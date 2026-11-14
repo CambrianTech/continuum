@@ -82,7 +82,7 @@ impl From<ModelId> for String {
 }
 
 /// A SHA-256 digest: of a message's bytes, a tool schema, a tokenizer artifact, or a tool call's
-/// canonical arguments (`continuum_context::cause::Fingerprint`, MIND-CONTEXT invariant 4).
+/// canonical arguments (`continuum_context::cause::Fingerprint`, CONTINUUM-ENGINE section 5 invariant 4).
 /// Carried as its 32 bytes; written as 64 lowercase hex digits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]

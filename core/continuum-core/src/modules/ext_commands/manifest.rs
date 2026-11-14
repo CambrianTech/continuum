@@ -179,7 +179,7 @@ pub fn load_manifests(dir: &Path, shipped: &[&str]) -> (Vec<LoadedCommand>, Vec<
                     refused.push(ManifestError::Duplicate { path, name: cmd.manifest.name.clone() });
                     continue;
                 }
-                let descriptor = cmd.descriptor();
+                let descriptor = cmd.process_descriptor();
                 loaded.push(LoadedCommand { command: Arc::new(cmd), descriptor });
             }
             Err(e) => refused.push(e),
@@ -316,13 +316,9 @@ impl ProcessCommand {
     }
 }
 
-#[async_trait]
-impl DynCommand for ProcessCommand {
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    fn descriptor(&self) -> CommandDescriptor {
+impl ProcessCommand {
+    /// Always describable: an authored command carries its own schema and no TS types.
+    fn process_descriptor(&self) -> CommandDescriptor {
         // Runtime-only: this descriptor feeds the catalogue, the tool surface, the ACL and
         // the recipe gate. It never enters codegen (the compile-time registry is
         // untouched), so the TypeRefs are a stable placeholder, not a TS type.
@@ -342,19 +338,31 @@ impl DynCommand for ProcessCommand {
             // A native authored command is one of her core hands: its manifest declares no
             // disclosure, and the author chose `native` to put it in her prompt.
             disclosure: continuum_base::tool_disclosure::Disclosure::Core,
+            withheld: None,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),
             type_refs: vec![json],
         }
     }
+}
+
+#[async_trait]
+impl DynCommand for ProcessCommand {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn descriptor(&self) -> Result<CommandDescriptor, crate::sdk_codegen::CodegenDefect> {
+        Ok(self.process_descriptor())
+    }
 
     async fn invoke(
         &self,
         params: Value,
         _caller: Option<crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String> {
-        self.run_process(params).await.map(CommandResult::Json)
+    ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
+        self.run_process(params).await.map(CommandResult::Json).map_err(crate::sdk_codegen::CommandFailure::from)
     }
 }
 

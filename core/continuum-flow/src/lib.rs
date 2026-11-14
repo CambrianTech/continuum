@@ -1,4 +1,4 @@
-//! Work flows through queues, never locks (SERVING-ENGINE §1c; Joel, 2026-10-28: "Its got to
+//! Work flows through queues, never locks (CONTINUUM-ENGINE.md 4.1c; Joel, 2026-10-28: "Its got to
 //! flow or have MANY queues"; "Semaphore really only exists for queue inserts and signals").
 //!
 //! - Every unit of work has a quality-of-service class ([`Qos`]): interactive, work, utility,
@@ -16,6 +16,8 @@
 //!   bounded and shed their oldest. A long queue gives every request everyone's latency.
 //! - Nobody holds a lock while waiting or working: a grant is a capability whose drop is the
 //!   release event.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 mod flow;
 mod qos;

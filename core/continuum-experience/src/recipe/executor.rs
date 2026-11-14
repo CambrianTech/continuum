@@ -271,7 +271,7 @@ impl PipelineExecutor {
                         Err(e) => return self.fail(run, format!("step {idx} ({}): {e}", step.command)).await,
                     },
                 };
-                let start = run.cursor.item.unwrap_or(0) as usize;
+                let start = run.cursor.item.unwrap_or(0) as usize; // unwrap_or: no item cursor = this step has not started, so it starts at its first item
                 for (i, item) in items.into_iter().enumerate().skip(start) {
                     if self.cancel_requested(run).await? {
                         return self.finish(run, RunPhase::Cancelled).await;
@@ -440,7 +440,7 @@ impl PipelineExecutor {
                 Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch).await {
                     Ok(r) => r,
                     // The handler may still have acted: a timeout is never a refusal.
-                    Err(_) => Err(DispatchFailure { outcome: DispatchOutcome::Uncertain, message: format!("timed out after {ms}ms") }),
+                    Err(_) => Err(DispatchFailure::uncertain(format!("timed out after {ms}ms"))),
                 },
                 None => dispatch.await,
             };
@@ -451,7 +451,7 @@ impl PipelineExecutor {
                         return Ok(Settled::Committed(value));
                     }
                     // It ran; only its result is unreadable. Still not a refusal.
-                    Err(e) => DispatchFailure { outcome: DispatchOutcome::Uncertain, message: format!("result unreadable: {e}") },
+                    Err(e) => DispatchFailure::uncertain(format!("result unreadable: {e}")),
                 },
                 Err(f) => f,
             };

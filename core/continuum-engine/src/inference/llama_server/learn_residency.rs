@@ -1,0 +1,410 @@
+//! What a mind's learning occupies in the engine, leased by the core BEFORE it is allocated
+//! (card 4114a2c6; Joel, 2026-11-08: "Everything must be under vram and ram budgeting").
+//!
+//! Learning is in place in the serving engine, so its memory is a small claim on the same budget:
+//! the shadow's weights, its optimizer state, and one per-engine training workspace. The engine
+//! measures each without allocating (`dry_run` on `/lora-adapters/fresh|load`, `/learn/preflight`),
+//! the core leases exactly those bytes from its one resource authority, then registers a
+//! RESIDENCY with the engine that mirrors those leases: the engine admits an allocation only inside
+//! a registered residency's rows (fork, Codex at 7885c2932 / 08bc3ccb3). The engine holds no second
+//! ledger, only this reference to the core's.
+
+use super::learn_ledger::{LearningEngine, LedgerAnswer, LedgerEngine, LedgerReply, Registered};
+use super::*;
+
+/// A residency the core mints, never reused (a released id is retired by the engine).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ResidencyId(uuid::Uuid);
+
+impl ResidencyId {
+    pub fn issue() -> Self {
+        Self(uuid::Uuid::new_v4())
+    }
+}
+
+impl std::fmt::Display for ResidencyId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// What a residency covers. Every field of a fresh shadow is sent: the engine never fills one in.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResidencySubject {
+    /// A new zero-B shadow the engine writes and loads (`/lora-adapters/fresh`).
+    Fresh(FreshShadow),
+    /// An existing adapter file under the engine's train dir (`/lora-adapters/load`).
+    Load { name: String },
+    /// A shadow already loaded (its learning's optimizer state), by its adapter id and file.
+    Loaded { lora_id: i64, path: String },
+    /// The engine's one training workspace, shared by every mind's chunks.
+    Workspace,
+}
+
+/// A fresh shadow's shape, all of it explicit.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FreshShadow {
+    pub name: String,
+    pub rank: u32,
+    pub alpha: f32,
+    pub targets: Vec<String>,
+    pub top_layers: u32,
+    pub seed: u32,
+}
+
+impl FreshShadow {
+    fn json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": self.name, "rank": self.rank, "alpha": self.alpha,
+            "targets": self.targets.join(","), "top_layers": self.top_layers, "seed": self.seed,
+        })
+    }
+}
+
+impl ResidencySubject {
+    fn json(&self) -> serde_json::Value {
+        match self {
+            ResidencySubject::Fresh(fresh) => serde_json::json!({ "fresh": fresh.json() }),
+            ResidencySubject::Load { name } => serde_json::json!({ "load": { "name": name } }),
+            ResidencySubject::Loaded { lora_id, path } => serde_json::json!({ "loaded": { "lora_id": lora_id, "path": path } }),
+            ResidencySubject::Workspace => serde_json::json!({ "workspace": true }),
+        }
+    }
+}
+
+/// What one row of a residency holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowKind {
+    Weights,
+    OptimizerStaticRequired,
+    OptimizerHostRequired,
+    SharedComputeRequired,
+}
+
+/// One measured row: bytes on one device's buffer type. `host` marks memory the core leases as
+/// RAM (pinned host buffers included); everything else is VRAM.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct MeasuredRow {
+    pub device: String,
+    pub buffer_type: String,
+    pub bytes: u64,
+    pub host: bool,
+}
+
+/// A measured row named for what it holds.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct ResidencyRow {
+    pub device: String,
+    pub buffer_type: String,
+    pub kind: RowKind,
+    pub bytes: u64,
+    pub host: bool,
+}
+
+impl ResidencyRow {
+    pub fn of(row: MeasuredRow, kind: RowKind) -> Self {
+        Self { device: row.device, buffer_type: row.buffer_type, kind, bytes: row.bytes, host: row.host }
+    }
+}
+
+/// One of the core's leases covering a residency, by the resource authority's id.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CoveringLease {
+    pub kind: LeaseKind,
+    pub lease_id: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaseKind {
+    Vram,
+    Ram,
+}
+
+/// A residency to register: the measured rows and the core leases that cover them.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResidencyTerms {
+    pub id: ResidencyId,
+    pub engine: LedgerEngine,
+    /// The core process that holds the leases (one per process, so a restarted core's residency is
+    /// never this one's).
+    pub owner: uuid::Uuid,
+    pub subject: ResidencySubject,
+    pub rows: Vec<ResidencyRow>,
+    pub leases: Vec<CoveringLease>,
+}
+
+/// Why the engine refused a residency request, by its own names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResidencyRefusal {
+    Invalid,
+    StaleEngine,
+    Retired,
+    ResidencyMismatch,
+    LeaseAlreadyBound,
+    Uncovered,
+    UnknownResidency,
+    SubjectMismatch,
+    Busy,
+}
+
+/// A residency as the engine holds it.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub struct RegisteredResidency {
+    pub id: String,
+    pub engine: LedgerEngine,
+    pub owner: String,
+    pub subject: serde_json::Value,
+    pub rows: Vec<ResidencyRow>,
+    pub leases: Vec<CoveringLease>,
+    pub pending: bool,
+    pub live: bool,
+    pub revoked: bool,
+    pub lora_id: i64,
+}
+
+/// An adapter the engine holds: its id and the file it was loaded from.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct LoadedAdapter {
+    pub id: i64,
+    pub path: String,
+}
+
+/// The engine's measurement of something not yet allocated.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct WeightsPlan {
+    pub engine: LedgerEngine,
+    pub weights: Vec<MeasuredRow>,
+}
+
+/// The engine's measurement of a loaded shadow's learning: optimizer state and the workspace.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct LearningPlan {
+    pub engine: LedgerEngine,
+    pub requirements: Vec<PlannedRow>,
+    /// The example's labelled reply rows, as the engine rendered and counted them.
+    pub reply_rows: u32,
+    /// The served context window the example was priced within (never shrunk to fit).
+    pub served_window: u32,
+}
+
+/// A preflight row: `*_required` is what learning would allocate, `shared_compute_held` is what
+/// serving holds now (evidence, never a lease row).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct PlannedRow {
+    pub device: String,
+    pub buffer_type: String,
+    pub kind: String,
+    pub bytes: u64,
+    pub host: bool,
+}
+
+/// Why the engine would not measure learning, by its own names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreflightRefusal {
+    None,
+    StaleEngine,
+    Busy,
+    Unsupported,
+    Invalid,
+}
+
+#[derive(serde::Deserialize)]
+struct PreflightReply {
+    engine: LedgerEngine,
+    refusal: PreflightRefusal,
+    #[serde(default)]
+    detail: Option<String>,
+    requirements: Vec<PlannedRow>,
+    #[serde(default)]
+    reply_rows: Option<u32>,
+    #[serde(default)]
+    served_window: Option<u32>,
+}
+
+/// A learning preflight's answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Preflight {
+    Planned(LearningPlan),
+    Refused { refusal: PreflightRefusal, detail: Option<String> },
+}
+
+impl LearningEngine {
+    /// `dry_run` of a fresh shadow: the weights it would take, nothing written or allocated.
+    pub async fn plan_fresh_shadow(&self, shadow: &FreshShadow) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
+        let mut body = shadow.json();
+        body["dry_run"] = serde_json::Value::Bool(true);
+        self.plan_request(self.client.post(format!("{}/lora-adapters/fresh", self.root)).json(&body)).await
+    }
+
+    /// `dry_run` of loading an adapter file: the weights it would take, nothing allocated.
+    pub async fn plan_load(&self, name: &str) -> Result<LedgerAnswer<WeightsPlan>, LlamaServerError> {
+        let body = serde_json::json!({ "name": name, "dry_run": true });
+        self.plan_request(self.client.post(format!("{}/lora-adapters/load", self.root)).json(&body)).await
+    }
+
+    /// `POST /learn/preflight`: what learning `messages` (with `tools`, as `/learn` would receive
+    /// them) on loaded shadow `lora_id` would allocate, measured on a disposable scheduler (serving
+    /// untouched). The engine renders and counts the reply itself, with the renderer `/learn` uses.
+    pub async fn learning_preflight(
+        &self,
+        engine: &LedgerEngine,
+        lora_id: i64,
+        messages: &[serde_json::Value],
+        tools: Option<&serde_json::Value>,
+    ) -> Result<LedgerAnswer<Preflight>, LlamaServerError> {
+        let mut body = serde_json::json!({ "engine": engine, "lora_id": lora_id, "messages": messages });
+        if let Some(tools) = tools {
+            body["tools"] = tools.clone();
+        }
+        let reply: LedgerAnswer<PreflightReply> =
+            self.plan_request(self.client.post(format!("{}/learn/preflight", self.root)).json(&body)).await?;
+        match reply {
+            LedgerAnswer::NoLedger => Ok(LedgerAnswer::NoLedger),
+            LedgerAnswer::Ledger(reply) => Ok(LedgerAnswer::Ledger(match (reply.refusal, reply.reply_rows, reply.served_window) {
+                (PreflightRefusal::None, Some(reply_rows), Some(served_window)) => {
+                    Preflight::Planned(LearningPlan { engine: reply.engine, requirements: reply.requirements, reply_rows, served_window })
+                }
+                (PreflightRefusal::None, _, _) => {
+                    return Err(LlamaServerError::Unreachable("/learn/preflight planned without the example's geometry".into()))
+                }
+                (refusal, _, _) => Preflight::Refused { refusal, detail: reply.detail },
+            })),
+        }
+    }
+
+    /// `POST /learn/residency`: mirror the core's leases for `terms` in the engine.
+    pub async fn register_residency(&self, terms: &ResidencyTerms) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
+        let body = serde_json::json!({
+            "id": terms.id.to_string(),
+            "engine": terms.engine,
+            "owner": terms.owner.to_string(),
+            "subject": terms.subject.json(),
+            "rows": terms.rows,
+            "leases": terms.leases,
+        });
+        let reply = self.ledger_request::<ResidencyRefusal>(self.client.post(format!("{}/learn/residency", self.root)).json(&body)).await?;
+        Ok(reply.map(LedgerReply::registered))
+    }
+
+    /// `POST /learn/residency/release`: the engine forgets a residency whose allocations have left;
+    /// refused (busy) while any is pending or live.
+    pub async fn release_residency(&self, engine: &LedgerEngine, id: &str) -> Result<LedgerAnswer<Registered<ResidencyRefusal>>, LlamaServerError> {
+        // the incarnation the residency was registered with: another one refuses stale_engine unchanged
+        let body = serde_json::json!({ "engine": engine, "id": id });
+        let reply = self.ledger_request::<ResidencyRefusal>(self.client.post(format!("{}/learn/residency/release", self.root)).json(&body)).await?;
+        Ok(reply.map(LedgerReply::registered))
+    }
+
+    /// `POST /lora-adapters/fresh` inside `residency`: the engine claims the residency, checks its
+    /// rows cover the shadow, writes the zero-B shadow and loads it dormant. The loaded adapter.
+    pub async fn seat_fresh(&self, shadow: &FreshShadow, residency: ResidencyId) -> Result<LoadedAdapter, LlamaServerError> {
+        let mut body = shadow.json();
+        body["residency"] = serde_json::Value::String(residency.to_string());
+        self.adapter_change(self.client.post(format!("{}/lora-adapters/fresh", self.root)).json(&body)).await
+    }
+
+    /// `POST /lora-adapters/unload`: the shadow leaves the engine (its optimizer released first).
+    pub async fn unseat(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
+        // bound to the incarnation that loaded it: a relaunch reusing the id refuses, never unloads
+        let body = serde_json::json!({ "engine": engine, "id": lora_id });
+        self.adapter_change(self.client.post(format!("{}/lora-adapters/unload", self.root)).json(&body)).await
+    }
+
+    async fn adapter_change(&self, request: reqwest::RequestBuilder) -> Result<LoadedAdapter, LlamaServerError> {
+        let resp = request.timeout(super::genome::LORA_LOAD_TIMEOUT).send().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            return Err(LlamaServerError::Unreachable(format!("adapter change refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+        }
+        serde_json::from_slice::<LoadedAdapter>(&bytes) // engine HTTP wire: the adapter change reply
+            .map_err(|e| LlamaServerError::Unreachable(format!("adapter change answered no id: {e}")))
+    }
+
+    async fn plan_request<T: serde::de::DeserializeOwned>(&self, request: reqwest::RequestBuilder) -> Result<LedgerAnswer<T>, LlamaServerError> {
+        let resp = request
+            .timeout(PROBE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        match resp.status().as_u16() {
+            200..=299 => {}
+            404 | 405 => return Ok(LedgerAnswer::NoLedger),
+            status => {
+                let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
+                return Err(LlamaServerError::Unreachable(format!("learning plan status {status}: {text}")));
+            }
+        }
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        serde_json::from_slice(&bytes) // engine HTTP wire: a measured plan
+            .map(LedgerAnswer::Ledger)
+            .map_err(|e| LlamaServerError::Unreachable(format!("the learning plan answered no plan: {e}")))
+    }
+}
+
+/// A checkpoint the engine published: one immutable generation directory holding her shadow's
+/// weights, its optimizer state and a manifest, flushed before and after its one rename.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Checkpoint {
+    /// The generation directory (`<name>.checkpoint`).
+    pub path: String,
+    /// Optimizer updates the saved shadow had committed: what the generation holds.
+    pub steps: i64,
+    pub binding: String,
+}
+
+/// What a checkpoint save answered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckpointAnswer {
+    Saved(Checkpoint),
+    /// The shadow has learned nothing yet: there is no optimizer state to save.
+    NoOptimizerState,
+}
+
+impl LearningEngine {
+    /// `POST /lora-adapters/save` with a checkpoint: publish shadow `lora_id`'s weights and optimizer
+    /// state as generation `<name>.checkpoint`, under incarnation `engine`, bound to `binding`, with
+    /// `provenance` recorded in its manifest. Refused while she is learning.
+    pub async fn save_checkpoint(
+        &self,
+        engine: &LedgerEngine,
+        lora_id: i64,
+        name: &str,
+        binding: &str,
+        provenance: serde_json::Value,
+    ) -> Result<CheckpointAnswer, LlamaServerError> {
+        let body = serde_json::json!({ "id": lora_id, "name": name, "checkpoint": { "engine": engine, "binding": binding, "provenance": provenance } });
+        let resp = self
+            .client
+            .post(format!("{}/lora-adapters/save", self.root))
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        let status = resp.status();
+        let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if !status.is_success() {
+            return Err(LlamaServerError::Unreachable(format!("checkpoint save refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+        }
+        #[derive(serde::Deserialize)]
+        struct Answer {
+            #[serde(default)]
+            refusal: Option<String>,
+            #[serde(default)]
+            checkpoint: Option<Checkpoint>,
+        }
+        let answer: Answer = serde_json::from_slice(&bytes) // engine HTTP wire: the save's answer
+            .map_err(|e| LlamaServerError::Unreachable(format!("checkpoint save answered nothing readable: {e}")))?;
+        match (answer.refusal.as_deref(), answer.checkpoint) {
+            (Some("no_optimizer_state"), _) => Ok(CheckpointAnswer::NoOptimizerState),
+            (Some(other), _) => Err(LlamaServerError::Unreachable(format!("checkpoint save refused: {other}"))),
+            (None, Some(checkpoint)) => Ok(CheckpointAnswer::Saved(checkpoint)),
+            (None, None) => Err(LlamaServerError::Unreachable("checkpoint save answered without a checkpoint".into())),
+        }
+    }
+}

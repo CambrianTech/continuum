@@ -26,6 +26,8 @@
 //!
 //! Env: `CONTINUUM_CORE_SOCKET` (default `/tmp/continuum-core.sock`),
 //! `CONTINUUM_START_SCRIPT` (override the start script path).
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;

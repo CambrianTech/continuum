@@ -8,7 +8,7 @@ use super::*;
 /// `Airc::current_room_landing_in` at bootstrap; an ESTABLISHED
 /// persona's durable membership always wins, so changing this never
 /// migrates a living citizen.
-pub const CITIZEN_COMMONS_ROOM: &str = "academy";
+pub const CITIZEN_COMMONS_ROOM: &str = continuum_base::reserved_rooms::ACADEMY;
 
 /// airc's OWN generic lobby — not continuum's commons.
 ///
@@ -17,7 +17,7 @@ pub const CITIZEN_COMMONS_ROOM: &str = "academy";
 /// otherwise, and continuum always has something to say
 /// ([`CITIZEN_COMMONS_ROOM`]). A literal `"general"` in continuum code reads
 /// like a choice; nine times in ten it is the absence of one.
-pub const AIRC_LOBBY_ROOM: &str = "general";
+pub const AIRC_LOBBY_ROOM: &str = continuum_base::reserved_rooms::GENERAL;
 
 /// Abort-on-drop guard for the continuum-owned heartbeat pump (#260): keeps
 /// the airc `HeartbeatTask` teardown contract — dropping the runtime aborts
@@ -262,8 +262,7 @@ impl PersonaAircRuntime {
         executor: Arc<crate::runtime::command_executor::CommandExecutor>,
     ) -> Result<Self, PersonaAircRuntimeError> {
         Self::bootstrap_as(
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             persona_id,
             agent_name,
             continuum_root,

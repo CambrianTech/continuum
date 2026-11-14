@@ -188,7 +188,7 @@ mod tests {
         for ((from, to), n) in worst.iter().take(8) {
             eprintln!("  {from} -> {to}: {n} lines");
         }
-        crate::ratchet::hold_sites("upward_imports", &violations, || {
+        crate::ratchet::hold_sites("upward_imports", &violations, crate::ratchet::Touched::HeldOnly(crate::ratchet::HeldOnly::CrossFile), || {
             "upward imports rose. A lower ring now names a higher ring: move the fact or verb \
              down to its owner, or place the module in its ring."
                 .to_string()

@@ -10,19 +10,39 @@
 //! - `{{named.label.output}}` — named step output
 //! - `{{env.VAR}}` — environment variable
 
-use regex::Regex;
 use serde_json::Value;
-use std::sync::LazyLock;
 
 use super::types::ExecutionContext;
 
-/// Matches innermost {{...}} patterns (no { or } inside the braces).
-/// This enables multi-pass resolution for nested interpolation:
+/// Replace every innermost `{{...}}` (one or more characters, none of them `{`, `}` or a
+/// newline) with `resolve(inner)`, scanning left to right without overlap: the matches the
+/// pattern `\{\{([^{}\n]+)\}\}` finds, written as a scan so there is no pattern to compile.
+/// Innermost-only is what enables multi-pass resolution for nested interpolation:
 /// `{{steps.0.output.topics.{{input.iteration}}.name}}`
 ///   Pass 1: resolves `{{input.iteration}}` → `0`
 ///   Pass 2: resolves `{{steps.0.output.topics.0.name}}` → topic name
-static INTERPOLATION_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"\{\{([^{}\n]+)\}\}").unwrap());
+fn replace_innermost(template: &str, mut resolve: impl FnMut(&str) -> String) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find("{{") {
+        let body = &rest[open + 2..];
+        match body.find(['{', '}', '\n']) {
+            Some(end) if end > 0 && body[end..].starts_with("}}") => {
+                out.push_str(&rest[..open]);
+                out.push_str(&resolve(&body[..end]));
+                rest = &body[end + 2..];
+            }
+            // No match starts at this `{{`; the next candidate starts one byte later
+            // (`{` is ASCII, so that is a char boundary).
+            _ => {
+                out.push_str(&rest[..open + 1]);
+                rest = &rest[open + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
 
 /// Interpolate {{variable}} references in a template string.
 /// Runs multiple passes to resolve nested interpolation.
@@ -31,12 +51,7 @@ pub fn interpolate(template: &str, ctx: &ExecutionContext) -> String {
     // Multi-pass: resolve innermost patterns first, then outer patterns
     // Safety limit of 5 passes prevents infinite loops
     for _ in 0..5 {
-        let new_result = INTERPOLATION_RE
-            .replace_all(&result, |caps: &regex::Captures| {
-                let path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                resolve_path(path, ctx)
-            })
-            .to_string();
+        let new_result = replace_innermost(&result, |inner| resolve_path(inner.trim(), ctx));
 
         if new_result == result {
             break; // No more substitutions

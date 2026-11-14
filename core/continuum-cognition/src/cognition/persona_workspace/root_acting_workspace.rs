@@ -291,6 +291,7 @@ impl PersonaWorkspaceRegistry {
         // Assembly restores disk state; do it outside the lookup lock.
         let restored = load_volatile(persona_id)?;
         let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
+        bind_archive(persona_id, &working_memory);
         // A resident keeps her learned tool head in her own store; a fork never does.
         if let Some(store) = template.admission.tool_heads() {
             working_memory
@@ -327,6 +328,7 @@ impl PersonaWorkspaceRegistry {
         let template = cfg.clone();
         let restored = load_volatile(persona_id)?;
         let (cycle, working_memory) = assemble_workspace_cycle(cfg, restored, Capture::Recorded);
+        bind_archive(persona_id, &working_memory);
         // A resident keeps her learned tool head in her own store; a fork never does.
         if let Some(store) = template.admission.tool_heads() {
             working_memory
@@ -405,14 +407,26 @@ impl PersonaWorkspaceRegistry {
         let save_one = |id: Uuid, memory: Arc<WorkingMemory>| {
             let started = std::time::Instant::now();
             let result = save_volatile(id, reason, staged_deadline, &memory);
+            let (outcome, bytes, archive) = match &result {
+                Ok(Checkpointed::Written { bytes, archive }) => ("ok", *bytes, *archive),
+                Ok(Checkpointed::Unchanged { archive }) => ("unchanged", 0, *archive),
+                Err(_) => ("error", 0, Default::default()),
+            };
             continuum_base::probe!(
                 class = "persona.volatile.checkpoint",
                 persona_id = %id,
-                outcome = if result.is_ok() { "ok" } else { "error" },
+                outcome = outcome,
                 ms = started.elapsed().as_millis() as u64,
+                bytes = bytes,
+                resident_acts = memory.resident_acts(),
+                archived_acts = archive.archived,
+                archive_bytes = archive.bytes,
+                compacted = archive.compacted,
+                retired = archive.retired,
+                bodies_deleted = archive.bodies_deleted,
                 "resident volatile checkpoint completed"
             );
-            (id, result)
+            (id, result.map(|_| ()))
         };
         match reason {
             // A periodic checkpoint reads no tree and writes one small file per resident:
@@ -630,7 +644,7 @@ impl PersonaWorkspaceRegistry {
         // runaway) while turns — which send it — were clean.
         let (adapter, model) = cycle
             .current_model_route()
-            .unwrap_or_else(|| (cfg.adapter.clone(), None));
+            .unwrap_or_else(|| (cfg.adapter.clone(), None)); // unwrap_or_else: no live binding yet, so the adapter she was built with and no served-model id (named, never invented)
         Some((Arc::clone(&cfg.admission), adapter, model))
     }
 
@@ -669,4 +683,18 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
 pub(super) struct PersistedVolatile {
     pub(super) wm: super::super::working_memory::VolatileSnapshot,
     pub(super) own_speech: OwnSpeechPersisted,
+}
+
+/// Give a resident her archive, so her resident log is bounded by her view's fold edge. A failure
+/// (no tool-output class yet, an unreadable index) is named and leaves her log unbounded as before,
+/// never refuses her registration.
+fn bind_archive(persona_id: Uuid, memory: &WorkingMemory) {
+    if let Err(error) = memory.bind_archive(persona_id) {
+        continuum_base::probe!(
+            class = "wm.history.unbound",
+            persona_id = %persona_id,
+            error = %error,
+            "her archive could not be opened: her resident log keeps every act this life"
+        );
+    }
 }

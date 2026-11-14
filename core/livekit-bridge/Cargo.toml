@@ -19,6 +19,7 @@ livekit-api.workspace = true
 
 # Async runtime
 tokio = { workspace = true }
+parking_lot = { workspace = true }
 
 # Serialization
 serde = { workspace = true }

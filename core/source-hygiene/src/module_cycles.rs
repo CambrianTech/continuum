@@ -258,7 +258,7 @@ mod tests {
         let count = violations.len();
                 let largest = violations.first().map_or("", |v| v.source.as_str()); // map_or: no cycle, nothing to name
         eprintln!("modules in a cycle: {count}; largest {largest}");
-        crate::ratchet::hold_sites("modules_in_cycles", &violations, || {
+        crate::ratchet::hold_sites("modules_in_cycles", &violations, crate::ratchet::Touched::HeldOnly(crate::ratchet::HeldOnly::CrossFile), || {
             "A new import closes a dependency loop: move the fact or verb down to its owner, or \
              invert it behind a trait the lower module owns."
                 .to_owned()

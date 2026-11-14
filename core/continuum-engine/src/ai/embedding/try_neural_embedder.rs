@@ -28,29 +28,9 @@ pub(super) async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
-    // This node embeds — claim the embed lane's standing FLOOR on the resource
-    // board (#225, Joel 2026-08-08: "the budgeter just has all its parts figure
-    // it out"). The floor makes the ledger's `available_for` math hold the lane's
-    // working VRAM against every OTHER consumer, so the serving plan can no
-    // longer grow its window into the slice cognition needs every turn (measured
-    // the day this landed: 604 MiB governed-available vs the 1792 MiB need —
-    // embedding fully dead, every recall degraded to no-relevance). Reserved
-    // HERE, at successful resolve, so a node with no embed model wastes nothing.
-    // Idempotent: re-resolve re-states the same floor.
-    if let Some(daemon) = crate::resources::ResourceDaemon::global() {
-        use crate::inference::llamacpp_adapter::{EMBED_LANE_CONSUMER_ID, EMBED_LANE_VRAM_BYTES};
-        daemon.reserve(
-            EMBED_LANE_CONSUMER_ID,
-            crate::resources::ResourceKind::Vram,
-            EMBED_LANE_VRAM_BYTES,
-        );
-        continuum_base::probe!(
-            class = "embed.vram.reserved",
-            consumer = EMBED_LANE_CONSUMER_ID,
-            bytes = EMBED_LANE_VRAM_BYTES,
-            "embed lane reserved its standing VRAM floor — serving's budget now plans around it"
-        );
-    }
+    // The embed lane's standing floor is re-stated by each of its leases, in the pool its context
+    // resides in, at the largest context it has embedded (`inference::embed_lane_memory`): the probe
+    // and calibration passes above set it before any turn embeds.
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 
@@ -271,11 +251,11 @@ impl EmbeddingProvider for LazyRecallEmbedder {
         self.resolved
             .get()
             .map(|p| p.id())
-            .unwrap_or("recall-embedder(resolving)")
+            .unwrap_or("recall-embedder(resolving)") // unwrap_or: before resolution the provider names itself resolving
     }
 
     fn dim(&self) -> usize {
-        self.resolved.get().map(|p| p.dim()).unwrap_or(0)
+        self.resolved.get().map(|p| p.dim()).unwrap_or(0) // unwrap_or: an unresolved embedder has no dimension yet
     }
 
     async fn embed(&self, text: &str) -> Vec<f32> {

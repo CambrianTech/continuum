@@ -32,7 +32,7 @@ pub struct Collapsible {
     pub hazard: Hazard,
 }
 
-/// `items`' collapsible ones (all but the newest, each whole larger than its pointer), newest first,
+/// `items`' collapsible ones (all but the newest and her work in hand, each whole larger than its pointer), newest first,
 /// priced by the caller's `cost`, with her measured re-read chance at each one's age, read off the
 /// clock that measured it (its recorded birth, never its position: a source idle for acts or
 /// batching several items in one would sample the wrong bucket); `Unmeasured` where nothing
@@ -42,6 +42,8 @@ pub(crate) fn collapsible<T: crate::epoch::Block>(items: &[crate::source::Item<T
         .iter()
         .rev()
         .skip(1)
+        // Her work in hand is never collapsible: a start keeps it whole beside her newest.
+        .filter(|item| !item.in_hand)
         .filter_map(|item| {
             let whole = crate::cost::whole(item, cost);
             let pointer = item.pointer().map_or(0, |pointer| cost.block(pointer)); // map_or: an item that leaves when collapsed costs nothing as a pointer
@@ -181,7 +183,7 @@ mod tests {
     }
 
     fn item(age: u64, whole: usize, events: f64, exposure: f64) -> Collapsible {
-        Collapsible { whole, saves: whole - 100, age, hazard: Hazard::Measured(Tally { exposure, events }) }
+        Collapsible { whole, saves: whole - 100, age, hazard: Hazard::Measured { tally: Tally { exposure, events }, prior: 1.0 } }
     }
 
     fn room() -> Room {

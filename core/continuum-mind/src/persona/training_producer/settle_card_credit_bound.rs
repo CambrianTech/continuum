@@ -163,7 +163,7 @@ pub fn staged_credit_from_list(listed: serde_json::Value) -> Result<Vec<StagedCr
         .into_iter()
         .map(|item| {
             let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // Decode the persisted ORM envelope; move its entity payload without cloning it.
-            Ok(serde_json::from_value(record.data)?) // Decode one staged-credit entity from its typed storage envelope.
+            Ok(record.decode()?) // Decode one staged-credit entity from its typed storage envelope.
         })
         .collect()
 }
@@ -234,11 +234,10 @@ pub(super) fn staged_submission_params(
     params["submissionId"] = json!(row.id);
     crate::cognition::held_out::stamp_examples(&mut params, row.task.as_ref());
     if verdict == CardVerdict::Corrected {
-        // The reviewed correction (#4900) is the one labelled source: its own bucket, and one
-        // correction trains, through the same /train path at the one default schedule
-        // (`native_jobs::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
+        // The reviewed correction (#4900) is the one labelled source: its own bucket, learned
+        // in place like every accepted example, at the one default schedule
+        // (`lora_defaults::DEFAULT_LEARNING_RATE`, 1e-4, measured on the 5090 2026-10-10).
         params["traitKind"] = json!(format!("{}/{CORRECTED_BUCKET}", plan.bucket_key()));
-        params["minExamples"] = json!(1);
     }
     Ok(params)
 }
@@ -286,16 +285,15 @@ pub(super) fn lived_examples(
     }
     kept
         .into_iter()
-        .map(|call| TrainingExample {
-            prompt: call
-                .request
-                .messages
-                .last()
-                .map(|m| m.content_text())
-                .unwrap_or_default(),
-            completion: call.response.text.clone(),
-            metadata: Some(metadata.clone()),
-            lived: Some(call.clone()),
+        // A call with no message has no prompt to learn from: it yields no example, never an empty one.
+        .filter_map(|call| {
+            let prompt = call.request.messages.last()?.content_text();
+            Some(TrainingExample {
+                prompt,
+                completion: call.response.text.clone(),
+                metadata: Some(metadata.clone()),
+                lived: Some(call.clone()),
+            })
         })
         .collect()
 }

@@ -42,7 +42,9 @@ pub enum TeachTrainingAction {
         candidate_id: Uuid,
         recipient: PersonaRef,
         base_model_id: String,
-        trait_kind: String,
+        #[ts(type = "string")]
+        #[schemars(with = "String")]
+        trait_kind: TraitKind,
         heldout_gym: String,
     },
     /// Submit the exact stored request. Generation options cannot be supplied.
@@ -50,6 +52,34 @@ pub enum TeachTrainingAction {
         #[ts(type = "string")]
         candidate_id: Uuid,
     },
+}
+
+/// The competence a candidate trains: a non-blank trait kind, by its type, so a blank one is
+/// refused when the command is read and never reaches the bridge.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TraitKind(String);
+
+impl TryFrom<String> for TraitKind {
+    type Error = String;
+    fn try_from(text: String) -> Result<Self, String> {
+        if text.trim().is_empty() {
+            return Err("a trait kind names a competence, and a blank one names none".into());
+        }
+        Ok(Self(text))
+    }
+}
+
+impl From<TraitKind> for String {
+    fn from(kind: TraitKind) -> Self {
+        kind.0
+    }
+}
+
+impl TraitKind {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl TeachTrainingAction {
@@ -130,9 +160,6 @@ impl Preparation {
                 "candidate preparation requires prepareAndSubmit".into(),
             ));
         };
-        if trait_kind.trim().is_empty() {
-            return Err(CommandError::Invalid("traitKind is required".into()));
-        }
         let registry = crate::persona::PersonaAircRuntimeRegistry::try_global()
             .ok_or_else(|| CommandError::Invalid("recipient roster is unavailable".into()))?;
         let runtime = match registry.get_by_agent_name(recipient.as_str()) {
@@ -164,7 +191,7 @@ impl Preparation {
                 persona_id: runtime.persona_id(),
                 persona_name: runtime.agent_name().into(),
                 base_model: base_model_id.clone(),
-                trait_kind: trait_kind.clone(),
+                trait_kind: trait_kind.as_str().to_owned(),
                 examples: vec![],
                 source: TrainingSource::TeacherSynthesized,
                 eval_set: None,
@@ -172,7 +199,6 @@ impl Preparation {
                 schedule: None,
                 local_artifact_dir: None,
                 preferred_provider: None,
-                min_examples: Some(crate::modules::training_trigger::DEFAULT_MIN_EXAMPLES),
                 validation_split: Some(crate::modules::training_trigger::DEFAULT_VALIDATION_SPLIT),
             },
             request_hash: request_hash(p)?,
@@ -529,7 +555,7 @@ mod tests {
                 .with_request_recorder(requests.clone()),
         );
         let (storage, _database_dir) = crate::orm::store::fresh_adapter().await;
-        let (first_owner, executor) = build_runtime(storage.clone(), false).await;
+        let (first_owner, executor) = build_runtime(storage.clone()).await;
         let conn = Connection::new(InProcessTransport::new(executor.clone(), None));
         let generation_service = service.clone();
         let generation_params = params.clone();
@@ -581,7 +607,6 @@ mod tests {
                         schedule: None,
                         local_artifact_dir: None,
                         preferred_provider: None,
-                        min_examples: Some(crate::modules::training_trigger::DEFAULT_MIN_EXAMPLES),
                         validation_split: Some(
                             crate::modules::training_trigger::DEFAULT_VALIDATION_SPLIT,
                         ),
@@ -632,7 +657,7 @@ mod tests {
         drop(executor);
         drop(first_owner);
 
-        let (next_owner, executor) = build_runtime(storage, false).await;
+        let (next_owner, executor) = build_runtime(storage).await;
         let conn = Connection::new(InProcessTransport::new(executor, None));
         let replay = candidate_flow(
             service.clone(),
@@ -649,7 +674,7 @@ mod tests {
         assert_eq!(
             next_owner
                 .state
-                .bucket_example_count(recipient, "code", "fixture-base"),
+                .bucket_example_count(recipient, "code", "fixture-base").await,
             Some(1)
         );
         let mut changed = params.clone();
@@ -713,7 +738,7 @@ mod tests {
         assert_eq!(
             next_owner
                 .state
-                .bucket_example_count(recipient, "code", "fixture-base"),
+                .bucket_example_count(recipient, "code", "fixture-base").await,
             Some(1)
         );
     }

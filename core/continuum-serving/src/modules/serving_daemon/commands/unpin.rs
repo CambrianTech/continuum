@@ -15,6 +15,7 @@
 //! `Privileged` — it changes what dictates GPU residency on this node.
 
 use crate::modules::serving_daemon::ServingIntent;
+use crate::sdk_codegen::CommandError;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -60,7 +61,7 @@ crate::action_command! {
     params: ServingUnpinParams,
     output: UnpinReport,
     run(this, _ctx, _p) => {
-        let released_model = this.intent.set_pin(None, true);
+        let released_model = this.intent.set_pin(None, true).map_err(|error| CommandError::Denied(error.to_string()))?;
         if released_model.is_some() {
             this.store.clear();
         }

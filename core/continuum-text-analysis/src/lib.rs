@@ -7,11 +7,14 @@
 //! Phase 2: Validation gates (garbage detection, loop detection)
 //! Phase 3: Mention detection, response cleaning
 //! Phase 4: Conversation heuristics
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 pub mod garbage_detection;
 pub mod loop_detection;
 pub mod mention_detection;
 pub mod response_cleaning;
+mod scan;
 pub mod similarity;
 pub mod types;
 pub mod validation;

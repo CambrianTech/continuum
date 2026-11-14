@@ -67,6 +67,7 @@ regex = { workspace = true }
 
 [dev-dependencies]
 continuum-academy = { path = "../continuum-academy", features = ["test-fixtures"] }
+continuum-hands = { path = "../continuum-hands", features = ["test-fixtures"] }  # the in-memory PR host work/submit's tests ensure PRs through
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }

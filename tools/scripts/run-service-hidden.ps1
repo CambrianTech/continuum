@@ -13,6 +13,19 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 try {
+    # The service lifecycle serializes launches. Preserve the previous attempt
+    # before Start-Process truncates its redirects (including during rollback).
+    $previousLogs = @('service.out.log', 'service.err.log') | Where-Object {
+        Test-Path -LiteralPath (Join-Path $LogDirectory $_) -PathType Leaf
+    }
+    if ($previousLogs.Count -gt 0) {
+        $attempt = Join-Path $LogDirectory ('service-attempts/' + [DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffffffZ') + '-' + [guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $attempt -ErrorAction Stop | Out-Null
+        foreach ($name in $previousLogs) {
+            Move-Item -LiteralPath (Join-Path $LogDirectory $name) -Destination (Join-Path $attempt $name) -ErrorAction Stop
+        }
+        Write-Output "Previous service output preserved at $attempt"
+    }
     if ($PSCmdlet.ParameterSetName -eq 'Native') {
         # Prebuilt handoff bypasses start-server.sh. Use this release's media
         # artifacts so normal boot and Scheduler recovery start the same rail.

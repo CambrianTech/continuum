@@ -20,8 +20,11 @@ use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
 mod allot;
+mod held;
 mod log;
 mod repeat;
+mod tail;
+pub use tail::Judged;
 
 use allot::{allot, rank};
 pub use crate::level::Level;
@@ -41,10 +44,17 @@ pub struct Claim {
     pub floor: usize,
     /// What the source costs in full: its want. A folded item still wants its whole.
     pub full: usize,
-    /// Its newest item in full: the newest end a start never collapses when it fits.
+    /// Its newest item in full, with every item her work in hand holds open (`Item::in_hand`): the
+    /// newest end a start never collapses when it fits.
     pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
     pub logged: usize,
+    /// What the engine holds of it from the live epoch (the events its last sent prompt carried,
+    /// every version it superseded included): computed once and resident. An act granting less turns the epoch over and re-prefills
+    /// the whole view behind it (on the M5, 2026-11-10, 65% of all re-prefilled tokens, an epoch
+    /// every second act: the act's other claims took back the reserve a start had left). 0 at a
+    /// start, which recomputes anyway.
+    pub held: usize,
     /// Its items carry acts, so a re-read of one is measured (`crate::rereads`).
     pub instrumented: bool,
     /// What a deeper start could collapse, newest first, with her measured re-read chance for each
@@ -80,7 +90,7 @@ impl std::error::Error for GrantMismatch {}
 pub struct Advance {
     pub items: usize,
     pub chars: usize,
-    /// Arrivals rendered as a repeat of an occurrence held whole (MIND-CONTEXT invariant 4): the
+    /// Arrivals rendered as a repeat of an occurrence held whole (CONTINUUM-ENGINE section 5 invariant 4): the
     /// health line's repeats.
     pub repeats: usize,
 }
@@ -149,10 +159,11 @@ pub struct View<T: Block> {
     /// a view saved before repeats, which held none.
     #[serde(default)]
     repeats: HashSet<SourceId>,
-    /// Items a sent prompt's tail already showed her this epoch ([`View::append_sent`]): the tail
-    /// is in the view in the bytes it was sent, so the item never arrives again as its source
-    /// renders it until a start re-renders everything. Absent in a view saved before the tail
-    /// joined the view, which covered nothing.
+    /// Items whose element her epoch already shows whole under another key (her act's tail showed
+    /// act k; her actions now offer it as `#k`): one element, one occurrence, so the item never
+    /// arrives again as its source renders it until a start re-renders everything, and she read it
+    /// where it was shown ([`View::renders`]). Absent in a view saved before the tail joined the
+    /// view, which covered nothing.
     #[serde(default)]
     covered: HashSet<SourceId>,
     /// Items of a source the start's allocation SHED for want of its floor ([`View::withhold`]):
@@ -174,6 +185,11 @@ pub struct View<T: Block> {
     /// restart, it orders the next start. Absent in a view saved before it existed.
     #[serde(default)]
     motion: Motion,
+    /// Per source, the key of the newest item this epoch's start folded ([`View::fold_edge`]):
+    /// every item of that source up to it renders only inside its fold block, so its owner may let
+    /// it leave RAM. Absent in a view saved before it, which names no edge.
+    #[serde(default)]
+    fold_edges: std::collections::BTreeMap<String, String>,
     /// Where this act's appends began, until its prompt is sent: what [`View::readmit`]
     /// redoes. Never saved: a restored view has no unsent act.
     #[serde(skip)]
@@ -183,6 +199,11 @@ pub struct View<T: Block> {
     /// receipted. Never saved: a restored view has nothing in flight.
     #[serde(skip)]
     submitted: Option<Receipt>,
+    /// How many of this epoch's events the last sent prompt carried: what the engine holds of it.
+    /// 0 from a start until its first send, and in a restored view until its next: an epoch the
+    /// engine has not received holds nothing a claim must keep ([`Claim::held`]).
+    #[serde(default)]
+    sent_events: usize,
     /// What the last append added, per source, in order: which source appended how many items and
     /// characters, so a re-append of a whole history names its source (card ef0b04e4: 2,195 items,
     /// 57.9M chars on one advance after a restart). Never saved: it describes one act.
@@ -208,10 +229,33 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
         priority: source.priority(),
         floor: floor(cost, source, items),
         full: items.iter().map(|item| crate::cost::whole(item, cost)).sum(),
-        newest: items.last().map_or(0, |item| crate::cost::whole(item, cost)), // map_or: a source with no items has no newest end
+        newest: newest_end(cost, items),
         logged: 0,
+        held: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
         collapsible: crate::depth::collapsible(items, rereads, cost),
+    }
+}
+
+/// What a start keeps whole when it fits: the newest item, and every item her work in hand holds
+/// open (`Item::in_hand`), each at its whole.
+fn newest_end<T: Block>(cost: &dyn Estimate<T>, items: &[Item<T>]) -> usize {
+    let Some((newest, older)) = items.split_last() else {
+        return 0; // a source with no items has no newest end
+    };
+    crate::cost::whole(newest, cost) + older.iter().filter(|item| item.in_hand).map(|item| crate::cost::whole(item, cost)).sum::<usize>()
+}
+
+impl Claim {
+    /// Its weight in the window's one allocation: its source's priority scaled by how often she
+    /// asks again for what it would collapse, `priority x (1 + re-reads per act)`, the sum of her
+    /// measured re-read rate over its collapsible items. A source she keeps re-reading from wins
+    /// room from one she does not (the M5, 2026-11-09: her acts and her 300k-token conversation
+    /// split the room evenly at priority 5 while 70-90% of her file reads re-read one 3-5 acts
+    /// old). Unmeasured ages add nothing, so an unmeasured source keeps its priority.
+    pub fn weight(&self) -> u8 {
+        let rereads: f64 = self.collapsible.iter().filter_map(|item| item.hazard.per_act()).sum();
+        (f64::from(self.priority) * (1.0 + rereads)).round().min(f64::from(u8::MAX)) as u8
     }
 }
 
@@ -225,6 +269,27 @@ pub fn claims<T: Block>(cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> V
 }
 
 impl<T: Block> View<T> {
+    /// What each source would claim at a start, priced by `cost`, with HER measured re-read rate
+    /// on each collapsible item (`Claim::collapsible`); [`claims`] has no view and so no measured
+    /// re-read.
+    pub fn claims(&self, cost: &dyn Estimate<T>, sources: &[&dyn Source<T>]) -> Vec<Claim> {
+        sources
+            .iter()
+            .map(|source| Claim { held: self.held(cost, source.name()), ..claim(cost, *source, &source.items(), self.motion.rereads()) })
+            .collect()
+    }
+
+    /// What the engine holds of `source` from this epoch: its events the last sent prompt carried,
+    /// every superseded version included, priced by `cost`. An unsent epoch holds nothing.
+    fn held(&self, cost: &dyn Estimate<T>, source: &str) -> usize {
+        let prefix = format!("{source}/");
+        self.epoch.events()[..self.sent_events.min(self.epoch.events().len())]
+            .iter()
+            .filter(|event| event.source.0.starts_with(&prefix))
+            .map(|event| cost.block(&event.text))
+            .sum()
+    }
+
     /// The first epoch. `allocate` answers each claim with a grant in `cost`, the caller's price
     /// of a block (the one it charges the final prompt with): the start keeps within each grant
     /// as `cost` prices what it renders, never through a converted unit.
@@ -368,8 +433,10 @@ impl<T: Block> View<T> {
             log: Vec::new(),
             appended: Vec::new(),
             motion: Motion::default(),
+            fold_edges: std::collections::BTreeMap::new(),
             act: None,
             submitted: None,
+            sent_events: 0,
             last_by_source: Vec::new(),
         };
         for entry in &log {
@@ -392,6 +459,9 @@ impl<T: Block> View<T> {
             let grant = granted.get(name).copied().unwrap_or(0).saturating_sub(arranged.logged[index]); // unwrap_or: every arranged source was granted (the allocator answered for each)
             let allot::Allotment { levels, mut fold } = allot(&**source, &items, grant, cost);
             let fold_run: Vec<String> = items.iter().zip(&levels).filter(|(_, level)| **level == Level::Folded).map(|(item, _)| item.key.clone()).collect();
+            if let Some(newest) = fold_run.last() {
+                view.fold_edges.insert(name.to_owned(), newest.clone());
+            }
             let mut rendered: Vec<(u64, usize)> = log.iter().filter(|entry| entry.source == name).map(|entry| (fingerprint(&entry.id.0, &entry.text), entry.text.chars())).collect();
             let mut planned = Vec::new();
             // Her oldest collapsed run is logged, up to the first item this start keeps whole.
@@ -412,8 +482,8 @@ impl<T: Block> View<T> {
                     view.summarized.remove(&id);
                 }
                 let text = match level {
-                    // A start re-renders every item as itself: no repeat is allotted here.
-                    Level::Full | Level::Repeat { .. } => {
+                    // A start re-renders every item as itself: no repeat or page is allotted here.
+                    Level::Full | Level::Repeat { .. } | Level::Page => {
                         oldest = false;
                         Some(crate::source::whole(&**source, item))
                     }
@@ -525,50 +595,6 @@ impl<T: Block> View<T> {
         (self.epoch.holds(&id) && !self.collapsed.contains(&id) && !self.repeats.contains(&id)) || self.covered.contains(&id)
     }
 
-    /// Whether a sent tail already showed her `source`'s item `item` this epoch
-    /// ([`View::append_sent`]): the caller does not send it in a tail again.
-    pub fn covers(&self, source: &str, item: &str) -> bool {
-        self.covered.contains(&key(source, item))
-    }
-
-    /// Whether this epoch holds `block` exactly, appended under `source` by a sent tail and not
-    /// retired: a tail piece she was already sent (the same clock line, the same ask) is not sent
-    /// again, or every act would re-append it.
-    pub fn holds_sent(&self, source: &str, block: &T) -> bool {
-        let prefix = format!("{source}/");
-        self.epoch.events().iter().any(|event| !event.retired && event.source.0.starts_with(&prefix) && &event.text == block)
-    }
-
-    /// The tail of a prompt that was SENT after this view (the clock line, the ask, her own call
-    /// and its result), appended in the exact blocks it was sent under `source`, so the next act's
-    /// prompt is this prompt plus what is new and the engine resumes at its end. Before this the
-    /// tail was re-rendered every act: her newest result as native protocol at the end of one
-    /// prompt and as a `[result #n]` item of her actions in the next, so every act re-prefilled the
-    /// previous one's tail (the M5, 2026-11-06: 2,822 s over 78 acts). `covers` names the items
-    /// (`(source, key)`) these blocks already show her: they do not arrive again from their source
-    /// this epoch; a start re-renders everything from the sources and drops the tail blocks.
-    pub fn append_sent(&mut self, source: &str, blocks: Vec<T>, covers: &[(&str, &str)]) -> Advance {
-        let mut advance = Advance::default();
-        for block in blocks {
-            // Unique for the epoch: events only grow once a prompt is sent (rewind never passes it).
-            let id = key(source, &self.epoch.events().len().to_string());
-            let chars = block.chars();
-            if let Observed::Appended { .. } = self.epoch.observe(id, None, Level::Full, block) {
-                advance.items += 1;
-                advance.chars += chars;
-            }
-        }
-        for (covered_source, item) in covers {
-            self.covered.insert(key(covered_source, item));
-        }
-        // The tail is this act's growth too: the next start reserves room for it.
-        match self.appended.last_mut() {
-            Some(last) => *last += advance.chars,
-            None => self.appended.push(advance.chars),
-        }
-        advance
-    }
-
     /// Whether `id` is held whole this epoch: rendered at its whole level, not collapsed,
     /// summarized, folded or a repeat. What a repeat may point at.
     fn holds_whole(&self, id: &SourceId) -> bool {
@@ -577,7 +603,7 @@ impl<T: Block> View<T> {
             && !self.summarized.contains(id)
             && !self.folded.contains(id)
             && !self.repeats.contains(id);
-        // A sent tail showed it in the bytes she read it in: whole.
+        // Her tail showed its element whole, under the tail's key.
         held || self.covered.contains(id)
     }
 
@@ -635,6 +661,7 @@ impl<T: Block> View<T> {
     /// The prompt rendered from this act was sent: the engine may now hold every token of it,
     /// so nothing may rewind past it and [`View::readmit`] answers `None` until the next act.
     pub fn sent(&mut self) {
+        self.sent_events = self.epoch.events().len();
         self.act = None;
         self.submitted = Some(self.receipt());
     }
@@ -665,9 +692,18 @@ impl<T: Block> View<T> {
                 }
                 // A folded item is held by its source's fold block, fixed at the start: it
                 // arrives on its own only when a later start raises it (the prefix never moves).
-                // A covered item is in her view already, in the bytes a sent tail showed her.
+                // A covered item is in her view already, where her tail showed its element whole.
                 // A withheld item waits for a start that funds its source (`View::withhold`).
                 if self.folded.contains(&id) || self.covered.contains(&id) || self.withheld.contains(&id) {
+                    continue;
+                }
+                // One element, one occurrence: an item whose element her epoch already shows under
+                // another key (her act's tail showed act k; her actions now offer it as `#k`). Shown
+                // whole there, she read it there: covered for the epoch.
+                if !self.epoch.holds(&id) && self.epoch.holds_element(item.id()) {
+                    if self.epoch.holds_element_whole(item.id()) {
+                        self.covered.insert(id);
+                    }
                     continue;
                 }
                 // An item with no pointer would leave her view entirely if collapsed (a peer's
@@ -704,7 +740,7 @@ impl<T: Block> View<T> {
                 let element = item.id();
                 let text = match level {
                     Level::Full | Level::Repeat { .. } => Some(crate::source::whole(&**source, item)),
-                    Level::Summary => item.summary.or(item.pointer),
+                    Level::Summary | Level::Page => item.summary.or(item.pointer),
                     Level::Pointer | Level::Folded => item.pointer,
                 };
                 if let Some(text) = text {
@@ -748,7 +784,7 @@ impl<T: Block> View<T> {
 
     /// The items of `source` this epoch holds (their latest version not retired) that the source no
     /// longer offers, each with the notice that ends it, for a source of states ([`Source::ended`]).
-    /// Its fold block and anything a sent tail covers are not its items to end.
+    /// Its fold block and anything her tail covers are not its items to end.
     fn ended(&self, source: &dyn Source<T>) -> Vec<(SourceId, T)> {
         let prefix = format!("{}/", source.name());
         let offered: HashSet<String> = source.items().into_iter().map(|item| item.key).collect();
@@ -797,6 +833,27 @@ impl<T: Block> View<T> {
     /// How each source moved across this view's starts.
     pub fn motion(&self) -> &Motion {
         &self.motion
+    }
+
+    /// The key of `source`'s newest item this epoch's start folded, `None` when it folded none:
+    /// every item of `source` up to it (its items are oldest first, the fold run their contiguous
+    /// oldest) renders only inside a fold block until a later start, so its owner may let it leave
+    /// RAM. Measured by the start that allotted it, never a count. O(1).
+    pub fn fold_edge(&self, source: &str) -> Option<&str> {
+        self.fold_edges.get(source).map(String::as_str)
+    }
+
+    /// `source`'s items that `left` names have left their owner for good (archived): forget them as
+    /// folded and as covered by her log's fold blocks. The blocks' text stays as it was rendered, so
+    /// the prefix does not move; only the ids go, or the view would hold one id per item she ever
+    /// had. O(folded + covered), paid by the start whose fold edge released them.
+    pub fn release(&mut self, source: &str, left: impl Fn(&str) -> bool) {
+        let prefix = format!("{source}/");
+        let gone = |id: &SourceId| id.0.strip_prefix(&prefix).is_some_and(&left);
+        self.folded.retain(|id| !gone(id));
+        for entry in &mut self.log {
+            entry.covers.retain(|id| !gone(id));
+        }
     }
 
     pub fn epoch_id(&self) -> u64 {

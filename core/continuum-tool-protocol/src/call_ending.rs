@@ -82,12 +82,20 @@ impl UnparsedArguments {
     }
 
     /// The input a call carries when its arguments are not a params object to run.
+    ///
+    /// The marker is built as a JSON value directly, in the shape `#[serde(tag = "kind")]` reads
+    /// back, so writing it has no failure case. The round-trip tests below hold the two together.
     pub fn into_input(self) -> Value {
+        let marker = match self {
+            UnparsedArguments::Cut { raw } => serde_json::json!({ "kind": "cut", "raw": raw }),
+            UnparsedArguments::Malformed { parse_error, raw } => {
+                serde_json::json!({ "kind": "malformed", "parse_error": parse_error, "raw": raw })
+            }
+            UnparsedArguments::Errored { raw } => serde_json::json!({ "kind": "errored", "raw": raw }),
+            UnparsedArguments::Unexplained { raw } => serde_json::json!({ "kind": "unexplained", "raw": raw }),
+        };
         let mut input = serde_json::Map::new();
-        input.insert(
-            Self::MARKER.to_string(),
-            serde_json::to_value(self).expect("a tagged pair of strings always serializes"), // JUSTIFIED: string fields under a unit tag cannot fail to serialize
-        );
+        input.insert(Self::MARKER.to_string(), marker);
         Value::Object(input)
     }
 
@@ -203,6 +211,15 @@ mod tests {
                 assert_eq!(raw, BROKEN);
             }
             other => panic!("expected Malformed, got {other:?}"),
+        }
+        // Every variant written by hand in `into_input` reads back as itself through serde.
+        for marker in [
+            UnparsedArguments::Cut { raw: BROKEN.to_string() },
+            UnparsedArguments::Malformed { parse_error: "eof".to_string(), raw: BROKEN.to_string() },
+            UnparsedArguments::Errored { raw: COMPLETE.to_string() },
+            UnparsedArguments::Unexplained { raw: COMPLETE.to_string() },
+        ] {
+            assert_eq!(UnparsedArguments::of(&marker.clone().into_input()), Ok(Some(marker)));
         }
         assert_eq!(UnparsedArguments::of(&serde_json::json!({"file_path": "a.rs"})), Ok(None));
     }

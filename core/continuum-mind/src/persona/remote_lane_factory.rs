@@ -93,8 +93,7 @@ pub(crate) fn is_remote_bound(
 ) -> Result<bool, crate::persona::model_override::PersonaModelOverrideError> {
     let airc_dir = crate::identity::citizen_path::citizen_home_path(
         continuum_root,
-        crate::identity::IdentityKind::Persona,
-        None,
+        crate::identity::citizen_path::CitizenKind::Persona,
         persona_name,
     );
     let root = airc_dir.parent().ok_or_else(|| {
@@ -130,8 +129,7 @@ impl RemoteLaneAdapterFactory {
     fn resolve_home(&self, persona_name: &str) -> Option<PersonaHome> {
         let airc_dir = crate::identity::citizen_path::citizen_home_path(
             &self.continuum_root,
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             persona_name,
         );
         airc_dir
@@ -186,16 +184,17 @@ impl PersonaAdapterFactory for RemoteLaneAdapterFactory {
             )
         })?;
 
-        let Some(over) = over.filter(|o| o.is_remote()) else {
+        // Remote exactly when the override names a peer: bind the peer with the override,
+        // so the assignment and its peer cannot be read apart.
+        let Some((over, peer_str)) =
+            over.and_then(|o| o.remote_peer.clone().map(|peer| (o, peer)))
+        else {
             return self.born_home(profile, home).await;
         };
+        let peer_str = peer_str.as_str();
 
         // From here she is explicitly assigned to a peer. Every failure below is an
         // Err, never a local adapter.
-        let peer_str = over
-            .remote_peer
-            .as_deref()
-            .expect("is_remote() implies remote_peer is Some");
         let peer = uuid::Uuid::parse_str(peer_str).map_err(|_| {
             format!(
                 "persona '{}' is assigned model '{}' on peer '{peer_str}', which is not a \
@@ -400,8 +399,7 @@ mod tests {
         let root = tempfile::tempdir().expect("root");
         let home_root = crate::identity::citizen_path::citizen_home_path(
             root.path(),
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             "Kira",
         );
         let home = PersonaHome::from_root(home_root.parent().expect("parent").to_path_buf());
@@ -506,8 +504,7 @@ pub mod test_support {
     pub fn home_for(root: &std::path::Path, name: &str) -> PersonaHome {
         let airc_dir = crate::identity::citizen_path::citizen_home_path(
             root,
-            crate::identity::IdentityKind::Persona,
-            None,
+            crate::identity::citizen_path::CitizenKind::Persona,
             name,
         );
         let home = PersonaHome::from_root(airc_dir.parent().unwrap().to_path_buf());

@@ -92,7 +92,8 @@ async fn checkpoint_every_endpoint(cap: Duration) {
     for (root, endpoint) in endpoints {
         let started = std::time::Instant::now();
         let left = deadline.saturating_duration_since(started);
-        let Some(outcome) = checkpoint_endpoint(&client, &root, &endpoint, left).await else {
+        let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
+        let Some(outcome) = checkpoint_endpoint(&client, &root, &endpoint, left, condemn).await else {
             continue; // never launched here: nothing resident
         };
         continuum_base::probe!(
@@ -110,17 +111,24 @@ async fn checkpoint_every_endpoint(cap: Duration) {
 /// checkpoint (the drained writer, confirmed saves). `None` when no engine was launched
 /// there. An adopted or exited engine refuses, and it is named, never retried. The endpoint
 /// stays suspended afterwards: the node is stopping.
+///
+/// CONDEMNED FIRST, through the one drain a replacement uses (`drain_for_replacement`): the
+/// writer waits for every admitted act's guard, and the turn settle before this has already
+/// handed those turns back, so nothing else ends them. Without it the stop waited on their
+/// decodes: the M5 2026-11-13/14 (card b5b9bef3), 4 turns handed back at 00:51:56Z and no save
+/// until a manual SIGTERM at 00:53:34Z; 23:40Z the same, 7 min at 19:19Z.
 pub(crate) async fn checkpoint_endpoint(
     client: &reqwest::Client,
     root: &str,
     endpoint: &std::sync::Arc<super::EndpointSlots>,
     cap: Duration,
+    condemn: impl FnOnce(),
 ) -> Option<Result<(), String>> {
     let generation = endpoint.state.lock().generation().cloned()?;
     let outcome = tokio::time::timeout(cap, async {
         let mut transition = endpoint
-            .transition_for_generation(&generation)
-            .await
+            .drain_for_replacement(Some(&generation), Some(&generation), || Ok::<(), String>(()), condemn, &|| true)
+            .await?
             .map_err(|()| "the engine changed before the stop's checkpoint".to_owned())?;
         transition.checkpoint_residents(client, root).await.map(|_| ())
     })
@@ -137,16 +145,15 @@ pub(crate) struct PageIoSettled {
 }
 
 /// Close `gate`, then wait for its in-flight page IO, at most `cap`.
+/// The wait is the gate's DRAINED event, published by the release that empties it, never a poll
+/// of its count (card b5b9bef3); `cap` is only the watchdog that names what it still cut.
 pub(crate) async fn settle(gate: &AdmissionGate, cap: Duration) -> PageIoSettled {
-    const POLL: Duration = Duration::from_millis(50);
     gate.close();
     let in_flight_at_close = gate.in_flight();
-    let deadline = std::time::Instant::now() + cap;
-    let mut poll = tokio::time::interval(POLL);
-    while gate.in_flight() > 0 && std::time::Instant::now() < deadline {
-        poll.tick().await;
+    match tokio::time::timeout(cap, gate.drained()).await {
+        Ok(()) => PageIoSettled { in_flight_at_close, cut: 0 },
+        Err(_watchdog) => PageIoSettled { in_flight_at_close, cut: gate.in_flight() },
     }
-    PageIoSettled { in_flight_at_close, cut: gate.in_flight() }
 }
 
 #[cfg(test)]

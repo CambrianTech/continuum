@@ -198,7 +198,7 @@ still exists and still has files in it, which reads as "working".
 4. `docs/architecture/COGNITION-ALGORITHMS.md` — Algorithm 4 (recall scoring), decay.
 5. `docs/architecture/BRAIN-REGIONS-SUBSTRATE.md` — hippocampus, motor, sensory as ServiceModules.
 6. `docs/architecture/GENOME-FOUNDRY-SENTINEL.md` — genome paging, foundry-as-JIT, sentinel-AI-as-PGO.
-7. `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the RTOS contract every Rust module inherits.
+7. `docs/architecture/CONTINUUM-ENGINE.md` — the RTOS contract every Rust module inherits.
 8. `docs/architecture/AI-COMMAND-NAMESPACE.md` — `ai/*` namespace, tool calling protocol.
 9. `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — captures, replay, audit.
 10. `core/continuum-core/src/persona/unified.rs` (the brain struct itself — every field is load-bearing).
@@ -278,7 +278,7 @@ The persona that talks to her host in three months and recalls things from today
 | Her genome on a turn | `genome/gene_trial.rs` (today: per-card arm, being retired) → per-turn selection by signature distance (`GENE-REUSE-FORK-MINT.md` §3d) | Genes follow her mind, never her workload: every turn pages the genes whose region her perception is inside (automatic floor, several at once), each turn's probe names why, and fitness is the world's surprise on the turns a gene ran plus an offline gene-off replay of the same turns. Never a card, room or randomized arm deciding what she thinks with. Never per call: the genome never changes beneath a request. |
 | Admitted-turn obligations (durable custody) | `persona/obligation.rs` (`PersonaObligation`, `Obligations`) | The durable half of `wake_backlog::PendingInput`: one row per admitted turn, recorded before her context is composed and closed when the turn ends. Not a second recovery manager; re-admission goes back through `PendingInput`'s retry path (card 920619c5). |
 | Privacy of thought (her mind room) | `persona/mind_room.rs` (`mind_room_id`, `is_private_room`, `note_withheld`) | A turn is private because of the room it runs in: her mind room, a local id derived from her identity, never an airc channel. Every capture sink asks the ONE predicate at its own seam and writes nothing for a private turn (`docs/architecture/PRIVACY-OF-THOUGHT.md` §4). A new sink asks it too. |
-| Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`, `PromptChurn`) | The ONE rule every grounding renderer lays blocks down by: churn class, then name — never salience, never arrival. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7. |
+| Prompt order (stable prefix first) | `cognition/deliberation_prompt.rs::stable_prefix_order` (+ `PromptScope`); `continuum_context::motion` | Within an epoch, blocks by name (the same on every act, never salience or arrival); at a start, her view orders every source by measured motion, the block that never changed leading. The prompt cache reuses only a common prefix; a block that moves forfeits everything behind it. Card c119ace7; the hand churn table it replaced was deleted 2026-11-09. |
 
 If a new concept needs a new location, that location goes in this table in the same commit that introduces it. **Do not let the map drift from the territory.**
 

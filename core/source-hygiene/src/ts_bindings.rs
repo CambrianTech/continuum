@@ -156,7 +156,7 @@ mod tests {
     }
 
     // what this catches: a deleted ts-rs type leaving its binding committed (the drift step
-    // cannot see it). Each deletion lowers the count; a new orphan raises it and fails.
+    // cannot see it). It reached 0; a new orphan fails.
     #[test]
     fn no_committed_binding_outlives_its_type() {
         let root = crate::repo_root().expect("the audited tree has a workspace root");
@@ -176,7 +176,7 @@ mod tests {
         for f in found.iter().take(8) {
             eprintln!("  orphan binding: protocol/typescript/{f}");
         }
-        crate::ratchet::hold("orphan_ts_bindings", found.len(), || {
+        crate::ratchet::zero_count("orphan_ts_bindings", found.len(), || {
             "A committed protocol/typescript binding has no Rust type exporting it. When you delete \
              a ts-rs type, delete its .ts file and its barrel line in the same change."
                 .to_string()

@@ -63,6 +63,13 @@ impl Source<ContextMessage> for Tasks<'_> {
         }));
         items
     }
+
+    /// Her older tasks as ONE line: how many, each having delivered its end to her already, so
+    /// the floor stays one line however much work she sent away.
+    fn fold(&self, folded: &[Item<ContextMessage>]) -> Option<ContextMessage> {
+        let tasks = folded.iter().filter(|item| item.key() != "banner").count();
+        (tasks > 0).then(|| ContextMessage::user(format!("[tasks: {tasks} earlier tasks folded; each delivers its end to me]")))
+    }
 }
 
 #[cfg(test)]

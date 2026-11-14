@@ -58,7 +58,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None, overflow_tokens: None };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -68,6 +68,28 @@
         }
         let d = reg.demand_of(kimi).expect("recorded");
         assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
+    }
+
+    // what this catches (Aris on the M5, 2026-11-13, 2b17c41df): a ring her collapses filled
+    // (median 35,046 against a full-detail view past her 43,807 grant) kept her requirement low
+    // for up to eight more collapses. Her newest demand past the window she was served is her
+    // requirement at once; a turn that fits returns her to her typical turn.
+    #[test]
+    fn a_turn_that_overflowed_its_window_raises_her_requirement_at_once() {
+        let reg = WorkingSetRegistry::new();
+        let aris = Uuid::new_v4();
+        for (i, t) in [34_508u32, 37_283, 41_123, 35_046, 36_287].iter().enumerate() {
+            reg.record_in_memory(aris, *t, i as u64);
+            reg.record_overflow_in_memory(aris, *t, 109_745);
+        }
+        let typical = requirement_tokens(&reg.demand_of(aris).expect("recorded"));
+        assert_eq!(typical, 36_287, "every turn fit: her typical turn");
+        reg.record_in_memory(aris, 63_000, 10);
+        reg.record_overflow_in_memory(aris, 63_000, 43_807);
+        assert_eq!(requirement_tokens(&reg.demand_of(aris).expect("recorded")), 63_000, "the overflowing turn is her requirement");
+        reg.record_in_memory(aris, 40_000, 11);
+        reg.record_overflow_in_memory(aris, 40_000, 80_000);
+        assert!(requirement_tokens(&reg.demand_of(aris).expect("recorded")) < 63_000, "a turn that fits ends the probe");
     }
 
     // what this catches (card 70706a9e): the NEED ring learns only from turns the fit
@@ -332,7 +354,7 @@
 
         let persona = p(9);
         let before = WorkingSetRegistry::with_store(class());
-        before.record(persona, 24_126, 1_000);
+        before.record(persona, 24_126, 32_768, 1_000);
         let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
@@ -412,7 +434,7 @@
         assert_eq!(reg.ceiling(), None);
         assert_eq!(reg.observed_personas(), 0);
         // A zero-token turn is a defect signal elsewhere, not an observation here.
-        reg.record(p(1), 0, 1_000);
+        reg.record(p(1), 0, 32_768, 1_000);
         assert_eq!(
             reg.ceiling(),
             None,
@@ -615,13 +637,15 @@ fn the_product_limit_p90_is_the_landed_p90_without_cuts_and_only_rises_with_them
     assert_eq!(need::reasoning_at_least(&landed, &[1_100, 1_200], 1_200), None, "only where higher");
 }
 
-// what this catches (the M5, 2026-11-04 20:15-20:35Z): #5773 raised her WISH and her residency
-// need to a censored overflow bound, and the grant gave the bound all one sequence holds, so one
-// mind took the pool (125,696 -> {Aiko: 114,592}) and three residents went dark for 20 min. An
-// overflow is first reducible (her view collapses older items to handles, ONE-ACT stage 3): the
-// bound stays the typed MEASUREMENT (`need_tokens`); her requirement is sized from what held.
+// what this catches: (the M5, 2026-11-04) a censored bound granted all one sequence holds
+// (125,696 -> {Aiko: 114,592}, three residents dark 20 min; `within` now clamps a bound to its
+// value); (the M5, 2026-11-09) censored needs dropped from her residency, which pinned a mind whose
+// own price chose more than her grant at that grant forever; and (BigMama, 2026-11-11) a bound read
+// as an exact need, never granted above the ceiling, so Sahar parked for good. A censored need is
+// her act's PRICED window: her residency is granted its value, never a whole sequence, and a bound
+// past the ceiling is granted the ceiling, never parked.
 #[test]
-fn an_overflow_is_measured_as_a_bound_and_never_raises_her_residency() {
+fn a_censored_need_raises_her_residency_by_its_value_never_to_a_whole_sequence() {
     use crate::inference::planning::window_allocator::Measure;
     let reg = WorkingSetRegistry::new();
     let aiko = Uuid::new_v4();
@@ -634,12 +658,33 @@ fn an_overflow_is_measured_as_a_bound_and_never_raises_her_residency() {
     }
     let demand = reg.demand_of(aiko).expect("recorded");
     assert_eq!(need_tokens(&demand), Some(NeedSample::AtLeast { at_least: would_have_held }), "the measurement keeps the bound, typed as one");
-    assert_eq!(resident_need(&demand), Some(30_000), "residency reads only what held");
+    assert_eq!(resident_need(&demand).map(|need| need.value().get()), Some(would_have_held), "residency reads her need, censored samples included");
     let requirement = &requirements_for(&[aiko], &reg)[0];
     assert_eq!(requirement.wish.map(|w| w.get()), Some(48_000), "the bound raises no wish");
     let Measure::Held { need, .. } = requirement.measure else { panic!("a held need: {requirement:?}") };
-    assert!(!need.is_bound(), "no bound reaches the grant, where `within` hands it a whole sequence: {need:?}");
-    assert_eq!(need.value().get(), 30_000);
+    assert!(need.is_bound(), "a bound stays a bound, so admission can clamp it: {need:?}");
+    // granted its value, within her wish with the sent headroom (48,000 x 1.25), never a sequence
+    assert_eq!(need.value().get(), 60_000, "granted its value up to her wish");
+    assert_eq!(need.within(262_144).get(), 60_000, "under a roomy ceiling: its value, never a whole sequence");
+    assert_eq!(need.within(58_112).get(), 58_112, "past the ceiling: the ceiling, never parked (Sahar)");
+}
+
+// what this catches (Codex on #5931): a bound clamped below her irreducible floor. A floor between
+// the ceiling and the bound must stand and wait; a floor at the bound is still a floor; a floor
+// under the ceiling raises what the bound clamps to and never lowers it.
+#[test]
+fn a_bound_is_clamped_to_the_ceiling_never_below_her_floor() {
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    let need_at = |floor: u32, ceiling: u32| {
+        reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 1);
+        reg.record_floor_in_memory(her, floor, 1);
+        resident_need(&reg.demand_of(her).expect("recorded")).expect("a need").within(ceiling).get()
+    };
+    assert_eq!(need_at(60_000, 58_112), 60_000, "a floor past the ceiling stands, and waits for room");
+    assert_eq!(need_at(116_240, 58_112), 116_240, "a floor at the bound is still a floor");
+    assert_eq!(need_at(30_000, 58_112), 58_112, "a floor under the ceiling: the bound clamps to the ceiling");
+    assert_eq!(need_at(30_000, 262_144), 116_240, "a roomy ceiling: the bound's value");
 }
 
 // what this catches (the M5, 2026-11-04): a deliberate start or a turnover within the grant
@@ -783,4 +828,47 @@ fn a_cut_inside_an_open_tool_call_is_a_cut_answer() {
     assert_eq!(read.stop, EmissionStop::CutMidAnswer, "the open call is her answer");
     assert!(read.answered);
     assert!(read.reasoning_tokens < 900, "the call's bytes are answer, not think: {}", read.reasoning_tokens);
+}
+
+// what this catches (Codex on #5931): a floor cut by a stale target on the way to admission. Her
+// wish 40,000 (target 50,000 with the sent headroom), floor 60,000 and bound 116,240 go through
+// requirements_for, the path admission reads: the floor stands past a 58,112 ceiling and waits,
+// and her target rises to it.
+#[test]
+fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
+    use crate::inference::planning::window_allocator::Measure;
+    let reg = WorkingSetRegistry::new();
+    let her = Uuid::new_v4();
+    for t in 0..4u64 {
+        reg.record_in_memory(her, 40_000, t);
+    }
+    reg.record_need_in_memory(her, NeedSample::AtLeast { at_least: 116_240 }, 5);
+    reg.record_floor_in_memory(her, 60_000, 5);
+    let requirement = &requirements_for(&[her], &reg)[0];
+    let Measure::Held { need, target } = requirement.measure else { panic!("a held need: {requirement:?}") };
+    assert!(target.get() >= 60_000, "her target rises to her floor: {target:?}");
+    assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
+    assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
+}
+
+// what this catches (the M5, 2026-11-13 19:36Z, card 8569b03d): a boot that plans for nobody. Before
+// the persona registry exists, the residents are the minds this host served most recently, each with
+// a turn held here; a mind that only ever wished (a fixture, a departed mind never served) is not one,
+// and older minds past the population are not counted.
+#[test]
+fn a_boot_remembers_its_newest_held_residents_and_nobody_else() {
+    let reg = WorkingSetRegistry::new();
+    let held_at = |mind: Uuid, demand: u32, at: u64| {
+        reg.record_in_memory(mind, demand, at);
+        reg.record_need_in_memory(mind, NeedSample::Exact(demand / 2), at);
+    };
+    let (oldest, older, newest) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    held_at(oldest, 68_000, 1);
+    held_at(older, 90_000, 2);
+    held_at(newest, 110_000, 3);
+    let wished_only = Uuid::new_v4();
+    reg.record_in_memory(wished_only, 200_000, 4);
+    assert_eq!(reg.remembered_residents(2), vec![newest, older], "the population's newest held residents");
+    assert_eq!(reg.remembered_residents(9).len(), 3, "a mind that never held a turn is no resident");
+    assert!(requirements_for(&reg.remembered_residents(2), &reg).iter().all(|r| r.measure.target().is_some()), "each remembered resident is a measured requirement");
 }

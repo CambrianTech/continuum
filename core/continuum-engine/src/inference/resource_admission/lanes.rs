@@ -90,10 +90,15 @@ pub struct LaneAdmission {
     /// non-zero an AMBIENT caller (a mind with no card in hand) does not enter the
     /// queue — work first (2026-09-15, [`LanePriority`]).
     pub(super) work_waiting: AtomicUsize,
-    /// Fires on every permit release so a parked ambient caller re-checks.
+    /// Fires on EVERY change that can admit a parked non-directed caller, and only after the
+    /// change is visible: a budget permit back in its semaphore (`BudgetPermit`), a request
+    /// leaving the queue or giving up its ticket (`ProgressGuard`, `ProgressGuard::physical`), a
+    /// ticket granted (`LaneWait::try_budget`), a budget grant aging an ambient caller
+    /// (`ProgressGuard::granted`), a held-work wait ending (`WorkWaiting`), a grown pool
+    /// (`set_served_lane_count`). Parked callers wait on it alone: no timer moves admission.
     pub(super) released: tokio::sync::Notify,
-    /// Held while the engine relaunches: every request enters it before either semaphore.
-    pub(super) quiesce: super::quiesce::Quiescer,
+    /// Grants and releases as counts, reported once a window (card 6742aad1).
+    pub(super) tally: super::lane_tally::LaneTally,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -159,13 +164,6 @@ pub fn set_served_lane_count(lanes: usize) {
     LANES.set_served_lane_count(lanes);
 }
 
-/// Hold every new inference request and wait until every request in admission has ended: the
-/// engine is then idle by construction, for its one upward relaunch (card 2540194e). `None` when a
-/// quiesce already runs. Dropping the result reopens admission.
-pub async fn quiesce_admission() -> Option<super::quiesce::Quiesced> {
-    LANES.quiesce.quiesce().await
-}
-
 /// Reconcile installed permits without waiting for running calls. The difference
 /// between installed and a smaller target is debt retried on the next serving tick.
 /// Caller holds the owner resize lock, the installed-permit accounting.
@@ -201,7 +199,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let target = match budget {
             LaneBudget::Physical => self.lane_count(),
             LaneBudget::NonDirected => self.nondirected_budget(),
@@ -250,7 +248,7 @@ impl LaneAdmission {
                 .clone()
                 .acquire_owned()
                 .await
-                .expect("lane semaphore never closed");
+                .expect("lane semaphore never closed"); // JUSTIFIED: these semaphores are never closed (nothing calls close)
             if let Some(permit) = self.permit_or_retire(permit, installed, budget) {
                 return permit;
             }
@@ -269,7 +267,7 @@ impl LaneAdmission {
             resize_lock: Mutex::new(()),
             work_waiting: AtomicUsize::new(0),
             released: tokio::sync::Notify::const_new(),
-            quiesce: super::quiesce::Quiescer::new(),
+            tally: super::lane_tally::LaneTally::new(),
         }
     }
 
@@ -294,7 +292,7 @@ impl LaneAdmission {
         let _guard = self
             .resize_lock
             .lock()
-            .expect("lane-resize lock never poisoned");
+            .expect("lane-resize lock never poisoned"); // JUSTIFIED: held only across permit arithmetic, which cannot panic: never poisoned
         let before = (
             self.served.load(Ordering::Acquire),
             self.serving_installed.load(Ordering::Acquire),
@@ -318,6 +316,8 @@ impl LaneAdmission {
         );
         drop(_guard);
         if after != before {
+            // A grown pool admits parked callers; their wait has no other wake for it.
+            self.released.notify_waiters();
             continuum_base::probe!(
                 class = "admission.lane.resized",
                 desired = lanes as u64,
@@ -367,8 +367,6 @@ impl LaneAdmission {
         let (observer, progress) = self.observe(persona, priority);
         let aging = observer.clone();
         let acquire = async move {
-        // Entered before either semaphore, so a quiesce for a relaunch holds every request.
-        let entry = self.quiesce.enter().await;
         let queued_at = std::time::Instant::now();
         let directed = priority.is_directed();
         // Non-directed reserves within the (lanes-1) budget FIRST, so the physical-lane
@@ -414,6 +412,9 @@ impl LaneAdmission {
             }
             LanePriority::Ambient => (Some(self.acquire_aged_ambient(&aging).await), None),
         };
+        // Wrapped at once (no await between): from here every drop of the budget permit, a
+        // cancelled physical wait included, wakes parked callers after the permit is back.
+        let nondirected = nondirected.map(|permit| super::serving_lane_permit::BudgetPermit::new(permit, &self.released));
         progress.physical(nondirected.is_some());
         let lane = match lent_lane {
             Some(lane) => lane,
@@ -426,29 +427,31 @@ impl LaneAdmission {
                 .await
             }
         };
-        continuum_base::probe!(
-            class = "admission.lane.granted",
-            persona = ?persona,
-            waited_ms = queued_at.elapsed().as_millis() as u64,
-            directed,
-            priority = ?priority,
-            now_available = self.serving_lanes().available_permits() as u64,
-            "serving-lane permit granted"
-        );
+        // A row only for a grant that waited; every grant is counted (`lane_tally`, card 6742aad1).
+        let waited_ms = queued_at.elapsed().as_millis() as u64;
+        self.tally.granted(waited_ms > 0);
+        if waited_ms > 0 {
+            continuum_base::probe!(
+                class = "admission.lane.granted",
+                persona = ?persona,
+                waited_ms,
+                directed,
+                priority = ?priority,
+                now_available = self.serving_lanes().available_permits() as u64,
+                "serving-lane permit granted after a wait"
+            );
+        }
         progress.granted();
         ServingLanePermit {
             gate: self,
             expected_occupancy,
-            _progress: progress,
             _lane: lane,
             _nondirected: nondirected,
             _inflight: InflightModelCall::enter(),
+            _progress: progress,
             granted_at: std::time::Instant::now(),
             persona,
-            directed,
             priority,
-            released: &self.released,
-            _entry: entry,
         }
         };
         (observer, acquire)
@@ -457,27 +460,28 @@ impl LaneAdmission {
     /// Active work and aged residents compete by ticket; only the winner tries
     /// the semaphore, so cancellation cannot leave an unobserved permit owner.
     async fn acquire_ticketed_budget(&self, observer: &super::LaneWait, aged: bool) -> tokio::sync::OwnedSemaphorePermit {
-        let _counted = WorkWaiting::enter(&self.work_waiting);
+        let _counted = WorkWaiting::enter(self);
         loop {
+            // Registered BEFORE the check: a change between the check and the wait still wakes it.
             let notified = self.released.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
             if let Some(permit) = observer.try_budget(aged) { return permit; }
-            tokio::select! {
-                _ = notified => {},
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
-            }
+            notified.await;
         }
     }
 
     /// An ambient caller never enters the semaphore's queue: it takes a permit only when
-    /// one is free AND no held-work caller is waiting, otherwise it parks on the release
-    /// signal (a 1 s tick guards against a missed wake). This opportunistic path alone
+    /// one is free AND no held-work caller is waiting, otherwise it parks on `released`, which
+    /// fires on both (a permit back, a held-work wait ending). This opportunistic path alone
     /// can starve; acquire_aged_ambient promotes into ticket order after the initial cohort.
     pub(super) async fn acquire_nondirected_as_ambient(&self) -> tokio::sync::OwnedSemaphorePermit {
         let sem = self.nondirected_lanes().clone();
         let mut yielded = false;
         loop {
+            let notified = self.released.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if self.work_waiting.load(Ordering::Acquire) == 0 {
                 if let Some(p) = self.try_acquire_resized(
                     &sem,
@@ -494,9 +498,7 @@ impl LaneAdmission {
                     "an ambient turn stands aside — a held card is waiting for the lane"
                 );
             }
-            let _ =
-                tokio::time::timeout(std::time::Duration::from_secs(1), self.released.notified())
-                    .await;
+            notified.await;
         }
     }
 
@@ -508,13 +510,16 @@ impl LaneAdmission {
         let opportunistic = self.acquire_nondirected_as_ambient();
         tokio::pin!(opportunistic);
         loop {
+            // A budget grant ages her (`ProgressGuard::granted` wakes `released`).
+            let notified = self.released.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
             if observer.ambient_aged(origin) {
                 return self.acquire_ticketed_budget(observer, true).await;
             }
             tokio::select! {
                 permit = &mut opportunistic => return permit,
-                _ = self.released.notified() => {},
-                _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {},
+                _ = notified => {},
             }
         }
     }
@@ -527,19 +532,21 @@ impl LaneAdmission {
 
 /// RAII count of a held-work caller waiting for the non-directed budget: incremented
 /// on entry, decremented on drop — so a wait that is cancelled mid-await (the only way
-/// a parked future ever leaves without a permit) is uncounted the instant it goes.
-pub(super) struct WorkWaiting<'a>(&'a AtomicUsize);
+/// a parked future ever leaves without a permit) is uncounted the instant it goes, and
+/// the ambient callers standing aside for it are woken to re-check.
+pub(super) struct WorkWaiting<'a>(&'a LaneAdmission);
 
 impl<'a> WorkWaiting<'a> {
-    pub(super) fn enter(counter: &'a AtomicUsize) -> Self {
-        counter.fetch_add(1, Ordering::AcqRel);
-        Self(counter)
+    pub(super) fn enter(gate: &'a LaneAdmission) -> Self {
+        gate.work_waiting.fetch_add(1, Ordering::AcqRel);
+        Self(gate)
     }
 }
 
 impl Drop for WorkWaiting<'_> {
     fn drop(&mut self) {
-        self.0.fetch_sub(1, Ordering::AcqRel);
+        self.0.work_waiting.fetch_sub(1, Ordering::AcqRel);
+        self.0.released.notify_waiters();
     }
 }
 
@@ -558,6 +565,12 @@ impl Default for LaneAdmission {
 /// gate probes, so a starved waiter names the count instead of implying it.
 pub fn serving_lane_permits_available() -> usize {
     LANES.serving_lanes().available_permits()
+}
+
+/// Serving lanes granted on this test's thread (`lane_tally`): a scenario bounds its own grants.
+#[cfg(test)]
+pub(crate) fn serving_lane_grants() -> u64 {
+    super::lane_tally::granted_on_this_thread()
 }
 
 /// `expected_occupancy`: the call's own bound on how long it will hold the lane (prefill

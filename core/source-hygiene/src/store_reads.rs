@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn unbounded_orm_selects_never_increase() {
         let violations = scan(&[&UnboundedOrmSelects]);
-        crate::ratchet::hold_sites("unbounded_orm_selects", &violations, || advice("unbounded_orm_selects", &violations));
+        crate::ratchet::hold_sites("unbounded_orm_selects", &violations, crate::ratchet::Touched::EndsClean, || advice("unbounded_orm_selects", &violations));
     }
 
     // what this catches: rows loaded to be filtered, sorted or searched in Rust, which decodes
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn load_then_filter_rows_never_increase() {
         let violations = scan(&[&LoadThenFilterRows]);
-        crate::ratchet::hold_sites("load_then_filter_rows", &violations, || advice("load_then_filter_rows", &violations));
+        crate::ratchet::hold_sites("load_then_filter_rows", &violations, crate::ratchet::Touched::EndsClean, || advice("load_then_filter_rows", &violations));
     }
 
     fn count(rule: &dyn SourceRule, src: &str) -> usize {
@@ -188,5 +188,12 @@ mod tests {
         assert_eq!(count(&LoadThenFilterRows, matched), 1, "rows handed whole to an in-memory matcher");
         let returned = "async fn f() { let rows = E::find().limit(n).all(db).await?;\n Ok(rows.into_iter().map(decode).collect()) }";
         assert_eq!(count(&LoadThenFilterRows, returned), 0);
+        // what this catches (#5954, 2026-11-13): `find_all` renamed to `scan()` hid every whole-
+        // collection read from this rule; a vector-statistics path decoded 10,000 embeddings to
+        // count them. A store's scan().await is a whole-collection read; Iterator::scan is not.
+        let scanned = "async fn f() { let all = store.scan().await?.try_collect::<Vec<_>>().await?;\n Ok(all.len()) }";
+        assert_eq!(count(&UnboundedOrmSelects, scanned), 1, "a store scan reads its whole collection");
+        let iterator = "fn f() { let sums: Vec<u32> = xs.iter().scan(0, |acc, x| { *acc += x; Some(*acc) }).collect(); }";
+        assert_eq!(count(&UnboundedOrmSelects, iterator), 0, "Iterator::scan is not a store read");
     }
 }

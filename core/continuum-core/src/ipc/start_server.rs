@@ -6,6 +6,8 @@
 use super::*;
 
 mod accept_loop;
+mod boot_error;
+use boot_error::BootError;
 mod ai_genome_modules;
 mod airc_boot;
 mod closing_modules;
@@ -26,7 +28,6 @@ mod resource_authority;
 mod runtime_start;
 mod service_modules;
 mod serving_modules;
-#[cfg(unix)]
 mod tcp_ingress;
 mod ws_ingress;
 
@@ -90,6 +91,9 @@ pub fn start_server(
         &resource_daemon,
         &model_catalog,
     )?;
+    // The engine's host prompt cache answers the host's memory deficit first, and takes its memory
+    // back when the OS reads normal: the one reclaim path for host RAM (card 0f631c46).
+    serving_daemon.give_host_memory_back_first(&pressure_monitor, rt_handle.clone());
 
     pressure_broker_wiring::register_pressure_broker(
         &runtime,
@@ -196,7 +200,8 @@ pub fn start_server(
             &airc_interceptor_cell,
             &rt_handle,
             &mut stretch_mark,
-        ));
+        )
+        .map_err(std::io::Error::other)?);
     } else {
         // A.2: by this point the mode-driven gate above has already
         // returned `Err` if persona hosting was required and discovery
@@ -218,45 +223,51 @@ pub fn start_server(
     stretch_mark("end_of_persona_host_block", "ai_provider_register");
 
     {
-        // Trainers probe their own interpreter's imports when built (card 6f05b89d): the probe
-        // is an owned task on this runtime, so registration runs inside it.
+        // The batch trainer's wind-down is a task on this runtime, so registration runs inside it.
         let _rt_guard = rt_handle.enter();
         ai_genome_modules::register_ai_provider_and_genome_modules(
             &runtime,
             &gpu_manager,
             &serving_daemon,
+            &resource_daemon,
             &airc_interceptor_cell,
         );
     }
-    let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state);
+    let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state)?;
 
-    let runtime_start::RuntimeStarted {
-        post_init_started,
-        tick_handles: _tick_handles,
-    } = runtime_start::initialize_and_start_runtime(
-        &runtime,
-        &rt_handle,
-        &discovery,
-        boot_mode,
-        phase_started,
-    )?;
-
+    // The executor is installed before initialize: every module's slot is late-bound, and a
+    // command a module's initialize dispatches is admitted by the readiness table like any other.
     let (executor, provider_registry) = command_executor::build_and_install_executor(
         &runtime,
         grid_state,
         airc_interceptor_cell,
         &call_plane.live_registrar_executor,
     );
-    command_executor::release_executor_dependents(
+
+    // BIND BEFORE INITIALIZE SETTLES: initialize starts here and runs beside the socket, so no
+    // module can wedge boot. Everything after this until the bind is the pre-bind window the
+    // 300 s boot deadline in main.rs still guards (construction, the registered-set check, the
+    // bind itself); a module's initialize is no longer in it.
+    let runtime_start::InitializeStarted { phase_started: init_started, settle } =
+        runtime_start::verify_and_begin_initialize(
+            &runtime,
+            &rt_handle,
+            &discovery,
+            boot_mode,
+            phase_started,
+        )?;
+
+    let listener = listeners::bind_ipc_listener(socket_path, init_started)?;
+    listeners::announce_ipc_ready(socket_path);
+
+    runtime_start::settle_then_release(
         &rt_handle,
-        &executor,
+        Arc::clone(&runtime),
+        settle,
+        Arc::clone(&executor),
         operator_peer_socket,
         persona_supervisor_executor_ready_tx,
     );
-
-    #[cfg(unix)]
-    let listener = listeners::bind_unix_listener(socket_path, post_init_started)?;
-    listeners::announce_ipc_ready(socket_path);
 
     let state = Arc::new(ServerState::new_with_shared_state(
         rt_handle,
@@ -274,8 +285,10 @@ pub fn start_server(
 
     log_info!("ipc", "server", "IPC server ready");
 
-    #[cfg(unix)]
-    tcp_ingress::spawn_optional_tcp_listener(&state);
+    // A second, TCP ingress only where the primary endpoint is not already TCP.
+    if !continuum_host::core_ipc::PRIMARY_IS_TCP {
+        tcp_ingress::spawn_optional_tcp_listener(&state);
+    }
     ws_ingress::spawn_ws_ingress(
         &state,
         &executor,
@@ -284,12 +297,9 @@ pub fn start_server(
         &call_plane.voice_service_for_view,
         &node_presence_deps,
         &persona_bootstrap_room_name,
-    );
+    )
+    .map_err(std::io::Error::other)?;
     memory_guard::spawn_memory_guard(&state);
 
-    #[cfg(unix)]
-    let served = accept_loop::serve_unix_connections(state, listener);
-    #[cfg(windows)]
-    let served = accept_loop::serve_windows_tcp_connections(state, post_init_started);
-    served
+    accept_loop::serve_connections(state, listener)
 }

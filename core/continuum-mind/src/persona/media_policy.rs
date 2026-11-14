@@ -49,10 +49,25 @@ pub struct MediaPlan<'a> {
     /// The single media item that attaches to the model as raw bytes,
     /// or `None` when the model has no native capability for any item
     /// in the slice (text-only persona path) or the slice is empty.
-    pub attachable: Option<&'a MediaItemLite>,
+    pub attachable: Option<Attachable<'a>>,
     /// All items that did NOT win the byte slot — must be rendered
     /// as text descriptions. Order: source order, NOT reversed.
     pub descriptions: Vec<&'a MediaItemLite>,
+}
+
+/// The kinds of media a model can consume as raw bytes. Typed so the byte slot's
+/// renderer matches it exhaustively: an item of any other kind never wins the slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeMedia {
+    Image,
+    Audio,
+}
+
+/// The item that won the byte slot, with the native kind the policy found for it.
+#[derive(Debug, Clone, Copy)]
+pub struct Attachable<'a> {
+    pub item: &'a MediaItemLite,
+    pub kind: NativeMedia,
 }
 
 impl<'a> MediaPlan<'a> {
@@ -94,14 +109,14 @@ impl MediaPolicy {
         media: &'a [MediaItemLite],
         model_caps: &HashSet<Capability>,
     ) -> MediaPlan<'a> {
-        let attachable_idx = media
+        let winner = media
             .iter()
             .enumerate()
             .rev()
-            .find(|(_, m)| is_natively_supported(m, model_caps))
-            .map(|(i, _)| i);
+            .find_map(|(i, item)| native_kind(item, model_caps).map(|kind| (i, Attachable { item, kind })));
 
-        let attachable = attachable_idx.map(|i| &media[i]);
+        let attachable_idx = winner.map(|(i, _)| i);
+        let attachable = winner.map(|(_, a)| a);
         let descriptions = media
             .iter()
             .enumerate()
@@ -121,15 +136,15 @@ impl MediaPolicy {
     }
 }
 
-/// Can this model natively consume this media item as raw bytes?
+/// The native kind this model can consume this media item as raw bytes, if any.
 /// Image needs `Capability::Vision`, audio needs `Capability::AudioInput`.
-/// Other types (video, etc.) always fall through to the description path
+/// Other types (video, etc.) always go to the description path
 /// — we don't ship a video-byte path yet.
-fn is_natively_supported(m: &MediaItemLite, caps: &HashSet<Capability>) -> bool {
+fn native_kind(m: &MediaItemLite, caps: &HashSet<Capability>) -> Option<NativeMedia> {
     match m.item_type.as_str() {
-        "image" => caps.contains(&Capability::Vision),
-        "audio" => caps.contains(&Capability::AudioInput),
-        _ => false,
+        "image" if caps.contains(&Capability::Vision) => Some(NativeMedia::Image),
+        "audio" if caps.contains(&Capability::AudioInput) => Some(NativeMedia::Audio),
+        _ => None,
     }
 }
 
@@ -185,7 +200,7 @@ mod tests {
         let media = vec![item("image")];
         let plan = MediaPolicy::AtMostOneLatest.plan(&media, &vision_only());
         assert!(plan.attachable.is_some());
-        assert_eq!(plan.attachable.unwrap().item_type, "image");
+        assert_eq!(plan.attachable.unwrap().item.item_type, "image");
         assert!(plan.descriptions.is_empty());
     }
 
@@ -213,7 +228,7 @@ mod tests {
         assert!(plan.attachable.is_some(), "latest image must attach");
         // Pointer identity: the attachable IS the last slice element.
         assert!(std::ptr::eq(
-            plan.attachable.unwrap() as *const _,
+            plan.attachable.unwrap().item as *const _,
             &media[2] as *const _,
         ));
         assert_eq!(plan.descriptions.len(), 2);
@@ -237,7 +252,7 @@ mod tests {
     fn mixed_image_then_audio_audio_wins_when_latest() {
         let media = vec![item("image"), item("audio")];
         let plan = MediaPolicy::AtMostOneLatest.plan(&media, &vision_and_audio());
-        assert_eq!(plan.attachable.unwrap().item_type, "audio");
+        assert_eq!(plan.attachable.unwrap().item.item_type, "audio");
         assert_eq!(plan.descriptions.len(), 1);
         assert_eq!(plan.descriptions[0].item_type, "image");
     }
@@ -250,7 +265,7 @@ mod tests {
     fn unsupported_latest_falls_back_to_supported_earlier() {
         let media = vec![item("image"), item("audio")];
         let plan = MediaPolicy::AtMostOneLatest.plan(&media, &vision_only());
-        assert_eq!(plan.attachable.unwrap().item_type, "image");
+        assert_eq!(plan.attachable.unwrap().item.item_type, "image");
         assert_eq!(plan.descriptions.len(), 1);
         assert_eq!(plan.descriptions[0].item_type, "audio");
     }
@@ -296,7 +311,7 @@ mod tests {
     fn audio_only_model_audio_wins() {
         let media = vec![item("audio"), item("image")];
         let plan = MediaPolicy::AtMostOneLatest.plan(&media, &audio_only());
-        assert_eq!(plan.attachable.unwrap().item_type, "audio");
+        assert_eq!(plan.attachable.unwrap().item.item_type, "audio");
         assert_eq!(plan.descriptions.len(), 1);
         assert_eq!(plan.descriptions[0].item_type, "image");
     }

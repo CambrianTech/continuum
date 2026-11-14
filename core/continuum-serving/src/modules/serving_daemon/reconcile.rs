@@ -337,6 +337,12 @@ impl ServingDaemonModule {
             .collect();
         desired_adapter_paths.sort();
 
+        // The one pool-size change that retires an engine: a ready engine whose pool holds fewer
+        // seated minds' needs than a launch at the live budget would (`floor_sized`, card 8569b03d).
+        if let Some(floor) = self.floor_sized_engine(&desired, served_ctx, lanes) {
+            return Some(self.retire_floor_sized_engine(operation, planned.intent_revision, floor));
+        }
+
         {
             let live = self.serving_tx.borrow();
             // Already serving the right model AND the right genome set: nothing relaunches.
@@ -349,7 +355,6 @@ impl ServingDaemonModule {
                 && live.active_model.as_deref() == Some(desired.as_str())
                 && live.adapters == desired_adapter_paths
                 && !self.shared_pool_move_due(&live.base_url)
-                && !self.pool_growth_due(&desired, served_ctx, lanes)
             {
                 // The lanes this hour served: the health window's maximum (the lane-bound rest
                 // stands on it).
@@ -402,7 +407,7 @@ impl ServingDaemonModule {
             let mut pending = self
                 .pending_model_change
                 .lock()
-                .unwrap_or_else(|p| p.into_inner());
+                .unwrap_or_else(|p| p.into_inner()); // unwrap_or_else: a poisoned lock still holds the pending change; recover it
             let verdict = model_change_gate(
                 live.ready,
                 live.active_model.as_deref(),
@@ -416,7 +421,7 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "deferred",
-                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"), // probe field: no live model
                         plan_model = desired.as_str(),
                         streak = streak as u64,
                         needs_streak = MODEL_CHANGE_SUSTAINED_TICKS as u64,
@@ -430,7 +435,7 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon", class = "serving.reconcile.model",
                         decision = "swapping",
-                        live_model = live.active_model.as_deref().unwrap_or("<none>"),
+                        live_model = live.active_model.as_deref().unwrap_or("<none>"), // probe field: no live model
                         plan_model = desired.as_str(),
                         streak = streak as u64,
                         "sustained plan disagreement — committing the model swap",

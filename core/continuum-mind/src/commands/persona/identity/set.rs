@@ -31,8 +31,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::identity::citizen_path::citizen_home_path;
-use crate::identity::IdentityKind;
+use crate::identity::citizen_path::{citizen_home_path, CitizenKind};
 use crate::live::avatar::types::AvatarGender;
 use crate::persona::card::PersonaCard;
 use crate::experience::role::RoleId;
@@ -181,7 +180,7 @@ crate::action_command! {
 
         // Persist to her durable V2 seed (same path bootstrap writes: the home root's
         // seed.json), then update the live registry so the edit takes effect now.
-        let seed_path = citizen_home_path(&this.continuum_root, IdentityKind::Persona, None, &card.agent_name)
+        let seed_path = citizen_home_path(&this.continuum_root, CitizenKind::Persona, &card.agent_name)
             .parent()
             .map(|root| root.join("seed.json"))
             .ok_or_else(|| CommandError::Internal(format!(

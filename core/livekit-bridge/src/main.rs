@@ -15,6 +15,7 @@
 //!
 //! Usage: livekit-bridge <socket-path> [--livekit-url <url>]
 //! Example: livekit-bridge /root/.continuum/sockets/livekit-bridge.sock
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 mod agent;
 mod server;

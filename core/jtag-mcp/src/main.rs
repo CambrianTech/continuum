@@ -32,6 +32,7 @@
 //!       }
 //!     }
 //!   }
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -52,7 +53,7 @@ fn camel_to_snake(s: &str) -> String {
             if i > 0 {
                 result.push('_');
             }
-            result.push(c.to_lowercase().next().unwrap());
+            result.extend(c.to_lowercase());
         } else {
             result.push(c);
         }
@@ -397,7 +398,9 @@ impl McpServer {
 // Main
 // ============================================================================
 
-fn main() {
+/// A response that cannot be serialized ends the server with that error (it carries only
+/// strings and JSON values, so this is not expected); a stdout write failure stays ignored.
+fn main() -> Result<(), serde_json::Error> {
     // Set up tracing to stderr (stdout is for JSON-RPC)
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
@@ -455,7 +458,7 @@ fn main() {
                         let response = server.handle_request(request);
 
                         // Write response
-                        let response_str = serde_json::to_string(&response).unwrap();
+                        let response_str = serde_json::to_string(&response)?;
                         writeln!(stdout_lock, "{}", response_str).ok();
                         stdout_lock.flush().ok();
                     }
@@ -463,7 +466,7 @@ fn main() {
                         tracing::error!("Failed to parse request: {}", e);
                         let response =
                             JsonRpcResponse::error(None, -32700, format!("Parse error: {}", e));
-                        let response_str = serde_json::to_string(&response).unwrap();
+                        let response_str = serde_json::to_string(&response)?;
                         writeln!(stdout_lock, "{}", response_str).ok();
                         stdout_lock.flush().ok();
                     }
@@ -477,4 +480,5 @@ fn main() {
     }
 
     tracing::info!("JTAG MCP Server shutting down");
+    Ok(())
 }

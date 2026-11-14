@@ -36,6 +36,8 @@ use uuid::Uuid;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use continuum_base::probed::Probed;
+
 use crate::paging::pool::{PagedResourcePool, PinHandle, PoolConfig};
 
 mod state_sampler;
@@ -47,9 +49,16 @@ mod page_key;
 pub use page_key::*;
 mod mind_gate;
 pub(crate) use mind_gate::MindTurn;
+pub use mind_gate::her_acts_done;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub use mind_gate::{begin_act_for_test, ActForTest};
 pub(crate) mod grant_handoff;
 pub use grant_handoff::reclaim_grant;
+mod learn_slot;
+pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;
+mod endpoint_concurrency;
+pub use endpoint_concurrency::{DecodeBound, DecodePermit, EndpointConcurrency};
 pub use kv_slot_pool::*;
 mod live_sequences;
 pub use live_sequences::SequenceBasis;
@@ -62,7 +71,7 @@ use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 mod adopted_replacement;
 mod discover;
-pub use discover::PoolDiscoveryMiss;
+pub use discover::{PoolDiscoveryMiss, PropsAbsent};
 pub(crate) use discover::served_ctx_by_root;
 mod adopted_checkpoint_refusal;
 pub use adopted_checkpoint_refusal::AdoptedCheckpointRefusal;
@@ -75,6 +84,8 @@ pub use placement::*;
 pub(crate) mod page_io;
 pub(crate) use page_io::admit as admit_page_io;
 pub use page_io::PageIoSettle;
+mod page_store_pool;
+pub use page_store_pool::KvPageStorePool;
 
 #[cfg(test)]
 mod tests;

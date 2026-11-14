@@ -72,6 +72,7 @@ pub mod spawned_rooms;
 pub mod membership;
 pub mod recipe;
 pub mod role;
+pub mod room_path;
 pub mod room_purpose;
 pub mod source;
 pub mod ledger;
@@ -375,9 +376,8 @@ pub enum Standing {
 pub fn benchmark_experience(
     examinee_peer_id: crate::identity::PeerId,
     owner_peer_id: crate::identity::PeerId,
-) -> Experience {
-    recipe::ExperienceRecipe::from_json(include_str!("recipes/benchmark.json"))
-        .expect("embedded benchmark recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
+) -> Result<Experience, source::RecipeLoadError> {
+    Ok(source::RecipeExperienceSource::shipped(source::shipped::BENCHMARK_HARD_RS)?
         .project(vec![
             Member {
                 peer_id: examinee_peer_id,
@@ -387,7 +387,7 @@ pub fn benchmark_experience(
                 peer_id: owner_peer_id,
                 standing: Standing::Owner,
             },
-        ])
+        ]))
 }
 
 /// The **chat** room's manifest — outlier B (social · freeform · durable). Primary
@@ -402,9 +402,8 @@ pub fn benchmark_experience(
 pub fn chat_experience(
     owner_peer_id: crate::identity::PeerId,
     member_peer_id: crate::identity::PeerId,
-) -> Experience {
-    recipe::ExperienceRecipe::from_json(include_str!("recipes/chat.json"))
-        .expect("embedded chat recipe must be valid JSON") // JUSTIFIED: embedded constant; validity is a build-time authoring property covered by recipe tests
+) -> Result<Experience, source::RecipeLoadError> {
+    Ok(source::RecipeExperienceSource::shipped(source::shipped::CHAT)?
         .project(vec![
             Member {
                 peer_id: owner_peer_id,
@@ -414,7 +413,7 @@ pub fn chat_experience(
                 peer_id: member_peer_id,
                 standing: Standing::Member,
             },
-        ])
+        ]))
 }
 
 #[cfg(test)]
@@ -431,11 +430,13 @@ mod tests {
         let bench = benchmark_experience(
             crate::identity::PeerId::new(),
             crate::identity::PeerId::new(),
-        );
+        )
+        .expect("the embedded benchmark recipe parses");
         let chat = chat_experience(
             crate::identity::PeerId::new(),
             crate::identity::PeerId::new(),
-        );
+        )
+        .expect("the embedded chat recipe parses");
 
         // Benchmark: structured, its primary surface is the score — activity-scoped,
         // slotted as context (the desktop shell routes that to the right inspector),

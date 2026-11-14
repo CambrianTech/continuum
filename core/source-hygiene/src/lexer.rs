@@ -33,6 +33,10 @@ pub mod tokens;
 /// build). Code under either is test code to these scans; the kernel cut moved its fixtures
 /// from the first spelling to the second so core's tests can reach them across the crate.
 const TEST_GATES: &[&str] = &["#[cfg(test)]", "#[cfg(any(test, feature = \"test-fixtures\"))]"];
+/// The same two gates as inner attributes: a file that opens with one is test code throughout,
+/// whether it is a test module moved out of its owner or a fixture module exported to
+/// dependents' tests (`saved-state`'s `round_trip.rs`, gated before at its `mod` line only).
+const WHOLE_FILE_GATES: &[&str] = &["#![cfg(test)]", "#![cfg(any(test, feature = \"test-fixtures\"))]"];
 
 pub fn production_half(src: &str) -> String {
     let lines: Vec<&str> = src.lines().collect();
@@ -41,9 +45,9 @@ pub fn production_half(src: &str) -> String {
     let mut i = 0;
     while i < lines.len() {
         let code = split_code_and_comment(lines[i]).0;
-        if code.trim_start().starts_with("#![cfg(test)]") {
+        if WHOLE_FILE_GATES.iter().any(|gate| code.trim_start().starts_with(gate)) {
             gated = true;
-            break; // the whole file from here is a test module moved out of its owner
+            break; // the whole file from here is a test module or a test fixture
         }
         let Some(gate) = TEST_GATES.iter().find(|gate| code.starts_with(**gate)) else {
             out.push(lines[i]);
@@ -269,6 +273,34 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
         i += 1;
     }
     (line, None)
+}
+
+/// A marker comment has to say something after it: a marker with nothing behind it is the
+/// SHAPE of a reason, which is worse than no marker because it silences the guard. Same bar as
+/// the unwrap ratchet's.
+// derived-or-floor: a FLOOR on the length of a COMMENT a human types — it bounds prose, never a token, a second or a rate, and there is nothing here to measure
+// context-budget-exempt: this bounds the length of a COMMENT, not a window, prompt or
+// token budget — the de-hardcode guard matches it on the `CHARS` suffix alone, which is
+// that guard erring toward noise on purpose.
+pub const MIN_REASON_CHARS: usize = 16;
+
+/// Whether `marker` (`derived-or-floor:`, `event-exempt:`) carries a real reason after it, in
+/// the comment on line `index` (0-based) of `lines` or in the contiguous comment block directly
+/// above it. The block-above form exists because an item carries a doc comment, not a trailing
+/// one. One owner for every rule that accepts a reason, so two rules never disagree about one.
+pub fn marker_with_reason(lines: &[&str], index: usize, marker: &str) -> bool {
+    let reason_on = |text: &str| text.split_once(marker).is_some_and(|(_, why)| why.trim().chars().count() >= MIN_REASON_CHARS);
+    if lines.get(index).and_then(|line| split_code_and_comment(line).1).is_some_and(reason_on) {
+        return true;
+    }
+    lines[..index.min(lines.len())]
+        .iter()
+        .rev()
+        .take_while(|l| {
+            let t = l.trim_start();
+            t.starts_with("//") || t.is_empty()
+        })
+        .any(|l| reason_on(l))
 }
 
 /// The byte length of a char (or byte) literal starting at `i`, if one does: `'x'` (any
@@ -639,7 +671,9 @@ mod tests {
             assert_eq!(projected.lines().count(), raw.lines().count());
         }
 
-
-
+        // A fixture file gated as a whole by the test-fixtures inner attribute is test code,
+        // like one gated by `#![cfg(test)]`.
+        let fixture = "//! fixtures\n#![cfg(any(test, feature = \"test-fixtures\"))]\nfn helper() { x.unwrap(); }\n";
+        assert_eq!(production_half(fixture), "//! fixtures");
     }
 }

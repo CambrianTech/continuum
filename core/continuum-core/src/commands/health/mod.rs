@@ -23,8 +23,11 @@ use crate::sdk_codegen::DynCommand;
 /// Build the dep-holding `health/*` runtime command objects over the module's live
 /// boot instant. Returns only `health-check` (the stateful verb); `get-stats`
 /// self-registers statelessly.
-pub fn command_objects(started_at: Instant) -> Vec<Arc<dyn DynCommand>> {
-    vec![Arc::new(check::HealthCheck { started_at })]
+pub fn command_objects(
+    started_at: Instant,
+    readiness: Arc<crate::runtime::ModuleReadiness>,
+) -> Vec<Arc<dyn DynCommand>> {
+    vec![Arc::new(check::HealthCheck { started_at, readiness })]
 }
 
 #[cfg(test)]
@@ -37,7 +40,7 @@ mod tests {
     // separately in its own file (it's stateless, not in this Vec).
     #[test]
     fn family_exposes_the_health_check_verb() {
-        let objs = command_objects(Instant::now());
+        let objs = command_objects(Instant::now(), Arc::new(crate::runtime::ModuleReadiness::new()));
         let names: Vec<&str> = objs.iter().map(|c| c.name()).collect();
         assert!(names.contains(&"health-check"), "got {names:?}");
     }

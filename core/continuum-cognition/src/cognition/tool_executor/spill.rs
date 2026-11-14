@@ -28,6 +28,7 @@ use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
+pub use super::output_id::OutputId;
 
 /// The handles live minds still point at, one set per holder (a working memory's instance).
 /// Disk-pressure eviction of the spill directory never deletes one of these
@@ -271,7 +272,7 @@ const CLASS: &str = "tool-output";
 
 /// The writer of the tool-output class. Refused before boot installs the registry: there is no
 /// directory to guess, and a result that cannot be saved is handed back whole as `Unsaved`.
-fn store() -> std::io::Result<ClassWriter> {
+pub(crate) fn store() -> std::io::Result<ClassWriter> {
     LIFE_START.get_or_init(std::time::SystemTime::now);
     ClassWriter::of(CLASS)
 }
@@ -329,12 +330,16 @@ fn unretained(content: &str, error: &std::io::Error) -> ResultCustody {
     ResultCustody::Unsaved
 }
 
-/// Resolve the spill file for `persona_id`/`handle`, rejecting any handle that
-/// isn't a bare hex stem — that is the path-traversal guard (no `/`, no `..`, no
-/// absolute path can survive the hex-only check), so we never canonicalize or
-/// touch a path outside the persona's own spill directory.
+/// Resolve the spill file for `persona_id`/`handle`, rejecting any handle that is not an
+/// [`OutputId`] (the path-traversal guard is that type's parse).
 pub fn resolve(persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
     resolve_in(&store()?, persona_id, handle)
+}
+
+/// The spill file of `persona_id`'s output `id`: an id already parsed, so nothing to refuse but
+/// the store itself.
+pub fn resolve_output(persona_id: Uuid, id: &OutputId) -> std::io::Result<PathBuf> {
+    resolve_id_in(&store()?, persona_id, id)
 }
 
 /// THE read of a saved result as her view loads it back: the saved output, trimmed as the
@@ -360,7 +365,7 @@ pub fn reproduces(persona_id: Uuid, handle: &str, body: &str) -> std::io::Result
 ///
 /// [`ContentHash::address`]: continuum_context::cause::ContentHash::address
 fn handle_of(content: &str) -> String {
-    continuum_context::cause::ContentHash::of(content).address()
+    OutputId::of(content).into()
 }
 
 /// A result's file name in its persona's directory of the class.
@@ -543,13 +548,12 @@ fn unsaved_whole(full: String, error: &std::io::Error) -> Fitted {
 }
 
 fn resolve_in(store: &ClassWriter, persona_id: Uuid, handle: &str) -> std::io::Result<PathBuf> {
-    if handle.is_empty() || !handle.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            format!("invalid output handle '{handle}': expected a hex output id"),
-        ));
-    }
-    store.owned_by(persona_id).path(&file_name(handle))
+    let id = OutputId::parse(handle).map_err(|refused| std::io::Error::new(std::io::ErrorKind::InvalidInput, refused))?;
+    resolve_id_in(store, persona_id, &id)
+}
+
+fn resolve_id_in(store: &ClassWriter, persona_id: Uuid, id: &OutputId) -> std::io::Result<PathBuf> {
+    store.owned_by(persona_id).path(&file_name(id.as_str()))
 }
 
 /// Outcome of investigating a spilled result — the bounded, line-numbered slice
@@ -665,7 +669,7 @@ pub fn read_extent(path: &Path, offset: u64, length: Option<usize>, allowance: A
         );
     }
     let len = length
-        .unwrap_or(capacity)
+        .unwrap_or(capacity) // unwrap_or: no length asked for reads as much as the encoding budget holds
         .min(capacity)
         .min((total_bytes - offset).min(usize::MAX as u64) as usize);
     let mut bytes = vec![0; len];

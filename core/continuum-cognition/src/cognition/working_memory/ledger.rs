@@ -84,7 +84,6 @@ impl WorkingMemory {
             dispatched: Mutex::new(HashMap::new()),
             next_action_seq: AtomicU64::new(1),
             action_fps: Mutex::new(VecDeque::new()),
-            action_fp_counts: Mutex::new(HashMap::new()),
             actions: Mutex::new(Default::default()),
             thoughts: Mutex::new(Default::default()),
             view: Mutex::new(None),
@@ -93,6 +92,8 @@ impl WorkingMemory {
             open_views: Mutex::new(Default::default()),
             act_times: Mutex::new(Default::default()),
             tool_head: Default::default(),
+            generation: AtomicU64::new(0),
+            archive: Mutex::new(Default::default()),
         }
     }
 
@@ -104,6 +105,7 @@ impl WorkingMemory {
     /// Keep the existing measured truncation peak across intermediate Act replies.
     /// Switching activity/root does not transfer this evidence to another concern.
     pub fn retain_truncated_emission(&self, room: Uuid, peak_tokens: u32) {
+        self.touch();
         let scope = self.scope.lock().clone();
         let mut pending = self.pending_emissions.lock();
         let peak_tokens = if let Some(index) = pending.iter().position(|e| e.room == room && e.scope == scope) {
@@ -120,34 +122,18 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         self.pending_emissions.lock().iter()
             .filter(|e| e.room == room && e.scope == scope)
-            .map(|e| e.peak_tokens).max().unwrap_or(0)
+            .map(|e| e.peak_tokens).max().unwrap_or(0) // JUSTIFIED: no pending emission retains no peak; 0 is the identity of the max the reply claim folds it into
     }
 
-    /// Record a fingerprint (tool name + args) of the action the hands just took, and return
-    /// how many times THIS exact call now appears in the recent window (including this one).
-    /// `≥ 2` means the mind is re-issuing an identical call — proprioception the act→observe
-    /// step renders EXPLICITLY so a looping mind perceives its own redundancy and moves on.
-    /// Reports a TRUE fact about her hands; it never dictates what to do instead (that would
-    /// be steering — [[no-hardcoded-heuristics-to-steer-cognition]]). The returned count is
-    /// DURABLE across the spawn (see `action_fp_counts`) so a loop that recurs amid other
-    /// acts escalates honestly instead of pinning at the tiny recency-window size.
-    pub fn note_action_fingerprint(&self, fingerprint: &str) -> usize {
-        // Windowed push feeds `action_verb_tally` (the RECENT investigation shape) — that
-        // one WANTS the rolling `capacity` window, so leave it bounded here.
-        {
-            let mut fps = self.action_fps.lock();
-            fps.push_back(fingerprint.to_string());
-            while fps.len() > self.capacity {
-                fps.pop_front();
-            }
+    /// Record a fingerprint (tool name + args) of the action the hands just took, into the
+    /// recent window the verb tally reads.
+    pub fn note_action_fingerprint(&self, fingerprint: &str) {
+        self.touch();
+        let mut fps = self.action_fps.lock();
+        fps.push_back(fingerprint.to_string());
+        while fps.len() > self.capacity {
+            fps.pop_front();
         }
-        // The repeat COUNT is durable across the spawn — NOT clipped to the tiny recency
-        // window — so an identical call interleaved with other acts still climbs 3→38
-        // rather than resetting every time it falls out of the `capacity`-deep window.
-        let mut counts = self.action_fp_counts.lock();
-        let c = counts.entry(fingerprint.to_string()).or_insert(0);
-        *c += 1;
-        *c
     }
 
     /// Tally of recent actions BY TOOL NAME (the part of the fingerprint before
@@ -162,7 +148,7 @@ impl WorkingMemory {
         let fps = self.action_fps.lock();
         let mut tally: Vec<(String, usize)> = Vec::new();
         for fp in fps.iter() {
-            let name = fp.split('|').next().unwrap_or(fp).to_string();
+            let name = fp.split('|').next().unwrap_or(fp).to_string(); // JUSTIFIED: split always yields its first piece; the fallback is the whole fingerprint, never invented
             match tally.iter_mut().find(|(n, _)| *n == name) {
                 Some((_, c)) => *c += 1,
                 None => tally.push((name, 1)),
@@ -193,6 +179,7 @@ impl WorkingMemory {
     /// Record `entry` in her ring: stamped with the next occurrence (the one owner of entry
     /// identity), the oldest leaving past capacity.
     pub(super) fn push_entry(&self, entries: &mut VecDeque<WmEntry>, mut entry: WmEntry) {
+        self.touch();
         entry.occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
         entries.push_back(entry);
         while entries.len() > self.capacity {
@@ -209,6 +196,7 @@ impl WorkingMemory {
             return;
         }
         let occurrence = self.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        self.touch();
         self.thoughts.lock().push(thought_log::ThoughtRecord::new(occurrence, r.to_string(), continuum_base::time::EpochMs::now().millis()));
     }
 
@@ -259,6 +247,7 @@ impl WorkingMemory {
         let Some(seq) = self.next_action_seq.load(Ordering::Relaxed).checked_sub(1) else {
             return;
         };
+        self.touch();
         self.open_views.lock().annotate(seq, intent);
     }
 
@@ -343,8 +332,12 @@ impl WorkingMemory {
                     result: Some(tail),
                     handle,
                     stored_chars: None,
+                    stored_content: None,
+                    run: None,
+                    body: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                     act: act_identity(&acts),
+                    verbs: acts.iter().map(|act| act.output.verb.clone()).collect(),
                 },
             );
         }
@@ -366,7 +359,7 @@ impl WorkingMemory {
         // fault in assembly, never permission to reuse an older statement or infer aliases.
         let native_calls = e.iter_mut().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::ActionStatement { room: r } if Some(r) == room))
-            .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default();
+            .map(|entry| std::mem::take(&mut entry.native_calls)).unwrap_or_default(); // JUSTIFIED: no statement for this room means none of its calls were native: the empty list is the fact
         self.push_entry(&mut e, WmEntry {
             disk_change,
             kind: WmKind::Receipt { n: seq },

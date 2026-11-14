@@ -289,6 +289,9 @@ impl DeploySource for GitGhDeploySource {
         .map_err(|e| format!("deploy-source task join error: {e}"))??;
         let newest_key = self.build_key(&tip).await.unwrap_or_else(|| tip.clone()); // unwrap_or_else: unresolved build key names only the fetched tip
         if continuum_cli_lifecycle::deploy_tracker::running_satisfies(running_sha(), &tip, Some(&newest_key)) {
+            // up to date: the tip changed no build input. Said, so it never reads as a stall.
+            continuum_base::probe!(class = "deploy.track.current", tip = %tip, build_key = %newest_key, running = running_sha(),
+                "the running build already is the tip's newest build: nothing to deploy");
             return Ok(Some((tip, Checks::Unknown))); // equality satisfies without authorizing a different revision
         }
         let repo = repo_dir.clone();
@@ -298,7 +301,12 @@ impl DeploySource for GitGhDeploySource {
             .await.map_err(|e| format!("deploy-candidates task join error: {e}"))?;
         match super::deploy_candidate::deployable_candidate(&repo_dir, &candidates).await? {
             Some(candidate) => Ok(Some((candidate, Checks::Green))),
-            None => Ok(Some((tip, Checks::Unknown))), // no platform publication: wait
+            None => {
+                // waiting on CI to publish: named, with what was looked for (card 0129ec9e)
+                continuum_base::probe!(class = "deploy.track.unpublished", tip = %tip, running = running_sha(),
+                    candidates = %candidates.join(","), "no deploy candidate has a published, authorized build for this platform yet: waiting for CI");
+                Ok(Some((tip, Checks::Unknown))) // no platform publication: wait
+            }
         }
     }
 }
@@ -318,7 +326,7 @@ fn read_hold(state_dir: &std::path::Path) -> Option<Hold> {
         .and_then(|t| continuum_base::time::EpochMs::of(t).ok())
         .map(continuum_base::time::EpochMs::millis)
         .unwrap_or(0); // unwrap_or: an unreadable mtime = epoch 0 = immediately stale, which is loud not silent
-    Some(Hold { reason: text.trim().chars().take(200).collect(), created_ms, ttl_ms: None })
+    Some(Hold { reason: text.trim().to_string(), created_ms, ttl_ms: None })
 }
 
 /// Atomically record the deploy request the supervisor consumes.
@@ -337,14 +345,21 @@ fn clear_deploy_request(state_dir: &std::path::Path) {
     let _ = std::fs::remove_file(state_dir.join("deploy-request.json"));
 }
 
-fn write_deploy_request(state_dir: &std::path::Path, req: &DeployRequest) {
-    let _ = std::fs::create_dir_all(state_dir);
-    if let Ok(bytes) = serde_json::to_vec_pretty(req) {
-        let path = state_dir.join("deploy-request.json");
-        let tmp = path.with_extension("json.tmp");
-        if std::fs::write(&tmp, bytes).is_ok() {
-            let _ = std::fs::rename(&tmp, &path);
-        }
+/// Record `req` through the `state` disk class (`<continuum home>/state`, the directory
+/// [`read_deploy_request`] reads and the consumer's `deploy_request_path` names): replaced whole, so
+/// a reader sees the old request or the new one. A failed write is said; the next tick writes again.
+fn write_deploy_request(req: &DeployRequest) {
+    let written = serde_json::to_vec_pretty(req).map_err(std::io::Error::other).and_then(|bytes| {
+        crate::system_resources::disk_reporters::ClassWriter::of("state")?
+            .replace(std::path::Path::new("deploy-request.json"), &bytes)
+    });
+    if let Err(error) = written {
+        continuum_base::probe!(
+            class = "deploy.track.request_unwritten",
+            tip = req.tip_sha.as_str(),
+            error = %error,
+            "the deploy request could not be recorded; the next tick records it again"
+        );
     }
 }
 
@@ -359,10 +374,13 @@ pub struct DeployTrackerModule {
     /// The ACTION half: launches the consumer on a request and keeps the receipt. `Arc`
     /// so the spawn runs off the tick (`spawn_blocking`).
     actuator: Arc<DeployActuator>,
+    /// Serving's snapshot, for the one fact the action reads off it: whether live work holds the
+    /// engine (`held_for`), the hold a consumer's handoff would refuse.
+    serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>,
 }
 
 impl DeployTrackerModule {
-    pub fn new() -> Self {
+    pub fn new(serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>) -> Self {
         let root = crate::paths::continuum_home().unwrap_or_else(|_| PathBuf::from(".")); // unwrap_or_else: no home = cwd; the deploy source degrades, never deploys on a guess
         let state_dir = root.join("state");
         let actuator = Arc::new(DeployActuator::new(root.clone()));
@@ -372,7 +390,90 @@ impl DeployTrackerModule {
             state_dir,
             stranded_reported: parking_lot::Mutex::new(None),
             actuator,
+            serving,
         }
+    }
+
+    /// THE ACTION for a wanted deploy of `tip_sha`: not while live work holds the engine (the
+    /// request stands for the first tick after the release), else the actuator's one decision.
+    async fn actuate(&self, req: DeployRequest, tip_sha: &str, stranded: bool, now: u64) -> Result<(), String> {
+        // NOT WHILE LIVE WORK HOLDS THE ENGINE. The consumer's handoff refuses then (no
+        // attempt charged on its side), but each launch spends one of the actuator's: the
+        // IntelMac, 2026-11-07, three launches behind genome-train f44eda06 and the tip was
+        // given up for good after the run ended (card fd833a10). The request stands; the
+        // first tick after the hold is released acts on it.
+        let held = self.serving.borrow().held_for.as_ref().and_then(|hold| hold.live_work());
+        if let Some(work) = held {
+            continuum_base::probe!(
+                class = "deploy.actuate.decision",
+                verdict = "held",
+                tip = tip_sha,
+                work = work.as_str(),
+                "a deploy is wanted and live work holds the engine: not launched, no attempt spent; the request stands"
+            );
+            return Ok(());
+        }
+        // THE ACTION, off the tick: the actuator defers to an installed owner,
+        // launches the consumer once per request, and keeps the receipt.
+        let actuator = self.actuator.clone();
+        let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
+            .await
+            .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
+        // One row says what the ACTION did this tick, so a deploy that was
+        // wanted but not taken is never silent: who owns the node instead, which
+        // attempt was launched and how, or which guard skipped it.
+        match outcome {
+            ActuateOutcome::Deferred(owner) => continuum_base::probe!(
+                class = "deploy.actuate.decision",
+                verdict = "deferred",
+                tip = tip_sha,
+                owner = owner.name(),
+                "a deploy is wanted and another owner acts on this node — the core stands down"
+            ),
+            ActuateOutcome::SpawnFailed { attempt, error } => continuum_base::probe!(
+                class = "deploy.actuate.decision",
+                verdict = "spawn_failed",
+                tip = tip_sha,
+                attempt = attempt as u64,
+                error = error.as_str(),
+                "the consumer could not be launched — see logs/deploy-actuate.log"
+            ),
+            ActuateOutcome::Skipped(decision) => continuum_base::probe!(
+                class = "deploy.actuate.decision",
+                verdict = "skipped",
+                tip = tip_sha,
+                decision = ?decision,
+                "this request was not actuated again this tick — its own bound or attempt cap decided"
+            ),
+            ActuateOutcome::Spawned { attempt, pid, mode, child } => {
+                continuum_base::probe!(
+                    class = "deploy.actuate.decision",
+                    verdict = "spawned",
+                    tip = tip_sha,
+                    attempt = attempt as u64,
+                    pid = pid.unwrap_or(0), // unwrap_or: 0 reads as "a scheduler task ran it", which returns no pid
+                    mode = mode.as_str(),
+                    "the consumer was launched detached — this core has handed off its own replacement"
+                );
+                if let Some(mut child) = child {
+                    // Reap the consumer off the tick and say how it exited — a consumer
+                    // that exits before its reboot stops this core is a receipt worth having
+                    // (NothingOwed, RefuseDirty, a failed build: its log names which).
+                    let tip = tip_sha.to_owned();
+                    tokio::task::spawn_blocking(move || {
+                        let status = child.wait();
+                        continuum_base::probe!(
+                            class = "deploy.actuate.consumer_exited",
+                            tip = tip.as_str(),
+                            pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
+                            status = ?status,
+                            "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
+                        );
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     fn tree_dirty(&self) -> bool {
@@ -388,12 +489,6 @@ impl DeployTrackerModule {
         args.extend(continuum_git::submodules::STATUS_ARGS);
         let out = crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT);
         out.stdout_if_ok().map(|s| continuum_git::submodules::has_operator_work(&s)).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
-    }
-}
-
-impl Default for DeployTrackerModule {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -529,7 +624,7 @@ impl ServiceModule for DeployTrackerModule {
                     now,
                 );
                 if let Some(req) = persisted.as_ref() {
-                    write_deploy_request(state_dir, req);
+                    write_deploy_request(req);
                     continuum_base::probe!(
                         class = "deploy.track.request_written",
                         tip = tip_sha.as_str(),
@@ -542,67 +637,8 @@ impl ServiceModule for DeployTrackerModule {
                 // request is exactly what a retry must be judged against.
                 let req = persisted
                     .or(standing)
-                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now));
-                // THE ACTION, off the tick: the actuator defers to an installed owner,
-                // launches the consumer once per request, and keeps the receipt.
-                let actuator = self.actuator.clone();
-                let outcome = tokio::task::spawn_blocking(move || actuator.on_deploy_wanted(&req, stranded, now))
-                    .await
-                    .map_err(|e| format!("deploy-actuator task join error: {e}"))?;
-                // One row says what the ACTION did this tick, so a deploy that was
-                // wanted but not taken is never silent: who owns the node instead, which
-                // attempt was launched and how, or which guard skipped it.
-                match outcome {
-                    ActuateOutcome::Deferred(owner) => continuum_base::probe!(
-                        class = "deploy.actuate.decision",
-                        verdict = "deferred",
-                        tip = tip_sha.as_str(),
-                        owner = owner.name(),
-                        "a deploy is wanted and another owner acts on this node — the core stands down"
-                    ),
-                    ActuateOutcome::SpawnFailed { attempt, error } => continuum_base::probe!(
-                        class = "deploy.actuate.decision",
-                        verdict = "spawn_failed",
-                        tip = tip_sha.as_str(),
-                        attempt = attempt as u64,
-                        error = error.as_str(),
-                        "the consumer could not be launched — see logs/deploy-actuate.log"
-                    ),
-                    ActuateOutcome::Skipped(decision) => continuum_base::probe!(
-                        class = "deploy.actuate.decision",
-                        verdict = "skipped",
-                        tip = tip_sha.as_str(),
-                        decision = ?decision,
-                        "this request was not actuated again this tick — its own bound or attempt cap decided"
-                    ),
-                    ActuateOutcome::Spawned { attempt, pid, mode, child } => {
-                        continuum_base::probe!(
-                            class = "deploy.actuate.decision",
-                            verdict = "spawned",
-                            tip = tip_sha.as_str(),
-                            attempt = attempt as u64,
-                            pid = pid.unwrap_or(0), // unwrap_or: 0 reads as "a scheduler task ran it", which returns no pid
-                            mode = mode.as_str(),
-                            "the consumer was launched detached — this core has handed off its own replacement"
-                        );
-                        if let Some(mut child) = child {
-                            // Reap the consumer off the tick and say how it exited — a consumer
-                            // that exits before its reboot stops this core is a receipt worth having
-                            // (NothingOwed, RefuseDirty, a failed build: its log names which).
-                            let tip = tip_sha.clone();
-                            tokio::task::spawn_blocking(move || {
-                                let status = child.wait();
-                                continuum_base::probe!(
-                                    class = "deploy.actuate.consumer_exited",
-                                    tip = tip.as_str(),
-                                    pid = pid.unwrap_or(0), // unwrap_or: a child always has a pid; 0 cannot occur here
-                                    status = ?status,
-                                    "the consumer this core launched has exited — see logs/deploy-actuate.log and logs/deploy-consume.log"
-                                );
-                            });
-                        }
-                    }
-                }
+                    .unwrap_or_else(|| continuum_cli_lifecycle::deploy_tracker::DeployRequest::new(tip_sha, now)); // unwrap_or_else: no request stands for this tip, so this tick's new one is the request
+                self.actuate(req, tip_sha, stranded, now).await?;
             }
             DeployVerdict::UpToDate => {}
             DeployVerdict::BuildInFlight { deployable_tip } => {
@@ -612,7 +648,7 @@ impl ServiceModule for DeployTrackerModule {
                 if let Some(tip_sha) = deployable_tip {
                     let standing = read_deploy_request(state_dir);
                     if let Some(req) = continuum_cli_lifecycle::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
-                        write_deploy_request(state_dir, &req);
+                        write_deploy_request(&req);
                         continuum_base::probe!(
                             class = "deploy.track.request_moved_in_flight",
                             tip = tip_sha.as_str(),
@@ -668,6 +704,63 @@ impl ServiceModule for DeployTrackerModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the IntelMac, 2026-11-07, card fd833a10): a deploy launched while live
+    // work holds the engine. The consumer's handoff refuses then, but every launch spends one of
+    // the actuator's three attempts, so three refusals behind a training run gave the tip up for
+    // good after the run ended. While the hold names live work nothing is launched and no attempt
+    // is recorded; the first action after the release launches attempt one.
+    #[tokio::test]
+    async fn a_held_engine_launches_nothing_and_its_release_launches_attempt_one() {
+        use crate::inference::llama_server::serving_hold::{HeldWork, HoldCause, ServingHold};
+        use crate::inference::llama_server::ServingSnapshot;
+        use super::super::deploy_actuator::{DeploySpawner, RecordingSpawner, SpawnPlan, Spawned};
+        let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
+        let user_home = dir.path().join("home");
+        let root = user_home.join(".continuum");
+        assert!(std::fs::create_dir_all(&root).is_ok());
+        let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
+        struct Shared(Arc<RecordingSpawner>);
+        impl DeploySpawner for Shared {
+            fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
+                self.0.spawn(plan)
+            }
+        }
+        let actuator = Arc::new(DeployActuator::with_spawner(user_home, root.clone(), None, Box::new(Shared(spawner.clone()))));
+        let training = ServingHold {
+            since_ms: 1,
+            by: HoldCause::Resident {
+                work: vec![HeldWork {
+                    job: uuid::Uuid::from_u128(0xf44e),
+                    consumer: "genome-train:f44eda06".into(),
+                    base_model: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".into(),
+                    engine_pid: 70964,
+                    engine_started_s: 1,
+                    port: 58057,
+                }],
+            },
+        };
+        let (serving_tx, serving) = tokio::sync::watch::channel(ServingSnapshot { held_for: Some(training), ..ServingSnapshot::empty() });
+        let tracker = DeployTrackerModule {
+            source: Box::new(GitGhDeploySource::from_env()),
+            state_dir: root.join("state"),
+            root,
+            stranded_reported: parking_lot::Mutex::new(None),
+            actuator: actuator.clone(),
+            serving,
+        };
+        let tip = "aef1f6b362201e84000702fd9f74e9eab31defc8";
+        let now = 1_794_000_000_000;
+        for tick in 0..3 {
+            assert!(tracker.actuate(DeployRequest::new(tip, now), tip, true, now + tick * 3_600_000).await.is_ok());
+        }
+        assert!(spawner.plans.lock().is_empty(), "held: nothing launched");
+        assert!(actuator.receipt().is_none(), "held: no attempt recorded");
+        serving_tx.send_modify(|snapshot| snapshot.held_for = None);
+        assert!(tracker.actuate(DeployRequest::new(tip, now), tip, false, now + 4 * 3_600_000).await.is_ok());
+        assert_eq!(spawner.plans.lock().len(), 1, "released: launched");
+        assert_eq!(actuator.receipt().map(|receipt| receipt.attempt), Some(1), "the first launch is attempt one");
+    }
 
     fn verdict(check_runs: &str, workflow_runs: Option<&str>) -> Checks {
         parse_tip_checks(check_runs, workflow_runs).checks

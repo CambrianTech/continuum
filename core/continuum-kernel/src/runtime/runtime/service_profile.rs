@@ -69,6 +69,10 @@ pub enum ModuleStopOutcome {
     JoinTimedOut,
     /// `shutdown` returned an error after a successful save.
     JoinFailed { error: String },
+    /// Its `initialize` never returned (it was degraded at boot and still is), so it holds no
+    /// loaded state and was neither drained nor saved: a save could overwrite good durable state
+    /// with an uninitialized module's.
+    NeverInitialized,
 }
 
 impl ModuleStopOutcome {
@@ -370,8 +374,15 @@ pub async fn run_signal_shutdown() {
             }
         }
         None => {
+            // Name the step that never completed (card b5b9bef3): a SIGTERM that joins a stop
+            // already stalled in a settle participant (the M5's page checkpoint, 2026-11-14) must
+            // say so, not only that the save is unknown.
+            let step = match crate::runtime::extensions::settling() {
+                Some(participant) => format!("the `{participant}` settle"),
+                None => "the module save".to_owned(),
+            };
             eprintln!(
-                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
+                "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
             );
         }
     }

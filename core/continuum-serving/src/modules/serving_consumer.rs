@@ -42,6 +42,13 @@
 //! [`pin`]: ServingConsumer::pin_model
 //! [`TierDownPolicy`]: super::serving_tier_down::TierDownPolicy
 //!
+//! # Not here: the engine's host prompt cache
+//!
+//! The prompt cache is host RAM, and host RAM has ONE reclaim path: the memory monitor's deficit,
+//! which asks the cache first (`super::serving_prompt_cache`, card 0f631c46). The authority's
+//! reclaim reaches this consumer only when serving's own pool row is over its ceiling, which it
+//! never was while the M5 starved (2026-11-13), so the cache is not a lever of this consumer.
+//!
 //! # No new task, no parallel allocator
 //!
 //! This is a thin adapter over handles the daemon already publishes
@@ -356,15 +363,15 @@ impl ServingConsumer {
     /// Add `id` to the suppress set (COW insert), so the daemon's reconcile
     /// unloads it. Idempotent — re-suppressing an already-suppressed id is a
     /// no-op the daemon ignores.
-    fn suppress_model(&self, id: &str) {
-        self.intent.set_suppressed(id, true, false);
+    fn suppress_model(&self, id: &str) -> Result<(), super::serving_daemon::IntentRevisionExhausted> {
+        self.intent.set_suppressed(id, true, false).map(|_| ())
     }
 
     /// Force-pin `id` (the re-home target), so the daemon's reconcile intersects
     /// its candidates to that one model and swaps to it — the tier-down carry-out.
     /// Unlike suppress this does NOT go dark: the daemon serves the smaller model.
-    fn pin_model(&self, id: &str) {
-        self.intent.set_pin(Some(id.to_string()), false);
+    fn pin_model(&self, id: &str) -> Result<(), super::serving_daemon::IntentRevisionExhausted> {
+        self.intent.set_pin(Some(id.to_string()), false).map(|_| ())
     }
 }
 
@@ -427,7 +434,7 @@ impl ResourceConsumer for ServingConsumer {
                 .as_ref()
                 .map(|(id, _, _, _)| id.clone())
                 .or_else(|| self.serving.borrow().loading_model.clone())
-                .unwrap_or_default();
+                .unwrap_or_default(); // unwrap_or_default: no model named yet, and the physical read is of the live lane whatever it serves
             return match (self.measured_of)(&model) {
                 Some(bytes) if bytes > 0 => vec![ConsumerFootprint {
                     kind: self.pool_kind,
@@ -480,7 +487,7 @@ impl ResourceConsumer for ServingConsumer {
             // is under-attributed by its grant until the record learns it (named gap).
             inherited_footprint(&rec, |m, w, l| (self.footprint_of)(m, w, l, 0))
         });
-        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0);
+        let planned_bytes = planned.as_ref().map(|(b, _)| *b).unwrap_or(0); // unwrap_or: no plan, no loading lane, no inherited record = nothing planned resident
 
         // THE HIGH-WATER REQUIRES A PROOF CHANNEL. `ready_verified_at_ms` is stamped the
         // moment readiness is CONFIRMED for the lane now serving, and a verification we
@@ -494,14 +501,13 @@ impl ResourceConsumer for ServingConsumer {
         // unfalsifiable claim on a third of the box is not.
         let Some(verified) = self.serving.borrow().ready_verified_at_ms else {
             return planned
-                .map(|(bytes, detail)| {
-                    vec![ConsumerFootprint {
-                        kind: self.pool_kind,
-                        bytes,
-                        detail,
-                    }]
+                .into_iter()
+                .map(|(bytes, detail)| ConsumerFootprint {
+                    kind: self.pool_kind,
+                    bytes,
+                    detail,
                 })
-                .unwrap_or_default();
+                .collect();
         };
 
         // DECAY ON EVIDENCE, NEVER ON A TIMER.
@@ -631,7 +637,9 @@ impl ResourceConsumer for ServingConsumer {
                 // down" (fail loud by declining to the honest full unload).
                 if !td.target_model.is_empty() && td.resident_after < current {
                     let freed = current - td.resident_after;
-                    self.pin_model(&td.target_model);
+                    if let Err(error) = self.pin_model(&td.target_model) {
+                        return ReclaimOutcome::refused(error.to_string());
+                    }
                     self.pending.lock().insert(
                         active.clone(),
                         Pending {
@@ -654,7 +662,9 @@ impl ResourceConsumer for ServingConsumer {
 
         // No tier-down → unload the active model to free its whole footprint.
         // Whole-lease-granular: serving's lease IS the active model.
-        self.suppress_model(&active);
+        if let Err(error) = self.suppress_model(&active) {
+            return ReclaimOutcome::refused(error.to_string());
+        }
         self.pending.lock().insert(
             active.clone(),
             Pending {

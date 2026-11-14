@@ -126,7 +126,7 @@ impl WorkingMemory {
         let scope = self.scope.lock().clone();
         self.entries.lock().iter().rev()
             .find(|entry| entry.scope == scope && matches!(entry.kind, WmKind::Receipt { n } if n == seq))
-            .map(|entry| entry.native_calls.clone()).unwrap_or_default()
+            .map(|entry| entry.native_calls.clone()).unwrap_or_default() // JUSTIFIED: no receipt entry for this act means it carried no native calls: the empty list is the fact
     }
 
     /// Render the complete active payload with its recorded provenance. The
@@ -148,13 +148,21 @@ impl WorkingMemory {
     /// `act`): the one resolution of an act number to its saved output. A refusal when no
     /// record carries `seq`, or when its save failed: such a result has no other copy, so it
     /// is never shown as less than whole.
+    /// An act her view folded left RAM for her archive: it reopens from there, read for this call.
     pub fn saved_handle(&self, seq: u64) -> Result<String, ActOutputRefusal> {
-        let actions = self.actions.lock();
-        let Some(record) = actions.get(seq) else {
+        let newest_saved = {
+            let actions = self.actions.lock();
+            if let Some(record) = actions.get(seq) {
+                return record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq });
+            }
             let newest_saved = actions.records().rev().find(|record| record.handle.is_some()).map(|record| record.seq);
-            return Err(ActOutputRefusal::Unknown { act: seq, newest_saved });
+            newest_saved
         };
-        record.handle.clone().ok_or(ActOutputRefusal::Unsaved { act: seq })
+        // Off her resident log: her archive, read with no lock of the log held.
+        if let Some(archived) = self.archived_handle(seq) {
+            return archived;
+        }
+        Err(ActOutputRefusal::Unknown { act: seq, newest_saved })
     }
 
     /// The saved output `act` names: [`Self::saved_handle`] for a number, her newest act with a
@@ -261,6 +269,18 @@ impl WorkingMemory {
     /// `stored` is the whole's rendered length and handle once its body left RAM for its
     /// handle (`evict_resident_results_over`, the memory owner's shed): `full` is then the
     /// pointer, and the view prices and loads the whole through the source (`continuum_context::StoredWhole`).
+    /// Her act in flight (her newest, riding whole after her view) rendered as every other act is:
+    /// what her view judges on its arrival (CONTINUUM-ENGINE section 5 invariant 4). `None` with none in flight.
+    pub(crate) fn in_flight_rendering(&self) -> Option<ActRendering> {
+        let seq = self.in_flight_action_seq()?;
+        self.actions.lock().get(seq).map(act_rendering)
+    }
+
+    /// Her act `seq`'s run of identical requests with identical outcomes, for her newest result.
+    pub(crate) fn repeat_run(&self, seq: u64) -> Option<action_log::RepeatRun> {
+        self.actions.lock().repeat_run(seq)
+    }
+
     pub(crate) fn action_renderings(&self) -> (Vec<ActRendering>, bool) {
         let active = self.in_flight_action_seq();
         let actions = self.actions.lock();
@@ -268,33 +288,7 @@ impl WorkingMemory {
         let renderings = actions
             .records()
             .filter(|record| Some(record.seq) != active)
-            .map(|record| {
-                let attribution = ResultAttribution::of(record);
-                let workspace = workspace_label(record.scope.as_deref());
-                let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
-                let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
-                    (Some(receipt), _, _) => receipt.to_string(),
-                    // Retained but never saved: no handle could reopen a collapsed line, so it stays
-                    // whole (goal 7: the full result stays reachable; Cormac on #5255).
-                    (None, Some(whole), _) => whole.clone(),
-                    (None, None, Some(head)) => head.clone(),
-                    // Unsaved and off the ledger: what it was, which never collapses anyway.
-                    (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
-                };
-                let stored = match (&record.result, &record.handle, record.stored_chars) {
-                    (None, Some(handle), Some(chars)) => {
-                        let label = format!("[result {attribution}{workspace}] ").chars().count();
-                        Some((label + chars, handle.clone()))
-                    }
-                    _ => None,
-                };
-                let full = whole.unwrap_or_else(|| pointer.clone());
-                let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
-                let content = record.result.as_deref().map_or(continuum_context::cause::Content::Absent, |result| {
-                    continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result))
-                });
-                ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
-            })
+            .map(act_rendering)
             .collect();
         (renderings, in_flight)
     }
@@ -377,6 +371,7 @@ impl WorkingMemory {
         content: &str,
         status: DispatchStatus,
     ) {
+        self.touch();
         let seq = self.next_action_seq.fetch_add(1, Ordering::Relaxed);
         let mut m = self.dispatched.lock();
         let entry = m.entry(handle).or_insert_with(|| DispatchedAction {
@@ -425,6 +420,7 @@ impl WorkingMemory {
     /// collapsed pointers), so disk-pressure eviction never deletes one (card 9197cd01).
     /// The whole set, replaced, so nothing can drift.
     pub(super) fn publish_live_handles(&self) {
+        // Resident records only: one that left for her archive is the archive's reference.
         let receipts = self.actions.lock().receipt_keys();
         let mut children = self.receipt_children.lock();
         // Dependencies live exactly as long as their receipt: drop those of receipts that
@@ -505,6 +501,7 @@ impl WorkingMemory {
     /// act). The live heartbeat never calls this — there, concerns flow
     /// continuously and old traces age out naturally past `capacity`.
     pub fn clear(&self) {
+        self.touch();
         self.pending_emissions.lock().clear();
         self.entries.lock().clear();
         self.thoughts.lock().clear();
@@ -517,4 +514,39 @@ impl WorkingMemory {
     pub fn is_empty(&self) -> bool {
         self.entries.lock().is_empty() && self.thoughts.lock().is_empty()
     }
+}
+
+/// One act as her view renders it: whole, summary, pointer, stored whole, outcome hash and identity.
+/// Every act's the same way, the one in flight included.
+fn act_rendering(record: &action_log::ActionRecord) -> ActRendering {
+    let attribution = ResultAttribution::of(record);
+    let workspace = workspace_label(record.scope.as_deref());
+    let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
+    let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
+        (Some(receipt), _, _) => receipt.to_string(),
+        // Retained but never saved: no handle could reopen a collapsed line, so it stays
+        // whole (goal 7: the full result stays reachable; Cormac on #5255).
+        (None, Some(whole), _) => whole.clone(),
+        (None, None, Some(head)) => head.clone(),
+        // Unsaved and off the ledger: what it was, which never collapses anyway.
+        (None, None, None) => format!("[action #{}] {}", record.seq, record.operation),
+    };
+    // Loaded back from the body's own saved copy when the memory owner named one.
+    let stored = match (&record.result, record.body.as_ref().or(record.handle.as_ref()), record.stored_chars) {
+        (None, Some(handle), Some(chars)) => {
+            let label = format!("[result {attribution}{workspace}] ").chars().count();
+            Some((label + chars, handle.clone()))
+        }
+        _ => None,
+    };
+    let full = whole.unwrap_or_else(|| pointer.clone()); // JUSTIFIED: a body out of RAM renders its pointer; its whole is the stored one, loaded when granted
+    let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
+    // Resident, its body's hash; evicted, the hash it kept as it left RAM: an evicted
+    // read is still the occurrence a re-read matches (`ActionRecord::stored_content`).
+    let content = match (record.result.as_deref(), record.stored_content) {
+        (Some(result), _) => continuum_context::cause::Content::Hashed(continuum_context::cause::ContentHash::of(result)),
+        (None, Some(hash)) => continuum_context::cause::Content::Hashed(hash),
+        (None, None) => continuum_context::cause::Content::Absent,
+    };
+    ActRendering { seq: record.seq, room: record.room, full, summary, pointer, stored, content, act: record.act }
 }

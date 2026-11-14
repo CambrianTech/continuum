@@ -1,4 +1,4 @@
-//! A mind's context as an epoch materialization (docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md).
+//! A mind's context as an epoch materialization (docs/architecture/CONTINUUM-ENGINE.md).
 //! Its own crate so the monolith never grows by it and its tests run in seconds.
 //!
 //! - [`cause`]: what each element follows from: its occurrence id, its cause, its content.
@@ -19,6 +19,7 @@
 //!   [`allocation::search`] chooses every leveled consumer's levels together.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
+#![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee, clippy::let_underscore_must_use)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub mod allocation;
 pub mod cause;

@@ -131,6 +131,18 @@ impl<T: Block> Epoch<T> {
         self.superseded_chars = mark.superseded_chars;
     }
 
+    /// Whether a live block of this epoch renders `element`, at any level: one element, one
+    /// occurrence, whatever key it arrived under.
+    pub(crate) fn holds_element(&self, element: crate::cause::ElementId) -> bool {
+        self.events.iter().any(|event| !event.retired && event.element == Some(element))
+    }
+
+    /// Whether a live block of this epoch renders `element` whole: what a repeat may point at,
+    /// whichever source's key it arrived under.
+    pub(crate) fn holds_element_whole(&self, element: crate::cause::ElementId) -> bool {
+        self.events.iter().any(|event| !event.retired && event.element == Some(element) && event.level == crate::level::Level::Full)
+    }
+
     /// Whether `source` has a version in this epoch.
     pub(crate) fn holds(&self, source: &SourceId) -> bool {
         self.events.iter().any(|e| &e.source == source)

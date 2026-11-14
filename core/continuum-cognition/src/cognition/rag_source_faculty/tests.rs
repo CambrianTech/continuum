@@ -174,18 +174,13 @@
         );
     }
 
-    // what this catches (card c119ace7, Cormac's condition on #4280): a BOARD-churn
-    // source registered as plain framing — no `volatile_content` — must NOT reach the
-    // cacheable system prefix. `room-wall` was exactly that: declared standing, riding
-    // the system message ahead of the conversation, with bytes that change whenever any
-    // teammate writes a card ledger. The M5's 2026-09-20 log convicted it from both
-    // sides — the turns where the wall changed reused 2,046 tokens (6%: the tools +
-    // identity head), and the turns where it did not reused 65-78% with the SAME
-    // conversation behind it. Placement now follows the CHURN TABLE
-    // (`deliberation_prompt::churn_of`), so no future registration can put a mutating
-    // block back in front of the conversation by forgetting one builder call.
+    // what this catches (card c119ace7, Cormac's condition on #4280): a mutating block placed
+    // ahead of her conversation by how it was registered. `room-wall` rode the system message
+    // with bytes any teammate's ledger changes. Every grounding is now a block of her view
+    // (`trailing`), ordered at a start by measured motion, and a registration never moves it;
+    // its importance is still standing ground.
     #[tokio::test]
-    async fn a_board_churn_source_never_reaches_the_cacheable_prefix_however_it_is_registered() {
+    async fn the_wall_is_a_view_block_however_it_is_registered() {
         let wall = RagSourceFaculty::new(
             persona(),
             Arc::new(StubSource::new("room-wall", &["card 1234: a ledger line"])),
@@ -198,14 +193,7 @@
             .contribute(&Workspace::new("hi"))
             .await
             .expect("non-empty source bids");
-        assert!(
-            !c.stable,
-            "the wall is BOARD churn — it may never sit in the cacheable system prefix"
-        );
-        assert!(
-            c.trailing,
-            "board grounding renders AFTER the conversation, beside map/wall/kanban"
-        );
+        assert!(c.trailing, "every grounding is a block of her view, never the system message");
         assert!(
             c.standing_grounding,
             "moving KV placement must not erase importance — the wall is still standing ground"

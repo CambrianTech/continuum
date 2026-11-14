@@ -8,7 +8,10 @@
 //! Can be shared via Arc across threads.
 
 use super::module_metrics::ModuleMetrics;
+use super::module_readiness::{ModuleReadiness, ModuleUnavailable};
 use super::service_module::{ModuleConfig, ModulePriority, ServiceModule};
+use super::wiring_defect::{WiringDefect, WiringDefects};
+use dashmap::mapref::entry::Entry;
 use dashmap::DashMap;
 use parking_lot::RwLock;
 use std::any::TypeId;
@@ -46,6 +49,19 @@ pub struct ModuleRegistry {
     /// [`ServiceModule::commands`](super::service_module::ServiceModule::commands)
     /// at `register()`. See docs/architecture/COMMAND-ORGANIZATION.md.
     command_objects: DashMap<&'static str, Arc<dyn crate::sdk_codegen::DynCommand>>,
+
+    /// Wiring the registry refused as modules registered (a duplicate name, a constructor
+    /// without its descriptor). Boot reads [`Self::check_wiring`] and refuses on any.
+    wiring_defects: parking_lot::Mutex<Vec<WiringDefect>>,
+
+    /// command name -> the module whose `commands()` contributed it. A dep-holding object
+    /// reaches its module's state, so it is admitted only as far as that module is; a stateless
+    /// object has no row and no owner.
+    object_owners: DashMap<&'static str, &'static str>,
+
+    /// Whether each module's `initialize` has returned (see [`ModuleReadiness`]). Here because
+    /// every dispatch path already holds the registry, so one table gates them all.
+    readiness: Arc<ModuleReadiness>,
 }
 
 impl Default for ModuleRegistry {
@@ -64,22 +80,45 @@ impl ModuleRegistry {
             command_routes: RwLock::new(Vec::new()),
             type_routes: DashMap::new(),
             command_objects: DashMap::new(),
+            wiring_defects: parking_lot::Mutex::new(Vec::new()),
+            object_owners: DashMap::new(),
+            readiness: Arc::new(ModuleReadiness::new()),
         };
         // Seed the typed object map with every self-registering STATELESS command
         // (zero host-module ceremony — see register_stateless_command!). Dep-holding
-        // commands are added later via module.commands() in register().
+        // commands are added later via module.commands() in register(). A second
+        // object under one name keeps the first and is recorded as a defect.
         for cmd in crate::sdk_codegen::stateless_command_objects() {
             let name = cmd.name();
-            if let Some(prev) = registry.command_objects.insert(name, cmd) {
-                panic!(
-                    "ModuleRegistry: duplicate stateless command object '{}' (prev '{}'). \
-                     Command names must be unique across the whole registry.",
-                    name,
-                    prev.name()
-                );
+            match registry.command_objects.entry(name) {
+                Entry::Occupied(_) => registry.refuse(WiringDefect::DuplicateStatelessCommand { name }),
+                Entry::Vacant(slot) => {
+                    slot.insert(cmd);
+                }
             }
         }
         registry
+    }
+
+    fn refuse(&self, defect: WiringDefect) {
+        tracing::error!(probe_class = "registry.wiring_defect", %defect, "ModuleRegistry refused a command's wiring");
+        self.wiring_defects.lock().push(defect);
+    }
+
+    /// Every wiring defect recorded since construction. Boot calls this before any
+    /// module initializes and refuses to start on `Err`: a defect is knowable the
+    /// instant a module registers, and a command that silently does not exist (or
+    /// routes to the wrong module) must never reach a client.
+    pub fn check_wiring(&self) -> Result<(), WiringDefects> {
+        let codegen = crate::sdk_codegen::command_registry_defects()
+            .iter()
+            .chain(crate::sdk_codegen::event_registry_defects())
+            .cloned()
+            .map(WiringDefect::from);
+        match WiringDefects::of(codegen.chain(self.wiring_defects.lock().iter().cloned()).collect()) {
+            Some(defects) => Err(defects),
+            None => Ok(()),
+        }
     }
 
     /// Register a module. Auto-wires command routing from its config.
@@ -124,15 +163,14 @@ impl ModuleRegistry {
                 routes.push((prefix, name));
             }
             // Sort by prefix length descending (longest match first)
-            routes.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+            routes.sort_by_key(|route| std::cmp::Reverse(route.0.len()));
         }
 
         // Register the module's self-routing command objects (the typed path).
         // Each captures the module's deps; the executor routes a command name to
         // the object DIRECTLY, ahead of the prefix table. A duplicate name across
-        // modules is a hard error — the "no central list" design removes the human
-        // backstop, so the map must catch the collision itself (mirrors
-        // sdk_codegen::command_registry's duplicate-name panic).
+        // modules is a wiring defect that refuses boot — the "no central list" design
+        // removes the human backstop, so the map must catch the collision itself.
         for cmd in module.commands() {
             let cmd_name = cmd.name();
             // A command is ONE thing declared in ONE file as a (descriptor, constructor)
@@ -148,30 +186,26 @@ impl ModuleRegistry {
             // Six commands had shipped this way.
             //
             // `dispatch_orphans` audits the OTHER direction (descriptor, no route). This is
-            // its mirror, and together they make the pair total. It panics rather than logs
-            // for the same reason the duplicate-name check below does, and it is the same
+            // its mirror, and together they make the pair total. It refuses boot rather than
+            // only logging, for the same reason the duplicate-name check below does, and it is the same
             // class of defect: the "no central list" design removes the human backstop, so
             // the registry must catch its own wiring gaps. Boot is the right time — the
             // fact is knowable the instant the module registers, and the alternative is a
             // command that silently does not exist for anyone who has to discover it.
             if !crate::sdk_codegen::descriptor_exists(cmd_name) {
-                panic!(
-                    "ModuleRegistry: command object '{cmd_name}' (module '{name}') has NO \
-                     DESCRIPTOR — it would route but stay invisible to commands/list, the \
-                     persona tool surface, the ACL and codegen. Add `crate::register_command!\
-                     (<Type>);` at its declaration site (descriptor is type-only, so it needs \
-                     none of the module's deps — see BenchmarkDispatch for the pattern)."
-                );
+                self.refuse(WiringDefect::MissingDescriptor { command: cmd_name, module: name });
+                continue;
             }
-            if let Some(existing) = self.command_objects.insert(cmd_name, cmd) {
-                panic!(
-                    "ModuleRegistry: duplicate command object '{}' — module '{}' \
-                     claims a name already registered (prev descriptor: '{}'). \
-                     Command names must be unique across the whole registry.",
-                    cmd_name,
-                    name,
-                    existing.name()
-                );
+            match self.command_objects.entry(cmd_name) {
+                Entry::Occupied(existing) => self.refuse(WiringDefect::DuplicateCommand {
+                    command: cmd_name,
+                    module: name,
+                    previous: existing.get().name(),
+                }),
+                Entry::Vacant(slot) => {
+                    self.object_owners.insert(cmd_name, name);
+                    slot.insert(cmd);
+                }
             }
         }
 
@@ -220,7 +254,7 @@ impl ModuleRegistry {
             .modules
             .iter()
             .map(|entry| super::event_graph::ModuleEdges {
-                module: *entry.key(),
+                module: entry.key(),
                 emits: entry.value().emissions(),
                 consumes: entry.value().artifact_subscriptions(),
             })
@@ -262,6 +296,25 @@ impl ModuleRegistry {
     /// command wins over its module's legacy `handle_command` arm.
     pub fn route_object(&self, command: &str) -> Option<Arc<dyn crate::sdk_codegen::DynCommand>> {
         self.command_objects.get(command).map(|e| e.value().clone())
+    }
+
+    /// The module that contributed command object `command`; `None` for a stateless one.
+    pub fn object_owner(&self, command: &str) -> Option<&'static str> {
+        self.object_owners.get(command).map(|e| *e.value())
+    }
+
+    /// The readiness table every dispatch path consults.
+    pub fn readiness(&self) -> Arc<ModuleReadiness> {
+        Arc::clone(&self.readiness)
+    }
+
+    /// Admit a command for its owning module (`None` = no owner: admitted). Waits while the
+    /// owner initializes, bounded by the init deadline; refuses by type when it is degraded.
+    pub async fn admit(&self, owner: Option<&str>) -> Result<(), ModuleUnavailable> {
+        match owner {
+            Some(module) => self.readiness.admit(module).await,
+            None => Ok(()),
+        }
     }
 
     /// List all registered command-object names (debugging / health-check /
@@ -413,14 +466,14 @@ mod tests {
             // keys on this, so the descriptor below can be any real one.
             "test/never-declared-verb"
         }
-        fn descriptor(&self) -> crate::sdk_codegen::CommandDescriptor {
+        fn descriptor(&self) -> Result<crate::sdk_codegen::CommandDescriptor, crate::sdk_codegen::CodegenDefect> {
             crate::sdk_codegen::CommandDescriptor::of::<StubSpec>()
         }
         async fn invoke(
             &self,
             _params: Value,
             _caller: Option<crate::routing::CallerIdentity>,
-        ) -> Result<CommandResult, String> {
+        ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
             Ok(CommandResult::Json(serde_json::json!({})))
         }
     }
@@ -459,13 +512,20 @@ mod tests {
     // (`activity/spawn|archive|protect`), which is why the room-minting verb could not
     // be found by anyone — human or citizen — reading the catalog. `dispatch_orphans`
     // covers the mirror case (descriptor, no route); this covers the one that had no
-    // check at all. It must PANIC at register(), not warn: the fact is knowable the
-    // instant the module registers, and a warning about an invisible command is read
-    // by nobody, for the same reason the command is invisible.
+    // check at all. It must REFUSE BOOT, not warn: register() records the defect the
+    // instant the module registers and check_wiring() (read by boot before any module
+    // initializes) returns it, because a warning about an invisible command is read by
+    // nobody, for the same reason the command is invisible.
     #[test]
-    #[should_panic(expected = "has NO DESCRIPTOR")]
     fn a_command_constructor_without_a_descriptor_refuses_to_register() {
-        ModuleRegistry::new().register(Arc::new(UndeclaredCommandModule));
+        let registry = ModuleRegistry::new();
+        registry.register(Arc::new(UndeclaredCommandModule));
+        let refused = registry.check_wiring().expect_err("an undeclared command refuses boot");
+        assert!(
+            matches!(refused.defects(), [WiringDefect::MissingDescriptor { command: "test/never-declared-verb", module: "undeclared" }]),
+            "{refused}"
+        );
+        assert!(refused.to_string().contains("has NO DESCRIPTOR"), "{refused}");
     }
 
     #[test]

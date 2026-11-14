@@ -18,9 +18,10 @@
 //! content-addressed and live-protected while a record names it, so the proof holds. Only
 //! proven bodies are planned and moved; an unproven one counts as pinned.
 //!
-//! NOT FULL GOVERNOR COVERAGE: the shed target is the host's RAM overrun past this priority's
-//! gate (`PressureSnapshot::over_gate`). Pressure raised by swap activity alone, with RAM use
-//! under the gate, makes that overrun 0 and sheds nothing here.
+//! The shed target is this reporter's share of the host's memory deficit at its priority
+//! (`PressureSnapshot::deficit_at`): the RAM overrun past its gate, or what the OS has compressed
+//! and swapped since it was last clean once lower priorities have given back all they hold. A
+//! compressing, swapping host with RAM "used" under the gate sheds here (the M5, 2026-11-13).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -223,6 +224,9 @@ fn prove_candidates(minds: &Minds, proven: &Mutex<ProvenCopies>) {
     for (persona, memory) in minds {
         // A thought is saved only when a shed may need its copy, never by the act that thought it.
         memory.save_unsaved_thoughts(*persona);
+        // An act's body is proven against its OWN saved copy, named here once per record: never
+        // against a reopened act's raw source, which no rendered body reproduces.
+        memory.save_unsaved_bodies(*persona);
         for candidate in memory.resident_results().candidates {
             let key = (*persona, candidate.handle.clone());
             if !proven.lock().0.contains(&key) {
@@ -342,8 +346,8 @@ impl MemoryReporter for MindResultsReporter {
     fn shed_load(&self, level: PressureLevel) {
         let minds = self.registry.resident_working_memories();
         let before = resident_bytes(&minds);
-        // Its share of its priority's overrun, as every shedder computes it (Cormac on #5697).
-        let over = self.pressure.borrow().share_of_overrun(PRIORITY, before);
+        // Its share of its priority's deficit, as every shedder computes it (Cormac on #5697).
+        let over = self.pressure.borrow().share_of_deficit(PRIORITY, before);
         if over == 0 {
             return;
         }
@@ -351,7 +355,7 @@ impl MemoryReporter for MindResultsReporter {
         continuum_base::probe!(
             class = "wm.results.shed",
             level = %level,
-            over_gate = %over,
+            deficit_share = %over,
             before = %before,
             after = %resident_bytes(&minds),
             "the memory owner moved the oldest resident results to their handles"

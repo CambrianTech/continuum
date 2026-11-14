@@ -23,7 +23,6 @@ impl VoiceModule {
             self.state
                 .legacy_call_aliases
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
                 .insert(session_id.to_string(), room_id.to_string());
             // clog_warn! auto-routes by module_path to the module's log file (live.log) —
             // the SAME sink the orchestrator's register logs land in — so the divergence is
@@ -52,13 +51,13 @@ impl VoiceModule {
         // agent batches, causing the reconnect churn cycle (agents connect → old
         // ones get evicted by LiveKit → new ones reconnect → repeat).
         {
-            let mut sessions = self.state.active_sessions.lock().unwrap();
+            let mut sessions = self.state.active_sessions.lock();
             if !sessions.insert(call_id.to_string()) {
                 log_info!(
                     "module",
                     "voice_register_session",
                     "Call {} already active — skipping duplicate registration",
-                    &call_id[..8.min(call_id.len())]
+                    continuum_base::shown_text::shown_text(&call_id)
                 );
                 return Ok(CommandResult::Json(
                     serde_json::json!({ "registered": true, "already_active": true, "call_id": call_id }),
@@ -111,7 +110,7 @@ impl VoiceModule {
                     "module",
                     "voice_register_session",
                     "Failed to spawn STT listener for call {}: {}",
-                    &listener_call_id[..8.min(listener_call_id.len())],
+                    continuum_base::shown_text::shown_text(&listener_call_id),
                     e
                 );
             }
@@ -124,7 +123,7 @@ impl VoiceModule {
                     "module",
                     "voice_register_session",
                     "Failed to start ambient audio for call {}: {}",
-                    &ambient_call_id[..8.min(ambient_call_id.len())],
+                    continuum_base::shown_text::shown_text(&ambient_call_id),
                     e
                 );
             }
@@ -160,7 +159,7 @@ impl VoiceModule {
                             tracing::info!(
                                 "🎨 Pre-created agent for '{}' in call {}",
                                 display_name,
-                                &agent_call_id[..8.min(agent_call_id.len())]
+                                continuum_base::shown_text::shown_text(&agent_call_id)
                             );
 
                             // Stream this persona's Bevy-rendered avatar into
@@ -224,15 +223,14 @@ impl VoiceModule {
         // and drop any legacy aliases pointing at the ended call — a rejoin
         // records fresh ones.
         {
-            let mut sessions = self.state.active_sessions.lock().unwrap();
+            let mut sessions = self.state.active_sessions.lock();
             sessions.remove(&call_id);
         }
         {
             let mut aliases = self
                 .state
                 .legacy_call_aliases
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
+                .lock();
             aliases.retain(|_, canonical| canonical != &call_id);
         }
 
@@ -240,7 +238,7 @@ impl VoiceModule {
             "module",
             "voice_end_session",
             "Ending call {} — cleaning up agents and listeners",
-            &call_id[..8.min(call_id.len())]
+            continuum_base::shown_text::shown_text(&call_id)
         );
 
         // Remove all LiveKit agents for this call

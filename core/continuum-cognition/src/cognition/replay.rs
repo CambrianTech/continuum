@@ -407,7 +407,7 @@ impl ActionCommand for CognitionReplay {
         if replay_hands.is_some() {
             let live_root = match persona_workspace::acting_root_of(persona_uuid) {
                 Some(root) => root,
-                None => crate::code::citizen_layer::ensure_citizen_layer(&persona_uuid.to_string()).await?,
+                None => crate::code::citizen_layer::ensure_citizen_layer(&persona_uuid.to_string(), &crate::code::git_actor::GitActor::citizen(persona_uuid, None)).await?,
             };
             persona_workspace::root_acting_workspace(&cycle, &live_root.to_string_lossy(), &[], false).await?;
         }

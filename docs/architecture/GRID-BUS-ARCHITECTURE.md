@@ -474,7 +474,7 @@ This doc supersedes:
 
 References:
 - `docs/UNIVERSAL-PRIMITIVES.md` — the existing Commands + Events primitives this doc extends.
-- `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the runtime contract every Rust module inherits (needs updating to allow `event_subscriptions: &["chat:posted", ...]` etc. as a first-class pattern, instead of every module declaring `&[]`).
+- `docs/architecture/CONTINUUM-ENGINE.md` — the runtime contract every Rust module inherits (needs updating to allow `event_subscriptions: &["chat:posted", ...]` etc. as a first-class pattern, instead of every module declaring `&[]`).
 - `docs/architecture/AGENT-BACKBONE-INTEGRATION.md` — substrate-vs-semantic split this doc honors.
 - `docs/architecture/FORGE-ALLOY-SPEC.md` / `FORGE-RECIPE-AS-ENTITY.md` — the alloy substrate this doc uses as the contract layer.
 

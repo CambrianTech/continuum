@@ -11,7 +11,7 @@ pub(super) fn spawn_ws_ingress(
     voice_service_for_view: &Arc<crate::live::session::voice_service::VoiceService>,
     node_presence_deps: &Option<(std::path::PathBuf, airc_core::RoomId)>,
     persona_bootstrap_room_name: &Option<String>,
-) {
+) -> Result<(), BootError> {
     // WebSocket listener for the thin-client fleet (task #29). ON BY DEFAULT on
     // localhost:`DEFAULT_WS_PORT` so web + terminal clients connect out-of-the-box
     // with zero setup — override the port with `CONTINUUM_CORE_WS`, change the
@@ -54,10 +54,9 @@ pub(super) fn spawn_ws_ingress(
                 // fail loud (not a silent skip) if the executor has none,
                 // because a WS server with no state source is a boot bug,
                 // not a runtime condition ([[fallbacks-are-illegal-fail-loud]]).
-                let projection_bus = ws_executor.message_bus().expect(
-                    "CONTINUUM_CORE_WS is set but the command executor has no message bus — \
-                     the positron chat projection has no airc source to subscribe to",
-                );
+                let Some(projection_bus) = ws_executor.message_bus() else {
+                    return Err(BootError::WsIngressWithoutBus);
+                };
                 let room_purpose = resolve_room_purpose(
                     state,
                     &projection_bus,
@@ -65,7 +64,7 @@ pub(super) fn spawn_ws_ingress(
                     persona_bootstrap_room_name,
                 );
 
-                install_persona_experience_source(&room_purpose);
+                install_persona_experience_source(&room_purpose)?;
 
                 positron_source::spawn(
                     &state.rt_handle,
@@ -84,7 +83,7 @@ pub(super) fn spawn_ws_ingress(
                     // wrote last. The node substrate above still receives everything,
                     // so the focused-room web session is unchanged.
                     Some(crate::cognition::room_substrates::global_room_substrates()),
-                );
+                )?;
 
                 // Per-citizen substrates for per-user views (nav): each connecting
                 // citizen (?me) reads its own nav from here, unioned with the node
@@ -146,7 +145,7 @@ pub(super) fn spawn_ws_ingress(
                 // persona's own observe/hot-edit results publish frames at the
                 // act seam; no tick, no scan. Install-only here; the act loop
                 // does the publishing when work actually happens.
-                positron_canvas_source::install(ws_substrate.clone());
+                positron_canvas_source::install(ws_substrate.clone())?;
 
                 // Live-call glass box (#58): folds the TRANSPORT's calls against
                 // the ORCHESTRATOR's registered sessions. Their disagreement is
@@ -176,6 +175,7 @@ pub(super) fn spawn_ws_ingress(
             }
         }
     }
+    Ok(())
 }
 
 fn resolve_room_purpose(
@@ -213,7 +213,9 @@ fn resolve_room_purpose(
     room_purpose
 }
 
-fn install_persona_experience_source(room_purpose: &crate::experience::room_purpose::SharedRoomPurpose) {
+fn install_persona_experience_source(
+    room_purpose: &crate::experience::room_purpose::SharedRoomPurpose,
+) -> Result<(), BootError> {
     // S1: the SAME recipe registry the projection resolves from, handed
     // to the persona spawn path — so a room's authored affordances select
     // the citizen's tool surface, not only what the renderer draws. One
@@ -237,11 +239,12 @@ fn install_persona_experience_source(room_purpose: &crate::experience::room_purp
                          citizens see EMBEDDED recipes' affordances only until the \
                          named file is fixed or removed (#432)"
                     );
-                    RecipeExperienceSource::builtins(room_purpose.clone())
+                    RecipeExperienceSource::builtins(room_purpose.clone())?
                 }
             };
         crate::experience::source::install_node_experience_source(Arc::new(source));
     }
+    Ok(())
 }
 
 fn spawn_node_projectors(

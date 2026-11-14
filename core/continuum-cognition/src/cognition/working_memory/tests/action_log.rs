@@ -16,7 +16,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     // A short first line per result: that line is the ledger's, the body the ring's.
-    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("f1a5ed0000000001"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -25,7 +25,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
     assert!(lines.first().is_some_and(|head| head.starts_with("[action #1]")), "{lines:?}");
     let ring = wm.recent_results_messages().join("\n");
-    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"first-handle\"}) — collapsed]"), "{ring}");
+    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"f1a5ed0000000001\"}) — collapsed]"), "{ring}");
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
 }
 
@@ -38,7 +38,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
 fn every_collapsed_line_she_is_shown_reads_back_and_nothing_else_does() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
-    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("first-handle"));
+    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("f1a5ed0000000001"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -70,9 +70,9 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     let room = Uuid::new_v4();
     let cap = 2 * BODY;
     wm.record("the parser drops the index");
-    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("f1a5ed0000000001"));
     for act in 2..=12 {
-        wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
+        wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("a1b2c3d4e5f60718"));
     }
     wm.record("so the fix is at checks.py:118");
     wm.record_settlement("done", None);
@@ -159,7 +159,11 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         handle: None,
         summary: None,
         stored_chars: None,
+        stored_content: None,
+        run: None,
+        body: None,
         received_ms: Some(at),
+        verbs: Vec::new(),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };
     let log = super::super::action_log::ActionLog::from_records(vec![
@@ -174,4 +178,96 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
     changed.push(act(6, room, 140, ToolEffect::Changes));
     changed.push(act(7, room, 150, ToolEffect::Observes));
     assert_eq!(super::super::action_log::ActionLog::from_records(changed).acts_since_change(room, 100), 1, "a declared change resets it");
+}
+
+// what this catches: an evicted observation hashed as `Absent`, so it was no occurrence and a
+// re-read of it never matched: her view measured zero re-reads while Atlas re-read an identical
+// file 103 times in 300 acts (the M5, 2026-11-09), so collapse looked free and her reads
+// thrashed. Evicted, a read keeps the outcome hash it had resident, across a restart too.
+#[test]
+fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
+    let wm = WorkingMemory::new(8);
+    let cap = 2 * BODY;
+    let body = format!("first\n{}", "a".repeat(cap / 2));
+    wm.record_receipt_typed(&[], &body, None, saved("f1a5ed0000000001"));
+    for act in 2..=5 {
+        record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
+    }
+    // read once later acts exist: her newest act is in flight and not yet rendered
+    let resident = wm.action_renderings().0.first().map(|act| act.content);
+    assert!(matches!(resident, Some(continuum_context::cause::Content::Hashed(_))), "precondition: resident, hashed: {resident:?}");
+    shed(&wm, cap / 2);
+    assert!(wm.actions.lock().records().next().is_some_and(|first| first.result.is_none()), "precondition: the first read was evicted");
+    let evicted = wm.action_renderings().0.first().map(|act| act.content);
+    assert_eq!(evicted, resident, "an evicted read is the same occurrence it was resident");
+    assert!(matches!(evicted, Some(continuum_context::cause::Content::Hashed(_))), "never Absent: {evicted:?}");
+    // through the checkpoint's disk form, as a restart reads it
+    let Ok(saved) = serde_json::to_string(&wm.snapshot()) else { panic!("test: the checkpoint serializes") };
+    let Ok(snapshot) = serde_json::from_str(&saved) else { panic!("test: the checkpoint reads back") };
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    assert_eq!(restored.action_renderings().0.first().map(|act| act.content), resident, "and across a restart");
+}
+
+// what this catches (IntelMac 0051cdcf on d17b1a419, 2026-11-11; Cormac's read): a run counted by
+// walking resident records, so when her view folded the earlier identical reads out of RAM her 3rd
+// identical read was told no run, and she re-read one handle ~45 times in 14 h. The run is the newest
+// record's own fact, taken as it is pushed; it survives a fold and a restart, and a changed outcome
+// or another room's act does not continue it.
+#[test]
+fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
+    use continuum_base::tool_effect::ToolEffect;
+    let (room, other) = (Uuid::from_u128(1), Uuid::from_u128(2));
+    let read = |seq: u64, room: Uuid, out: &str| super::super::action_log::ActionRecord {
+        seq,
+        room: Some(room),
+        scope: None,
+        operation: "tool/output".into(),
+        head: None,
+        result: Some(out.into()),
+        handle: None,
+        summary: None,
+        stored_chars: None,
+        stored_content: None,
+        run: None,
+        body: None,
+        received_ms: Some(seq),
+        verbs: Vec::new(),
+        act: Some(continuum_context::cause::Act {
+            fingerprint: continuum_context::cause::Fingerprint::of([("outputId", b"59db1a33".as_slice())]),
+            effect: ToolEffect::Reopens,
+        }),
+    };
+    let mut log = super::super::action_log::ActionLog::default();
+    log.push(read(1, room, "the same output"));
+    log.push(read(2, room, "the same output"));
+    assert_eq!(log.repeat_run(2).map(|r| r.times), Some(2));
+    assert_eq!(log.drain_through(2).len(), 2, "her view folded both earlier reads out of RAM");
+    log.push(read(3, room, "the same output"));
+    assert_eq!(log.repeat_run(3).map(|r| r.times), Some(3), "the run spans the fold");
+    let restored = super::super::action_log::ActionLog::from_records(log.records().cloned().collect());
+    assert_eq!(restored.repeat_run(3).map(|r| r.times), Some(3), "and a restart");
+    log.push(read(4, other, "the same output"));
+    assert_eq!(log.repeat_run(4), None, "another room's act starts its own run");
+    log.push(read(5, room, "a different output"));
+    assert_eq!(log.repeat_run(5), None, "a changed outcome ends it");
+}
+
+// what this catches: a checkpointed thought naming neither its text nor a saved whole with its
+// length (three `Option`s allowed it, and her view rendered it as an empty message) failing her
+// whole checkpoint or reaching her view. Decoded, it is dropped with a probe; every other thought
+// restores, and the wire shape a reverted build reads is unchanged.
+#[test]
+fn an_unreadable_checkpointed_thought_is_dropped_and_the_rest_restore() {
+    let wm = WorkingMemory::new(8);
+    wm.record("a resident thought");
+    let mut wire = serde_json::to_value(wm.snapshot()).expect("test: a snapshot encodes"); // expect: a snapshot is plain data
+    assert_eq!(wire["thoughts"][0]["text"], "a resident thought", "the wire shape every build reads");
+    if let Some(thoughts) = wire["thoughts"].as_array_mut() {
+        thoughts.push(serde_json::json!({ "occurrence": 999, "at_ms": 1 }));
+    }
+    let snapshot: VolatileSnapshot = serde_json::from_value(wire).expect("test: the checkpoint decodes"); // expect: an unreadable thought never fails it
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    assert_eq!(restored.thoughts(), wm.thoughts(), "the readable thought restores; the unreadable one is gone");
 }

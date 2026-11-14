@@ -89,6 +89,16 @@ impl FrozenSlots {
 
 pub(super) const HEALTH_FAILS_TO_RELAUNCH: u8 = 2;
 
+/// The pool whose seated residents the smoke probe must not overwrite. An engine never probed has
+/// seated no turn yet (its first turn discovers the pool), and one without paging seats none.
+fn seated_pool(root: &str) -> Option<std::sync::Arc<crate::inference::slots::KvSlotPool>> {
+    use continuum_base::probed::Probed;
+    match crate::inference::slots::directory().get(root) {
+        Probed::Known(pool) => Some(pool),
+        Probed::NotAsked | Probed::Absent(_) => None,
+    }
+}
+
 impl ServingDaemonModule {
     #[cfg(test)]
     pub(super) fn set_decode_age_source(&mut self, source: DecodeAgeSource) {
@@ -328,10 +338,7 @@ impl ServingDaemonModule {
             .base_url
             .strip_suffix("/v1")
             .map(str::to_string);
-        let live_pool = live_root
-            .as_deref()
-            .and_then(|root| crate::inference::slots::directory().get(root))
-            .flatten();
+        let live_pool = live_root.as_deref().and_then(seated_pool);
         if let Some(pool) = live_pool.as_ref() {
             if pool.smoke_would_overwrite_a_resident() {
                 continuum_base::probe!(
@@ -373,10 +380,7 @@ impl ServingDaemonModule {
             // engine whose pool is still undiscovered has seated no turn yet; a first turn that
             // discovers it DURING the probe is the remaining window, open on card 030ffc01 (the
             // fix is the probe going through the shared /props discovery before its POST).
-            let live_pool = live_root
-                .as_deref()
-                .and_then(|root| crate::inference::slots::directory().get(root))
-                .flatten();
+            let live_pool = live_root.as_deref().and_then(seated_pool);
             let _reserved = match live_pool
                 .as_ref()
                 .filter(|p| p.scratch_slot().is_none() && p.n_slots() == 1)
@@ -406,7 +410,7 @@ impl ServingDaemonModule {
                 health_fails.store(0, Ordering::Relaxed);
                 // A success invalidates the miss-time fingerprint — a stale one must
                 // never exonerate a LATER freeze.
-                *last_miss_fp.lock().unwrap() = None;
+                *last_miss_fp.lock() = None;
                 health_probing.store(false, Ordering::Release);
                 return;
             }
@@ -420,7 +424,7 @@ impl ServingDaemonModule {
             // and latency as before.
             let cur_fp = server.slots_activity_fingerprint().await;
             let prev_fp = {
-                let mut guard = last_miss_fp.lock().unwrap();
+                let mut guard = last_miss_fp.lock();
                 std::mem::replace(&mut *guard, cur_fp)
             };
             if matches!(

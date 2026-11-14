@@ -154,6 +154,13 @@ pub struct PersonaDemand {
     /// `None` until a turn measured it.
     #[serde(default)]
     pub floor_tokens: Option<u32>,
+    /// Her newest turn's demand when it exceeded the window she was served: what her view holds at
+    /// full detail did not fit her grant, so her view collapsed. `None` when her newest turn fit.
+    /// The upward probe: her requirement is at least it ([`requirement_tokens`]), so the next grant
+    /// holds what overflowed instead of waiting for the median of a ring her collapses filled (Aris
+    /// on the M5, 2026-11-13, 2b17c41df). Legacy files read `None`.
+    #[serde(default)]
+    pub overflow_tokens: Option<u32>,
 }
 
 /// How many recent turns define "typical". Sixteen: a working session, not a
@@ -208,9 +215,12 @@ use held_need::push_need;
 pub use held_need::{need_sample, need_tokens, resident_need, NeedSample};
 
 /// What a lane must hold for her: the typical turn, else the last one — one honest
-/// sample, never the peak.
+/// sample, never the peak — and at least her newest turn when it overflowed the window she was
+/// served ([`PersonaDemand::overflow_tokens`]): a ring her collapses filled lags her by up to eight
+/// turns, every one of them another collapse.
 pub fn requirement_tokens(d: &PersonaDemand) -> u32 {
-    typical_tokens(d).unwrap_or(d.last_tokens) // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
+    let typical = typical_tokens(d).unwrap_or(d.last_tokens); // unwrap_or: no ring yet (a legacy record) = her last measured turn, a measurement, never the peak or a constant
+    d.overflow_tokens.map_or(typical, |overflow| typical.max(overflow)) // map_or: her newest turn fit, so the typical turn stands
 }
 
 /// One mind's observed REPLY size — the output-side twin of [`PersonaDemand`].
@@ -334,11 +344,14 @@ impl WorkingSetRegistry {
     /// component's true size — including the parts it then had to drop. A zero
     /// demand is not recorded: it means the assembly produced nothing, which is a
     /// defect to be seen elsewhere, not a data point that would drag a peak down.
-    pub fn record(&self, persona: Uuid, demand_tokens: u32, now_ms: u64) {
+    /// `served_window` is the window the turn was assembled in: a demand past it overflowed
+    /// ([`PersonaDemand::overflow_tokens`]).
+    pub fn record(&self, persona: Uuid, demand_tokens: u32, served_window: u32, now_ms: u64) {
         if demand_tokens == 0 {
             return;
         }
-        let updated = self.record_in_memory(persona, demand_tokens, now_ms);
+        self.record_in_memory(persona, demand_tokens, now_ms);
+        let updated = self.record_overflow_in_memory(persona, demand_tokens, served_window);
         // Persist EVERY observation. A restart must not re-strangle her: the
         // registry is in-memory, so before this the reboot erased the measurement
         // and the planner fell back to the cold-start constant until enough turns
@@ -389,6 +402,14 @@ impl WorkingSetRegistry {
                 push_recent(&mut d, demand_tokens);
                 d
             })
+    }
+
+    /// The in-memory half of the overflow [`Self::record`] notes: her newest demand when it
+    /// exceeded `served_window`, else none.
+    pub fn record_overflow_in_memory(&self, persona: Uuid, demand_tokens: u32, served_window: u32) -> PersonaDemand {
+        let mut entry = self.observed.entry(persona).or_default();
+        entry.overflow_tokens = (demand_tokens > served_window).then_some(demand_tokens);
+        *entry
     }
 
     /// The prompt size a turn contributes to the seat's typical-prompt pool: what it
@@ -689,6 +710,30 @@ impl WorkingSetRegistry {
         })
     }
 
+    /// Her need, or, before her own first landed turn, the need the minds on this node measured
+    /// (each channel's median across them): a measurement, never a prior. `None` only on a node
+    /// where no mind has landed a turn.
+    pub fn need_or_pooled(&self, persona: Uuid) -> Option<OutputNeed> {
+        self.need_of(persona).or_else(|| self.pooled_need())
+    }
+
+    fn pooled_need(&self) -> Option<OutputNeed> {
+        // Keys first, so no map guard is held while each need is read.
+        let minds: Vec<Uuid> = self.emitted.iter().map(|entry| *entry.key()).collect();
+        let needs: Vec<OutputNeed> = minds.into_iter().filter_map(|mind| self.need_of(mind)).collect();
+        let median = |mut values: Vec<u32>| -> Option<u32> {
+            values.sort_unstable();
+            values.get(values.len() / 2).copied()
+        };
+        Some(OutputNeed {
+            reasoning: median(needs.iter().map(|n| n.reasoning).collect())?,
+            answer: median(needs.iter().map(|n| n.answer).collect())?,
+            turns: 0, // none of them hers
+            reasoning_at_least: None,
+            answer_at_least: None,
+        })
+    }
+
     fn save(&self, persona: Uuid, demand: &PersonaDemand) {
         self.persist(persona, DEMAND_FILE, serde_json::to_vec(demand).map_err(std::io::Error::from), "working-set demand"); // BOUNDARY: disk — the per-persona working-set.json durable format
     }
@@ -813,6 +858,23 @@ impl WorkingSetRegistry {
     pub fn observed_personas(&self) -> usize {
         self.observed.len()
     }
+
+    /// The `count` minds this host served most recently, newest first: the residents a boot plans
+    /// for before its persona registry exists. Only a mind a held turn measured counts (her need is
+    /// what a turn held here, and her wish what her view holds at full detail); a departed mind or a
+    /// test fixture that never held a turn is not a resident. On the M5, 2026-11-13 19:36Z, a boot
+    /// with no residents in its demand launched the engine at a 2,048-token pool beside four minds
+    /// whose requirements were 68-110k each.
+    pub fn remembered_residents(&self, count: usize) -> Vec<Uuid> {
+        let mut held: Vec<(u64, Uuid)> = self
+            .observed
+            .iter()
+            .filter(|e| resident_need(e.value()).is_some() && requirement_tokens(e.value()) > 0)
+            .map(|e| (e.value().last_seen_ms, *e.key()))
+            .collect();
+        held.sort_unstable_by(|a, b| b.cmp(a));
+        held.into_iter().take(count).map(|(_, mind)| mind).collect()
+    }
 }
 
 /// Each mind's requirement, from the untrimmed demand her turns assemble with the
@@ -828,12 +890,12 @@ pub fn requirements_for(
         .iter()
         .map(|p| {
             let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
             // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
             let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            // Residency is sized from what held, never from a censored bound: an overflow is
-            // reducible by her view's collapse (ONE-ACT stage 3, `resident_need`).
-            let need = demand.as_ref().and_then(resident_need).and_then(Tokens::new).map(Observed::Exact);
+            // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
+            // collapse, so admission clamps it to what one sequence holds (`resident_need`).
+            let need = demand.as_ref().and_then(resident_need);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();

@@ -3,9 +3,9 @@
 //! A source renders its current state as ITEMS under stable keys (one result, one open
 //! file, one notice), never as one block. The epoch appends only the items whose rendering
 //! changed, so a source that grows by one item costs one item, not a re-render of all of
-//! them. A source that cannot key its state (the clock, this act's ask) is not a source:
-//! it rides the act's tail after the epoch, and the tail joins the epoch in the bytes it was
-//! sent (`view::View::append_sent`), so even it never moves once sent.
+//! them. Even the act's tail (the clock, the ask, her call and its result) is a source, keyed by
+//! what each item is: judged by the view before the send and joining the epoch once served
+//! (`view::View::judge_tail`, `view::View::append_tail`), so it never moves once sent.
 
 use crate::cause::{Act, Cause, Content, ContentHash, ElementId};
 use crate::epoch::Block;
@@ -40,8 +40,13 @@ pub struct Item<T> {
     /// from governed RAM, never from the window).
     pub(crate) stored: Option<StoredWhole>,
     /// What this occurrence asked for and what its tool declares it does, when it is an act
-    /// (MIND-CONTEXT invariant 4); `None` for an element that is not one (a message, a notice).
+    /// (CONTINUUM-ENGINE section 5 invariant 4); `None` for an element that is not one (a message, a notice).
     pub(crate) act: Option<Act>,
+    /// Her work in hand holds it open (the read of a file she is editing, the note she wrote on
+    /// what her last change did): a start keeps it whole while its source's grant can hold it
+    /// beside the rest at their floor, charged to that grant like any item, and never folds past it
+    /// (`view::allot`). Mid-epoch it arrives as any item does.
+    pub(crate) in_hand: bool,
 }
 
 /// Where a non-resident whole lives and what it costs, measured when it was stored.
@@ -64,7 +69,13 @@ impl<T: Block> Item<T> {
     /// cannot build an element without saying what it follows from.
     pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
         let content = Content::Hashed(ContentHash::of(full.text()));
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
+    }
+
+    /// An occurrence about nothing but itself (a thought, a settled answer): keyed by its id, so no
+    /// second identity is minted beside the one its producer named.
+    pub fn occurrence(id: ElementId, cause: Cause, full: T) -> Self {
+        Self::whole(id, cause, id.key(), full)
     }
 
     /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
@@ -72,7 +83,7 @@ impl<T: Block> Item<T> {
     /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
     /// whole is not held.
     pub fn rendered(id: ElementId, cause: Cause, key: impl Into<String>, full: T, content: Content) -> Self {
-        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
     }
 
     /// Its pointer level: what it costs once collapsed, and how to reopen it. `None` when it
@@ -98,6 +109,16 @@ impl<T: Block> Item<T> {
     pub fn with_act(mut self, act: Act) -> Self {
         self.act = Some(act);
         self
+    }
+
+    /// Her work in hand holds it open (`Item::in_hand`).
+    pub fn in_hand(mut self) -> Self {
+        self.in_hand = true;
+        self
+    }
+
+    pub fn is_in_hand(&self) -> bool {
+        self.in_hand
     }
 
     pub fn key(&self) -> &str {
@@ -201,12 +222,13 @@ pub trait Source<T: Block> {
     /// (never a list of ids). It reads only the run's ends, O(1) in the run: a start asks once
     /// per item it raises. The view folds the run only when this block is smaller than the
     /// run's pointers, so a source's floor stops growing with every item it ever held. Fixed
-    /// for the epoch it starts. The default cannot fold: its items floor at their pointers.
-    fn fold(&self, _folded: &[Item<T>]) -> Option<T> {
-        None
-    }
+    /// for the epoch it starts. REQUIRED, never defaulted: a source that does not decide floors
+    /// every item it ever held at its pointer, and a growing one then outgrows any window (her
+    /// thoughts had no fold: Benchy's floor was 2,536 thought pointers, 78,755 tokens, and every
+    /// act was refused, the M5, 2026-11-09). `None` is a decision a source states and justifies.
+    fn fold(&self, folded: &[Item<T>]) -> Option<T>;
 
-    /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
+    /// The block `item` renders as when the view finds it repeats `ancestor` (CONTINUUM-ENGINE section 5
     /// invariant 4: the same request to a tool that only observes, with the same outcome). The
     /// view decides; the source words it, naming the ancestor and how to reopen it even when the
     /// ancestor is folded or paged out, never "as above". The default words none, so its items

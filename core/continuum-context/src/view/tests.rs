@@ -16,12 +16,12 @@ fn rendered(view: &View<String>) -> String {
 // ring grows by one result an act and the volatile sources change every act, and each
 // act's view still starts with the previous act's view.
 #[test]
-fn every_act_of_an_epoch_only_appends() {
+fn every_act_of_an_epoch_only_appends() -> Result<(), GrantMismatch> {
     let mut board = Fake::new("board", 3);
     board.push("card", "card 1b232595 claimed");
     let mut actions = Fake::new("actions", 5);
     let mut notices = Fake::new("notices", 2);
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&board, &actions, &notices], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&board, &actions, &notices], all_full)?;
     for act in 1..=6 {
         let before = rendered(&view);
         actions.push(&format!("#{act}"), &format!("code/read result {act}"));
@@ -29,20 +29,45 @@ fn every_act_of_an_epoch_only_appends() {
         view.advance(&[&board, &actions, &notices]);
         assert!(rendered(&view).starts_with(&before), "act {act} rewrote the prefix");
     }
+    Ok(())
+}
+
+// what this catches: an act's allocation granting a live epoch's source less than the epoch
+// already renders for it, so the epoch turns over and the engine re-prefills every token behind
+// it (the M5, 2026-11-10: 65% of re-prefilled tokens, an epoch every second act). A live view's
+// claim holds what its last sent prompt carried, superseded versions included (resident too); an
+// epoch never sent, or a start's claim, holds nothing (a whole unsent receipt took the newest
+// room update's room otherwise).
+#[test]
+fn a_live_claim_holds_what_its_epoch_already_renders() -> Result<(), GrantMismatch> {
+    let mut views = Fake::new("open-views", 4);
+    views.push("a.rs", &"a".repeat(5_000));
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
+    assert_eq!(view.claims(&crate::cost::Chars, &[&views])[0].held, 0, "an epoch the engine has not received holds nothing");
+    views.push("a.rs", "a.rs lines 1-40");
+    view.advance(&[&views]);
+    view.sent();
+    let rendered: usize = view.render().map(|block| block.chars()).sum();
+    let live = view.claims(&crate::cost::Chars, &[&views]);
+    assert_eq!(live[0].held, rendered, "the epoch's whole rendering of the source, both versions");
+    assert!(live[0].held > live[0].full, "held counts the superseded version no want counts");
+    assert_eq!(claims(&crate::cost::Chars, &[&views])[0].held, 0, "a start recomputes: it holds nothing");
+    Ok(())
 }
 
 // what this catches: a source that grew by one item re-sending all of itself (the
 // snapshot rendering that sank #5210 live: 0.37 reuse).
 #[test]
-fn an_act_appends_only_the_items_that_changed() {
+fn an_act_appends_only_the_items_that_changed() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", &"a".repeat(5_000));
     views.push("b.rs", &"b".repeat(5_000));
-    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&views], all_full)?;
     views.push("b.rs", "b.rs lines 1-40");
     let advance = view.advance(&[&views]);
     assert_eq!(advance, Advance { items: 1, chars: "b.rs lines 1-40".len(), repeats: 0 });
     assert_eq!(view.advance(&[&views]), Advance::default(), "nothing changed, nothing appended");
+    Ok(())
 }
 
 // what this catches (card ef0b04e4): a whole history re-appended on one advance (2,195 items, 57.9M
@@ -72,22 +97,25 @@ fn an_advance_names_each_source_that_appended() -> Result<(), GrantMismatch> {
 // differently, so "changed"), the collapse-then-uncollapse churn the sticky ring collapse
 // was patched for; and her next act's result being born collapsed because its source was.
 #[test]
-fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() {
+fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
-    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |claims| vec![0; claims.len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |claims| vec![0; claims.len()])?;
     assert_eq!(start.collapsed, 1);
     let at_start = view.chars();
     actions.push("#2", "short");
     let advance = view.advance(&[&actions]);
     assert_eq!(advance, Advance { items: 1, chars: "short".len(), repeats: 0 }, "only the new result, in full");
     assert!(view.chars() - at_start < 100, "the old result did not come back in full");
+    Ok(())
 }
 
-// what this catches: a grant spent on the oldest items (she reads stale results in full and
-// her latest ones as pointers), or a grant overspent past what the allocator gave.
+// what this catches (Aris on the M5, 2026-11-13, 2b17c41df): her demand measured from a collapsed
+// render, so each grant sized from it collapsed more and the window fell 109,745 -> 43,807 on an
+// idle pool. What her view holds at full detail is the render plus what its collapses took away;
+// a view that collapsed nothing adds nothing.
 #[test]
-fn a_grant_keeps_the_newest_items_in_full() {
+fn a_collapsed_view_says_what_it_holds_at_full_detail() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
     for act in 1..=3 {
         actions.push(&format!("#{act}"), &"r".repeat(1_000));
@@ -95,10 +123,31 @@ fn a_grant_keeps_the_newest_items_in_full() {
     let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
     let floor: usize = actions.items().iter().map(pointer).sum();
     let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
-    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant]).unwrap();
+    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant])?;
+    assert_eq!(start.collapsed, 1);
+    let whole: usize = actions.items().iter().map(|item| item.full.len()).sum();
+    assert_eq!(view.chars() + view.collapsed_growth(&crate::cost::Chars, &[&actions]), whole, "the render plus its collapses is every item whole");
+    let (roomy, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full)?;
+    assert_eq!(roomy.collapsed_growth(&crate::cost::Chars, &[&actions]), 0, "nothing collapsed adds nothing");
+    Ok(())
+}
+
+// what this catches: a grant spent on the oldest items (she reads stale results in full and
+// her latest ones as pointers), or a grant overspent past what the allocator gave.
+#[test]
+fn a_grant_keeps_the_newest_items_in_full() -> Result<(), GrantMismatch> {
+    let mut actions = Fake::new("actions", 1);
+    for act in 1..=3 {
+        actions.push(&format!("#{act}"), &"r".repeat(1_000));
+    }
+    let pointer = |item: &Item<String>| item.pointer.as_ref().map_or(0, String::len);
+    let floor: usize = actions.items().iter().map(pointer).sum();
+    let grant = floor + 2 * (1_000 - pointer(&actions.items()[0]));
+    let (view, start) = View::start(&crate::cost::Chars, vec![], &[&actions], |_| vec![grant])?;
     assert_eq!(start.collapsed, 1);
     assert!(rendered(&view).starts_with("[#1:"), "the oldest collapsed, the newest two whole");
     assert!(view.chars() <= grant);
+    Ok(())
 }
 
 // what this catches: an allocator that answers for fewer sources than it was asked about,
@@ -114,41 +163,43 @@ fn a_grant_for_the_wrong_number_of_sources_is_refused() {
 // what this catches: a turnover that keeps an item the source no longer offers, or one
 // that loses the allocator's choice; and a retired item that silently vanishes mid-epoch.
 #[test]
-fn turnover_renders_only_what_the_sources_offer_now() {
+fn turnover_renders_only_what_the_sources_offer_now() -> Result<(), GrantMismatch> {
     let mut views = Fake::new("open-views", 4);
     views.push("a.rs", "a.rs contents");
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&views], all_full)?;
     views.items.clear();
     views.retired.push(("a.rs".into(), "[closed a.rs]".into()));
     view.advance(&[&views]);
     assert!(rendered(&view).ends_with("[closed a.rs]"), "the close is appended, not a rewrite");
     views.retired.clear();
     views.push("b.rs", "b.rs contents");
-    let start = view.turn_over(&crate::cost::Chars, vec!["head".into()], &[&views], all_full).unwrap();
+    let start = view.turn_over(&crate::cost::Chars, vec!["head".into()], &[&views], all_full)?;
     assert_eq!(start.epoch, 2);
     assert_eq!(rendered(&view), "head\nb.rs contents");
     assert_eq!(view.superseded_chars(), 0);
+    Ok(())
 }
 
 // what this catches: a growth reserve sized from one outlier act instead of the epoch's
 // typical act.
 #[test]
-fn appended_per_act_is_the_median_act_of_the_epoch() {
+fn appended_per_act_is_the_median_act_of_the_epoch() -> Result<(), GrantMismatch> {
     let mut actions = Fake::new("actions", 1);
-    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec![], &[&actions], all_full)?;
     assert_eq!(view.appended_per_act(), None);
     for (act, size) in [(1, 100), (2, 120), (3, 9_000)] {
         actions.push(&format!("#{act}"), &"r".repeat(size));
         view.advance(&[&actions]);
     }
     assert_eq!(view.appended_per_act(), Some(120));
+    Ok(())
 }
 
 // what this catches: a collapsed item with nothing to leave behind still costing the view (a
 // short conversation turn whose one-line pointer weighs what the turn does), or rendering an
 // empty message.
 #[test]
-fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
+fn an_item_without_a_pointer_leaves_the_view_when_collapsed() -> Result<(), GrantMismatch> {
     struct Turns(Vec<&'static str>);
     impl Source<String> for Turns {
         fn name(&self) -> &str {
@@ -160,33 +211,39 @@ fn an_item_without_a_pointer_leaves_the_view_when_collapsed() {
         fn items(&self) -> Vec<Item<String>> {
             self.0.iter().map(|t| item(*t, (*t).to_owned(), None, None)).collect()
         }
+
+        fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+            None // a fixture that does not exercise folding
+        }
     }
     let mut turns = Turns(vec!["one", "two", "three"]);
-    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()]).unwrap();
+    let (mut view, start) = View::start(&crate::cost::Chars, vec![], &[&turns], |_| vec!["three".len()])?;
     assert_eq!((start.collapsed, rendered(&view)), (2, "three".to_owned()));
     turns.0.push("four");
     view.advance(&[&turns]);
     assert_eq!(rendered(&view), "three\nfour", "a new turn arrives whole; the collapsed stay gone");
+    Ok(())
 }
 
 // what this catches: a restart rebuilding her view from scratch. Restored, the view must render
 // the same bytes (the engine's saved page for it still matches) and keep its epoch's choices:
 // a collapsed item stays collapsed, and the next act only appends.
 #[test]
-fn a_restored_view_renders_the_same_bytes_and_keeps_appending() {
+fn a_restored_view_renders_the_same_bytes_and_keeps_appending() -> Result<(), Box<dyn std::error::Error>> {
     let mut actions = Fake::new("actions", 1);
     actions.push("#1", &"x".repeat(9_000));
     actions.push("#2", "short");
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&actions], |claims| vec![claims[0].floor + 10]).unwrap();
+    let (mut view, _) = View::start(&crate::cost::Chars, vec!["head".into()], &[&actions], |claims| vec![claims[0].floor + 10])?;
     view.advance(&[&actions]);
-    let saved = serde_json::to_string(&view).unwrap();
-    let mut restored: View<String> = serde_json::from_str(&saved).unwrap();
+    let saved = serde_json::to_string(&view)?; // boundary: disk format, the checkpoint a restored view reads back
+    let mut restored: View<String> = serde_json::from_str(&saved)?; // boundary: disk format, the checkpoint read back
     assert_eq!(rendered(&restored), rendered(&view));
     let before = rendered(&restored);
     actions.push("#3", "next");
     restored.advance(&[&actions]);
     assert!(rendered(&restored).starts_with(&before), "the next act only appends");
     assert!(!rendered(&restored).contains(&"x".repeat(9_000)), "a collapsed item stays collapsed");
+    Ok(())
 }
 
 // what this catches: an oversized arrival forcing a turnover. A whole-file read arrived in full
@@ -224,6 +281,10 @@ impl Source<String> for Leveled {
             .iter()
             .map(|(key, full, summary)| item(*key, full.clone(), summary.clone(), Some(format!("[{key}]"))))
             .collect()
+    }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
     }
 }
 
@@ -370,6 +431,10 @@ impl Source<String> for Spilled {
     fn load(&self, item: &Item<String>) -> Option<String> {
         (item.stored.as_ref()?.handle == "spill/3341").then(|| self.body.clone())
     }
+
+    fn fold(&self, _folded: &[Item<String>]) -> Option<String> {
+        None // a fixture that does not exercise folding
+    }
 }
 
 // what this catches: a body evicted from RAM priced and rendered as its resident pointer, so
@@ -454,6 +519,30 @@ fn a_hundred_results_under_a_tight_grant_fold_into_one_block_and_the_newest_stay
     assert_eq!((start.folded, start.collapsed), (97, 0));
     assert!(view.chars() <= grant);
     assert!(!view.renders("actions", "1"), "a folded item is not read");
+    Ok(())
+}
+
+// what this catches: a mind's resident log keeping every act she ever took because nothing told
+// its owner which acts her view no longer shows (the M5, 2026-11-10: 4,522-5,686 records per
+// resident, whole, in RAM and in every checkpoint). A start names the newest item it folded; the
+// owner lets the run up to it leave, and `release` forgets their ids while the fold block's bytes,
+// and so the prefix, stay where they were.
+#[test]
+fn a_start_names_its_fold_edge_and_a_released_run_leaves_the_view_unmoved() -> Result<(), GrantMismatch> {
+    let mut actions = Folding::new(100, 1_000);
+    let grant = claims(&crate::cost::Chars, &[&actions])[0].floor + 3 * 1_000;
+    let (mut view, _) = View::start(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
+    assert_eq!(view.fold_edge("actions"), Some("97"), "the newest folded act is the start's measured edge");
+    assert_eq!(view.fold_edge("thoughts"), None, "a source that folded nothing names no edge");
+    let before: Vec<String> = view.render().cloned().collect();
+    actions.items.retain(|(seq, _, _)| *seq > 97);
+    view.release("actions", |key| key.parse::<u64>().is_ok_and(|seq| seq <= 97));
+    assert!(view.folded.is_empty(), "no id is held for an act that left");
+    assert!(view.log.iter().all(|entry| entry.covers.is_empty()), "the log's fold block covers nothing it must keep");
+    assert_eq!(view.advance(&[&actions]), Advance::default(), "the released run arrives as nothing");
+    assert_eq!(view.render().cloned().collect::<Vec<_>>(), before, "her view's bytes did not move");
+    view.turn_over(&crate::cost::Chars, Vec::new(), &[&actions], |_| vec![grant])?;
+    assert!(view.render().any(|block| block.starts_with("[actions #1-#97")), "the logged fold block still names the range");
     Ok(())
 }
 
@@ -568,165 +657,7 @@ fn the_receipt_names_each_shown_occurrence_and_its_level_in_prompt_order() -> Re
     Ok(())
 }
 
-/// MIND-CONTEXT invariant 4: an unchanged observation arrives as a repeat only while the whole it
-/// repeats is in front of her.
-mod repeats {
-    use super::*;
-    use crate::cause::{Act, ContentHash, Fingerprint, ToolEffect};
-
-    /// Her acts as one chain, each caused by the one before; each act's content is its raw
-    /// output's hash, never its labelled rendering (two equal outputs compare equal).
-    struct Acts(Vec<(&'static str, &'static str, ToolEffect, String)>);
-
-    impl Acts {
-        fn push(&mut self, verb: &'static str, args: &'static str, effect: ToolEffect, output: &str) {
-            self.0.push((verb, args, effect, output.to_owned()));
-        }
-    }
-
-    impl Source<String> for Acts {
-        fn name(&self) -> &str {
-            "acts"
-        }
-        fn priority(&self) -> u8 {
-            5
-        }
-        fn items(&self) -> Vec<Item<String>> {
-            let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
-            self.0
-                .iter()
-                .enumerate()
-                .map(|(i, (verb, args, effect, output))| {
-                    let seq = i + 1;
-                    let cause = if seq == 1 { Cause::Root(crate::cause::Origin::ActivityStart) } else { Cause::Of(id(seq - 1)) };
-                    let act = Act { fingerprint: Fingerprint::of([(*verb, args.as_bytes())]), effect: *effect };
-                    Item::rendered(id(seq), cause, seq.to_string(), format!("[#{seq} {verb}] {output}"), Content::Hashed(ContentHash::of(output)))
-                        .with_pointer(format!("[#{seq} {verb}: collapsed; reopen with tool/output act={seq}]"))
-                        .with_act(act)
-                })
-                .collect()
-        }
-        fn repeat(&self, item: &Item<String>, ancestor: &Item<String>) -> Option<String> {
-            Some(format!(
-                "[#{} repeat of #{}, outcome unchanged; reopen with tool/output act={}]",
-                item.key(),
-                ancestor.key(),
-                ancestor.key()
-            ))
-        }
-    }
-
-    /// A file she reads whole: far larger than its collapsed pointer, as a real read is.
-    fn body(name: &str) -> String {
-        format!("// {name}\n") + &"fn parse(&mut self) -> Result<Tree, Error> { self.step()?; }\n".repeat(60)
-    }
-
-    fn floors(claims: &[Claim]) -> Vec<usize> {
-        claims.iter().map(|claim| claim.floor).collect()
-    }
-
-    // what this catches: the M5 2026-10-30 read loop, the same unchanged file arriving whole
-    // again and again while the first copy is still in front of her: the second read arrives as
-    // a repeat naming #1, is counted, and never counts as reading a whole.
-    #[test]
-    fn an_unchanged_read_repeated_mid_epoch_arrives_as_a_repeat() {
-        let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        assert_eq!(view.advance(&[&acts]).repeats, 0);
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        let advance = view.advance(&[&acts]);
-        assert_eq!(advance.repeats, 1);
-        let text = rendered(&view);
-        assert_eq!(text.matches(&body("a.rs")).count(), 1, "the whole arrives once");
-        assert!(text.contains("[#2 repeat of #1, outcome unchanged; reopen with tool/output act=1]"), "{text}");
-        assert!(view.renders("acts", "1"));
-        assert!(!view.renders("acts", "2"), "a repeat is never a read of a whole");
-        // The receipt says so too: #2 was shown as a repeat of #1, never at `Full` (a reader asking
-        // "was this result shown whole?" matches `Full` only).
-        let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
-        let levels: Vec<_> = view.receipt().items.iter().filter(|r| r.element.is_some()).map(|r| (r.element, r.level)).collect();
-        assert_eq!(levels, [(Some(id(1)), Level::Full), (Some(id(2)), Level::Repeat { of: id(1) })], "{levels:?}");
-    }
-
-    // what this catches (Codex on #5652): a cause cycle among earlier acts (1 -> 2 -> 1, a malformed
-    // chain) looping the ancestor walk forever when a later act arrives under it. Each step must land
-    // strictly before the last; the walk runs on a thread so a regression fails instead of hanging.
-    #[test]
-    fn a_cause_cycle_beneath_an_arrival_ends_the_walk() {
-        let (sent, got) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let id = |seq: usize| ElementId::of(&[b"act", &seq.to_be_bytes()]);
-            let read = |seq: usize, cause: Cause, output: &str| {
-                let act = Act { fingerprint: Fingerprint::of([("code/read", br#"{"path":"a.rs"}"#.as_slice())]), effect: ToolEffect::Observes };
-                Item::rendered(id(seq), cause, seq.to_string(), output.to_owned(), Content::Hashed(ContentHash::of(output))).with_act(act)
-            };
-            let items = vec![read(1, Cause::Of(id(2)), "one"), read(2, Cause::Of(id(1)), "two"), read(3, Cause::Of(id(2)), "three")];
-            let (_, repeated_of) = super::super::repeat::resolve(&Acts(Vec::new()), items, |_| true, |_| true);
-            sent.send(repeated_of).ok();
-        });
-        let repeated_of = got.recv_timeout(std::time::Duration::from_secs(5));
-        assert_eq!(repeated_of, Ok(vec![None, None, None]), "the walk ends at the cycle and finds no repeat");
-    }
-
-    // what this catches: the same output from a tool that changes the world read as "nothing
-    // happened" (Codex: two appends that both answer OK are two appends), and a tool that
-    // declares nothing, or a reopen, ever rendered as a repeat.
-    #[test]
-    fn only_a_declared_observation_can_repeat() {
-        for effect in [ToolEffect::Changes, ToolEffect::Reopens, ToolEffect::Undeclared] {
-            let mut acts = Acts(Vec::new());
-            let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
-            acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
-            view.advance(&[&acts]);
-            acts.push("tool/x", r#"{"line":"a"}"#, effect, "OK");
-            assert_eq!(view.advance(&[&acts]).repeats, 0, "{effect:?}");
-            assert!(view.renders("acts", "1") && view.renders("acts", "2"), "{effect:?}: both occurrences whole");
-        }
-    }
-
-    // what this catches: a repeat pointing at a whole that is not in front of her (collapsed by
-    // the start, or gone with a turnover), whose reopen would answer another repeat and trap her
-    // (Codex and Fable on the design). The re-read arrives whole; and a turnover renders an
-    // earlier repeat as itself.
-    #[test]
-    fn a_repeat_needs_its_ancestor_whole_in_this_epoch() {
-        let mut acts = Acts(Vec::new());
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
-        let (mut view, start) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], floors).unwrap(); // unwrap: one grant per claim cannot mismatch
-        assert_eq!(start.collapsed + start.folded, 2, "the start holds both at their floor");
-        assert!(!view.renders("acts", "1"));
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        assert_eq!(view.advance(&[&acts]).repeats, 0, "#1 is collapsed: the re-read arrives whole");
-        assert!(view.renders("acts", "3"));
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        assert_eq!(view.advance(&[&acts]).repeats, 1, "#3 is whole now: #4 repeats it");
-        assert!(rendered(&view).contains("[#4 repeat of #3,"));
-        view.turn_over(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
-        let text = rendered(&view);
-        assert!(!text.contains("repeat of"), "a turnover re-renders every item as itself: {text}");
-        assert!(view.renders("acts", "4"));
-    }
-
-    // what this catches: an item already sent whole rewritten as a repeat on a later act, which
-    // changes text she was already sent and breaks the prefix every act appends to. Two equal
-    // reads arriving in one append both arrive whole (the first was not yet held), and the second
-    // keeps its whole rendering for the epoch.
-    #[test]
-    fn a_rendering_already_sent_is_never_turned_into_a_repeat() {
-        let mut acts = Acts(Vec::new());
-        let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&acts], all_full).unwrap(); // unwrap: one grant per claim cannot mismatch
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        acts.push("code/read", r#"{"path":"a.rs"}"#, ToolEffect::Observes, &body("a.rs"));
-        assert_eq!(view.advance(&[&acts]).repeats, 0);
-        let before = rendered(&view);
-        acts.push("code/read", r#"{"path":"b.rs"}"#, ToolEffect::Observes, &body("b.rs"));
-        let advance = view.advance(&[&acts]);
-        assert_eq!((advance.items, advance.repeats), (1, 0), "only the new read arrives");
-        assert!(rendered(&view).starts_with(&before));
-    }
-}
+mod repeats;
 
 // Atlas 2026-11-06: a large wall append preceded a fitting-view restore. This
 // exercises the real View owner, not the cognition turnover predicate alone.
@@ -778,36 +709,6 @@ fn turnover_receipt_counts_promotions_but_not_new_items() -> Result<(), GrantMis
     assert_eq!(rendered(&view), before, "a refused turnover retains the old owner");
     let full = view.turn_over(&crate::cost::Chars, Vec::new(), &[&reads], all_full)?;
     assert_eq!((full.restored_items, full.restored_chars), (1, 1000));
-    Ok(())
-}
-
-// what this catches: the M5's tail re-prefill (2026-11-06, 2,822 s over 78 acts). Her act's tail
-// (the clock, her call, its result) was sent once as native protocol and re-rendered the next act
-// as a `[result #n]` item of her actions, so the previous prompt was never the next one's prefix.
-// Appended as sent, the tail is the next prompt's prefix; the act it showed never arrives a second
-// time from its source; a start re-renders it from the source and drops the tail.
-#[test]
-fn a_sent_tail_is_the_next_acts_prefix_and_what_it_showed_never_arrives_twice() -> Result<(), GrantMismatch> {
-    let mut actions = Fake::new("actions", 5);
-    actions.push("#1", "result 1");
-    let (mut view, _) = View::start(&crate::cost::Chars, vec!["identity".into()], &[&actions], all_full)?;
-    view.advance(&[&actions]);
-    let sent = [rendered(&view), "[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()].join("\n");
-    view.append_sent("tail", vec!["[now 12:00]".into(), "call #2".into(), "result 2 as sent".into()], &[("actions", "#2")]);
-    assert_eq!(rendered(&view), sent, "the view now ends with the tail exactly as it was sent");
-    assert!(view.covers("actions", "#2") && view.renders("actions", "#2"), "she read #2 whole, in the tail");
-    assert!(view.holds_sent("tail", &"[now 12:00]".to_string()), "a piece already sent is known");
-    actions.push("#2", "result 2 as the actions source renders it");
-    actions.push("#3", "result 3");
-    view.advance(&[&actions]);
-    let next = rendered(&view);
-    assert!(next.starts_with(&sent), "the next act's prompt extends the sent one");
-    assert!(!next.contains("as the actions source renders it"), "#2 arrived twice:\n{next}");
-    assert!(next.ends_with("result 3"), "{next}");
-    view.turn_over(&crate::cost::Chars, vec!["identity".into()], &[&actions], all_full)?;
-    let started = rendered(&view);
-    assert!(started.contains("as the actions source renders it") && !started.contains("as sent"), "a start renders from the source:\n{started}");
-    assert!(!view.covers("actions", "#2"), "a start covers nothing");
     Ok(())
 }
 
@@ -964,3 +865,30 @@ mod absent_source;
 mod depth;
 /// A source a start shed waits for a start that funds it.
 mod shed;
+/// Her work in hand stays whole through a start; the rest collapses oldest first.
+mod in_hand;
+
+// what this catches: her sources splitting the window by flat constants, so her acts (whose reads
+// she keeps asking for again) got the same share as a 300k-token conversation she does not (the
+// M5, 2026-11-09: 70-90% of her file reads re-read one 3-5 acts old). A source's weight is its
+// priority scaled by her measured re-reads of what it would collapse; unmeasured, its priority.
+#[test]
+fn a_source_she_re_reads_from_weighs_more_and_an_unmeasured_one_keeps_its_priority() {
+    use crate::depth::Collapsible;
+    use crate::rereads::{Hazard, Tally};
+    let claim = |hazard: Hazard| Claim {
+        source: "actions".into(),
+        priority: 5,
+        floor: 100,
+        full: 10_000,
+        newest: 500,
+        logged: 0,
+        held: 0,
+        instrumented: true,
+        collapsible: (0..4).map(|age| Collapsible { whole: 2_000, saves: 1_900, age, hazard }).collect(),
+    };
+    assert_eq!(claim(Hazard::Unmeasured).weight(), 5, "unmeasured: its priority, never a guessed rate");
+    // each of four items asked for again (1 + 1) / (3 + 1) = 0.5 of acts: two re-reads per act
+    let measured = claim(Hazard::Measured { tally: Tally { exposure: 3.0, events: 1.0 }, prior: 1.0 });
+    assert_eq!(measured.weight(), 15, "priority x (1 + 2 re-reads per act)");
+}

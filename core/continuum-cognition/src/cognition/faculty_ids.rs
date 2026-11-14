@@ -1,7 +1,7 @@
 //! The ids persona's grounding sources deliver under: the faculty a workspace candidate
-//! carries when a persona source fed it. Cognition matches on them (the prompt's churn
-//! order) and persona's sources emit them, so they live here,
-//! below both: one constant per source, never a second literal that can drift. Moved
+//! carries when a persona source fed it. Persona's sources emit them and cognition names
+//! them, so they live here, below both: one constant per source, never a second literal
+//! that can drift. Moved
 //! from each source's own `SOURCE_ID` so cognition names no persona module.
 
 /// `persona::airc_source`.
@@ -9,18 +9,8 @@
 /// Source identifier — used by budget presets, telemetry, cursor scope checks.
 pub const AIRC: &str = "airc";
 
-/// `persona::engram_source`.
-///
-/// Source identifier — referenced by budget presets and telemetry.
-pub const ENGRAMS: &str = "engrams";
-
 /// `persona::media_perception_source`.
 pub const MEDIA_PERCEPTION: &str = "media-perception";
-
-/// The `[mission]` grounding block (generic `[<source_id>]` projection). The retired
-/// `agent/solve` pinned the task brief under it (the #390 anchor-loss fix); the id stays
-/// because the prompt's churn order still classifies that block as standing framing.
-pub const MISSION: &str = "mission";
 
 /// `persona::room_board_source`.
 ///

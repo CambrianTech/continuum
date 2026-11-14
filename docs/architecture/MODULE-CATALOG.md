@@ -2,7 +2,7 @@
 
 > **Premise** (Joel, 2026-05-16): *"The most effective designs are fundamentally simple. Every concern is hundreds of lines, and yet everything is performant. How do we make the others perform like CBAR in Continuum?"*
 >
-> **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy), [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (the cognition contract), and [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md) (the module-author field manual).
+> **Companion to** [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) (the substrate floor), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy), [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (the cognition contract), and [COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md](COMMAND-INFRASTRUCTURE-FIELD-MANUAL.md) (the module-author field manual).
 >
 > **Status.** Most entries are design proposals targeting per-module Rust files under `core/continuum-core/src/`. **Some are now live in Rust** — see [§0 below](#0-currently-live-in-rust). Implementation lands per ALPHA-GAP lanes.
 
@@ -197,20 +197,6 @@ Local LLM generation. One model per instance; the substrate routes turns to it. 
 | Subscriptions | `[InferenceRequest]` |
 | Emissions | `[InferenceComplete, FirstTokenEmitted, ResidencyFault]` |
 | Estimated LoC | ~400 lines (composition → tokenizer → llama.cpp invoke → token stream + reprojection metadata) |
-
-### `inference-grpc-bridge`
-
-Bridge from the gRPC inference server (existing `inference-grpc/` crate) into the substrate's typed dataflow. Pure adapter.
-
-| Field | Value |
-|---|---|
-| Path | `core/continuum-core/src/inference/grpc_bridge.rs` |
-| Lane | `ResourceClass::Io` |
-| Target | `TargetSilicon::Network` |
-| Cadence | `OnReady` |
-| Subscriptions | `[InferenceRequest::Remote]` |
-| Emissions | `[InferenceComplete, RemoteInferenceFailed]` |
-| Estimated LoC | ~150 lines (Rust gRPC client + typed request/response mapping) |
 
 ### `embedding-batcher`
 
@@ -596,7 +582,7 @@ Cross-platform `RawFrame` entry from Unity (and similar engines). Pure FFI shim.
 | Cadence | `Realtime` |
 | Subscriptions | `[UnityFFISubmit]` (extern entry) |
 | Emissions | `[RawFrame]` |
-| Estimated LoC | ~100 lines (the FFI shim + RawFrame fill — zero-overhead per CBAR-SUBSTRATE §"Zero-Overhead Frame Entry") |
+| Estimated LoC | ~100 lines (the FFI shim + RawFrame fill — zero-overhead per CONTINUUM-ENGINE §"Zero-Overhead Frame Entry") |
 
 (Equivalents per platform: `ios_frame_receiver.rs`, `android_frame_receiver.rs`, `wasm_frame_receiver.rs`. Each ~100 lines. Same `RawFrame` struct; different FFI shim.)
 
@@ -751,11 +737,11 @@ Newly unblocked / next-tier:
 
 | # | Module | Status | Notes |
 |---|---|---|---|
-| 6 | `inference-llm` | Unclaimed; unblocked | Governor + recall + working-set all shipped. Replaces inference-grpc hardcoded clamps with broker-issued leases. ~400 LoC, Section II. |
+| 6 | `inference-llm` | Unclaimed; unblocked | Governor + recall + working-set all shipped. ~400 LoC, Section II. |
 | 7 | `composer` | Unclaimed; unblocked | Recall + working-set shipped. Composition cache + materialization + pinning. ~250 LoC. |
 | 8 | `speculator` | Unclaimed; unblocked | Depends on composer. Pre-compose likely-next + hit-rate feedback to governor. ~280 LoC. |
-| 9 | `reprojection-service` | Unclaimed; independent | CBAR-SUBSTRATE §"Spatiotemporal Reprojection" toolkit. ~350 LoC. |
-| 10 | **Lane D** (CBAR persona runtime frame) | Unclaimed; structural | Gates persona-cognition module. Spec in CBAR-SUBSTRATE + PERSONA-COGNITION-CONTRACT. Bigger scope; fresh-session work. |
+| 9 | `reprojection-service` | Unclaimed; independent | CONTINUUM-ENGINE §"Spatiotemporal Reprojection" toolkit. ~350 LoC. |
+| 10 | **Lane D** (CBAR persona runtime frame) | Unclaimed; structural | Gates persona-cognition module. Spec in CONTINUUM-ENGINE + PERSONA-COGNITION-CONTRACT. Bigger scope; fresh-session work. |
 
 The five-step sequence above is **dependency-honest** — each PR is reviewable + mergeable independently while building toward the cognition core.
 
@@ -1145,7 +1131,7 @@ This catalog is dependency-ordered. Modules in earlier sections are foundational
 1. **Substrate floor:** `substrate-governor`, `pressure-broker` (shipped), `working-set-manager`, `genome-tier-store` (5 instances).
 2. **Recall + composition:** `demand-aligned-recall`, `composer`, `speculator`, `embedding-batcher`.
 3. **Cognition core:** `persona-cognition`, `rag-composer`, `hippocampus-consolidation`, `engram-recall`.
-4. **Inference path:** `inference-llm`, `inference-grpc-bridge` (shipped variant).
+4. **Inference path:** `inference-llm`.
 5. **Substrate services:** `reprojection-service`, `threat-detector`, `audit-recorder`, `vdd-reporter`.
 6. **Sensory:** `vision-*`, `voice-*`, `unity-frame-receiver` + per-platform receivers.
 7. **Federation + grid:** `federation-publisher`, `federation-puller`, `grid-inference-router`.
@@ -1165,7 +1151,7 @@ The architectural beauty is that *nothing in this catalog is special*. Each entr
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the substrate contract every module inherits.
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the substrate contract every module inherits.
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — artifact economy + governor.
 - [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) — cognition agency + protection invariants.
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap. The implementation order above maps onto Lanes A–H.

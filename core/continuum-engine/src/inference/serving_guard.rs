@@ -303,7 +303,7 @@ pub(crate) async fn guard_resident_model(
             // stream itself (2026-08-15: every turn of a round waited here for
             // 120s each while serving/status knew the exact cause — a failed
             // decode smoke-probe — and nothing surfaced it).
-            let degraded = snap.degraded_reason.as_deref().unwrap_or("");
+            let degraded = snap.degraded_reason.as_deref().unwrap_or(""); // unwrap_or: a daemon that states no degradation has none to carry on the probe
             continuum_base::probe!(
                 class = "inference.awaiting_serving_transition",
                 provider = cfg.provider_id.as_str(),
@@ -348,6 +348,25 @@ pub(crate) async fn guard_resident_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches: the M5, 2026-11-11 16:13Z (#5947): Benchy's 22,949-token prompt with
+    // the reply sized from her 136,517 grant fits that grant, and only the lane's equal share
+    // (524,285 / 5 = 104,857) refuses it. An admitted request is checked against her grant;
+    // checked against the share too, every act whose grant passed the share was refused.
+    #[test]
+    fn an_admitted_request_fits_its_grant_even_where_the_share_would_refuse_it() {
+        let (grant, share) = (136_517, 104_857);
+        // `>=` refuses, as the engine does (`n_tokens >= n_ctx`): fitting leaves one token free.
+        let measured = PromptCount::Measured { prompt: 22_949, reply: grant - 22_949 - 1 };
+        assert_eq!(measured.check(grant, "p", "Benchy"), Ok(()), "within her grant: admitted");
+        assert_eq!(
+            measured.check(share, "p", "Benchy"),
+            Err(InferenceError::ContextExceeded { requested: 22_949, available: share }),
+            "the share alone refuses it: why an admitted request must not also be held to it"
+        );
+        let full = PromptCount::Measured { prompt: 22_949, reply: grant - 22_949 };
+        assert!(full.check(grant, "p", "Benchy").is_err(), "filling her grant to the last token: refused, as the engine would");
+    }
 
     #[test]
     fn refuses_measured_prompt_and_reply_overflow_without_pricing_base64_as_text() {

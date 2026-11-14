@@ -100,7 +100,7 @@ done until its gate is met on the live node and the change is MERGED.
 | 8 | Learning | a reviewed correction applied on unseen tasks, retained after restart, vs the same base without the gene | Cormac, BigMama |
 | 9 | One scheduler, the whole grid | every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler: one measured activity temperature per mind is its priority, aging means no mind is ever starved, hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | Codex — proposed (card b4eed65c) |
 | 10 | Tools are working sets | the native tool surface is the command-namespace SUBTREES the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help; tool share of the prompt measured before/after (44% on 10-18) | Sneasel (card ecd5dff3) |
-| 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/MIND-CONTEXT-AND-ENGINE-CONFIG.md` | see table below |
+| 11 | Speed is ours | every workstream below has a VALIDATOR that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows. Design: `docs/architecture/CONTINUUM-ENGINE.md` | see table below |
 
 **Every major module is distributable** (Joel, 10-19: "really would help with speed and grid
 distribution, independent development amongst our agents and machines, and personas themselves
@@ -231,17 +231,28 @@ single source of truth and this file must not drift from it.
    These exist because agents arriving without context keep re-inferring the
    architecture and rebuilding a chatbot in place of the substrate.
 
-2. **[docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md](docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)**
+2. **[docs/architecture/CONTINUUM-ENGINE.md](docs/architecture/CONTINUUM-ENGINE.md)**
    and the canonical-docs list in CLAUDE.md, if you are touching runtime or cognition.
 
 ## Machine-level conventions you cannot infer from the code
 
-**Cargo target dir — always set it first.** In the main checkout:
+**Cargo target dir — preserve the configured cache; set the default only if unset.** In the main checkout:
 
 ```bash
 export CARGO_TARGET_DIR="$HOME/.continuum/cache/cargo-target"
 ```
 
+Preserve an explicitly configured `CARGO_TARGET_DIR`, including a path on another
+volume. Read the effective environment before building; do not silently replace
+an owner-selected cache with the home-directory default.
+
+In PowerShell, set the default only when no target directory is configured:
+
+```powershell
+if (-not $env:CARGO_TARGET_DIR) {
+    $env:CARGO_TARGET_DIR = Join-Path $HOME '.continuum/cache/cargo-target'
+}
+```
 In a worktree, build into its own copy-on-write clone of that dir instead (CLAUDE.md plan
 phase 2, "Each worktree builds into its own target dir"): a shared dir hands one worktree
 another's stale workspace-crate build.

@@ -27,12 +27,14 @@
 pub mod boundary_serialization;
 pub mod budget_discipline;
 pub mod cognition_names_persona;
+pub mod commands_in_refusal_text;
 pub mod context_codec;
 pub mod continuum_home;
 pub mod crate_policy;
 pub mod crate_wiring;
 pub mod dev_only_deps;
 pub mod error_text_match;
+pub mod fixed_rooms;
 pub mod grab_bag;
 pub mod file_size;
 pub mod identity_discipline;
@@ -48,10 +50,15 @@ pub mod time_bounds;
 pub mod test_mod_singularity;
 pub mod tls_stack;
 pub mod ts_bindings;
+pub mod sql_outside_the_orm;
+pub mod row_decode;
 pub mod subprocess_spawn;
+pub mod swallowed_errors;
 pub mod unwrap_justification;
 pub mod vendor_pin;
 pub mod required_inputs;
+pub mod resident_bounds;
+pub mod shapes;
 pub mod store_reads;
 pub mod wall_clock;
 
@@ -196,7 +203,7 @@ fn audited_crate_root() -> PathBuf {
         .map(|core| core.join(AUDITED_CRATE))
         // unwrap_or_else: a manifest dir with no parent cannot happen under cargo,
         // and inventing a relative fallback would scan the wrong tree silently.
-        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE))
+        .unwrap_or_else(|| PathBuf::from(AUDITED_CRATE)) // unwrap_or_else: cargo always gives the manifest dir a parent (see above)
 }
 
 /// The root of the checkout under audit (head, or the base tree a ratchet measures).
@@ -545,6 +552,4 @@ mod tests {
             root.display()
         );
     }
-
-    use super::*;
 }

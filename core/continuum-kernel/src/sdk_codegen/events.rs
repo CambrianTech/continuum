@@ -21,7 +21,7 @@
 
 use ts_rs::{Config, Dependency, TS};
 
-use super::{render_import_lines, TypeRef};
+use super::{render_import_lines, CodegenDefect, TypeRef};
 
 /// The single source of truth for ONE event class — its wire name + the ts-rs
 /// `Payload` type subscribers receive / emitters send. Same shape as
@@ -42,14 +42,14 @@ pub struct EventDescriptor {
 
 impl EventDescriptor {
     /// Snapshot an `EventSpec` into a descriptor (type-level, no instance).
-    pub fn of<E: EventSpec>() -> Self {
+    pub fn of<E: EventSpec>() -> Result<Self, CodegenDefect> {
         let cfg = Config::default();
         let payload_dep = Dependency::from_ty::<E::Payload>(&cfg)
-            .expect("event Payload must be a named TS type (struct/enum)");
-        Self {
+            .ok_or(CodegenDefect::UnnamedEventPayload { class: E::CLASS })?;
+        Ok(Self {
             class: E::CLASS,
             payload: TypeRef::from_dependency(&payload_dep),
-        }
+        })
     }
 
     /// The camelCase accessor stem from the class name — `contract:proposed` →
@@ -80,11 +80,11 @@ impl EventDescriptor {
 
 /// Self-registered event (the event twin of `CommandRegistration`).
 pub struct EventRegistration {
-    descriptor_fn: fn() -> EventDescriptor,
+    descriptor_fn: fn() -> Result<EventDescriptor, CodegenDefect>,
 }
 
 impl EventRegistration {
-    pub const fn new(descriptor_fn: fn() -> EventDescriptor) -> Self {
+    pub const fn new(descriptor_fn: fn() -> Result<EventDescriptor, CodegenDefect>) -> Self {
         Self { descriptor_fn }
     }
 }
@@ -108,20 +108,44 @@ macro_rules! register_event {
 }
 
 /// The event registry — assembled from every `register_event!` submission,
-/// sorted by class for deterministic output, with a hard-fail on duplicates (same
-/// anti-drift guarantee as commands).
+/// sorted by class for deterministic output. An undescribable payload or a duplicate class
+/// (same anti-drift guarantee as commands) is left out and recorded in
+/// [`event_registry_defects`], which boot refuses on (`ModuleRegistry::check_wiring`).
 pub fn event_registry() -> Vec<EventDescriptor> {
-    let mut descriptors: Vec<EventDescriptor> = inventory::iter::<EventRegistration>()
-        .map(|reg| (reg.descriptor_fn)())
-        .collect();
-    descriptors.sort_by(|a, b| a.class.cmp(b.class));
-    if let Some(dup) = descriptors.windows(2).find(|w| w[0].class == w[1].class) {
-        panic!(
-            "sdk_codegen: duplicate event CLASS '{}' — two EventSpec impls claim it.",
-            dup[0].class
-        );
-    }
-    descriptors
+    built_events().descriptors.clone()
+}
+
+/// Every event declaration the registry could not describe; empty in a sound build.
+pub fn event_registry_defects() -> &'static [CodegenDefect] {
+    &built_events().defects
+}
+
+struct BuiltEvents {
+    descriptors: Vec<EventDescriptor>,
+    defects: Vec<CodegenDefect>,
+}
+
+fn built_events() -> &'static BuiltEvents {
+    static EVENTS: std::sync::OnceLock<BuiltEvents> = std::sync::OnceLock::new();
+    EVENTS.get_or_init(|| {
+        let mut defects = Vec::new();
+        let mut descriptors: Vec<EventDescriptor> = Vec::new();
+        for described in inventory::iter::<EventRegistration>().map(|reg| (reg.descriptor_fn)()) {
+            match described {
+                Ok(descriptor) => descriptors.push(descriptor),
+                Err(defect) => defects.push(defect),
+            }
+        }
+        descriptors.sort_by(|a, b| a.class.cmp(b.class));
+        descriptors.dedup_by(|later, kept| {
+            let duplicate = later.class == kept.class;
+            if duplicate {
+                defects.push(CodegenDefect::DuplicateEventClass { class: later.class });
+            }
+            duplicate
+        });
+        BuiltEvents { descriptors, defects }
+    })
 }
 
 /// Emit the TypeScript `EventMap` module — class → payload, the typed surface

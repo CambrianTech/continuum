@@ -77,7 +77,7 @@ mod tests {
     fn the_planner_floor_outside_the_planner_never_rises() {
         let violations = scan(&[&PlannerFloorOutsideThePlanner]);
                 let count = violations.len();
-                crate::ratchet::hold_sites("planner_floor_outside_the_planner", &violations, || {
+                crate::ratchet::hold_sites("planner_floor_outside_the_planner", &violations, crate::ratchet::Touched::EndsClean, || {
             format!(
                 "MIN_SERVE_CTX is named outside the serving planner on {count} lines. It is the \
                  smallest lane the planner serves, not a window: an unknown window is `None`, and \

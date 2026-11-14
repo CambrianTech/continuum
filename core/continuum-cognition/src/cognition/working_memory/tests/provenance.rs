@@ -291,7 +291,7 @@ fn an_old_snapshot_without_acts_restores_without_panic() {
     // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
     let texts = fresh.recent();
     assert_eq!(
-        fresh.thoughts().into_iter().filter_map(|record| record.text).collect::<Vec<_>>(),
+        fresh.thoughts().into_iter().filter_map(|record| record.text().map(str::to_owned)).collect::<Vec<_>>(),
         ["thinking about the tokenizer"],
         "the legacy ring thought restored into her thought log"
     );
@@ -311,67 +311,5 @@ fn an_old_snapshot_without_acts_restores_without_panic() {
     assert!(
         fresh.has_receipt(),
         "the receipt kind still survives the trip"
-    );
-}
-
-#[test]
-fn note_action_fingerprint_counts_identical_repeats() {
-    let wm = WorkingMemory::new(8);
-    assert_eq!(
-        wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
-        1
-    );
-    assert_eq!(
-        wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
-        2
-    );
-    assert_eq!(
-        wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
-        3
-    );
-    // a DIFFERENT call is its own first occurrence, not a repeat of the above
-    assert_eq!(wm.note_action_fingerprint("code/read|{\"file\":\"a\"}"), 1);
-    // back to the original — still counted across the window
-    assert_eq!(
-        wm.note_action_fingerprint("code/search|{\"pattern\":\"x\"}"),
-        4
-    );
-}
-
-// what this catches: the loop-awareness COUNT must survive a tiny recency window
-// (regression for the 2026-07-14 Atlas x38 pinned-at-3 spiral). The windowed
-// `action_fps` alone caps the count at the window size the instant other acts
-// interleave — a deepening loop then reads "3 times" forever and conveys none of the
-// spiral. The DURABLE per-session count must keep climbing to 38.
-//
-// Pins its OWN small capacity on purpose: the invariant is "durable count beats the
-// window", so the window must be small REGARDLESS of what the live budget derives.
-// It used to borrow the live default, which coupled a durability test to a capacity
-// number that has since changed.
-#[test]
-fn action_fingerprint_count_escalates_past_the_tiny_recency_window() {
-    // Literal, not a named const: the hardcoded-bound guard rightly polices NAMED
-    // size constants in cognition (they become de-facto bounds reused elsewhere).
-    // This 3 is test DATA — the deliberately tiny window the invariant is about.
-    let wm = WorkingMemory::new(3);
-    let tree = "code/tree|{\"max_depth\":1}";
-    let mut last = 0;
-    for _ in 0..38 {
-        last = wm.note_action_fingerprint(tree);
-        // three OTHER distinct calls per cycle — more than capacity(3), so a
-        // window-only count would evict `tree` before it recurs and never exceed 1.
-        wm.note_action_fingerprint("code/read|{\"f\":\"a\"}");
-        wm.note_action_fingerprint("code/list|{\"p\":\".\"}");
-        wm.note_action_fingerprint("code/search|{\"q\":\"x\"}");
-    }
-    assert_eq!(
-        last, 38,
-        "durable count must reflect all 38 identical issues, not cap at the window size"
-    );
-    // The recent-window tally (action_verb_tally) stays CORRECTLY windowed — it's
-    // the recent-shape channel, not the durable-repeat channel.
-    assert!(
-        wm.action_verb_tally().len() <= 3,
-        "verb tally stays bounded to the recency window"
     );
 }

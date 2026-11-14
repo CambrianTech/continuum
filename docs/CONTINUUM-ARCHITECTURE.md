@@ -1,7 +1,7 @@
 # Continuum Architecture: The Real-Time AI Presence Engine
 
 > **Companion to [CONTINUUM-VISION.md](CONTINUUM-VISION.md)** — product vision and philosophy.
-> **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits.
+> **Substrate contract:** [CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md) — the runtime/RTOS contract every Rust concern inherits.
 > **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — what is actually being worked on right now, lane by lane.
 
 ---
@@ -12,7 +12,7 @@ This document was drafted as a vision/architecture sketch before the cognition m
 
 - The week-numbered "Migration Roadmap" (was Phase 1–5) is **superseded** by the lane-shaped ALPHA-GAP-ANALYSIS.md. Phases are out; lanes A–G are in.
 - Each "Architecture" Rust pseudocode block below is **illustrative**, not the shipped API. Where the shape has moved on (e.g. `RagEngine` no longer takes a `BudgetManager`/`EmbeddingBatcher` pair as separately-named substructs), the linked module is authoritative. Pseudocode kept because it still reads cleanly as a sketch of intent.
-- The substrate contract (concurrency, scheduling, memory, pressure, telemetry, artifact handles) is **owned by [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)**, not this doc. If the two ever disagree on substrate-shaped questions, CBAR-SUBSTRATE wins.
+- The substrate contract (concurrency, scheduling, memory, pressure, telemetry, artifact handles) is **owned by [CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md)**, not this doc. If the two ever disagree on substrate-shaped questions, CONTINUUM-ENGINE wins.
 
 Recent substrate-level state changes worth knowing about when reading the rest of this doc:
 
@@ -20,7 +20,7 @@ Recent substrate-level state changes worth knowing about when reading the rest o
 - Cognition migration is in flight as the 8-PR "oxidization" stack
   (#1284 `should_respond`; #1290 / #1291 / #1293 `rate_proposals`;
   #1298 / #1301 / #1303 `generate_recipe`; #1292 `vision-describe`).
-- `inference-grpc` and `orpheus` hard-fail on no-GPU (#1314) — no silent
+- `orpheus` hard-fails on no-GPU (#1314) — no silent
   CPU fallback. The `no_cpu_fallback_contract.rs` regression test covers
   llama.cpp / ORT and will be widened to the whole workers tree.
 
@@ -179,7 +179,7 @@ Continuum solves this with:
 
 ## Substrate Contract
 
-Every Rust concern in continuum-core — RAG, persona, memory, genome, vision, search, inference, voice, data — implements the **same substrate contract**: concurrency, scheduling, memory pressure response, device pressure response, telemetry, artifact handles, and lifecycle. The contract is owned by **[CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)**.
+Every Rust concern in continuum-core — RAG, persona, memory, genome, vision, search, inference, voice, data — implements the **same substrate contract**: concurrency, scheduling, memory pressure response, device pressure response, telemetry, artifact handles, and lifecycle. The contract is owned by **[CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md)**.
 
 Three takeaways for anyone working in this doc's territory:
 
@@ -996,7 +996,7 @@ You put on your AR glasses. The AIs appear as avatars in your space. They point 
 
 **Canonical truth docs (read these first):**
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime/RTOS substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, and lifecycle. Precedence over this doc on substrate-shaped questions.
+- [CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md) — runtime/RTOS substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, and lifecycle. Precedence over this doc on substrate-shaped questions.
 - [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap. Current state of Lanes A–G, owners, merge gates, active PRs.
 - [CONTINUUM-VISION.md](CONTINUUM-VISION.md) — philosophy and product vision.
 

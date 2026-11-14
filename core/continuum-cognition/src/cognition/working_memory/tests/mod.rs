@@ -5,6 +5,7 @@ use super::residency::Resident;
 mod action_log;
 mod actions;
 mod custody;
+mod history;
 mod open_views;
 mod pins;
 mod provenance;
@@ -19,7 +20,7 @@ fn saved(handle: &str) -> crate::ai::types::ResultCustody {
 /// Record `text` as a saved receipt with no typed acts: the shape a settlement collapse
 /// acts on. An unsaved receipt never collapses.
 fn record_saved(wm: &WorkingMemory, text: &str) {
-    wm.record_receipt_typed(&[], text, None, saved("ring-test"));
+    wm.record_receipt_typed(&[], text, None, saved("a1b2c3d4e5f60718"));
 }
 
 /// A test body's size in bytes: big enough that a shed below a few of them is visible. The

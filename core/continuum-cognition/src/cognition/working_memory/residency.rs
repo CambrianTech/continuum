@@ -110,10 +110,58 @@ impl WorkingMemory {
             let mut thoughts = self.thoughts.lock();
             for (occurrence, handle) in saved {
                 if let Some(record) = thoughts.get_mut(occurrence) {
-                    record.handle = Some(handle);
+                    record.saved_as(handle);
                 }
             }
         }
+        self.touch();
+        self.publish_live_handles();
+        drop(pin);
+    }
+
+    /// Name a saved copy of EXACTLY each resident act body the memory owner has not named one for
+    /// yet (her newest excepted: a shed never moves it), so a shed proves and moves it. Proven by
+    /// content address: a body whose own address is its receipt's handle is that file; any other
+    /// (an act that reopened a saved output keeps the SOURCE's handle, while its body is her
+    /// rendered result) is saved under its own address. Before this the proof compared the raw
+    /// saved file with the rendered body, they never matched, and every such body stayed resident
+    /// as the last copy (the M5, 2026-11-10: one resident carried 17 MB of bodies, strings of
+    /// 593 KB and 1.7 MB). Copied out under the lock, hashed and saved outside it, once per record.
+    pub(crate) fn save_unsaved_bodies(&self, persona_id: Uuid) {
+        let unnamed: Vec<(u64, Option<String>, String)> = {
+            let actions = self.actions.lock();
+            let newest = actions.records().rev().find(|record| record.result.is_some()).map(|record| record.seq);
+            actions
+                .records()
+                // A receipt whose save failed at the act (`Unsaved`) stays whole, as it always has:
+                // only a SAVED act's body is named here.
+                .filter(|record| record.body.is_none() && record.handle.is_some() && Some(record.seq) != newest)
+                .filter_map(|record| Some((record.seq, record.handle.clone(), record.result.clone()?)))
+                .collect()
+        };
+        if unnamed.is_empty() {
+            return;
+        }
+        let pin = crate::cognition::tool_executor::spill::LivePin::new();
+        let named: Vec<(u64, String)> = unnamed
+            .into_iter()
+            .filter_map(|(seq, handle, body)| {
+                let address = continuum_context::cause::ContentHash::of(&body).address();
+                if handle.as_deref() == Some(address.as_str()) {
+                    return Some((seq, address));
+                }
+                pin.retain(persona_id, &body).handle().map(|saved| (seq, saved.to_owned()))
+            })
+            .collect();
+        {
+            let mut actions = self.actions.lock();
+            for (seq, body) in named {
+                if let Some(record) = actions.get_mut(seq).filter(|record| record.body.is_none() && record.result.is_some()) {
+                    record.body = Some(body);
+                }
+            }
+        }
+        self.touch();
         self.publish_live_handles();
         drop(pin);
     }
@@ -154,6 +202,7 @@ impl WorkingMemory {
             }
             total
         };
+        self.touch();
         self.publish_live_handles();
         if total > budget {
             continuum_base::probe!(

@@ -1,6 +1,11 @@
 #![cfg(test)]
     use super::*;
 
+    /// The citizen a test's commits are by.
+    fn actor() -> GitActor {
+        GitActor::citizen(Uuid::from_u128(0xa1), Some("Tester"))
+    }
+
     // what this catches (Astra on #5026): a claim's close dropping a checkout's sync lock while
     // a sync still holds it, so a new claim's sync on the same
     // checkout ran beside it. The lock leaves only when no sync holds it.
@@ -17,7 +22,8 @@
     }
 
     async fn git(dir: &Path, args: &[&str]) -> String {
-        run_git(dir, args).await.unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()))
+        // A fixture's commits are by the test's citizen, as every commit names its actor.
+        crate::code::git_bridge::run_git_input(dir, Some(&actor()), args, &[], None).await.unwrap_or_else(|e| panic!("git {args:?} in {}: {e}", dir.display()))
     }
     async fn head(dir: &Path) -> String {
         git(dir, &["rev-parse", "HEAD"]).await.trim().to_string()
@@ -27,12 +33,54 @@
         git(dir, &["config", "user.name", "t"]).await;
     }
 
+    // what this catches (Benchy's #5883, card a7a37ce7): an autosave recording a lagging
+    // submodule checkout as a pin change. The repo pins its submodule at the first commit; the
+    // checkout is moved to a second; a Work autosave of an ordinary edit must keep the pin and
+    // carry the edit, while an Everything save (a stranded save that loses nothing) still may.
+    #[tokio::test]
+    async fn a_work_autosave_keeps_the_submodule_pin_and_carries_her_edit() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let sub = tmp.path().join("engine");
+        git(tmp.path(), &["init", "-q", "-b", "main", &sub.to_string_lossy()]).await;
+        identity(&sub).await;
+        std::fs::write(sub.join("a.txt"), "1").expect("write");
+        git(&sub, &["add", "a.txt"]).await;
+        git(&sub, &["commit", "-q", "-m", "one"]).await;
+        let pinned = head(&sub).await;
+        std::fs::write(sub.join("a.txt"), "2").expect("write");
+        git(&sub, &["commit", "-q", "-am", "two"]).await;
+        let lagging = head(&sub).await;
+
+        let repo = tmp.path().join("repo");
+        git(tmp.path(), &["init", "-q", "-b", "main", &repo.to_string_lossy()]).await;
+        identity(&repo).await;
+        git(&repo, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", &sub.to_string_lossy(), "vendor/engine"]).await;
+        let checkout = repo.join("vendor/engine");
+        git(&checkout, &["checkout", "-q", &pinned]).await;
+        git(&repo, &["add", "vendor/engine"]).await;
+        git(&repo, &["commit", "-q", "-m", "pin the engine"]).await;
+
+        // Her checkout's submodule lags the branch's pin; she edits a file of her own.
+        git(&checkout, &["checkout", "-q", &lagging]).await;
+        std::fs::write(repo.join("her.rs"), "fn work() {}").expect("write");
+        commit_tree_no_hooks(&repo, "wip", true, &actor(), TreeScope::Work).await.expect("autosave");
+
+        let pin = git(&repo, &["rev-parse", "HEAD:vendor/engine"]).await.trim().to_string();
+        assert_eq!(pin, pinned, "the autosave kept the branch's pin, not the lagging checkout");
+        assert!(git(&repo, &["ls-tree", "--name-only", "HEAD"]).await.lines().any(|l| l == "her.rs"), "her edit is in the commit");
+        assert!(!has_uncommitted_work(&repo).await.expect("status"), "the lagging checkout alone is not her work: no wip every turn");
+
+        let stranded = commit_tree_no_hooks(&repo, "stranded", false, &actor(), TreeScope::Everything).await.expect("save");
+        let carried = git(&repo, &["rev-parse", &format!("{stranded}:vendor/engine")]).await.trim().to_string();
+        assert_eq!(carried, lagging, "a stranded save loses nothing, the checkout's commit included");
+    }
+
     /// The act-end sync's MECHANISM, with the carry decision granted. An offline fixture's
     /// remote is a local bare repo — exactly what the POLICY refuses — so the two are
     /// tested apart: the policy in
     /// `a_push_only_transfers_when_the_other_node_can_read_its_target`, the mechanism here.
     async fn sync(root: &Path, card: Uuid, node: &str) -> PushOutcome {
-        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()), None, CommitPolicy::TurnEnd).await
+        sync_after_act_over(root, card, node, Carry::Via("https://origin.test/repo.git".into()), &actor(), CommitPolicy::TurnEnd).await
     }
 
     /// A bare `origin` and two clones — machine A and machine B — sharing one `main`
@@ -86,6 +134,11 @@
             other => panic!("expected a committed push, got {other:?}"),
         };
         assert!(!has_unpushed_work(&m.a).await, "pushed = nothing unpushed");
+        // what this catches (card e5e72485): her autosave fell to the node's git config for its
+        // committer, and once for its author too; both are her, by her airc address.
+        let made_by = git(&m.a, &["log", "-1", "--format=%an <%ae>|%cn <%ce>", &sha]).await;
+        let her = format!("{} <{}>", actor().name(), actor().email());
+        assert_eq!(made_by.trim(), format!("{her}|{her}"));
         assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).await.trim(), sha, "origin holds the branch at her sha");
         assert!(
             matches!(sync(&m.a, card, "node-a").await, PushOutcome::Ok { committed: false, pushed: false, .. }),
@@ -93,7 +146,7 @@
         );
 
         git(&m.b, &["checkout", "-q", "-B", &m.branch]).await;
-        let arrived = arrive_over(&m.b, &m.branch, 7).await;
+        let arrived = arrive_over(&m.b, &m.branch, 7, &actor()).await;
         match &arrived {
             ArrivalOutcome::Transferred { sha: s, stranded: None, from_node: Some(n), .. } => {
                 assert_eq!(*s, sha);
@@ -104,7 +157,7 @@
         assert_eq!(head(&m.b).await, sha);
         assert_eq!(std::fs::read_to_string(m.b.join("src.txt")).unwrap(), "edit from A\n", "B's tree is A's");
         assert_eq!(git(&m.b, &["status", "--porcelain"]).await.trim(), "");
-        assert!(matches!(arrive_over(&m.b, &m.branch, 8).await, ArrivalOutcome::Current { .. }), "a second arrival moves nothing");
+        assert!(matches!(arrive_over(&m.b, &m.branch, 8, &actor()).await, ArrivalOutcome::Current { .. }), "a second arrival moves nothing");
         assert!(!has_unpushed_work(&m.b).await, "at origin's tip: nothing to carry");
     }
 
@@ -134,7 +187,7 @@
         assert!(move_blocker_over(persona, None).await.is_none(), "card publication releases placement");
         assert_eq!(git(&m.origin, &["rev-parse", &format!("refs/heads/{}", m.branch)]).await.trim(), successor);
         git(&m.b, &["checkout", "-q", "-B", &m.branch]).await;
-        assert!(matches!(arrive_over(&m.b, &m.branch, 40).await, ArrivalOutcome::Transferred { .. }));
+        assert!(matches!(arrive_over(&m.b, &m.branch, 40, &actor()).await, ArrivalOutcome::Transferred { .. }));
         assert_eq!(head(&m.b).await, successor);
         assert_eq!(std::fs::read_to_string(m.b.join("review.txt")).unwrap(), "reviewed successor\n");
     }
@@ -187,7 +240,7 @@
         git(&m.a, &["commit", "-q", "-m", "independent review corrections"]).await;
         let successor = head(&m.a).await;
         for now in [50, 51] {
-            assert_eq!(arrive_over(&m.a, &m.branch, now).await, ArrivalOutcome::LocalWorkPreserved {
+            assert_eq!(arrive_over(&m.a, &m.branch, now, &actor()).await, ArrivalOutcome::LocalWorkPreserved {
                 branch: m.branch.clone(), sha: successor.clone(), remote_sha: remote_sha.clone(),
                 local_commits: 1, dirty: false,
             });
@@ -204,7 +257,7 @@
         let index = git(&m.a, &["write-tree"]).await;
         let status = git(&m.a, &["status", "--porcelain", "--untracked-files=all"]).await;
         for now in [52, 53] {
-            assert_eq!(arrive_over(&m.a, &m.branch, now).await, ArrivalOutcome::LocalWorkPreserved {
+            assert_eq!(arrive_over(&m.a, &m.branch, now, &actor()).await, ArrivalOutcome::LocalWorkPreserved {
                 branch: m.branch.clone(), sha: successor.clone(), remote_sha: successor.clone(),
                 local_commits: 0, dirty: true,
             });
@@ -234,7 +287,7 @@
         git(&m.b, &["commit", "-q", "-m", "B's own"]).await;
         let y = head(&m.b).await;
         std::fs::write(m.b.join("z.txt"), "B's dirty edit\n").unwrap();
-        let arrived = arrive_over(&m.b, &m.branch, 42).await;
+        let arrived = arrive_over(&m.b, &m.branch, 42, &actor()).await;
         let ArrivalOutcome::Transferred { sha, stranded: Some(reference), .. } = &arrived else {
             panic!("expected a transfer with a stranded ref, got {arrived:?}");
         };
@@ -250,7 +303,7 @@
         // A clean checkout that is merely BEHIND strands nothing.
         std::fs::write(m.a.join("src.txt"), "from A again\n").unwrap();
         let PushOutcome::Ok { sha: sha_a2, .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
-        match arrive_over(&m.b, &m.branch, 43).await {
+        match arrive_over(&m.b, &m.branch, 43, &actor()).await {
             ArrivalOutcome::Transferred { sha, stranded: None, .. } => assert_eq!(sha, sha_a2),
             other => panic!("behind, clean: a plain fast-forward, got {other:?}"),
         }
@@ -261,7 +314,150 @@
         let out = sync(&m.b, card, "node-b").await;
         assert!(matches!(out, PushOutcome::Rejected { .. }), "{out:?}");
         // The next arrival on B strands the rejected commit and takes A's tip.
-        assert!(matches!(arrive_over(&m.b, &m.branch, 44).await, ArrivalOutcome::Transferred { stranded: Some(_), .. }));
+        assert!(matches!(arrive_over(&m.b, &m.branch, 44, &actor()).await, ArrivalOutcome::Transferred { stranded: Some(_), .. }));
+    }
+
+    // what this catches (Kimi on the Windows node, 2026-11-08, Codex da817b0e): a fresh
+    // allocation whose card branch already sat on origin at a commit off another line was reset
+    // to that branch, stranding the allocation and leaving her creation anchor off HEAD, so
+    // work/submit refused. A remote without the anchor is reported and never adopted; a remote
+    // that contains the anchor still transfers as before.
+    #[tokio::test]
+    async fn a_remote_branch_that_predates_the_allocation_is_never_adopted() {
+        let m = two_machines().await;
+        // origin's card branch: an old commit off another line (not an ancestor of main's tip).
+        git(&m.a, &["checkout", "-q", "--orphan", "old-line"]).await;
+        let Ok(()) = std::fs::write(m.a.join("README"), "an old line\n") else { panic!("wrote README") };
+        git(&m.a, &["commit", "-q", "-am", "old line"]).await;
+        let stale = head(&m.a).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        // B: a fresh allocation of the card at main's tip, anchored there.
+        git(&m.b, &["checkout", "-q", "-B", &m.branch, "origin/main"]).await;
+        let anchor = head(&m.b).await;
+        git(&m.b, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        match arrive_over(&m.b, &m.branch, 50, &actor()).await {
+            ArrivalOutcome::RemotePredatesAllocation { remote_sha, anchor: said, .. } => {
+                assert_eq!((remote_sha, said), (stale.clone(), anchor.clone()));
+            }
+            other => panic!("a remote without the anchor must not be adopted, got {other:?}"),
+        }
+        assert_eq!(head(&m.b).await, anchor, "the allocation stands");
+        assert_eq!(git(&m.b, &["for-each-ref", STRANDED_REF_PREFIX]).await.trim(), "", "nothing stranded");
+        // A remote that descends from the anchor is still adopted.
+        git(&m.a, &["checkout", "-q", "-B", &m.branch, "origin/main"]).await;
+        let Ok(()) = std::fs::write(m.a.join("src.txt"), "from A\n") else { panic!("wrote src.txt") };
+        git(&m.a, &["add", "src.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "A's work"]).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        let descendant = head(&m.a).await;
+        match arrive_over(&m.b, &m.branch, 51, &actor()).await {
+            ArrivalOutcome::Transferred { sha, stranded: None, .. } => assert_eq!(sha, descendant),
+            other => panic!("a remote containing the anchor transfers, got {other:?}"),
+        }
+    }
+
+    // what this catches (Codex 52754e2a): the recovery for a checkout an earlier arrival already
+    // moved off its anchor (Kimi: HEAD = a stale branch plus her WIP commit, anchor at canary).
+    // Arrival keeps HEAD whole under a stranded ref, counts the commit only she has, and puts the
+    // branch back on the anchor; the next arrival reports the stale remote instead of adopting it.
+    #[tokio::test]
+    async fn a_checkout_already_off_its_anchor_is_put_back_on_it_keeping_her_work() {
+        let m = two_machines().await;
+        let anchor = git(&m.b, &["rev-parse", "origin/main"]).await.trim().to_string();
+        // origin's card branch on another line, and B already moved onto it with a WIP commit.
+        git(&m.a, &["checkout", "-q", "--orphan", "old-line"]).await;
+        let Ok(()) = std::fs::write(m.a.join("README"), "an old line\n") else { panic!("wrote README") };
+        git(&m.a, &["commit", "-q", "-am", "old line"]).await;
+        git(&m.a, &["push", "-q", "-f", "origin", &format!("HEAD:refs/heads/{}", m.branch)]).await;
+        git(&m.b, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&m.b, &["checkout", "-q", "-B", &m.branch, "FETCH_HEAD"]).await;
+        let Ok(()) = std::fs::write(m.b.join("wip.txt"), "her wip\n") else { panic!("wrote wip") };
+        git(&m.b, &["add", "wip.txt"]).await;
+        git(&m.b, &["commit", "-q", "-m", "wip"]).await;
+        let off = head(&m.b).await;
+        git(&m.b, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        let Some(ArrivalOutcome::Realigned { anchor: said, stranded, own_commits, .. }) = realign_to_anchor(&m.b, &m.branch, 60, &actor()).await else {
+            panic!("a checkout off its anchor is realigned");
+        };
+        assert_eq!((said, own_commits), (anchor.clone(), 1), "the WIP is the one commit no remote carries");
+        assert_eq!(git(&m.b, &["rev-parse", &stranded]).await.trim(), off, "her HEAD is kept whole");
+        assert_eq!(head(&m.b).await, anchor, "the branch is back on its anchor");
+        assert!(realign_to_anchor(&m.b, &m.branch, 61, &actor()).await.is_none(), "on its anchor, nothing to do");
+        assert!(matches!(arrive_over(&m.b, &m.branch, 62, &actor()).await, ArrivalOutcome::RemotePredatesAllocation { .. }), "and the stale remote is not adopted again");
+    }
+
+    // what this catches (Codex on the f76005e8 review): a shallow clone makes git's ancestry
+    // answer about missing history, not ancestry, so a valid descendant could be realigned on a
+    // guess. Here the anchor is the tip's parent, which a depth-1 clone does not hold: git cannot
+    // answer, so nothing changes and the reason is said. A yes needs no full history.
+    #[tokio::test]
+    async fn unproven_ancestry_in_a_shallow_clone_changes_nothing() {
+        let m = two_machines().await;
+        let card = Uuid::new_v4();
+        for edit in ["from A\n", "from A again\n"] {
+            std::fs::write(m.a.join("src.txt"), edit).unwrap_or_else(|e| panic!("{e}"));
+            let PushOutcome::Ok { .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
+        }
+        // An older commit of the branch, published under its own name and fetched at depth 1:
+        // present here, but cut off from the tip's shallow history, so git answers "no" although
+        // it is an ancestor.
+        git(&m.a, &["branch", "-f", "older", "HEAD^"]).await;
+        git(&m.a, &["push", "-q", "origin", "older"]).await;
+        let shallow = m.tmp.path().join("shallow");
+        git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
+        git(&shallow, &["fetch", "-q", "--depth", "1", "origin", "older"]).await;
+        let parent = git(&shallow, &["rev-parse", "FETCH_HEAD"]).await.trim().to_string();
+        let tip = head(&shallow).await;
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &parent]).await;
+        match realign_to_anchor(&shallow, &m.branch, 70, &actor()).await {
+            Some(ArrivalOutcome::AncestryUnknown { reason, .. }) => assert!(!reason.is_empty()),
+            other => panic!("an anchor the shallow history cannot reach is unknown, never realigned, got {other:?}"),
+        }
+        assert_eq!(head(&shallow).await, tip, "the checkout stands");
+        // A yes is proof in any clone: the tip as anchor is its own ancestor, nothing to do.
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &tip]).await;
+        assert!(realign_to_anchor(&shallow, &m.branch, 71, &actor()).await.is_none());
+    }
+
+    // what this catches (Codex b7194c2c): the blocking history fetch ran outside the arrival's lock
+    // scope, so an arrival dropped mid-fetch released the checkout while that git still ran, and
+    // the next sync could start beside it. The lock now lives in the blocking task until it ends.
+    #[tokio::test]
+    async fn a_dropped_arrival_keeps_the_checkout_locked_until_its_history_fetch_ends() {
+        static FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static FETCHED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        fn slow_fetch(_: &Path) -> Result<(), String> {
+            FETCHING.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(600));
+            FETCHED.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+        let m = two_machines().await;
+        let card = Uuid::new_v4();
+        for edit in ["from A\n", "from A again\n"] {
+            std::fs::write(m.a.join("src.txt"), edit).unwrap_or_else(|e| panic!("{e}"));
+            let PushOutcome::Ok { .. } = sync(&m.a, card, "node-a").await else { panic!("push") };
+        }
+        // A shallow checkout whose anchor (present here, off another line) it does not descend from.
+        let shallow = m.tmp.path().join("shallow-locked");
+        git(m.tmp.path(), &["clone", "-q", "--depth", "1", "--branch", &m.branch, &format!("file://{}", m.origin.display()), &shallow.to_string_lossy()]).await;
+        identity(&shallow).await;
+        git(&shallow, &["checkout", "-q", "--orphan", "elsewhere"]).await;
+        git(&shallow, &["commit", "-q", "--allow-empty", "-m", "elsewhere"]).await;
+        let anchor = head(&shallow).await;
+        git(&shallow, &["checkout", "-q", &m.branch]).await;
+        git(&shallow, &["update-ref", airc_lib::work_worktree::CREATION_BASE_REF, &anchor]).await;
+        let her = actor();
+        let arrival = arrive_locked_with(&shallow, &m.branch, 80, slow_fetch, &her);
+        let hands = crate::identity::hands_context::HandsContext::for_claim(Uuid::new_v4(), card, Uuid::new_v4());
+        let Ok(lease) = crate::identity::hands_gate::admit(hands) else { panic!("admitted") };
+        let arrival = crate::identity::hands_gate::admitted(Some(std::sync::Arc::new(lease)), arrival);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), arrival).await.is_err(), "dropped mid-fetch");
+        assert!(FETCHING.load(std::sync::atomic::Ordering::SeqCst), "the fetch had started");
+        let lock = CHECKOUT_SYNC.entry(shallow.clone()).or_default().clone();
+        assert!(lock.try_lock().is_err(), "the checkout stays locked while the fetch runs");
+        let waited = tokio::time::timeout(std::time::Duration::from_secs(5), lock.lock_owned()).await;
+        assert!(waited.is_ok() && FETCHED.load(std::sync::atomic::Ordering::SeqCst), "the next holder gets it only after the fetch ended");
     }
 
     // what this catches: the two pure readers. The push-error classifier must not call a
@@ -269,28 +465,21 @@
     // network "rejected"; the WIP subject parser is the only source of the from-node.
     #[tokio::test]
     async fn push_errors_classify_and_the_wip_subject_names_its_node() {
-        assert_eq!(classify_push_error("! [rejected] x -> x (fetch first)"), PushFailure::Rejected);
-        assert_eq!(classify_push_error("remote: error: GH006: Protected branch update failed"), PushFailure::Rejected);
-        assert_eq!(classify_push_error("fatal: Could not read from remote repository."), PushFailure::Unreachable);
-        assert_eq!(classify_push_error("ssh: Could not resolve hostname github.com"), PushFailure::Unreachable);
-        assert_eq!(classify_push_error("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
+        assert_eq!(classify_push_porcelain("!\trefs/heads/x:refs/heads/x\t[rejected] (fetch first)"), PushFailure::Rejected);
+        assert_eq!(classify_push_porcelain("remote: error: GH006: Protected branch update failed"), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("fatal: Could not read from remote repository."), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("ssh: Could not resolve hostname github.com"), PushFailure::Unreachable);
+        assert_eq!(classify_push_porcelain("something new"), PushFailure::Unreachable, "unknown reads as not delivered");
         let card = Uuid::new_v4();
-        assert_eq!(node_of_wip_subject(&wip_message(card, "node-a", None)).as_deref(), Some("node-a"));
-        assert!(wip_message(card, "n", None).starts_with(&format!("wip({})", &card.to_string()[..8])));
-        // what this catches (card e5e72485): her act commits carried no trailer, so her
-        // authorship of her own work had to be added by hand. Credited, and the node still
-        // reads back from the subject line.
-        let kimi = Uuid::from_u128(0xe2f0);
-        let credited = wip_message(card, "node-a", Some((kimi, "Kimi")));
-        assert!(credited.ends_with(&format!("Co-Authored-By: Kimi <{kimi}@airc.citizen>")), "{credited}");
-        assert_eq!(node_of_wip_subject(&credited).as_deref(), Some("node-a"));
+        assert_eq!(node_of_wip_subject(&wip_message(card, "node-a")).as_deref(), Some("node-a"));
+        assert!(wip_message(card, "n").starts_with(&format!("wip({})", airc_core::shown_id::shown_form(card))));
         assert_eq!(node_of_wip_subject("fix: the printer"), None);
         // Not pushable is said, not guessed.
         let m = two_machines().await;
         git(&m.a, &["checkout", "-q", "--detach"]).await;
         assert_eq!(sync(&m.a, card, "n").await, PushOutcome::NotPushable { reason: DETACHED_REASON });
         assert!(!has_unpushed_work(&m.a).await, "a detached tree has no branch of hers, so it never defers");
-        assert!(matches!(arrive_over(&m.b, "no/such-branch", 1).await, ArrivalOutcome::NoRemoteBranch { .. }));
+        assert!(matches!(arrive_over(&m.b, "no/such-branch", 1, &actor()).await, ArrivalOutcome::NoRemoteBranch { .. }));
     }
 
     // what this catches (Cormac's condition on #4278 — the defect that would have stranded
@@ -344,7 +533,7 @@
         std::fs::write(staged.join("work.txt"), "her act\n").unwrap();
 
         let (card, persona) = (Uuid::new_v4(), Uuid::new_v4());
-        let out = sync_after_act(&staged, card, "node-a", None).await;
+        let out = sync_after_act(&staged, card, "node-a", &actor()).await;
         assert_eq!(out, PushOutcome::NotPushable { reason: LOCAL_ORIGIN_REASON }, "never a push into this node's own cache");
         assert_eq!(out.label(), "not_pushable");
         assert!(out.pins_the_mind(), "work that cannot be carried must pin her");
@@ -354,7 +543,7 @@
         let why = move_blocker_over(persona, None).await.expect("a move would strand her work");
         assert!(why.contains(&staged.display().to_string()), "{why}");
         // …and a fetch there cannot deliver another node's work either.
-        assert!(matches!(arrive(&staged, &m.branch, 1).await, ArrivalOutcome::NotTransferable { .. }));
+        assert!(matches!(arrive(&staged, &m.branch, 1, &actor()).await, ArrivalOutcome::NotTransferable { .. }));
 
         // The positive control on the POLICY: a checkout whose origin is the grid-owned
         // remote (a continuum card's worktree — Cormac: "right as written") carries. Without
@@ -391,7 +580,7 @@
         git(&orphan, &["commit", "-q", "-m", "workspace: initial state"]).await;
         std::fs::write(orphan.join("a.txt"), "x\n").unwrap();
         assert_eq!(carry_of(&orphan).await, Carry::NoOrigin);
-        assert_eq!(sync_after_act(&orphan, card, "n", None).await, PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
+        assert_eq!(sync_after_act(&orphan, card, "n", &actor()).await, PushOutcome::NotPushable { reason: NO_ORIGIN_REASON });
         assert!(has_unpushed_work(&orphan).await, "dirty work with nowhere to go pins her");
     }
 
@@ -562,4 +751,96 @@
         assert!(crate::identity::hands_gate::close(context).await.is_empty());
         drop(lock);
         forget_checkout(&root);
+    }
+
+    // What this catches: Kimi's 2026-11-08 allocation recorded a fresh canary anchor,
+    // then arrival fetched an ancient card branch and reset behind that anchor.
+    // A shallow boundary must not turn missing ancestry into permission to invalidate submission.
+    #[tokio::test]
+    async fn arrival_keeps_a_fresh_shallow_creation_anchor_reachable() {
+        let m = two_machines().await;
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["checkout", "-q", "main"]).await;
+        assert!(std::fs::write(m.a.join("new-canary.txt"), "new integration base\n").is_ok());
+        git(&m.a, &["add", "new-canary.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "advance canary beyond old card"]).await;
+        git(&m.a, &["push", "-q", "origin", "main"]).await;
+        let fresh = m.tmp.path().join("fresh-shallow-allocation");
+        git(m.tmp.path(), &["clone", "-q", "--no-local", "--depth=1", "--branch", "main",
+            &m.origin.to_string_lossy(), &fresh.to_string_lossy()]).await;
+        identity(&fresh).await;
+        let anchor = head(&fresh).await;
+        git(&fresh, &["checkout", "-q", "-b", &m.branch]).await;
+        git(&fresh, &["update-ref", "refs/worktree/airc-creation-base", &anchor]).await;
+        assert_eq!(git(&fresh, &["rev-parse", "--is-shallow-repository"]).await.trim(), "true");
+        let outcome = arrive_over(&fresh, &m.branch, 100, &actor()).await;
+        assert!(run_git(&fresh, &["merge-base", "--is-ancestor", &anchor, "HEAD"]).await.is_ok(),
+            "arrival invalidated the recorded submission anchor: {outcome:?}");
+    }
+    // What this catches: Kimi's 2026-11-08 allocation recorded a fresh canary anchor,
+    // then arrival fetched an ancient card branch and reset behind that anchor.
+    // A shallow boundary must not turn missing ancestry into permission to invalidate submission.
+    #[tokio::test]
+    async fn arrival_recovers_an_already_invalidated_shallow_creation_anchor() {
+        let m = two_machines().await;
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["checkout", "-q", "main"]).await;
+        assert!(std::fs::write(m.a.join("new-canary.txt"), "new integration base\n").is_ok());
+        git(&m.a, &["add", "new-canary.txt"]).await;
+        git(&m.a, &["commit", "-q", "-m", "advance canary beyond old card"]).await;
+        git(&m.a, &["push", "-q", "origin", "main"]).await;
+        let fresh = m.tmp.path().join("fresh-shallow-allocation");
+        git(m.tmp.path(), &["clone", "-q", "--no-local", "--depth=1", "--branch", "main",
+            &m.origin.to_string_lossy(), &fresh.to_string_lossy()]).await;
+        identity(&fresh).await;
+        let anchor = head(&fresh).await;
+        git(&fresh, &["checkout", "-q", "-b", &m.branch]).await;
+        git(&fresh, &["update-ref", "refs/worktree/airc-creation-base", &anchor]).await;
+        assert_eq!(git(&fresh, &["rev-parse", "--is-shallow-repository"]).await.trim(), "true");
+        // Reproduce the reset already observed in Kimi's reflog, then retain a local WIP.
+        git(&fresh, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&fresh, &["reset", "-q", "--hard", "FETCH_HEAD"]).await;
+        assert!(std::fs::write(fresh.join("resident-work.txt"), "retain this work\n").is_ok());
+        git(&fresh, &["add", "resident-work.txt"]).await;
+        git(&fresh, &["commit", "-q", "-m", "resident WIP"]).await;
+        let work = head(&fresh).await;
+        let context = crate::identity::hands_context::HandsContext::fresh();
+        let Ok(lease) = crate::identity::hands_gate::admit(context) else { panic!("fixture hands admission") };
+        let her = actor();
+        let outcome = crate::identity::hands_gate::admitted(
+            Some(std::sync::Arc::new(lease)), super::arrival::arrive_locked(&fresh, &m.branch, 101, &her)
+        ).await;
+        let ArrivalOutcome::Realigned { stranded, .. } = &outcome else {
+            panic!("actual shallow invalidated checkout remains blocked: {outcome:?}");
+        };
+        assert_eq!(git(&fresh, &["rev-parse", stranded]).await.trim(), work);
+        assert!(run_git(&fresh, &["merge-base", "--is-ancestor", &anchor, "HEAD"]).await.is_ok(),
+            "arrival invalidated the recorded submission anchor: {outcome:?}");
+    }
+    // What this catches: stderr wording must not decide whether a branch is absent or a
+    // push was rejected. Exercise real Git's exit-2 and porcelain rejection contracts.
+    #[tokio::test]
+    async fn remote_answers_are_typed_before_their_messages_are_rendered() {
+        let m = two_machines().await;
+        assert!(matches!(remote_branch_absent(&m.a, &m.branch).await, Ok(true)));
+        git(&m.a, &["push", "-q", "origin", &m.branch]).await;
+        assert!(matches!(remote_branch_absent(&m.a, &m.branch).await, Ok(false)));
+        git(&m.b, &["fetch", "-q", "origin", &m.branch]).await;
+        git(&m.b, &["checkout", "-q", "-b", &m.branch, "FETCH_HEAD"]).await;
+        git(&m.b, &["commit", "-q", "--allow-empty", "-m", "remote work"]).await;
+        git(&m.b, &["push", "-q", "origin", &m.branch]).await;
+        git(&m.a, &["commit", "-q", "--allow-empty", "-m", "local work"]).await;
+        let Err(error) = crate::code::git_bridge::run_git_input(
+            &m.a, None, &["push", "--porcelain", "origin", &m.branch], &[], None,
+        ).await else { panic!("divergent push must be refused") };
+        assert_eq!(error.end, crate::code::git_bridge::GitEnd::Refused);
+        assert_eq!(classify_push_porcelain(&error.stdout), PushFailure::Rejected);
+        let Err(error) = crate::code::git_bridge::within(
+            tokio::time::Instant::now(),
+            crate::code::git_bridge::run_git_input(&m.a, None, &["status"], &[], None),
+        ).await else { panic!("expired admission must not run git") };
+        assert_eq!(error.end, crate::code::git_bridge::GitEnd::NeverRan);
+        assert!(error.out_of_time());
+        git(&m.a, &["remote", "set-url", "origin", &m.tmp.path().join("absent.git").to_string_lossy()]).await;
+        assert!(remote_branch_absent(&m.a, &m.branch).await.is_err(), "unreachable is not an absent branch");
     }

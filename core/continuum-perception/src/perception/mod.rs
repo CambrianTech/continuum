@@ -259,7 +259,7 @@ impl crate::sdk_codegen::CommandSpec for ObserveCommand {
     const WIRE: crate::sdk_codegen::WireShape = crate::sdk_codegen::WireShape::Provided;
     type Params = ObserveParams;
     type Result = ObserveResult;
-    fn params_schema() -> serde_json::Value {
+    fn params_schema() -> Result<serde_json::Value, serde_json::Error> {
         crate::sdk_codegen::input_schema::<Self::Params>()
     }
 

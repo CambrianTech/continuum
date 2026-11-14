@@ -41,6 +41,11 @@ on:
       - 'tools/scripts/ci-change-scope.cjs'
       - 'tools/scripts/tests/ci-change-scope.test.cjs'
   workflow_dispatch:
+    inputs:
+      build_key:
+        description: 'Immutable lifecycle build key selected by publication admission'
+        required: true
+        type: string
 
 # A canary dispatch must never cancel the canary build in progress. Each canary tip's core is what
 # the deploy consumers download (card 50ca737e); the build takes 45-73 min and canary merges land
@@ -142,6 +147,24 @@ jobs:
           fetch-depth: 0
           filter: blob:none
           submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pin publication to the consumer build key
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          BUILD_KEY: ${{ inputs.build_key }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e 'import {resolveBuildKey} from "./tools/scripts/publication-build-key.mjs"; const key=process.env.BUILD_KEY; if(await resolveBuildKey(key,process.cwd()) !== key) throw new Error("requested revision is not a build key");'
+          git merge-base --is-ancestor "$BUILD_KEY" origin/canary
+          git checkout --detach "$BUILD_KEY"
+          git submodule update --init --recursive
+      - name: Record exact build revision
+        shell: bash
+        run: echo "BUILD_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       - name: Install Rust toolchain from rust-toolchain.toml
         run: |
@@ -364,7 +387,7 @@ jobs:
           # Republish rather than trust the marker's existence: archive first, then the marker
           # that names it (Astra on #4974).
           gh release view "$tag" >/dev/null 2>&1 \
-            || gh release create "$tag" --prerelease --target "$GITHUB_SHA" --title "$tag" \
+            || gh release create "$tag" --prerelease --target "$BUILD_SHA" --title "$tag" \
                  --notes "Published Windows NVIDIA engine, built by core-binaries.yml. Its tag is the hash of every input that decides its bytes; published-engine.ready names the complete archive." \
             || gh release view "$tag" >/dev/null
           gh release upload "$tag" --clobber "$RUNNER_TEMP/$archive"
@@ -414,8 +437,8 @@ jobs:
           version="$("$stage/continuum$exe" --version)"
           echo "$version"
           case "$version" in
-            *"sha ${GITHUB_SHA:0:9}"*) ;;
-            *) echo "::error::continuum --version does not report ${GITHUB_SHA:0:9}"; exit 1 ;;
+            *"sha ${BUILD_SHA:0:9}"*) ;;
+            *) echo "::error::continuum --version does not report ${BUILD_SHA:0:9}"; exit 1 ;;
           esac
           # Relative names from inside the dir: GNU tar (Git for Windows) reads `D:\...` as a
           # remote host `D` and fails "Cannot connect to D: resolve failed".
@@ -424,7 +447,7 @@ jobs:
           # Values reach Python as argv, never inside its string literals: a Windows path
           # (D:\a\_temp) in a literal would read `\a` as an escape.
           "$py" - "$RUNNER_TEMP/$name.json" "$RUNNER_TEMP/$name.tar.gz.sha256" "${{ matrix.platform }}" \
-            "${{ matrix.uname }}" "$GITHUB_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
+            "${{ matrix.uname }}" "$BUILD_SHA" "$CONTINUUM_FEATURES" "$name.tar.gz" \
             "$CUDA_VERSION" "${CUDA_COMPUTE_CAP:-}" "$runtime_libs" "$stage" <<'EOF'
           import json, os, sys
           from pathlib import Path
@@ -491,7 +514,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NAME: ${{ steps.package.outputs.name }}
           DIR: ${{ runner.temp }}
-        run: bash "$GITHUB_WORKSPACE/tools/scripts/lib/publish-core-package.sh" publish "$DIR" "$NAME"
+        run: GITHUB_SHA="$BUILD_SHA" bash "$GITHUB_WORKSPACE/tools/scripts/lib/publish-core-package.sh" publish "$DIR" "$NAME"
 
   # The publish/republish owner's failure paths, proven with a fake gh on every run (PRs too):
   # a clean dispatch can't exercise them (Codex helper on #5043).
@@ -523,7 +546,9 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Republish any built leg not on the release as built
-        run: bash tools/scripts/lib/publish-core-package.sh check dist
+        env:
+          BUILD_KEY: ${{ inputs.build_key }}
+        run: GITHUB_SHA="$BUILD_KEY" bash tools/scripts/lib/publish-core-package.sh check dist
 
   prune:
     name: prune old canary releases
@@ -555,3 +580,32 @@ jobs:
               echo "pruning $tag"
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
             done
+
+  admit-next:
+    name: admit latest canary after publication
+    needs: [build, publish-check, publish-script-test, prune]
+    if: >-
+      success() && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/canary' &&
+      vars.CORE_BINARIES_HOURLY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    # Same admission mutex as cron/check completion. The next build remains queued
+    # behind this workflow's existing canary concurrency group until we finish.
+    concurrency:
+      group: core-binaries-hourly-dispatch
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: canary
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: node tools/scripts/core-binaries-hourly.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DRY_RUN: 'false'
+          PUBLICATION_COMPLETION_KEY: ${{ inputs.build_key }}

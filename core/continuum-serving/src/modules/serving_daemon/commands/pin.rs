@@ -158,7 +158,7 @@ crate::action_command! {
         // 4. Set the pin. live_candidates now intersects to this model; the
         //    daemon's next tick reconciles the live server to it (sub-second to a
         //    few seconds; observe readiness via serving/status).
-        this.intent.set_pin(Some(p.model_id.clone()), true);
+        this.intent.set_pin(Some(p.model_id.clone()), true).map_err(|error| CommandError::Denied(error.to_string()))?;
         this.store.save(&p.model_id);
 
         let detail = match &previous_model {

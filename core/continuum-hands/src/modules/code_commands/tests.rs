@@ -35,12 +35,12 @@
         assert_eq!(std::fs::canonicalize(root).unwrap(), std::fs::canonicalize(bound.path()).unwrap(), "still where they were bound");
     }
 
-    // what this catches: this node's own residents held to a workspace (Joel 2026-10-17:
-    // "Don't restrict them"), or given the credentials (Joel 2026-10-18: "keep creds
-    // off-limits"), or a caller from OUTSIDE this node (an airc peer) let past her workspace.
-    // The operator is never confined. The decision is the caller's identity, never a params field.
+    // what this catches: this node's own residents confined at all (Joel 2026-11-08: "Stop
+    // caging them. It's unfair"), or a caller from OUTSIDE this node (an airc peer) let past
+    // its workspace. The operator is never confined. The decision is the caller's identity,
+    // never a params field.
     #[test]
-    fn a_resident_reaches_the_host_but_its_credentials_and_an_outside_peer_is_confined() {
+    fn a_resident_is_never_confined_and_an_outside_peer_is() {
         let rt = tokio::runtime::Runtime::new().expect("test: runtime");
         let state = crate::test_acting::state_with_default_policy(rt.handle().clone());
         let _home = crate::paths::test_home::HomeGuard::preserve_blocking(); // reads the process home a guarded fixture may be swapping (card cb3221a5)
@@ -50,8 +50,7 @@
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        let hers = confinement_of(&state, &resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
-        assert!(hers.reaches_host(), "this node's resident reaches the whole host");
+        assert!(confinement_of(&state, &resident, ws.path()).expect("test: acting installed").is_none(), "a resident has the host an agent has");
         // the default test policy resolves no trust for a resident, so her reads stay in the sandbox: least privilege, never the host
         assert!(matches!(read_scope_of(&state, &resident, ws.path()).expect("test: acting installed"), crate::code::path_security::ReadScope::Sandbox), "no resolved trust: her file verbs stay in the sandbox");
         let outside = Ctx {
@@ -59,7 +58,6 @@
             ..Ctx::default()
         };
         let confined = confinement_of(&state, &outside, ws.path()).expect("test: acting installed").expect("a peer from outside this node is confined");
-        assert!(!confined.reaches_host(), "held to her workspace");
         assert_eq!(confined.workspace(), ws.path());
     }
 
@@ -79,9 +77,9 @@
             caller: Some(crate::routing::CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(uuid::Uuid::from_u128(0xC1)))),
             ..Ctx::default()
         };
-        // a resident whose trust admits code/shell is read-scoped by her confinement (read_scope_of's trusted branch), which reaches the host
-        let hers = confinement_of(&state, &resident, ws.path()).expect("test: acting installed").expect("a resident carries the credential boundary");
-        let scope = crate::code::path_security::ReadScope::Host { deny: hers.host_denials() };
+        // a resident whose trust admits code/shell has no confinement, so read_scope_of's trusted branch gives her the host
+        assert!(confinement_of(&state, &resident, ws.path()).expect("test: acting installed").is_none(), "a resident has no confinement");
+        let scope = crate::code::path_security::ReadScope::Host;
         let resolved = security.validate_write_in(target.to_str().unwrap(), &scope).expect("a resident's absolute path resolves");
         assert_eq!(resolved, elsewhere.path().canonicalize().unwrap().join("note.txt"));
         let outside = Ctx {
@@ -223,7 +221,7 @@
     // resident edit calls after it on the M5).
     #[test]
     fn the_advertised_edit_schema_has_no_single_entry_all_of() {
-        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>().expect("the edit params schema serializes");
         let text = schema.to_string();
         assert!(!text.contains("\"allOf\""), "no allOf anywhere in the advertised edit schema: {text}");
         let edit_mode = &schema["properties"]["edit_mode"];
@@ -237,7 +235,7 @@
     // fill-in example must decode and land through the real executor.
     #[test]
     fn code_edit_published_schema_round_trips_through_its_parser() {
-        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>();
+        let schema = crate::sdk_codegen::input_schema::<CodeEditParams>().expect("the edit params schema serializes");
         assert!(schema["required"].as_array().unwrap().contains(&serde_json::json!("edit_mode")));
         assert_eq!(schema["properties"].as_object().unwrap().len(), 3, "file_path, edit_mode, description");
         let alternatives = schema["definitions"]["EditMode"]["oneOf"].as_array().expect("EditMode is a oneOf");
@@ -731,7 +729,7 @@
         std::env::set_var("CONTINUUM_HOME", home.path());
 
         let peer = "test-peer-1234";
-        let layer = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer provisions");
+        let layer = ensure_citizen_layer_from_base(peer, base.path(), &crate::code::git_actor::GitActor::citizen(uuid::Uuid::nil(), Some("Tester"))).await.expect("layer provisions");
         assert!(
             layer.starts_with(home.path()),
             "layer lives under CONTINUUM_HOME: {layer:?}"
@@ -773,7 +771,7 @@
             "the shared base is untouched by layer writes"
         );
         // Idempotent: second call reuses the existing layer (her diff survives).
-        let again = ensure_citizen_layer_from_base(peer, base.path()).await.expect("layer reused");
+        let again = ensure_citizen_layer_from_base(peer, base.path(), &crate::code::git_actor::GitActor::citizen(uuid::Uuid::nil(), Some("Tester"))).await.expect("layer reused");
         assert_eq!(again, layer);
         assert_eq!(
             std::fs::read_to_string(again.join("Cargo.toml")).unwrap(),

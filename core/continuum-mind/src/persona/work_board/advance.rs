@@ -214,24 +214,37 @@ pub async fn advance_card_state_effective(
                     }
                 }
             }
-            // A PASS ON A CARD WITH AN OPEN PR LEAVES IT MERGEABLE. The card finishes through
-            // its merge, as Merged; closing it here made `airc work merge` refuse it ("state
-            // is Closed, but merge requires Review"). Kimi passed #4825's submission on
-            // 2026-10-06 and the card closed with its PR open, so the merge took a hand move
-            // back to Review. A card with no PR (a bench round's) still closes on the pass.
+            // A PASS ON A CODE CARD FINISHES THROUGH ITS MERGE, never on the pass. With its PR
+            // linked the card stays mergeable in Review and its merge moves it to Merged; closing
+            // it made `airc work merge` refuse ("state is Closed, but merge requires Review": Kimi's
+            // #4825, 2026-10-06). With NO PR linked a close landed nothing anywhere while her
+            // receipt said done: the card stays in Review and her guidance names the move that
+            // opens and links the PR (`work/submit` again). Only a card its oracle grades closes
+            // on the pass: its grade is its finish.
             if passed {
                 if let Some((_, parent_card)) = card_in_subscribed_rooms(airc, parent_id).await {
-                    if parent_card.pull_request.is_some() && parent_card.state != CardState::Merged {
+                    let graded = crate::recipe::benchmark_catalog::graded_at_submit(&parent_card.title);
+                    let finish = passed_parent(parent_card.pull_request.is_some(), &parent_card.state, graded);
+                    if finish != PassedParent::Close {
                         if parent_card.state != CardState::Review {
                             raw_advance(airc, parent_id, CardState::Review, via).await?;
                         }
-                        continuum_base::probe!(
-                            class = "work.review.passed_awaiting_merge",
-                            review = %short8(card_id.as_uuid()),
-                            parent = %short8(parent),
-                            "reviewer's pass on a card with an open PR — it stays in Review for \
-                             its merge, which moves it to Merged"
-                        );
+                        match finish {
+                            PassedParent::AwaitMerge => continuum_base::probe!(
+                                class = "work.review.passed_awaiting_merge",
+                                review = %short8(card_id.as_uuid()),
+                                parent = %short8(parent),
+                                "reviewer's pass on a card with an open PR — it stays in Review for \
+                                 its merge, which moves it to Merged"
+                            ),
+                            _ => continuum_base::probe!(
+                                class = "work.review.passed_awaiting_pull_request",
+                                review = %short8(card_id.as_uuid()),
+                                parent = %short8(parent),
+                                "reviewer's pass on a code card with no PR linked — it stays in Review; \
+                                 nothing lands until work/submit opens and links its PR"
+                            ),
+                        }
                         close_superseded_reviews(airc, parent_id, card_id, via).await;
                         return Ok(CardState::Review);
                     }
@@ -338,6 +351,28 @@ pub async fn advance_card_state_effective(
     Ok(state)
 }
 
+/// What a reviewer's pass does to the card it reviewed.
+#[derive(Debug, PartialEq, Eq)]
+enum PassedParent {
+    /// Its linked PR has not merged: it waits in Review for the merge.
+    AwaitMerge,
+    /// A code card with no PR linked: nothing can land yet, so it waits in Review, never closed.
+    AwaitPullRequest,
+    /// Its oracle's grade is its finish (or it is already merged): the pass closes it.
+    Close,
+}
+
+/// PURE: a pass leaves a code card in Review until its PR merges, and a code card with no PR in
+/// Review until one is linked; only a card graded at submit closes on the pass.
+fn passed_parent(pr_linked: bool, current: &CardState, graded_at_submit: bool) -> PassedParent {
+    match (pr_linked, current) {
+        (_, CardState::Merged) => PassedParent::Close,
+        (true, _) => PassedParent::AwaitMerge,
+        (false, _) if graded_at_submit => PassedParent::Close,
+        (false, _) => PassedParent::AwaitPullRequest,
+    }
+}
+
 /// What a resident's finish does to a card, from its PR link and current state.
 #[derive(Debug, PartialEq, Eq)]
 enum ResidentFinish {
@@ -418,11 +453,23 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
     // The review lands on the PARENT's board, named, never through the shared current-room
     // pointer: parallel dones on two boards would otherwise race one join against the other
     // (IntelMac on #4838; the race #4838 removes from work/state).
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
-    let created = airc.create_work_card_in(&room, req).await.map_err(|e| e.to_string())?;
-    super::board_index::wrote(airc, &room);
-    Ok(created)
+    review_once(airc, &room, parent, None, req).await
+}
+
+/// A parent's review card, once: a repeat spawn returns the review that stands (`create_once`).
+async fn review_once(
+    airc: &Arc<Airc>,
+    room: &airc_lib::Room,
+    parent: WorkCardId,
+    submission: Option<airc_work::SubmissionId>,
+    card: CreateWorkCard,
+) -> Result<WorkCardId, String> {
+    super::create_once::create_once(airc, room, super::create_once::NewCard::Review { parent, submission, card })
+        .await
+        .map(|made| made.card.card_id())
+        .map_err(|e| e.to_string())
 }
 
 /// Post the review card for a ROOM's own card (not a bench card): titled and described
@@ -450,15 +497,9 @@ pub async fn open_room_review_card(
         card.title
     );
     // on the parent's board, named: never through the shared current-room pointer (#4838)
-    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
-    let created = match submission {
-        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
-        None => airc.create_work_card_in(room, req).await,
-    }
-    .map_err(|e| e.to_string())?;
-    super::board_index::wrote(airc, room);
-    Ok(created)
+    review_once(airc, room, parent, submission, req).await
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`).
@@ -624,6 +665,19 @@ mod tests {
     // what this catches (card 4356a90f, Codex on #5399): a resident's `closed` after a pass
     // stranded a green PR (airc work merge needs Review), and a close on an already-merged
     // card must not downgrade it to Closed, where a repeated close would reopen it.
+    // what this catches: a reviewer's pass on a code card with no PR linked CLOSING it, so her work
+    // was "done" while its patch landed nowhere (the finishing chain's break 2, 2026-11-08), or a
+    // card with an open PR closed on the pass, stranding it for the merger (Kimi's #4825).
+    #[test]
+    fn a_pass_with_no_pull_request_keeps_the_card_in_review() {
+        use PassedParent::*;
+        assert_eq!(passed_parent(false, &CardState::Review, false), AwaitPullRequest, "no PR: stays in Review, never closed");
+        assert_eq!(passed_parent(false, &CardState::InProgress, false), AwaitPullRequest);
+        assert_eq!(passed_parent(true, &CardState::Review, false), AwaitMerge, "a PR: waits for its merge");
+        assert_eq!(passed_parent(false, &CardState::Review, true), Close, "an oracle-graded card finishes on its grade");
+        assert_eq!(passed_parent(true, &CardState::Merged, false), Close, "already merged: nothing to wait for");
+    }
+
     #[test]
     fn a_residents_finish_waits_for_the_merge_and_never_undoes_it() {
         use ResidentFinish::*;

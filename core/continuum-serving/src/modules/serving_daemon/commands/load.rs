@@ -89,7 +89,7 @@ crate::action_command! {
         }
 
         // 2. Lift the OFF pin if present. Track whether it actually changed.
-        let was_suppressed = this.intent.set_suppressed(&p.model_id, false, true);
+        let was_suppressed = this.intent.set_suppressed(&p.model_id, false, true).map_err(|error| CommandError::Denied(error.to_string()))?;
 
         let now_serving = this.serving.borrow().active_model.clone();
         let detail = if was_suppressed {

@@ -60,6 +60,7 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+            scratch_released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
@@ -293,13 +294,28 @@ impl KvSlotPool {
         Some(self.operation_permit(slot, permit))
     }
 
-    /// A scratch release wakes only its physical semaphore, never citizen admission:
+    /// The wait for a busy slot's next release, or `None` when it is free now (the caller tries
+    /// again at once). Registered before the check, so a release between them is never missed;
+    /// the caller lets go of everything first (an admission's dropped pin announces a release,
+    /// and a wait registered before that drop was woken by its own announcement). It takes no
+    /// permit: queued in the slot's semaphore a waiter was HANDED the permit only to drop it, and
+    /// two such waiters (her learning step and a dream consolidation) passed it between them while
+    /// each one's retry found it taken: 35,000 lane grants a second on the M5, 2026-11-13 (card 6742aad1).
+    pub(crate) fn busy_until_release(&self, slot: u32) -> Result<Option<SlotRelease>, String> {
+        let operation = self.operations.get(slot as usize).ok_or("unknown physical KV slot")?;
+        let mut release = Box::pin(Arc::clone(self.release_signal(slot)).notified_owned());
+        release.as_mut().enable();
+        Ok((operation.available_permits() == 0).then_some(release))
+    }
+
+    /// A scratch release wakes only scratch's waiters, never citizen admission:
     /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn release_signal(&self, slot: u32) -> &Arc<tokio::sync::Notify> {
+        if Some(slot) == self.scratch { &self.scratch_released } else { &self.released }
+    }
+
     fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
-        SlotPermit {
-            _permit: permit,
-            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
-        }
+        SlotPermit { _permit: permit, released: Arc::clone(self.release_signal(slot)) }
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
@@ -514,6 +530,9 @@ pub(super) struct EndpointState {
     pub(super) page_admission: Option<Result<Option<std::path::PathBuf>, String>>,
 }
 
+/// A slot pool as far as its engine was probed (see [`Probed`]).
+pub type PoolProbe = Probed<Arc<KvSlotPool>, PropsAbsent>;
+
 /// Which engine an endpoint has, and the pool serving it.
 pub(super) enum Engine {
     /// Never probed: no pool known.
@@ -531,10 +550,9 @@ pub(super) enum Engine {
 pub(super) enum Serving {
     /// The last verified ready's install.
     Install(OwnedInstall),
-    /// No launch of this core has verified ready yet: the pool entry the endpoint had before
-    /// (`Some(None)` latched unsupported, `None` never probed), whose residents a relaunch
-    /// still saves or records as discarded.
-    Before(Option<Option<Arc<KvSlotPool>>>),
+    /// No launch of this core has verified ready yet: the pool the endpoint had before, as far as
+    /// it was probed, whose residents a relaunch still saves or records as discarded.
+    Before(PoolProbe),
 }
 
 /// An owned engine as `ready` installed it: its generation, the contract it launched with and
@@ -546,14 +564,14 @@ pub(super) struct OwnedInstall {
 }
 
 impl Engine {
-    /// The pool entry this engine leaves to its successor's launch, as `Serving::Before` holds it.
-    fn into_entry(self) -> Option<Option<Arc<KvSlotPool>>> {
+    /// The pool this engine leaves to its successor's launch, as `Serving::Before` holds it.
+    fn into_pool(self) -> PoolProbe {
         match self {
-            Engine::Unprobed => None,
-            Engine::Unsupported => Some(None),
-            Engine::Adopted(pool) => Some(Some(pool)),
-            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(install.pool)),
-            Engine::Owned { serving: Serving::Before(entry), .. } => entry,
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before,
         }
     }
 }
@@ -580,42 +598,47 @@ impl EndpointState {
         self.owned().filter(|install| install.generation == generation)
     }
 
-    /// The pool entry serving this endpoint (`Some(None)` latched unsupported, `None` never
-    /// probed).
-    pub(super) fn pool_entry(&self) -> Option<Option<&Arc<KvSlotPool>>> {
+    /// The pool serving this endpoint, as far as it was probed: never probed asks, latched
+    /// unsupported refuses, known proceeds. One answer per state, so no caller can read "not asked
+    /// yet" as "there is none" (the M5 2026-11-04 14:56Z pool-growth refusal).
+    pub(super) fn pool(&self) -> Probed<&Arc<KvSlotPool>, &PropsAbsent> {
         match &self.engine {
-            Engine::Unprobed => None,
-            Engine::Unsupported => Some(None),
-            Engine::Adopted(pool) => Some(Some(pool)),
-            Engine::Owned { serving: Serving::Install(install), .. } => Some(Some(&install.pool)),
-            Engine::Owned { serving: Serving::Before(entry), .. } => entry.as_ref().map(Option::as_ref),
+            Engine::Unprobed => Probed::NotAsked,
+            Engine::Unsupported => Probed::Absent(&PropsAbsent),
+            Engine::Adopted(pool) => Probed::Known(pool),
+            Engine::Owned { serving: Serving::Install(install), .. } => Probed::Known(&install.pool),
+            Engine::Owned { serving: Serving::Before(before), .. } => before.as_ref(),
         }
     }
 
-    /// The pool serving this endpoint, if any.
-    pub(super) fn current_pool(&self) -> Option<&Arc<KvSlotPool>> {
-        self.pool_entry().flatten()
+    /// Whether `pool` is exactly the pool serving this endpoint now. Not asked and absent are both
+    /// "not this pool": a caller holding a pool asks only whether it is still the installed one.
+    pub(super) fn serves(&self, pool: &Arc<KvSlotPool>) -> bool {
+        match self.pool() {
+            Probed::Known(installed) => Arc::ptr_eq(installed, pool),
+            Probed::NotAsked | Probed::Absent(_) => false,
+        }
     }
 
     /// Start `generation`: what served before keeps serving until it is verified ready.
     pub(super) fn start(&mut self, generation: EngineGeneration) {
         let serving = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
             Engine::Owned { serving, .. } => serving,
-            previous => Serving::Before(previous.into_entry()),
+            previous => Serving::Before(previous.into_pool()),
         };
         self.engine = Engine::Owned { generation, serving };
     }
 
-    /// Replace the serving pool entry, keeping any started generation: a test's stand-in for a
+    /// Replace the serving pool, keeping any started generation: a test's stand-in for a
     /// discovered or carried pool.
     #[cfg(test)]
-    pub(super) fn set_pool_entry(&mut self, entry: Option<Option<Arc<KvSlotPool>>>) {
+    pub(super) fn set_pool(&mut self, pool: PoolProbe) {
         self.engine = match std::mem::replace(&mut self.engine, Engine::Unprobed) {
-            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(entry) },
-            _ => match entry {
-                None => Engine::Unprobed,
-                Some(None) => Engine::Unsupported,
-                Some(Some(pool)) => Engine::Adopted(pool),
+            Engine::Owned { generation, .. } => Engine::Owned { generation, serving: Serving::Before(pool) },
+            _ => match pool {
+                Probed::NotAsked => Engine::Unprobed,
+                Probed::Absent(PropsAbsent) => Engine::Unsupported,
+                Probed::Known(pool) => Engine::Adopted(pool),
             },
         };
     }
@@ -636,12 +659,21 @@ pub struct EndpointSlots {
     /// (card 6b28a445). On the endpoint because the pool does not outlive the engine;
     /// retention is bounded by [`DiscardLog`].
     pub(super) discarded: Mutex<DiscardLog>,
+    /// The endpoint's aggregate decode permits, sized from its generation (card 23069702).
+    pub(super) concurrency: Arc<super::EndpointConcurrency>,
 }
 
 pub struct EndpointAdmission {
     pub(super) endpoint: Arc<EndpointSlots>,
     pub(super) _guard: tokio::sync::OwnedRwLockReadGuard<()>,
     pub pool: Option<Arc<KvSlotPool>>,
+}
+
+impl EndpointSlots {
+    /// The endpoint's aggregate decode permits: every pooled admission at this server takes one.
+    pub fn concurrency(&self) -> &super::EndpointConcurrency {
+        &self.concurrency
+    }
 }
 
 impl EndpointAdmission {

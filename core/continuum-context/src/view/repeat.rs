@@ -1,4 +1,4 @@
-//! MIND-CONTEXT invariant 4: a cycle cannot be presented as progress.
+//! CONTINUUM-ENGINE section 5 invariant 4: a cycle cannot be presented as progress.
 //!
 //! An act that asks a tool which only observes for exactly what an earlier act in its chain asked
 //! (equal [`Fingerprint`](crate::cause::Fingerprint)), and gets the same outcome (equal content
@@ -11,8 +11,13 @@
 //! repeat is chosen for an act's first arrival in an epoch, and only when the occurrence it
 //! repeats is held WHOLE in that epoch, so it was in the context she was sent. An ancestor that is
 //! folded, collapsed, summarized or gone with a turnover gives no repeat: she needs the content
-//! again and it arrives whole. A turnover re-renders every item as itself, and a reopen is never a
-//! repeat ([`ToolEffect::Reopens`]).
+//! again and it arrives whole. A turnover re-renders every item as itself. A reopen
+//! ([`ToolEffect::Reopens`]) repeats only an identical reopen whose whole is held: a first reopen,
+//! after a repeat's pointer, always arrives whole, while reopening the same saved output again
+//! with its whole in front of her is the repeat (IntelMac, 2026-11-11: 20+ identical reopens).
+//!
+//! Her newest act is judged the same way as her act's tail arrives ([`View::judge_tail`](super::View::judge_tail)):
+//! an act judged only once it reached her sources was never seen as a repeat on its own arrival.
 
 use std::collections::HashMap;
 
@@ -98,7 +103,7 @@ fn ancestors<T>(
 fn observed<T>(item: &Item<T>) -> Option<(Fingerprint, ContentHash)> {
     let act = item.act?;
     match (act.effect, item.content) {
-        (ToolEffect::Observes, Content::Hashed(hash)) => Some((act.fingerprint, hash)),
+        (ToolEffect::Observes | ToolEffect::Reopens, Content::Hashed(hash)) => Some((act.fingerprint, hash)),
         _ => None,
     }
 }

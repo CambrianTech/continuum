@@ -12,7 +12,6 @@ types, derive macros).
 | `continuum-core/` | The substrate binary (`continuum-core-server`) and library. Persona / cognition / inference / airc / paging / system_resources / routing / runtime. |
 | `continuum-airc-protocol/` | Shared wire types for the substrate's airc command + event protocols. Consumed by `core/continuum-core` (server-side) AND `client/continuum-client` (client-side) so the wire bytes can't drift. |
 | `continuum-orm-derive/` | `#[derive(Entity)]` + `#[entity(...)]` proc macros. The rust analogue of TS entity decorators. |
-| `inference-grpc/` | gRPC-protocol shim for AI inference (separate binary). |
 | `jtag-mcp/` | Rust MCP server (will graduate to `apps/mcp/` per task #143). |
 | `livekit-bridge/`, `livekit-protocol/` | WebRTC + LiveKit integration crates. |
 | `llama/` | Wrapper around the vendored `llama.cpp` library (`core/vendor/llama.cpp`). |
@@ -28,7 +27,7 @@ types, derive macros).
 
 The substrate doctrine docs in `docs/architecture/`:
 
-- `CBAR-SUBSTRATE-ARCHITECTURE.md` — RTOS-style runtime contract every rust module inherits.
+- `CONTINUUM-ENGINE.md` — the engine design and plan; its section 3 is the RTOS-style runtime contract every rust module inherits.
 - `CONCURRENCY-STYLE-GUIDE.md` — canonical concurrent shape (own task + `tokio::time::interval` + `watch::Sender<Snapshot>` + atomic gate + 100ms timeout + quarantine).
 - `PERSONA-COGNITION-PIPELINE.md` — what a persona IS and the cognition cycle.
 - `RTOS-DEBUGGER-PROBES.md` — `probe!` / `time_sync!` / `time_probe!` macros as RTOS-style breakpoints.

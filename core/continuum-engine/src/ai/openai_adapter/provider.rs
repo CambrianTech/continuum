@@ -23,7 +23,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// derived catalog value and can misname the lane (5090 2026-07-24), so
     /// a refusal must not point callers at it when the truth is known.
     fn served_model_ids(&self) -> Vec<String> {
-        let guard = self.runtime_models.read().unwrap();
+        let guard = self.runtime_models.read();
         match guard.as_ref().filter(|set| !set.is_empty()) {
             Some(set) => {
                 let mut ids: Vec<String> = set.iter().cloned().collect();
@@ -47,12 +47,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// existing physical residency is warm; failure leaves the turn backstop
     /// responsible for restoring or prefilling normally.
     fn warm_ahead(&self, key: crate::inference::slots::PageKey) {
+        use continuum_base::probed::Probed;
         let root = self.endpoints().root().to_string();
         // Discovery is the pin path's job — warm-ahead only acts on servers
         // whose slot pool is already installed (every server after its first
         // real turn), so it can never race the /props probe or mis-latch it.
-        let Some(Some(pool)) = crate::inference::slots::directory().get(&root) else {
-            return;
+        let pool = match crate::inference::slots::directory().get(&root) {
+            Probed::Known(pool) => pool,
+            Probed::NotAsked | Probed::Absent(_) => return,
         };
         if pool.scratch_slot().is_none() {
             // Without reserved scratch, already-admitted keyless traffic can
@@ -68,10 +70,11 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             return;
         }
         let client = self.client.clone();
-        let concurrency = self.concurrency.clone();
+        // The endpoint's own permits: a pooled server's one aggregate bound (card 23069702).
+        let concurrency = crate::inference::slots::directory().endpoint(&root).concurrency().bound();
         tokio::spawn(async move {
             let _ = crate::inference::turn_admission::warm_ahead(
-                &concurrency,
+                concurrency,
                 key,
                 pool,
                 &client,
@@ -89,27 +92,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // itself, and any modality absent from the set is bridged (vision →
         // VisionDescriptionService, audio → STT/TTS) before the request lands.
         let supports_tools = self.config.capabilities.contains(&Capability::ToolUse);
-        AdapterCapabilities::builder()
+        let builder = AdapterCapabilities::builder()
             .capabilities(self.config.capabilities.iter().copied())
             .remote()
-            // Sourced from the served model's declared ceiling (#46) — never a
-            // hardcoded per-adapter clamp. The fallbacks only apply when no
-            // model row is present (a mis-provisioned adapter), which fails
-            // loud downstream anyway.
-            .context_window(
-                self.config
-                    .models
-                    .first()
-                    .map(|m| m.context_window)
-                    .unwrap_or(128_000),
-            )
-            .max_output_tokens(
-                self.config
-                    .models
-                    .first()
-                    .map(|m| m.max_output_tokens)
-                    .unwrap_or(16_384),
-            )
             // Native function-calling + JSON-Schema when the served model does
             // tools; otherwise the model is a competent chat model and cognition
             // emulates tools/schema in-prompt.
@@ -117,8 +102,17 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 crate::ai::adapter::NativeProtocols::FunctionCalling
             } else {
                 crate::ai::adapter::NativeProtocols::PromptEmulated
-            })
-            .build()
+            });
+        // Sourced from the served model's declared ceiling (#46), never a hardcoded
+        // per-adapter clamp. An adapter with no model row declares no window: the
+        // capability stays unknown rather than becoming a number the budget trusts.
+        match self.config.models.first() {
+            Some(model) => builder
+                .context_window(model.context_window)
+                .max_output_tokens(model.max_output_tokens)
+                .build(),
+            None => builder.build(),
+        }
     }
 
     fn api_style(&self) -> ApiStyle {
@@ -192,7 +186,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// so the fabric's capability-aware selection sees the truth the endpoint
     /// told us — not a guess. `Unknown`/`Unsupported` → `None`.
     fn lora_capabilities(&self) -> LoRACapabilities {
-        match &*self.lora_support.read().unwrap() {
+        match &*self.lora_support.read() {
             LoraSupport::Supported(catalog) => LoRACapabilities::MultiLayerPaging {
                 max_loaded: catalog.len(),
                 supports_hot_swap: true,
@@ -210,67 +204,16 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     }
 
     async fn initialize(&mut self) -> Result<(), String> {
-        // The decode permit tracks the LIVE served slot count (B3): grow adds
-        // permits the moment a relaunch serves more slots; shrink retires them
-        // as in-flight generations finish. One task per adapter, canonical
-        // watch-receiver shape — no polling, no locks across await.
-        if self.config.single_resident_model
-            && !self
-                .permit_reconciler_started
-                .swap(true, std::sync::atomic::Ordering::SeqCst)
-        {
-            if let Some(mut rx) = crate::inference::llama_server::serving_state_receiver() {
-                let sem = self.concurrency.clone();
-                let issued = self.permit_target.clone();
-                tokio::spawn(async move {
-                    loop {
-                        if rx.changed().await.is_err() {
-                            return; // serving sender gone — process teardown
-                        }
-                        let target = { rx.borrow().lanes.max(1) as usize };
-                        let cur = issued.load(std::sync::atomic::Ordering::SeqCst);
-                        if target > cur {
-                            sem.add_permits(target - cur);
-                            issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            continuum_base::probe!(
-                                class = "inference.permits.grown",
-                                from = cur as u64,
-                                to = target as u64,
-                                "decode permits grew to the served slot count"
-                            );
-                        } else if target < cur {
-                            // Retire the surplus as generations finish — a
-                            // smaller relaunch is never over-admitted, and a
-                            // long drain re-checks the latest snapshot on the
-                            // next loop pass.
-                            for _ in 0..(cur - target) {
-                                match sem.acquire().await {
-                                    Ok(permit) => permit.forget(),
-                                    Err(_) => return,
-                                }
-                            }
-                            issued.store(target, std::sync::atomic::Ordering::SeqCst);
-                            continuum_base::probe!(
-                                class = "inference.permits.shrunk",
-                                from = cur as u64,
-                                to = target as u64,
-                                "decode permits retired down to the served slot count"
-                            );
-                        }
-                    }
-                });
-            }
-        }
         // Only require API key if provider needs auth. Providers without
         // an `api_key_env` in the catalog (localhost DMR, llamacpp-local) skip
         // this entirely — their `requires_auth` is false.
         if self.config.requires_auth {
-            let key_env = self.config.api_key_env.as_deref().unwrap_or_else(|| {
-                panic!(
+            let Some(key_env) = self.config.api_key_env.as_deref() else {
+                return Err(format!(
                     "provider `{}` requires auth but has no api_key_env in the catalog",
                     self.config.provider_id
-                )
-            });
+                ));
+            };
             self.api_key = get_secret(key_env).map(|s| s.to_string());
             if self.api_key.is_none() {
                 return Err(format!(
@@ -289,20 +232,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // That's the correct failure mode: don't falsely claim availability.
         // Gated on the TYPED capability (#55), never the provider id.
         if self.config.dynamic_model_catalog {
-            if let Err(e) = self.refresh_runtime_models().await {
-                clog_warn!(
+            match self.refresh_runtime_models().await {
+                Ok(count) => clog_info!("DMR live model catalog: {} model(s) available", count),
+                Err(e) => clog_warn!(
                     "DMR model catalog fetch failed at init: {}. DMR will report no models available until a successful refresh.",
                     e
-                );
-            } else {
-                let count = self
-                    .runtime_models
-                    .read()
-                    .unwrap()
-                    .as_ref()
-                    .map(|s| s.len())
-                    .unwrap_or(0);
-                clog_info!("DMR live model catalog: {} model(s) available", count);
+                ),
             }
         }
 
@@ -395,7 +330,10 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
 
         let status = response.status();
         if !status.is_success() {
-            let err_body = response.text().await.unwrap_or_default();
+            let err_body = match response.text().await {
+                Ok(body) => body,
+                Err(read) => format!("<error body unreadable: {read}>"),
+            };
             return Err(format!(
                 "{} /v1/embeddings {status}: {err_body}",
                 self.config.name

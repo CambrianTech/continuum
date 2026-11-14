@@ -468,6 +468,14 @@ pub async fn card(airc: &Airc, card_id: WorkCardId) -> Option<(Room, WorkCard)> 
         })
 }
 
+/// Every board of her subscribed rooms, through her index: where her send-backs and the review
+/// cards of their resubmissions live (card 7f8c248e).
+pub async fn boards(airc: &Airc) -> Result<Vec<Arc<BoardSnapshot>>, AircError> {
+    let rooms = subscribed_rooms(airc).await?;
+    let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: leases read as not yet crossed
+    Ok(for_peer(airc.peer_id()).boards(airc, &rooms, now_ms).await.into_iter().map(|(_, board)| board).collect())
+}
+
 /// The board of one subscribed room, through her index. `None` names the scope's current room.
 /// A room she is not subscribed to is `NotSubscribed`, never another room's board.
 pub async fn room_board(airc: &Airc, room: Option<uuid::Uuid>) -> Result<Arc<BoardSnapshot>, AircError> {
