@@ -19,7 +19,7 @@
 //! with the workspace root resolved and the `DashMap` guard dropped FIRST, so a git never
 //! holds a shard lock across I/O, and a cancelled command ends its git and what it started.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
@@ -32,6 +32,7 @@ pub mod commit;
 pub mod diff;
 pub mod fetch;
 pub mod log;
+pub mod merge;
 pub mod push;
 pub mod rebase;
 pub mod status;
@@ -42,6 +43,7 @@ use commit::CodeGitCommit;
 use diff::CodeGitDiff;
 use fetch::CodeGitFetch;
 use log::CodeGitLog;
+use merge::CodeGitMerge;
 use push::CodeGitPush;
 use rebase::CodeGitRebase;
 use status::CodeGitStatus;
@@ -57,6 +59,17 @@ pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<P
         .get(&key.map_key())
         .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
     Ok(engine.workspace_root())
+}
+
+/// The commit her branch ends at now.
+pub(crate) async fn head(root: &Path) -> Result<String, CommandError> {
+    crate::code::git_bridge::run_git(root, &["rev-parse", "HEAD"]).await.map(|h| h.trim().to_string()).map_err(CommandError::Internal)
+}
+
+/// The paths git holds unmerged: what she resolves before a merge or rebase continues.
+pub(crate) async fn conflicted(root: &Path) -> Result<Vec<String>, CommandError> {
+    let listed = crate::code::git_bridge::run_git(root, &["diff", "--name-only", "--diff-filter=U"]).await.map_err(CommandError::Internal)?;
+    Ok(listed.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
 }
 
 /// The dep-holding git command objects [`CodeModule`](crate::modules::code::CodeModule)
@@ -90,6 +103,9 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGitRebase {
             state: state.clone(),
         }),
+        Arc::new(CodeGitMerge {
+            state: state.clone(),
+        }),
         Arc::new(CodeGitApply { state }),
     ]
 }
@@ -113,6 +129,7 @@ mod tests {
         assert_eq!(CodeGitPush::NAME, "code/git/push");
         assert_eq!(CodeGitFetch::NAME, "code/git/fetch");
         assert_eq!(CodeGitRebase::NAME, "code/git/rebase");
+        assert_eq!(CodeGitMerge::NAME, "code/git/merge");
     }
 
     // what this catches: the generator macro fills DESCRIPTION from the doc comment.
