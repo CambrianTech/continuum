@@ -573,7 +573,7 @@ mod tests {
         };
         let host = HostBudget { usable_bytes: 24_804_791_852, perf_cores: 8 };
         let reqs = minds(&[36_491, 64_256]);
-        let a = allocate(&reqs, &[fp], &host, 2).expect("one slot fits");
+        let a = allocate(&reqs, std::slice::from_ref(&fp), &host, 2).expect("one slot fits");
         assert_eq!((a.lanes, a.window), (1, 64_256));
         assert_eq!(a.served, vec![reqs[0].persona]);
         assert_eq!(a.unserved, vec![reqs[1].persona]);

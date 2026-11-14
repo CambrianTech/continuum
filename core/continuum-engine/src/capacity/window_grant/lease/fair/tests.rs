@@ -87,7 +87,7 @@ fn a_need_that_grows_under_a_rendered_act_moves_her_grant_at_the_next_act() {
     let mut fair = FairGrantState::default();
     let mut current = None;
     let mut publish = |need: u32, current: &mut Option<PoolGrants>| {
-        let demands = [Demand { mind: a, need: t(need), target: t(need), wish: t(need), in_flight: false, settled: true, ceiling: 200 }];
+        let demands = [Demand { mind: a, need: t(need), target: t(need), wish: t(need), turn: crate::capacity::window_grant::Turn::Settled, ceiling: 200, growth: crate::inference::planning::window_allocator::Growth::Unmeasured }];
         let before = current.clone();
         owner.fair_publish(&mut fair, &demands, 200, 200, engine(), || before, |next| *current = Some(next)).1
     };
