@@ -152,13 +152,17 @@ pub enum ResultCustody {
     Whole { handle: String },
     /// `content` is a pointer; the whole result is saved under `handle`.
     Pointer { handle: String },
+    /// Nothing ran (a refused call, a reported cut): `content` is the refusal, which reaches her
+    /// in her act's result and nowhere else. No output exists, so no id names one: an id she could
+    /// reopen would hand her a refusal as if it were a result (IntelMac 0051cdcf, 2026-11-14).
+    Refused,
 }
 
 impl ResultCustody {
     /// The handle the whole result is saved under, if it was saved.
     pub fn handle(&self) -> Option<&str> {
         match self {
-            ResultCustody::Unsaved => None,
+            ResultCustody::Unsaved | ResultCustody::Refused => None,
             ResultCustody::Whole { handle } | ResultCustody::Pointer { handle } => Some(handle),
         }
     }

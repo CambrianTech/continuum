@@ -16,7 +16,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     // A short first line per result: that line is the ledger's, the body the ring's.
-    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("f1a5ed0000000001"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -25,7 +25,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
     assert!(lines.first().is_some_and(|head| head.starts_with("[action #1]")), "{lines:?}");
     let ring = wm.recent_results_messages().join("\n");
-    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"first-handle\"}) — collapsed]"), "{ring}");
+    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"f1a5ed0000000001\"}) — collapsed]"), "{ring}");
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
 }
 
@@ -38,7 +38,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
 fn every_collapsed_line_she_is_shown_reads_back_and_nothing_else_does() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
-    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("first-handle"));
+    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("f1a5ed0000000001"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -70,9 +70,9 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     let room = Uuid::new_v4();
     let cap = 2 * BODY;
     wm.record("the parser drops the index");
-    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("f1a5ed0000000001"));
     for act in 2..=12 {
-        wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
+        wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("a1b2c3d4e5f60718"));
     }
     wm.record("so the fix is at checks.py:118");
     wm.record_settlement("done", None);
@@ -188,7 +188,7 @@ fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     let body = format!("first\n{}", "a".repeat(cap / 2));
-    wm.record_receipt_typed(&[], &body, None, saved("first-handle"));
+    wm.record_receipt_typed(&[], &body, None, saved("f1a5ed0000000001"));
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
