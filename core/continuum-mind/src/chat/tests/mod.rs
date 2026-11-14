@@ -115,7 +115,13 @@
     /// The `data/batch` reply the store gives a committed line: the message row, then its
     /// arrival at sequence 1. ONE construction site for every chat test's data stub.
     pub(super) fn batch_ok() -> Value {
-        json!({ "success": true, "data": [{ "success": true }, { "success": true, "seq": 1, "fresh": true }] })
+        batch_reply(crate::orm::types::BatchOutcome::Ensured, crate::orm::types::Appended::Fresh(1))
+    }
+
+    /// A committed line's typed `data/batch` outcomes: its message row, then its arrival.
+    pub(super) fn batch_reply(row: crate::orm::types::BatchOutcome, arrival: crate::orm::types::Appended) -> Value {
+        serde_json::to_value([row, crate::orm::types::BatchOutcome::Appended { appended: arrival }])
+            .expect("test: batch outcomes serialize")
     }
 
     fn imported_line(text: &str) -> crate::chat::line_store::PostedLine {
@@ -193,9 +199,7 @@
     #[tokio::test]
     pub(super) async fn a_duplicate_import_reports_its_existing_arrival() {
         let data = StubDataModule::new(|_command, _params| {
-            Ok(
-                json!({ "success": true, "data": [{ "success": true, "created": false }, { "success": true, "seq": 7, "fresh": false }] }),
-            )
+            Ok(batch_reply(crate::orm::types::BatchOutcome::AlreadyPresent, crate::orm::types::Appended::Existing(7)))
         });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("already stored by send()");
@@ -209,18 +213,21 @@
         );
     }
 
-    // what this catches: an append reply that does not say whether it created the arrival being
-    // read as a duplicate, vouching for a line nobody confirmed (Codex on #5694).
+    // what this catches: a batch reply without the arrival's append outcome read as a committed
+    // import, vouching for a line nobody confirmed (Codex on #5694). Freshness itself is typed
+    // (Appended::Fresh | Existing), so only a missing outcome can still arrive.
     #[tokio::test]
-    pub(super) async fn an_append_reply_without_freshness_is_an_error() {
-        let data = StubDataModule::new(|_command, _params| Ok(json!({ "success": true, "data": [{ "success": true }, { "success": true, "seq": 3 }] })));
+    pub(super) async fn a_batch_reply_without_its_arrival_is_an_error() {
+        let data = StubDataModule::new(|_command, _params| {
+            Ok(serde_json::to_value([crate::orm::types::BatchOutcome::Ensured]).expect("test: outcomes serialize"))
+        });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("unconfirmed");
         let err = chat
             .commit_line(&line, None, json!({ "text": line.text }))
             .await
-            .expect_err("a reply without freshness is malformed");
-        assert!(err.contains("did not say whether it was fresh"), "named: {err}");
+            .expect_err("a reply without its arrival is malformed");
+        assert!(err.contains("reported no arrival"), "named: {err}");
     }
 
     // what this catches: a store refusal swallowed as a calm skip. The import is awaited by the
@@ -229,7 +236,7 @@
     #[tokio::test]
     pub(super) async fn a_refused_import_is_an_error() {
         let data = StubDataModule::new(|_command, _params| {
-            Ok(json!({ "success": false, "error": "disk full" }))
+            Err("disk full".to_string())
         });
         let chat = chat_with_stubs(vec![Arc::new(data)]);
         let line = imported_line("lost?");

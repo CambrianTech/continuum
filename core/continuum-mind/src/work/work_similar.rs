@@ -497,7 +497,6 @@ impl WorkGet {
 #[async_trait]
 impl ActionCommand for WorkGet {
     const NAME: &'static str = "work/get";
-    const ALIASES: &'static [&'static str] = &["get_task"];
     const NATIVE: bool = true; // core room workflow — re-reading a card's spec mid-task must not require asking the room
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =

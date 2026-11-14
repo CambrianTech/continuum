@@ -32,17 +32,18 @@ pub struct VectorBackfillParams {
     pub model: Option<String>,
     /// Optional record filter (same shape as `data/list` filters). Restricts which
     /// records get backfilled.
+    /// Decoded once at the wire into typed filters (each an operator or a value).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    #[ts(optional, type = "Record<string, unknown>")]
-    pub filter: Option<serde_json::Map<String, serde_json::Value>>,
+    #[ts(optional, as = "Option<HashMap<String, FieldFilter>>")]
+    #[schemars(with = "Option<serde_json::Map<String, serde_json::Value>>")]
+    pub filter: Option<HashMap<String, FieldFilter>>,
     /// Storage handle. Defaults to "main" (the shared DB).
     // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
     // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
     // its name; only the wire changes.
-    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub handle: Option<String>,
+    #[serde(default, rename = "dbPath", skip_serializing_if = "crate::data::StoreHandle::is_main")]
+    #[ts(optional, as = "Option<crate::data::StoreHandle>")]
+    pub handle: crate::data::StoreHandle,
 }
 
 crate::action_command! {
@@ -57,18 +58,10 @@ crate::action_command! {
     params: VectorBackfillParams,
     output: VectorBackfillStats,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main");
-        // Parse the wire filter map into typed FieldFilters (untagged: operator or value).
-        let filter: Option<HashMap<String, FieldFilter>> = match p.filter {
-            Some(map) => Some(
-                serde_json::from_value(serde_json::Value::Object(map))
-                    .map_err(|e| format!("invalid filter: {e}"))?,
-            ),
-            None => None,
-        };
+        let handle = p.handle.as_str();
         let result = this
             .state
-            .backfill_vectors(handle, &p.collection, &p.text_field, p.batch_size, p.model, filter)
+            .backfill_vectors(handle, &p.collection, &p.text_field, p.batch_size, p.model, p.filter)
             .await?;
         Ok(result)
     }

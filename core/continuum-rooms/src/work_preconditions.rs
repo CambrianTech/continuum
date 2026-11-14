@@ -91,24 +91,11 @@ impl WorkVerb {
         }
     }
 
-    /// The verb's declared aliases, the first being the name her tool list offers it under. The
-    /// mind's work commands declare `ALIASES` from this, so the alias has one owner.
-    pub const fn aliases(self) -> &'static [&'static str] {
-        match self {
-            WorkVerb::Claim => &["claim_task"],
-            WorkVerb::Heartbeat => &["heartbeat_task", "extend_claim"],
-            WorkVerb::Note => &["ledger", "note_task"],
-            WorkVerb::Release => &["release_task"],
-            WorkVerb::State => &["update_task", "close_task"],
-            WorkVerb::Review | WorkVerb::Submission | WorkVerb::Submit => &[],
-        }
-    }
-
     /// The name her tool list offers the verb under (`sdk_codegen::wire_name`, the one function
-    /// her function list is named by), so a move her text names is one she can call.
+    /// her function list is named by: `work/release` → `work_release`), so a move her text names
+    /// is one she can call, and every work verb shares one scheme (card d2b6dbce).
     pub fn offered(self) -> String {
-        use continuum_kernel::sdk_codegen::{offer_style_for, primary_alias, wire_name};
-        wire_name(self.command(), primary_alias(self.aliases()), offer_style_for(None))
+        continuum_kernel::sdk_codegen::wire_name(self.command())
     }
 
     /// What holding this verb's precondition entitles her to besides the verb itself, as command

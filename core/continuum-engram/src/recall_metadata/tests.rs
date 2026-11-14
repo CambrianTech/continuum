@@ -512,7 +512,7 @@
         // Delete the engram. SQLite's CASCADE rule must remove the
         // child metadata row at the DB layer.
         let deleted = engrams.delete(engram_id).await.expect("delete engram");
-        assert!(deleted);
+        assert_eq!(deleted, continuum_kernel::orm::seam::Deleted::Removed);
 
         let after = metadata
             .find_by_id(row_id)

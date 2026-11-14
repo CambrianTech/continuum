@@ -50,7 +50,7 @@ impl super::relational::RelationalStore {
                 Some(value) => value,
                 None => String::new(),
             },
-            schema: Some(serde_json::to_string(schema.as_ref())?),
+            schema: Some(serde_json::to_string(schema.as_ref())?), // wire: collection stats report the declared schema to clients as text
             indices: Some(
                 schema
                     .indexes
@@ -92,6 +92,7 @@ impl super::relational::RelationalStore {
                 let mut revisions = Vec::new();
                 for collection in &ordered {
                     let deleted = store
+                        // bounded: clearing deletes every row by intent, in the store, loading none
                         .delete_on(transaction, QueryBuilder::new(collection).build())
                         .await?;
                     records_deleted = records_deleted

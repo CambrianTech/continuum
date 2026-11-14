@@ -282,25 +282,28 @@ pub async fn credit_status<T: Transport>(
     submission_id: Uuid,
 ) -> Result<ReviewedCredit, ClientError> {
     let id = submission_id.to_string();
-    let Some(CreditSnapshot { binding, decision, accepted }) = read_credit(conn, persona_name, submission_id).await? else {
+    let Some(CreditSnapshot { binding, progress }) = read_credit(conn, persona_name, submission_id).await? else {
         return Ok(ReviewedCredit::pending(ReviewedCreditState::Unbound));
     };
     // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
-    let refused = match (&accepted, &decision) {
-        (None, Some(_)) => read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
-        _ => None,
+    let (state, decision_review_id, destination) = match progress {
+        CreditProgress::AwaitingReview => (ReviewedCreditState::AwaitingReview, None, None),
+        CreditProgress::Decided(decision) => (
+            ReviewedCreditState::AwaitingAcceptance,
+            Some(decision.review.review_id.as_uuid()),
+            read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
+        ),
+        CreditProgress::Accepted { decision, acceptance } => (
+            ReviewedCreditState::Accepted,
+            Some(decision.review.review_id.as_uuid()),
+            Some(acceptance.receipt),
+        ),
     };
     Ok(ReviewedCredit {
-        state: if accepted.is_some() {
-            ReviewedCreditState::Accepted
-        } else if decision.is_some() {
-            ReviewedCreditState::AwaitingAcceptance
-        } else {
-            ReviewedCreditState::AwaitingReview
-        },
+        state,
         staged_revision_id: Some(binding.selection.staged_revision_id),
-        decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
-        destination: accepted.map(|a| a.receipt).or(refused),
+        decision_review_id,
+        destination,
     })
 }
 
@@ -308,8 +311,14 @@ pub async fn credit_status<T: Transport>(
 /// same causality checks and keep the evidence they already read.
 pub(super) struct CreditSnapshot {
     pub(super) binding: WorkCreditBinding,
-    pub(super) decision: Option<CreditReviewDecision>,
-    pub(super) accepted: Option<CreditReviewAcceptance>,
+    pub(super) progress: CreditProgress,
+}
+
+/// Where one credit is in its review: an acceptance exists only with the decision it accepts.
+pub(super) enum CreditProgress {
+    AwaitingReview,
+    Decided(CreditReviewDecision),
+    Accepted { decision: CreditReviewDecision, acceptance: CreditReviewAcceptance },
 }
 
 pub(super) async fn read_credit<T: Transport>(
@@ -339,7 +348,14 @@ pub(super) async fn read_credit<T: Transport>(
             "review acceptance does not match its decision and selected revision".into(),
         ));
     }
-    Ok(Some(CreditSnapshot { binding, decision, accepted }))
+    let progress = match accepted {
+        Some(acceptance) => match decision {
+            Some(decision) => CreditProgress::Accepted { decision, acceptance },
+            None => return Err(ClientError::Transport("review acceptance has no decision".into())),
+        },
+        None => decision.map_or(CreditProgress::AwaitingReview, CreditProgress::Decided),
+    };
+    Ok(Some(CreditSnapshot { binding, progress }))
 }
 
 /// An indexed one-row list distinguishes absence from storage/decoding failure;
@@ -619,10 +635,7 @@ pub(super) async fn generation_row<T: Transport>(
 ) -> Result<StagedCredit, CreditBindingError> {
     // Read the compact child index through the shared cursor owner. Parent
     // evidence is loaded only for matching links and still revalidated below.
-    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), StagedCreditGeneration::COLLECTION,
-        serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), None,
-    ).await?;
+    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCreditGeneration::COLLECTION, filter: &serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), select: None }).await?;
     let mut selected = None;
     for link in links {
         if link.submitted_request_id != generation {

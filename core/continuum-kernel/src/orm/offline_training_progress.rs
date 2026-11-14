@@ -15,6 +15,23 @@ pub struct Model {
 pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
+/// Why the offline migration refused or failed, typed for its caller.
+#[derive(Debug, thiserror::Error)]
+pub enum MigrationError {
+    #[error("migration source must be an existing database file")]
+    NotAFile,
+    #[error("database path is not UTF-8")]
+    NotUtf8,
+    #[error("database path contains URI delimiters or escapes")]
+    UriDelimiters,
+    #[error("refusing {invalid} invalid non-NULL progress values")]
+    InvalidProgress { invalid: u64 },
+    #[error("migration cardinality mismatch: changed {changed} of {historical_nulls} historical NULLs, {remaining} remain; refusing commit")]
+    Cardinality { changed: u64, historical_nulls: u64, remaining: u64 },
+    #[error(transparent)]
+    Database(#[from] DbErr),
+}
+
 #[derive(Debug, PartialEq, serde::Serialize)]
 pub struct Receipt {
     pub rows: u64,
@@ -25,16 +42,16 @@ pub struct Receipt {
 
 /// Call only on an explicit offline database. Apply is an explicit assertion
 /// that these historical NULLs mean unstarted, not unknown training progress.
-pub async fn run(path: &Path, apply_historical_unstarted: bool) -> Result<Receipt, String> {
+pub async fn run(path: &Path, apply_historical_unstarted: bool) -> Result<Receipt, MigrationError> {
     if !path.is_file() {
-        return Err("migration source must be an existing database file".into());
+        return Err(MigrationError::NotAFile);
     }
     let path = path
         .to_str()
-        .ok_or("database path is not UTF-8")?
+        .ok_or(MigrationError::NotUtf8)?
         .replace('\\', "/");
     if path.contains(['?', '#', '%']) {
-        return Err("database path contains URI delimiters or escapes".into());
+        return Err(MigrationError::UriDelimiters);
     }
     let mode = if apply_historical_unstarted {
         "rw"
@@ -45,15 +62,14 @@ pub async fn run(path: &Path, apply_historical_unstarted: bool) -> Result<Receip
     // One offline transaction, no runtime pool or alternate backend.
     options.max_connections(1).sqlx_logging(false);
     let db = Database::connect(options)
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     let result = migrate(&db, apply_historical_unstarted).await;
-    db.close().await.map_err(|error| error.to_string())?;
+    db.close().await?;
     result
 }
 
-async fn migrate(db: &DatabaseConnection, apply: bool) -> Result<Receipt, String> {
-    let tx = db.begin().await.map_err(|error| error.to_string())?;
+async fn migrate(db: &DatabaseConnection, apply: bool) -> Result<Receipt, MigrationError> {
+    let tx = db.begin().await?;
     // Validate storage classes before typed decoding can coerce REAL or TEXT.
     // Aggregate queries never retrieve bodies or materialize all submissions.
     let invalid = Condition::all().add(Column::Learned.is_not_null()).add(
@@ -68,42 +84,35 @@ async fn migrate(db: &DatabaseConnection, apply: bool) -> Result<Receipt, String
     let invalid = Entity::find()
         .filter(invalid)
         .count(&tx)
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     if invalid != 0 {
-        return Err(format!(
-            "refusing {invalid} invalid non-NULL progress values"
-        ));
+        return Err(MigrationError::InvalidProgress { invalid });
     }
     let rows = Entity::find()
         .count(&tx)
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     let historical_nulls = Entity::find()
         .filter(Column::Learned.is_null())
         .count(&tx)
-        .await
-        .map_err(|error| error.to_string())?;
+        .await?;
     let changed = if apply {
         let changed = Entity::update_many()
             .col_expr(Column::Learned, Expr::value(0_i64))
             .filter(Column::Learned.is_null())
             .exec(&tx)
-            .await
-            .map_err(|error| error.to_string())?
+            .await?
             .rows_affected;
         let remaining = Entity::find()
             .filter(Column::Learned.is_null())
             .count(&tx)
-            .await
-            .map_err(|error| error.to_string())?;
+            .await?;
         if changed != historical_nulls || remaining != 0 {
-            return Err("migration cardinality mismatch; refusing commit".into());
+            return Err(MigrationError::Cardinality { changed, historical_nulls, remaining });
         }
-        tx.commit().await.map_err(|error| error.to_string())?;
+        tx.commit().await?;
         changed
     } else {
-        tx.rollback().await.map_err(|error| error.to_string())?;
+        tx.rollback().await?;
         0
     };
     Ok(Receipt {

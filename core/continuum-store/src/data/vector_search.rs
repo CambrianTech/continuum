@@ -62,7 +62,7 @@ impl DataState {
                 // A ranked row the query did not return was deleted after ranking.
                 Some(records.remove(&id.to_string()).ok_or_else(|| VectorStoreError::Hydration {
                     id,
-                    fault: crate::orm::StorageError::NotFound { collection: collection.to_owned(), id: id.to_string() },
+                    fault: crate::orm::StorageError::NotFound { collection: collection.to_owned().into(), id: id.to_string() },
                 })?)
             } else {
                 None

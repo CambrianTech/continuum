@@ -20,7 +20,7 @@ pub(super) fn column(schema: &CollectionSchema, field: &str) -> Result<Alias, St
     {
         Ok(Alias::new(name))
     } else {
-        Err(StorageError::Undeclared { collection: schema.collection.clone(), field: field.to_owned() })
+        Err(StorageError::Undeclared { collection: schema.collection.clone().into(), field: field.to_owned().into() })
     }
 }
 
@@ -64,7 +64,7 @@ pub(super) fn condition(
             all = all.add(field_condition(
                 table.clone(),
                 schema.fields.iter().find(|declared| naming::to_snake_case(&declared.name) == naming::to_snake_case(field))
-                    .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone(), field: field.clone() })?,
+                    .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone().into(), field: field.clone().into() })?,
                 filter,
             )?);
         }
@@ -76,7 +76,7 @@ pub(super) fn condition(
             .find(|field| {
                 naming::to_snake_case(&field.name) == naming::to_snake_case(&cursor.field)
             })
-            .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone(), field: cursor.field.clone() })?;
+            .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone().into(), field: cursor.field.clone().into() })?;
         let unique = field.name == "id"
             || field.unique
             || schema.indexes.iter().any(|index| {
@@ -113,10 +113,10 @@ pub(super) fn condition(
             ))
         };
         if let Some(start) = &range.start {
-            all = all.add(col().gte(start.clone()));
+            all = all.add(col().gte(start.as_str()));
         }
         if let Some(end) = &range.end {
-            all = all.add(col().lte(end.clone()));
+            all = all.add(col().lte(end.as_str()));
         }
     }
     Ok(all)

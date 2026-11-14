@@ -31,10 +31,9 @@ mod relational_structure;
 mod relational_catalog_tokens;
 mod relational_evolution;
 mod relational_conversion;
-#[cfg(test)]
-mod relational_derived_tests;
 pub mod schema_error;
 pub mod seam;
+pub mod names;
 pub mod storage_error;
 mod relational_query;
 mod relational_codec;

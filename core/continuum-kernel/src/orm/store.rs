@@ -163,12 +163,14 @@ where
 
     /// Count matching entities in the database without decoding their bodies.
     pub async fn count(&self) -> Result<usize, OrmStoreError> {
+        // bounded: a count returns one number and decodes no rows
         self.adapter.count(&QueryBuilder::new(T::COLLECTION).build()).await.map_err(failed::<T>("count"))
     }
 
     /// Stream boot replay in stable row order without collecting an intermediate result set.
     pub async fn scan(&self) -> Result<futures::stream::BoxStream<'_, Result<(Uuid, T), OrmStoreError>>, OrmStoreError> {
         use futures::StreamExt;
+        // bounded: a stream of one row at a time with no result set; each caller states what bounds its table
         let rows = self.adapter.scan(&QueryBuilder::new(T::COLLECTION).build()).await.map_err(failed::<T>("scan"))?;
         Ok(rows.map(|row| {
             let row = row.map_err(failed::<T>("scan"))?;

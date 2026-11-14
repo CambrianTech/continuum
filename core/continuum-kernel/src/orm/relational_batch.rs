@@ -23,19 +23,20 @@ impl super::relational::RelationalStore {
                             let record = store
                                 .read_on(transaction, &row.collection, &row.id)
                                 .await?
-                                .ok_or(StorageError::NotFound { collection: row.collection, id: row.id })?;
+                                .ok_or(StorageError::NotFound { collection: row.collection.into(), id: row.id })?;
                             BatchOutcome::Read { record }
                         }
                         BatchOperation::Delete(row) => {
                             let deleted = store
+                                // bounded: deletes the one row with this primary key, in the store, loading none
                                 .delete_on(transaction, QueryBuilder::new(&row.collection).filter_eq("id", row.id).build())
                                 .await?;
                             committed.extend(deleted.revisions);
                             if deleted.count == 0 { BatchOutcome::Absent } else { BatchOutcome::Removed }
                         }
                         BatchOperation::Update(row) => {
-                            if !store.update_on(transaction, &row.collection, &row.id, row.data, true).await? {
-                                return Err(StorageError::NotFound { collection: row.collection, id: row.id });
+                            if !store.update_on(transaction, super::seam::RowRef { collection: &row.collection, id: &row.id }, row.data, super::seam::Versioning::Increment).await? {
+                                return Err(StorageError::NotFound { collection: row.collection.into(), id: row.id });
                             }
                             BatchOutcome::Updated
                         }

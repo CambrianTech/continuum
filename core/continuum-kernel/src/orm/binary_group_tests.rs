@@ -50,7 +50,7 @@ async fn required_native_fields_create_atomically_without_body_readback(
         uuid::Uuid::from_u128(1).to_string()
     );
     assert!(store.create_binary(record(), payloads()?).await.is_err());
-    let page = read_page(&store, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(
         page[0]
             .value
@@ -70,7 +70,7 @@ async fn required_native_fields_create_atomically_without_body_readback(
     let store = open(path).await?;
     store.ensure(&RequiredNativeRow::collection_schema()).await?;
     for (field, expected) in payloads()? {
-        let page = read_page(&store, RequiredNativeRow::COLLECTION, &field, None, 1).await?;
+        let page = read_page(&store, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: &field }, None, 1).await?;
         assert_eq!(page[0].value.as_ref(), Some(&expected));
     }
     // One producer result contains both its compute payload and its coarse sketch.
@@ -97,54 +97,34 @@ async fn required_native_fields_create_atomically_without_body_readback(
         BinaryValue::new(descriptor(ElementType::U8, vec![1]), vec![1])?,
     );
     assert!(store
-        .update_binary(
-            RequiredNativeRow::COLLECTION.into(),
-            record().id,
-            invalid,
-            BinaryWriteCondition::Replace
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: invalid, condition: BinaryWriteCondition::Replace })
         .await
         .is_err());
     assert_eq!(*revision.borrow(), 1);
     for (field, expected) in payloads()? {
-        let page = read_page(&store, RequiredNativeRow::COLLECTION, &field, None, 1).await?;
+        let page = read_page(&store, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: &field }, None, 1).await?;
         assert_eq!(page[0].value.as_ref(), Some(&expected));
     }
     assert!(
         !store
-            .update_binary(
-                RequiredNativeRow::COLLECTION.into(),
-                record().id,
-                changed()?,
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: changed()?, condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     assert_eq!(*revision.borrow(), 1);
     assert!(
         store
-            .update_binary(
-                RequiredNativeRow::COLLECTION.into(),
-                record().id,
-                changed()?,
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: changed()?, condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(*revision.borrow(), 2);
     assert!(store
-        .update_binary(
-            RequiredNativeRow::COLLECTION.into(),
-            record().id,
-            std::collections::BTreeMap::new(),
-            BinaryWriteCondition::Replace
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: std::collections::BTreeMap::new(), condition: BinaryWriteCondition::Replace })
         .await
         .is_err());
     drop(store);
     let store = open(path).await?;
     for (field, expected) in changed()? {
-        let page = read_page(&store, RequiredNativeRow::COLLECTION, &field, None, 1).await?;
+        let page = read_page(&store, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: &field }, None, 1).await?;
         assert_eq!(page[0].value.as_ref(), Some(&expected));
     }
     assert_eq!(

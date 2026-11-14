@@ -387,7 +387,9 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// itself, so a command is fully portable: rename/move it and its aliases
     /// travel with it — no central table to keep in sync. Aggregated into one
     /// generated inverse index ([`crate::ai::tool_dialect`]); a name two
-    /// commands both claim is a build-time panic. Defaults to none.
+    /// commands both claim is a build-time panic. Defaults to none. Inbound only: what she is
+    /// OFFERED is always [`super::wire_name`] of [`Self::NAME`], so an alias never renames one
+    /// member of a family away from its siblings (card d2b6dbce).
     const ALIASES: &'static [&'static str] = &[];
     /// What this command's calls do to the world. See [`CommandSpec::EFFECT`]; defaults to
     /// `Undeclared`.

@@ -1,12 +1,14 @@
-//! The tool dialect's contract against the LIVE command registry: the aliases commands
-//! declare (`ALIASES`, `action_command!` `aliases:`) aggregate into the index the engine's
-//! `ai::tool_dialect` reads. These tests live here because the registrations do; the
+//! The tool dialect's contract against the LIVE command registry: every command is offered by
+//! ONE name derived from its path (`wire_name`: `work/release` → `work_release`), and the aliases
+//! commands declare (`ALIASES`, `action_command!` `aliases:`) aggregate into the inbound index the
+//! engine's `ai::tool_dialect` reads. These tests live here because the registrations do; the
 //! engine's own tests cannot see commands it does not link.
 
 #[cfg(test)]
 mod tests {
     use crate::ai::tool_dialect::*;
     use crate::ai::types::{NativeToolSpec, ToolCall, ToolInputSchema};
+    use crate::sdk_codegen::ext::command_registry_live;
 
     fn call(name: &str, input: serde_json::Value) -> ToolCall {
         ToolCall { id: "t1".into(), name: name.into(), input }
@@ -40,83 +42,79 @@ mod tests {
         assert_eq!(resolve_wire_name("tools/not/a/command"), "tools/not/a/command");
     }
 
-    // what this catches: an alias that ALSO carries args — both halves of the adapter
-    // have to compose, or `list_tasks(state=open)` still dies.
+    // what this catches: an offered name or an alias that ALSO carries args — both halves of
+    // the adapter have to compose, or `work_list(state=open)` still dies.
     #[test]
-    fn an_alias_carrying_arguments_resolves_through_both_halves() {
-        let mut c = call("list_tasks(state=open)", serde_json::json!({}));
-        normalize_call(&mut c);
-        assert_eq!(c.name, "work/list");
-        assert_eq!(c.input.get("state").and_then(|v| v.as_str()), Some("open"));
-    }
-
-    // what this catches: the per-command declarations aggregate into a working
-    // round-trip over the LIVE registry under BOTH offer styles — a hot verb offers
-    // under its trained reflex OR our charset-legal canonical, and EITHER offered
-    // form maps back to the same canonical command. This is the decentralized
-    // replacement for the old global DIALECT table; if a command's ALIASES stops
-    // being read, or the round-trip stops being style-symmetric, these break.
-    #[test]
-    fn per_command_aliases_round_trip_under_both_offer_styles() {
-        for (canonical, reflex) in [
-            ("code/shell", "bash"),
-            ("code/read", "read_file"),
-            ("code/write", "write_file"),
-            ("code/run", "run_code"),
-            ("code/list", "list_files"),
-            ("work/claim", "claim_task"),
-            ("work/list", "list_tasks"),
-            ("work/get", "get_task"),
-        ] {
-            // TrainedReflex offers the alias; it maps back to canonical.
-            assert_eq!(
-                to_wire_spec_with(spec(canonical), OfferStyle::TrainedReflex).name,
-                reflex,
-                "TrainedReflex offers {canonical} as {reflex}"
-            );
-            assert_eq!(
-                from_wire_name(reflex),
-                canonical,
-                "map {reflex} back to {canonical}"
-            );
-            // Canonical offers OUR name charset-legal; it maps back to canonical too.
-            let canon_wire = canonical.replace('/', "_");
-            assert_eq!(
-                to_wire_spec_with(spec(canonical), OfferStyle::Canonical).name,
-                canon_wire,
-                "Canonical offers {canonical} as {canon_wire}"
-            );
-            assert_eq!(
-                from_wire_name(&canon_wire),
-                canonical,
-                "map {canon_wire} back to {canonical}"
-            );
+    fn a_name_carrying_arguments_resolves_through_both_halves() {
+        for (name, canonical, arg) in [("work_list(state=open)", "work/list", "state"), ("read_file(file_path=a.rs)", "code/read", "file_path")] {
+            let mut c = call(name, serde_json::json!({}));
+            normalize_call(&mut c);
+            assert_eq!(c.name, canonical, "{name}");
+            assert!(c.input.get(arg).is_some(), "{name} keeps its argument: {}", c.input);
         }
-        // A canonical name a model emits directly still resolves (never narrows).
-        assert_eq!(from_wire_name("code/read"), "code/read");
-        // An unknown name passes through — the executor fails it loud with a
-        // did-you-mean; the adapter never invents a route.
-        assert_eq!(from_wire_name("frobnicate"), "frobnicate");
     }
 
-    // what this catches: the DEFAULT offer policy MEETS THEIR TRAINING — a hot verb is
-    // offered under the model's trained reflex (`read_file`), NOT our canonical
-    // `code_read`. Canonical is a hypothesis not yet validated by a tool-using A/B
-    // (#204): the only offer-surface gate we can run (humaneval-rs) is pure codegen and
-    // offers no tools, so it can't measure the change. If someone flips the default to
-    // Canonical without that validation, this fails loudly — the guard against a blind
-    // flip of the tuned surface. [[tool-naming-meet-their-training-alias-or-redirect]]
+    // what this catches: two naming schemes in her tool list (card d2b6dbce). Live, the M5
+    // 2026-11-14 04:55Z: Aiko was offered `claim_task`, `release_task`, `list_tasks` (aliases
+    // renaming the offer) beside `work_create`, `work_submit` (paths); she reasoned in `work_*`,
+    // found no `work_release`, and called `work_create` again. Every registered command is
+    // offered as `wire_name` of its path, and that name resolves back to it, whatever any
+    // command declares as an alias.
     #[test]
-    fn default_offer_policy_meets_their_training() {
-        assert_eq!(offer_style_for(None), OfferStyle::TrainedReflex);
-        assert_eq!(to_wire_spec(spec("code/read")).name, "read_file");
-        assert_eq!(to_wire_spec(spec("work/claim")).name, "claim_task");
-        // Canonical is still REACHABLE as an explicit policy (the seam is intact) —
-        // it's just not the blind default.
-        assert_eq!(
-            to_wire_spec_with(spec("code/read"), OfferStyle::Canonical).name,
-            "code_read"
-        );
+    fn every_registered_command_is_offered_by_its_path_and_resolves_back() {
+        let registry = command_registry_live();
+        assert!(registry.iter().any(|d| d.name == "work/release"), "the live registry is linked");
+        for d in &registry {
+            let offered = to_wire_spec(spec(d.name)).name;
+            assert_eq!(offered, d.name.replace('/', "_"), "{} is offered by its path", d.name);
+            assert_eq!(offered, wire_name(d.name), "{}", d.name);
+            assert_eq!(resolve_wire_name(&offered), d.name, "the name offered for {} resolves to it", d.name);
+        }
+    }
+
+    // what this catches: a family split across schemes. Every command under one namespace
+    // (`work/*`, `code/git/*`) is offered with that namespace's prefix, so a verb she infers
+    // from its siblings is spelled the way it is offered; and the verb Aiko looked for exists.
+    #[test]
+    fn no_family_mixes_naming_schemes_and_work_release_exists() {
+        use std::collections::BTreeMap;
+        let mut families: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        for d in command_registry_live() {
+            if let Some((family, _verb)) = d.name.rsplit_once('/') {
+                families.entry(family).or_default().push(to_wire_spec(spec(d.name)).name);
+            }
+        }
+        for (family, offered) in &families {
+            let prefix = format!("{}_", family.replace('/', "_"));
+            let strays: Vec<&String> = offered.iter().filter(|name| !name.starts_with(&prefix)).collect();
+            assert!(strays.is_empty(), "family {family} offers {strays:?} outside `{prefix}*`");
+        }
+        let Some(work) = families.get("work") else { panic!("the work family is registered") };
+        for verb in ["work_claim", "work_create", "work_release", "work_review", "work_submit", "work_list", "work_get"] {
+            assert!(work.iter().any(|name| name == verb), "the work family offers {verb}: {work:?}");
+        }
+        assert_eq!(resolve_wire_name("work_release"), "work/release");
+    }
+
+    // what this catches: an alias that takes another command's offered name, or a work verb
+    // still answering to a retired per-verb name that no family member shares.
+    #[test]
+    fn aliases_never_shadow_an_offered_name_and_the_work_family_has_none() {
+        let registry = command_registry_live();
+        let offered: std::collections::HashMap<String, &str> = registry.iter().map(|d| (wire_name(d.name), d.name)).collect();
+        for d in &registry {
+            for alias in d.aliases {
+                if let Some(other) = offered.get(*alias) {
+                    assert_eq!(*other, d.name, "{}'s alias `{alias}` is the offered name of {other}", d.name);
+                }
+            }
+            if d.name.starts_with("work/") {
+                assert!(d.aliases.is_empty(), "{} declares per-verb aliases {:?}", d.name, d.aliases);
+            }
+        }
+        for retired in ["claim_task", "release_task", "list_tasks", "get_task", "update_task", "heartbeat_task"] {
+            assert_eq!(resolve_wire_name(retired), retired, "`{retired}` no longer names a work verb");
+        }
     }
 
     // what this catches: the socket/CLI resolver (used at Runtime::route_command and
@@ -133,9 +131,10 @@ mod tests {
         assert_eq!(resolve_wire_name("frobnicate"), "frobnicate"); // unknown passes through
     }
 
-    // what this catches: the index is NON-VACUOUS — the migration actually landed
-    // aliases on commands. A regression that dropped the ALIASES consts (or the
-    // descriptor plumbing) would empty this and silently stop all reflex mapping.
+    // what this catches: the index is NON-VACUOUS — trained reflexes (`read_file`, `bash`), the
+    // real need the alias scheme served, still resolve inbound. A regression that dropped the
+    // ALIASES consts (or the descriptor plumbing) would empty this and silently stop all reflex
+    // mapping. They are answered, never offered: `code/read` is offered as `code_read`.
     #[test]
     fn the_alias_index_is_populated() {
         assert!(
@@ -146,6 +145,8 @@ mod tests {
         // Spot-check the highest-frequency live reflexes (mined 2026-07-19).
         assert_eq!(from_wire_name("file_tree"), "code/tree");
         assert_eq!(from_wire_name("read_file"), "code/read");
+        assert_eq!(from_wire_name("bash"), "code/shell");
+        assert_eq!(to_wire_spec(spec("code/read")).name, "code_read");
         // Git reflexes declared via the action_command! macro's `aliases:` clause
         // (#202 Slice 6) — a model reaching for the industry-standard `git_status`
         // resolves to our `code/git/status`. If the macro's aliases plumbing breaks,

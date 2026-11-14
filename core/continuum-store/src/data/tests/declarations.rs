@@ -33,7 +33,7 @@ async fn startup_and_later_admission_use_the_same_registered_declaration(
         .fields
         .iter()
         .any(|field| field.name == "sessionId"));
-    adapter.ensure_schema(declared).await.into_result()?;
+    adapter.ensure_schema(&declared).await?;
     assert!(crate::data::adapters::resolve_collection_schema(
         &registry,
         "unknown_fixture_collection"

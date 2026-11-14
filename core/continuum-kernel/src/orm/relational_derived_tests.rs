@@ -1,4 +1,4 @@
-use super::{relational_evolution as evolution, relational_schema::DeclaredTable};
+use crate::orm::{relational_evolution as evolution, relational_schema::DeclaredTable};
 use sea_orm::{ActiveModelTrait, EntityTrait, Set, TransactionTrait};
 
 /// Read-only catalog inspection through the same typed projections as admission.
@@ -27,7 +27,7 @@ async fn replay_snapshot_open() -> Result<(), Box<dyn std::error::Error>> {
     }
     for _ in 0..2 {
         let start = std::time::Instant::now();
-        let store = super::relational::RelationalStore::open(super::adapter::AdapterConfig {
+        let store = super::relational::RelationalStore::open(&super::adapter::AdapterConfig {
             connection_string: target.to_str().ok_or("path encoding")?.into(),
             ..Default::default()
         }).await?;

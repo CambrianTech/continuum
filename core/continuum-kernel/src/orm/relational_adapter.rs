@@ -4,7 +4,7 @@ use super::{
     adapter::{AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter},
     query::{QueryBuilder, StorageQuery},
     relational::RelationalStore,
-    seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Versioning, Written},
+    seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Written},
     types::{BatchOperation, BatchOutcome, CollectionSchema, CollectionStats, DataRecord, UUID},
 };
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ impl SeaOrmAdapter {
 
     pub async fn connect(config: AdapterConfig) -> Result<Self, StorageError> {
         Ok(Self {
-            store: RelationalStore::open(config).await?,
+            store: RelationalStore::open(&config).await?,
         })
     }
 }
@@ -61,7 +61,7 @@ impl StorageAdapter for SeaOrmAdapter {
         self.store
             .read_on(&self.store.db, row.collection, row.id)
             .await?
-            .ok_or_else(|| StorageError::NotFound { collection: row.collection.to_owned(), id: row.id.clone() })
+            .ok_or_else(|| StorageError::NotFound { collection: row.collection.to_owned().into(), id: row.id.clone() })
     }
     async fn query(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
         self.store.query(query).await
@@ -73,7 +73,7 @@ impl StorageAdapter for SeaOrmAdapter {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
         let statement =
             super::relational_query::select(&schema, query, super::relational_query::Selection::Stream)?;
         let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement)).await?;
@@ -86,15 +86,13 @@ impl StorageAdapter for SeaOrmAdapter {
         self.store.count(query).await
     }
     async fn update(&self, update: Update<'_>) -> Result<DataRecord, StorageError> {
-        let increment = update.versioning == Versioning::Increment;
-        self.store
-            .update(update.row.collection.to_owned(), update.row.id.clone(), update.data, increment)
-            .await
+        let row = super::types::RowKey { collection: update.row.collection.to_owned(), id: update.row.id.to_owned() };
+        self.store.update(row, update.data, update.versioning).await
     }
     async fn delete(&self, row: RowRef<'_>) -> Result<Deleted, StorageError> {
         let removed = self
             .store
-            .delete_matching(QueryBuilder::new(row.collection).filter_eq("id", row.id.clone()).build())
+            .delete_matching(QueryBuilder::new(row.collection).filter_eq("id", row.id.as_str()).build())
             .await?;
         Ok(if removed == 0 { Deleted::Absent } else { Deleted::Removed })
     }
@@ -136,7 +134,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn update_binary(&self, write: BinaryWrite<'_>) -> Result<BinaryWritten, StorageError> {
         let written = self
             .store
-            .update_binary(write.row.collection.to_owned(), write.row.id.clone(), write.payloads, write.condition)
+            .update_binary(write)
             .await?;
         Ok(if written { BinaryWritten::Written } else { BinaryWritten::Unchanged })
     }

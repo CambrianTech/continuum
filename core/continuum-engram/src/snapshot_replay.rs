@@ -22,8 +22,10 @@ async fn typed_snapshot_reopens_without_losing_rows() -> Result<(), Box<dyn std:
         let metadata = OrmStore::<crate::recall_metadata::EngramRecallMetadata>::new(adapter.clone()).await?;
         let mut counts = (0usize, 0usize);
         {
+            // bounded: counted one streamed row at a time, no result set held
             let mut rows = engrams.scan().await?;
             while rows.try_next().await?.is_some() { counts.0 += 1; }
+            // bounded: counted one streamed row at a time, no result set held
             let mut rows = metadata.scan().await?;
             while rows.try_next().await?.is_some() { counts.1 += 1; }
         }

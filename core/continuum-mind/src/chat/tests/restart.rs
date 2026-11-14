@@ -112,7 +112,7 @@ async fn a_pending_publication_survives_a_reopen_and_publishes() {
         .await
         .expect("the line is stored");
     let accepted = Arc::new(Mutex::new(Vec::new()));
-    let reopened = real_store_chat(relay(0, accepted.clone()));
+    let reopened = real_store_chat(relay(0, std::sync::Arc::clone(&accepted)));
     assert_eq!(
         reopened
             .republish_pending(airc_core::RoomId::from_uuid(params.room_id))
@@ -236,7 +236,7 @@ async fn publication_recovery_pages_a_backlog_after_reopen() {
     let count = crate::orm::query::default_page_size() + 3;
     let accepted = Arc::new(Mutex::new(Vec::new()));
     let room = Uuid::new_v4();
-    let chat = real_store_chat(relay(count, accepted.clone()));
+    let chat = real_store_chat(relay(count, std::sync::Arc::clone(&accepted)));
     for n in 0..count {
         let sent = chat.send_with_wire(params_in(room, &format!("offline line {n}")), crate::chat::WireLeg::Envelope)
             .await.expect("line and obligation commit despite relay refusal");

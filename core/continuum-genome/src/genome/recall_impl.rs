@@ -375,19 +375,13 @@ impl LocalDemandAlignedRecall {
         // candidates. Better than panicking; the audit trail in
         // RecallScore lets a debugger see WHICH factor was NaN.
         layers.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
         experts.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
         engrams.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
 
         RankedPool {

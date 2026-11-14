@@ -167,7 +167,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     // #2 is the active result: it renders whole as the full-result message below, so
     // the ring shows only #1 rather than paying for #2 twice.
     let expected = vec![
-        format!("[result #1; room {room_a}; operation code/search, code/read; saved: read_output({{\"outputId\":\"search-output\"}})] same result"),
+        format!("[result #1; room {room_a}; operation code/search, code/read; saved: tool_output({{\"outputId\":\"search-output\"}})] same result"),
     ];
     let messages = wm.recent_results_messages();
     assert_eq!(
@@ -201,7 +201,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     restored.record_settlement("reported", None);
     shed(&restored, 0);
     assert!(restored.recent_results_messages().join("\n").contains(
-        &format!("[result #1; room {room_a}; operation code/search, code/read; saved: read_output({{\"outputId\":\"search-output\"}}) — collapsed]")
+        &format!("[result #1; room {room_a}; operation code/search, code/read; saved: tool_output({{\"outputId\":\"search-output\"}}) — collapsed]")
     ));
 
     // Regression 735a3183: Kimi's 274-line read disappeared after a poll;

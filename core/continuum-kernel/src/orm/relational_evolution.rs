@@ -3,6 +3,7 @@ use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend};
 use sea_orm::sea_query::{Alias, Asterisk, Func, Query, Table};
 use super::{adapter::naming, schema_error::SchemaError, types::{CollectionSchema, FieldType, SchemaField}};
 
+use super::schema_error::GapFault;
 /// Changing JSON to native text explicitly exposes the stored text verbatim.
 /// This is not JSON string extraction: quotes, objects and whitespace remain bytes.
 /// The entity's typed consumer still validates its domain (for example enum tags).
@@ -38,8 +39,8 @@ pub(super) async fn evolve(
                     continue;
                 }
                 return Err(SchemaError::DeclaredTypeConversion {
-                    collection: current.collection.clone(),
-                    field: field.name.clone(),
+                    collection: current.collection.clone().into(),
+                    field: field.name.clone().into(),
                     previous: old.field_type.clone(),
                     requested: field.field_type.clone(),
                 });
@@ -50,13 +51,13 @@ pub(super) async fn evolve(
         !previous.fields.iter().any(|old| old.name == field.name)).collect();
     for field in &added {
         if !field.nullable && field.default_value.is_none() {
-            return Err(gap("added field requires a declared value or constraint rebuild"));
+            return Err(gap(GapFault::AddedFieldNeedsValue));
         }
     }
     let before = super::relational_schema::compile(previous)
-        .map_err(|error| SchemaError::gap(&current.collection, error.to_string()))?;
+        .map_err(|error| SchemaError::gap(&current.collection, GapFault::Compile(Box::new(error))))?;
     let after = super::relational_schema::compile(current)
-        .map_err(|error| SchemaError::gap(&current.collection, error.to_string()))?;
+        .map_err(|error| SchemaError::gap(&current.collection, GapFault::Compile(Box::new(error))))?;
     let table = naming::to_table_name(&current.collection);
     if rebuild {
         let names: Vec<_> = before.create.get_columns().iter().map(|column| column.get_column_name()).collect();
@@ -100,7 +101,7 @@ async fn rebuild_table(
     let selection = Query::select().columns(columns.clone()).from(Alias::new(table)).to_owned();
     let mut copy = Query::insert();
     copy.into_table(Alias::new(&temporary)).columns(columns).select_from(selection)
-        .map_err(|error| SchemaError::gap(table, error.to_string()))?;
+        .map_err(|error| SchemaError::gap(table, GapFault::CopyQuery(error)))?;
     db.execute(DbBackend::Sqlite.build(&copy)).await?;
     db.execute(DbBackend::Sqlite.build(&Table::drop().table(Alias::new(table)).to_owned())).await?;
     db.execute(DbBackend::Sqlite.build(&Table::rename().table(Alias::new(&temporary), Alias::new(table)).to_owned())).await?;
@@ -135,12 +136,12 @@ pub(super) async fn admit_table(
             Some(old) if !super::relational_structure::preserves_assignment(&old.r#type, &column.r#type) =>
                 return Err(SchemaError::PhysicalTypeConversion {
                     table: table.into(),
-                    column: column.name.clone(),
-                    previous: old.r#type.clone(),
-                    requested: column.r#type.clone(),
+                    column: column.name.clone().into(),
+                    previous: old.r#type.clone().into(),
+                    requested: column.r#type.clone().into(),
                 }),
             None if column.notnull != 0 && column.dflt_value.is_none() =>
-                return Err(SchemaError::gap(table, "added required column has no declared default")),
+                return Err(SchemaError::gap(table, GapFault::AddedColumnNoDefault)),
             _ => {}
         }
     }
@@ -160,7 +161,7 @@ pub(super) async fn verify_references(db: &DatabaseTransaction) -> Result<(), Sc
         .from_function(Func::cust(Alias::new("pragma_foreign_key_check")), Alias::new("violations"))
         .limit(1).to_owned();
     if db.query_one(DbBackend::Sqlite.build(&query)).await?.is_some() {
-        return Err(SchemaError::gap("schema", "foreign-key violation after evolution"));
+        return Err(SchemaError::gap("schema", GapFault::ForeignKeyViolation));
     }
     Ok(())
 }

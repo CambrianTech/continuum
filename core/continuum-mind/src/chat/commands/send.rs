@@ -71,7 +71,7 @@ crate::action_command! {
         if let (Some(caller), Some(named)) = (ctx.caller.as_ref(), p.sender_id) {
             if caller.peer_id.as_uuid() != named {
                 return Err(CommandError::Denied(format!(
-                    "chat/send: caller {} may not speak as {named}; omit senderId to speak as yourself",
+                    "caller {} may not speak as {named}; omit senderId to speak as yourself",
                     caller.peer_id.as_uuid()
                 )));
             }

@@ -9,6 +9,14 @@ use sea_orm::sea_query::{Alias, Expr, OnConflict, Query};
 use sea_orm::{ConnectionTrait, DbBackend};
 use serde_json::Value;
 
+
+/// Encoded column values for one row, and whether the write advances its version.
+pub(super) struct FieldWrite<'a, I> {
+    pub(super) row: super::seam::RowRef<'a>,
+    pub(super) fields: I,
+    pub(super) versioning: super::seam::Versioning,
+}
+
 impl super::relational::RelationalStore {
     pub async fn read_on<C: ConnectionTrait>(
         &self,
@@ -17,7 +25,7 @@ impl super::relational::RelationalStore {
         id: &str,
     ) -> Result<Option<DataRecord>, StorageError> {
         let schema = self.schema(collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
         let query = QueryBuilder::new(collection)
             .filter_eq("id", id)
             .limit(1)
@@ -37,61 +45,51 @@ impl super::relational::RelationalStore {
     pub async fn update_on<C: ConnectionTrait>(
         &self,
         connection: &C,
-        collection: &str,
-        id: &str,
+        row: super::seam::RowRef<'_>,
         data: Value,
-        increment: bool,
+        versioning: super::seam::Versioning,
     ) -> Result<bool, StorageError> {
+        let collection = row.collection;
         let schema = self.schema(collection)?;
 
         let mut fields = Vec::new();
-        for (name, value) in data.as_object().ok_or_else(|| StorageError::Malformed { collection: collection.to_string(), expected: Shape::Object })? {
+        for (name, value) in data.as_object().ok_or_else(|| StorageError::Malformed { collection: collection.to_string().into(), expected: Shape::Object })? {
             if super::types::METADATA_KEYS.contains(&name.as_str()) {
-                return Err(StorageError::StorageOwned { field: name.clone() });
+                return Err(StorageError::StorageOwned { field: name.clone().into() });
             }
             let field = schema
                 .fields
                 .iter()
                 .find(|f| f.name == *name)
-                .ok_or_else(|| StorageError::Undeclared { collection: collection.to_string(), field: name.clone() })?;
+                .ok_or_else(|| StorageError::Undeclared { collection: collection.to_string().into(), field: name.clone().into() })?;
             fields.push((
                 Alias::new(naming::to_snake_case(name)),
                 super::relational_codec::encode(field, value)?,
             ));
         }
-        self.update_fields_on(connection, collection, id, fields, increment)
-            .await
+        self.update_fields_on(connection, FieldWrite { row, fields, versioning }).await
     }
 
     /// Shared metadata/custody mutation for already schema-validated typed bindings.
-    pub(super) async fn update_fields_on<C: ConnectionTrait>(
-        &self,
-        connection: &C,
-        collection: &str,
-        id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
-        increment: bool,
-    ) -> Result<bool, StorageError> {
-        self.update_fields_matching_on(
-            connection,
-            collection,
-            id,
-            fields,
-            increment,
-            sea_orm::Condition::all(),
-        )
-        .await
+    pub(super) async fn update_fields_on<C, I>(&self, connection: &C, write: FieldWrite<'_, I>) -> Result<bool, StorageError>
+    where
+        C: ConnectionTrait,
+        I: IntoIterator<Item = (Alias, sea_orm::sea_query::Value)>,
+    {
+        self.update_fields_matching_on(connection, write, sea_orm::Condition::all()).await
     }
 
-    pub(super) async fn update_fields_matching_on<C: ConnectionTrait>(
+    pub(super) async fn update_fields_matching_on<C, I>(
         &self,
         connection: &C,
-        collection: &str,
-        id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
-        increment: bool,
+        write: FieldWrite<'_, I>,
         condition: sea_orm::Condition,
-    ) -> Result<bool, StorageError> {
+    ) -> Result<bool, StorageError>
+    where
+        C: ConnectionTrait,
+        I: IntoIterator<Item = (Alias, sea_orm::sea_query::Value)>,
+    {
+        let FieldWrite { row: super::seam::RowRef { collection, id }, fields, versioning } = write;
         let mut statement = Query::update();
         statement
             .table(Alias::new(naming::to_table_name(collection)))
@@ -103,7 +101,7 @@ impl super::relational::RelationalStore {
                     .map(|(column, value)| (column, Expr::val(value).into())),
             );
         statement.value(Alias::new("updated_at"), chrono::Utc::now().to_rfc3339());
-        if increment {
+        if versioning == super::seam::Versioning::Increment {
             statement.value(
                 Alias::new("version"),
                 Expr::col(Alias::new("version")).add(1),
@@ -166,7 +164,7 @@ impl super::relational::RelationalStore {
             .as_object()
             .is_some_and(|data| data.contains_key(field))
         {
-            return Err(StorageError::Required { collection: record.collection.clone(), field: field.to_string() });
+            return Err(StorageError::Required { collection: record.collection.clone().into(), field: field.to_string().into() });
         }
         let table = Alias::new(naming::to_table_name(&record.collection));
         let mut conflict = OnConflict::column(Alias::new("id"));

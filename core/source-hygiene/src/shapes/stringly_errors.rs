@@ -8,6 +8,9 @@
 //! - `Result<_, String>` and `Result<_, ()>`;
 //! - `.map_err(|e| format!(..))` and `.map_err(|e| <..>.to_string())` / `.to_owned()`;
 //! - a variant of an error enum (named `..Error` or `..Failure`) holding a bare `String`.
+//! - a failure BUILT from text: `<..Error|..Failure>::<Variant>(format!(..))` or `Err(format!(..))` (the
+//!   2026-11-14 author-evidence refusal, written as `CommandError::Invalid(format!(..))` while a typed
+//!   `SubmitRefusal` sat in the same file).
 
 use super::items::{generic_args, items, type_is, variants};
 use super::{Shape, Site, Target, Unit};
@@ -19,6 +22,7 @@ const STRING_ERROR: &str = "a failure typed as a String";
 const UNIT_ERROR: &str = "a failure typed as `()`: no reason at all";
 const FLATTENED: &str = "a typed failure flattened to text";
 const STRING_VARIANT: &str = "an error variant holding a bare String";
+const FORMATTED: &str = "a failure built from formatted text";
 
 impl Shape for StringlyErrors {
     fn name(&self) -> &'static str {
@@ -38,7 +42,7 @@ impl Shape for StringlyErrors {
         let code = &unit.code;
         let mut out = Vec::new();
         for at in 0..code.len() {
-            if let Some(what) = result_type(code, at).or_else(|| flattening(code, at)) {
+            if let Some(what) = result_type(code, at).or_else(|| flattening(code, at)).or_else(|| formatted(code, at)) {
                 out.push(Site { line: code[at].line, what });
             }
         }
@@ -82,6 +86,19 @@ fn flattening(code: &[Token], at: usize) -> Option<&'static str> {
     (formats || to_text).then_some(FLATTENED)
 }
 
+/// `<..Error|..Failure>::<Variant>(format!(..))` or `Err(format!(..))` starting at `at`: a failure
+/// built from formatted text where a typed variant would carry the facts.
+fn formatted(code: &[Token], at: usize) -> Option<&'static str> {
+    let is_format = |i: usize| code.get(i).is_some_and(|t| t.is_ident("format")) && code.get(i + 1).is_some_and(|t| t.is('!'));
+    if code[at].is_ident("Err") && code.get(at + 1)?.is('(') && is_format(at + 2) {
+        return Some(FORMATTED);
+    }
+    let is_ident = |i: usize| code.get(i).is_some_and(|t| t.kind == crate::lexer::tokens::Kind::Ident);
+    let error_type = is_ident(at) && (code[at].text.ends_with("Error") || code[at].text.ends_with("Failure"));
+    let path = error_type && code.get(at + 1)?.is(':') && code.get(at + 2)?.is(':') && is_ident(at + 3);
+    (path && code.get(at + 4)?.is('(') && is_format(at + 5)).then_some(FORMATTED)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -111,6 +128,10 @@ mod tests {
         assert_eq!(found("fn f() -> std::result::Result<Vec<u8>, std::string::String>;"), [STRING_ERROR]);
         assert_eq!(found("fn f() -> Result<(), ()>;"), [UNIT_ERROR]);
         assert_eq!(found("let m = build(x).map_err(|e| format!(\"index: {e}\"))?;"), [FLATTENED]);
+        assert_eq!(found("fn f() -> R { Err(CommandError::Invalid(format!(\"{n} bytes\"))) }"), [FORMATTED]);
+        assert_eq!(found("fn f() -> R { let e = SaveFailure::Disk(format!(\"{p}\")); }"), [FORMATTED]);
+        assert_eq!(found("fn f() -> R { Err(format!(\"{n}\")) }"), [FORMATTED]);
+        assert!(found("fn f() -> R { Err(SubmitRefusal::EvidenceTooLong { bytes, limit }) }").is_empty(), "a typed variant is no site");
         assert_eq!(found("let m = build(x).map_err(|e| e.to_string())?;"), [FLATTENED]);
         assert_eq!(found("enum CheckpointFailure { Save(String), Load { why: String }, Gone }"), [STRING_VARIANT, STRING_VARIANT]);
     }

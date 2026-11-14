@@ -25,7 +25,7 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
     assert!(lines.first().is_some_and(|head| head.starts_with("[action #1]")), "{lines:?}");
     let ring = wm.recent_results_messages().join("\n");
-    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"f1a5ed0000000001\"}) — collapsed]"), "{ring}");
+    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: tool_output({\"outputId\":\"f1a5ed0000000001\"}) — collapsed]"), "{ring}");
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
 }
 

@@ -204,14 +204,14 @@ pub fn to_collection_schema(es: &EntitySchema) -> Result<crate::orm::types::Coll
                 return Err(format!("invalid reference {reference}"));
             }
             Ok(ForeignKeyRef { collection: collection.into(), field: field.into(),
-                on_delete: opts.and_then(|o| o.on_delete).unwrap_or(CascadeRule::Restrict), on_update: CascadeRule::Restrict })
+                on_delete: opts.and_then(|o| o.on_delete).unwrap_or(CascadeRule::Restrict), on_update: CascadeRule::Restrict }) // unwrap_or: an undeclared cascade restricts, the schema default
         }).transpose()?;
         Ok(SchemaField {
             default_value: opts.and_then(|o| o.default.clone()),
             name: f.field_name.clone(), field_type,
-            indexed: opts.and_then(|o| o.index).unwrap_or(false),
-            unique: opts.and_then(|o| o.unique).unwrap_or(false),
-            nullable: opts.and_then(|o| o.nullable).unwrap_or(false),
+            indexed: opts.and_then(|o| o.index).unwrap_or(false), // unwrap_or: an undeclared option is off, the schema default
+            unique: opts.and_then(|o| o.unique).unwrap_or(false), // unwrap_or: an undeclared option is off, the schema default
+            nullable: opts.and_then(|o| o.nullable).unwrap_or(false), // unwrap_or: an undeclared option is off, the schema default
             max_length: opts.and_then(|o| o.max_length).map(|n| n as usize),
             foreign_key,
         })
@@ -222,7 +222,7 @@ pub fn to_collection_schema(es: &EntitySchema) -> Result<crate::orm::types::Coll
             Some("DESC") => true,
             Some(other) => return Err(format!("{}: invalid index direction {other}", c.name)),
         };
-        Ok(SchemaIndex { descending, name: c.name.clone(), fields: c.fields.clone(), unique: c.unique.unwrap_or(false) })
+        Ok(SchemaIndex { descending, name: c.name.clone(), fields: c.fields.clone(), unique: c.unique.unwrap_or(false) }) // unwrap_or: an index not declared unique is not unique
     }).collect::<Result<Vec<_>, String>>()?;
     Ok(CollectionSchema { collection: es.collection.clone(), fields, indexes })
 }
@@ -252,7 +252,7 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
 
     // Second pass: now that the hash checks out, deserialize into typed
     // structs for consumers.
-    let entities: HashMap<String, EntitySchema> = serde_json::from_value(entities_value)
+    let entities: HashMap<String, EntitySchema> = serde_json::from_value(entities_value) // disk: the hashed entity-registry file, decoded once into typed schemas
         .map_err(|e| format!("typed parse of entities failed: {}", e))?;
 
     validate_relationships(&entities)?;
@@ -267,7 +267,7 @@ fn validate_relationships(entities: &HashMap<String, EntitySchema>) -> Result<()
             let target = schemas.iter().find(|target| target.collection == reference.collection)
                 .ok_or_else(|| format!("{}.{}: undeclared relationship target {}", schema.collection, source.name, reference.collection))?;
             let field = target.fields.iter().find(|field| field.name == reference.field)
-                .ok_or_else(|| format!("{}.{}: missing target field {}.{}", schema.collection, source.name, target.collection, reference.field))?;
+                .ok_or_else(|| format!("{}.{}: target {}.{} is not a declared field", schema.collection, source.name, target.collection, reference.field))?;
             let unique = field.name == "id" || field.unique || target.indexes.iter().any(|index|
                 index.unique && index.fields == [field.name.clone()]);
             if !unique {
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn declarations_preserve_constraints_and_refuse_unknown_types() -> Result<(), String> {
+    fn declarations_preserve_constraints_and_refuse_unknown_types() -> Result<(), Box<dyn std::error::Error>> {
         let mut entity: EntitySchema = serde_json::from_value(serde_json::json!({
             "collection": "child", "entityClass": "Child", "fields": [{
                 "fieldName": "parentId", "fieldType": "foreign_key", "options": {
@@ -383,7 +383,7 @@ mod tests {
                     "default": "root", "index": true
                 }
             }], "compositeIndexes": [{"name": "parent_order", "fields": ["parentId"], "direction": "DESC"}]
-        })).map_err(|e| e.to_string())?;
+        }))?;
         let schema = to_collection_schema(&entity)?;
         let field = &schema.fields[0];
         assert_eq!(field.default_value, Some(Value::String("root".into())));

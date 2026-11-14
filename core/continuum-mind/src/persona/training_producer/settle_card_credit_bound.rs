@@ -27,10 +27,7 @@ pub async fn settle_card_credit_bound(
         // data/update is refused (modules/grid/acl.rs; cards fd47a804, 44aee459). Her acts
         // (staging, decisions, submits) stay under her identity above.
         let substrate = substrate_connection(&executor);
-        let listed = crate::orm::client_read::matching(
-            &conn, &handle, StagedCredit::COLLECTION,
-            serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), None,
-        ).await;
+        let listed = crate::orm::client_read::matching(&conn, crate::orm::client_read::ListSelection { handle: &handle, collection: StagedCredit::COLLECTION, filter: &serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), select: None }).await;
         let listed = match (listed, binding) {
             (Ok(rows), Some(binding)) => graded::bound_rows_retained(&conn, &persona_name, binding, rows).await,
             (listed, _) => listed,

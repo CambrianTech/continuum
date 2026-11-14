@@ -418,6 +418,7 @@ impl Registry {
             .map_err(|error| error.to_string())?;
         let mut saved = std::collections::HashMap::new();
         use futures::TryStreamExt;
+        // bounded: one row per tracked cache root on this node
         let mut replay = store.scan().await.map_err(|error| error.to_string())?;
         while let Some((_, record)) = replay.try_next().await.map_err(|error| error.to_string())? {
             if !CARGO_TARGET_CLASSES.contains(&record.class.as_str()) {

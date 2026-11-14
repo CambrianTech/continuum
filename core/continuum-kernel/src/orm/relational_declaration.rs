@@ -2,10 +2,11 @@
 //! Receipt-free tables are admitted only after proving the current declaration exactly.
 use super::{adapter::naming, types::CollectionSchema};
 use sea_orm::entity::prelude::*;
-use sea_orm::{QueryOrder, QuerySelect, Set};
+use sea_orm::{QueryOrder, Set};
 use serde::Deserialize;
 use super::schema_error::{SchemaError, SchemaDiff};
 
+use super::schema_error::GapFault;
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "orm_declarations")]
 pub struct Model {
@@ -37,6 +38,7 @@ mod catalog {
 }
 
 async fn physical<C: ConnectionTrait>(db: &C, collection: &str) -> Result<Vec<catalog::Model>, SchemaError> {
+    // bounded: the catalog rows of one table (its columns and indexes)
     catalog::Entity::find()
         .filter(catalog::Column::TblName.eq(naming::to_table_name(collection)))
         .order_by_asc(catalog::Column::Name)
@@ -51,7 +53,7 @@ pub(super) async fn admit(
     schema: &CollectionSchema,
 ) -> Result<bool, SchemaError> {
     let actual = physical(db, &schema.collection).await?;
-    match Entity::find_by_id(schema.collection.clone())
+    match Entity::find_by_id(schema.collection.as_str())
         .one(db)
         .await
         .map_err(SchemaError::from)?
@@ -83,7 +85,7 @@ async fn verify_current_declaration(
     schema: &CollectionSchema,
     actual: &[catalog::Model],
 ) -> Result<(), SchemaError> {
-    let declaration = super::relational_schema::compile(schema).map_err(|error| SchemaError::gap(&schema.collection, error.to_string()))?;
+    let declaration = super::relational_schema::compile(schema).map_err(|error| SchemaError::gap(&schema.collection, GapFault::Compile(Box::new(error))))?;
     let expected = sea_orm::Database::connect("sqlite::memory:")
         .await.map_err(SchemaError::from)?;
     expected.execute(sea_orm::DbBackend::Sqlite.build(&declaration.create))
@@ -126,8 +128,8 @@ pub(super) async fn record<C: ConnectionTrait>(
     let physical = physical(db, &schema.collection).await?;
     ActiveModel {
         collection: Set(schema.collection.clone()),
-        declaration: Set(serde_json::to_value(schema).map_err(SchemaError::from)?),
-        physical: Set(serde_json::to_value(physical).map_err(SchemaError::from)?),
+        declaration: Set(serde_json::to_value(schema).map_err(SchemaError::from)?), // disk: the catalog row stores the declaration as its JSON column
+        physical: Set(serde_json::to_value(physical).map_err(SchemaError::from)?), // disk: the catalog row stores the physical shape as its JSON column
     }
     .insert(db)
     .await
@@ -135,34 +137,19 @@ pub(super) async fn record<C: ConnectionTrait>(
     Ok(())
 }
 
-// Transfer batch size, never a cap on the number of declarations admitted.
-const CATALOG_PAGE_SIZE: u64 = 64;
-
-/// Restore schema receipts in primary-key pages once per connection owner.
+/// Restore schema receipts once per connection owner, in collection order.
 /// Receipt and physical verification still precede admission; this is not inference.
 pub(super) async fn restore<C: ConnectionTrait>(
     db: &C,
 ) -> Result<std::collections::HashMap<String, std::sync::Arc<CollectionSchema>>, SchemaError> {
     let mut schemas = std::collections::HashMap::new();
-    let mut after: Option<String> = None;
-    loop {
-        let mut query = Entity::find()
-            .order_by_asc(Column::Collection)
-            .limit(CATALOG_PAGE_SIZE);
-        if let Some(cursor) = &after {
-            query = query.filter(Column::Collection.gt(cursor.as_str()));
-        }
-        let receipts = query.all(db).await.map_err(SchemaError::from)?;
-        if receipts.is_empty() {
-            break;
-        }
-        for receipt in receipts {
-            let schema = decode(&receipt)?;
-            super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, error.to_string()))?;
-            verify_physical(&receipt, &physical(db, &schema.collection).await?)?;
-            after = Some(receipt.collection);
-            schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
-        }
+    // bounded: one receipt per declared collection; the schemas are held resident by design
+    let receipts = Entity::find().order_by_asc(Column::Collection).all(db).await.map_err(SchemaError::from)?;
+    for receipt in receipts {
+        let schema = decode(&receipt)?;
+        super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, GapFault::Compile(Box::new(error))))?;
+        verify_physical(&receipt, &physical(db, &schema.collection).await?)?;
+        schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
     }
     Ok(schemas)
 }
@@ -170,19 +157,19 @@ fn decode(receipt: &Model) -> Result<CollectionSchema, SchemaError> {
     let schema: CollectionSchema =
         CollectionSchema::deserialize(&receipt.declaration).map_err(SchemaError::from)?;
     if receipt.collection != schema.collection {
-        return Err(SchemaError::gap(&receipt.collection, "schema receipt identity mismatch"));
+        return Err(SchemaError::gap(&receipt.collection, GapFault::ReceiptIdentity));
     }
     Ok(schema)
 }
 fn verify_physical(receipt: &Model, actual: &[catalog::Model]) -> Result<(), SchemaError> {
     let rows = receipt.physical.as_array()
-        .ok_or_else(|| SchemaError::gap(&receipt.collection, "physical schema receipt is not an array"))?;
+        .ok_or_else(|| SchemaError::gap(&receipt.collection, GapFault::ReceiptNotArray))?;
     if rows.len() != actual.len() {
         return Err(SchemaError::difference(&receipt.collection, SchemaDiff::RecordedPhysical));
     }
     for (row, actual) in rows.iter().zip(actual) {
         if !row.is_object() {
-            return Err(SchemaError::gap(&receipt.collection, "physical schema receipt row is not an object"));
+            return Err(SchemaError::gap(&receipt.collection, GapFault::ReceiptRowNotObject));
         }
         let declared = catalog::Model::deserialize(row)
             .map_err(SchemaError::from)?;

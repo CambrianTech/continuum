@@ -431,11 +431,7 @@ pub async fn staged_evidence<T: Transport>(
     submitted: &airc_work::WorkSubmission,
 ) -> Result<Vec<StagedCreditEvidence>, ClientError> {
     ensure_storage(conn, persona_name).await?;
-    let rows: Vec<StagedEvidenceRow> = crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
-        serde_json::Map::from_iter([("cardId".into(), json!(submitted.card_id.as_uuid().to_string()))]),
-        Some(["cardId", "claimId", "owner", "stagedAtMs", "receipts"].into_iter().map(str::to_owned).collect()),
-    ).await?;
+    let rows: Vec<StagedEvidenceRow> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCredit::COLLECTION, filter: &serde_json::Map::from_iter([("cardId".into(), json!(submitted.card_id.as_uuid().to_string()))]), select: Some(&["cardId", "claimId", "owner", "stagedAtMs", "receipts"]) }).await?;
     let mut evidence = Vec::with_capacity(rows.len());
     for row in rows {
         if row.card_id != submitted.card_id.as_uuid() {

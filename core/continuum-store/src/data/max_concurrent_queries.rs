@@ -1,16 +1,6 @@
 use super::*;
 use crate::identity::is_uuid_shape;
 
-/// Max concurrent query operations. Limits peak heap from personas × N queries
-/// all materializing result sets simultaneously. Without this, RSS spikes
-/// from concurrent JSON serialization of large result sets.
-///
-/// Set to 16 to match SQLite reader pool capacity (main DB has 20 readers).
-/// Previous value of 4 caused head-of-line blocking: 20 readers sat idle
-/// while the semaphore refused to let queries through, causing cascading
-/// timeouts under normal 15-persona load.
-pub(super) const MAX_CONCURRENT_QUERIES: usize = 16;
-
 // Adapter builders interpolate field/table identifiers. The generic API accepts
 // names, not SQL expressions: otherwise a public-table projection or filter
 // could subquery a protected collection. Values remain ordinary bound data.
@@ -143,10 +133,6 @@ pub struct DataState {
     pub(super) active_migration: Mutex<Option<MigrationHandle>>,
     /// Pre-cutover connection string (for rollback)
     pub(super) previous_connection: Mutex<Option<String>>,
-    /// Limits concurrent query/list operations to cap peak heap usage.
-    /// 15 personas firing queries simultaneously can spike RSS by several GB
-    /// from concurrent result set materialization + JSON serialization.
-    pub(super) query_semaphore: Semaphore,
 }
 
 impl Default for DataState {
@@ -165,7 +151,6 @@ impl DataState {
             context: OnceLock::new(),
             active_migration: Mutex::new(None),
             previous_connection: Mutex::new(None),
-            query_semaphore: Semaphore::new(MAX_CONCURRENT_QUERIES),
         }
     }
 

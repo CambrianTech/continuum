@@ -72,7 +72,7 @@ pub mod handler;
 mod refusal;
 pub use refusal::{Category, CommandId, NextCall, NextCallArgs, NextMoves, NoMove, Refusal, RefusalCause};
 mod verb_ref;
-pub use verb_ref::{offer_style_for, offered_name_of, primary_alias, wire_name, OfferStyle, VerbRef};
+pub use verb_ref::{wire_name, VerbRef};
 pub use command::{
     natives_without_an_outcome, outcome_projector, project_result, read_outcome, read_refusals_only, stateless_command_objects,
     ActVerdict, ActionCommand, DynCommand, OutcomeProjector, ProjectsOutcome, StatelessCommand, ToolVerdict,
@@ -338,7 +338,8 @@ macro_rules! action_command {
             // `ProjectsOutcome`, submitted after this impl). Absent ⇒ the trait default, false.
             $(const NATIVE: bool = $native;)?
             // Optional `aliases: &[...],` clause ⟹ ALIASES (the trained/former names a
-            // model reaches for, resolved inbound by tool_dialect). Absent ⇒ the trait
+            // model reaches for, resolved inbound by tool_dialect; never the offered name, which
+            // is `wire_name(NAME)`). Absent ⇒ the trait
             // default (empty). Emitted only when present, so the default stands otherwise.
             $(const ALIASES: &'static [&'static str] = $aliases;)?
             // Optional `effect: <ToolEffect variant>,` clause ⟹ EFFECT (CONTINUUM-ENGINE section 5 invariant 4:

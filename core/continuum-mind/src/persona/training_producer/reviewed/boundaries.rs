@@ -182,16 +182,15 @@ async fn validate_acceptance<T: Transport>(
     let credit = super::consume_review_credit::read_credit(conn, name, id)
         .await?
         .ok_or_else(|| ClientError::Transport("review boundary has no binding".into()))?;
-    if credit.binding.persona_id != persona
-        || credit.binding.selection.submission_id != id
-        || credit.accepted.is_none()
-    {
+    let super::consume_review_credit::CreditProgress::Accepted { acceptance, .. } = credit.progress else {
+        return Err(ClientError::Transport("review boundary acceptance identity differs".into()));
+    };
+    if credit.binding.persona_id != persona || credit.binding.selection.submission_id != id {
         return Err(ClientError::Transport(
             "review boundary acceptance identity differs".into(),
         ));
     }
-    credit.accepted
-        .ok_or_else(|| ClientError::Transport("review boundary acceptance disappeared".into()))
+    Ok(acceptance)
 }
 
 #[async_trait::async_trait]

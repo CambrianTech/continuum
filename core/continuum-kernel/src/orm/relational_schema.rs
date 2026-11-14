@@ -34,7 +34,7 @@ fn action(rule: CascadeRule) -> ForeignKeyAction {
 
 pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, StorageError> {
     if schema.collection.is_empty() {
-        return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::NoCollection });
+        return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::NoCollection });
     }
     let table = naming::to_table_name(&schema.collection);
     let mut columns = BTreeSet::new();
@@ -45,7 +45,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, Storag
     for field in &schema.fields {
         let name = naming::to_snake_case(&field.name);
         if name.is_empty() || !columns.insert(name.clone()) {
-            return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::ColumnCollision { field: field.name.clone() } });
+            return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::ColumnCollision { field: field.name.clone() } });
         }
         let mut column = ColumnDef::new(Alias::new(&name));
         match field.field_type {
@@ -75,15 +75,15 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, Storag
         }
         if let Some(max) = field.max_length {
             if !matches!(field.field_type, FieldType::String | FieldType::Uuid | FieldType::Date) {
-                return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::MaxLengthNotText { field: field.name.clone() } });
+                return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::MaxLengthNotText { field: field.name.clone() } });
             }
-            let max = i64::try_from(max).map_err(|_| StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::MaxLengthRange { field: field.name.clone() } })?;
+            let max = i64::try_from(max).map_err(|_| StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::MaxLengthRange { field: field.name.clone() } })?;
             column.check(Expr::expr(Func::cust(Alias::new("length")).arg(Expr::col(Alias::new(&name)))).lte(max));
         }
         create.col(&mut column);
         if field.field_type == FieldType::Binary {
             let descriptor_name = super::binary::descriptor_column(&field.name);
-            if !columns.insert(descriptor_name.clone()) { return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::DescriptorCollision { field: field.name.clone() } }); }
+            if !columns.insert(descriptor_name.clone()) { return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::DescriptorCollision { field: field.name.clone() } }); }
             let mut descriptor = ColumnDef::new(Alias::new(&descriptor_name));
             descriptor.binary();
             if !field.nullable { descriptor.not_null(); }
@@ -96,7 +96,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, Storag
                 && (reference.on_delete == CascadeRule::SetNull
                     || reference.on_update == CascadeRule::SetNull)
             {
-                return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::SetNullNotNullable { field: field.name.clone() } });
+                return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::SetNullNotNullable { field: field.name.clone() } });
             }
             create.foreign_key(
                 ForeignKey::create()
@@ -120,11 +120,11 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, Storag
         }
     }
     if !columns.contains("id") {
-        return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::NoId });
+        return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::NoId });
     }
     for declared in &schema.indexes {
         if declared.fields.is_empty() {
-            return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::EmptyIndex { index: declared.name.clone() } });
+            return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::EmptyIndex { index: declared.name.clone() } });
         }
         let mut index = Index::create();
         index
@@ -133,7 +133,7 @@ pub(super) fn compile(schema: &CollectionSchema) -> Result<DeclaredTable, Storag
         for (position, field) in declared.fields.iter().enumerate() {
             let name = naming::to_snake_case(field);
             if !columns.contains(&name) {
-                return Err(StorageError::Declaration { collection: schema.collection.clone(), fault: DeclarationFault::IndexField { index: declared.name.clone(), field: field.clone() } });
+                return Err(StorageError::Declaration { collection: schema.collection.clone().into(), fault: DeclarationFault::IndexField { index: declared.name.clone(), field: field.clone() } });
             }
             let order = if declared.descending && position + 1 == declared.fields.len() { IndexOrder::Desc } else { IndexOrder::Asc };
             index.col((Alias::new(name), order));

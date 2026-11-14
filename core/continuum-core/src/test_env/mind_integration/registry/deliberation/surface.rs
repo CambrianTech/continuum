@@ -45,7 +45,7 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
             assert_eq!(act, first, "a {who:?} {kind} act changed the tool schemas");
         }
     }
-    for must in ["edit_file", "bash", "list_commands", "help"] {
+    for must in ["code_edit", "code_shell", "commands_list", "commands_help"] {
         assert!(first.1.contains(&format!("\"{must}\"")), "{must} rides natively: {}", first.1);
     }
     // An on-demand verb (concluding an activity) is one commands/help away, not a schema every act.
@@ -53,7 +53,7 @@ async fn consecutive_acts_in_one_activity_send_byte_identical_tool_schemas() {
     // holds: `work_preconditions::in_hand`, the fix for Benchy's 2026-11-04 review card), never
     // as core hands: offered on every card, residents called work/review on their own card 22
     // times and work/submission on cards with nothing submitted 27 times (the M5, 2026-11-07).
-    for absent in ["conclude_activity", "work_review", "work_submission"] {
+    for absent in ["activity_archive", "work_review", "work_submission"] {
         assert!(!first.1.contains(&format!("\"{absent}\"")), "{absent} stays one commands/help away: {}", first.1);
     }
 }

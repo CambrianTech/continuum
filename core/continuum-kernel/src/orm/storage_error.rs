@@ -28,7 +28,7 @@ pub enum StorageError {
     Codec(#[from] serde_json::Error),
     /// No entity schema has been admitted for this collection.
     #[error("collection {collection} has no admitted entity schema")]
-    Unadmitted { collection: String },
+    Unadmitted { collection: super::names::CollectionName },
     /// Persisted state the store cannot read back as written (a contract of the store, broken).
     #[error("persisted storage state is unreadable: {what}")]
     Corrupt { what: &'static str },
@@ -40,32 +40,32 @@ pub enum StorageError {
     Config(ConfigFault),
     /// A native row's id is not a canonical lowercase hyphenated UUID (page cursors order by its text).
     #[error("{id} is not a canonical lowercase hyphenated UUID")]
-    NotCanonicalId { id: String },
+    NotCanonicalId { id: super::types::UUID },
     /// The SQLite driver failed reading a row.
     #[error(transparent)]
     Driver(#[from] sea_orm::sqlx::Error),
     /// A value does not fit its field's declared type.
     #[error("{field} is declared {declared:?} and the value is not")]
-    TypeMismatch { field: String, declared: super::types::FieldType },
+    TypeMismatch { field: super::names::FieldName, declared: super::types::FieldType },
     /// A NULL for a field that is not nullable (written, or found stored).
     #[error("{field} is not nullable")]
-    NotNullable { field: String },
+    NotNullable { field: super::names::FieldName },
     /// A binary field reached the JSON path; native payloads have their own interface.
     #[error("{field} is binary: it is written and read through the native interface")]
-    BinaryThroughJson { field: String },
+    BinaryThroughJson { field: super::names::FieldName },
     /// A stored column's storage class is not its declared type's (e.g. TEXT under a number):
     /// the column needs the schema owner's migration, never a cast at read.
     #[error("{field} is declared {declared:?} but stored as {found}")]
-    StorageClass { field: String, declared: super::types::FieldType, found: String },
+    StorageClass { field: super::names::FieldName, declared: super::types::FieldType, found: super::names::PhysicalType },
     /// A stored value its declared type cannot hold.
     #[error("{field} holds an invalid stored value: {fault}")]
-    InvalidStored { field: String, fault: StoredFault },
+    InvalidStored { field: super::names::FieldName, fault: StoredFault },
     /// A stored JSON column that does not parse.
     #[error("{field} holds invalid JSON: {source}")]
-    StoredJson { field: String, #[source] source: serde_json::Error },
+    StoredJson { field: super::names::FieldName, #[source] source: serde_json::Error },
     /// A result column with no declared field.
     #[error("{collection}.{column} has no declared codec")]
-    Undecodable { collection: String, column: String },
+    Undecodable { collection: super::names::CollectionName, column: super::names::ColumnName },
     /// A query's projection left out a record envelope field.
     #[error("the projection omitted {name}")]
     Projection { name: &'static str },
@@ -74,10 +74,10 @@ pub enum StorageError {
     Unqueryable(QueryFault),
     /// An append's sequence spec does not fit its collection's declaration.
     #[error("{collection}: the append cannot run: {fault}")]
-    Append { collection: String, fault: AppendFault },
+    Append { collection: super::names::CollectionName, fault: AppendFault },
     /// A field storage owns (id, timestamps, version) was written by a caller.
     #[error("{field} is owned by storage")]
-    StorageOwned { field: String },
+    StorageOwned { field: super::names::FieldName },
     /// A native write carried no payloads.
     #[error("a native write needs at least one payload")]
     NoPayloads,
@@ -89,34 +89,34 @@ pub enum StorageError {
     Task(#[from] tokio::task::JoinError),
     /// An entity declaration that cannot become a table.
     #[error("{collection}: the declaration cannot compile: {fault}")]
-    Declaration { collection: String, fault: DeclarationFault },
+    Declaration { collection: super::names::CollectionName, fault: DeclarationFault },
     /// The control that drives a long operation (a migration's pause/resume) closed under it.
     #[error("the {what} control closed")]
     ControlClosed { what: &'static str },
     /// No row with this id.
     #[error("{collection} has no row {id}")]
-    NotFound { collection: String, id: UUID },
+    NotFound { collection: super::names::CollectionName, id: UUID },
     /// The write's record is not the shape its collection declares.
     #[error("{collection}: the record is not {expected}")]
-    Malformed { collection: String, expected: Shape },
+    Malformed { collection: super::names::CollectionName, expected: Shape },
     /// A declared field the write left out, with no default and not nullable.
     #[error("{collection}.{field} is required")]
-    Required { collection: String, field: String },
+    Required { collection: super::names::CollectionName, field: super::names::FieldName },
     /// A field written as a native payload that is not declared binary.
     #[error("{collection}.{field} is not a declared binary field")]
-    NotBinary { collection: String, field: String },
+    NotBinary { collection: super::names::CollectionName, field: super::names::FieldName },
     /// A binary field supplied both as JSON and as a native payload.
     #[error("{collection}.{field} was supplied through two representations")]
-    TwoRepresentations { collection: String, field: String },
+    TwoRepresentations { collection: super::names::CollectionName, field: super::names::FieldName },
     /// The statement could not be built (a column/value mismatch in the builder).
     #[error(transparent)]
     Query(#[from] sea_orm::sea_query::error::Error),
     /// A field the operation names is not declared on the collection.
     #[error("{collection}.{field} is not declared")]
-    Undeclared { collection: String, field: String },
+    Undeclared { collection: super::names::CollectionName, field: super::names::FieldName },
     /// A collection's sequence cannot advance (exhausted, or its persisted head is invalid).
     #[error("{collection}: the sequence cannot advance")]
-    SequenceExhausted { collection: String },
+    SequenceExhausted { collection: super::names::CollectionName },
     /// A count or size does not fit the integer the database or this process uses.
     #[error("{what} exceeds its integer range")]
     Overflow { what: &'static str },

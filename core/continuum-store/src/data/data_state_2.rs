@@ -1,5 +1,11 @@
 use super::*;
 
+/// The backend a cutover leaves and the one it moves to, named so they cannot be swapped.
+pub(crate) struct ConnectionSwap {
+    pub(crate) current: String,
+    pub(crate) target: String,
+}
+
 impl DataState {
 
     /// Backfill vectors - generate embeddings for records missing them
@@ -616,11 +622,8 @@ impl DataState {
     /// Cutover: swap the active adapter for a new connection string, redirecting
     /// all subsequent operations to the new backend. Single source for
     /// `migration/cutover`.
-    pub(crate) async fn migration_cutover(
-        &self,
-        current: String,
-        target: String,
-    ) -> Result<MigrationCutover, String> {
+    pub(crate) async fn migration_cutover(&self, swap: ConnectionSwap) -> Result<MigrationCutover, String> {
+        let ConnectionSwap { current, target } = swap;
         // Store current for rollback
         *self.previous_connection.lock().await = Some(current.clone());
 

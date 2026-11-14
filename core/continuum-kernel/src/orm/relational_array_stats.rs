@@ -29,9 +29,9 @@ impl super::relational::RelationalStore {
             let header: Option<Vec<u8>> = row.try_get("", "descriptor")?;
             match header {
                 None if payloads == 0 => {},
-                None => return Err(StorageError::Corrupt { what: "a binary payload is missing its descriptor" }),
+                None => return Err(StorageError::Corrupt { what: "a binary payload without a descriptor" }),
                 Some(header) => {
-                    if usize::try_from(payloads).map_err(|_| StorageError::Corrupt { what: "a negative payload count" })? != count { return Err(StorageError::Corrupt { what: "a binary descriptor is missing its payload" }); }
+                    if usize::try_from(payloads).map_err(|_| StorageError::Corrupt { what: "a negative payload count" })? != count { return Err(StorageError::Corrupt { what: "a binary descriptor without its payload" }); }
                     let descriptor = BinaryDescriptor::decode(&header)?;
                     let [dimension] = descriptor.shape.as_slice() else { return Err(StorageError::Unqueryable(super::storage_error::QueryFault::RankOne)); };
                     let bytes = i64::try_from(descriptor.byte_len()?).map_err(|_| StorageError::Overflow { what: "a binary size" })?;

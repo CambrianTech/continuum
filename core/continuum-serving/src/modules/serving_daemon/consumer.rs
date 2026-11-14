@@ -40,7 +40,8 @@ use super::*;
 /// by the consumer beside the window and lanes it reads from the same snapshot. The first
 /// cut read a daemon cell the target derivation rewrote; that cell moved under a running
 /// engine (2026-09-20 07:52Z) and the board credited a grant no process held.
-pub(super) fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+pub(super) fn serving_footprint_fn(catalog: &Arc<ModelCatalog>) -> FootprintFn {
+    let catalog = Arc::clone(catalog);
     Arc::new(
         move |id: &str, served_window: u32, lanes: u32, grant_mib: u32| {
             catalog
@@ -89,14 +90,11 @@ impl crate::modules::serving_prompt_cache::PromptCacheControl for EnginePromptCa
 }
 
 impl ServingDaemonModule {
-    /// Register the engine's host prompt cache with the memory monitor: the first holder asked
-    /// for the host's deficit, and taken back when the OS reads normal (card 0f631c46). The one
-    /// reclaim path for host RAM; steps run on `runtime`.
-    pub fn give_host_memory_back_first(
-        &self,
-        monitor: &crate::system_resources::MemoryPressureMonitor,
-        runtime: tokio::runtime::Handle,
-    ) {
+    /// Register the engine's host prompt cache with the memory monitor (`live_pool::
+    /// give_host_memory_back_first` registers it after the minds' pool): the first holder asked for
+    /// the host's deficit, and taken back when the OS reads normal (card 0f631c46). Steps run on
+    /// `runtime`.
+    pub(super) fn register_prompt_cache(&self, monitor: &crate::system_resources::MemoryPressureMonitor, runtime: tokio::runtime::Handle) {
         crate::modules::serving_prompt_cache::PromptCacheShedder::register(
             Arc::new(EnginePromptCache(self.server.clone())),
             self.subscribe_serving(),
@@ -215,7 +213,7 @@ impl ServingDaemonModule {
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
             self.intent.clone(),
-            serving_footprint_fn(self.catalog.clone()),
+            serving_footprint_fn(&self.catalog),
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own

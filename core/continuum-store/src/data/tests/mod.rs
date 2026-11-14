@@ -41,7 +41,8 @@ use crate::orm::types::CollectionSchema;
                 })).await?;
                 let rows: crate::orm::types::StorageResult<Vec<DataRecord>> =
                     serde_json::from_value(result.to_json_value()?)?;
-                let rows = rows.into_result()?;
+                assert!(rows.success, "{:?}", rows.error);
+                let Some(rows) = rows.data else { return Err("a successful receipt carries its rows".into()) };
                 assert_eq!(rows.len(), limit);
                 for (index, row) in rows.iter().enumerate() {
                     assert_eq!(row.data["value"], json!(index + 2));
@@ -245,16 +246,16 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn create_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::data::create::DataCreateParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+            serde_json::from_value(params)?;
+        let handle = p.handle.as_str();
         let result = module
             .state
             .create_record(handle, p.collection, p.id, p.data)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -262,31 +263,31 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn read_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::data::read::DataReadParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+            serde_json::from_value(params)?;
+        let handle = p.handle.as_str();
         let result = module
             .state
             .read_record(handle, &p.collection, &p.id)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
     /// Test seam: drive [`DataState::index_vector`] through the same
     /// [`VectorIndexParams`](crate::commands::vector::index::VectorIndexParams)
     /// deserialization the typed `vector/index` command uses. Returns the typed
-    /// `StorageResult<DataRecord>` as JSON.
+    /// indexed `DataRecord` as JSON.
     pub(super) async fn index_via_state(
         module: &DataModule,
         params: serde_json::Value,
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
-        let handle = p.handle.as_deref().unwrap_or("main");
-        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await.map_err(|e| e.to_string())?;
-        Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
+        let handle = p.handle.as_str();
+        let record = module.state.index_vector(handle, &p.collection, &p.id, &p.embedding).await?;
+        Ok(CommandResult::Json(serde_json::to_value(record)?))
     }
 
     /// Test seam for the typed `vector/stats` command. Returns [`VectorStats`] as
@@ -294,13 +295,13 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn stats_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::stats::VectorStatsParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
-        let result = module.state.vector_stats(handle, &p.collection).await.map_err(|e| e.to_string())?;
+            serde_json::from_value(params)?;
+        let handle = p.handle.as_str();
+        let result = module.state.vector_stats(handle, &p.collection).await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -311,9 +312,9 @@ use crate::orm::types::CollectionSchema;
         params: serde_json::Value,
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::search::VectorSearchParams = serde_json::from_value(params)?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let query = crate::data::wire_query(&p.query_vector, p.embedder.as_deref());
-        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await.map_err(|e| e.to_string())?;
+        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await?;
         Ok(CommandResult::Json(serde_json::to_value(result)?))
     }
 
@@ -322,16 +323,16 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn invalidate_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::invalidate_cache::VectorInvalidateCacheParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
+            serde_json::from_value(params)?;
+        let handle = p.handle.as_str();
         let result = module
             .state
             .invalidate_vector_cache(handle, &p.collection)
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -340,17 +341,11 @@ use crate::orm::types::CollectionSchema;
     pub(super) async fn backfill_via_state(
         module: &DataModule,
         params: serde_json::Value,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, Box<dyn std::error::Error + Send + Sync>> {
         let p: crate::commands::vector::backfill::VectorBackfillParams =
-            serde_json::from_value(params).map_err(|e| e.to_string())?;
-        let handle = p.handle.as_deref().unwrap_or("main");
-        let filter: Option<std::collections::HashMap<String, FieldFilter>> = match p.filter {
-            Some(map) => Some(
-                serde_json::from_value(serde_json::Value::Object(map))
-                    .map_err(|e| format!("invalid filter: {e}"))?,
-            ),
-            None => None,
-        };
+            serde_json::from_value(params)?;
+        let handle = p.handle.as_str();
+        let filter = p.filter;
         let result = module
             .state
             .backfill_vectors(
@@ -361,9 +356,9 @@ use crate::orm::types::CollectionSchema;
                 p.model,
                 filter,
             )
-            .await.map_err(|e| e.to_string())?;
+            .await?;
         Ok(CommandResult::Json(
-            serde_json::to_value(result).map_err(|e| e.to_string())?,
+            serde_json::to_value(result)?,
         ))
     }
 
@@ -461,7 +456,7 @@ use crate::orm::types::CollectionSchema;
                 "data": { "name": "Alice" }
             }))
             .expect("clean params deserialize");
-        assert!(clean.handle.is_none(), "omitted handle stays None (→ main)");
+        assert!(clean.handle.is_main(), "an omitted dbPath addresses the main store");
 
         let legacy: crate::commands::data::create::DataCreateParams =
             serde_json::from_value(json!({
@@ -471,8 +466,8 @@ use crate::orm::types::CollectionSchema;
             }))
             .expect("legacy dbPath params deserialize");
         assert_eq!(
-            legacy.handle.as_deref(),
-            Some("some/store.db"),
+            legacy.handle.as_str(),
+            "some/store.db",
             "dbPath is the wire name of the storage handle (the envelope owns `handle`)"
         );
     }
@@ -523,8 +518,7 @@ use crate::orm::types::CollectionSchema;
         );
 
         if let Ok(CommandResult::Json(result)) = create_result {
-            assert!(result["success"].as_bool().unwrap_or(false));
-            let id = result["data"]["id"].as_str().unwrap();
+            let id = result["id"].as_str().expect("test: the created record carries its id");
 
             // Read with dbPath
             let read_result = read_via_state(
@@ -539,8 +533,7 @@ use crate::orm::types::CollectionSchema;
 
             assert!(read_result.is_ok());
             if let Ok(CommandResult::Json(read)) = read_result {
-                assert!(read["success"].as_bool().unwrap_or(false));
-                assert_eq!(read["data"]["data"]["name"], "Alice");
+                assert_eq!(read["data"]["name"], "Alice");
             }
         }
     }

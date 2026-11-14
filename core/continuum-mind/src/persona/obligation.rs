@@ -142,10 +142,7 @@ pub async fn close<T: Transport>(conn: &Connection<T>, persona_name: &str, id: U
 /// Reconcile every open obligation through bounded identity pages, then restore
 /// admission order for replay. Recovery needs each trigger, never a clipped view.
 pub async fn open<T: Transport>(conn: &Connection<T>, persona_name: &str, persona_id: Uuid) -> Result<Vec<PersonaObligation>, ClientError> {
-    let mut rows: Vec<PersonaObligation> = crate::orm::client_read::matching(
-        conn, &handle(persona_name), PersonaObligation::COLLECTION,
-        serde_json::Map::from_iter([("personaId".into(), json!(persona_id.to_string()))]), None,
-    ).await?;
+    let mut rows: Vec<PersonaObligation> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &handle(persona_name), collection: PersonaObligation::COLLECTION, filter: &serde_json::Map::from_iter([("personaId".into(), json!(persona_id.to_string()))]), select: None }).await?;
     rows.sort_by_key(|row| (row.admitted_at_ms, row.id));
     Ok(rows)
 }

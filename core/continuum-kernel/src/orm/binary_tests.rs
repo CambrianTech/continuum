@@ -181,7 +181,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
             .borrow(),
         2
     );
-    let page = read_page(&reopened, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(
         page[0]
             .value
@@ -260,7 +260,7 @@ fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<()
 }
 
 async fn open(path: &str) -> Result<RelationalStore, Box<dyn std::error::Error>> {
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(),
         ..Default::default()
     })
@@ -286,12 +286,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
     let delayed = BinaryValue::new(descriptor(ElementType::F32, vec![2]), vec![0; 8])?;
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(1).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), winner.clone())]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), winner.clone())]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     let metadata_query = || {
@@ -308,28 +303,18 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
     );
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(1).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), delayed)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), delayed)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     let after = store.query(&metadata_query()).await?;
-    assert!(!native_changes.has_changed().map_err(|e| e.to_string())?);
+    assert!(!native_changes.has_changed()?);
     assert_eq!(before[0].metadata.version, after[0].metadata.version);
     assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
-    let page = read_page(&store, NativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(page[0].value.as_ref(), Some(&winner));
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(2).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), winner)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(2).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), winner)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     Ok(())
@@ -360,18 +345,13 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     ];
     for (n, (kind, bytes)) in variants.iter().enumerate() {
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(n as u128).to_string(),
-                std::collections::BTreeMap::from([(
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(n as u128).to_string() }, payloads: std::collections::BTreeMap::from([(
                     "payload".into(),
                     BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?,
-                )]),
-                BinaryWriteCondition::Replace,
-            )
+                )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
-    assert!(read_page(&store, NativeRow::COLLECTION, "payload", None, 0)
+    assert!(read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 0)
         .await
         .is_err());
     let stats = store
@@ -394,7 +374,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
             .select(vec!["id".into()])
             .limit(2)
             .build();
-        assert_eq!(store.count(&missing.clone()).await?, expected);
+        assert_eq!(store.count(&missing).await?, expected);
         let rows = store.query(&missing).await?;
         assert_eq!(rows.len(), expected.min(2));
         assert!(rows.iter().all(|row| row.data.get("payload").is_none()));
@@ -403,10 +383,9 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     assert!(store
         .update_on(
             &store.db,
-            NativeRow::COLLECTION,
-            &uuid::Uuid::nil().to_string(),
+            crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::nil().to_string() },
             json!({"payload":null}),
-            true
+            crate::orm::seam::Versioning::Increment,
         )
         .await
         .is_err());
@@ -414,7 +393,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     let reopened = open(path).await?;
     let mut cursor = None;
     for (n, (kind, bytes)) in variants.iter().enumerate() {
-        let page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+        let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, uuid::Uuid::from_u128(n as u128).to_string());
         let value = page[0].value.as_ref().ok_or("missing native payload")?;
@@ -422,7 +401,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
         assert_eq!(value.descriptor(), &descriptor(*kind, vec![2]));
         cursor = Some(page[0].id.clone());
     }
-    let null_page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+    let null_page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
     assert!(null_page.is_empty());
     Ok(())
 }
@@ -435,11 +414,11 @@ struct TestRecord {
 }
 async fn read_page(
     store: &RelationalStore,
-    collection: &str,
-    field: &str,
+    column: crate::orm::seam::FieldRef<'_>,
     after: Option<String>,
     limit: usize,
 ) -> Result<Vec<TestRecord>, Box<dyn std::error::Error>> {
+    let crate::orm::seam::FieldRef { collection, field } = column;
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
     let snapshot = store.binary_snapshot(collection).await?;
@@ -450,7 +429,7 @@ async fn read_page(
                 after: after
                     .map(|id| uuid::Uuid::parse_str(&id))
                     .transpose()
-                    .map_err(|e| e.to_string())?,
+                    ?,
                 limit: std::num::NonZeroUsize::new(limit)
                     .ok_or("test page size must be positive")?,
             },
@@ -668,12 +647,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     assert!(!revision.deleted);
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     assert_eq!(
@@ -686,12 +660,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
@@ -742,12 +711,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
@@ -785,7 +749,7 @@ async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result
     ))
     .one(&store.db)
     .await
-    .map_err(|e| e.to_string())?
+    ?
     .ok_or("missing maximum head")?;
     assert_eq!(persisted.high, i64::MAX);
     Ok(())
