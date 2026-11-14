@@ -3456,6 +3456,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "chrono",
+ "continuum-client",
  "continuum-engine",
  "continuum-kernel",
  "dashmap",
