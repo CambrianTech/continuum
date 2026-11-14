@@ -181,14 +181,8 @@ crate::action_command! {
         // charged against the save.
         let observe = std::time::Duration::from_secs(15) + settle;
         let Some(receipt) = crate::runtime::await_shutdown(rx, observe).await else {
-            // The watchdog names the step that never completed (card b5b9bef3).
-            let step = match crate::runtime::extensions::settling() {
-                Some(participant) => format!("the `{participant}` settle"),
-                None => "the module save".to_owned(),
-            };
             return Err(crate::sdk_codegen::CommandError::Internal(format!(
-                "shutdown is still running after {}s, stalled in {step} — it was NOT cancelled, \
-                 and whether every module saved is unknown from here",
+                "shutdown is still running after {}s — it was NOT cancelled, and whether                  every module saved is unknown from here",
                 observe.as_secs()
             )));
         };
@@ -270,27 +264,11 @@ mod tests {
         }
         let mut command = tokio::process::Command::new(std::env::current_exe().unwrap());
         command.args(["--exact", "commands::system::shutdown::tests::acknowledged_commit_exits_only_after_receipt", "--nocapture"])
-            .env(CHILD, "1").kill_on_drop(true)
-            .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            .env(CHILD, "1").kill_on_drop(true);
         #[cfg(windows)]
         command.creation_flags(0x08000000);
-        // The stop's own completion signal (card b5b9bef3): the CLI waits on the core's EXIT EVENT,
-        // never a liveness poll, so the parent here observes the child the same way.
-        let child = command.spawn().unwrap();
-        let pid = child.id().expect("test: a spawned child has a pid");
-        let started = std::time::Instant::now();
-        // Read the pipes while the exit is awaited, so a full pipe can never hold the child up.
-        let (exit, output) = tokio::join!(
-            async {
-                let exit = continuum_host::process_exit_event::exited(pid, std::time::Duration::from_secs(20)).await;
-                (exit, started.elapsed().as_millis())
-            },
-            child.wait_with_output(),
-        );
-        let (exit, exited_ms) = exit;
-        exit.expect("the stopped core's exit event arrives within its watchdog");
-        let output = output.unwrap();
-        println!("stop request -> exit event: {exited_ms} ms");
+        let output = tokio::time::timeout(std::time::Duration::from_secs(20), command.output())
+            .await.expect("shutdown test child must exit within its deadline").unwrap();
         assert!(output.status.success(), "child failed: {}", String::from_utf8_lossy(&output.stderr));
         assert!(String::from_utf8_lossy(&output.stdout).contains("received-completed-shutdown-receipt"));
     }

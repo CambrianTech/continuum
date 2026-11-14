@@ -106,7 +106,6 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
-    let requested = std::time::Instant::now();
     say_turns_may_settle();
     let drain = tokio::time::timeout(GRACEFUL_STOP_BUDGET,
         cmds.execute_value("system/shutdown-drain", serde_json::to_value(&target).map_err(|e| e.to_string())?)) // Encode the process binding for the lifecycle IPC request.
@@ -130,32 +129,11 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
         receipt_sha256: continuum_core::commands::system::shutdown::shutdown_receipt_digest(&result.receipt)
             .map_err(|e| e.to_string())?,
     };
-    let saved_ms = requested.elapsed().as_millis() as u64;
-    // The commit and the exit event race on purpose: a successful commit never replies (the
-    // core is gone), so the CLI subscribes to the process's exit while the request is out and
-    // proceeds the moment the kernel says the core ended. The deadline is only a watchdog.
-    let commit = cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?); // Encode the receipt acknowledgment for lifecycle IPC.
-    let exit_event = exited_within(pid, TEARDOWN_EXIT_DEADLINE);
-    tokio::pin!(commit, exit_event);
-    // The exit is the only thing the stop waits for; the commit's reply (the connection
-    // closing as the core goes, or a refusal) is kept only to explain an exit that never came.
-    let mut reply = None;
-    let exited = loop {
-        tokio::select! {
-            answered = &mut commit, if reply.is_none() => reply = Some(answered),
-            exited = &mut exit_event => break exited,
-        }
-    };
-    exited.map_err(|why| format!("acknowledged shutdown did not exit: {why}; commit result: {reply:?}"))?;
-    let exited_ms = requested.elapsed().as_millis() as u64;
-    continuum_base::probe!(
-        class = "lifecycle.stop.exited",
-        pid = pid,
-        saved_ms = saved_ms,
-        exited_ms = exited_ms,
-        "a stop, from its request to the core's exit event: `saved_ms` to the save receipt, `exited_ms` to the exit"
-    );
-    println!("core pid {pid} exited {exited_ms} ms after the stop was requested (receipt at {saved_ms} ms)");
+    let reply = tokio::time::timeout(TEARDOWN_EXIT_DEADLINE,
+        cmds.execute_value("system/shutdown-commit", serde_json::to_value(commit).map_err(|e| e.to_string())?)).await; // Encode the receipt acknowledgment for lifecycle IPC.
+    exited_within(pid, TEARDOWN_EXIT_DEADLINE).await.map_err(|why| {
+        format!("acknowledged shutdown did not exit: {why}; commit result: {reply:?}")
+    })?;
     let evidence = core_process_evidence()
         .map_err(|e| format!("cannot verify processes after acknowledged exit: {e}"))?;
     if !evidence.core_pids.is_empty() {
@@ -181,19 +159,19 @@ pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, r
     // PREFLIGHT THE TEARDOWN AUTHORITY BEFORE THE DRAIN (Astra, 2026-09-22): the
     // drain is one-way, so a caller that cannot end the process must refuse here
     // rather than leave a drained core answering ping.
-    // ONE graceful stop on every platform (card b5b9bef3): the core drains, saves, hands the
-    // receipt back and exits ITSELF on the commit, through the same exit its SIGTERM path
-    // takes; the CLI waits on that exit event. Unix used to save, then kill the core from
-    // here, and a save that never returned (the stop's checkpoint behind acts it had handed
-    // back) left the M5's core serving minds for 100 s to 7 min until a manual SIGTERM.
-    // Only a core that cannot bind a target (several cores at once, or one that cannot
-    // answer) takes the forced path below, which preflights its authority first.
+    // For older cores, any missing privilege must be obtained BEFORE the drain.
+    // New Windows cores can exit after the CLI receives their save receipt.
+    // Older builds and multi-core recovery keep the OS-capability/UAC path.
     if !keep_lanes {
         continuum_core::inference::lane_registry::records_checked()
             .map_err(|e| format!("cannot establish lane teardown ownership before drain: {e}"))?;
     }
     let pids = cores_to_tear_down();
-    let target = probe_shutdown_target(&pids).await?;
+    let target = if cfg!(windows) && (keep_lanes || require_durable) {
+        probe_shutdown_target(&pids).await?
+    } else {
+        None
+    };
     if require_durable && !pids.is_empty() && target.is_none() {
         return Err("maintenance requires one receipt-bound shutdown generation; legacy or ambiguous cores remain running".into());
     }

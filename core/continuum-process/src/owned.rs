@@ -157,9 +157,10 @@ pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
     // M5 Pro (2026-10-15T19:34Z, macOS 26.5, against canary 8eaed76f3's process model; a Python
     // driver of a shell's `sleep` grandchild, n=200): gone 2.2 ms p50, 3.7 ms max after its
     // SIGKILL; a loaded CI runner saw one still present at the first snapshot (canary 8eaed76f3,
-    // shell_session test_kill_execution). So each killed process's exit EVENT is awaited, watched
-    // by one KILL_POLL, the cadence a release already checks a killed execution at. What remains
-    // after that is recorded, never assumed gone: a release re-checks it, as before.
+    // shell_session test_kill_execution). So the killed set is re-checked, at a doubling interval
+    // from 1 ms, until it is gone or one KILL_POLL has passed, the cadence a release already checks
+    // a killed execution at. What remains after that is recorded, never assumed gone: a release
+    // re-checks it, as before.
     let survivors = confirm_gone(check, KILL_POLL).await;
     TreeEnd { reaped, survivors, unwalked }
 }
@@ -170,38 +171,21 @@ pub async fn end_tree(child: &mut tokio::process::Child) -> TreeEnd {
 /// recheck re-kills what remains. A check that couldn't run confirms nothing: everything it was
 /// given stays unconfirmed.
 pub async fn confirm_gone(killed: Vec<ProcessIdentity>, within: std::time::Duration) -> Vec<ProcessIdentity> {
-    // Look once: whatever is already gone (or whose pid now names another process) needs no wait.
-    let still = present(killed).await;
-    if still.is_empty() {
-        return still;
-    }
-    // Then each survivor's EXIT EVENT, delivered by the kernel the moment it ends, never a
-    // doubling poll (card b5b9bef3). `within` is one watchdog over all of them; an exit not
-    // observed is no answer either way, and the final look below decides.
     let deadline = tokio::time::Instant::now() + within;
-    for who in &still {
-        let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-        match continuum_host::process_exit_event::exited(who.pid, left).await {
-            Ok(()) => {}
-            Err(unobserved) => {
-                continuum_base::probe!(
-                    class = "process.exit.unobserved",
-                    pid = who.pid,
-                    why = %unobserved,
-                    "a killed process's exit was not observed inside its watchdog; the look that follows decides"
-                );
-            }
+    let mut still = killed;
+    let mut wait = std::time::Duration::from_millis(1);
+    loop {
+        let check = still.clone();
+        still = match tokio::task::spawn_blocking(move || still_present(&check)).await {
+            Ok(present) => present,
+            Err(_) => return still,
+        };
+        let now = tokio::time::Instant::now();
+        if still.is_empty() || now >= deadline {
+            return still;
         }
-    }
-    present(still).await
-}
-
-/// Which of `who` are still present, by identity. A check that couldn't run confirms nothing.
-async fn present(who: Vec<ProcessIdentity>) -> Vec<ProcessIdentity> {
-    let check = who.clone();
-    match tokio::task::spawn_blocking(move || still_present(&check)).await {
-        Ok(present) => present,
-        Err(_) => who,
+        tokio::time::sleep(wait.min(deadline - now)).await;
+        wait *= 2;
     }
 }
 

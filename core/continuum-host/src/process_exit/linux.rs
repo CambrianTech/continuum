@@ -1,4 +1,10 @@
-use super::ExitWaitError;
+use super::Unobservable;
+
+/// Linux keeps a zombie in /proc, where the process table reader sees its status: nothing to add.
+pub(super) fn exited_unreaped(_pid: u32) -> bool {
+    false
+}
+
 
 /// Closes a descriptor on every path.
 struct Fd(libc::c_int);
@@ -12,15 +18,15 @@ impl Drop for Fd {
 
 /// Linux: a pidfd turns readable when its process exits (zombie included); a pid already gone
 /// answers ESRCH, which is that exit.
-pub(super) fn wait_exit(pid: u32) -> Result<(), ExitWaitError> {
+pub(super) fn wait_exit(pid: u32) -> Result<(), Unobservable> {
     // SAFETY: pidfd_open(pid, 0) only creates a descriptor referring to the process.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
     if fd < 0 {
         let error = std::io::Error::last_os_error();
         return match error.raw_os_error() {
             Some(libc::ESRCH) => Ok(()),
-            Some(libc::ENOSYS) => Err(ExitWaitError::Unsupported),
-            _ => Err(ExitWaitError::Refused { pid, error: error.to_string() }),
+            Some(libc::ENOSYS) => Err(Unobservable::Unsupported),
+            _ => Err(Unobservable::Refused { pid, error: error.to_string() }),
         };
     }
     let fd = fd as libc::c_int;
@@ -34,7 +40,7 @@ pub(super) fn wait_exit(pid: u32) -> Result<(), ExitWaitError> {
         }
         let error = std::io::Error::last_os_error();
         if error.raw_os_error() != Some(libc::EINTR) {
-            return Err(ExitWaitError::Refused { pid, error: error.to_string() });
+            return Err(Unobservable::Refused { pid, error: error.to_string() });
         }
     }
 }
