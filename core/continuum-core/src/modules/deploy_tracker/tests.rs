@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! The deploy tracker module's tests (moved out whole so the module stays under 1,000 lines).
 
 use super::*;
