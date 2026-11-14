@@ -953,4 +953,24 @@ mod tests {
         let bound = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
         assert!(minds_over_the_grid(&bound, 75_776).is_empty(), "a bound past the widest window is not unservable (Cormac on #5773)");
     }
+
+    // what this catches (the M5, 2026-11-14, `grid.mind.unservable widest_window=132300`): the
+    // widest lane read as the pool's equal share. Against the seat the engine holds (262,144 per
+    // sequence) neither Benchy nor Atlas is unservable; against the share both were named.
+    #[test]
+    fn a_need_past_the_equal_share_is_servable_on_a_seat_that_holds_it() {
+        use crate::inference::planning::window_allocator::{observed::Observed, LaneRequirement, Tokens};
+        const fn t(n: u32) -> Tokens {
+            match Tokens::new(n) {
+                Some(tokens) => tokens,
+                None => panic!("a test's token literal is never zero"),
+            }
+        }
+        let (benchy, atlas) = (Uuid::new_v4(), Uuid::new_v4());
+        let held = |mind, need| LaneRequirement::wished(mind, t(need), 1.0).held(Observed::Exact(t(need)));
+        let minds = vec![held(benchy, 148_818), held(atlas, 135_619)];
+        let seat = crate::capacity::window_grant::seat_window(132_300, Some(262_144));
+        assert!(minds_over_the_grid(&minds, seat).is_empty(), "after: one seat holds either need");
+        assert_eq!(minds_over_the_grid(&minds, 132_300).len(), 2, "before: the equal share named both");
+    }
 }
