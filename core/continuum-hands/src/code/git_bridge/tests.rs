@@ -642,7 +642,5 @@
         // a pipe holds 64 KiB; 1 MiB to a git that never reads stdin can't be delivered whole
         let err = run_git_input(dir.path(), None, &["--version"], &[], Some(vec![b'x'; 1 << 20])).await.unwrap_err();
         assert_eq!(err.end, GitEnd::Unknown, "it exited 0 without taking its input: what it did is unknown");
-        assert!(err.to_string().contains("--version"), "input the git never took is an error naming it, never its output: {err}");
-    }
-        // The hook recorded its pid (written above): proves git ran and reached the
-        // pre-commit hook. A wall-clock bound is unnecessary — we verify the event itself.
+            assert!(err.to_string().contains("--version"), "input the git never took is an error naming it, never its output: {err}");
+        }
