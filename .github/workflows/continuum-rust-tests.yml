@@ -99,6 +99,11 @@ jobs:
 
       - uses: ./.github/actions/rust-ci-setup
 
+      # Lib execution alone does not compile integration/bin test targets. Apply the
+      # same crate feature contract to every test target before executing its suite.
+      - name: compile every test target
+        run: cargo check --locked -p "$CRATE" --tests --profile dev-fast --features "$FEATURES"
+
       # Integration targets, not part of --lib, in one invocation sharing one build: the signed-grant
       # loop, and the engine log relay as the real `continuum-core-server --log-relay` binary
       # (spawn into the engine's group, readiness, core exit and re-follow; card 1d7d6d4c).
