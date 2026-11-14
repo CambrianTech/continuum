@@ -36,5 +36,9 @@
   "engine_page_lanes": {
     "value": 1,
     "receipt": "how many page saves/restores the pinned fork (cd2e16d87) runs at once: one. They are tasks on its single task loop (tools/server/server-queue.cpp:138-153 process_new_tasks; save at server-context.cpp:2809/2960, restore at 2996/3076). Measured: two restores the core issued at once after the 2026-11-14 00:18Z relaunch, Aris (00:18:13.016Z, ms=2573 engine_ms=1012 wait_ms=1561) and Benchy (00:18:13.925Z, ms=1930 engine_ms=906 wait_ms=1024): Benchy waited 1,024 ms, Aris's 1,012 ms in the engine"
+  },
+  "host_copy_bytes_per_ms": {
+    "value": 40558095,
+    "receipt": "host memcpy on the M5 (Apple M5 Pro, Mac17,9) while it served its residents, 2026-11-14T07:24:45Z: 268,435,456 B copied (python3 bytes(bytearray), one memcpy) best of 7 in 6.62 ms. What the fork's loop pays per byte once a page switch only copies state in or out (llama_state_seq_get_data / set_data on unified memory); the deployed engine's own copy_ms receipt replaces it"
   }
 }
