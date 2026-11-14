@@ -20,7 +20,10 @@
 use crate::ai::types::ResultCustody;
 use crate::cognition::act_observe::{Observation, ToolVerb};
 use crate::cognition::tool_executor::tool_output::TOOL_OUTPUT;
+use crate::cognition::working_memory::ActSeq;
 use crate::sdk_codegen::VerbRef;
+use continuum_hands::modules::code_commands::{CodeEditParams, CodeWriteParams};
+use serde::Deserialize;
 
 /// The verb her open views name for paging a file.
 const CODE_READ: VerbRef<continuum_hands::modules::code_commands::CodeRead> = VerbRef::in_hands();
@@ -60,25 +63,67 @@ pub struct OpenView {
     /// in the whole representation; the shared context allocator decides its visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
-    /// The read of this file her view keeps whole through a turnover while she is editing it
-    /// ([`OpenViews::editing_reads`]): her newest read that showed the whole file, else her newest.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kept_read: Option<KeptRead>,
-    /// The act that last edited or wrote this file from this checkout: while it is set and the view
-    /// is open where her hands stand, her edit of it is open.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub edited_seq: Option<u64>,
+    /// What her hands have done with it: seen, read, or being edited ([`ViewWork`]).
+    #[serde(default, skip_serializing_if = "ViewWork::is_seen")]
+    pub work: ViewWork,
+}
+
+/// What her hands have done with a view, one state: an edit always has the read her view keeps
+/// beside it, so "edited but nothing read to keep" cannot be represented.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ViewWork {
+    /// Open, nothing of it read whole or edited (a saved output she pages, a read that failed).
+    #[default]
+    Seen,
+    /// Read: the read her view would keep.
+    Read(KeptRead),
+    /// Edited from this checkout after `read`: her edit of it is open while the view is open where
+    /// her hands stand, and her view keeps `read` whole through a turnover
+    /// ([`OpenViews::editing_reads`]).
+    Editing { read: KeptRead, edited: ActSeq },
+}
+
+impl ViewWork {
+    fn is_seen(&self) -> bool {
+        *self == Self::Seen
+    }
+
+    /// After a read of it.
+    fn read(self, read: KeptRead) -> Self {
+        match self {
+            Self::Seen => Self::Read(read),
+            Self::Read(kept) => Self::Read(kept.or(read)),
+            Self::Editing { read: kept, edited } => Self::Editing { read: kept.or(read), edited },
+        }
+    }
+
+    /// After an edit of it at `edited`. A file she never read opens no edit: no read of it is hers
+    /// to keep.
+    fn edited(self, edited: ActSeq) -> Self {
+        match self {
+            Self::Seen => Self::Seen,
+            Self::Read(read) | Self::Editing { read, .. } => Self::Editing { read, edited },
+        }
+    }
 }
 
 /// One read of a file her view may keep whole while she edits it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct KeptRead {
     /// The act that read it.
-    pub seq: u64,
+    pub seq: ActSeq,
     /// It showed every line: a later partial read (one region, her newest look) never replaces it,
     /// or a turnover would keep a page and collapse the file (Aris on the M5, 2026-11-14: a whole
     /// read at 00:28Z, then five reads of single regions).
     pub whole: bool,
+}
+
+impl KeptRead {
+    /// The read to keep of this and a `newer` one: the newer, unless it is a region and this
+    /// showed the whole file.
+    fn or(self, newer: Self) -> Self {
+        if newer.whole || !self.whole { newer } else { self }
+    }
 }
 
 /// Storage retention in records, not a prompt budget. Cursor and intent costs are measured
@@ -180,9 +225,7 @@ impl OpenViews {
         // (the M5, 2026-11-10: 20 identical re-reads, 2,876 s; Atlas read one 666-line file 4x).
         // A partial inline read keeps the handle already named: its own covers only its range.
         let whole_file = shown.zip(field_u32("total_lines")).is_some_and(|((start, end), total)| start <= 1 && end >= total);
-        if whole_file || !view.kept_read.is_some_and(|kept| kept.whole) {
-            view.kept_read = Some(KeptRead { seq, whole: whole_file });
-        }
+        view.work = view.work.read(KeptRead { seq: ActSeq(seq), whole: whole_file });
         view.handle = match (&result.custody, whole_file) {
             (ResultCustody::Pointer { handle }, _) => Some(handle.clone()),
             (ResultCustody::Whole { handle }, true) => Some(handle.clone()),
@@ -192,38 +235,46 @@ impl OpenViews {
     }
 
     /// An edit or write of a file she has open from this checkout: her edit of it is open
-    /// ([`OpenView::edited_seq`]). Matched by the file, whichever spelling (relative to the
+    /// ([`ViewWork::Editing`]). Matched by the file, whichever spelling (relative to the
     /// checkout or absolute) the read and the edit used; an edit of a file she never read opens
     /// nothing, since no read of it is hers to keep.
     fn note_edit(&mut self, act: &Observation, seq: u64, scope: Option<&str>) -> bool {
         if !act.completed_successfully() {
             return false;
         }
-        let Some(edited) = act.call.input.get("file_path").and_then(|path| path.as_str()).map(|path| in_checkout(path, scope)) else {
-            return false;
+        // Her call as the tool decoded it: an applied act's input is its typed params.
+        let target = match act.output.verb {
+            ToolVerb::Edit => CodeEditParams::deserialize(&act.call.input).map(|params| params.file_path),
+            ToolVerb::Write => CodeWriteParams::deserialize(&act.call.input).map(|params| params.file_path),
+            _ => return false,
         };
+        let Ok(target) = target else {
+            return false; // not a code/edit or code/write call: a tool whose name only says "edit" or "write"
+        };
+        let edited = in_checkout(&target, scope);
         let mut changed = false;
         for view in self.views.iter_mut().filter(|view| view.scope.as_deref() == scope) {
             if matches!(&view.subject, ViewSubject::File { path } if in_checkout(path, scope) == edited) {
-                view.edited_seq = Some(seq);
+                view.work = view.work.edited(ActSeq(seq));
                 changed = true;
             }
         }
         changed
     }
 
-    /// The reads her view keeps whole while she edits: for each file she has edited from where her
-    /// hands stand (`scope`) and still has open, its kept read ([`OpenView::kept_read`]), one per
-    /// file whichever spellings name it (a whole read before a partial one, then the newest).
-    pub fn editing_reads(&self, scope: Option<&str>) -> Vec<u64> {
+    /// The reads her view keeps whole while she edits: for each file she is editing from where her
+    /// hands stand (`scope`) and still has open, its kept read, one per file whichever spellings
+    /// name it (a whole read before a region, then the newest).
+    pub fn editing_reads(&self, scope: Option<&str>) -> Vec<ActSeq> {
         let mut kept: std::collections::BTreeMap<std::path::PathBuf, KeptRead> = std::collections::BTreeMap::new();
-        for view in self.views.iter().filter(|view| view.scope.as_deref() == scope && view.edited_seq.is_some()) {
-            let (ViewSubject::File { path }, Some(read)) = (&view.subject, view.kept_read) else {
-                continue;
-            };
-            let file = kept.entry(in_checkout(path, scope)).or_insert(read);
-            if (read.whole, read.seq) > (file.whole, file.seq) {
-                *file = read;
+        let editing = self.views.iter().filter(|view| view.scope.as_deref() == scope).filter_map(|view| match (&view.subject, view.work) {
+            (ViewSubject::File { path }, ViewWork::Editing { read, .. }) => Some((in_checkout(path, scope), read)),
+            (ViewSubject::File { .. }, ViewWork::Seen | ViewWork::Read(_)) | (ViewSubject::Output { .. }, _) => None,
+        });
+        for (file, read) in editing {
+            let held = kept.entry(file).or_insert(read);
+            if (read.whole, read.seq) > (held.whole, held.seq) {
+                *held = read;
             }
         }
         kept.into_values().map(|read| read.seq).collect()
@@ -284,8 +335,7 @@ impl OpenViews {
                 touched_seq: seq,
                 scope: scope.map(str::to_owned),
                 note: None,
-                kept_read: None,
-                edited_seq: None,
+                work: ViewWork::Seen,
             },
         };
         self.views.push(view);

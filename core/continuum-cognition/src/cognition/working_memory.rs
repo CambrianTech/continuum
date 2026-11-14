@@ -412,7 +412,7 @@ pub struct VolatileSnapshot {
     pub(crate) actions: Vec<action_log::ActionRecord>,
     /// Her thoughts, whole ([`thought_log`]). A checkpoint from before them carries her thoughts
     /// as `entries` of kind `Thought`; a restore moves those into the log.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "thought_log::readable")]
     pub thoughts: Vec<ThoughtRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
     /// (`derived::or_none`), her first act after the restore starts a new one.
@@ -480,7 +480,7 @@ impl VolatileSnapshot {
     pub(crate) fn reachable_handles(&self) -> HashSet<String> {
         let log = action_log::ActionLog::from_records(self.action_records());
         let mut handles = reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views);
-        handles.extend(self.thoughts.iter().filter_map(|thought| thought.handle.clone()));
+        handles.extend(self.thoughts.iter().filter_map(|thought| thought.saved_handle().map(str::to_owned)));
         handles
     }
 
@@ -604,6 +604,7 @@ mod action_log;
 mod archive;
 mod history;
 mod in_hand;
+pub use in_hand::{ActSeq, ThoughtOccurrence};
 pub mod act_times;
 mod collapsed_receipt;
 pub(crate) use collapsed_receipt::CollapsedReceipt;
@@ -621,7 +622,7 @@ pub use archive::{ArchiveTick, SpanSummary};
 #[cfg(test)]
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{RecordId, ResidentResults, ShedCandidate};
-pub use thought_log::ThoughtRecord;
+pub use thought_log::{ThoughtBody, ThoughtRecord};
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

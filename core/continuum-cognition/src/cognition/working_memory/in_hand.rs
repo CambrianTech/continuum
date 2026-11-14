@@ -13,14 +13,23 @@
 use super::*;
 use crate::cognition::act_observe::ToolVerb;
 
-/// What her work in hand holds open, by the keys her sources give it.
+/// One of her acts, by its `#n` (`ActionRecord::seq`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub struct ActSeq(pub u64);
+
+/// One of her thoughts, by its place in her memory's one entry sequence (`ThoughtRecord::occurrence`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ThoughtOccurrence(pub u64);
+
+/// What her work in hand holds open, by the ids her sources give it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(crate) struct InHand {
-    /// The acts (`#n`) whose reads of the files she is editing her view keeps whole.
-    pub reads: std::collections::HashSet<u64>,
-    /// Her notes on what her edits did: the first thought (by occurrence) she wrote after each
-    /// edit's result since the oldest read she keeps.
-    pub notes: std::collections::HashSet<u64>,
+    /// The acts whose reads of the files she is editing her view keeps whole.
+    pub reads: std::collections::HashSet<ActSeq>,
+    /// Her notes on what her edits did: the first thought she wrote after each edit's result since
+    /// the oldest read she keeps.
+    pub notes: std::collections::HashSet<ThoughtOccurrence>,
 }
 
 impl WorkingMemory {
@@ -36,8 +45,8 @@ impl WorkingMemory {
             .actions
             .lock()
             .records()
-            .filter(|record| record.seq > since && record.scope == scope)
-            .filter(|record| matches!(ToolVerb::classify(&record.operation), ToolVerb::Edit | ToolVerb::Write))
+            .filter(|record| ActSeq(record.seq) > since && record.scope == scope)
+            .filter(|record| record.verbs.iter().any(|verb| matches!(verb, ToolVerb::Edit | ToolVerb::Write)))
             .filter_map(|record| record.received_ms)
             .collect();
         // Her note on an edit: the first thought she had after its result returned (strictly after,
@@ -45,7 +54,7 @@ impl WorkingMemory {
         let thoughts = self.thoughts.lock();
         let notes = edited
             .iter()
-            .filter_map(|&returned| thoughts.records().find(|thought| thought.at_ms > returned).map(|thought| thought.occurrence))
+            .filter_map(|&returned| thoughts.records().find(|thought| thought.at_ms > returned).map(|thought| ThoughtOccurrence(thought.occurrence)))
             .collect();
         InHand { reads: reads.into_iter().collect(), notes }
     }

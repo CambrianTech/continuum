@@ -243,6 +243,7 @@ fn a_restored_handleless_receipt_keeps_its_children_under_its_new_handle() {
         run: None,
         body: None,
         received_ms: None,
+        verbs: Vec::new(),
         act: None,
     });
     snapshot.receipt_children.insert(receipt_key(7, None), vec![child.clone()]);

@@ -135,7 +135,7 @@ impl Source<ContextMessage> for Actions<'_> {
         let in_hand = self.memory.in_hand();
         for act in acts {
             let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
-            let held = in_hand.reads.contains(&act.seq);
+            let held = in_hand.reads.contains(&crate::cognition::working_memory::ActSeq(act.seq));
             let item = self.item(act, cause);
             items.push(if held { item.in_hand() } else { item });
         }

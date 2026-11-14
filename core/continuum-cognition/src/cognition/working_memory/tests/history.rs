@@ -156,7 +156,7 @@ fn a_fold_past_the_file_she_is_editing_leaves_its_read_resident() {
     let read = wm.actions_taken() + 1;
     super::open_views::record_read_and_edit(&wm);
     act(&wm, 5);
-    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([read]), "precondition: her edit holds the read");
+    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([ActSeq(read)]), "precondition: her edit holds the read");
     wm.release_through(wm.actions_taken() - 1);
     assert_eq!(wm.resident_acts() as u64, wm.actions_taken() - (read - 1), "every act from the read on stays resident");
 }

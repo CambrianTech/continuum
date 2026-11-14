@@ -51,7 +51,7 @@ impl WorkingMemory {
         let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
         let scope = self.scope.lock().clone();
         let in_hand = self.open_views.lock().editing_reads(scope.as_deref()).into_iter().min();
-        in_flight.into_iter().chain(in_hand).fold(edge, |edge, seq| edge.min(seq.saturating_sub(1)))
+        in_flight.into_iter().chain(in_hand.map(|ActSeq(seq)| seq)).fold(edge, |edge, seq| edge.min(seq.saturating_sub(1)))
     }
 
     /// Move every resident act up to `edge` into her archive's outbox (written by the next

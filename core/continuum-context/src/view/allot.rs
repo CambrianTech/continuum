@@ -124,84 +124,98 @@ pub(super) fn allot<T: Block>(
     grant: usize,
     cost: &dyn Estimate<T>,
 ) -> Allotment<T> {
-    let mut held: Vec<usize> = items.iter().enumerate().filter(|(_, item)| item.in_hand).map(|(index, _)| index).collect();
-    loop {
-        match allot_holding(source, items, grant, cost, &held) {
-            Some(allotment) => return allotment,
-            // The grant cannot hold all of it whole: her oldest work in hand gives way first.
-            None => {
-                held.remove(0);
-            }
-        }
-    }
+    let open: Vec<usize> = items.iter().enumerate().filter(|(_, item)| item.in_hand).map(|(index, _)| index).collect();
+    // Her work in hand, newest kept longest: the most of it whose floor the grant holds, its oldest
+    // given up first; none of it when even her newest alone does not fit.
+    let fits = (0..open.len()).map(|drop| Floors::new(source, items, &open[drop..], cost)).find(|floors| floors.at(items.len()).0 <= grant);
+    let floors = match fits {
+        Some(floors) => floors,
+        None => Floors::new(source, items, &[], cost),
+    };
+    walk(&floors, items, grant, cost)
 }
 
-/// [`allot`] with the items at `held` (ascending indices) kept whole; `None` when the grant cannot
-/// hold them beside every other item at its floor (never with nothing held: then it is the walk
-/// alone).
+/// What each prefix of a source's items costs at the floor while the items at `held` (ascending
+/// indices) stay whole.
 ///
 /// A held item inside the oldest run stands whole where it is; the run's other items still fold
 /// into its one block, which names only items it holds at its ends (a held item at an end is left
 /// out of the slice its source folds), so holding one read never costs the floor of every act
 /// after it.
-fn allot_holding<T: Block>(
-    source: &(impl Source<T> + ?Sized),
-    items: &[Item<T>],
-    grant: usize,
-    cost: &dyn Estimate<T>,
-    held: &[usize],
-) -> Option<Allotment<T>> {
-    let holds = |index: usize| held.binary_search(&index).is_ok();
-    // What each prefix costs at the floor: `pointers` sums the pointers of the items the run may
-    // fold, `kept` the wholes of the held ones.
-    let mut pointers = Vec::with_capacity(items.len() + 1);
-    let mut kept = Vec::with_capacity(items.len() + 1);
-    pointers.push(0);
-    kept.push(0);
-    for (index, item) in items.iter().enumerate() {
-        let (pointer, whole) = if holds(index) {
-            (0, crate::cost::whole(item, cost))
-        } else {
-            (item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer)), 0) // map_or: an item that leaves when collapsed costs nothing
-        };
-        pointers.push(pointers[index] + pointer);
-        kept.push(kept[index] + whole);
-    }
-    let head = standing_head(items);
-    // The run's first foldable item, and for each prefix the end of its last foldable one: a held
-    // item is never a fold run's end.
-    let first = (head..items.len()).find(|&index| !holds(index)).unwrap_or(items.len()); // unwrap_or: every item past the head is held
-    let mut ends = Vec::with_capacity(items.len() + 1);
-    ends.push(0);
-    for index in 0..items.len() {
-        ends.push(if holds(index) { ends[index] } else { index + 1 });
-    }
-    let floor = |count: usize| {
-        let end = ends[count];
-        if end <= first {
-            return (pointers[count] + kept[count], None);
+struct Floors<'a, T: Block, S: Source<T> + ?Sized> {
+    source: &'a S,
+    items: &'a [Item<T>],
+    cost: &'a dyn Estimate<T>,
+    held: &'a [usize],
+    /// Sums the pointers of the items the run may fold.
+    pointers: Vec<usize>,
+    /// Sums the wholes of the held items.
+    kept: Vec<usize>,
+    /// For each prefix, the end of its last foldable item: a held item is never a run's end.
+    ends: Vec<usize>,
+    /// The run's first foldable item: the first past the leading items that stand as themselves
+    /// ([`standing_head`]) and not held.
+    first: usize,
+}
+
+impl<'a, T: Block, S: Source<T> + ?Sized> Floors<'a, T, S> {
+    fn new(source: &'a S, items: &'a [Item<T>], held: &'a [usize], cost: &'a dyn Estimate<T>) -> Self {
+        let holds = |index: usize| held.binary_search(&index).is_ok();
+        let mut pointers = Vec::with_capacity(items.len() + 1);
+        let mut kept = Vec::with_capacity(items.len() + 1);
+        let mut ends = Vec::with_capacity(items.len() + 1);
+        pointers.push(0);
+        kept.push(0);
+        ends.push(0);
+        for (index, item) in items.iter().enumerate() {
+            let (pointer, whole, end) = if holds(index) {
+                (0, crate::cost::whole(item, cost), ends[index])
+            } else {
+                (item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer)), 0, index + 1) // map_or: an item that leaves when collapsed costs nothing
+            };
+            pointers.push(pointers[index] + pointer);
+            kept.push(kept[index] + whole);
+            ends.push(end);
         }
-        match fold_of(source, &items[first..end], pointers[end] - pointers[first], cost) {
-            Some(block) => (pointers[first] + cost.block(&block) + (pointers[count] - pointers[end]) + kept[count], Some(block)),
-            None => (pointers[count] + kept[count], None),
+        let first = (standing_head(items)..items.len()).find(|&index| !holds(index)).unwrap_or(items.len()); // unwrap_or: every item past the standing head is held, so the run is empty and nothing folds
+        Self { source, items, cost, held, pointers, kept, ends, first }
+    }
+
+    fn holds(&self, index: usize) -> bool {
+        self.held.binary_search(&index).is_ok()
+    }
+
+    /// What the oldest `count` items cost at their floor, and the fold block standing for their
+    /// run when it folds.
+    fn at(&self, count: usize) -> (usize, Option<T>) {
+        let end = self.ends[count];
+        if end <= self.first {
+            return (self.pointers[count] + self.kept[count], None);
         }
-    };
+        let first = self.first;
+        match fold_of(self.source, &self.items[first..end], self.pointers[end] - self.pointers[first], self.cost) {
+            Some(block) => (self.pointers[first] + self.cost.block(&block) + (self.pointers[count] - self.pointers[end]) + self.kept[count], Some(block)),
+            None => (self.pointers[count] + self.kept[count], None),
+        }
+    }
+}
+
+/// Spend `grant` over `floors`' items newest first ([`allot`]): every held item whole, every other
+/// at the most detail that fits.
+fn walk<T: Block, S: Source<T> + ?Sized>(floors: &Floors<'_, T, S>, items: &[Item<T>], grant: usize, cost: &dyn Estimate<T>) -> Allotment<T> {
     let mut levels = vec![Level::Pointer; items.len()];
-    for &index in held {
+    for &index in floors.held {
         levels[index] = Level::Full;
     }
-    let (mut paid, _) = floor(items.len());
-    if !held.is_empty() && paid > grant {
-        return None;
-    }
+    let (mut paid, _) = floors.at(items.len());
     let mut spare = grant.saturating_sub(paid);
     let mut ceiling = Level::Full;
     let mut run = items.len();
     while run > 0 {
         let item = &items[run - 1];
-        let (below, _) = floor(run - 1);
+        let (below, _) = floors.at(run - 1);
         let budget = spare + paid;
-        if holds(run - 1) {
+        if floors.holds(run - 1) {
             // Whole already, in the floor: the older run keeps what is left beside it (its fold
             // block repriced without this item at its end).
             spare = budget.saturating_sub(below + crate::cost::whole(item, cost));
@@ -242,11 +256,11 @@ fn allot_holding<T: Block>(
         paid = below;
         run -= 1;
     }
-    let (_, fold) = floor(run);
+    let (_, fold) = floors.at(run);
     if fold.is_some() {
-        for index in (first..ends[run]).filter(|&index| !holds(index)) {
+        for index in (floors.first..floors.ends[run]).filter(|&index| !floors.holds(index)) {
             levels[index] = Level::Folded;
         }
     }
-    Some(Allotment { levels, fold })
+    Allotment { levels, fold }
 }

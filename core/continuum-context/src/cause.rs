@@ -21,6 +21,12 @@ impl ElementId {
         self.0
     }
 
+    /// The id as an item's key ([`crate::source::Item::occurrence`]): one rendering, so an item
+    /// about nothing but its own occurrence carries no second identity beside it.
+    pub fn key(self) -> String {
+        format!("{:032x}", self.0)
+    }
+
     /// The id named by a producer's stable identity, given as its parts (whose, which producer,
     /// the producer's own id for it): the first 128 bits of their SHA-256. One derivation, so two
     /// producers never disagree about how an identity becomes an id. Each part is length-prefixed,

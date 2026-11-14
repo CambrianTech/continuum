@@ -306,10 +306,10 @@ fn an_edit_of_a_file_she_has_open_puts_its_read_and_her_note_on_it_in_hand() {
     let note = working(&wm, true, 0, 0);
     let in_hand = wm.in_hand();
     let (acts, _) = wm.action_renderings();
-    assert_eq!(in_hand.reads, std::collections::HashSet::from([acts[0].seq]), "the read of the file she is editing");
+    assert_eq!(in_hand.reads, std::collections::HashSet::from([ActSeq(acts[0].seq)]), "the read of the file she is editing");
     let thoughts = wm.thoughts();
-    let noted = thoughts.iter().find(|thought| thought.text.as_deref() == Some(note)).map(|thought| thought.occurrence);
-    assert_eq!(in_hand.notes, noted.into_iter().collect::<std::collections::HashSet<u64>>(), "her note on what the edit did, never the plan she had before it");
+    let noted = thoughts.iter().find(|thought| thought.text() == Some(note)).map(|thought| ThoughtOccurrence(thought.occurrence));
+    assert_eq!(in_hand.notes, noted.into_iter().collect::<std::collections::HashSet<ThoughtOccurrence>>(), "her note on what the edit did, never the plan she had before it");
 
     let restored = WorkingMemory::new(8);
     restored.restore(wm.snapshot());

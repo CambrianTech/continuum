@@ -72,6 +72,12 @@ impl<T: Block> Item<T> {
         Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
     }
 
+    /// An occurrence about nothing but itself (a thought, a settled answer): keyed by its id, so no
+    /// second identity is minted beside the one its producer named.
+    pub fn occurrence(id: ElementId, cause: Cause, full: T) -> Self {
+        Self::whole(id, cause, id.key(), full)
+    }
+
     /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
     /// its attribution label): `content` is that whole's hash, taken over its raw bytes where it
     /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
