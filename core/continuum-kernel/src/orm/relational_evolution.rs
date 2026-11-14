@@ -1,22 +1,37 @@
 //! Declaration-driven evolution within the admitting owner's transaction.
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend};
 use sea_orm::sea_query::{Alias, Asterisk, Func, Query, Table};
-use super::{adapter::naming, schema_error::SchemaError, types::CollectionSchema};
+use super::{adapter::naming, schema_error::SchemaError, types::{CollectionSchema, FieldType, SchemaField}};
+
+/// Changing JSON to native text explicitly exposes the stored text verbatim.
+/// This is not JSON string extraction: quotes, objects and whitespace remain bytes.
+/// The entity's typed consumer still validates its domain (for example enum tags).
+fn preserves_native_storage(previous: &FieldType, current: &FieldType) -> bool {
+    previous == current || matches!((previous, current), (FieldType::Json, FieldType::String))
+}
+
+fn same_physical_field(previous: &SchemaField, current: &SchemaField) -> bool {
+    if !preserves_native_storage(&previous.field_type, &current.field_type) { return false; }
+    let mut physical = previous.clone();
+    physical.field_type = current.field_type.clone();
+    physical == *current
+}
 
 pub(super) async fn evolve(
     db: &DatabaseTransaction, previous: &CollectionSchema, current: &CollectionSchema,
 ) -> Result<(), SchemaError> {
     let gap = |detail| SchemaError::gap(&current.collection, detail);
-    // Plan completely before issuing mutations. Existing fields retain their exact
-    // declared type, constraints and codec; no value is guessed from its name.
+    // Plan completely before issuing mutations. No value is guessed from its name.
+    // A native-text declaration may retire JSON decoding without rewriting bytes.
     let rebuild = previous.fields.iter().any(|field|
-        current.fields.iter().find(|candidate| candidate.name == field.name) != Some(field))
+        !current.fields.iter().find(|candidate| candidate.name == field.name)
+            .is_some_and(|candidate| same_physical_field(field, candidate)))
         || previous.indexes.iter().any(|index| !current.indexes.contains(index))
         || current.fields.iter().any(|field| !previous.fields.iter().any(|old| old.name == field.name)
             && (field.unique || field.foreign_key.is_some()));
     for field in &current.fields {
         if let Some(old) = previous.fields.iter().find(|old| old.name == field.name) {
-            if old.field_type != field.field_type {
+            if !preserves_native_storage(&old.field_type, &field.field_type) {
                 return Err(gap("type conversion requires a declared conversion contract"));
             }
         }

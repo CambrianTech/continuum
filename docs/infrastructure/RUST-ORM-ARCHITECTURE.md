@@ -297,6 +297,16 @@ Expression-bearing catalogs still require exact proof. This establishes physical
 SQLite TEXT does not distinguish historical String, Uuid, Date and Json codecs, and
 the proof does not establish historical row validity or native revision provenance.
 
+An explicit `Json` to `String` declaration retires JSON interpretation and exposes
+the stored TEXT verbatim. This is a byte-preserving codec transition, not JSON
+string extraction: quotes, object syntax and whitespace remain unchanged. If no
+physical constraints changed, only the declaration receipt changes, in the existing
+admission transaction; the table is not rebuilt. The reverse transition remains
+refused. Typed entity consumers still reject invalid domain values. Unit enums
+declare `#[entity(text)]`; they do not become permissive strings in Rust. The
+November 14 engram replay reproduces a wrong JSON receipt over native enum text
+and verifies exact values, unchanged physical schema and restart.
+
 Sequence heads are durable high-water marks: deleted rows cannot reconstruct issued
 sequences. Disk-root records carry citizen ownership and eviction custody; a filesystem
 scan does not reconstruct that authority. Neither is a disposable derived cache.

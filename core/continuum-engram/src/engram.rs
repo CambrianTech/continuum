@@ -94,7 +94,7 @@ pub struct Engram {
     /// Engram category — episodic vs semantic vs procedural vs meta.
     /// Indexed: recall by kind ("show me all Episodic engrams") is a
     /// common filter.
-    #[entity(indexed)]
+    #[entity(indexed, text)]
     pub kind: EngramKind,
 
     /// The memorable content itself. v1 is plain text; later PRs may
@@ -127,7 +127,7 @@ pub struct Engram {
     /// signal in introspection ("engrams admitted from peer X while their
     /// trust was high but is now low — re-evaluate"). Indexed: forensic
     /// queries filter by trust tier.
-    #[entity(indexed)]
+    #[entity(indexed, text)]
     pub trust_state_at_admission: TrustState,
 
     /// Optional pointer to the `CognitionTrace` SEAM record that explains
@@ -835,6 +835,11 @@ mod tests {
         use continuum_kernel::orm::OrmEntity;
         let schema = Engram::collection_schema();
         assert_eq!(schema.collection, "engrams");
+        for name in ["kind", "trustStateAtAdmission"] {
+            let field_type = schema.fields.iter().find(|field| field.name == name).map(|field| &field.field_type);
+            assert_eq!(field_type, Some(&continuum_kernel::orm::FieldType::String),
+                "unit enums use native text, not a JSON string codec");
+        }
 
         let field_names: std::collections::BTreeSet<&str> =
             schema.fields.iter().map(|f| f.name.as_str()).collect();

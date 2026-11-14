@@ -3,6 +3,43 @@
 use super::*;
 
 #[tokio::test]
+async fn native_text_declaration_retires_json_codec_without_rewriting_values() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+    use super::relational_declaration as declaration;
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("native-text.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    let values = ["Episodic", "\"Semantic\"", "{\"kept\":true}"];
+    for (index, value) in values.iter().enumerate() {
+        initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION, json!({"label":value}))).await?;
+    }
+    // Reproduce the rollout fault: native text rows certified with the wrong JSON codec.
+    let receipt = declaration::Entity::find_by_id(Parent::COLLECTION).one(&initial.db).await?.ok_or("receipt absent")?;
+    let mut incorrect = Parent::collection_schema();
+    incorrect.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.field_type = FieldType::Json;
+    let physical = receipt.physical.clone();
+    let mut active = receipt.into_active_model();
+    active.declaration = Set(serde_json::to_value(incorrect)?);
+    active.update(&initial.db).await?;
+    initial.db.clone().close().await?;
+    for _ in 0..2 {
+        let reopened = RelationalStore::open(AdapterConfig { connection_string: path.into(), ..Default::default() }).await?;
+        reopened.ensure(Parent::collection_schema()).await?;
+        let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(3).build()).await?;
+        assert_eq!(rows.len(), 3);
+        for value in values { assert!(rows.iter().any(|row| row.data["label"] == value)); }
+        let receipt = declaration::Entity::find_by_id(Parent::COLLECTION).one(&reopened.db).await?.ok_or("receipt absent")?;
+        assert_eq!(receipt.physical, physical, "codec retirement must not rewrite the table");
+        let mut reverse = Parent::collection_schema();
+        reverse.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.field_type = FieldType::Json;
+        assert!(reopened.ensure(reverse).await.is_err(), "text must not become JSON by guessing");
+        reopened.db.clone().close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let file = directory.path().join("rebuild.db");
