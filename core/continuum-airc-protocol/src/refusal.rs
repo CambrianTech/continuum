@@ -41,6 +41,9 @@ pub enum NoMove {
     NothingMoreExists,
     /// Nothing of hers is saved yet, so there is nothing to reopen.
     NothingSaved,
+    /// The next step is another participant's (a reviewer's verdict, an author marking a pull
+    /// request ready): no call of hers moves it.
+    AwaitsAnother,
 }
 
 impl std::fmt::Display for NoMove {
@@ -48,6 +51,7 @@ impl std::fmt::Display for NoMove {
         match self {
             NoMove::NothingMoreExists => f.write_str("no call recovers it; what you were shown is all there is"),
             NoMove::NothingSaved => f.write_str("none of your acts has a saved output yet"),
+            NoMove::AwaitsAnother => f.write_str("the next step is another participant's; no call of yours moves it"),
         }
     }
 }
