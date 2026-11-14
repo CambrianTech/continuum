@@ -572,6 +572,15 @@ Continuum runtime work must follow these rules:
     - **One state spread across `Option`s and `bool`s** (flags rebuilt from an
       enum, parallel `Option`s matched as a tuple with a `_ =>` fallback): does
       a combination exist the code never handles? Make it unrepresentable.
+    - **The contract carries the shape** (Joel: "group params as part of
+      structs when they belong together. Pass by reference and assign
+      mutability and optional at contract"): parameters that travel together
+      are one struct, never a long list of same-typed arguments a caller can
+      swap; a function borrows (`&T`, `&mut T` only where it mutates) instead
+      of taking ownership or cloning; what may be absent is `Option` in the
+      signature and what must be present is a required field, so a caller can
+      read mutability and optionality from the contract and the compiler
+      enforces both, never a runtime check inside.
     - And **strings as identities** (verbs, field names, producer labels,
       `format!` keys beside a typed id, `serde_json::Value.get("field")` where
       a typed input exists): an identity is an enum or newtype.
