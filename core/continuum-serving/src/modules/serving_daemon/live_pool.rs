@@ -21,7 +21,8 @@
 //! (`grants.rs`), and a new engine (another incarnation: pid and start time) starts whole from its
 //! own launch fit.
 //!
-//! The grants have ONE publisher (`publish_grants`, on serving's tick). The step never publishes
+//! The grants have ONE publisher (`publish_grants`, run when the pool moves and on serving's tick as the
+//! waiting minds' heartbeat). The step never publishes
 //! grants itself: it publishes the pool it moved to on a watch, and the grant publisher reads that
 //! value, so no second call site can race the first with a stale pool.
 
@@ -193,7 +194,23 @@ impl ServingDaemonModule {
     pub fn give_host_memory_back_first(self: &Arc<Self>, monitor: &MemoryPressureMonitor, runtime: tokio::runtime::Handle) {
         let pool = KvPoolShedder { module: Arc::downgrade(self), pressure: monitor.subscribe() };
         monitor.add_reporter(Arc::new(pool));
+        self.publish_grants_when_the_pool_moves(&runtime);
         self.register_prompt_cache(monitor, runtime);
+    }
+
+    /// The grant publisher subscribes to the pool: a step publishes the minds' grants the moment it
+    /// lands, not at serving's next tick (RTOS rule 10). The tick still publishes each evaluation
+    /// as the waiting minds' heartbeat (`GrantEvaluation::cadence`); it no longer carries a pool
+    /// change. Holds the module weakly: the subscription never keeps a stopped daemon alive.
+    pub(super) fn publish_grants_when_the_pool_moves(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
+        let module = Arc::downgrade(self);
+        let mut moved = self.live_pool.subscribe();
+        runtime.spawn(async move {
+            while moved.changed().await.is_ok() {
+                let Some(module) = module.upgrade() else { break };
+                module.publish_grants();
+            }
+        });
     }
 }
 

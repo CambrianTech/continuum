@@ -696,3 +696,40 @@ async fn no_plan_published_means_no_launch() {
     assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
 }
 
+
+// what this catches: a pool step reaching the minds' grants only at serving's next tick (up to a
+// tick late, RTOS rule 10). The grant publisher subscribes to the live pool, so a step alone
+// publishes a fresh evaluation, with no tick run.
+#[tokio::test]
+async fn a_pool_step_publishes_the_grants_without_a_tick() {
+    use crate::inference::engine_residency::EngineIncarnation;
+    let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+    let system = Arc::new(SystemResourceMonitor::new());
+    let daemon = Arc::new(ServingDaemonModule::new(
+        gpu,
+        system,
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    ));
+    let mut evaluations = daemon.subscribe_evaluations();
+    evaluations.borrow_and_update();
+    daemon.publish_grants_when_the_pool_moves(&tokio::runtime::Handle::current());
+    let engine = EngineIncarnation {
+        pid: 4_242,
+        started_s: 1_794_000_000,
+        port: 8_090,
+    };
+    daemon
+        .live_pool
+        .send_replace(crate::modules::serving_daemon::live_pool::LivePool::Lowered {
+            tokens: 65_536,
+            on: engine,
+        });
+    // A last-resort bound so a missing subscription fails the test instead of hanging it; the
+    // publication itself is driven by the pool change.
+    tokio::time::timeout(std::time::Duration::from_secs(5), evaluations.changed())
+        .await
+        .expect("the pool step published an evaluation")
+        .expect("the evaluation channel is open");
+}
