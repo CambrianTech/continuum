@@ -9,7 +9,9 @@ use sea_orm::sea_query::{
 };
 use serde_json::Value;
 
-pub(super) fn column(schema: &CollectionSchema, field: &str) -> Result<Alias, String> {
+use super::storage_error::{QueryFault, StorageError};
+
+pub(super) fn column(schema: &CollectionSchema, field: &str) -> Result<Alias, StorageError> {
     let name = naming::to_snake_case(field);
     if schema
         .fields
@@ -18,22 +20,19 @@ pub(super) fn column(schema: &CollectionSchema, field: &str) -> Result<Alias, St
     {
         Ok(Alias::new(name))
     } else {
-        Err(format!(
-            "{}.{} is not a declared field",
-            schema.collection, field
-        ))
+        Err(StorageError::Undeclared { collection: schema.collection.clone(), field: field.to_owned() })
     }
 }
 
 /// Predicates bind through the same declared scalar codec as writes. Opaque payloads
 /// have no relational ordering: promote their searchable facts into declared columns.
-fn bound_value(field: &SchemaField, value: &Value) -> Result<SqlValue, String> {
+fn bound_value(field: &SchemaField, value: &Value) -> Result<SqlValue, StorageError> {
     if matches!(field.field_type, FieldType::Json | FieldType::Binary) {
-        return Err(format!("{} is an opaque payload; compare declared scalar columns", field.name));
+        return Err(StorageError::Unqueryable(QueryFault::OpaqueComparison));
     }
     super::relational_codec::encode(field, value)
 }
-pub(super) fn value(value: &Value) -> Result<SqlValue, String> {
+pub(super) fn value(value: &Value) -> Result<SqlValue, StorageError> {
     Ok(match value {
         Value::Null => SqlValue::String(None),
         Value::Bool(v) => (*v).into(),
@@ -42,21 +41,19 @@ pub(super) fn value(value: &Value) -> Result<SqlValue, String> {
             if let Some(n) = v.as_i64() {
                 n.into()
             } else if v.is_u64() {
-                return Err("integer exceeds the declared SQLite signed integer range".into());
+                return Err(StorageError::Unqueryable(QueryFault::IntegerRange));
             } else {
-                v.as_f64().ok_or("invalid finite number")?.into()
+                v.as_f64().ok_or(StorageError::Unqueryable(QueryFault::NonFinite))?.into()
             }
         }
-        Value::Array(_) | Value::Object(_) => {
-            return Err("relational comparison requires a scalar field".into())
-        }
+        Value::Array(_) | Value::Object(_) => return Err(StorageError::Unqueryable(QueryFault::NonScalar)),
     })
 }
 
 pub(super) fn condition(
     schema: &CollectionSchema,
     query: &StorageQuery,
-) -> Result<Condition, String> {
+) -> Result<Condition, StorageError> {
     let table = Alias::new(naming::to_table_name(&schema.collection));
     let mut all = Condition::all();
     if let Some(filters) = &query.filter {
@@ -67,7 +64,7 @@ pub(super) fn condition(
             all = all.add(field_condition(
                 table.clone(),
                 schema.fields.iter().find(|declared| naming::to_snake_case(&declared.name) == naming::to_snake_case(field))
-                    .ok_or_else(|| format!("{}.{} is not a declared field", schema.collection, field))?,
+                    .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone(), field: field.clone() })?,
                 filter,
             )?);
         }
@@ -79,7 +76,7 @@ pub(super) fn condition(
             .find(|field| {
                 naming::to_snake_case(&field.name) == naming::to_snake_case(&cursor.field)
             })
-            .ok_or_else(|| format!("undeclared cursor field {}", cursor.field))?;
+            .ok_or_else(|| StorageError::Undeclared { collection: schema.collection.clone(), field: cursor.field.clone() })?;
         let unique = field.name == "id"
             || field.unique
             || schema.indexes.iter().any(|index| {
@@ -88,13 +85,13 @@ pub(super) fn condition(
                     && naming::to_snake_case(&index.fields[0]) == naming::to_snake_case(&field.name)
             });
         if !unique || field.nullable || cursor.value.is_null() {
-            return Err("single-value cursors require a declared non-null unique field; a non-unique order needs a composite cursor".into());
+            return Err(StorageError::Unqueryable(QueryFault::CursorNotUnique));
         }
         if query.sort.as_ref().is_some_and(|sort| {
             sort.len() != 1
                 || naming::to_snake_case(&sort[0].field) != naming::to_snake_case(&cursor.field)
         }) {
-            return Err("cursor field must match the query's unique ordering field".into());
+            return Err(StorageError::Unqueryable(QueryFault::CursorOrder));
         }
         let col = Expr::col((table, column(schema, &cursor.field)?));
         // Before/after follow the declared traversal order, not numeric magnitude.
@@ -106,7 +103,7 @@ pub(super) fn condition(
         });
     }
     if query.tags.is_some() {
-        return Err("tags must be expressed through a declared relationship".into());
+        return Err(StorageError::Unqueryable(QueryFault::Tags));
     }
     if let Some(range) = &query.time_range {
         let col = || {
@@ -136,14 +133,12 @@ pub(super) fn select(
     schema: &CollectionSchema,
     query: &StorageQuery,
     selection: Selection,
-) -> Result<SelectStatement, String> {
+) -> Result<SelectStatement, StorageError> {
     if selection == Selection::Page && query.limit.is_none() {
-        return Err(
-            "record reads require an explicit page limit; use count for cardinality".into(),
-        );
+        return Err(StorageError::Unqueryable(QueryFault::Unbounded));
     }
     if query.joins.as_ref().is_some_and(|joins| !joins.is_empty()) {
-        return Err("join requires the relationship query compiler".into());
+        return Err(StorageError::Unqueryable(QueryFault::Join));
     }
     let table = Alias::new(naming::to_table_name(&schema.collection));
     let mut statement = Query::select();
@@ -166,7 +161,7 @@ pub(super) fn select(
             .map(|f| f.name.clone()).collect(),
     };
     if fields.is_empty() {
-        return Err("empty projection".into());
+        return Err(StorageError::Unqueryable(QueryFault::EmptyProjection));
     }
     for metadata in ["id", "createdAt", "updatedAt", "version"] {
         if !fields
@@ -211,7 +206,7 @@ pub(super) fn select(
     Ok(statement)
 }
 
-fn field_condition(table: Alias, field: &SchemaField, filter: &FieldFilter) -> Result<Condition, String> {
+fn field_condition(table: Alias, field: &SchemaField, filter: &FieldFilter) -> Result<Condition, StorageError> {
     let col = Expr::col((table.clone(), Alias::new(naming::to_snake_case(&field.name))));
     let expr: SimpleExpr = match filter {
         FieldFilter::Value(v) | FieldFilter::Operator(QueryOperator::Eq(v)) if v.is_null() => {
@@ -244,7 +239,7 @@ fn field_condition(table: Alias, field: &SchemaField, filter: &FieldFilter) -> R
             QueryOperator::Exists(true) | QueryOperator::IsNotNull => col.is_not_null(),
             QueryOperator::Exists(false) | QueryOperator::IsNull => col.is_null(),
             QueryOperator::Contains(text) => {
-                if field.field_type != FieldType::String { return Err("contains requires a declared text column".into()); }
+                if field.field_type != FieldType::String { return Err(StorageError::Unqueryable(QueryFault::ContainsNotText)); }
                 // Escape LIKE wildcards: contains is literal, not a pattern language.
                 let escaped = text
                     .replace('!', "!!")
@@ -252,9 +247,7 @@ fn field_condition(table: Alias, field: &SchemaField, filter: &FieldFilter) -> R
                     .replace('_', "!_");
                 col.like(sea_orm::sea_query::LikeExpr::new(format!("%{escaped}%")).escape('!'))
             }
-            QueryOperator::Regex(_) => {
-                return Err("SQLite provider does not support regex queries".into())
-            }
+            QueryOperator::Regex(_) => return Err(StorageError::Unqueryable(QueryFault::Regex)),
         },
     };
     Ok(Condition::all().add(expr))

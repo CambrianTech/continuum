@@ -67,6 +67,9 @@ pub enum StorageError {
     /// A query's projection left out a record envelope field.
     #[error("the projection omitted {name}")]
     Projection { name: &'static str },
+    /// A query whose shape this store cannot run.
+    #[error("the query cannot run: {0}")]
+    Unqueryable(QueryFault),
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
@@ -135,4 +138,33 @@ pub enum StoredFault {
     Boolean(i64),
     #[error("a non-finite number")]
     NonFinite,
+}
+
+/// Why a query's shape cannot run on this store.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum QueryFault {
+    #[error("an opaque payload (JSON or binary) is compared; compare declared scalar columns")]
+    OpaqueComparison,
+    #[error("an integer exceeds SQLite's signed range")]
+    IntegerRange,
+    #[error("a number is not finite")]
+    NonFinite,
+    #[error("an array or object is compared; comparison needs a scalar")]
+    NonScalar,
+    #[error("a single-value cursor needs a declared non-null unique field (a non-unique order needs a composite cursor)")]
+    CursorNotUnique,
+    #[error("the cursor field is not the query's unique ordering field")]
+    CursorOrder,
+    #[error("tags are expressed through a declared relationship")]
+    Tags,
+    #[error("a record read needs an explicit page limit (count gives cardinality)")]
+    Unbounded,
+    #[error("a join goes through the relationship query compiler")]
+    Join,
+    #[error("the projection is empty")]
+    EmptyProjection,
+    #[error("contains needs a declared text column")]
+    ContainsNotText,
+    #[error("this store does not run regex queries")]
+    Regex,
 }
