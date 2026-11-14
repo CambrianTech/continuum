@@ -17,6 +17,15 @@ targets; they do not impose one UI framework. Browser DOM/accessibility/pixels a
 or device feedback must work without Positron instrumentation. Positron can enrich the same
 observations with semantic state and revision receipts when the project uses it.
 
+Independence is an engineering aim, not an absolute prohibition on dependencies. Offer and
+recommend a narrow build-tool or application plugin when it materially improves development:
+for example, reliable hot-update completion, source-mapped diagnostics, route discovery or
+render acknowledgments. Integration may be necessary for some capabilities. Declare those
+requirements and the capabilities available without it; do not pretend generic observation can
+prove every internal application state. A plugin must fit the project's existing tooling, publish
+typed events through the shared command/observation contract, and avoid taking ownership of
+the application or introducing a second lifecycle. Measure its benefit on a real project.
+
 Codex must dogfood this exact command path while building it, recording failures and fixes.
 A private developer-only browser workflow does not prove residents have the capability. Prove
 both the developer and resident can reach the same supported target and consume its feedback.
