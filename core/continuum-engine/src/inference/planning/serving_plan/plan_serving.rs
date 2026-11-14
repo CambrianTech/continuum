@@ -364,16 +364,6 @@ fn plan_serving_into(
         },
         None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
     };
-    // Closeness: fraction of requirement actually satisfied (card 53a8d49b). A value of
-    // 0 means no window at all (fits_on_gpu=false); values < 1 mean the node is below
-    // target but still serving something — the ratchet walks this upward monotonically.
-    let closeness = (
-        if demand.window_target() > 0 {
-            served_context_window as f64 / demand.window_target() as f64
-        } else {
-            1.0
-        }
-    ).min(1.0).max(0.0);
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
