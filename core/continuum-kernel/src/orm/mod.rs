@@ -79,6 +79,7 @@ mod relational_array_stats;
 pub mod binary;
 mod relational_binary;
 mod binary_snapshot;
+mod migration_snapshot;
 pub mod binary_delta;
 pub use binary_snapshot::BinarySnapshot;
 

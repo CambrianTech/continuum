@@ -284,6 +284,10 @@ pub struct MigrationEngine {
     running: Arc<AtomicBool>,
 }
 
+#[cfg(test)]
+#[path = "migration_native_tests.rs"]
+mod native_tests;
+
 impl MigrationEngine {
     /// Create a new migration engine
     pub fn new(
@@ -395,8 +399,10 @@ impl MigrationEngine {
             return Ok(());
         }
 
-        let batch_size = self.config.batch_size;
-        let mut offset = state.migrated.load(Ordering::Relaxed); // Resume from last position
+        let batch_size = std::num::NonZeroUsize::new(self.config.batch_size)
+            .ok_or("migration batch size must be positive")?;
+        let snapshot = self.source.binary_snapshot(collection).await?;
+        let mut after: Option<String> = None;
 
         loop {
             if self.paused.load(Ordering::Relaxed) {
@@ -404,20 +410,12 @@ impl MigrationEngine {
                 return Ok(());
             }
 
-            // Fetch a batch from source
-            let query = StorageQuery {
-                collection: collection.to_string(),
-                limit: Some(batch_size),
-                offset: Some(offset),
-                ..Default::default()
-            };
-
-            let result = self.source.query(query).await;
-            let records = match result.data {
-                Some(r) if !r.is_empty() => r,
-                Some(_) => break, // Empty page = done
-                None => {
-                    let err = result.error.unwrap_or_else(|| "Source query failed".into());
+            let records = match snapshot.migration_page(&super::migration_snapshot::MigrationPage {
+                after: after.as_deref(), limit: batch_size,
+            }).await {
+                Ok(rows) if rows.is_empty() => break,
+                Ok(rows) => rows,
+                Err(err) => {
                     *state.error.write() = Some(err.clone());
                     *state.status.write() = MigrationStatus::Failed;
                     return Err(err);
@@ -427,18 +425,24 @@ impl MigrationEngine {
             let batch_count = records.len();
 
             // Insert batch into target
-            for record in records {
+            for row in records {
+                let next = row.record.id.clone();
                 // Move the owned row into the destination; a rejected write is not
                 // migrated work and must never be followed by Completed/verified.
-                if let Err(error) = self.target.create(record).await.into_result() {
+                let inserted = if row.payloads.is_empty() {
+                    self.target.create(row.record).await.into_result().map(|_| ())
+                } else {
+                    self.target.create_binary(row.record, row.payloads).await.into_result().map(|_| ())
+                };
+                if let Err(error) = inserted {
                     state.failed.fetch_add(1, Ordering::Relaxed);
                     *state.error.write() = Some(error.clone());
                     *state.status.write() = MigrationStatus::Failed;
                     return Err(error);
                 }
                 state.migrated.fetch_add(1, Ordering::Relaxed);
+                after = Some(next);
             }
-            offset += batch_count;
 
             // Throttle between batches
             if self.config.throttle_ms > 0 {
@@ -446,7 +450,7 @@ impl MigrationEngine {
             }
 
             // If we got fewer than batch_size, we're done
-            if batch_count < batch_size {
+            if batch_count < batch_size.get() {
                 break;
             }
         }

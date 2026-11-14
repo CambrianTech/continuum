@@ -65,6 +65,16 @@ partial row into a full entity and manufacture missing fields.
 
 ## 3. Native binary boundary with the engine
 
+The existing migration engine reads bounded ID-keyset pages on the shared owner's
+snapshot and transfers each row's native fields through `create_binary`. Payloads
+never enter the scalar record envelope; each descriptor and byte allocation moves
+unchanged into the destination transaction. Optional NULL pairs remain absent.
+The whole source page validates before its first destination write. Destination
+commits remain per row, so later failure can leave an explicitly incomplete target.
+This transfer mechanism does not yet provide legacy-schema conversion, durable
+resume, exact-value certification or the offline cutover command. Those are required
+before deployment; count-based verification alone does not certify data identity.
+
 The producer supplies bytes and a typed descriptor. The descriptor identifies the
 element representation, shape, byte order, layout and producer/model identity.
 Normalization, quantization parameters and precision/error guarantees must be explicit
