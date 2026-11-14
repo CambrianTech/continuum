@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Shared test boundary for ORM integration and load fixtures.
 use super::*;
 

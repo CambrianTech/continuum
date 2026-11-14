@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::adapter::AdapterConfig;
 use super::relational::RelationalStore;
 use super::{
@@ -32,6 +34,8 @@ struct RequiredNativeRow {
 mod group_tests;
 #[path = "binary_snapshot_tests.rs"]
 mod snapshot_tests;
+#[path = "binary_delta_tests.rs"]
+mod delta_tests;
 
 fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
     BinaryDescriptor {

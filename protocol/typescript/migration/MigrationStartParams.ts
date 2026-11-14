@@ -17,10 +17,6 @@ target: string,
  */
 batchSize: number, 
 /**
- * Milliseconds to pause between batches (backpressure). Defaults to 10.
- */
-throttleMs: bigint, 
-/**
  * Optional explicit collection list. Omit to migrate every collection.
  */
 collections?: Array<string>, };

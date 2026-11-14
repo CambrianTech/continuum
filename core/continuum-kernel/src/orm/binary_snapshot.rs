@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 /// A database snapshot, not a consumer-adoption receipt. Drop releases the read transaction.
 pub struct BinarySnapshot {
-    transaction: DatabaseTransaction,
-    schema: Arc<CollectionSchema>,
+    pub(super) transaction: DatabaseTransaction,
+    pub(super) schema: Arc<CollectionSchema>,
     revision: u64,
 }
 impl super::relational::RelationalStore {

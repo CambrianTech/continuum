@@ -339,14 +339,14 @@ pub(crate) fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> 
     }
     // Order-independent compare. Build a name-keyed map of one side, walk
     // the other.
-    let a_by_name: HashMap<&str, &crate::orm::types::SchemaField> =
+    let mut a_by_name: HashMap<&str, &crate::orm::types::SchemaField> =
         a.fields.iter().map(|f| (f.name.as_str(), f)).collect();
     if a_by_name.len() != a.fields.len() { return false; }
     for bf in &b.fields {
-        let Some(af) = a_by_name.get(bf.name.as_str()) else {
+        let Some(af) = a_by_name.remove(bf.name.as_str()) else {
             return false;
         };
-        if *af != bf
+        if af != bf
         {
             return false;
         }
@@ -355,14 +355,14 @@ pub(crate) fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> 
     if a.indexes.len() != b.indexes.len() {
         return false;
     }
-    let a_idx_by_name: HashMap<&str, &crate::orm::types::SchemaIndex> =
+    let mut a_idx_by_name: HashMap<&str, &crate::orm::types::SchemaIndex> =
         a.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
     if a_idx_by_name.len() != a.indexes.len() { return false; }
     for bi in &b.indexes {
-        let Some(ai) = a_idx_by_name.get(bi.name.as_str()) else {
+        let Some(ai) = a_idx_by_name.remove(bi.name.as_str()) else {
             return false;
         };
-        if *ai != bi {
+        if ai != bi {
             return false;
         }
     }

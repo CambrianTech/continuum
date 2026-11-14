@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::adapter::AdapterConfig;
 use super::query::{JoinSpec, JoinType};
 use super::relational::RelationalStore;

@@ -88,23 +88,21 @@ impl Default for CascadeRule {
     export,
     export_to = "../../../protocol/typescript/orm/ForeignKeyRef.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForeignKeyRef {
     /// Target collection name (e.g. "engrams").
     pub collection: String,
     /// Target field on the referenced row. Almost always "id" but
     /// named so non-id natural-key references are expressible.
     pub field: String,
-    #[serde(default)]
     pub on_delete: CascadeRule,
-    #[serde(default)]
     pub on_update: CascadeRule,
 }
 
 /// Schema field definition
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaField.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaField {
     /// Explicit declared insertion value; absence never invents a value.
     #[serde(default)]
@@ -112,11 +110,8 @@ pub struct SchemaField {
     pub default_value: Option<Value>,
     pub name: String,
     pub field_type: FieldType,
-    #[serde(default)]
     pub indexed: bool,
-    #[serde(default)]
     pub unique: bool,
-    #[serde(default)]
     pub nullable: bool,
     #[ts(optional)]
     pub max_length: Option<usize>,
@@ -131,14 +126,12 @@ pub struct SchemaField {
 /// Composite index definition
 #[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaIndex.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaIndex {
     /// Direction of the final indexed column, matching decorator metadata.
-    #[serde(default)]
     pub descending: bool,
     pub name: String,
     pub fields: Vec<String>,
-    #[serde(default)]
     pub unique: bool,
 }
 
@@ -148,11 +141,10 @@ pub struct SchemaIndex {
     export,
     export_to = "../../../protocol/typescript/orm/CollectionSchema.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionSchema {
     pub collection: String,
     pub fields: Vec<SchemaField>,
-    #[serde(default)]
     pub indexes: Vec<SchemaIndex>,
 }
 

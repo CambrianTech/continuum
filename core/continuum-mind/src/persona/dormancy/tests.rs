@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 use super::*;
 use crate::persona::roster_hold::RosterHold;
 

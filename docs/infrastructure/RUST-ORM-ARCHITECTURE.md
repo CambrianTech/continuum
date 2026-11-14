@@ -65,6 +65,19 @@ partial row into a full entity and manufacture missing fields.
 
 ## 3. Native binary boundary with the engine
 
+The existing migration engine reads bounded ID-keyset pages on the shared owner's
+snapshot and transfers each row's native fields through `create_binary`. Payloads
+never enter the scalar record envelope; each descriptor and byte allocation moves
+unchanged into the destination transaction. Optional NULL pairs remain absent.
+The whole source page validates before its first destination write. Destination
+commits remain per row, so later failure can leave an explicitly incomplete target.
+Verification now requires completed write receipts, matching declarations and exact
+scalar values, native descriptors and bytes using bounded pinned pages on both stores.
+It detects equal-count payload or producer changes. Writers must remain quiescent:
+per-collection snapshots do not certify a globally atomic database cutover. This
+transfer mechanism does not yet provide legacy-schema conversion, durable resume
+or the offline cutover command. Those remain required before deployment.
+
 The producer supplies bytes and a typed descriptor. The descriptor identifies the
 element representation, shape, byte order, layout and producer/model identity.
 Normalization, quantization parameters and precision/error guarantees must be explicit
@@ -109,8 +122,16 @@ This is not mmap/Metal zero-copy: SQLite owns its result buffers. The current cu
 is ID-ordered within that pinned snapshot. The native revision identifies payload
 write/delete state, not scalar-filter invalidations or GPU adoption. IDs and cursors are typed UUIDs; native identity text
 must be canonical lowercase hyphenated UUIDs so database ordering matches the cursor.
-Revision-watermarked newest-first traversal, deletion replay and the GPU consumer remain
-unfinished; this bulk-copy slice must not be presented as the complete engine seam.
+Native snapshot changes_into traverses coalesced native changes by descending revision
+and UUID, with an exclusive since revision and composite continuation key. It appends
+typed Upsert (descriptor plus absolute byte range) or Remove entries and native bytes
+into caller-owned buffers. Tombstones and absent optional native fields produce Remove;
+partial pairs or missing live rows refuse before either buffer changes. Continue on the
+same snapshot with unchanged field and since; cursors are not independently bound.
+End-of-interval means no further database page, not consumer/GPU adoption. Advance an
+applied watermark only after all changes and downstream transfers complete. Scalar-filter
+invalidations and GPU integration remain unfinished. Migration must populate native
+revision receipts; arbitrary preexisting payloads are not inferred.
 
 Native create/update now record an internal per-row revision in the same committing
 transaction as the bytes and descriptor. The existing sequence-head owner allocates
@@ -130,16 +151,19 @@ its persisted schema catalog once at open using primary-key receipt pages (64 pe
 transfer, with no collection-count cap), so children participate even before their
 caller re-admits a declaration. A new external declaration requires admission or a
 new owner before deletion; an incomplete catalog cannot silently miss descendants.
-Receipt validation currently retains exact declaration/physical equality. Removing its
-JSON comparison requires strict declaration decoding first: permissive serde defaults
-and ignored unknown fields must not silently admit unsupported metadata. This remains
-an explicit CPU/schema improvement gap; paging alone does not remove serialization.
+Declaration types reject unknown fields at every level. Collection index lists, field
+nullability/index/unique flags, index direction and foreign-key actions are required;
+optional insertion defaults, length limits and references retain valid absence.
+Restoration decodes each receipt once and verifies physical metadata without rebuilding
+a JSON declaration. Re-admission compares typed schemas using the same shared equality
+as registration. Physical metadata comparison remains exact. Incomplete old declarations
+are refused; migration must supply an explicit complete declaration, never a fallback.
 The existing committing owner publishes typed domain/collection revision notices only
 after commit. Append and native receivers share that owner but never share a revision
 domain. Native create/update, direct deletes, batch deletes, cascades and clear return
 their notices through the transaction result; rollback and conditional no-op emit none.
 Persisted heads seed receivers on owner restart. These are wakeup hints backed by
-durable heads, not a snapshot or replay proof: ordered delta paging and its completion
+durable heads, not a consumer adoption proof: downstream delta application and completion
 semantics must land before consumers may use a high-water mark as processed work.
 The current receipt table coalesces each identity to its latest revision. A fixed
 upper revision with live paged queries is therefore eventual reconciliation, not an
@@ -321,6 +345,15 @@ conversion, full schema/native-payload migration, independent review and live pr
 are unfinished. The f64-specific codec was rejected and deleted. Existing
 JSON row hydration, optional unbounded query surfaces and static resource caps remain
 implementation gaps. This document states the contract, not that those gaps are fixed.
+
+Measured isolated native-sync replay (2026-11-14): 10,003 initial 768-f32 rows,
+28 native updates and four deletions. A warm full read selected 9,999 live rows and
+30,716,928 payload bytes in 95.561/98.267 ms; the native delta selected 32 changes
+and 86,016 payload bytes in 0.958/0.457 ms. Alternating runs include validation and
+exclude snapshot acquisition. This is a synthetic sparse-update storage comparison
+with an assumed previously cached corpus, not bootstrap, CPU/RSS measurement,
+GPU transfer/quality, resident latency or deployment proof. Exact changed identities,
+descriptors, bytes and removals are checked; cold/restart load remains to be measured.
 
 ## 8. Simulation is part of every iteration
 

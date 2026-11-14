@@ -8,7 +8,7 @@
 //! - Per-collection progress tracking with atomic counters
 //! - Pause/resume support
 //! - Non-destructive (source data is never deleted)
-//! - Configurable batch size and throttle
+//! - Bounded pages; progress follows committed writes
 
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
@@ -20,6 +20,7 @@ use ts_rs::TS;
 
 use super::adapter::StorageAdapter;
 use super::query::StorageQuery;
+#[cfg(test)]
 use super::types::{DataRecord, RecordMetadata};
 
 /// Migration configuration
@@ -29,9 +30,6 @@ pub struct MigrationConfig {
     /// Records per batch (default: 500)
     #[serde(default = "default_batch_size")]
     pub batch_size: usize,
-    /// Milliseconds to pause between batches (default: 10)
-    #[serde(default = "default_throttle_ms")]
-    pub throttle_ms: u64,
     /// Optional list of collections to migrate (None = all)
     pub collections: Option<Vec<String>>,
 }
@@ -39,15 +37,11 @@ pub struct MigrationConfig {
 fn default_batch_size() -> usize {
     500
 }
-fn default_throttle_ms() -> u64 {
-    10
-}
 
 impl Default for MigrationConfig {
     fn default() -> Self {
         Self {
             batch_size: 500,
-            throttle_ms: 10,
             collections: None,
         }
     }
@@ -169,11 +163,11 @@ pub struct MigrationVerification {
 }
 
 /// Shared migration state — safe to read/pause while engine is running.
-/// All fields use atomic or RwLock for lock-free concurrent access.
+/// Progress uses atomics/RwLock; pause/resume is retained watch state.
 #[derive(Clone)]
 pub struct MigrationHandle {
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
-    paused: Arc<AtomicBool>,
+    paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
     source: Arc<dyn StorageAdapter>,
     target: Arc<dyn StorageAdapter>,
@@ -202,20 +196,20 @@ impl MigrationHandle {
             total,
             migrated,
             failed,
-            paused: self.paused.load(Ordering::Relaxed),
+            paused: *self.paused.borrow(),
             running: self.running.load(Ordering::Relaxed),
             collections,
         }
     }
 
-    /// Pause the migration (atomic flag — no lock needed)
+    /// Publish pause; the current page completes before the next page waits.
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
+        self.paused.send_replace(true);
     }
 
-    /// Resume the migration (atomic flag — caller must call engine.run() again)
+    /// Publish resume to the same running migration; no replacement task is needed.
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.send_replace(false);
     }
 
     /// Whether the migration is still running
@@ -223,12 +217,14 @@ impl MigrationHandle {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Verify migration by comparing record counts between source and target.
+    /// Verify receipts, schemas and exact scalar/native values in bounded snapshots.
+    /// Offline callers must keep writers quiescent across collections and adoption.
     pub async fn verify(&self) -> Result<MigrationVerification, String> {
         let mut results = Vec::new();
-        let mut all_match = true;
-
         let states = self.states.read().clone();
+        // No collection receipts means no migration evidence, not successful
+        // verification (including a failed discovery/count before initialization).
+        let mut all_match = !states.is_empty();
         for (collection, state) in &states {
             let source_count = self
                 .source
@@ -245,9 +241,19 @@ impl MigrationHandle {
                 })
                 .await;
 
-            let src = source_count.data.unwrap_or(0);
-            let tgt = target_count.data.unwrap_or(0);
-            let matches = src == tgt;
+            let src = source_count.into_result()?;
+            let tgt = target_count.into_result()?;
+            let receipts_match = src == tgt
+                && *state.status.read() == MigrationStatus::Completed
+                && state.failed.load(Ordering::Relaxed) == 0
+                && state.migrated.load(Ordering::Relaxed) == src;
+            let matches = if receipts_match {
+                let source = self.source.binary_snapshot(collection).await?;
+                let target = self.target.binary_snapshot(collection).await?;
+                // A transfer-page bound, not a limit on verified rows.
+                source.migration_matches(&target, std::num::NonZeroUsize::new(64)
+                    .ok_or("invalid verification page size")?).await?
+            } else { false };
             if !matches {
                 all_match = false;
             }
@@ -275,9 +281,13 @@ pub struct MigrationEngine {
     target: Arc<dyn StorageAdapter>,
     config: MigrationConfig,
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
-    paused: Arc<AtomicBool>,
+    paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
 }
+
+#[cfg(test)]
+#[path = "migration_native_tests.rs"]
+mod native_tests;
 
 impl MigrationEngine {
     /// Create a new migration engine
@@ -291,7 +301,7 @@ impl MigrationEngine {
             target,
             config,
             states: Arc::new(parking_lot::RwLock::new(HashMap::new())),
-            paused: Arc::new(AtomicBool::new(false)),
+            paused: tokio::sync::watch::channel(false).0,
             running: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -310,17 +320,15 @@ impl MigrationEngine {
     /// Run the full migration
     pub async fn run(&mut self) -> Result<MigrationProgress, String> {
         self.running.store(true, Ordering::Relaxed);
+        self.wait_until_resumed().await?;
 
         // Step 1: Discover collections
         let collections = match &self.config.collections {
             Some(explicit) => explicit.clone(),
             None => {
-                let result = self.source.list_collections().await;
-                result.data.ok_or_else(|| {
+                self.source.list_collections().await.into_result().map_err(|error| {
                     self.running.store(false, Ordering::Relaxed);
-                    result
-                        .error
-                        .unwrap_or_else(|| "Failed to list source collections".into())
+                    error
                 })?
             }
         };
@@ -355,9 +363,7 @@ impl MigrationEngine {
 
         // Step 3: Migrate each collection
         for collection in &collections {
-            if self.paused.load(Ordering::Relaxed) {
-                break;
-            }
+            self.wait_until_resumed().await?;
             if let Err(e) = self.migrate_collection(collection).await {
                 self.running.store(false, Ordering::Relaxed);
                 return Err(e);
@@ -390,29 +396,24 @@ impl MigrationEngine {
             return Ok(());
         }
 
-        let batch_size = self.config.batch_size;
-        let mut offset = state.migrated.load(Ordering::Relaxed); // Resume from last position
+        let batch_size = std::num::NonZeroUsize::new(self.config.batch_size)
+            .ok_or("migration batch size must be positive")?;
+        let snapshot = self.source.binary_snapshot(collection).await?;
+        let mut after: Option<String> = None;
 
         loop {
-            if self.paused.load(Ordering::Relaxed) {
+            if *self.paused.borrow() {
                 *state.status.write() = MigrationStatus::Paused;
-                return Ok(());
+                self.wait_until_resumed().await?;
+                *state.status.write() = MigrationStatus::InProgress;
             }
 
-            // Fetch a batch from source
-            let query = StorageQuery {
-                collection: collection.to_string(),
-                limit: Some(batch_size),
-                offset: Some(offset),
-                ..Default::default()
-            };
-
-            let result = self.source.query(query).await;
-            let records = match result.data {
-                Some(r) if !r.is_empty() => r,
-                Some(_) => break, // Empty page = done
-                None => {
-                    let err = result.error.unwrap_or_else(|| "Source query failed".into());
+            let records = match snapshot.migration_page(&super::migration_snapshot::MigrationPage {
+                after: after.as_deref(), limit: batch_size,
+            }).await {
+                Ok(rows) if rows.is_empty() => break,
+                Ok(rows) => rows,
+                Err(err) => {
                     *state.error.write() = Some(err.clone());
                     *state.status.write() = MigrationStatus::Failed;
                     return Err(err);
@@ -422,44 +423,28 @@ impl MigrationEngine {
             let batch_count = records.len();
 
             // Insert batch into target
-            for record in records {
-                let target_record = DataRecord {
-                    id: record.id.clone(),
-                    collection: collection.to_string(),
-                    data: record.data.clone(),
-                    metadata: RecordMetadata {
-                        created_at: record.metadata.created_at.clone(),
-                        updated_at: record.metadata.updated_at.clone(),
-                        version: record.metadata.version,
-                        tags: record.metadata.tags.clone(),
-                        schema: record.metadata.schema.clone(),
-                        ttl: record.metadata.ttl,
-                    },
-                };
-
-                let insert = self.target.create(target_record).await;
-                if insert.success {
-                    state.migrated.fetch_add(1, Ordering::Relaxed);
+            for row in records {
+                let next = row.record.id.clone();
+                // Move the owned row into the destination; a rejected write is not
+                // migrated work and must never be followed by Completed/verified.
+                let inserted = if row.payloads.is_empty() {
+                    self.target.create(row.record).await.into_result().map(|_| ())
                 } else {
-                    let fail_count = state.failed.fetch_add(1, Ordering::Relaxed);
-                    // Log first failures per collection (cap at 10 to avoid noise)
-                    if fail_count < 10 {
-                        if let Some(ref err) = insert.error {
-                            eprintln!("[MIGRATION] Failed {}/{}: {}", collection, record.id, err);
-                        }
-                    }
+                    self.target.create_binary(row.record, row.payloads).await.into_result().map(|_| ())
+                };
+                if let Err(error) = inserted {
+                    state.failed.fetch_add(1, Ordering::Relaxed);
+                    *state.error.write() = Some(error.clone());
+                    *state.status.write() = MigrationStatus::Failed;
+                    return Err(error);
                 }
+                state.migrated.fetch_add(1, Ordering::Relaxed);
+                after = Some(next);
             }
 
-            offset += batch_count;
-
-            // Throttle between batches
-            if self.config.throttle_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(self.config.throttle_ms)).await;
-            }
 
             // If we got fewer than batch_size, we're done
-            if batch_count < batch_size {
+            if batch_count < batch_size.get() {
                 break;
             }
         }
@@ -470,12 +455,19 @@ impl MigrationEngine {
 
     /// Convenience: pause
     pub fn pause(&self) {
-        self.paused.store(true, Ordering::Relaxed);
+        self.paused.send_replace(true);
     }
 
     /// Convenience: resume
     pub fn resume(&self) {
-        self.paused.store(false, Ordering::Relaxed);
+        self.paused.send_replace(false);
+    }
+
+    async fn wait_until_resumed(&self) -> Result<(), String> {
+        let mut control = self.paused.subscribe();
+        control.wait_for(|paused| !*paused).await
+            .map(|_| ())
+            .map_err(|error| format!("migration control closed: {error}"))
     }
 
     /// Convenience: verify
@@ -490,6 +482,39 @@ mod tests {
     use crate::orm::adapter::AdapterConfig;
     use crate::orm::SeaOrmAdapter;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
+
+    #[tokio::test]
+    async fn equal_counts_cannot_verify_a_rejected_migration() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let source = setup_sqlite(&dir.path().join("source.db").to_string_lossy()).await;
+        let target = setup_sqlite(&dir.path().join("target.db").to_string_lossy()).await;
+        let schema = CollectionSchema {
+            collection: "items".into(),
+            fields: crate::orm::base_entity_fields(),
+            indexes: vec![],
+        };
+        for adapter in [&source, &target] {
+            adapter.ensure_schema(schema.clone()).await.into_result()?;
+            adapter.create(DataRecord {
+                id: "collision".into(), collection: "items".into(),
+                data: json!({}), metadata: RecordMetadata::default(),
+            }).await.into_result()?;
+        }
+        let mut engine = MigrationEngine::new(source, target, MigrationConfig {
+            batch_size: 1, collections: Some(vec!["items".into()]),
+        });
+        assert!(!engine.verify().await?.verified, "no run has no migration receipts");
+        assert!(engine.run().await.is_err(), "a destination refusal stops migration");
+        let status = engine.handle().status();
+        assert_eq!(status.migrated, 0);
+        assert_eq!(status.failed, 1);
+        assert!(!engine.handle().is_running());
+        let verification = engine.verify().await?;
+        assert!(!verification.verified, "equal counts cannot erase the refusal");
+        assert_eq!(verification.collections[0].source_count, 1);
+        assert_eq!(verification.collections[0].target_count, 1);
+        Ok(())
+    }
 
     async fn setup_sqlite(path: &str) -> Arc<dyn StorageAdapter> {
         let adapter = SeaOrmAdapter::connect(AdapterConfig {
@@ -545,7 +570,6 @@ mod tests {
             target.clone(),
             MigrationConfig {
                 batch_size: 10,
-                throttle_ms: 0,
                 collections: None,
             },
         );
@@ -606,25 +630,51 @@ mod tests {
                 .await.into_result().expect("test: storage operation succeeds");
         }
 
+        let gated = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(target.clone()));
+        let gate = gated.pause_next_write();
         let mut engine = MigrationEngine::new(
             source.clone(),
-            target.clone(),
+            gated,
             MigrationConfig {
-                batch_size: 3,
-                throttle_ms: 0,
+                batch_size: 1,
                 collections: None,
             },
         );
 
-        // Pre-pause before running
+        // Poll the real continuation to Pending before publishing resume. No
+        // sleep or timeout stands in for observing the suspended future.
         engine.pause();
-        let status = engine.run().await.unwrap();
-        // Should have paused before migrating (or after first batch)
-        assert!(status.paused);
-
-        // Resume and complete
-        engine.resume();
-        let status = engine.run().await.unwrap();
+        let handle = engine.handle();
+        let mut run = Box::pin(engine.run());
+        std::future::poll_fn(|context| {
+            use std::future::Future;
+            assert!(run.as_mut().poll(context).is_pending());
+            std::task::Poll::Ready(())
+        }).await;
+        assert!(handle.status().paused);
+        assert!(handle.is_running());
+        assert_eq!(handle.status().migrated, 0);
+        handle.resume();
+        tokio::select! {
+            _ = gate.entered.notified() => {},
+            result = &mut run => panic!("migration finished before held write: {result:?}"),
+        }
+        handle.pause();
+        gate.release.notify_one();
+        std::future::poll_fn(|context| {
+            use std::future::Future;
+            assert!(run.as_mut().poll(context).is_pending());
+            let status = handle.status();
+            if status.migrated == 1 {
+                assert_eq!(status.collections[0].status, "paused");
+                std::task::Poll::Ready(())
+            } else { std::task::Poll::Pending }
+        }).await;
+        assert_eq!(target.count(StorageQuery {
+            collection: "items".into(), ..Default::default()
+        }).await.into_result(), Ok(1));
+        handle.resume();
+        let status = run.await.unwrap();
         assert_eq!(status.migrated, 10);
     }
 
@@ -695,7 +745,6 @@ mod tests {
             target.clone(),
             MigrationConfig {
                 batch_size: 100,
-                throttle_ms: 0,
                 collections: None,
             },
         );

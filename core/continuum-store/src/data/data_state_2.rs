@@ -535,22 +535,13 @@ impl DataState {
     /// source for the typed `migration/start` command.
     pub(crate) async fn migration_start(
         &self,
-        source: String,
-        target: String,
-        batch_size: usize,
-        throttle_ms: u64,
-        collections: Option<Vec<String>>,
+        source: &str,
+        target: &str,
+        config: MigrationConfig,
     ) -> Result<MigrationProgress, String> {
         // Get or create adapters for source and target
-        let source_adapter = self.get_adapter(&source).await?;
-        let target_adapter = self.get_adapter(&target).await?;
-
-        let config = MigrationConfig {
-            batch_size,
-            throttle_ms,
-            collections,
-        };
-
+        let source_adapter = self.get_adapter(source).await?;
+        let target_adapter = self.get_adapter(target).await?;
         let mut engine = MigrationEngine::new(source_adapter, target_adapter, config);
         let handle = engine.handle();
 
@@ -558,14 +549,11 @@ impl DataState {
         *self.active_migration.lock().await = Some(handle.clone());
 
         // Spawn migration as background task — returns immediately
+        log_info!(
+            "data", "migration/start", "Background migration started: {} -> {}",
+            source, target
+        );
         tokio::spawn(async move {
-            log_info!(
-                "data",
-                "migration/start",
-                "Background migration started: {} -> {}",
-                source,
-                target
-            );
             match engine.run().await {
                 Ok(status) => {
                     log_info!("data", "migration/start", "Migration completed: {:?}", status);

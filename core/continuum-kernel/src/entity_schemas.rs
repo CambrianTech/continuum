@@ -22,7 +22,7 @@
 //!              ▼
 //!     DataModule calls resolve(collection) when it needs entity shape
 //!
-//! Design doc: docs/architecture/ORM-PHASE-2-DESIGN.md
+//! Design doc: docs/infrastructure/RUST-ORM-ARCHITECTURE.md
 //!
 //! SHA-256 drift detection: the JSON carries a `$sha256` field hashed over
 //! the canonical `{ entities: ... }` subtree. On load we recompute and
@@ -35,10 +35,11 @@
 //! payload can shrink from inline CollectionSchema to just a collection
 //! name. No behavior change in this module alone.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
+use std::io::{BufWriter, Write};
 use std::sync::OnceLock;
 
 // ─── JSON-facing types (camelCase serde) ──────────────────────────────────
@@ -227,7 +228,7 @@ pub fn to_collection_schema(es: &EntitySchema) -> Result<crate::orm::types::Coll
 }
 
 fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
-    let EntitySchemasFile { schema_version, sha256: embedded_sha, entities: entities_value } =
+    let EntitySchemasFile { schema_version, sha256: embedded_sha, entities: mut entities_value } =
         serde_json::from_str(ENTITY_SCHEMAS_JSON).map_err(|e| format!("parse error: {}", e))?;
     if schema_version != 1 {
         return Err(format!(
@@ -238,13 +239,7 @@ fn parse_and_verify() -> Result<HashMap<String, EntitySchema>, String> {
     // Recompute SHA-256 over canonical `{ "entities": <entities> }`.
     // Canonicalization: sort object keys, preserve array order. Must match
     // the TS codegen's `canonicalize()` helper for the hash to agree.
-    let wrapped = Value::Object(serde_json::Map::from_iter([("entities".to_string(), entities_value.clone())]));
-    let canonical_value = canonicalize_value(&wrapped);
-    let canonical_str = serde_json::to_string(&canonical_value)
-        .map_err(|e| format!("canonical serialize failed: {}", e))?;
-    let mut hasher = Sha256::new();
-    hasher.update(canonical_str.as_bytes());
-    let computed = hex_encode(&hasher.finalize());
+    let computed = canonical_digest(&mut entities_value)?;
 
     if computed != embedded_sha {
         return Err(format!(
@@ -286,22 +281,25 @@ fn validate_relationships(entities: &HashMap<String, EntitySchema>) -> Result<()
     Ok(())
 }
 
-fn canonicalize_value(v: &Value) -> Value {
-    match v {
-        Value::Object(map) => {
-            let sorted: BTreeMap<&String, Value> = map
-                .iter()
-                .map(|(k, v)| (k, canonicalize_value(v)))
-                .collect();
-            let mut out = serde_json::Map::new();
-            for (k, v) in sorted {
-                out.insert(k.clone(), v);
-            }
-            Value::Object(out)
-        }
-        Value::Array(arr) => Value::Array(arr.iter().map(canonicalize_value).collect()),
-        other => other.clone(),
+fn canonical_digest(entities: &mut Value) -> Result<String, String> {
+    // Sort in place (a no-op with serde_json's default sorted maps). The same
+    // owned tree is subsequently consumed by typed schema decoding.
+    entities.sort_all_objects();
+    #[derive(Serialize)]
+    struct Envelope<'a> {
+        entities: &'a Value,
     }
+    let mut hasher = Sha256::new();
+    {
+        // This is the generated schema's canonical JSON digest boundary, not
+        // runtime payload conversion. Buffer small serializer writes without
+        // allocating a second tree or a complete serialized document.
+        let mut writer = BufWriter::new(&mut hasher);
+        serde_json::to_writer(&mut writer, &Envelope { entities })
+            .map_err(|e| format!("canonical serialize failed: {e}"))?;
+        writer.flush().map_err(|e| format!("canonical digest flush failed: {e}"))?;
+    }
+    Ok(hex_encode(&hasher.finalize()))
 }
 
 fn hex_encode(bytes: &[u8]) -> String {
@@ -317,6 +315,64 @@ fn hex_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_digest_preserves_values_and_array_order() -> Result<(), Box<dyn std::error::Error>> {
+        let mut entities: Value = serde_json::from_str(
+            r#"{"z":[{"z":null,"a":"quote\"\n雪"},18446744073709551615,-3.25,true],"a":{}}"#,
+        )?;
+        let original = entities.clone();
+        let expected = r#"{"entities":{"a":{},"z":[{"a":"quote\"\n雪","z":null},18446744073709551615,-3.25,true]}}"#;
+        assert_eq!(canonical_digest(&mut entities)?, hex_encode(&Sha256::digest(expected.as_bytes())));
+        assert_eq!(entities, original);
+        entities["z"][0]["z"] = Value::Bool(false);
+        assert_ne!(canonical_digest(&mut entities)?, hex_encode(&Sha256::digest(expected.as_bytes())));
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "isolated generated-schema hash allocation/timing comparison"]
+    fn canonical_digest_replay() -> Result<(), Box<dyn std::error::Error>> {
+        // Reference is the removed algorithm, retained only to compare exact
+        // bytes and cost on the actual generated schema workload.
+        fn old_canonical(v: &Value) -> Value {
+            match v {
+                Value::Object(map) => {
+                    let sorted: std::collections::BTreeMap<_, _> = map.iter()
+                        .map(|(key, value)| (key, old_canonical(value))).collect();
+                    Value::Object(sorted.into_iter().map(|(key, value)| (key.clone(), value)).collect())
+                }
+                Value::Array(items) => Value::Array(items.iter().map(old_canonical).collect()),
+                other => other.clone(),
+            }
+        }
+        let file: EntitySchemasFile = serde_json::from_str(ENTITY_SCHEMAS_JSON)?;
+        for native_first in [false, true] {
+            let mut native_us = 0;
+            let mut old_us = 0;
+            for _ in 0..20 {
+                for native in [native_first, !native_first] {
+                    // Each path receives an owned parsed tree; parsing is excluded.
+                    let mut entities = file.entities.clone();
+                    let start = std::time::Instant::now();
+                    let computed = if native {
+                        canonical_digest(&mut entities)?
+                    } else {
+                        let wrapped = Value::Object(serde_json::Map::from_iter([
+                            ("entities".to_string(), entities.clone()),
+                        ]));
+                        let text = serde_json::to_string(&old_canonical(&wrapped))?;
+                        hex_encode(&Sha256::digest(text.as_bytes()))
+                    };
+                    let elapsed = start.elapsed().as_micros();
+                    assert_eq!(computed, file.sha256);
+                    if native { native_us += elapsed; } else { old_us += elapsed; }
+                }
+            }
+            eprintln!("schema digest 20 runs native_first={native_first}: old_us={old_us} streamed_us={native_us}; input_bytes={}", ENTITY_SCHEMAS_JSON.len());
+        }
+        Ok(())
+    }
 
     #[test]
     fn declarations_preserve_constraints_and_refuse_unknown_types() -> Result<(), String> {
