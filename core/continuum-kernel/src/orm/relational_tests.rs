@@ -195,7 +195,7 @@ async fn cancelled_request_retains_commit_and_revision_custody(
     release_tx
         .send(())
         .map_err(|_| "transaction owner disappeared with caller")?;
-    tokio::time::timeout(std::time::Duration::from_secs(5), revision.changed()).await??;
+    revision.changed().await?;
     assert_eq!(*revision.borrow(), 1);
     assert!(store
         .read_on(&store.db, Child::COLLECTION, "cancelled")

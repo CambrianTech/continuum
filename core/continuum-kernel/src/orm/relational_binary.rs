@@ -13,6 +13,9 @@ impl super::relational::RelationalStore {
         record: super::types::DataRecord,
         payloads: std::collections::BTreeMap<String, BinaryValue>,
     ) -> Result<String, String> {
+        if payloads.is_empty() {
+            return Err("native create requires at least one payload".into());
+        }
         // Compile typed bindings before dispatch, then move them into the same committing owner.
         super::binary::native_identity(&record.id)?;
         let statement = self.insert_statement_with_binary(&record, payloads)?;

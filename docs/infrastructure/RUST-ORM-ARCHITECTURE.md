@@ -126,6 +126,13 @@ their notices through the transaction result; rollback and conditional no-op emi
 Persisted heads seed receivers on owner restart. These are wakeup hints backed by
 durable heads, not a snapshot or replay proof: ordered delta paging and its completion
 semantics must land before consumers may use a high-water mark as processed work.
+The current receipt table coalesces each identity to its latest revision. A fixed
+upper revision with live paged queries is therefore eventual reconciliation, not an
+as-of snapshot: a row can move past that bound before its page is read. Exact snapshot
+completion must retain one existing-owner read transaction across head capture,
+metadata and payload pages. Scalar changes and FK-driven updates currently do not
+advance native revisions; a filtered corpus must include their invalidations before
+this receipt stream can claim membership completeness.
 The sequence-head declaration now has a composite domain/collection identity; any
 previous development database needs the offline schema migration before adoption.
 
@@ -258,6 +265,16 @@ inside one transaction. It never interprets unknown progress as unstarted automa
 The receipt records rows, historical NULLs, changed rows and whether changes applied.
 This narrow repair does not perform the full schema/native-payload migration above.
 
+### Runtime orchestration and deterministic completion
+
+Publish work through its existing owner and await its typed result or completion
+receipt. Elapsed time is not evidence of completion, cancellation, resource release
+or physical death. Use event barriers for ordering and fault replay; do not use sleeps
+or arbitrary timeouts to establish correctness. Model absence with Option, failure
+with Result and explicit error variants, and admissible persisted states in schemas.
+Runtime and critical startup execute in Rust owners. Shell scripts or Python require
+a concrete exceptional necessity or appropriateness; they are not orchestration
+shortcuts. Development build tooling is separate from the installed runtime.
 ## 7. Proof and current implementation gaps
 
 Use the same dataset, query shapes, concurrency and exact artifact revisions before

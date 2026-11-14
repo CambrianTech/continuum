@@ -156,3 +156,61 @@ async fn required_native_fields_create_atomically_without_body_readback(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn empty_native_create_cannot_leave_untracked_live_receipts(
+) -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::PaginatorTrait;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("empty-native.sqlite");
+    let path = path.to_str().ok_or("non-UTF8 fixture")?;
+    let store = open(path).await?;
+    store
+        .ensure(CollectionSchema {
+            collection: "scalar_only".into(),
+            fields: base_entity_fields(),
+            indexes: Vec::new(),
+        })
+        .await?;
+    let record = DataRecord {
+        id: uuid::Uuid::from_u128(1).to_string(),
+        collection: "scalar_only".into(),
+        data: json!({}),
+        metadata: RecordMetadata::default(),
+    };
+    assert!(
+        store
+            .create_binary(record, std::collections::BTreeMap::new())
+            .await
+            .is_err(),
+        "an empty group must not create an untracked native identity"
+    );
+    assert_eq!(
+        store
+            .count(QueryBuilder::new("scalar_only").build())
+            .await?,
+        0
+    );
+    use sea_orm::EntityTrait;
+    assert_eq!(
+        crate::orm::relational_native_revision::Entity::find()
+            .count(&store.db)
+            .await?,
+        0
+    );
+    assert_eq!(
+        crate::orm::relational_sequence::Entity::find()
+            .count(&store.db)
+            .await?,
+        0
+    );
+    drop(store);
+    let store = open(path).await?;
+    assert_eq!(
+        store
+            .count(QueryBuilder::new("scalar_only").build())
+            .await?,
+        0
+    );
+    Ok(())
+}

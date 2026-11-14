@@ -279,3 +279,56 @@ async fn cyclic_cascade_deduplicates_identities_and_uses_one_revision(
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn clear_orders_physical_alias_dependencies_and_counts_every_row(
+) -> Result<(), Box<dyn std::error::Error>> {
+    for rule in [CascadeRule::Cascade, CascadeRule::Restrict] {
+        let directory = tempfile::tempdir()?;
+        let config = AdapterConfig {
+            connection_string: directory
+                .path()
+                .join("clear.sqlite")
+                .to_str()
+                .ok_or("non-UTF8 fixture")?
+                .into(),
+            ..Default::default()
+        };
+        let store = RelationalStore::open(config.clone()).await?;
+        store.ensure(schema("aParent", false, None)).await?;
+        store
+            .ensure(schema("zChild", true, Some(("a_parent", "id", rule))))
+            .await?;
+        store
+            .create(DataRecord {
+                id: id(1),
+                collection: "aParent".into(),
+                data: json!({"name":"parent"}),
+                metadata: RecordMetadata::default(),
+            })
+            .await?;
+        native(&store, "zChild", 2, Some(id(1))).await?;
+        drop(store);
+        let store = RelationalStore::open(config.clone()).await?;
+        let cleared = store.clear().await?;
+        assert_eq!(
+            cleared.records_deleted, 2,
+            "clear must count both rows for {rule:?}"
+        );
+        assert_eq!(cleared.tables_cleared, vec!["zChild", "aParent"]);
+        drop(store);
+        let store = RelationalStore::open(config).await?;
+        assert_eq!(store.count(QueryBuilder::new("aParent").build()).await?, 0);
+        assert_eq!(store.count(QueryBuilder::new("zChild").build()).await?, 0);
+        let receipt = crate::orm::relational_native_revision::Entity::find_by_id((
+            "zChild".to_owned(),
+            id(2),
+        ))
+        .one(&store.db)
+        .await?
+        .ok_or("test: durable tombstone absent")?;
+        assert!(receipt.deleted);
+        assert_eq!(receipt.revision, 2);
+    }
+    Ok(())
+}

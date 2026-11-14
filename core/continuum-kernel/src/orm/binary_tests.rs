@@ -45,7 +45,7 @@ fn descriptor(element_type: ElementType, shape: Vec<u64>) -> BinaryDescriptor {
 #[tokio::test]
 async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
 ) -> Result<(), Box<dyn std::error::Error>> {
-    use std::{sync::Arc, time::Duration};
+    use std::sync::Arc;
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("cancelled-native.db");
     let path = path.to_str().ok_or("non-UTF8 fixture path")?;
@@ -107,20 +107,18 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
                     .map(|_| ())
             }
         });
-        tokio::time::timeout(Duration::from_secs(5), gate.entered.notified()).await?;
+        gate.entered.notified().await;
         request.abort();
         assert!(request.await.is_err_and(|error| error.is_cancelled()));
         // A pending write must not block an independent metadata reader.
-        let count = tokio::time::timeout(
-            Duration::from_secs(5),
-            real.count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build()),
-        )
-        .await?
-        .into_result()?;
+        let count = real
+            .count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build())
+            .await
+            .into_result()?;
         assert_eq!(count, usize::from(!creating));
         gate.release.notify_one();
-        tokio::time::timeout(Duration::from_secs(5), gate.done.notified()).await?;
-        tokio::time::timeout(Duration::from_secs(5), native_changes.changed()).await??;
+        gate.done.notified().await;
+        native_changes.changed().await?;
         assert_eq!(
             *native_changes.borrow_and_update(),
             if creating { 1 } else { 2 }
