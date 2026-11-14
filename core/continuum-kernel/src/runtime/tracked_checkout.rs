@@ -14,11 +14,19 @@
 //! 1. The CANDIDATE is `CONTINUUM_TRACK_REPO_DIR` (a recorded fact — `continuum install`
 //!    records it, see [`record`]) else the build-time source root — a convenience for a
 //!    fresh clone that has never installed, never the fact itself.
-//! 2. The candidate resolves to its DURABLE checkout: the main working tree of the repo it
-//!    belongs to (`git rev-parse --git-common-dir`'s parent). A worktree is temp by
-//!    definition; the main checkout outlives every lease. A plain checkout resolves to
+//! 2. The BUILD-TIME candidate resolves to its DURABLE checkout: the main working tree of the
+//!    repo it belongs to (`git rev-parse --git-common-dir`'s parent). A lease worktree is temp
+//!    by definition; the main checkout outlives every lease. A plain checkout resolves to
 //!    itself.
-//! 3. Resolved on EVERY read (one `exists()` and one bounded git call), never cached: a
+//! 3. A RECORDED checkout is the deploy checkout as recorded, worktree or not. The deploy
+//!    checks tips out in it (`deploy-consume`: `git checkout --detach <tip>`) and refuses it
+//!    while it holds tracked edits, so it must be a tree nobody works in. On a development
+//!    node the main working tree is where agents work: the M5's recorded deploy worktree was
+//!    collapsed to it, the consumer moved that tree to a detached 8e38ada8d on 2026-10-25,
+//!    and from then on every published tip met an agent's edits there (`RefuseDirty`), so
+//!    every deploy was done by hand from `wt/deploy-latest` (2026-11-14, three in a few
+//!    hours). A recorded tree that is gone is named GONE by path, never re-resolved.
+//! 4. Resolved on EVERY read (one `exists()` and one bounded git call), never cached: a
 //!    checkout that vanishes is named by path on the next tick, not mislabeled as a fetch
 //!    failure forever.
 
@@ -47,18 +55,44 @@ impl std::fmt::Display for CheckoutError {
     }
 }
 
+/// The candidate before resolution, by where it came from: the two resolve differently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Candidate {
+    /// `CONTINUUM_TRACK_REPO_DIR`: the deploy checkout someone declared. Taken as recorded.
+    Recorded(PathBuf),
+    /// The source root this binary was built from: possibly a lease, so resolved to the main tree.
+    BuildRoot(PathBuf),
+}
+
 /// The candidate before resolution: the recorded fact, else the build-time source root.
 /// `None` only when neither names a path (a binary built outside any checkout with nothing
 /// recorded) — the tracker then has no source, honestly.
-pub fn candidate() -> Option<PathBuf> {
+pub fn candidate() -> Option<Candidate> {
     continuum_base::config_env::read(TRACK_REPO_DIR_KEY)
-        .map(PathBuf::from)
+        .map(|dir| Candidate::Recorded(PathBuf::from(dir)))
         .or_else(|| {
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
                 .ancestors()
                 .nth(2)
-                .map(|p| p.to_path_buf())
+                .map(|p| Candidate::BuildRoot(p.to_path_buf()))
         })
+}
+
+/// A recorded checkout's own working tree (`--show-toplevel`): a worktree stays itself.
+pub fn recorded_checkout_of(recorded: &Path) -> Result<PathBuf, CheckoutError> {
+    if !recorded.is_dir() {
+        return Err(CheckoutError::Gone(recorded.to_path_buf()));
+    }
+    let dir = recorded.to_string_lossy().into_owned();
+    let out = crate::system_resources::bounded_command::probe(
+        "git",
+        &["-C", &dir, "rev-parse", "--path-format=absolute", "--show-toplevel"],
+        GIT_TIMEOUT,
+    );
+    match out.stdout_if_ok().map(str::trim).filter(|top| !top.is_empty()) {
+        Some(top) => Ok(PathBuf::from(top)),
+        None => Err(CheckoutError::NotARepo(recorded.to_path_buf(), out.outcome().to_string())),
+    }
 }
 
 /// The durable checkout a candidate belongs to: the repo's MAIN working tree. Pure over
@@ -88,7 +122,8 @@ pub fn durable_checkout_of(candidate: &Path) -> Result<PathBuf, CheckoutError> {
 /// The checkout to track, resolved now. `Ok(None)` = nothing names a candidate.
 pub fn tracked_checkout() -> Result<Option<PathBuf>, CheckoutError> {
     match candidate() {
-        Some(c) => durable_checkout_of(&c).map(Some),
+        Some(Candidate::Recorded(dir)) => recorded_checkout_of(&dir).map(Some),
+        Some(Candidate::BuildRoot(dir)) => durable_checkout_of(&dir).map(Some),
         None => Ok(None),
     }
 }
@@ -134,5 +169,26 @@ mod tests {
         let plain = tmp.path().join("plain");
         std::fs::create_dir(&plain).unwrap();
         assert!(matches!(durable_checkout_of(&plain), Err(CheckoutError::NotARepo(p, _)) if p == plain), "a directory that is no checkout is named as such");
+    }
+
+    // what this catches (the M5, 2026-10-25 to 2026-11-14): a RECORDED deploy worktree collapsed
+    // to the main working tree agents edit, so the consumer detached that tree and every
+    // published tip met their edits (RefuseDirty); every deploy was then done by hand. A
+    // recorded worktree is the deploy checkout itself; one that is gone is named GONE.
+    #[test]
+    fn a_recorded_deploy_worktree_is_tracked_as_itself_never_the_main_tree() {
+        let Ok(tmp) = tempfile::tempdir() else { panic!("a temp dir") };
+        let main = tmp.path().join("main");
+        assert!(std::fs::create_dir(&main).is_ok());
+        git(&main, &["init", "-q", "-b", "canary"]);
+        git(&main, &["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "root"]);
+        let deploy = tmp.path().join("deploy-latest");
+        git(&main, &["worktree", "add", "-q", "--detach", &deploy.to_string_lossy()]);
+        let canon = |p: &Path| p.canonicalize().ok();
+        let Ok(tracked) = recorded_checkout_of(&deploy) else { panic!("a recorded worktree resolves") };
+        assert_eq!(canon(&tracked), canon(&deploy), "the recorded deploy worktree is tracked as itself");
+        assert_ne!(canon(&tracked), canon(&main), "never the main working tree agents edit");
+        git(&main, &["worktree", "remove", "--force", &deploy.to_string_lossy()]);
+        assert_eq!(recorded_checkout_of(&deploy), Err(CheckoutError::Gone(deploy.clone())), "a recorded tree that is gone is named GONE");
     }
 }
