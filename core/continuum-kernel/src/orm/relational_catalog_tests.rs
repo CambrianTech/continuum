@@ -13,11 +13,18 @@ async fn inspect_persisted_declaration_read_only() -> Result<(), Box<dyn std::er
     let db = sea_orm::Database::connect(format!(
         "sqlite://{}?mode=ro", path.replace('\\', "/")
     )).await?;
-    let receipt = super::relational_declaration::Entity::find_by_id(&collection)
-        .one(&db).await?.ok_or("requested declaration receipt is absent")?;
-    let schema: CollectionSchema = serde_json::from_value(receipt.declaration)?; // Decode the persisted ORM catalog format, never application row bodies.
-    for field in &schema.fields {
-        println!("DECLARED_FIELD {} {} {:?} nullable={}", collection, field.name, field.field_type, field.nullable);
+    let physical = super::relational_structure::read(&db, &super::adapter::naming::to_table_name(&collection)).await?;
+    for column in &physical.columns {
+        println!("PHYSICAL_COLUMN {} {} {} required={}", collection, column.name, column.r#type, column.notnull);
+    }
+    match super::relational_declaration::Entity::find_by_id(&collection).one(&db).await? {
+        Some(receipt) => {
+            let schema: CollectionSchema = serde_json::from_value(receipt.declaration)?; // Decode the persisted ORM catalog format, never application row bodies.
+            for field in &schema.fields {
+                println!("DECLARED_FIELD {} {} {:?} nullable={}", collection, field.name, field.field_type, field.nullable);
+            }
+        }
+        None => println!("NO_DECLARATION_RECEIPT {collection}"),
     }
     db.close().await?;
     Ok(())
