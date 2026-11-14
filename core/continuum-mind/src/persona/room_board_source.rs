@@ -117,6 +117,7 @@ pub trait RoomBoardReader: Send + Sync {
 /// A board read slower than this is always marked (the pair of durations is the
 /// distribution a stalled tick is measured against); faster reads mark once per room
 /// per minute, enough to notice a hang without flooding the ledger.
+// derived-or-floor: a diagnostics threshold for marking a read in the ledger, never a wait; it decides only how often a fast read is logged
 const SLOW_BOARD_READ_MS: u64 = 100;
 
 fn board_read_mark_due(room: uuid::Uuid) -> bool {
@@ -502,7 +503,7 @@ impl RoomBoardSource {
             .cards
             .iter()
             .filter(|c| {
-                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+                c.owner.is_some_and(|o| o.as_uuid() == self.persona_id)
                     // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
                     // claim rendered as held contradicts the #156 lost-claim fact
                     // and is the stale-lease loop attractor (2026-08-03).

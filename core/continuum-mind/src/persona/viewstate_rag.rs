@@ -283,7 +283,7 @@ impl<V: RagRenderable> ViewStateRagSource<V> {
             },
         };
         let envelope = substrate.cache().get(V::KIND)?;
-        serde_json::from_value(envelope.payload.clone()).ok()
+        serde_json::from_value(envelope.payload.clone()).ok() // wire boundary: the cached ViewState envelope arrived over the substrate realtime wire as JSON; decoded once here into its typed view
     }
 }
 
