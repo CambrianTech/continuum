@@ -25,6 +25,11 @@ threshold: number,
  */
 includeData: boolean, 
 /**
+ * The served embedder that produced `queryVector`. Omit it for a vector the caller
+ * produced itself, which is searched against rows written by `vector/index`.
+ */
+embedder?: string, 
+/**
  * Storage handle. Defaults to "main" (the shared DB).
  */
 dbPath?: string, };
