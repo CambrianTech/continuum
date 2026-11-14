@@ -31,6 +31,7 @@ pub(crate) mod deploy_actuator;
 pub mod deploy_tracker;
 pub mod deploy_candidate;
 pub mod floor_fetch;
+pub mod mind_homes;
 pub mod card_carry;
 pub mod channel;
 pub use continuum_mind::chat;

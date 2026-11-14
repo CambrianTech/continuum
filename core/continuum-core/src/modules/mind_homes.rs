@@ -8,6 +8,10 @@
 //! dirs (4.5 GB) and 7,504 spill dirs (984 MB, back to July) stood beside 16 citizens, and every
 //! pass over them (the disk pool's walk each broker tick) grew with the pile.
 //!
+//! It is a [`ServiceModule`](crate::runtime::ServiceModule) like every other owner with a life:
+//! its `initialize` runs the pass on a blocking thread and the runtime initializes modules before it
+//! admits any command, so no `persona/spawn` can mint a home while the pass reads the registry.
+//!
 //! One pass at boot, off the async workers, removes every id-named directory under those roots
 //! whose id is not a citizen AND that holds no memory. Memory is never reclaimed: `memory/*` maps
 //! any UUID to a store under `personas/<id>`, so agents (Codex, the memory bridge) keep memory
@@ -70,9 +74,56 @@ pub fn reclaim(
     Ok(reclaimed)
 }
 
+/// The owner of minds' per-mind directories on this node.
+pub struct MindHomesModule {
+    continuum_root: PathBuf,
+}
+
+impl MindHomesModule {
+    pub fn new(continuum_root: PathBuf) -> Self {
+        Self { continuum_root }
+    }
+}
+
+#[async_trait::async_trait]
+impl crate::runtime::ServiceModule for MindHomesModule {
+    fn config(&self) -> crate::runtime::ModuleConfig {
+        crate::runtime::ModuleConfig {
+            name: "mind_homes",
+            priority: crate::runtime::ModulePriority::Background,
+            command_prefixes: &[],
+            event_subscriptions: &[],
+            needs_dedicated_thread: false,
+            max_concurrency: 1,
+            tick_interval: None,
+        }
+    }
+
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+        let root = self.continuum_root.clone();
+        if let Err(error) = tokio::task::spawn_blocking(move || reclaim_at_boot(&root)).await {
+            continuum_base::probe!(class = "persona.orphan_reclaim_panicked", error = %error);
+        }
+        Ok(())
+    }
+
+    async fn handle_command(
+        &self,
+        command: &str,
+        _params: serde_json::Value,
+    ) -> Result<crate::runtime::CommandResult, String> {
+        // The runtime routes no command here (no command_prefixes); the trait still asks.
+        Err(String::from(command))
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
 /// The boot pass: the citizens are the seeds under `continuum_root`, the roots are every
 /// per-mind root this node keeps.
-pub fn reclaim_at_boot(continuum_root: &Path) {
+fn reclaim_at_boot(continuum_root: &Path) {
     // Every persona seed the registry holds, live, dormant or archived: each sibling of the
     // persona kind dir under `citizens/` is read the same way (a dir with no persona seeds adds none).
     let persona_dir =

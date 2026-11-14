@@ -259,23 +259,12 @@ pub(super) fn start_persona_host(
     // below). Subscribe BEFORE the spawn so no plan edge is missed while
     // the task waits on the executor-ready oneshot.
     let serving_plan_rx = serving_daemon.subscribe();
-    rt_handle.spawn(async move {
-        // Before any mind is hosted: what minds that are not citizens left behind is removed,
-        // once, on a blocking thread (a filesystem pass, never on the async workers).
-        let root = continuum_root_for_boot.clone();
-        if let Err(error) =
-            tokio::task::spawn_blocking(move || super::orphan_minds::reclaim_at_boot(&root)).await
-        {
-            continuum_base::probe!(class = "persona.orphan_reclaim_panicked", error = %error);
-        }
-        super::persona_host_reconciler::run_persona_host(
-            executor_ready_rx,
-            continuum_root_for_boot,
-            persona_floor,
-            supervisor,
-            serving_plan_rx,
-        )
-        .await
-    });
+    rt_handle.spawn(super::persona_host_reconciler::run_persona_host(
+        executor_ready_rx,
+        continuum_root_for_boot,
+        persona_floor,
+        supervisor,
+        serving_plan_rx,
+    ));
     Ok(executor_ready_tx)
 }

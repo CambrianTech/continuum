@@ -19,7 +19,6 @@ mod listeners;
 mod live_call;
 mod memory_guard;
 mod model_registry_boot;
-mod orphan_minds;
 mod persona_host_reconciler;
 mod persona_hosting;
 mod persona_registry_modules;
