@@ -539,9 +539,14 @@ Continuum runtime work must follow these rules:
     (process exited, port bound, checkpoint written, engine ready, artifact
     built), so a faster machine simply arrives sooner and a slower one is never
     failed by a stopwatch. Dependencies come from the data a stage consumes,
-    never from a hand-written order. A bound may exist only as a watchdog that
-    reports a stall loudly, naming the event that never came; it never decides
-    the outcome. This holds in production, in tests (assert on the completion
+    never from a hand-written order. A timeout NEVER decides deterministic flow
+    (Joel: "You only use timeouts to trigger errors like a last resort like a web
+    request failing and even then ideally you're tuned into errors, interrupts
+    and other events too. You NEVER use timeouts [for] deterministic flow"). Its
+    only place is the error path, as the last resort when a remote party may
+    never answer (a hung network request); even there the first line is the
+    error event itself (connection reset, process-exit signal, interrupt, the
+    peer's typed failure), and the timeout only names the event that never came. This holds in production, in tests (assert on the completion
     event, never on elapsed time) and in our own tooling (a deploy is a graph:
     artifact built -> stop -> core-exited -> start -> engine-ready -> minds
     resume, with the build outside the dark window). Measured cost of breaking
