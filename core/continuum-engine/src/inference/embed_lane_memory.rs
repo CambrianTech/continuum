@@ -304,6 +304,10 @@ mod tests {
     async fn a_refused_embed_lease_is_granted_by_the_release_that_makes_room() {
         let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 100));
         let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        // The authority's first tick publishes before anything is leased, so the waiting lease's next
+        // publication is the release, not that tick (whose answer, still short, would be a refusal).
+        let mut board = daemon.subscribe();
+        board.changed().await.expect("test: the authority's first tick publishes");
         let serving = LeaseRequest {
             consumer_id: "serving".to_string(),
             kind: ResourceKind::Vram,
@@ -312,8 +316,6 @@ mod tests {
             reclaim_policy: ReclaimPolicy::Pinned,
         };
         let held = daemon.acquire_guarded(&serving).expect("test: serving leases 60 of 100");
-        // The authority's first tick publishes now, so the lease's next publication is the release.
-        tokio::task::yield_now().await;
         let waiting = tokio::spawn({
             let daemon = Arc::clone(&daemon);
             async move { lease_part(&daemon, ResourceKind::Vram, 50, 1).await }
