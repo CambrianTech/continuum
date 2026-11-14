@@ -18,13 +18,19 @@
 //! Never below what the minds need: the floor is every mind's need, and a mind whose act is in
 //! flight keeps the grant her act began on (`need_floor`). Never above the engine's pool, and never
 //! by relaunching it: the engine's `-c` stays, the grants the minds' bindings follow are what move
-//! (`grants.rs`), and a new engine starts whole from its own launch fit.
+//! (`grants.rs`), and a new engine (another incarnation: pid and start time) starts whole from its
+//! own launch fit.
+//!
+//! The grants have ONE publisher (`publish_grants`, on serving's tick). The step never publishes
+//! grants itself: it publishes the pool it moved to on a watch, and the grant publisher reads that
+//! value, so no second call site can race the first with a stale pool.
 
 use std::num::{NonZeroU32, NonZeroU64};
 use std::sync::Weak;
 
 use super::*;
 use crate::capacity::window_grant::{Demand, PoolGrants};
+use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::planning::MIN_SERVE_CTX;
 use crate::system_resources::{
     MemoryBudgetSpec, MemoryPressureMonitor, MemoryPriority, MemoryReporter, ModuleMemoryReport, PressureLevel,
@@ -41,15 +47,16 @@ pub(super) enum LivePool {
     /// Nothing owed has lowered it: the engine's own pool stands.
     #[default]
     Launched,
-    /// Lowered to `tokens` of the engine pool `of`. A different engine pool is a new engine, which
-    /// starts from its own launch fit.
-    Lowered { tokens: u32, of: NonZeroU32 },
+    /// Lowered to `tokens` on the engine incarnation `on`. Any other incarnation is a new engine,
+    /// which starts whole from its own launch fit.
+    Lowered { tokens: u32, on: EngineIncarnation },
 }
 
-/// What one step moves the pool against: the engine's pool, one token's KV bytes as the footprint
-/// measured them, and the least the minds' grants hold now (`need_floor`).
+/// What one step moves the pool against: the engine serving now and its pool, one token's KV bytes
+/// as the footprint measured them, and the least the minds' grants hold now (`need_floor`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct PoolNow {
+    pub(super) engine: EngineIncarnation,
     pub(super) served: NonZeroU32,
     pub(super) kv_per_token: NonZeroU64,
     pub(super) floor: u32,
@@ -80,17 +87,18 @@ impl Followed {
 }
 
 impl LivePool {
-    /// The most the grants may hold on an engine pool of `served`, before any floor.
-    pub(super) fn ceiling(self, served: u32) -> u32 {
+    /// The most the grants may hold on `engine`'s pool of `served`, before any floor. A lowering
+    /// holds only on the incarnation it was made on; an unknown engine is never taken for it.
+    pub(super) fn ceiling(self, served: u32, engine: Option<EngineIncarnation>) -> u32 {
         match self {
-            Self::Lowered { tokens, of } if of.get() == served => tokens,
+            Self::Lowered { tokens, on } if engine == Some(on) => tokens.min(served),
             Self::Lowered { .. } | Self::Launched => served,
         }
     }
 
     /// The pool the grants share: the ceiling, never below `floor`, never above the engine's pool.
-    pub(super) fn pool(self, served: u32, floor: u32) -> u32 {
-        self.ceiling(served).max(floor).min(served)
+    pub(super) fn pool(self, served: u32, floor: u32, engine: Option<EngineIncarnation>) -> u32 {
+        self.ceiling(served, engine).max(floor).min(served)
     }
 
     /// Follow one poll of the room: an owed share lowers the pool by the tokens that hold it (rounded
@@ -99,7 +107,7 @@ impl LivePool {
     pub(super) fn follow(self, change: RoomChange, now: PoolNow) -> Followed {
         let served = now.served.get();
         let floor = now.floor.min(served);
-        let before = self.pool(served, floor);
+        let before = self.pool(served, floor, Some(now.engine));
         let after = match change {
             RoomChange::Owed(share) => {
                 let owed = share.get().div_ceil(now.kv_per_token.get());
@@ -112,7 +120,7 @@ impl LivePool {
         };
         let next = match after >= served {
             true => Self::Launched,
-            false => Self::Lowered { tokens: after, of: now.served },
+            false => Self::Lowered { tokens: after, on: now.engine },
         };
         Followed { next, before, after }
     }
@@ -129,13 +137,14 @@ pub(super) fn need_floor(demands: &[Demand<uuid::Uuid>], granted: Option<&PoolGr
 }
 
 impl ServingDaemonModule {
-    /// What the pool steps against now; `None` while no engine reports a pool, no model's KV cost
-    /// is known, or nothing can be granted.
+    /// What the pool steps against now; `None` while no engine incarnation is known, no engine
+    /// reports a pool, no model's KV cost is known, or nothing can be granted.
     fn pool_now(&self) -> Option<PoolNow> {
+        let engine = self.server.served_incarnation()?;
         let served = NonZeroU32::new(self.served_pool.load(Ordering::Relaxed))?;
         let kv_per_token = self.kv_per_token()?;
         let floor = self.grant_inputs().ok()?.floor;
-        Some(PoolNow { served, kv_per_token, floor })
+        Some(PoolNow { engine, served, kv_per_token, floor })
     }
 
     /// One token's KV bytes on the serving model, from its footprint.
@@ -148,20 +157,22 @@ impl ServingDaemonModule {
     /// The bytes the grants may fill now, before any floor; `None` while no engine reports a pool.
     fn live_pool_bytes(&self) -> Option<u64> {
         let served = self.served_pool.load(Ordering::Relaxed);
-        let ceiling = self.live_pool.lock().ceiling(served);
+        let engine = self.server.served_incarnation();
+        let ceiling = self.live_pool.borrow().ceiling(served, engine);
         NonZeroU32::new(ceiling).zip(self.kv_per_token()).map(|(tokens, kv)| u64::from(tokens.get()) * kv.get())
     }
 
-    /// Move the pool by one poll of the room and republish the grants when it moved. Returns the
-    /// step, `None` when there was nothing to step against.
+    /// Move the pool by one poll of the room and publish where it moved to; the grant publisher
+    /// reads it (`grants.rs`). Returns the step, `None` when there was nothing to step against. The
+    /// monitor's poll is the one writer, so the read and the send cannot interleave with another step.
     fn follow_room(&self, change: RoomChange) -> Option<(Followed, PoolNow)> {
         let now = self.pool_now()?;
-        let followed = {
-            let mut live = self.live_pool.lock();
-            let followed = live.follow(change, now);
+        let followed = self.live_pool.borrow().follow(change, now);
+        self.live_pool.send_if_modified(|live| {
+            let moved = *live != followed.next;
             *live = followed.next;
-            followed
-        };
+            moved
+        });
         continuum_base::probe!(
             target: "continuum_core::modules::serving_daemon", class = "serving.kv_pool.follow",
             change = ?change,
@@ -170,11 +181,9 @@ impl ServingDaemonModule {
             pool_before = followed.before,
             pool_after = followed.after,
             kv_per_token = now.kv_per_token.get(),
+            engine = ?now.engine,
             "the minds' pool follows the host's room: lowered by its share of the deficit to no less than their needs, raised only into the OS's measured headroom"
         );
-        if followed.before != followed.after {
-            self.publish_grants();
-        }
         Some((followed, now))
     }
 
@@ -247,7 +256,7 @@ impl MemoryReporter for KvPoolShedder {
     /// monitor offers the next holder.
     fn take_again(&self, headroom: NonZeroU64) -> u64 {
         let Some(module) = self.module.upgrade() else { return 0 };
-        if *module.live_pool.lock() == LivePool::Launched {
+        if *module.live_pool.borrow() == LivePool::Launched {
             return 0;
         }
         match module.follow_room(RoomChange::Headroom(headroom)) {
@@ -269,6 +278,7 @@ mod tests {
     const M5_KV_PER_TOKEN: u64 = 15_163;
     /// The M5's free target: `vm.vm_page_free_target` 4,000 pages of 16 KiB (2026-11-13).
     const M5_FREE_TARGET: u64 = 4_000 * 16_384;
+    const ENGINE: EngineIncarnation = EngineIncarnation { pid: 4_242, started_s: 1_794_000_000, port: 8_090 };
 
     fn t(n: u32) -> Tokens {
         Tokens::new(n).expect("test: a nonzero size") // expect: every size here is a positive literal
@@ -304,7 +314,7 @@ mod tests {
         let demands = [demand(her, 100_000, true), demand(other, 60_000, false)];
         let floor = need_floor(&demands, Some(&granted));
         assert_eq!(floor, 140_000 + 60_000, "her act in flight keeps the grant it began on; the other mind keeps her need");
-        let now = PoolNow { served, kv_per_token: kv, floor };
+        let now = PoolNow { engine: ENGINE, served, kv_per_token: kv, floor };
 
         let mut host = HostDeficit::default();
         let mut live = LivePool::default();
@@ -324,7 +334,7 @@ mod tests {
                 verdict => verdict.headroom().map(RoomChange::Headroom),
             };
             let Some(change) = change else {
-                pools.push(live.pool(served.get(), floor));
+                pools.push(live.pool(served.get(), floor, Some(ENGINE)));
                 continue;
             };
             let followed = live.follow(change, now);
@@ -345,15 +355,18 @@ mod tests {
         assert_eq!(live, LivePool::Launched);
     }
 
-    // what this catches: a lowering carried onto a new engine (its pool is its own launch fit), a
-    // floor above the engine's pool read as a pool larger than the engine, and an empty roster
-    // lowering the pool to nothing.
+    // what this catches: a lowering carried onto a replacement engine (its pool is its own launch
+    // fit, even at the same size), an unknown engine read as the lowered one, a floor above the
+    // engine's pool read as a pool larger than the engine, and an empty roster lowering it to nothing.
     #[test]
-    fn a_new_engine_starts_whole_and_the_pool_never_leaves_the_engines_bounds() {
-        let lowered = LivePool::Lowered { tokens: 200_000, of: NonZeroU32::new(480_430).expect("test: a pool") }; // expect: a positive literal
-        assert_eq!(lowered.pool(480_430, 0), 200_000);
-        assert_eq!(lowered.pool(300_000, 0), 300_000, "a new engine's pool starts whole");
-        assert_eq!(lowered.pool(480_430, 900_000), 480_430, "a floor past the engine is the engine's pool");
+    fn a_replacement_engine_starts_whole_and_the_pool_never_leaves_the_engines_bounds() {
+        let lowered = LivePool::Lowered { tokens: 200_000, on: ENGINE };
+        let replacement = EngineIncarnation { pid: ENGINE.pid + 1, started_s: ENGINE.started_s + 60, ..ENGINE };
+        assert_eq!(lowered.pool(480_430, 0, Some(ENGINE)), 200_000);
+        assert_eq!(lowered.pool(480_430, 0, Some(replacement)), 480_430, "a replacement at the same pool size starts whole");
+        assert_eq!(lowered.pool(480_430, 0, None), 480_430, "an unknown engine is never taken for the lowered one");
+        assert_eq!(lowered.pool(150_000, 0, Some(ENGINE)), 150_000, "never above the engine's pool");
+        assert_eq!(lowered.pool(480_430, 900_000, Some(ENGINE)), 480_430, "a floor past the engine is the engine's pool");
         assert_eq!(need_floor(&[], None), MIN_SERVE_CTX, "no mind measured: one prompt's least window");
     }
 }

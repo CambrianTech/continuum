@@ -137,10 +137,12 @@ impl ServingDaemonModule {
                 }
             }
         }
-        // The pool the grants share is the engine's as the host's room has moved it (`live_pool`):
-        // never below what the minds need, never above what the engine holds.
+        // The pool the grants share is the engine's as the host's room has moved it: the value the
+        // pool step publishes (`live_pool`), never below what the minds need, never above what the
+        // engine holds. This publisher is its one reader; the step never publishes grants itself.
         let floor = super::live_pool::need_floor(&demands, self.grants_tx.borrow().as_ref());
-        let pool = self.live_pool.lock().pool(pool_tokens, floor);
+        let engine = self.server.served_incarnation();
+        let pool = self.live_pool.borrow().pool(pool_tokens, floor, engine);
         Ok(GrantInputs { demands, pool, cap: per_sequence_cap, excluded, floor })
     }
 }
