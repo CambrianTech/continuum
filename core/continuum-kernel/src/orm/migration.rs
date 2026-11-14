@@ -20,6 +20,7 @@ use ts_rs::TS;
 
 use super::adapter::StorageAdapter;
 use super::query::StorageQuery;
+#[cfg(test)]
 use super::types::{DataRecord, RecordMetadata};
 
 /// Migration configuration
@@ -226,9 +227,10 @@ impl MigrationHandle {
     /// Verify migration by comparing record counts between source and target.
     pub async fn verify(&self) -> Result<MigrationVerification, String> {
         let mut results = Vec::new();
-        let mut all_match = true;
-
         let states = self.states.read().clone();
+        // No collection receipts means no migration evidence, not successful
+        // verification (including a failed discovery/count before initialization).
+        let mut all_match = !states.is_empty();
         for (collection, state) in &states {
             let source_count = self
                 .source
@@ -245,9 +247,12 @@ impl MigrationHandle {
                 })
                 .await;
 
-            let src = source_count.data.unwrap_or(0);
-            let tgt = target_count.data.unwrap_or(0);
-            let matches = src == tgt;
+            let src = source_count.into_result()?;
+            let tgt = target_count.into_result()?;
+            let matches = src == tgt
+                && *state.status.read() == MigrationStatus::Completed
+                && state.failed.load(Ordering::Relaxed) == 0
+                && state.migrated.load(Ordering::Relaxed) == src;
             if !matches {
                 all_match = false;
             }
@@ -423,34 +428,16 @@ impl MigrationEngine {
 
             // Insert batch into target
             for record in records {
-                let target_record = DataRecord {
-                    id: record.id.clone(),
-                    collection: collection.to_string(),
-                    data: record.data.clone(),
-                    metadata: RecordMetadata {
-                        created_at: record.metadata.created_at.clone(),
-                        updated_at: record.metadata.updated_at.clone(),
-                        version: record.metadata.version,
-                        tags: record.metadata.tags.clone(),
-                        schema: record.metadata.schema.clone(),
-                        ttl: record.metadata.ttl,
-                    },
-                };
-
-                let insert = self.target.create(target_record).await;
-                if insert.success {
-                    state.migrated.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    let fail_count = state.failed.fetch_add(1, Ordering::Relaxed);
-                    // Log first failures per collection (cap at 10 to avoid noise)
-                    if fail_count < 10 {
-                        if let Some(ref err) = insert.error {
-                            eprintln!("[MIGRATION] Failed {}/{}: {}", collection, record.id, err);
-                        }
-                    }
+                // Move the owned row into the destination; a rejected write is not
+                // migrated work and must never be followed by Completed/verified.
+                if let Err(error) = self.target.create(record).await.into_result() {
+                    state.failed.fetch_add(1, Ordering::Relaxed);
+                    *state.error.write() = Some(error.clone());
+                    *state.status.write() = MigrationStatus::Failed;
+                    return Err(error);
                 }
+                state.migrated.fetch_add(1, Ordering::Relaxed);
             }
-
             offset += batch_count;
 
             // Throttle between batches
@@ -490,6 +477,39 @@ mod tests {
     use crate::orm::adapter::AdapterConfig;
     use crate::orm::SeaOrmAdapter;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
+
+    #[tokio::test]
+    async fn equal_counts_cannot_verify_a_rejected_migration() -> Result<(), String> {
+        let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
+        let source = setup_sqlite(&dir.path().join("source.db").to_string_lossy()).await;
+        let target = setup_sqlite(&dir.path().join("target.db").to_string_lossy()).await;
+        let schema = CollectionSchema {
+            collection: "items".into(),
+            fields: crate::orm::base_entity_fields(),
+            indexes: vec![],
+        };
+        for adapter in [&source, &target] {
+            adapter.ensure_schema(schema.clone()).await.into_result()?;
+            adapter.create(DataRecord {
+                id: "collision".into(), collection: "items".into(),
+                data: json!({}), metadata: RecordMetadata::default(),
+            }).await.into_result()?;
+        }
+        let mut engine = MigrationEngine::new(source, target, MigrationConfig {
+            batch_size: 1, throttle_ms: 0, collections: Some(vec!["items".into()]),
+        });
+        assert!(!engine.verify().await?.verified, "no run has no migration receipts");
+        assert!(engine.run().await.is_err(), "a destination refusal stops migration");
+        let status = engine.handle().status();
+        assert_eq!(status.migrated, 0);
+        assert_eq!(status.failed, 1);
+        assert!(!engine.handle().is_running());
+        let verification = engine.verify().await?;
+        assert!(!verification.verified, "equal counts cannot erase the refusal");
+        assert_eq!(verification.collections[0].source_count, 1);
+        assert_eq!(verification.collections[0].target_count, 1);
+        Ok(())
+    }
 
     async fn setup_sqlite(path: &str) -> Arc<dyn StorageAdapter> {
         let adapter = SeaOrmAdapter::connect(AdapterConfig {
