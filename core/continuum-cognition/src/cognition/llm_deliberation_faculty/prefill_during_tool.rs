@@ -20,7 +20,7 @@ use continuum_kernel::runtime::stage::{
 };
 
 use super::*;
-use crate::ai::adapter::{DispatchTermsPolicy as _, PromptCache};
+use crate::ai::adapter::PromptCache;
 use crate::ai::inference_error::InferenceError;
 use crate::ai::types::{DispatchTerms, Think};
 use crate::inference::slots::PageKey;
