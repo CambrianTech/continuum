@@ -57,7 +57,16 @@ pub struct MemoryRecord {
 #[ts(export, export_to = "../../../protocol/typescript/memory/CorpusMemory.ts")]
 pub struct CorpusMemory {
     pub record: MemoryRecord,
-    pub embedding: Option<Vec<f32>>,
+    pub embedding: Option<MemoryEmbedding>,
+}
+
+/// Precomputed values and the embedder that produced them travel together.
+/// Absence belongs to the complete embedding, never to its required provenance.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/memory/MemoryEmbedding.ts")]
+pub struct MemoryEmbedding {
+    pub values: Vec<f32>,
+    pub producer: continuum_store::data::vector_index::EmbedderId,
 }
 
 /// A timeline event with its optional embedding vector — sent from TS ORM to Rust.

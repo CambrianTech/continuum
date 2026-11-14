@@ -1,44 +1,59 @@
-#![cfg(test)]
+use std::{collections::BTreeMap, sync::Arc};
+use crate::{identity::PersonaRef, memory::{MemoryRecord, persistent::PersistentMemory}};
+use crate::orm::{StorageAdapter, SeaOrmAdapter, store::{NativeEntityWrite, OrmStore}};
+use continuum_store::data::vector_index::{unit_f32, EmbedderId, Producer};
 
-use super::persist_memory_on;
-use continuum_client::{mock::MockTransport, Connection};
-use serde_json::json;
+fn record(id: uuid::Uuid, persona: &PersonaRef) -> PersistentMemory {
+    PersistentMemory::from_record(MemoryRecord {
+        id: id.to_string(), persona_id: persona.as_str().to_owned(),
+        memory_type: "observation".into(), content: "retain the reviewed correction".into(),
+        context: serde_json::json!({"task": "native-restart"}),
+        timestamp: "2026-11-14T00:00:00Z".into(), importance: 0.75,
+        access_count: 0, tags: vec!["rust".into()], related_to: vec![],
+        source: None, last_accessed_at: None, origin_node: None,
+        origin_seq: Some(9_007_199_254_740_993), layer: None, relevance_score: None,
+    })
+}
 
 #[tokio::test]
-async fn failed_and_inconsistent_write_receipts_never_report_persistence(
-) -> Result<(), Box<dyn std::error::Error>> {
-    let memory = serde_json::from_value(json!({
-        "record": {
-            "id": "fixture", "persona_id": "fixture", "memory_type": "observation",
-            "content": "must be durable before cache append", "context": {},
-            "timestamp": "2026-11-14T00:00:00Z", "importance": 0.9,
-            "access_count": 0, "tags": [], "related_to": [], "source": "fixture"
-        },
-        "embedding": null
-    }))?;
-    for receipt in [
-        json!({"success":false,"data":null,"error":"injected write refusal"}),
-        json!({"success":true,"data":null,"error":null}),
-        json!({"success":false,"data":null,"error":null}),
-    ] {
-        let transport = MockTransport::new();
-        transport.respond_with("data/create", receipt);
-        let result = persist_memory_on(&Connection::new(transport), &"fixture".into(), &memory).await;
-        assert!(result.is_err(), "uncommitted memory was reported durable");
+async fn native_memory_survives_reopen_with_exact_scalars_and_producer()
+    -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("memory.db");
+    let persona = PersonaRef("native-restart-fixture".into());
+    let id = uuid::Uuid::from_u128(1);
+    let producer = EmbedderId::new("restart-fixture-3d");
+    {
+        let adapter: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&path).await?);
+        let store = OrmStore::<PersistentMemory>::new(adapter).await?;
+        let entity = record(id, &persona);
+        let payload = unit_f32([1.0, 0.0, 0.0].into_iter(), &Producer::Embedder(producer.clone()))?;
+        store.save_native(NativeEntityWrite {
+            id, entity: &entity,
+            payloads: BTreeMap::from([("embedding".into(), payload)]),
+        }).await?;
+        let without_vector = record(uuid::Uuid::from_u128(2), &persona);
+        store.save(uuid::Uuid::from_u128(2), &without_vector).await?;
+        // A malformed native write must not leave a scalar row behind.
+        let refused_id = uuid::Uuid::from_u128(3);
+        let refused = record(refused_id, &persona);
+        let payload = unit_f32([1.0, 0.0, 0.0].into_iter(), &Producer::Embedder(producer.clone()))?;
+        assert!(store.save_native(NativeEntityWrite {
+            id: refused_id, entity: &refused,
+            payloads: BTreeMap::from([("undeclaredPayload".into(), payload)]),
+        }).await.is_err());
+        assert_eq!(store.count().await?, 2);
     }
-    let transport = MockTransport::new();
-    transport.respond_to("data/create", |params| {
-        assert_eq!(params["collection"], "memories");
-        assert_eq!(params["dbPath"], "@persona:fixture");
-        assert_eq!(params["id"], "fixture");
-        Ok(json!({
-            "success":true, "error":null,
-            "data": {
-                "id":"fixture", "collection":"memories", "data":params["data"],
-                "metadata":{"createdAt":"2026-11-14T00:00:00Z","updatedAt":"2026-11-14T00:00:00Z","version":1}
-            }
-        }))
-    });
-    assert!(persist_memory_on(&Connection::new(transport), &"fixture".into(), &memory).await.is_ok());
+    let reopened: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&path).await?);
+    let loaded = super::persistence::load(reopened, &persona).await?;
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(loaded[0].record.id, id.to_string());
+    assert_eq!(loaded[0].record.origin_seq, Some(9_007_199_254_740_993));
+    assert_eq!(loaded[0].record.source, None);
+    assert_eq!(loaded[0].record.context, serde_json::json!({"task": "native-restart"}));
+    let embedding = loaded[0].embedding.as_ref().ok_or("missing native embedding")?;
+    assert_eq!(embedding.values, [1.0, 0.0, 0.0]);
+    assert_eq!(embedding.producer, producer);
+    assert!(loaded[1].embedding.is_none());
     Ok(())
 }

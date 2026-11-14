@@ -2,11 +2,12 @@
 //! `memory/*` commands share (the module that owns it composes the command list).
 
 use crate::memory::PersonaMemoryManager;
-use crate::runtime::{CommandExecutor, LateBound};
+use crate::runtime::{CommandExecutor, LateBound, StorageProvider};
 use std::sync::Arc;
 
 /// Shared state for memory module.
 pub struct MemoryState {
+    storage: LateBound<dyn StorageProvider>,
     /// Per-persona memory manager — pure compute on in-memory MemoryCorpus.
     pub memory_manager: Arc<PersonaMemoryManager>,
     /// Substrate-wide command executor, installed by `start_server` via
@@ -20,9 +21,19 @@ pub struct MemoryState {
 impl MemoryState {
     pub fn new(memory_manager: Arc<PersonaMemoryManager>) -> Self {
         Self {
+            storage: LateBound::new("memory::storage"),
             memory_manager,
             executor_slot: Arc::new(LateBound::new("memory::executor")),
         }
+    }
+
+    /// Module initialization supplies the existing shared storage owner.
+    pub fn install_storage(&self, storage: Arc<dyn StorageProvider>) {
+        self.storage.install(storage);
+    }
+
+    pub fn storage(&self) -> Result<&dyn StorageProvider, String> {
+        Ok(self.storage.require()?.as_ref())
     }
 
     /// Resolve the executor, or a loud error naming the boot-ordering contract.

@@ -39,6 +39,25 @@ impl super::relational::RelationalStore {
     }
 }
 impl BinarySnapshot {
+    /// Scalar rows and native payloads share this transaction's committed view.
+    pub(super) async fn query(
+        &self,
+        query: &super::query::StorageQuery,
+    ) -> Result<Vec<super::types::DataRecord>, StorageError> {
+        if query.collection != self.schema.collection {
+            return Err(StorageError::SnapshotCollection {
+                expected: self.schema.collection.clone(),
+                found: query.collection.clone(),
+            });
+        }
+        let statement = super::relational_query::select(
+            &self.schema, query, super::relational_query::Selection::Page,
+        )?;
+        let rows = self.transaction.query_all(DbBackend::Sqlite.build(&statement)).await?;
+        let decoder = super::relational_codec::RowDecoder::new(self.schema.clone(), &[]);
+        rows.into_iter().map(|row| decoder.decode(row)).collect()
+    }
+
     /// Native payload revision visible to these reads, not proof of applied GPU work.
     pub fn revision(&self) -> u64 {
         self.revision

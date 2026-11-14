@@ -20,7 +20,7 @@ use std::time::Instant;
 /// No SQL, no filesystem access — pure compute on in-memory data.
 pub struct MemoryCorpus {
     pub memories: Vec<MemoryRecord>,
-    pub memory_embeddings: HashMap<String, Vec<f32>>,
+    pub memory_embeddings: HashMap<String, MemoryEmbedding>,
     pub timeline_events: Vec<TimelineEvent>,
     pub event_embeddings: HashMap<String, Vec<f32>>,
     pub loaded_at: Instant,
@@ -30,7 +30,7 @@ impl MemoryCorpus {
     /// Create a corpus from ORM-provided data.
     pub fn new(
         memories: Vec<MemoryRecord>,
-        memory_embeddings: HashMap<String, Vec<f32>>,
+        memory_embeddings: HashMap<String, MemoryEmbedding>,
         timeline_events: Vec<TimelineEvent>,
         event_embeddings: HashMap<String, Vec<f32>>,
     ) -> Self {
@@ -122,7 +122,7 @@ impl MemoryCorpus {
     pub fn memories_with_embeddings(&self) -> Vec<(&MemoryRecord, &[f32])> {
         self.memories
             .iter()
-            .filter_map(|m| self.memory_embeddings.get(&m.id).map(|e| (m, e.as_slice())))
+            .filter_map(|m| self.memory_embeddings.get(&m.id).map(|e| (m, e.values.as_slice())))
             .collect()
     }
 
@@ -432,7 +432,10 @@ mod tests {
     fn test_from_corpus_data() {
         let memories = vec![CorpusMemory {
             record: make_memory("m1", "test", 0.5, "2025-01-01T00:00:00Z"),
-            embedding: Some(vec![0.1, 0.2, 0.3]),
+            embedding: Some(MemoryEmbedding {
+                values: vec![0.1, 0.2, 0.3],
+                producer: continuum_store::data::vector_index::EmbedderId::new("corpus-fixture"),
+            }),
         }];
         let events = vec![CorpusTimelineEvent {
             event: make_event("e1", "room-1", "General", "2025-01-01T00:00:00Z", 0.6),

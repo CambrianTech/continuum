@@ -34,6 +34,9 @@ pub mod consciousness_context;
 pub mod load_corpus;
 pub mod multi_layer_recall;
 pub mod share;
+mod persistence;
+#[cfg(test)]
+mod persistence_tests;
 
 use append_event::MemoryAppendEvent;
 use append_memory::MemoryAppendMemory;
@@ -119,8 +122,8 @@ pub fn persona_db_handle(persona_id: &crate::identity::PersonaRef) -> String {
     }
 }
 
-/// Write one memory through to the persona's durable store via `data/create`.
-/// Fails LOUD when the executor isn't installed or the write fails — a memory
+/// Write one typed memory and its native payload through the shared storage owner.
+/// Fails when the storage provider isn't installed or the write fails — a memory
 /// that only landed in cache is the exact lie this seam exists to kill.
 pub(crate) async fn persist_memory(
     state: &MemoryState,
@@ -128,52 +131,33 @@ pub(crate) async fn persist_memory(
     memory: &crate::memory::CorpusMemory,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     use crate::sdk_codegen::CommandError;
-    let executor = state.executor().map_err(CommandError::Internal)?;
-    let connection = continuum_client::Connection::new(
-        crate::runtime::InProcessTransport::new(executor, None),
-    );
-    persist_memory_on(&connection, persona_id, memory).await
-}
-
-async fn persist_memory_on<T: continuum_client::Transport>(
-    connection: &continuum_client::Connection<T>,
-    persona_id: &crate::identity::PersonaRef,
-    memory: &crate::memory::CorpusMemory,
-) -> Result<(), crate::sdk_codegen::CommandError> {
-    use crate::sdk_codegen::CommandError;
-    let mut data = serde_json::to_value(&memory.record)
-        .map_err(|e| CommandError::Internal(format!("serialize memory record: {e}")))?;
-    if let Some(embedding) = &memory.embedding {
-        data[EMBEDDING_KEY] = serde_json::json!(embedding);
+    use crate::memory::persistent::PersistentMemory;
+    use crate::orm::store::{NativeEntityWrite, OrmStore};
+    use continuum_store::data::vector_index::{unit_f32, Producer};
+    if memory.record.persona_id != persona_id.as_str() {
+        return Err(CommandError::Invalid("memory owner differs from the destination persona".into()));
     }
-    let _created: crate::orm::types::DataRecord = connection.commands()
-        .execute(
-            "data/create",
-            serde_json::json!({
-                "collection": MEMORIES_COLLECTION,
-                "dbPath": persona_db_handle(persona_id),
-                "id": memory.record.id,
-                "data": data,
-            }),
-        )
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "memory/append-memory: durable write to {} failed: {e}",
-                persona_db_handle(persona_id)
-            ))
-        })?;
-    Ok(())
+    let id = uuid::Uuid::parse_str(&memory.record.id)
+        .map_err(|error| CommandError::Invalid(error.to_string()))?;
+    let adapter = state.storage().map_err(CommandError::Internal)?
+        .adapter(&persona_db_handle(persona_id)).await.map_err(CommandError::Internal)?;
+    let store = OrmStore::<PersistentMemory>::new(adapter).await
+        .map_err(|error| CommandError::Internal(error.to_string()))?;
+    let mut payloads = std::collections::BTreeMap::new();
+    if let Some(embedding) = &memory.embedding {
+        let payload = unit_f32(embedding.values.iter().copied(), &Producer::Embedder(embedding.producer.clone()))
+            .map_err(|error| CommandError::Invalid(error.to_string()))?;
+        payloads.insert(EMBEDDING_KEY.to_owned(), payload);
+    }
+    let entity = PersistentMemory::from_record(memory.record.clone());
+    store.save_native(NativeEntityWrite { id, entity: &entity, payloads }).await
+        .map_err(|error| CommandError::Internal(error.to_string()))
 }
-
-#[cfg(test)]
-mod persistence_tests;
-
 /// Hydrate a persona's corpus from its durable store when no corpus is cached
 /// (i.e. first touch after a core restart). The data owner admits the declared
 /// schema before reading; schema/read failures remain errors. Each request is
-/// bounded and keyset traversal visits all matching identities, without claiming
-/// a pinned snapshot across concurrent writes. Returns how many memories were
+/// bounded and keyset traversal visits matching identities within one pinned
+/// snapshot shared with native payloads. Returns how many memories were
 /// loaded, or `None` when the corpus was already cached.
 pub(crate) async fn hydrate_corpus_if_missing(
     state: &MemoryState,
@@ -183,50 +167,9 @@ pub(crate) async fn hydrate_corpus_if_missing(
     if state.memory_manager.has_corpus(persona_id) {
         return Ok(None);
     }
-    let executor = state.executor().map_err(CommandError::Internal)?;
-    let connection = continuum_client::Connection::new(
-        crate::runtime::InProcessTransport::new(executor, None),
-    );
-    let rows: Vec<serde_json::Value> = crate::orm::client_read::matching(
-        &connection,
-        &persona_db_handle(persona_id),
-        MEMORIES_COLLECTION,
-        serde_json::Map::from_iter([("persona_id".into(), serde_json::json!(persona_id))]),
-        None,
-    )
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "memory hydrate: data/list on {} failed: {e}",
-                persona_db_handle(persona_id)
-            ))
-        })?;
-    let mut memories: Vec<crate::memory::CorpusMemory> = Vec::with_capacity(rows.len());
-    for data in rows {
-        // The ORM returns row keys camelCased (TS compatibility); MemoryRecord
-        // is snake_case on the wire. Fold TOP-LEVEL keys back — nested objects
-        // (`context`) keep their own keys untouched.
-        let mut data = match data {
-            serde_json::Value::Object(obj) => serde_json::Value::Object(
-                obj.into_iter()
-                    .map(|(k, v)| (crate::orm::adapter::naming::to_snake_case(&k), v))
-                    .collect(),
-            ),
-            other => other,
-        };
-        let embedding = data.as_object_mut().and_then(|row| row.remove(EMBEDDING_KEY))
-            .map(serde_json::from_value::<Option<Vec<f32>>>)
-            .transpose()
-            .map_err(|e| CommandError::Internal(format!("memory hydrate: invalid embedding: {e}")))?
-            .flatten();
-        let record: crate::memory::MemoryRecord =
-            serde_json::from_value(data).map_err(|e| {
-                CommandError::Internal(format!(
-                    "memory hydrate: row in '{MEMORIES_COLLECTION}' is not a MemoryRecord: {e}"
-                ))
-            })?;
-        memories.push(crate::memory::CorpusMemory { record, embedding });
-    }
+    let adapter = state.storage().map_err(CommandError::Internal)?
+        .adapter(&persona_db_handle(persona_id)).await.map_err(CommandError::Internal)?;
+    let memories = persistence::load(adapter, persona_id).await?;
     let count = memories.len();
     state
         .memory_manager

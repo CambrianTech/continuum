@@ -46,7 +46,8 @@ mod tests {
         )))
     }
 
-    fn test_memory(persona_id: &str, id: &str, content: &str) -> serde_json::Value {
+    fn test_memory(persona_id: &str, fixture_name: &str, content: &str) -> serde_json::Value {
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, fixture_name.as_bytes());
         serde_json::json!({
             "record": {
                 "id": id,

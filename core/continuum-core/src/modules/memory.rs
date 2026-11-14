@@ -48,7 +48,8 @@ impl ServiceModule for MemoryModule {
         }
     }
 
-    async fn initialize(&self, _ctx: &ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
+        self.state.install_storage(ctx.storage("memory")?);
         Ok(())
     }
 

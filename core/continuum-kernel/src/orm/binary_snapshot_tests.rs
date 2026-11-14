@@ -60,12 +60,18 @@ async fn snapshot_pins_empty_head_and_pages_while_writer_commits(
     insert(&store, 1).await?;
     insert(&store, 2).await?;
     assert_eq!(page(&empty, None).await?, (vec![], vec![]));
+    let scalars = QueryBuilder::new(NativeRow::COLLECTION).sort_asc("id").limit(2).build();
+    assert!(empty.query(&scalars).await?.is_empty());
     drop(empty);
 
     let snapshot = store.binary_snapshot(NativeRow::COLLECTION).await?;
     assert_eq!(snapshot.revision(), 2);
     let first = uuid::Uuid::from_u128(1);
     let second = uuid::Uuid::from_u128(2);
+    assert_eq!(snapshot.query(&scalars).await?.len(), 2);
+    let wrong_collection = QueryBuilder::new("another_collection").limit(2).build();
+    assert!(matches!(snapshot.query(&wrong_collection).await,
+        Err(StorageError::SnapshotCollection { .. })));
     assert_eq!(page(&snapshot, None).await?, (vec![1, 2], vec![first]));
     assert!(
         store

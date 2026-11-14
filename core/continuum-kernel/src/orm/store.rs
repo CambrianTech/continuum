@@ -144,6 +144,23 @@ where
         Ok(())
     }
 
+    /// Persist an entity and its native fields in the same committing operation.
+    /// Payload ownership moves to storage; entity fields are serialized only at this boundary.
+    pub async fn save_native(&self, write: NativeEntityWrite<'_, T>) -> Result<(), OrmStoreError> {
+        let record = DataRecord {
+            id: write.id.to_string(),
+            collection: T::COLLECTION.to_owned(),
+            data: row_data(write.entity)?,
+            metadata: RecordMetadata::default(),
+        };
+        if write.payloads.is_empty() {
+            self.adapter.create(record).await.map_err(failed::<T>("create"))?;
+        } else {
+            self.adapter.create_binary(record, write.payloads).await.map_err(failed::<T>("create_binary"))?;
+        }
+        Ok(())
+    }
+
     /// Count matching entities in the database without decoding their bodies.
     pub async fn count(&self) -> Result<usize, OrmStoreError> {
         self.adapter.count(&QueryBuilder::new(T::COLLECTION).build()).await.map_err(failed::<T>("count"))
@@ -164,6 +181,25 @@ where
     /// target this store's collection.
     pub async fn find_matching(&self, query: &StorageQuery) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
         let records = self.adapter.query(query).await.map_err(failed::<T>("query"))?;
+        Self::decode_records(records)
+    }
+
+    /// Read typed scalars from the same committed view as native payload pages.
+    pub async fn find_matching_in(
+        &self,
+        snapshot: &super::BinarySnapshot,
+        query: &StorageQuery,
+    ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        if query.collection != T::COLLECTION {
+            return Err(failed::<T>("snapshot query")(StorageError::SnapshotCollection {
+                expected: T::COLLECTION.to_owned(), found: query.collection.clone(),
+            }));
+        }
+        let records = snapshot.query(query).await.map_err(failed::<T>("snapshot query"))?;
+        Self::decode_records(records)
+    }
+
+    fn decode_records(records: Vec<DataRecord>) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
         records
             .into_iter()
             .map(|r| -> Result<(Uuid, T), OrmStoreError> {
@@ -279,6 +315,13 @@ where
         let id = id.to_string();
         self.adapter.delete(RowRef { collection: T::COLLECTION, id: &id }).await.map_err(failed::<T>("delete"))
     }
+}
+
+/// One atomic entity admission, including any opaque native fields.
+pub struct NativeEntityWrite<'a, T> {
+    pub id: Uuid,
+    pub entity: &'a T,
+    pub payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
 }
 
 /// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
