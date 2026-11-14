@@ -1,6 +1,6 @@
 //! Transient slot admission: confirm the save before detaching a resident for operator traffic.
 
-use super::{KvSlotPool, PageIn, SlotPermit, TurnAdmission};
+use super::{KvSlotPool, PageAction, PageIn, SlotPermit, TurnAdmission};
 use std::sync::Arc;
 
 impl TurnAdmission {
@@ -35,7 +35,7 @@ impl TurnAdmission {
                 let _page_io = page_io;
                 pool.note_page_lost(&previous);
                 let saved;
-                (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, "save").await?;
+                (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, PageAction::Save).await?;
                 if !saved {
                     return Err("transient borrow refused: resident checkpoint save was rejected".into());
                 }

@@ -295,7 +295,7 @@ impl LlmDeliberationFaculty {
                     if let Some(memory) = memory {
                         memory.reclaim_ended_notices();
                         // What this start folded leaves RAM for her archive.
-                        memory.release_folded(view);
+                        memory.release_folded(self.persona_id, view);
                     }
                 }
                 Err(mismatch) => continuum_base::probe!(
@@ -444,7 +444,7 @@ impl LlmDeliberationFaculty {
                     // What this start folded leaves RAM for her archive: her resident log is
                     // bounded by her view's measured fold edge, once per start.
                     if let Some(memory) = memory {
-                        memory.release_folded(view);
+                        memory.release_folded(self.persona_id, view);
                     }
                 }
                 continuum_base::probe!(

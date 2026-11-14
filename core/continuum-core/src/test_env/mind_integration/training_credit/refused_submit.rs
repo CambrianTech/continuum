@@ -58,7 +58,7 @@ pub(super) async fn the_region_settles_a_refused_decided_credit_with_no_turn_rev
         Some(json!({"success": false, "errorKind": "RecoveryRequired", "error": "the trigger is still recovering its buckets"})),
     );
     let conn = settlement_connection(fx.executor.clone(), fx.persona, refusing, None);
-    let decided = reviewed::consume_review_with_boundary(&conn, fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+    let decided = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await
         .expect("the review is consumed");
     assert_eq!(decided.state, State::AwaitingAcceptance);
@@ -108,7 +108,7 @@ pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
     let refusing = continuum_client::mock::MockTransport::new();
     script_settlement_reply(&refusing, &fx.selected, Some(json!({"success": false, "errorKind": "RecoveryRequired"})));
     let conn = settlement_connection(fx.executor.clone(), fx.persona, refusing, None);
-    reviewed::consume_review_with_boundary(&conn, fx.name, fx.persona, fx.room, &board, fx.pass.review_id, &reviewed::SelfReview::NotAdmitted, None)
+    reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &conn, substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await
         .expect("the review is consumed");
 

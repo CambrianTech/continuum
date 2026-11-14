@@ -92,3 +92,29 @@ fn a_held_lock_refuses_a_second_holder() {
     // between fork and exec (O_CLOEXEC releases it at exec), so "free" is "free once that ends".
     lock_path(&path, true).expect("free again");
 }
+
+// what this catches: a tool editing her workspace through durable placement stripped what the
+// file was besides its bytes. The replacement keeps the old mode (an executable script stays
+// executable) and lands on a symlink's target, leaving the link a link (#5945, 2026-11-11).
+#[cfg(unix)]
+#[test]
+fn write_replace_keeping_keeps_the_mode_and_writes_through_a_link() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("run.sh");
+    std::fs::write(&script, b"old").unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    write_replace_keeping(&script, b"new").unwrap();
+    assert_eq!(std::fs::read(&script).unwrap(), b"new");
+    assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o755, "still executable");
+
+    let link = dir.path().join("link.sh");
+    std::os::unix::fs::symlink(&script, &link).unwrap();
+    write_replace_keeping(&link, b"through").unwrap();
+    assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link stays a link");
+    assert_eq!(std::fs::read(&script).unwrap(), b"through", "the bytes land on its target");
+
+    let fresh = dir.path().join("fresh.txt");
+    write_replace_keeping(&fresh, b"first").unwrap();
+    assert_eq!(std::fs::read(&fresh).unwrap(), b"first", "a file that does not exist yet is created");
+}

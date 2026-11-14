@@ -14,11 +14,16 @@ impl EngineGeneration {
         }
     }
     pub(crate) fn has_exited(&self) -> bool {
-        self.exited.load(Ordering::Acquire)
+        *self.exited.borrow()
+    }
+
+    /// The owned child's exit as an event: resolves once [`Self::observed_exit`] runs.
+    pub fn exit(&self) -> EngineExit {
+        EngineExit::of(self.exited.subscribe())
     }
 
     pub fn observed_exit(&self) {
-        self.exited.store(true, Ordering::Release);
+        self.exited.send_replace(true);
         if let Some(endpoint) = self.endpoint.upgrade() {
             let state = endpoint.state.lock();
             if state.generation().is_some_and(|g| g.id == self.id) {
@@ -350,7 +355,8 @@ impl EndpointTransition {
             .await
             .map_err(|failure| match failure {
                 CheckpointFailure::Engine(refusal) => refusal,
-                CheckpointFailure::Save(detail) => AdoptedCheckpointRefusal::Save(detail),
+                CheckpointFailure::Admission(detail) => AdoptedCheckpointRefusal::Admission(detail),
+                CheckpointFailure::Save { slot, kind } => AdoptedCheckpointRefusal::Save { slot, kind },
             });
         if result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
@@ -454,25 +460,23 @@ impl EndpointTransition {
         &mut self,
         client: &reqwest::Client,
         root: &str,
-    ) -> Result<ResidentCheckpoint<'_>, String> {
+    ) -> Result<ResidentCheckpoint<'_>, CheckpointFailure<OwnedCheckpointRefusal>> {
+        use OwnedCheckpointRefusal as Refused;
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
-            return Err("checkpoint URL does not identify the held endpoint".into());
+            return Err(CheckpointFailure::Engine(Refused::EndpointMismatch));
         }
         let (generation, pool) = {
             let state = self.endpoint.state.lock();
             if state.paging_uncertain {
-                return Err("checkpoint refused: paging completion remains uncertain".into());
+                return Err(CheckpointFailure::Engine(Refused::PagingUncertain));
             }
-            let generation = state
-                .generation()
-                .cloned()
-                .ok_or("checkpoint requires an owned generation")?;
+            let generation = state.generation().cloned().ok_or(CheckpointFailure::Engine(Refused::NotOwned))?;
             let owned = match state.owned_by(generation.id) {
                 Some(owned) if !generation.has_exited() => owned,
-                _ => return Err("checkpoint requires this live generation's verified pool".into()),
+                _ => return Err(CheckpointFailure::Engine(Refused::PoolUnverified)),
             };
             if owned.contract.page_dir.is_none() {
-                return Err("checkpoint requires a verified page directory".into());
+                return Err(CheckpointFailure::Engine(Refused::NoPageDir));
             }
             let pool = Arc::clone(&owned.pool);
             state.ready.send_replace(false);
@@ -480,11 +484,11 @@ impl EndpointTransition {
         };
         self.checkpoint_pool(client, root, &pool, &|| {
             if generation.has_exited() {
-                Err("checkpoint engine exited")
+                Err(Refused::EngineExited)
             } else {
                 Ok(())
             }
-        }).await.map_err(|failure| failure.to_string())?;
+        }).await?;
         Ok(ResidentCheckpoint {
             transition: self,
             generation,
@@ -495,21 +499,21 @@ impl EndpointTransition {
     /// One save path for a drained pool. The caller supplies its existing engine
     /// authority: an owned generation or a verified adopted process incarnation.
     /// Losing that authority cannot publish a successful save for its successor.
-    async fn checkpoint_pool<E>(
+    async fn checkpoint_pool<E: std::error::Error>(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         pool: &Arc<KvSlotPool>,
         verify_engine: &(dyn Fn() -> Result<(), E> + Send + Sync),
     ) -> Result<(), CheckpointFailure<E>> {
-        use super::super::turn_admission::{kv_page_action, PageOutcome};
+        use super::super::turn_admission::{kv_page_action, PageAction, PageOutcome};
 
         let verify_engine = || verify_engine().map_err(CheckpointFailure::Engine);
         verify_engine()?;
         directory()
             .discover_page_admission(client, root)
             .await
-            .map_err(CheckpointFailure::Save)?;
+            .map_err(CheckpointFailure::Admission)?;
         let mut residents: Vec<_> = pool
             .holders
             .lock()
@@ -517,41 +521,46 @@ impl EndpointTransition {
             .map(|(&slot, &key)| (slot, key))
             .collect();
         residents.sort_unstable_by_key(|(slot, _)| *slot);
-        for (slot, key) in residents {
-            verify_engine()?;
-            pool.note_page_lost(&key);
-            let mut save = CheckpointSave {
-                endpoint: self.endpoint.clone(),
-                pending: true,
-            };
-            match kv_page_action(client, root, slot, &key, "save").await {
-                PageOutcome::Completed => {
-                    verify_engine()?;
-                    save.pending = false;
-                    pool.note_saved(key);
-                }
-                PageOutcome::Rejected => {
-                    save.pending = false;
-                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
-                }
-                PageOutcome::Unresolved(unresolved) => {
-                    // The engine kept working without a receipt. This checkpoint's error does not
-                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
-                    // cannot be handed to the request, so the save stays PENDING: its drop below
-                    // quarantines the endpoint, and no turn is admitted until a verified
-                    // replacement. The request itself stays owned by the endpoint until its
-                    // receipt. The page stays lost (noted above): no half-written restore.
-                    unresolved.hold(());
-                    return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
-                    )));
-                }
-                PageOutcome::Uncertain => {
-                    return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
-                    )));
+        // Every resident's save is issued at once and joined on its own receipt: the saves are
+        // independent, so the core adds no serial wait of its own and the stop costs what the
+        // engine's schedule of them costs. The fork pinned today (cd2e16d87) runs page tasks one at
+        // a time on its task loop (tools/server/server-queue.cpp:138-153, the save itself at
+        // server-context.cpp:2809/2960), so there they queue in the engine, and an engine that
+        // overlaps them makes the stop its largest save with no change here.
+        let verify_engine = &verify_engine;
+        let saves = residents.into_iter().map(|(slot, key)| {
+            let endpoint = self.endpoint.clone();
+            async move {
+                verify_engine()?;
+                pool.note_page_lost(&key);
+                let save = CheckpointSave::begin(endpoint);
+                let failed = |kind: SaveFailure| -> Result<(), CheckpointFailure<E>> { Err(CheckpointFailure::Save { slot, kind }) };
+                match kv_page_action(client, root, slot, &key, PageAction::Save).await {
+                    PageOutcome::Completed => {
+                        // An engine gone after its receipt leaves the save unanswered: quarantined.
+                        verify_engine()?;
+                        save.confirmed(pool, key);
+                        Ok(())
+                    }
+                    PageOutcome::Rejected => {
+                        save.rejected();
+                        failed(SaveFailure::Rejected)
+                    }
+                    PageOutcome::Unresolved(unresolved) => {
+                        // The engine kept working without a receipt. This checkpoint's error does
+                        // not prove the engine is retired (Codex's follow-up on #5772), so the save
+                        // stays unanswered: its drop quarantines the endpoint, and no turn is
+                        // admitted until a verified replacement. The request stays owned by the
+                        // endpoint until its receipt; the page stays lost (no half-written restore).
+                        unresolved.hold(());
+                        failed(SaveFailure::Unresolved)
+                    }
+                    PageOutcome::Uncertain => failed(SaveFailure::Uncertain),
                 }
             }
+        });
+        for saved in futures::future::join_all(saves).await {
+            saved?;
         }
         verify_engine()
     }
@@ -567,7 +576,7 @@ impl EndpointTransition {
         }
         let generation = EngineGeneration {
             id: Uuid::new_v4(),
-            exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            exited: Arc::new(tokio::sync::watch::channel(false).0),
             endpoint: Arc::downgrade(&self.endpoint),
         };
         state.start(generation.clone());
@@ -907,20 +916,4 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
-}
-
-/// Why one drained pool's save stopped: its caller's own engine check refused (kept as the
-/// caller's type, so an adopted engine's `EngineGone` stays that variant), or the save failed.
-enum CheckpointFailure<E> {
-    Engine(E),
-    Save(String),
-}
-
-impl<E: std::fmt::Display> std::fmt::Display for CheckpointFailure<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Engine(refusal) => refusal.fmt(f),
-            Self::Save(detail) => f.write_str(detail),
-        }
-    }
 }

@@ -865,6 +865,8 @@ mod absent_source;
 mod depth;
 /// A source a start shed waits for a start that funds it.
 mod shed;
+/// Her work in hand stays whole through a start; the rest collapses oldest first.
+mod in_hand;
 
 // what this catches: her sources splitting the window by flat constants, so her acts (whose reads
 // she keeps asking for again) got the same share as a 300k-token conversation she does not (the

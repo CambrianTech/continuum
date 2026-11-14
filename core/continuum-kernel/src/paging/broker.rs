@@ -310,7 +310,16 @@ impl PressureBroker {
     /// per tier:
     ///
     ///   Normal/Warning  → no action (broker observes)
-    ///   High            → evict from highest-pressure pool
+    ///   High            → evict from the highest-pressure pool that gives
+    ///                     bytes back: a pool that frees nothing (all it holds
+    ///                     is pinned, or worth more than this tier's relief)
+    ///                     passes the request to the next, so a hot volume is
+    ///                     relieved by the class that can spare bytes, never
+    ///                     stalled on the one that sorts first. Needed once a
+    ///                     pool may keep what it holds below Critical (the KV
+    ///                     page store keeps minds' pages, 2026-11-13: at 0.3%
+    ///                     of an 85% full M5 volume it answered the relief
+    ///                     with 29 minds' warm pages in two hours)
     ///   Critical        → evict from all over-budget pools in parallel
     ///                     (sequential here since pool.evict_some returns
     ///                     immediately; parallel only matters if eviction
@@ -335,12 +344,13 @@ impl PressureBroker {
             .map(|p| (p.pressure(), p.clone()))
             .filter(|(p, _)| *p >= self.config.act_above)
             .collect();
-        pressured.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        pressured.sort_by(|a, b| b.0.total_cmp(&a.0));
         let act_on: &[(f64, Arc<dyn ResourcePool>)] = match tier {
-            PressureTier::High => pressured.first().map(std::slice::from_ref).unwrap_or(&[]),
-            PressureTier::Critical => &pressured[..],
+            PressureTier::High | PressureTier::Critical => &pressured[..],
             _ => &[],
         };
+        // High relieves ONE pool: the first, in pressure order, that gives bytes back.
+        let first_relief_only = tier == PressureTier::High;
         let mut bytes_freed = 0u64;
         let mut pools_acted: Vec<String> = Vec::new();
         let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -364,6 +374,9 @@ impl PressureBroker {
             if freed > 0 {
                 bytes_freed += freed;
                 pools_acted.push(pool.tier_name().to_string());
+                if first_relief_only {
+                    break;
+                }
             }
         }
         if bytes_freed > 0 {
@@ -394,11 +407,7 @@ impl PressureBroker {
                 }
             })
             .collect();
-        views.sort_by(|a, b| {
-            b.pressure
-                .partial_cmp(&a.pressure)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        views.sort_by(|a, b| b.pressure.total_cmp(&a.pressure));
         let global_pressure = views.iter().map(|v| v.pressure).fold(0.0_f64, f64::max);
         BrokerSnapshot {
             global_pressure,
@@ -512,6 +521,27 @@ mod tests {
         assert_eq!(kv.evict_count(), 1);
         assert_eq!(lora.evict_count(), 0);
         assert_eq!(report.pools_acted, vec!["kv".to_string()]);
+        assert_eq!(report.bytes_freed, 100);
+    }
+
+    // what this catches (the M5, 2026-11-13 22:40Z-00:50Z: the volume at 0.85 put its pools at
+    // High, and the KV page store answered with 29 minds' warm pages; it now keeps them below
+    // Critical): High stopping at the first pool even when that pool frees nothing, so a hot
+    // volume is never relieved. The next pool that frees ends the pass.
+    #[test]
+    fn high_pressure_moves_past_a_pool_that_frees_nothing() {
+        let broker = PressureBroker::new(BrokerConfig::default());
+        let keeps = MockPool::new("kv-pages", 0.86, 0);
+        let gives = MockPool::new("cargo", 0.85, 100);
+        let untouched = MockPool::new("models", 0.84, 100);
+        for pool in [&keeps, &gives, &untouched] {
+            broker.register(Arc::<MockPool>::clone(pool));
+        }
+        let report = broker.relieve();
+        assert_eq!(keeps.evict_count(), 1, "the hottest pool is asked first");
+        assert_eq!(gives.evict_count(), 1, "it freed nothing, so the next is asked");
+        assert_eq!(untouched.evict_count(), 0, "High still relieves one pool: the first that frees");
+        assert_eq!(report.pools_acted, vec!["cargo".to_string()]);
         assert_eq!(report.bytes_freed, 100);
     }
 

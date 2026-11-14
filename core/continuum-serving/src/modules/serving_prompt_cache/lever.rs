@@ -1,6 +1,6 @@
 //! The lever on the engine's host prompt cache: the limit serving last set on each engine, the
 //! pure step that picks the next one, and the calls that carry a step out (lower by a share, or
-//! take back to the launch grant). [`super::PromptCacheShedder`] decides when.
+//! raise within the host's measured headroom). [`super::PromptCacheShedder`] decides when.
 
 use std::num::NonZeroU64;
 use std::sync::Arc;
@@ -59,19 +59,13 @@ impl Known {
 /// The cache an engine holds now, as far as serving knows. A different engine (both identities
 /// known and unequal) starts from its own launch grant, its contents unknown. Otherwise what
 /// serving last learned stands, the limit never above the launch grant: a lowering is never a
-/// RAISE (taking the cache back is [`PromptCacheLever::take_back`], only when the OS reads
-/// normal). No last set and no launch grant (`0` = unknown on the snapshot) is `None`.
-pub(super) fn current_limit(last: Option<LastSet>, now: Option<EngineIncarnation>, launched_mib: u32) -> Option<Known> {
-    let launched = NonZeroU64::new(u64::from(launched_mib));
+/// RAISE (taking the cache back is [`PromptCacheLever::plan_raise`], only within the host's
+/// measured headroom).
+pub(super) fn current_limit(last: Option<LastSet>, now: Option<EngineIncarnation>, grant: NonZeroU64) -> Known {
     match last {
-        Some(LastSet { engine: Some(was), .. }) if now.is_some_and(|is| is != was) => {
-            launched.map(|limit_mib| Known { limit_mib, held_bytes: None })
-        }
-        Some(LastSet { limit_mib, held_bytes, .. }) => Some(Known {
-            limit_mib: launched.map_or(limit_mib, |l| l.min(limit_mib)),
-            held_bytes: Some(held_bytes),
-        }),
-        None => launched.map(|limit_mib| Known { limit_mib, held_bytes: None }),
+        Some(LastSet { engine: Some(was), .. }) if now.is_some_and(|is| is != was) => Known { limit_mib: grant, held_bytes: None },
+        Some(LastSet { limit_mib, held_bytes, .. }) => Known { limit_mib: grant.min(limit_mib), held_bytes: Some(held_bytes) },
+        None => Known { limit_mib: grant, held_bytes: None },
     }
 }
 
@@ -96,15 +90,6 @@ pub(super) struct Step {
     pub after_mib: NonZeroU64,
 }
 
-/// Why no step was planned. Both mean the heavy lever decides.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum NoStep {
-    /// The snapshot names no launch grant and serving never set one: nothing to lower from.
-    LimitUnknown,
-    /// The cache is already at the route's floor, or holds nothing above it.
-    AtFloor { limit_mib: NonZeroU64 },
-}
-
 /// What one reclaim did to the cache: at most two limits set, their freed bytes summed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Applied {
@@ -112,6 +97,21 @@ pub(super) struct Applied {
     pub freed_bytes: u64,
     pub held_bytes: u64,
     pub calls: u64,
+}
+
+/// One planned raise: the engine it applies to and the limit before and after.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Raise {
+    engine: Option<EngineIncarnation>,
+    pub before_mib: NonZeroU64,
+    pub after_mib: NonZeroU64,
+}
+
+impl Raise {
+    /// The host bytes this raise lets the cache fill: what it claims of the headroom.
+    pub(super) fn claimed_bytes(self) -> u64 {
+        (self.after_mib.get() - self.before_mib.get()) << 20
+    }
 }
 
 /// What taking the cache back did: the limit before and after, and what the engine said the
@@ -140,31 +140,40 @@ impl PromptCacheLever {
         *self.last.lock()
     }
 
-    /// Take the cache back to the engine's launch grant, when serving lowered it below that grant
-    /// on this engine. `Ok(None)` = nothing to take back (never lowered, or a relaunched engine
-    /// that already starts at its grant). The whole grant at once: a raised limit allocates
-    /// nothing, the cache fills only as prompts are stored, and the next deficit lowers it again.
-    pub(super) async fn take_back(&self, launched_mib: u32) -> Result<Option<Raised>, LlamaServerError> {
+    /// Plan taking the cache back by at most `headroom` bytes, toward the engine's launch grant.
+    /// The part of the current limit the cache has not filled yet is already granted room, so it
+    /// comes off the headroom first: a raise the cache has not grown into is never raised again,
+    /// and a raise never lets the cache fill past what the host can give without re-entering
+    /// pressure. `None` = at the grant, or no room past what is already granted.
+    pub(super) fn plan_raise(&self, grant: NonZeroU64, headroom: NonZeroU64) -> Option<Raise> {
         let engine = self.control.engine();
-        let Some(grant) = NonZeroU64::new(u64::from(launched_mib)) else {
-            return Ok(None);
+        let known = current_limit(*self.last.lock(), engine, grant);
+        let limit_bytes = known.limit_mib.get() << 20;
+        let unfilled = match known.held_bytes {
+            Some(held) => limit_bytes.saturating_sub(held),
+            None => limit_bytes,
         };
-        let Some(known) = current_limit(*self.last.lock(), engine, launched_mib).filter(|known| known.limit_mib < grant) else {
-            return Ok(None);
-        };
-        let reply = self.control.set_limit(grant).await?;
-        self.learned(engine, grant, reply.held_bytes);
-        Ok(Some(Raised { before_mib: known.limit_mib, after_mib: grant, held_bytes: reply.held_bytes }))
+        let room_mib = headroom.get().saturating_sub(unfilled) >> 20;
+        let after = known.limit_mib.saturating_add(room_mib).min(grant);
+        (after > known.limit_mib).then_some(Raise { engine, before_mib: known.limit_mib, after_mib: after })
+    }
+
+    /// Carry a planned raise out on the engine; its reply is the receipt.
+    pub(super) async fn raise(&self, raise: Raise) -> Result<Raised, LlamaServerError> {
+        let reply = self.control.set_limit(raise.after_mib).await?;
+        self.learned(raise.engine, raise.after_mib, reply.held_bytes);
+        Ok(Raised { before_mib: raise.before_mib, after_mib: raise.after_mib, held_bytes: reply.held_bytes })
     }
 
     /// Plan the step for a reclaim of `target_bytes`, from what the cache holds when known,
-    /// from its limit otherwise (the engine's launch grant on first use).
-    pub(super) fn plan(&self, launched_mib: u32, target_bytes: u64) -> Result<Step, NoStep> {
+    /// from its limit otherwise (the engine's launch grant on first use). `None` = the cache is
+    /// already at the route's floor, or holds nothing above it: the higher priorities give back
+    /// the rest, and the lever's last limit already says where it stands.
+    pub(super) fn plan(&self, grant: NonZeroU64, target_bytes: u64) -> Option<Step> {
         let engine = self.control.engine();
-        let known = current_limit(*self.last.lock(), engine, launched_mib).ok_or(NoStep::LimitUnknown)?;
-        let base = known.base_mib();
-        let after = next_limit(base, target_bytes).ok_or(NoStep::AtFloor { limit_mib: base })?;
-        Ok(Step { engine, held_known: known.held_bytes.is_some(), before_mib: known.limit_mib, after_mib: after })
+        let known = current_limit(*self.last.lock(), engine, grant);
+        let after = next_limit(known.base_mib(), target_bytes)?;
+        Some(Step { engine, held_known: known.held_bytes.is_some(), before_mib: known.limit_mib, after_mib: after })
     }
 
     /// Carry the step out on the engine. When the cache's contents were unknown and the first

@@ -530,6 +530,99 @@ Continuum runtime work must follow these rules:
    ids, or swallowed command errors.
 9. Extension code should be short because the base substrate is doing the hard
    work.
+10. **Stages emit what they deliver; anything that needs it subscribes. No
+    timeout, sleep or poll is ever the mechanism that moves work forward**
+    (Joel, 2026-11-14: "Timeouts are dumb ... every stage emits what it delivers
+    and anything else can consume those via subscriptions to any number of
+    dependencies"; "every timeout is gonna be different and flaky. All of the
+    sudden you're on a faster machine"). A wait names the event it waits for
+    (process exited, port bound, checkpoint written, engine ready, artifact
+    built), so a faster machine simply arrives sooner and a slower one is never
+    failed by a stopwatch. Dependencies come from the data a stage consumes,
+    never from a hand-written order. A timeout NEVER decides deterministic flow
+    (Joel: "You only use timeouts to trigger errors like a last resort like a web
+    request failing and even then ideally you're tuned into errors, interrupts
+    and other events too. You NEVER use timeouts [for] deterministic flow"). Its
+    only place is the error path, as the last resort when a remote party may
+    never answer (a hung network request); even there the first line is the
+    error event itself (connection reset, process-exit signal, interrupt, the
+    peer's typed failure), and the timeout only names the event that never came. This holds in production, in tests (assert on the completion
+    event, never on elapsed time) and in our own tooling (a deploy is a graph:
+    artifact built -> stop -> core-exited -> start -> engine-ready -> minds
+    resume, with the build outside the dark window). Measured cost of breaking
+    it, 2026-11-13/14 on the M5: `continuum stop` hung 100 s on four deploys
+    waiting on a timer instead of the core's exit (the core's own shutdown is
+    2.2 s), and two CI tests (gateway port rebind, adopted-checkpoint save) fail
+    on whatever machine is slower than the one their duration was tuned on
+    (cards b5b9bef3, 13590777). The `waits_that_decide_flow` ratchet counts
+    sleeps, intervals, ticks, `Duration` constants and timeouts used as control
+    flow, tests included (below, after rule 11).
+11. **Rust is deterministic only when states and failures are types** (Joel,
+    2026-11-14: "Rust is HIGHLY deterministic if you use it right"; "Even when
+    you code rust it looks like js"). A review of five PRs that night
+    (`~/.continuum/evidence/js-shaped-rust-2026-11-14/review.md`) found ~30
+    sites in three recurring shapes; every reviewer asks these, and a ratchet
+    counts them in touched files:
+    - **Unknown stored as a value** (0, 0.0, `usize::MAX`, `""`, `.max(1)`
+      meaning "not measured"): can this number be zero or MAX for a reason
+      other than the measurement? Absence is `Option`, `Probed` or an enum.
+    - **A typed failure turned into a `String`** (`Result<_, String>`,
+      `map_err(|e| format!(..))`, `Err(())`, variants holding a `String`,
+      `{success, error: Option<String>}` envelopes): can the caller `match` on
+      why it failed?
+    - **One state spread across `Option`s and `bool`s** (flags rebuilt from an
+      enum, parallel `Option`s matched as a tuple with a `_ =>` fallback): does
+      a combination exist the code never handles? Make it unrepresentable.
+    - **The contract carries the shape** (Joel: "group params as part of
+      structs when they belong together. Pass by reference and assign
+      mutability and optional at contract"): parameters that travel together
+      are one struct, never a long list of same-typed arguments a caller can
+      swap; a function borrows (`&T`, `&mut T` only where it mutates) instead
+      of taking ownership or cloning; what may be absent is `Option` in the
+      signature and what must be present is a required field, so a caller can
+      read mutability and optionality from the contract and the compiler
+      enforces both, never a runtime check inside.
+    - And **strings as identities** (verbs, field names, producer labels,
+      `format!` keys beside a typed id, `serde_json::Value.get("field")` where
+      a typed input exists): an identity is an enum or newtype.
+
+#### The shape ratchets (rules 10-11)
+
+Joel, 2026-11-14: "I can't even keep track of the thousands of these you've
+made. This is 90% your code and the rest is codex." Agents wrote these shapes,
+so a gate tracks them, not a person. `core/source-hygiene/src/shapes/` holds
+six token rules over the shared lexer (strings and comments are never code).
+Each counts every `core/` workspace member, not only the audited set, and holds
+two ratchets: `<name>` (production) and `<name>_in_tests`. A total may only fall,
+judged against the PR's own base tree by the PR's rules; every crate's count is
+recorded beside it. A touched file keeps its old sites and may add none. Only a
+touched file's sites can move, so the total rises exactly when the touched files
+gain sites. Crates are not judged one at a time, because a crate cut moves sites
+between crates with the total unchanged. Every CI run prints every crate of
+every ratchet, folded in its log ("every crate of every ratchet").
+
+Baseline totals (canary `958ea3056`, CI run 43547453878, production / tests):
+
+| Ratchet | What it counts | Baseline |
+|---|---|---|
+| `waits_that_decide_flow` | `sleep`/`sleep_until`, `interval`, `tick_interval: Some`, `Duration` constants, a `timeout`/`timeout_at`/`recv_timeout` whose `Err` side carries on. The only exemption is `// event-exempt: <the remote that may never answer>` | 398 / 291 |
+| `unknown_as_value` | `map_or(0` / `map_or(0.0`, `unwrap_or(0)` / `unwrap_or_default()` on a measurement-named read, `.max(1)` guarding a division, `usize`/`u32`/`u64::MAX` as a returned sentinel | 218 / 34 |
+| `stringly_errors` (library code) | `Result<_, String>`, `Result<_, ()>`, `map_err` to `format!`/`to_string`/`to_owned`, `..Error`/`..Failure` variants holding a bare `String` | 2,923 / 238 |
+| `state_as_flags` | a struct with 2+ `bool`/`AtomicBool` fields; `match (a, b, ..)` over 2+ `Option` fields of one struct declared in the same crate | 145 / 9 |
+| `string_identities` | a `.get("..")` on JSON outside wire code; a `HashMap`/`BTreeMap<String, _>` struct field in library code | 839 / 184 |
+| `contract_shape` | a library fn with 5+ parameters or 3+ consecutive parameters of one primitive type; `.clone()` passed straight as a call argument; a `pub fn` taking an owned `String`/`Vec` | 2,192 / 1,250 |
+
+The rules are lexical, so they approximate. A clone or an owned buffer the
+callee keeps is counted too. A timeout bound to a variable counts, because its
+`Err` side is out of sight. A fallback on a read whose name says nothing is
+missed. The full per-crate table is
+`docs/planning/SHAPE-RATCHET-BASELINE-2026-11-14.md`. The ten crates where a
+sweep pays most, by total sites: continuum-core 1,481, continuum-engine 1,444,
+continuum-mind 984, continuum-kernel 835, continuum-cognition 726,
+continuum-live 482, continuum-academy 337, continuum-dreaming 309,
+continuum-cli-lifecycle 262, continuum-grid 211. The floor, where phase 5 starts:
+`continuum-base` 15 stringly errors and 1 string identity; `continuum-host` 7 waits
+(5 production, 2 test), 2 unknowns and 1 contract; `continuum-pack` is not cut yet.
 
 ### Domain Mapping
 
@@ -1820,7 +1913,12 @@ reply edges. The view's `Item` gains the same link.
      with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
      what X said or how it ended.
   2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
-     message to the newest element of each causal thread.
+     message to the newest element of each causal thread. Her work in hand is part of that end: a source
+     marks an item `Item::in_hand` (the read of a file she is editing, her first thought after each edit's
+     result), a start keeps it whole while its source's grant holds it beside the rest at their floor
+     (`view::allot`, charged like any item, the oldest given up first), the claim's newest end counts it,
+     and the oldest run folds around it (`working_memory::in_hand`; Aris on the M5, 2026-11-14: two
+     turnovers collapsed the file she was editing and she read it whole again after each).
   3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
      keeps its outcome and a pointer back. The chain shortens and stays linked.
   4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
@@ -2089,6 +2187,7 @@ pass after):**
 | A reopen too large for the view loops | Eitan, IntelMac, 2026-11-11 to 11-13 (#5966) | context | consecutive reopens of one output advance through its pages |
 | A per-element store codec and per-pair norms | 2026-11-13 review of #5954, `similarity::cosine` | data path | bytes moved and CPU time per search fall to the copy and the GPU dispatch |
 | A Windows core's private commit runs away | BigMama 2026-11-13, 10.8 to 32.7 GB in 8 min | serving | resident memory flat over a recorded day |
+| A restart re-prefills every mind | M5 2026-11-13 23:45Z deploy: ledger restored 0, every first act `cold_turn cause="no_page"`; 29 paged-out minds' pages taken by the page store at volume 0.85 (store 3% of its budget), 22:40Z-00:50Z | serving | dyno fixture `2026-11-13-restart.json`: four recorded residents restore in ~5.6 s (0 tokens re-prefilled) against ~401 s and 253,321 tokens cold; saves and restores issued at once, so on an engine that overlaps page tasks the stop costs its largest save (~4.9 s, not the ~13.5 s sum) and each mind waits only on her own restore (largest ~2.0 s); the pinned fork runs one page task at a time (server-queue.cpp:138-153); a paged-out mind keeps her page under the recorded pressure |
 
 Every row of the plan (section 8) names the scenario that proves it, alongside its gate and
 validator. A fault found live and not yet a scenario is the next scenario to record.

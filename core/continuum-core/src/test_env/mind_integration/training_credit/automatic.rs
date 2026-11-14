@@ -278,16 +278,7 @@ pub(super) async fn an_independent_signed_pass_accepts_the_issuing_turn() -> Tes
         &issuing_row,
         Some(json!({"success": true, "acceptance": {"submissionId": issuing_row.id, "replayed": false}})),
     );
-    let accepted = reviewed::consume_review_with_boundary(
-        &settlement_connection(r.executor.clone(), r.persona, destination, None),
-        r.name,
-        r.persona,
-        r.room.channel.as_uuid(),
-        &board,
-        pass.review_id,
-        &reviewed::SelfReview::NotAdmitted,
-        None,
-    )
+    let accepted = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(r.executor.clone(), r.persona, destination, None), substrate: &substrate_conn(&r.executor) }, &reviewed::ReviewSelection { persona_name: r.name, persona_id: r.persona, room_id: r.room.channel.as_uuid(), board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
     .await?;
     assert_eq!(accepted.state, State::Accepted, "{accepted:?}");
     assert_eq!(accepted.staged_revision_id, Some(issuing_row.id), "the turn that issued the submission");
@@ -532,10 +523,7 @@ pub(super) async fn a_decision_that_always_hangs_never_holds_back_the_next() -> 
     for (pass, row) in passes.iter().zip([&first_row, &second_row]) {
         let refusing = continuum_client::mock::MockTransport::new();
         script_settlement_reply(&refusing, row, Some(json!({"success": false, "errorKind": "RecoveryRequired"})));
-        let decided = reviewed::consume_review_with_boundary(
-            &settlement_connection(r.executor.clone(), r.persona, refusing, None),
-            r.name, r.persona, r.room.channel.as_uuid(), &board, pass.review_id, &reviewed::SelfReview::NotAdmitted, None,
-        )
+        let decided = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(r.executor.clone(), r.persona, refusing, None), substrate: &substrate_conn(&r.executor) }, &reviewed::ReviewSelection { persona_name: r.name, persona_id: r.persona, room_id: r.room.channel.as_uuid(), board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await?;
         assert_eq!(decided.state, State::AwaitingAcceptance, "{decided:?}");
     }
