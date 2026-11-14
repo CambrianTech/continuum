@@ -30,7 +30,7 @@ use crate::orm::types::CollectionSchema;
             adapter.create(DataRecord {
                 id: value.to_string(), collection: "bounded_records".into(),
                 data: json!({"value":value}), metadata: RecordMetadata::default(),
-            }).await.into_result()?;
+            }).await?;
         }
         for command in ["data/query", "data/queryWithJoin"] {
             for limit in [0, 1, 2] {
@@ -153,14 +153,11 @@ use crate::orm::types::CollectionSchema;
                     "localField": "id", "foreignField": "id", "type": "left"}]
             })).unwrap()).await.expect_err("private join");
             assert!(error.contains("protected collection"));
-            for operation_type in [crate::orm::types::BatchOperationType::Create,
-                crate::orm::types::BatchOperationType::Read,
-                crate::orm::types::BatchOperationType::Update,
-                crate::orm::types::BatchOperationType::Delete] {
-                let error = module.state.batch_operations("invalid-handle", vec![BatchOperation {
-                    operation_type, collection: collection.clone(), id: Some("record".into()), data: Some(json!({}))
-                }]).await.expect_err("private batch");
-                assert!(error.contains("protected collection"));
+            let write = || crate::orm::types::RowWrite { collection: collection.clone(), id: "record".into(), data: json!({}) };
+            let key = || crate::orm::types::RowKey { collection: collection.clone(), id: "record".into() };
+            for operation in [BatchOperation::Create(write()), BatchOperation::Read(key()), BatchOperation::Update(write()), BatchOperation::Delete(key())] {
+                let error = module.state.batch_operations("invalid-handle", vec![operation]).await.expect_err("private batch");
+                assert!(matches!(error, crate::sdk_codegen::CommandError::Invalid(_)), "a protected collection is the caller's refusal: {error:?}");
             }
         }
     }
@@ -180,9 +177,9 @@ use crate::orm::types::CollectionSchema;
             id: "private-record".into(), collection: private.into(),
             data: json!({"need": "private need"}), metadata: RecordMetadata::default(),
         }).await;
-        assert!(stored.success, "{:?}", stored.error);
-        assert!(module.state.create_record(&path, "public".into(), Some("public-record".into()), json!({"value": 1})).await.unwrap().success);
-        assert!(module.state.read_record(&path, "public", &"public-record".into()).await.unwrap().success);
+        assert!(stored.is_ok(), "{stored:?}");
+        module.state.create_record(&path, "public".into(), Some("public-record".into()), json!({"value": 1})).await.unwrap();
+        module.state.read_record(&path, "public", &"public-record".into()).await.unwrap();
         // These previously interpolated SQL expressions could bypass a plain
         // protected-collection equality check while naming a public collection.
         for attack in [
@@ -202,11 +199,12 @@ use crate::orm::types::CollectionSchema;
             "filter": {"value": 1}, "sort": [{"field": "value", "direction": "asc"}]
         })).await.unwrap();
         assert!(ordinary.to_json_value().unwrap()["success"].as_bool().unwrap());
-        let names = module.state.list_collection_names(&path).await.unwrap().data.unwrap();
+        let names = module.state.list_collection_names(&path).await.unwrap();
         assert!(names.iter().all(|name| require_public_collection(name).is_ok()));
-        assert!(adapter.read(private, &"private-record".into()).await.success);
-        assert!(module.state.clear_all_collections(&path).await.unwrap().success);
-        assert!(!adapter.read(private, &"private-record".into()).await.success);
+        let private_row = crate::orm::seam::RowRef { collection: private, id: &"private-record".to_string() };
+        assert!(adapter.read(private_row).await.is_ok());
+        module.state.clear_all_collections(&path).await.unwrap();
+        assert!(matches!(adapter.read(private_row).await, Err(crate::orm::StorageError::NotFound { .. })));
 
     }
 
@@ -216,8 +214,8 @@ use crate::orm::types::CollectionSchema;
             name: (*name).into(), field_type: kind.clone(), default_value: None,
             nullable: false, indexed: false, unique: false, max_length: None, foreign_key: None,
         }));
-        adapter.ensure_schema(CollectionSchema { collection: collection.into(), fields: declared, indexes: vec![] })
-            .await.into_result().expect("test: declared fixture schema");
+        adapter.ensure_schema(&CollectionSchema { collection: collection.into(), fields: declared, indexes: vec![] })
+            .await.expect("test: declared fixture schema");
     }
 
     /// Helper: per-test isolated SQLite file routed through resolve_handle's
@@ -254,7 +252,7 @@ use crate::orm::types::CollectionSchema;
         let result = module
             .state
             .create_record(handle, p.collection, p.id, p.data)
-            .await?;
+            .await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))
@@ -271,7 +269,7 @@ use crate::orm::types::CollectionSchema;
         let result = module
             .state
             .read_record(handle, &p.collection, &p.id)
-            .await?;
+            .await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))
@@ -287,7 +285,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
         let handle = p.handle.as_deref().unwrap_or("main");
-        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await?;
+        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(serde_json::to_value(crate::orm::types::StorageResult::ok(record))?))
     }
 
@@ -300,7 +298,7 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::stats::VectorStatsParams =
             serde_json::from_value(params).map_err(|e| e.to_string())?;
         let handle = p.handle.as_deref().unwrap_or("main");
-        let result = module.state.vector_stats(handle, &p.collection).await?;
+        let result = module.state.vector_stats(handle, &p.collection).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))
@@ -315,7 +313,7 @@ use crate::orm::types::CollectionSchema;
         let p: crate::commands::vector::search::VectorSearchParams = serde_json::from_value(params)?;
         let handle = p.handle.as_deref().unwrap_or("main");
         let query = crate::data::wire_query(&p.query_vector, p.embedder.as_deref());
-        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await?;
+        let result = module.state.vector_search(handle, &p.collection, query, p.k, p.threshold, p.include_data).await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(serde_json::to_value(result)?))
     }
 
@@ -331,7 +329,7 @@ use crate::orm::types::CollectionSchema;
         let result = module
             .state
             .invalidate_vector_cache(handle, &p.collection)
-            .await?;
+            .await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))
@@ -363,7 +361,7 @@ use crate::orm::types::CollectionSchema;
                 p.model,
                 filter,
             )
-            .await?;
+            .await.map_err(|e| e.to_string())?;
         Ok(CommandResult::Json(
             serde_json::to_value(result).map_err(|e| e.to_string())?,
         ))
@@ -505,7 +503,7 @@ use crate::orm::types::CollectionSchema;
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         // Create with dbPath
         let create_result = create_via_state(
@@ -571,7 +569,7 @@ use crate::orm::types::CollectionSchema;
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         // Create 25 records
         for i in 0..25 {
@@ -693,7 +691,7 @@ use crate::orm::types::CollectionSchema;
         // Tests bypass the IPC surface (registered-entity-only post-Step 3).
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         for i in 0..7 {
             let _ = create_via_state(

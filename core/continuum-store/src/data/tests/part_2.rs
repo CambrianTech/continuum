@@ -40,7 +40,7 @@ use super::*;
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         // Create records without embeddings
         for i in 0..5 {
@@ -134,7 +134,7 @@ use super::*;
         };
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
         schema.fields.extend(crate::orm::base_entity_fields());
-        adapter.ensure_schema(schema).await.into_result().expect("test: declared schema");
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         for i in 0..rows {
             let _ = create_via_state(

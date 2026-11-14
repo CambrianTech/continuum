@@ -23,8 +23,8 @@ async fn declare_vectors(adapter: &dyn StorageAdapter, collection: &str) {
             nullable: true, indexed: false, unique: false, max_length: None, foreign_key: None,
         });
     }
-    adapter.ensure_schema(CollectionSchema { collection: collection.into(), fields, indexes: vec![] })
-        .await.into_result().expect("test: declared vector schema");
+    adapter.ensure_schema(&CollectionSchema { collection: collection.into(), fields, indexes: vec![] })
+        .await.expect("test: declared vector schema");
 }
 
 async fn create_row(adapter: &dyn StorageAdapter, collection: &str, id: &str) {
@@ -32,7 +32,7 @@ async fn create_row(adapter: &dyn StorageAdapter, collection: &str, id: &str) {
         id: id.into(), collection: collection.into(),
         data: json!({"content": format!("document {id}")}),
         metadata: crate::orm::types::RecordMetadata::default(),
-    }).await.into_result().expect("test: row");
+    }).await.expect("test: row");
 }
 
 // what this catches: a page of rows without vectors must not end corpus traversal.
@@ -208,7 +208,8 @@ async fn test_vector_search_basic() {
     // A cached hit can disappear before hydration. Surface the read failure,
     // rather than return partial results with a contradictory count.
     let id = results[0]["id"].as_str().expect("vector hit must carry its record id");
-    assert!(adapter.delete("test_search", &id.to_owned()).await.success);
+    let row_id = id.to_owned();
+    assert_eq!(adapter.delete(crate::orm::seam::RowRef { collection: "test_search", id: &row_id }).await.expect("test: delete"), crate::orm::seam::Deleted::Removed);
     let hydrated = module
         .state
         .vector_search(&db_path, "test_search", QueryVector { values: &query_vector, producer: Producer::WireQuery }, 3, 0.0, true)
@@ -268,7 +269,7 @@ async fn test_vector_cache_invalidation() {
         let created = module.state.create_record(
             &alias, "test_cache".into(), Some(target()), json!({}),
         ).await.expect("create through mutation owner");
-        assert!(created.success, "{created:?}");
+        assert_eq!(created.id, target());
         module.state.index_vector(&alias, "test_cache", target(), vec![1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
             &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
@@ -285,15 +286,14 @@ async fn test_vector_cache_invalidation() {
         assert!(changed.results.iter().all(|hit| hit.id != target()));
         match operation {
             "batch" => {
-                let result = module.state.batch_operations(&alias, vec![crate::orm::types::BatchOperation {
-                    operation_type: crate::orm::types::BatchOperationType::Delete,
-                    collection: "test_cache".into(), id: Some(target()), data: None,
-                }]).await.expect("batch delete");
-                assert!(result.success, "{result:?}");
+                let result = module.state.batch_operations(&alias, vec![crate::orm::types::BatchOperation::Delete(
+                    crate::orm::types::RowKey { collection: "test_cache".into(), id: target() },
+                )]).await.expect("batch delete");
+                assert!(matches!(result[..], [crate::orm::types::BatchOutcome::Removed]), "{result:?}");
             }
-            "delete" => assert!(module.state.delete_record(&alias, "test_cache".into(), target()).await.expect("delete").success),
-            "truncate" => assert!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate").success),
-            "clear" => assert!(module.state.clear_all_collections(&alias).await.expect("clear").success),
+            "delete" => assert_eq!(module.state.delete_record(&alias, "test_cache".into(), target()).await.expect("delete"), crate::orm::seam::Deleted::Removed),
+            "truncate" => assert_eq!(module.state.truncate_collection(&alias, "test_cache").await.expect("truncate"), 1),
+            "clear" => { module.state.clear_all_collections(&alias).await.expect("clear"); }
             _ => unreachable!("fixture operation"),
         }
         let after = module.state.vector_search(
@@ -309,11 +309,14 @@ async fn test_vector_cache_invalidation() {
 async fn write_vector(adapter: &dyn StorageAdapter, collection: &str, id: &str, values: [f32; 2], producer: &Producer) {
     let payload = unit_f32(values.into_iter(), producer).expect("test: certified vector");
     let written = adapter
-        .update_binary(collection, id, BTreeMap::from([("embedding".to_owned(), payload)]), BinaryWriteCondition::Replace)
+        .update_binary(crate::orm::seam::BinaryWrite {
+            row: crate::orm::seam::RowRef { collection, id },
+            payloads: BTreeMap::from([("embedding".to_owned(), payload)]),
+            condition: BinaryWriteCondition::Replace,
+        })
         .await
-        .into_result()
         .expect("test: native write");
-    assert!(written, "the row exists");
+    assert_eq!(written, crate::orm::seam::BinaryWritten::Written, "the row exists");
 }
 
 // what this catches: rows from two producers ranked in one matrix (a cross-space comparison), or
@@ -367,18 +370,19 @@ async fn the_snapshot_is_released_before_any_matrix_is_sealed() {
     let id = record_id(0).to_string();
     create_row(&adapter, "test_lease", &id).await;
     write_vector(&adapter, "test_lease", &id, [1.0, 0.0], &Producer::IndexCommand).await;
-    let count = || adapter.count(StorageQuery { collection: "test_lease".into(), ..Default::default() });
+    let whole = StorageQuery { collection: "test_lease".into(), ..Default::default() };
+    let count = || adapter.count(&whole);
 
     // Control: while a snapshot is held, the pool has no connection left to lease.
     let held = adapter.binary_snapshot("test_lease").await.expect("test: snapshot");
-    assert!(!count().await.success, "a held snapshot holds the only connection");
+    assert!(count().await.is_err(), "a held snapshot holds the only connection");
     drop(held);
 
     let snapshot = adapter.binary_snapshot("test_lease").await.expect("test: snapshot");
     let limit = NonZeroUsize::new(16).expect("test: positive page");
     let groups = crate::data::vector_corpus::read_groups(snapshot, limit).await.expect("test: pages");
     // Nothing is sealed yet, and the connection is already back in the pool.
-    assert_eq!(count().await.into_result().expect("the snapshot's connection is released"), 1);
+    assert_eq!(count().await.expect("the snapshot's connection is released"), 1);
     let sealed: Vec<_> = groups.into_iter().map(|(_, builder)| builder.seal(RecallTarget::STORE)).collect();
     assert_eq!(sealed.iter().map(|matrix| matrix.len()).sum::<usize>(), 1);
 }
