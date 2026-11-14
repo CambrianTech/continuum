@@ -23,7 +23,7 @@ pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
 pub use lease::is_grant_retiring;
 #[cfg(test)]
 pub(crate) use lease::dyno_seam;
-pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+pub use lease::{hold_for_act, ActHold, publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails

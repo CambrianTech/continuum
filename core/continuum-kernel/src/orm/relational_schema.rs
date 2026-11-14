@@ -15,6 +15,13 @@ pub(super) struct DeclaredTable {
     pub indexes: Vec<IndexCreateStatement>,
 }
 
+impl DeclaredTable {
+    pub(super) fn from_entity<E: sea_orm::EntityTrait>(entity: E) -> Self {
+        let schema = sea_orm::Schema::new(sea_orm::DbBackend::Sqlite);
+        Self { create: schema.create_table_from_entity(entity), indexes: schema.create_index_from_entity(entity) }
+    }
+}
+
 fn action(rule: CascadeRule) -> ForeignKeyAction {
     match rule {
         CascadeRule::Restrict => ForeignKeyAction::Restrict,

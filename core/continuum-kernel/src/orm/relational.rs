@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub(super) struct RelationalStore {
     pub db: DatabaseConnection,
     pub in_memory: bool,
+    schema_url: String,
     schemas: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionSchema>>>>,
     schema_gate: Arc<tokio::sync::Mutex<()>>,
     pub writer_gate: Arc<tokio::sync::Mutex<()>>,
@@ -45,14 +46,14 @@ impl RelationalStore {
             }
         }
         let url = if in_memory {
-            "sqlite::memory:".into()
+            format!("sqlite:file%3Acontinuum-{}?mode=memory&cache=shared", uuid::Uuid::new_v4())
         } else {
             format!(
                 "sqlite://{}?mode=rwc",
                 config.connection_string.replace('\\', "/")
             )
         };
-        let mut options = ConnectOptions::new(url);
+        let mut options = ConnectOptions::new(url.clone());
         options
             .max_connections(
                 config
@@ -71,32 +72,26 @@ impl RelationalStore {
         let db = Database::connect(options)
             .await
             .map_err(|e| e.to_string())?;
-        let heads = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_sequence::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&heads))
-            .await
-            .map_err(|e| e.to_string())?;
-        let native_revisions = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_native_revision::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&native_revisions))
-            .await
-            .map_err(|e| e.to_string())?;
-        db.execute(DbBackend::Sqlite.build(&super::relational_native_revision::revision_index()))
-            .await
-            .map_err(|e| e.to_string())?;
-        let declarations = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_declaration::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&declarations))
-            .await
-            .map_err(|e| e.to_string())?;
+        let schema_db = super::relational_evolution::schema_connection(&url).await.map_err(|error| error.to_string())?;
+        let initialized = async {
+            use super::relational_schema::DeclaredTable;
+            use sea_orm::EntityName;
+            use super::relational_evolution::{admit_table, verify_references};
+            let transaction = schema_db.begin().await?;
+            admit_table(&transaction, super::relational_sequence::Entity.table_name(), DeclaredTable::from_entity(super::relational_sequence::Entity)).await?;
+            let mut native = DeclaredTable::from_entity(super::relational_native_revision::Entity);
+            native.indexes.push(super::relational_native_revision::revision_index());
+            admit_table(&transaction, super::relational_native_revision::Entity.table_name(), native).await?;
+            admit_table(&transaction, super::relational_declaration::Entity.table_name(), DeclaredTable::from_entity(super::relational_declaration::Entity)).await?;
+            verify_references(&transaction).await?;
+            transaction.commit().await?;
+            Ok::<(), super::schema_error::SchemaError>(())
+        }.await;
+        let closed = schema_db.close().await;
+        initialized.map_err(|error| error.to_string())?;
+        closed.map_err(|error| error.to_string())?;
         let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
-        let schemas = super::relational_declaration::restore(&catalog_read).await?;
+        let schemas = super::relational_declaration::restore(&catalog_read).await.map_err(|error| error.to_string())?;
         use super::relational_sequence::{Column, Entity};
         use sea_orm::{ColumnTrait, Condition, EntityTrait, QueryFilter, QueryOrder, QuerySelect};
         let mut revisions = HashMap::new();
@@ -148,6 +143,7 @@ impl RelationalStore {
         Ok(Self {
             db,
             in_memory,
+            schema_url: url,
             schemas: Arc::new(parking_lot::RwLock::new(schemas)),
             schema_gate: Arc::new(tokio::sync::Mutex::new(())),
             writer_gate: Arc::new(tokio::sync::Mutex::new(())),
@@ -158,18 +154,19 @@ impl RelationalStore {
     pub async fn ensure(&self, schema: CollectionSchema) -> Result<(), String> {
         let _guard = self.schema_gate.lock().await;
         if let Some(existing) = self.schemas.read().get(&schema.collection) {
-            if !super::entity::schemas_equivalent(existing.as_ref(), &schema) {
-                return Err(format!(
-                    "{} has conflicting entity declarations",
-                    schema.collection
-                ));
+            if super::entity::schemas_equivalent(existing.as_ref(), &schema) {
+                return Ok(());
             }
-            return Ok(());
         }
         let declared = super::relational_schema::compile(&schema)?;
         let _write = self.writer_gate.lock().await;
-        let transaction = self.db.begin().await.map_err(|e| e.to_string())?;
-        if super::relational_declaration::admit(&transaction, &schema).await? {
+        // SQLite DROP TABLE executes FK actions even during a rebuild. Use a
+        // short-lived, pinned schema connection; normal read/write connections
+        // keep FK enforcement enabled. Validate all references before commit.
+        let schema_db = super::relational_evolution::schema_connection(&self.schema_url).await.map_err(|error| error.to_string())?;
+        let result = async {
+        let transaction = schema_db.begin().await.map_err(|e| e.to_string())?;
+        if super::relational_declaration::admit(&transaction, &schema).await.map_err(|error| error.to_string())? {
             transaction
                 .execute(DbBackend::Sqlite.build(&declared.create))
                 .await
@@ -180,9 +177,15 @@ impl RelationalStore {
                     .await
                     .map_err(|e| e.to_string())?;
             }
-            super::relational_declaration::record(&transaction, &schema).await?;
+            super::relational_declaration::record(&transaction, &schema).await.map_err(|error| error.to_string())?;
         }
+        super::relational_evolution::verify_references(&transaction).await.map_err(|error| error.to_string())?;
         transaction.commit().await.map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+        }.await;
+        let closed = schema_db.close().await.map_err(|error| error.to_string());
+        result?;
+        closed?;
         self.schemas
             .write()
             .insert(schema.collection.clone(), Arc::new(schema));
@@ -331,38 +334,28 @@ impl RelationalStore {
                 values.push(Expr::val(descriptor.encode()?).into());
                 continue;
             }
-            let metadata;
+            use super::relational_codec::{encode, encode_integer, encode_text};
             let value = match field.name.as_str() {
-                "id" => {
-                    metadata = serde_json::Value::String(record.id.clone());
-                    &metadata
+                "id" => encode_text(field, &record.id)?,
+                "createdAt" => encode_text(field, &record.metadata.created_at)?,
+                "updatedAt" => encode_text(field, &record.metadata.updated_at)?,
+                "version" => encode_integer(field, i64::from(record.metadata.version))?,
+                name => {
+                    let value = match fields.get(name) {
+                        Some(value) => value,
+                        None => match &field.default_value {
+                            Some(value) => value,
+                            None if field.nullable => &serde_json::Value::Null,
+                            None => return Err(format!("{}.{} is required", record.collection, name)),
+                        },
+                    };
+                    encode(field, value)?
                 }
-                "createdAt" => {
-                    metadata = serde_json::Value::String(record.metadata.created_at.clone());
-                    &metadata
-                }
-                "updatedAt" => {
-                    metadata = serde_json::Value::String(record.metadata.updated_at.clone());
-                    &metadata
-                }
-                "version" => {
-                    metadata = serde_json::json!(record.metadata.version);
-                    &metadata
-                }
-                name => match fields.get(name) {
-                    Some(value) => value,
-                    None if field.default_value.is_some() => field
-                        .default_value
-                        .as_ref()
-                        .ok_or("declared default disappeared")?,
-                    None if field.nullable => &serde_json::Value::Null,
-                    None => return Err(format!("{}.{} is required", record.collection, name)),
-                },
             };
             columns.push(Alias::new(super::adapter::naming::to_snake_case(
                 &field.name,
             )));
-            values.push(Expr::val(super::relational_codec::encode(field, value)?).into());
+            values.push(Expr::val(value).into());
         }
         if !payloads.is_empty() {
             return Err("native write contains undeclared binary fields".into());

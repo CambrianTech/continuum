@@ -2,6 +2,191 @@
 
 use super::*;
 
+#[tokio::test]
+async fn native_text_declaration_retires_json_codec_without_rewriting_values() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
+    use super::relational_declaration as declaration;
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("native-text.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    let values = ["Episodic", "\"Semantic\"", "{\"kept\":true}"];
+    for (index, value) in values.iter().enumerate() {
+        initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION, json!({"label":value}))).await?;
+    }
+    // Reproduce the rollout fault: native text rows certified with the wrong JSON codec.
+    let receipt = declaration::Entity::find_by_id(Parent::COLLECTION).one(&initial.db).await?.ok_or("receipt absent")?;
+    let mut incorrect = Parent::collection_schema();
+    incorrect.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.field_type = FieldType::Json;
+    let physical = receipt.physical.clone();
+    let mut active = receipt.into_active_model();
+    active.declaration = Set(serde_json::to_value(incorrect)?);
+    active.update(&initial.db).await?;
+    initial.db.clone().close().await?;
+    for _ in 0..2 {
+        let reopened = RelationalStore::open(AdapterConfig { connection_string: path.into(), ..Default::default() }).await?;
+        reopened.ensure(Parent::collection_schema()).await?;
+        let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(3).build()).await?;
+        assert_eq!(rows.len(), 3);
+        for value in values { assert!(rows.iter().any(|row| row.data["label"] == value)); }
+        let receipt = declaration::Entity::find_by_id(Parent::COLLECTION).one(&reopened.db).await?.ok_or("receipt absent")?;
+        assert_eq!(receipt.physical, physical, "codec retirement must not rewrite the table");
+        let mut reverse = Parent::collection_schema();
+        reverse.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.field_type = FieldType::Json;
+        assert!(reopened.ensure(reverse).await.is_err(), "text must not become JSON by guessing");
+        reopened.db.clone().close().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("rebuild.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    initial.insert(&initial.db, &record("c", Child::COLLECTION,
+        json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"kept":true},"joinedLabel":null}))).await?;
+    let mut invalid = Parent::collection_schema();
+    invalid.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.max_length = Some(2);
+    assert!(initial.ensure(invalid).await.is_err());
+    let mut current = Parent::collection_schema();
+    current.fields.retain(|field| field.name != "label");
+    initial.ensure(current.clone()).await?;
+    let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
+    let children = initial.query(query()).await?;
+    assert_eq!(children.len(), 1, "DROP during rebuild must not cascade");
+    assert_eq!(children[0].data["seq"], json!(9007199254740993u64));
+    initial.db.clone().close().await?;
+    let reopened = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    reopened.ensure(current).await?;
+    reopened.ensure(Child::collection_schema()).await?;
+    assert_eq!(reopened.query(query()).await?.len(), 1);
+    // Normal writes still enforce FK constraints after the schema connection closes.
+    assert!(reopened.insert(&reopened.db, &record("bad", Child::COLLECTION,
+        json!({"parentId":"absent","token":"bad","seq":2,"body":{},"joinedLabel":null}))).await.is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("evolution.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"retained"}))).await?;
+    let mut current = Parent::collection_schema();
+    current.fields.push(SchemaField {
+        name: "status".into(), field_type: FieldType::String, nullable: false,
+        default_value: Some(json!("ready")), indexed: true, unique: false,
+        max_length: None, foreign_key: None,
+    });
+    initial.ensure(current.clone()).await?;
+    let query = || QueryBuilder::new(Parent::COLLECTION).limit(1).build();
+    let rows = initial.query(query()).await?;
+    assert_eq!(rows[0].data["status"], "ready");
+    assert_eq!(rows[0].data["label"], "retained");
+    // A missing required value rejects the entire next declaration, including
+    // an otherwise-valid addition that precedes it.
+    let mut invalid = current.clone();
+    let mut extra = current.fields.last().ok_or("new field absent")?.clone();
+    extra.name = "extra".into();
+    invalid.fields.push(extra.clone());
+    extra.name = "missingValue".into();
+    extra.default_value = None;
+    invalid.fields.push(extra);
+    assert!(initial.ensure(invalid).await.is_err());
+    // Fail after ALTER has run: another table already owns this index name.
+    // The admitted map, physical table and receipt must all retain current.
+    let mut collision = current.clone();
+    let mut extra = current.fields.last().ok_or("new field absent")?.clone();
+    extra.name = "extra".into();
+    collision.fields.push(extra);
+    collision.indexes.push(SchemaIndex {
+        name: "idx_relational_children_seq".into(), fields: vec!["status".into()],
+        unique: false, descending: false,
+    });
+    assert!(initial.ensure(collision).await.is_err());
+    initial.db.clone().close().await?;
+    let reopened = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    reopened.ensure(current).await?;
+    let rows = reopened.query(query()).await?;
+    assert_eq!(rows[0].data["status"], "ready");
+    assert!(rows[0].data.get("extra").is_none());
+    Ok(())
+}
+
+#[tokio::test]
+async fn receipt_free_equivalent_column_order_preserves_rows() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("column-order.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    let mut reordered = Parent::collection_schema();
+    reordered.fields.reverse();
+    initial.ensure(reordered).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"preserved"}))).await?;
+    super::relational_declaration::Entity::delete_many().exec(&initial.db).await?;
+    initial.db.clone().close().await?;
+    let reopened = store(path).await?;
+    let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].data["label"], "preserved");
+    Ok(())
+}
+
+#[tokio::test]
+async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::{EntityTrait, ConnectionTrait, DbBackend};
+    use crate::orm::relational_declaration as declaration;
+    use sea_orm::sea_query::{Alias, ColumnDef, Table};
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("adoption.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"unchanged"}))).await?;
+    initial.insert(&initial.db, &record("c", Child::COLLECTION,
+        json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"original":true},"joinedLabel":null}))).await?;
+    let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
+    let before = initial.query(query()).await?;
+    declaration::Entity::delete_many().exec(&initial.db).await?;
+    initial.db.clone().close().await?;
+
+    let reopened = store(path).await?;
+    let after = reopened.query(query()).await?;
+    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(&after)?);
+    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&reopened.db).await?.is_some());
+    // The receipt remains sufficient on another restart; it is not a repeated adoption.
+    reopened.db.clone().close().await?;
+    let admitted = store(path).await?;
+    assert_eq!(admitted.query(query()).await?.len(), 1);
+
+    declaration::Entity::delete_by_id(Child::COLLECTION).exec(&admitted.db).await?;
+    let drift = Table::alter().table(Alias::new(Child::COLLECTION))
+        .add_column(ColumnDef::new(Alias::new("extra")).text()).to_owned();
+    admitted.db.execute(DbBackend::Sqlite.build(&drift)).await?;
+    admitted.db.clone().close().await?;
+    let evolved = RelationalStore::open(AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    evolved.ensure(Child::collection_schema()).await?;
+    assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&evolved.db).await?.is_some());
+    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(evolved.query(query()).await?)?);
+    let shape = super::relational_structure::read(&evolved.db, Child::COLLECTION).await?;
+    assert!(!shape.columns.iter().any(|column| column.name == "extra"));
+    Ok(())
+}
+
 #[test]
 fn declaration_equivalence_rejects_duplicate_names_on_either_side() {
     use crate::orm::entity::schemas_equivalent;

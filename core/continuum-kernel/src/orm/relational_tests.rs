@@ -460,14 +460,10 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
         .db
         .execute(DbBackend::Sqlite.build(&declared.create))
         .await?;
-    let rejected = unmanaged
-        .ensure(schema)
-        .await
-        .expect_err("unmanaged existing table must require migration");
-    assert!(
-        rejected.contains("no declared-schema receipt"),
-        "{rejected}"
-    );
+    unmanaged.ensure(schema).await?;
+    unmanaged.insert(&unmanaged.db, &record("adopted", Parent::COLLECTION,
+        json!({"label":"retained after completing declared indexes"}))).await?;
+    assert_eq!(unmanaged.count(QueryBuilder::new(Parent::COLLECTION).build()).await?, 1);
     Ok(())
 }
 

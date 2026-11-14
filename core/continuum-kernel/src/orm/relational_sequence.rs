@@ -4,6 +4,7 @@ use sea_orm::entity::prelude::*;
 #[sea_orm(table_name = "orm_sequence_heads")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
+    #[sea_orm(default_value = "append")]
     pub domain: String,
     #[sea_orm(primary_key, auto_increment = false)]
     pub collection: String,

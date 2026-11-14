@@ -25,6 +25,8 @@ pub(crate) struct Observation {
     pub live: BTreeMap<uuid::Uuid, usize>,
     /// Requests whose caller let go before a terminal receipt (held until a fence).
     pub unresolved: BTreeMap<uuid::Uuid, usize>,
+    /// Acts rendered against their grant and not yet ended ([`ActHold`]).
+    pub rendered: BTreeMap<uuid::Uuid, usize>,
     /// Minds whose publication is being handed off (charged until physical proof or fence).
     pub retiring: BTreeMap<uuid::Uuid, GrantLease>,
 }
@@ -61,6 +63,11 @@ impl OwnerUnderTest {
         reserve_attempt_with(self.owner, slot_for, persona, leased, needed, || current)
     }
 
+    /// Her act rendered against `current`, her lease as published at that instant (`hold_for_act`).
+    pub(crate) fn hold(&self, persona: uuid::Uuid, current: Option<GrantLease>) -> Option<ActHold> {
+        self.owner.hold_act(persona, || current)
+    }
+
     /// The engine's physical save-then-erase receipt for a handoff.
     pub(crate) fn reclaimed(&self, ticket: GrantHandoff) -> Result<(), String> {
         self.owner.record_reclaimed(ReclaimedGrant::scripted(ticket))
@@ -82,6 +89,7 @@ impl OwnerUnderTest {
                 let count = match entry.custody {
                     Custody::Live => seen.live.entry(*mind).or_insert(0),
                     Custody::Unresolved => seen.unresolved.entry(*mind).or_insert(0),
+                    Custody::Rendered => seen.rendered.entry(*mind).or_insert(0),
                 };
                 *count += 1;
             }

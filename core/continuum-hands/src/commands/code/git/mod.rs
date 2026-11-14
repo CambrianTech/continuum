@@ -23,7 +23,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::modules::code::CodeState;
-use crate::modules::code_commands::ensure_engine;
 use crate::sdk_codegen::{CommandError, Ctx, DynCommand};
 
 pub mod add;
@@ -51,14 +50,10 @@ use status::CodeGitStatus;
 /// Resolve the caller's workspace root, provisioning the engine on first use.
 /// Returns an OWNED [`PathBuf`] so the `DashMap` ref guard is dropped before the
 /// caller awaits its git — never a lock held across a shell-out.
+/// The root is the hands' one checkout ([`crate::code::hands::CheckoutRoot`]), the same one
+/// their shell and file verbs resolve against (cards c8546b52, 566e390e).
 pub(crate) async fn workspace_root_for(state: &CodeState, ctx: &Ctx) -> Result<PathBuf, CommandError> {
-    let key = crate::modules::code_commands::hands_of(state, ctx);
-    ensure_engine(state, &key).await?;
-    let engine = state
-        .file_engines
-        .get(&key.map_key())
-        .ok_or_else(|| CommandError::Internal("workspace vanished after provisioning".into()))?;
-    Ok(engine.workspace_root())
+    crate::modules::code_commands::checkout_root_for(state, ctx).await.map(crate::code::hands::CheckoutRoot::into_path)
 }
 
 /// The commit her branch ends at now.
