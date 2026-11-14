@@ -258,7 +258,7 @@ fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
     let finished = owner
         .reserve_against(a, lease, 50, || Some(lease))
         .expect("first request");
-    let unresolved = owner
+    let mut unresolved = owner
         .reserve_against(a, lease, 50, || Some(lease))
         .expect("overlapping second request");
     settle(
@@ -267,6 +267,7 @@ fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
             finish: "stop".into(),
         }),
     );
+    unresolved.mark_dispatched();
     drop(unresolved);
     assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
     assert_eq!(

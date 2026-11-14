@@ -3,4 +3,4 @@
 /**
  * Field type for schema definition
  */
-export type FieldType = "string" | "number" | "boolean" | "date" | "json" | "uuid";
+export type FieldType = "string" | "number" | "boolean" | "date" | "json" | "binary" | "uuid";

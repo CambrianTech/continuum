@@ -6,7 +6,7 @@
 
 use super::chat_data_handle::{ChatModule, CHAT_DATA_HANDLE};
 use super::orm_entities::CHAT_ORM_COLLECTIONS;
-use crate::orm::types::BatchOperation;
+use crate::orm::types::{BatchOperation, BatchOutcome};
 use crate::runtime::{command_executor::CommandExecutor, LateBound};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -67,7 +67,8 @@ impl Default for ChatSlot {
 }
 
 impl ChatModule {
-    /// Run a `data/*` command against the chat handle: the module's ONE way into its store.
+    /// Run a `data/*` command against the chat handle: the module's ONE way into its store. A typed
+    /// command answers with its value; its failure is the executor's error.
     pub(super) async fn store(&self, command: &str, mut params: Value) -> Result<Value, String> {
         let executor = self.executor()?;
         self.executor_slot
@@ -75,34 +76,45 @@ impl ChatModule {
             .get_or_try_init(|| ensure_chat_collections(&executor))
             .await?;
         params["dbPath"] = json!(CHAT_DATA_HANDLE);
-        let result = executor
-            .execute_json(command, params)
-            .await
-            .map_err(|e| format!("chat store: {command} failed: {e}"))?;
-        match refusal(command, &result) {
+        executor.execute_json(command, params).await.map_err(|e| format!("chat store: {command} failed: {e}"))
+    }
+
+    /// The legacy JSON `data/query` route, which still answers with a success receipt (card
+    /// 6837890b moves this module to typed store calls).
+    async fn legacy_query(&self, query: Value) -> Result<Value, String> {
+        let result = self.store("data/query", query).await?;
+        match refusal("data/query", &result) {
             Some(refused) => Err(refused),
             None => Ok(result),
         }
     }
 
-    /// The rows of `collection` matching `filter`, optionally sorted and limited.
+    /// A bounded set of rows matching `filter`, optionally sorted.
     pub(super) async fn query_rows(
         &self,
         collection: &str,
         filter: Value,
         sort: Option<Value>,
-        limit: Option<usize>,
+        limit: usize,
     ) -> Result<Vec<Value>, String> {
-        let mut query = json!({ "collection": collection, "filter": filter });
+        let mut query = json!({ "collection": collection, "filter": filter, "limit": limit });
         if let Some(sort) = sort {
             query["sort"] = sort;
         }
-        if let Some(limit) = limit {
-            query["limit"] = json!(limit);
-        }
-        records(collection, &self.store("data/query", query).await?)
+        records(collection, self.legacy_query(query).await?)
     }
 
+    /// Only the identities needed for bounded reconciliation, ordered by the store.
+    pub(super) async fn query_ids(&self, collection: &str, filter: Value, limit: usize) -> Result<Vec<Uuid>, String> {
+        let response = self.legacy_query(json!({
+            "collection": collection, "filter": filter, "select": ["id"],
+            "sort": [{"field": "id", "direction": "asc"}], "limit": limit,
+        })).await?;
+        records(collection, response)?.into_iter().map(|row| {
+            let id = row.get("id").and_then(Value::as_str).ok_or("chat identity projection omitted id")?;
+            Uuid::parse_str(id).map_err(|e| format!("chat identity projection: {e}"))
+        }).collect()
+    }
     /// The row `id` names in `collection`, `None` only when the store confirms there is none.
     pub(super) async fn row<T: serde::de::DeserializeOwned>(
         &self,
@@ -114,7 +126,7 @@ impl ChatModule {
                 collection,
                 json!({ "id": { "$eq": id.to_string() } }),
                 None,
-                Some(1),
+                1,
             )
             .await?;
         let Some(row) = rows.into_iter().next() else {
@@ -127,9 +139,9 @@ impl ChatModule {
     }
 
     /// Run `operations` as one atomic batch.
-    pub(super) async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Value, String> {
-        self.store("data/batch", json!({ "operations": operations }))
-            .await
+    pub(super) async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, String> {
+        let outcomes = self.store("data/batch", json!({ "operations": operations })).await?;
+        serde_json::from_value::<crate::orm::data_outputs::BatchOutcomes>(outcomes).map(|batch| batch.outcomes).map_err(|e| format!("chat store: data/batch outcome: {e}")) // command-bus envelope: chat reaches data/batch through execute_json until typed in-process calls (card d2856ec5)
     }
 }
 
@@ -138,13 +150,10 @@ impl ChatModule {
 async fn ensure_chat_collections(executor: &Arc<CommandExecutor>) -> Result<(), String> {
     for collection in CHAT_ORM_COLLECTIONS {
         let params = json!({ "collection": collection, "dbPath": CHAT_DATA_HANDLE });
-        let result = executor
+        executor
             .execute_json("data/ensure-schema", params)
             .await
             .map_err(|e| format!("chat store: ensuring {collection} failed: {e}"))?;
-        if let Some(refused) = refusal("data/ensure-schema", &result) {
-            return Err(refused);
-        }
     }
     Ok(())
 }
@@ -157,26 +166,55 @@ fn refusal(command: &str, result: &Value) -> Option<String> {
     let reason = result
         .get("error")
         .and_then(Value::as_str)
-        .unwrap_or("success=false without an error");
+        .unwrap_or("success=false without an error"); // diagnostic text only: the malformed receipt still fails
     Some(format!("chat store: the store refused {command}: {reason}"))
 }
 
 /// The entities of a successful `data/query` response (`{ success, data: [{ id, data: <entity> }] }`).
 /// Only a well-formed empty list means no rows: a missing list or a record without its entity is a
 /// malformed answer, an error, never fewer rows (Codex on #5696).
-fn records(collection: &str, query_result: &Value) -> Result<Vec<Value>, String> {
+fn records(collection: &str, mut query_result: Value) -> Result<Vec<Value>, String> {
     let malformed = |what: &str| format!("chat store: malformed {collection} query answer: {what}");
     let records = query_result
-        .get("data")
-        .and_then(Value::as_array)
+        .as_object_mut()
+        .and_then(|fields| fields.remove("data"))
         .ok_or_else(|| malformed("no record list"))?;
+    let Value::Array(records) = records else {
+        return Err(malformed("no record list"));
+    };
     records
-        .iter()
-        .map(|record| {
+        .into_iter()
+        .map(|mut record| {
             record
-                .get("data")
-                .cloned()
+                .as_object_mut()
+                .and_then(|fields| fields.remove("data"))
                 .ok_or_else(|| malformed("a record without its entity"))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod owned_rows_tests {
+    use super::*;
+
+    #[test]
+    fn transcript_payload_moves_without_copying() {
+        let payload = "transcript".repeat(4096);
+        let allocation = payload.as_ptr();
+        let mut row = serde_json::Map::new();
+        row.insert("data".into(), Value::String(payload));
+        let mut response = serde_json::Map::new();
+        response.insert("data".into(), Value::Array(vec![Value::Object(row)]));
+        let rows = records("chat_messages", Value::Object(response)).expect("test: valid row");
+        assert_eq!(rows[0].as_str().expect("test: text").as_ptr(), allocation);
+    }
+
+    #[test]
+    fn malformed_rows_are_not_silently_omitted() {
+        for response in [json!({}), json!({"data": null}), json!({"data": [{}]}),
+                         json!({"data": [{"data": 1}, null]})] {
+            assert!(records("chat_messages", response).is_err());
+        }
+        assert_eq!(records("chat_messages", json!({"data": []})).expect("test: empty page"), Vec::<Value>::new());
+    }
 }

@@ -106,11 +106,11 @@ impl ChatModule {
         let by_sequence = || Some(json!([{ "field": "arrivalSeq", "direction": "asc" }]));
         let page = json!({ "arrivalSeq": { "$gt": cursor.through }, "room": { "$in": rooms } });
         let arrivals = decode(
-            self.query_rows(collection, page, by_sequence(), Some(intake))
+            self.query_rows(collection, page, by_sequence(), intake)
                 .await?,
         )?;
         let retained_floor = decode(
-            self.query_rows(collection, json!({}), by_sequence(), Some(1))
+            self.query_rows(collection, json!({}), by_sequence(), 1)
                 .await?,
         )?
         .first()

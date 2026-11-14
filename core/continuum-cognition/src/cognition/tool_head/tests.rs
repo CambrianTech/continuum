@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+#[cfg(test)]
+use futures::TryStreamExt;
 use std::sync::Arc;
 
 use super::entity::{ToolHeadRecord, ToolHeadStore};
@@ -99,7 +101,7 @@ async fn her_head_survives_a_restart_through_her_store() {
     kept.keep(head.snapshot()).await.expect("first save");
     head.note(at(2), None, &verbs(&["code/edit"]), &[], "code/edit(file_path=a.rs)");
     kept.keep(head.snapshot()).await.expect("second save updates");
-    assert_eq!(store.find_all().await.expect("rows").len(), 1);
+    assert_eq!(store.scan().await.expect("rows").try_collect::<Vec<_>>().await.expect("test: stream rows").len(), 1);
     let restored = ToolHead::default();
     restored.restore(kept.load().await.expect("read").expect("kept"));
     assert_eq!(restored.snapshot(), head.snapshot());

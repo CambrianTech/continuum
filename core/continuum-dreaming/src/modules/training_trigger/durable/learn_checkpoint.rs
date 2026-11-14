@@ -133,13 +133,10 @@ impl DurableStore {
         if let Some(after) = after {
             query = query.filter("id", QueryOperator::Gt(after.into()));
         }
-        let result = self.adapter.query(query.build()).await;
-        if !result.success {
-            return Err(result.error.unwrap_or_else(|| "learn checkpoint query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
-        }
-        result
-            .data
-            .ok_or("learn checkpoint query omitted rows")?
+        self.adapter
+            .query(&query.build())
+            .await
+            .map_err(|e| format!("learn checkpoint query: {e}"))?
             .into_iter()
             .map(|row| row.decode().map_err(|e| e.to_string())) // decode the persisted ORM row into its typed owner
             .collect()

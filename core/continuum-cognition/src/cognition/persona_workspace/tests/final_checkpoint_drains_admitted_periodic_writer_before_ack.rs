@@ -33,6 +33,9 @@ use super::*;
                 owner.checkpoint_volatile_all()
             });
             timeout(Duration::from_secs(5), ready).await??;
+            // Terminal drain must return even while storage is blocked; it cannot
+            // rely on shutdown(), which is skipped after a save timeout.
+            registry.close_volatile_checkpoints();
             let owner = Arc::clone(&registry);
             let root = Arc::clone(&home);
             let replacement = tokio::task::spawn_blocking(move || {
@@ -53,7 +56,8 @@ use super::*;
             let mut final_save = tokio::task::spawn_blocking(move || {
                 let _native = crate::paths::NativeHomeOverride::install(root.path());
                 starting.send(()).unwrap();
-                owner.stop_volatile_checkpoints()
+                // Exercise runtime's drain -> save path, without shutdown().
+                owner.flush_volatile_all()
             });
             timeout(Duration::from_secs(5), started).await??;
             assert!(
@@ -140,7 +144,7 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            context_window: 8_192, // fixture: a window the harness prompts fit, not the planner floor
             // Synchronous recall in the harness: these tests assert recall bids in
             // phase 1 on the same tick, which a deferred (cold-start) worker can't
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.

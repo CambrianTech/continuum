@@ -25,12 +25,7 @@ pub struct CreditSubmitRefusal {
 }
 
 fn delete(id: Uuid) -> BatchOperation {
-    BatchOperation {
-        operation_type: BatchOperationType::Delete,
-        collection: CreditSubmitRefusal::COLLECTION.into(),
-        id: Some(id.to_string()),
-        data: None,
-    }
+    BatchOperation::Delete(RowKey { collection: CreditSubmitRefusal::COLLECTION.into(), id: id.to_string() })
 }
 
 /// Keep submission `id`'s refused answer, replacing an earlier one.

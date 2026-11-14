@@ -18,6 +18,12 @@ pub(in crate::modules::training_trigger) struct Submission {
     pub(super) base_model: String,
     #[entity(json)]
     pub(super) batch: PendingBatch,
+    /// Signature inputs without lived payload. Counts use pending_count instead.
+    #[entity(json)]
+    pub(super) arrival_summary: Option<super::arrival_summary::ArrivalSummary>,
+    /// Count-only inspection never reads prompt, completion or lived payload.
+    #[entity(json)]
+    pub(super) pending_count: Option<super::pending_counts::PendingCount>,
     pub(super) is_pending: bool,
     pub(super) dispatch_id: Option<Uuid>,
     /// Withdrawn before any dispatch by `genome/training-trigger/retire`: the
@@ -117,22 +123,12 @@ impl DurableStore {
     }
 
     pub(super) async fn next_sequence(&self) -> Result<u64, String> {
-        let result = self
-            .adapter
-            .query(
-                QueryBuilder::new(Submission::COLLECTION)
+        let result = self.adapter.query(&QueryBuilder::new(Submission::COLLECTION)
                     .sort_desc("sequence")
                     .limit(1)
                     .select(vec!["sequence".into()])
-                    .build(),
-            )
-            .await;
-        if !result.success {
-            return Err(result
-                .error
-                .unwrap_or_else(|| "training sequence query refused".into())); // The query explicitly failed; missing diagnostics still return an error.
-        }
-        let rows = result.data.ok_or("training sequence query omitted rows")?;
+                    .build(),).await.map_err(|e| e.to_string());
+        let rows = result?;
         let last = rows
             .first()
             .map(|row| {
@@ -153,25 +149,13 @@ impl DurableStore {
         after: u64,
         limit: usize,
     ) -> Result<Vec<Submission>, String> {
-        let result = self
-            .adapter
-            .query(
-                key.query(Submission::COLLECTION)
+        let result = self.adapter.query(&key.query(Submission::COLLECTION)
                     .filter_eq("isPending", true)
                     .filter("sequence", QueryOperator::Gt(after.into()))
                     .sort_asc("sequence")
                     .limit(limit)
-                    .build(),
-            )
-            .await;
-        if !result.success {
-            return Err(result
-                .error
-                .unwrap_or_else(|| "training pending query refused".into())); // The query explicitly failed; this supplies its missing diagnostic, never rows.
-        }
-        result
-            .data
-            .ok_or("training pending query omitted rows")?
+                    .build(),).await.map_err(|e| e.to_string());
+        result?
             .into_iter()
             .map(|row| row.decode().map_err(|error| error.to_string())) // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.
             .collect()
@@ -186,23 +170,13 @@ impl DurableStore {
         let mut after = 0u64;
         let mut found = Vec::new();
         loop {
-            let result = self
-                .adapter
-                .query(
-                    QueryBuilder::new(Submission::COLLECTION)
+            let result = self.adapter.query(&QueryBuilder::new(Submission::COLLECTION)
                         .filter_eq("isPending", true)
                         .filter("sequence", QueryOperator::Gt(after.into()))
                         .sort_asc("sequence")
                         .limit(PAGE)
-                        .build(),
-                )
-                .await;
-            if !result.success {
-                return Err(result
-                    .error
-                    .unwrap_or_else(|| "training pending query refused".into())); // The query explicitly failed; this supplies its missing diagnostic, never rows.
-            }
-            let rows = result.data.ok_or("training pending query omitted rows")?;
+                        .build(),).await.map_err(|e| e.to_string());
+        let rows = result?;
             let page = rows.len();
             for row in rows {
                 let row: Submission = row.decode().map_err(|error| error.to_string())?; // Decode persisted ORM rows into the typed submission owner; no transcript re-encoding.

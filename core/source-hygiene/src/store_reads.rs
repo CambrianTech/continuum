@@ -162,6 +162,9 @@ mod tests {
         assert_eq!(count(&UnboundedOrmSelects, counted), 0, "a count loads no rows");
         assert_eq!(count(&UnboundedOrmSelects, "async fn f() { self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await }"), 1);
         assert_eq!(count(&UnboundedOrmSelects, "async fn f() { self.find_matching(QueryBuilder::new(T::COLLECTION).limit(1).build()).await }"), 0);
+        // The seam borrows the query a read takes (`&StorageQuery`): the borrowed form is judged the same.
+        assert_eq!(count(&UnboundedOrmSelects, "async fn f() { self.find_matching(&QueryBuilder::new(T::COLLECTION).build()).await }"), 1);
+        assert_eq!(count(&UnboundedOrmSelects, "async fn f() { self.adapter.query(&QueryBuilder::new(C).limit(64).build()).await }"), 0);
         assert_eq!(count(&UnboundedOrmSelects, "pub fn build(self) -> StorageQuery { self.query }"), 0, "a type in a signature is no read");
         assert_eq!(count(&UnboundedOrmSelects, "fn query(&self) -> QueryBuilder { QueryBuilder::new(c).filter_eq(\"personaId\", p) }"), 0, "an unbuilt builder is read by its caller");
         assert_eq!(count(&UnboundedOrmSelects, "pub struct StorageQuery { pub limit: Option<usize> }"), 0);

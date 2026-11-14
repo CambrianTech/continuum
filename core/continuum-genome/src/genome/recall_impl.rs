@@ -94,6 +94,9 @@ pub trait CandidateSource: Send + Sync {
     export_to = "../../../protocol/typescript/genome/RecallDecision.ts"
 )]
 pub struct RecallDecision {
+    #[entity(primary_key)]
+    #[ts(type = "string")]
+    pub id: uuid::Uuid,
     pub schema_version: u32,
     pub policy_revision: String,
     #[ts(type = "number")]
@@ -372,19 +375,13 @@ impl LocalDemandAlignedRecall {
         // candidates. Better than panicking; the audit trail in
         // RecallScore lets a debugger see WHICH factor was NaN.
         layers.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
         experts.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
         engrams.sort_by(|a, b| {
-            b.1.combined
-                .partial_cmp(&a.1.combined)
-                .unwrap_or(std::cmp::Ordering::Equal)
+            b.1.combined.total_cmp(&a.1.combined)
         });
 
         RankedPool {
@@ -460,6 +457,7 @@ impl DemandAlignedRecall for LocalDemandAlignedRecall {
         let trace = RecallTrace(ArtifactId::new(uuid::Uuid::new_v4()));
         let result = self.rank_borrowed(now_ms, &candidates, trace);
         let decision = RecallDecision {
+            id: trace.0.as_uuid(),
             schema_version: 1,
             policy_revision: RecallDecision::POLICY_REVISION.into(),
             now_ms,

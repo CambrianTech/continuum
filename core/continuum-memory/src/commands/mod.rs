@@ -129,13 +129,25 @@ pub(crate) async fn persist_memory(
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     use crate::sdk_codegen::CommandError;
     let executor = state.executor().map_err(CommandError::Internal)?;
+    let connection = continuum_client::Connection::new(
+        crate::runtime::InProcessTransport::new(executor, None),
+    );
+    persist_memory_on(&connection, persona_id, memory).await
+}
+
+async fn persist_memory_on<T: continuum_client::Transport>(
+    connection: &continuum_client::Connection<T>,
+    persona_id: &crate::identity::PersonaRef,
+    memory: &crate::memory::CorpusMemory,
+) -> Result<(), crate::sdk_codegen::CommandError> {
+    use crate::sdk_codegen::CommandError;
     let mut data = serde_json::to_value(&memory.record)
         .map_err(|e| CommandError::Internal(format!("serialize memory record: {e}")))?;
     if let Some(embedding) = &memory.embedding {
         data[EMBEDDING_KEY] = serde_json::json!(embedding);
     }
-    executor
-        .execute_json(
+    let _created: crate::orm::types::DataRecord = connection.commands()
+        .execute(
             "data/create",
             serde_json::json!({
                 "collection": MEMORIES_COLLECTION,
@@ -147,18 +159,22 @@ pub(crate) async fn persist_memory(
         .await
         .map_err(|e| {
             CommandError::Internal(format!(
-                "memory/append-memory: durable write to {} failed: {e}",
+                "the durable write of this memory to {} failed: {e}",
                 persona_db_handle(persona_id)
             ))
         })?;
     Ok(())
 }
 
+#[cfg(test)]
+mod persistence_tests;
+
 /// Hydrate a persona's corpus from its durable store when no corpus is cached
-/// (i.e. first touch after a core restart). A fresh persona with no store yet
-/// hydrates to an EMPTY corpus (the sqlite adapter treats a missing table as
-/// zero rows) — an honest empty, not a fallback. Returns how many memories
-/// were loaded, or `None` when the corpus was already cached.
+/// (i.e. first touch after a core restart). The data owner admits the declared
+/// schema before reading; schema/read failures remain errors. Each request is
+/// bounded and keyset traversal visits all matching identities, without claiming
+/// a pinned snapshot across concurrent writes. Returns how many memories were
+/// loaded, or `None` when the corpus was already cached.
 pub(crate) async fn hydrate_corpus_if_missing(
     state: &MemoryState,
     persona_id: &crate::identity::PersonaRef,
@@ -168,53 +184,41 @@ pub(crate) async fn hydrate_corpus_if_missing(
         return Ok(None);
     }
     let executor = state.executor().map_err(CommandError::Internal)?;
-    let listed = executor
-        .execute_json(
-            "data/list",
-            serde_json::json!({
-                "collection": MEMORIES_COLLECTION,
-                "dbPath": persona_db_handle(persona_id),
-                "filter": { "persona_id": persona_id },
-            }),
-        )
+    let connection = continuum_client::Connection::new(
+        crate::runtime::InProcessTransport::new(executor, None),
+    );
+    let rows: Vec<serde_json::Value> = crate::orm::client_read::matching(&connection, crate::orm::client_read::ListSelection { handle: &persona_db_handle(persona_id), collection: MEMORIES_COLLECTION, filter: &serde_json::Map::from_iter([("persona_id".into(), serde_json::json!(persona_id))]), select: None })
         .await
         .map_err(|e| {
             CommandError::Internal(format!(
-                "memory hydrate: data/list on {} failed: {e}",
+                "memory hydrate: listing the memories in {} failed: {e}",
                 persona_db_handle(persona_id)
             ))
         })?;
-    let items = listed
-        .get("items")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-    let mut memories: Vec<crate::memory::CorpusMemory> = Vec::with_capacity(items.len());
-    for item in &items {
-        // Each item is a DataRecord envelope; the memory row is its `data`.
-        let Some(data) = item.get("data") else {
-            continue;
-        };
+    let mut memories: Vec<crate::memory::CorpusMemory> = Vec::with_capacity(rows.len());
+    for data in rows {
         // The ORM returns row keys camelCased (TS compatibility); MemoryRecord
         // is snake_case on the wire. Fold TOP-LEVEL keys back — nested objects
         // (`context`) keep their own keys untouched.
-        let data = match data {
+        let mut data = match data {
             serde_json::Value::Object(obj) => serde_json::Value::Object(
-                obj.iter()
-                    .map(|(k, v)| (crate::orm::adapter::naming::to_snake_case(k), v.clone()))
+                obj.into_iter()
+                    .map(|(k, v)| (crate::orm::adapter::naming::to_snake_case(&k), v))
                     .collect(),
             ),
-            other => other.clone(),
+            other => other,
         };
+        let embedding = data.as_object_mut().and_then(|row| row.remove(EMBEDDING_KEY))
+            .map(serde_json::from_value::<Option<Vec<f32>>>)
+            .transpose()
+            .map_err(|e| CommandError::Internal(format!("memory hydrate: invalid embedding: {e}")))?
+            .flatten();
         let record: crate::memory::MemoryRecord =
-            serde_json::from_value(data.clone()).map_err(|e| {
+            serde_json::from_value(data).map_err(|e| {
                 CommandError::Internal(format!(
                     "memory hydrate: row in '{MEMORIES_COLLECTION}' is not a MemoryRecord: {e}"
                 ))
             })?;
-        let embedding: Option<Vec<f32>> = data
-            .get(EMBEDDING_KEY)
-            .and_then(|v| serde_json::from_value(v.clone()).ok());
         memories.push(crate::memory::CorpusMemory { record, embedding });
     }
     let count = memories.len();

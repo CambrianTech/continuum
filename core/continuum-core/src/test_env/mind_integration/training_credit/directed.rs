@@ -1,6 +1,8 @@
 #![cfg(test)]
 //! From `cognition::act_observe` (its credit scenarios): a directed drive's credit, staged
 //! through the real data runtime, survives a partial cancellation and an atomic retry.
+#[cfg(test)]
+use futures::TryStreamExt;
 use super::*;
 use std::sync::Mutex;
 use crate::ai::types::ToolCall;
@@ -116,10 +118,10 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("fifth act never reached its pause"),
     }
     // Her staged credit, read back through the ORM like every other reader.
-    let longterm: Arc<dyn crate::orm::StorageAdapter> = Arc::new(crate::orm::SqliteAdapter::open(&home.path().join(".continuum/personas/capture-owner/data/longterm.db")).await.expect("open her longterm store"));
+    let longterm: Arc<dyn crate::orm::StorageAdapter> = Arc::new(crate::orm::SeaOrmAdapter::open(&home.path().join(".continuum/personas/capture-owner/data/longterm.db")).await.expect("open her longterm store"));
     let staged = crate::orm::OrmStore::<StagedCredit>::new(Arc::clone(&longterm)).await.expect("staged credit store");
     let read = || async {
-        let mut rows = staged.find_eq("cardId", card.to_string()).await.expect("read staged credit");
+        let mut rows = staged.find_eq("cardId", card.to_string(), 2).await.expect("read staged credit");
         assert_eq!(rows.len(), 1, "one staged credit row per card");
         rows.remove(0).1
     };
@@ -211,7 +213,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         "identical retry reuses its revision identity"
     );
     let generations = crate::orm::OrmStore::<StagedCreditGeneration>::new(Arc::clone(&longterm)).await.expect("generation store");
-    assert_eq!(generations.find_all().await.expect("read generations").len(), 5);
+    assert_eq!(generations.scan().await.expect("read generations").try_collect::<Vec<_>>().await.expect("test: stream rows").len(), 5);
     drop(capture);
     let other_card = Uuid::new_v4();
     let mut other = turn_capture(
@@ -230,5 +232,5 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
         finished.id,
         "same Persona's next turn cannot replace this card"
     );
-    assert_eq!(staged.find_all().await.expect("read staged credits").len(), 2);
+    assert_eq!(staged.scan().await.expect("read staged credits").try_collect::<Vec<_>>().await.expect("test: stream rows").len(), 2);
 }

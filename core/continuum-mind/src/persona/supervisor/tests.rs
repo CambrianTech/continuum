@@ -508,9 +508,9 @@
                         (0, RoleId::Helper, failed_id)
                     );
                     assert!(
-                        matches!(source, crate::orm::OrmStoreError::AdapterFailed {
-                        operation: "initialize", collection, ..
-                    } if collection == "engrams"),
+                        matches!(source, crate::orm::OrmStoreError::Storage {
+                        operation: "initialize", collection: "engrams", ..
+                    }),
                         "test: preserve the actual SQLite initialization error: {source}"
                     );
                 }

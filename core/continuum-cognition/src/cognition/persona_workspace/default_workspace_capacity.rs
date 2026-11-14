@@ -382,7 +382,7 @@ pub(super) fn assemble_workspace_cycle(
     // so a message is embedded ONCE and shared across every persona (never 14× for
     // 14 personas). `None` (harnesses) falls back to the lexical bootstrap, which
     // works on any machine with no model. Relevance > recency either way.
-    let embedder = cfg.embedder.unwrap_or_else(|| {
+    let embedder = cfg.embedder.unwrap_or_else(|| { // unwrap_or_else: a host with no model embeds lexically, the documented bootstrap
         Arc::new(CachingEmbeddingProvider::new(Arc::new(
             LexicalEmbedder::new(),
         )))
@@ -699,10 +699,11 @@ pub struct PersonaWorkspaceRegistry {
     /// without holding the lookup lock, so a losing lazy build has no side effects.
     pub(super) assembly: Mutex<()>,
     /// Serializes checkpoint admission BEFORE resolving current residents and
-    /// snapshotting. Held only by blocking checkpoint work, never a turn. True
-    /// closes periodic admission once shutdown starts; queued ticks cannot
-    /// overwrite the acknowledged final checkpoint.
-    pub(super) checkpoint_stopped: Mutex<bool>,
+    /// snapshotting. Held only by blocking checkpoint work, never a turn.
+    pub(super) checkpoint_writer: Mutex<()>,
+    /// Terminal drain closes admission without waiting for an admitted writer.
+    /// Save timeout must not leave periodic persistence open.
+    pub(super) checkpoint_stopped: std::sync::atomic::AtomicBool,
     #[cfg(all(test, feature = "stress-tests"))]
     pub(super) checkpoint_pause: Mutex<Option<CheckpointPause>>,
     /// Per-persona fork-template: a clone of the `PersonaBrainConfig` the live

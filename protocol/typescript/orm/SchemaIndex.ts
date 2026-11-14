@@ -3,4 +3,8 @@
 /**
  * Composite index definition
  */
-export type SchemaIndex = { name: string, fields: Array<string>, unique: boolean, };
+export type SchemaIndex = { 
+/**
+ * Direction of the final indexed column, matching decorator metadata.
+ */
+descending: boolean, name: string, fields: Array<string>, unique: boolean, };

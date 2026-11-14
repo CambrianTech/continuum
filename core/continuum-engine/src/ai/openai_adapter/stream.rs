@@ -212,7 +212,16 @@ impl OpenAICompatibleAdapter {
             })?;
             // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
             let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
-            let adm = crate::inference::turn_admission::admit_turn(
+            let preparation = match terms.admission.and_then(|admission| admission.lease) {
+                Some(lease) => {
+                    let persona = parse(request.persona_id.as_deref()).ok_or_else(||
+                        crate::ai::inference_error::InferenceError::Protocol(
+                            "a request carrying a grant admission must name its persona by id".into()))?;
+                    Some(crate::inference::turn_admission::Preparation { persona, lease })
+                }
+                None => None,
+            };
+            let adm = crate::inference::turn_admission::admit_prepared_turn(
                 endpoint_permits,
                 class,
                 turn_key,
@@ -221,9 +230,10 @@ impl OpenAICompatibleAdapter {
                 root,
                 approx_tokens,
                 crate::inference::turn_admission::AdmissionPatience::for_turn(),
+                preparation,
             )
             .await
-            .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
+            .map_err(crate::ai::inference_error::InferenceError::from)?;
             let scratch = adm.scratch_slot();
             // Only a turn that names its page owns a slot. A Turn with no persona (or a Fork
             // with no room) used to go out UNPINNED with cache_prompt on whenever the pool had a
@@ -502,7 +512,7 @@ impl OpenAICompatibleAdapter {
         // POST through the lane with the mid-relaunch retry (`inference::lane_send`).
         // Her grant's reservation: released by the engine's terminal receipt (the stream's final
         // frame, below); dropped without it (a cancelled caller, a broken stream) it stays held.
-        let mut grant_reservation = None;
+        let mut grant_reservation = _admission.as_mut().and_then(|admitted| admitted.take_preparation());
         let response = crate::inference::lane_send::send_with_lane_retry(
             &self.config,
             request_builder,
