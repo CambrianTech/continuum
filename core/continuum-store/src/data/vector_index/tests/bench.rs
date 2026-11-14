@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! vector-bench: the engine doc's simulation-first receipt for the vector consumer.
 //!
 //! OLD is the path this branch deletes, replayed faithfully: each row's embedding stored as

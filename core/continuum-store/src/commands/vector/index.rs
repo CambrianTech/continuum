@@ -38,7 +38,7 @@ crate::action_command! {
     params: VectorIndexParams,
     output: StorageResult<DataRecord>,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_deref().unwrap_or("main"); // an unnamed handle is the shared main store by contract
         // The wire keeps its receipt shape; the store seam below it is typed.
         let record = this
             .state

@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! The consumer's contract: certified unit rows, typed refusals, one dot product per score,
 //! and a measured prefilter that keeps the exact ranking.
 use super::cpu::{dot, CpuMatrix, MatrixBuilder};
