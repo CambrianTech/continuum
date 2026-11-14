@@ -12,6 +12,9 @@ pub mod card_facts;
 pub mod work_preconditions;
 /// What on a board no reviewer can judge yet, and the next move it owes her.
 pub mod review_queue;
+/// Whether a submission has passed review, derived from its recorded verdicts; whether its author
+/// may review it; whether a pass verified the submitted head (cards 0174211f, 5a94e88e).
+pub mod review_verdict;
 /// The handoff record: her state at the seam, written before a stop, read first on wake
 /// (card 49b5e806).
 pub mod handoff;

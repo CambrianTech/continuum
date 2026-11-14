@@ -32,8 +32,8 @@ impl ActionCommand for WorkSubmission {
         )?;
         let card = board.card(WorkCardId::from_uuid(card_uuid)).ok_or_else(|| {
             CommandError::NotFound(format!(
-                "card {card_uuid} is absent from the board of room {} — to read a card use \
-                 work/get, to publish your own work use work/submit",
+                "card {card_uuid} is absent from the board of room {}: name a card that board holds, \
+                 or the room that holds this one",
                 room_label(&room.name, room.channel.as_uuid()),
             ))
         })?;
@@ -85,11 +85,8 @@ impl ActionCommand for WorkSubmission {
             Ok(value) => (Some(value), None),
             Err(e) => (None, Some(e.to_string())),
         };
-        let outcomes: Vec<_> = board
-            .submission_reviews_for(submitted.submission_id)
-            .filter(|r| r.card_id == submitted.card_id)
-            .map(|r| r.outcome)
-            .collect();
+        let policy = crate::persona::work_board::review::room_policy(runtime.airc(), &room).await;
+        let state = review_state(&board, submitted, &policy.counted());
         let reviews = board
             .submission_reviews_for(submitted.submission_id)
             .filter(|r| r.card_id == submitted.card_id)
@@ -108,11 +105,12 @@ impl ActionCommand for WorkSubmission {
                 publisher: submitted.publisher.as_uuid(),
                 claim_id: submitted.claim_id.as_uuid(),
                 base_sha: submitted.base_sha.to_string(),
+                head: submitted.head.commit().map(ToString::to_string),
                 instance: submitted.instance.clone(),
                 artifact: (&submitted.artifact).into(),
                 submitted_at_ms: submitted.submitted_at_ms,
                 bound_staged_revision_id: credit.as_ref().and_then(|c| c.staged_revision_id),
-                next: next_after_submission(Some(submission_uuid), &outcomes, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id)), card.pull_request.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+                next: next_after_submission(Some(submission_uuid), state, crate::recipe::benchmark_catalog::graded_at_submit(&card.title), submission_review_handoff(&board, card.card_id, Some(submitted.submission_id)), card.pull_request.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
             },
             claim_id: submitted.claim_id.as_uuid(),
             base_sha: submitted.base_sha.to_string(),

@@ -84,6 +84,14 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         });
     }
 
+    /// The llama.cpp extensions are what pin a page's slot and keep its prompt cache.
+    fn prompt_cache(&self) -> crate::ai::adapter::PromptCache {
+        match self.config.llamacpp_sampling_extensions {
+            true => crate::ai::adapter::PromptCache::PinnedSlot,
+            false => crate::ai::adapter::PromptCache::NotKept,
+        }
+    }
+
     fn capabilities(&self) -> AdapterCapabilities {
         // The capability set is already projected from the registry at
         // construction (#65) — the adapter just hands it through, adding the

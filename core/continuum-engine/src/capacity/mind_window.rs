@@ -52,6 +52,15 @@ pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: 
     }
 }
 
+/// Her granted window, HELD for the act about to render against it ([`super::window_grant::ActHold`]):
+/// no replan moves it and no handoff takes it until the act ends. Refused as the reclaiming wait
+/// [`decide_window`] names when a publication between her decision and the hold took it or owes it to
+/// a waiter: her act waits for a grant, never renders against one being handed off.
+pub fn hold_granted(persona: uuid::Uuid) -> Result<super::window_grant::ActHold, WindowRefused> {
+    super::window_grant::hold_for_act(persona)
+        .ok_or(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming)))
+}
+
 /// No grants watch is installed in this process, so a mind on the shared pool can never be granted
 /// a window here: a typed refusal, never a wait on a watch that cannot fire (Cormac on #5752).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

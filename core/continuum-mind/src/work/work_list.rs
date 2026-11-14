@@ -267,6 +267,11 @@ impl ActionCommand for WorkList {
             &owner_peers,
         )
         .await;
+        let reader = airc_core::PeerId::from_uuid(me);
+        let judges_her_own = |card: &airc_work::WorkCard| {
+            crate::cognition::review_verdict::judged_submission(card, &board.cards)
+                .is_some_and(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, reader))
+        };
         // Render EVERY card once (holder resolution is the shared projection), then
         // filter on the rendered facts. Filtering before rendering would put the
         // availability question on the raw column again — the exact split this fixes.
@@ -284,7 +289,8 @@ impl ActionCommand for WorkList {
                         // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
-                        claimable: holder.claimable(),
+                        // Never offered to the mind whose work it judges (card 0174211f).
+                        claimable: holder.claimable() && !judges_her_own(c),
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,

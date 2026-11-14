@@ -342,6 +342,40 @@ impl KvSlotPool {
         SlotPaging::judged(slot, prev.filter(|p| *p != key), basis)
     }
 
+    /// Whom a stop saves: every attributed resident, and every slot still holding a sequence of a
+    /// mind no slot is attributed to. The stop condemns acts in flight, and a cut act drops her
+    /// attribution (`TurnAdmission`'s drop), so without this the stop saved only the minds that
+    /// were idle: the M5 2026-11-14 07:48:28Z, one save of four residents, and three cold first
+    /// acts after the deploy (`cold_turn cause="no_page"`). A confirmed sequence is saved when
+    /// it is at least as new as her page; an unconfirmed one (her cut act's tokens) only when
+    /// she has no page, since a cut prompt may have truncated below what her page holds.
+    pub(crate) fn stop_residents(&self) -> Vec<(u32, PageKey)> {
+        let attributed: std::collections::HashMap<u32, PageKey> = self.holders.lock().clone();
+        let paged: std::collections::HashSet<PageKey> = self.saved.lock().clone();
+        // One save per page: a mind attributed nowhere whose sequences sit in several slots is
+        // saved from her confirmed one before an unconfirmed one.
+        let mut cut: std::collections::HashMap<PageKey, (u32, HeldSequence)> = std::collections::HashMap::new();
+        for (slot, key, held) in self.sequences.lock().held() {
+            let worth_saving = match held {
+                HeldSequence::Confirmed { at_least_her_page } => at_least_her_page || !paged.contains(&key),
+                HeldSequence::Unconfirmed => !paged.contains(&key),
+            };
+            if !worth_saving || attributed.contains_key(&slot) || attributed.values().any(|k| *k == key) {
+                continue;
+            }
+            let confirmed = |h: &HeldSequence| matches!(h, HeldSequence::Confirmed { .. });
+            match cut.get(&key) {
+                Some((_, kept)) if confirmed(kept) || !confirmed(&held) => {}
+                _ => {
+                    cut.insert(key, (slot, held));
+                }
+            }
+        }
+        let mut residents: Vec<(u32, PageKey)> = attributed.into_iter().chain(cut.into_iter().map(|(key, (slot, _))| (slot, key))).collect();
+        residents.sort_unstable_by_key(|(slot, _)| *slot);
+        residents
+    }
+
     /// `key`'s generation completed in `slot`: the slot holds her newest sequence.
     pub(crate) fn note_generated(&self, slot: u32, key: PageKey) {
         self.sequences.lock().completed(slot, key);

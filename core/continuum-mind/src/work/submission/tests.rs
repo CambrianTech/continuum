@@ -1,26 +1,21 @@
 #![cfg(test)]
 
-    // what this catches (Codex root, review of #5017): work/review read the room's policy
-    // twice, so a Declared(self: false) read followed by an Unavailable read published the
-    // author's own review under a policy nobody could verify. The command now reads ONCE and
-    // decides on that snapshot; every outcome of the one read is pinned here.
+    // what this catches (cards 0174211f, fa4aaaaa; Aiko passed her own submissions on the M5,
+    // 2026-11-14): a room declaring no policy ADMITTED the author's own review. Every outcome of the
+    // one policy read is pinned through the command's decision: only a readable `self: true` admits.
     #[test]
-    fn her_own_review_publishes_only_on_a_readable_policy_that_admits_it() {
+    fn her_own_review_publishes_only_where_the_room_declares_self() {
+        use crate::cognition::review_verdict::{author_may_review, PeerIsMind};
         use crate::experience::binding::ReviewPolicy;
         use crate::persona::work_board::review::PolicyRead;
-        use crate::sdk_codegen::CommandError;
-        let card = airc_work::WorkCardId::new();
-        assert!(super::own_review_publishable(&PolicyRead::Absent, &card).is_ok(), "no policy keeps today's behaviour");
-        let admits = ReviewPolicy { self_review: true, ..ReviewPolicy::default() };
-        assert!(super::own_review_publishable(&PolicyRead::Declared(admits), &card).is_ok());
-        let refuses = ReviewPolicy { self_review: false, ..ReviewPolicy::default() };
-        assert!(super::own_review_publishable(&PolicyRead::Declared(refuses), &card).is_err());
-        let Err(CommandError::Invalid(why)) =
-            super::own_review_publishable(&PolicyRead::Unavailable("wall unreachable".into()), &card)
-        else {
-            panic!("an unreadable policy must refuse her own review, by name");
-        };
-        assert!(why.contains("could not be read") && why.contains("wall unreachable"), "{why}");
+        let her = airc_core::PeerId::new();
+        let card = crate::cognition::work_preconditions::fixture_card(airc_work::CardState::Review, Some(her), None, "her work");
+        let submission = crate::cognition::work_preconditions::fixture_submission(&card);
+        let own = |read: PolicyRead| author_may_review(read.declared(), &PeerIsMind, &submission, her).is_ok();
+        assert!(!own(PolicyRead::Absent), "no policy is no permission");
+        assert!(!own(PolicyRead::Unavailable("wall unreachable".into())), "an unreadable policy is no permission");
+        assert!(!own(PolicyRead::Declared(ReviewPolicy::default())), "declared, self false");
+        assert!(own(PolicyRead::Declared(ReviewPolicy { self_review: true, ..ReviewPolicy::default() })), "the room admits it");
     }
 
     // what this catches (card d6e1b7a2, BigMama on #4836): a card she HOLDS on a room she is
@@ -280,9 +275,11 @@
     // revise and resubmit, a pass says it fired, and nothing submitted says nothing.
     #[test]
     fn after_a_submit_the_receipt_says_what_happens_next() {
-        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        use crate::cognition::review_verdict::ReviewState;
+        let waiting = ReviewState::Awaiting { passes: 0, required: 1 };
+        let passed = ReviewState::Passed { passes: 1 };
         let id = uuid::Uuid::new_v4();
-        let bench = super::next_after_submission(Some(id), &[], true, None, None).expect("submitted");
+        let bench = super::next_after_submission(Some(id), waiting, true, None, None).expect("submitted");
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
@@ -293,22 +290,27 @@
             head: airc_work::BranchName::new("e5c80c7f/her-fix").expect("a valid branch"),
             base: airc_work::BranchName::new("canary").expect("a valid branch"),
         };
-        let reviewed = super::next_after_submission(Some(id), &[], false, handoff, Some(&pr)).expect("submitted");
+        let reviewed = super::next_after_submission(Some(id), waiting, false, handoff, Some(&pr)).expect("submitted");
         assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
         assert!(reviewed.contains("CambrianTech/continuum#5900"), "the pull request carrying it is named: {reviewed}");
-        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff, Some(&pr)), Some(reviewed.clone()), "an unknown verdict is still waiting");
-        assert!(super::next_after_submission(Some(id), &[], false, None, None).unwrap().contains("no review handoff is recorded"));
-        let back = super::next_after_submission(Some(id), &[Failed], true, None, None).expect("sent back");
+        let one_of_two = super::next_after_submission(Some(id), ReviewState::Awaiting { passes: 1, required: 2 }, false, handoff, Some(&pr)).expect("waiting");
+        assert!(one_of_two.contains("1 of the 2 passing reviews") && !one_of_two.contains("passed review"), "a pass short of the policy is not passed: {one_of_two}");
+        assert!(super::next_after_submission(Some(id), waiting, false, None, None).unwrap_or_default().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), ReviewState::SentBack { by: airc_core::PeerId::new() }, true, None, None).expect("sent back");
         assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
-        let merging = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff, Some(&pr)).expect("passed");
-        assert!(merging.contains("passed review") && merging.contains("CambrianTech/continuum#5900") && !merging.contains("card is done"), "a pass outranks an earlier send-back, and lands through its merge: {merging}");
+        let merging = super::next_after_submission(Some(id), passed, false, handoff, Some(&pr)).expect("passed");
+        assert!(merging.contains("passed review") && merging.contains("CambrianTech/continuum#5900") && !merging.contains("card is done"), "a pass lands through its merge: {merging}");
+        // what this catches (card 5a94e88e): passing verdicts on a submission with no recorded head
+        // read "passed ... merges"; no verdict covers what would land.
+        let headless = super::next_after_submission(Some(id), ReviewState::HeadUnrecorded, false, handoff, Some(&pr)).expect("headless");
+        assert!(!headless.contains("passed review") && headless.contains("records no head"), "{headless}");
         // what this catches (break 2): a pass with no PR linked told her the card was done while
         // its patch landed nowhere; it names the move that opens and links the PR instead.
-        let unlanded = super::next_after_submission(Some(id), &[Passed], false, handoff, None).expect("passed");
+        let unlanded = super::next_after_submission(Some(id), passed, false, handoff, None).expect("passed");
         assert!(!unlanded.contains("card is done") && unlanded.contains("no pull request is linked") && unlanded.contains("work/submit"), "{unlanded}");
-        let graded = super::next_after_submission(Some(id), &[Passed], true, None, None).expect("passed");
+        let graded = super::next_after_submission(Some(id), passed, true, None, None).expect("passed");
         assert!(graded.contains("card is done"), "an oracle-graded card finishes on its grade: {graded}");
-        assert_eq!(super::next_after_submission(None, &[], true, None, None), None, "nothing submitted, nothing to say");
+        assert_eq!(super::next_after_submission(None, waiting, true, None, None), None, "nothing submitted, nothing to say");
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
@@ -896,7 +898,7 @@
             publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
             submitted_at_ms: 7,
         };
-        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false, None);
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), crate::cognition::review_verdict::ReviewState::Awaiting { passes: 0, required: 1 }, false, None);
         assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
         assert!(answer.next.contains("already your submission"), "{}", answer.next);
     }

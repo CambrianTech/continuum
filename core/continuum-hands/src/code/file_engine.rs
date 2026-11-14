@@ -93,14 +93,20 @@ impl FileEngine {
     /// mistyped PATH. One constructor, used by every not-found site, so read,
     /// edit and write all recover the same way (compression: one decision, one
     /// place).
+    ///
+    /// The miss names the absolute root it was resolved against (cards c8546b52, 566e390e):
+    /// "File not found" alone let Aris believe her edit went to her card's checkout when her
+    /// hands stood in her home workspace (the M5, 2026-11-14).
     fn not_found(&self, relative_path: &str) -> FileEngineError {
-        let hits = suggest_nearest_paths(self.security.workspace_root(), relative_path);
+        let root = self.security.workspace_root();
+        let hits = suggest_nearest_paths(root, relative_path);
         if hits.is_empty() {
-            return FileEngineError::NotFound(relative_path.to_string());
+            return FileEngineError::NotFound(format!("{relative_path} (in {})", root.display()));
         }
         FileEngineError::NotFound(format!(
-            "{relative_path} — no such file. Did you mean: {}? (searched this \
+            "{relative_path} — no such file in {}. Did you mean: {}? (searched this \
              workspace; use file_tree/grep to look further)",
+            root.display(),
             hits.join(", ")
         ))
     }

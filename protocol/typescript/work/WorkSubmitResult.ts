@@ -15,7 +15,11 @@ claim_id: string,
 /**
  * The artifact is a patch against this base in this activity instance.
  */
-base_sha: string, instance: string, artifact: WorkArtifactReference, submitted_at_ms: number, 
+base_sha: string, 
+/**
+ * The commit the patch ends at: what a passing review names as verified_head.
+ */
+head: string | null, instance: string, artifact: WorkArtifactReference, submitted_at_ms: number, 
 /**
  * Present only after the selected copy and reservations were persisted.
  */

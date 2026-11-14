@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::workspace_root_for;
+use super::{conflicted, head, workspace_root_for};
 use crate::code::git_actor::GitActor;
 use crate::code::git_bridge;
 use crate::modules::code::CodeState;
@@ -77,7 +77,7 @@ crate::action_command! {
 pub async fn rebase(root: &Path, actor: &GitActor, p: &GitRebaseParams) -> Result<GitRebaseResult, CommandError> {
     let args: Vec<&str> = match p {
         GitRebaseParams::Start { onto } if onto.trim().is_empty() => {
-            return Err(CommandError::Invalid("code/git/rebase: `onto` names the base to rebase onto, e.g. origin/canary".into()))
+            return Err(CommandError::Invalid("`onto` names the base to rebase onto, e.g. origin/canary".into()))
         }
         GitRebaseParams::Start { onto } => vec!["rebase", onto.as_str()],
         GitRebaseParams::Continue => vec!["rebase", "--continue"],
@@ -99,18 +99,8 @@ pub async fn rebase(root: &Path, actor: &GitActor, p: &GitRebaseParams) -> Resul
             })
         }
         Err(_) if !conflicts.is_empty() => Ok(GitRebaseResult::Conflicts { files: conflicts }),
-        Err(error) => Err(CommandError::Internal(format!("code/git/rebase: {error}"))),
+        Err(error) => Err(CommandError::Internal(error.to_string())),
     }
-}
-
-async fn head(root: &Path) -> Result<String, CommandError> {
-    git_bridge::run_git(root, &["rev-parse", "HEAD"]).await.map(|h| h.trim().to_string()).map_err(CommandError::Internal)
-}
-
-/// The paths git holds unmerged: what she resolves before continuing.
-async fn conflicted(root: &Path) -> Result<Vec<String>, CommandError> {
-    let listed = git_bridge::run_git(root, &["diff", "--name-only", "--diff-filter=U"]).await.map_err(CommandError::Internal)?;
-    Ok(listed.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect())
 }
 
 #[cfg(test)]
