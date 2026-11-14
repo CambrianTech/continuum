@@ -50,7 +50,7 @@ pub(super) fn verified_capture(
 /// still serves every slot it has: that is the residency the board charges and the
 /// ambient budget the citizens get.
 pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
-    served.filter(|n| *n > 0).unwrap_or(target_lanes)
+    served.filter(|n| *n > 0).unwrap_or(target_lanes) // unwrap_or: an engine naming no slots serves the count it was launched with, a fact of its own launch
 }
 
 /// PURE: each sequence's window inside the engine's one shared pool, and the sequences. An
@@ -182,7 +182,7 @@ impl ServingDaemonModule {
             crate::inference::llama_server::note_serving_ready();
         }
         if let Some(bus) = bus {
-            if let Ok(payload) = serde_json::to_value(snapshot) {
+            if let Ok(payload) = serde_json::to_value(snapshot) { // boundary: the bus spans the grid, so a peer's lease allocator reads this as wire JSON
                 bus.publish_async_only(SERVING_SNAPSHOT_EVENT, payload);
             }
         }

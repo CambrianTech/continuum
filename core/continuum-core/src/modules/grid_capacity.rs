@@ -121,7 +121,7 @@ impl ServiceModule for GridCapacityModule {
                 "kind": "existing_schema",
                 "payload": {
                     "schema": "grid_capacity",
-                    "inline": serde_json::to_value(&offer)
+                    "inline": serde_json::to_value(&offer) // boundary: the offer leaves this node on the airc realtime wire to every peer
                         .map_err(|e| format!("capacity offer encode failed: {e}"))?,
                 }
             },
