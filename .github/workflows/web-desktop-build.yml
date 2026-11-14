@@ -1,0 +1,36 @@
+name: Web Desktop Build Check
+
+on:
+  pull_request:
+    paths:
+      - 'apps/web/**'
+      - 'packages/*/web/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/web-desktop-build.yml'
+
+concurrency:
+  group: web-desktop-build-${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  build-check:
+    name: Web client build (tsc + vite)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: package-lock.json
+
+      - name: Install workspace dependencies
+        run: npm ci || npm install
+
+      - name: Build web client (tsc + vite)
+        run: npm run build -w @continuum/web
