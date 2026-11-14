@@ -174,6 +174,13 @@ pub(super) fn settlement_acts(count: usize) -> Vec<(String, Vec<crate::ai::types
 /// `receipt`, with its call really captured under `persona` in the process home's capture
 /// directory, the way the turn driver leaves a served call: the cursor it carries reads back
 /// as the call she lived. Receipts that are not served, or already carry a cursor, pass as-is.
+type CaptureSinks = std::collections::HashMap<
+    (std::path::PathBuf, Uuid),
+    Arc<crate::cognition::prompt_capture::JsonlPromptCaptureSink>,
+>;
+static CAPTURE_SINKS: std::sync::LazyLock<std::sync::Mutex<CaptureSinks>> =
+    std::sync::LazyLock::new(Default::default);
+
 pub(super) fn captured(
     persona: Uuid,
     receipt: crate::ai::provenance::GenerationReceipt,
@@ -186,11 +193,8 @@ pub(super) fn captured(
     // One capture session per home and persona, as one turn driver keeps: every store open
     // rotates (only the current and previous segments are kept), so a session per receipt
     // would expire all but the last two captures before she staged them.
-    static SINKS: std::sync::LazyLock<
-        std::sync::Mutex<std::collections::HashMap<(std::path::PathBuf, Uuid), Arc<JsonlPromptCaptureSink>>>,
-    > = std::sync::LazyLock::new(Default::default);
     let dir = crate::cognition::capture::fixture_dir(FIXTURE_DIR).expect("the test home resolves"); // JUSTIFIED: test fixture
-    let mut sinks = SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked test leaves the map usable
+    let mut sinks = CAPTURE_SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a panicked test leaves the map usable
     // Home-pinned tests run one at a time (HomeGuard): a sink of another home belongs to a
     // finished test, and its handles go with it so its temp home can be removed.
     sinks.retain(|(home, _), _| *home == dir);
@@ -228,6 +232,11 @@ pub(super) fn uncaptured(id: &str, model: &str) -> crate::ai::provenance::Genera
 pub(super) async fn captures_unreadable<T>(staged: impl std::future::Future<Output = T>) -> T {
     let dir = crate::cognition::capture::fixture_dir(crate::cognition::prompt_capture::FIXTURE_DIR)
         .expect("the test home resolves"); // JUSTIFIED: test fixture
+    // Release this fixture's completed capture writers before moving their files.
+    // Windows cannot rename their parent directory while those handles remain open.
+    // The receipts retain their exact cursors; the restored bytes remain authoritative.
+    CAPTURE_SINKS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        .retain(|(home, _), _| *home != dir);
     let aside = dir.with_extension("aside");
     std::fs::rename(&dir, &aside).expect("move the captures aside"); // JUSTIFIED: test fixture
     let out = staged.await;
