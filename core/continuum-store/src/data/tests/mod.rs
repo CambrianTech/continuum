@@ -286,7 +286,7 @@ use crate::orm::types::CollectionSchema;
     ) -> Result<CommandResult, Box<dyn std::error::Error>> {
         let p: crate::commands::vector::index::VectorIndexParams = serde_json::from_value(params)?;
         let handle = p.handle.as_str();
-        let record = module.state.index_vector(handle, &p.collection, p.id, p.embedding).await?;
+        let record = module.state.index_vector(handle, &p.collection, &p.id, &p.embedding).await?;
         Ok(CommandResult::Json(serde_json::to_value(record)?))
     }
 

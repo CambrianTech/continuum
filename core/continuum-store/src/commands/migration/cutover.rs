@@ -29,7 +29,7 @@ crate::action_command! {
     params: MigrationCutoverParams,
     output: MigrationCutover,
     run(this, _ctx, p) => {
-        let result = this.state.migration_cutover(p.current, p.target).await?;
+        let result = this.state.migration_cutover(crate::data::ConnectionSwap { current: p.current, target: p.target }).await?;
         Ok(result)
     }
 }

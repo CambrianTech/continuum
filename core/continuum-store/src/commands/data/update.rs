@@ -47,7 +47,7 @@ crate::action_command! {
         let handle = p.handle.as_str();
         let result = this
             .state
-            .update_record(handle, p.collection, p.id, p.data, p.versioning)
+            .update_record(handle, &p.collection, &p.id, p.data, p.versioning)
             .await?;
         Ok(result)
     }

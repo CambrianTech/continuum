@@ -35,17 +35,17 @@ impl DataState {
     pub(crate) async fn update_record(
         &self,
         handle: &str,
-        collection: String,
-        id: UUID,
+        collection: &str,
+        id: &UUID,
         data: Value,
         versioning: Versioning,
     ) -> Result<DataRecord, CommandError> {
-        require_public_collection(&collection).map_err(CommandError::Invalid)?;
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         require_record_fields(&data).map_err(CommandError::Invalid)?;
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let updated = adapter.update(Update { row: RowRef { collection: &collection, id: &id }, data, versioning }).await?;
-        self.vector_cache.invalidate(&scope, &collection);
-        self.publish_event(&collection, "updated", json!({ "id": id, "collection": collection }));
+        let updated = adapter.update(Update { row: RowRef { collection, id }, data, versioning }).await?;
+        self.vector_cache.invalidate(&scope, collection);
+        self.publish_event(collection, "updated", json!({ "id": id, "collection": collection }));
         Ok(updated)
     }
 

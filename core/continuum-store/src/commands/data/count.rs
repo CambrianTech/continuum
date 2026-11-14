@@ -39,7 +39,7 @@ crate::action_command! {
     output: usize,
     run(this, _ctx, p) => {
         let handle = p.handle.as_str();
-        let result = this.state.count_records(handle, p.collection, p.filter).await?;
+        let result = this.state.count_records(handle, &p.collection, p.filter).await?;
         Ok(result)
     }
 }

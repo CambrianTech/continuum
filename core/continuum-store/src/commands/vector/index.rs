@@ -41,7 +41,7 @@ crate::action_command! {
         let handle = p.handle.as_str();
         let record = this
             .state
-            .index_vector(handle, &p.collection, p.id, p.embedding)
+            .index_vector(handle, &p.collection, &p.id, &p.embedding)
             .await?;
         Ok(record)
     }

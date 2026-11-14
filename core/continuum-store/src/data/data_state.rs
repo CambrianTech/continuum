@@ -239,10 +239,10 @@ impl DataState {
     pub(crate) async fn count_records(
         &self,
         handle: &str,
-        collection: String,
+        collection: &str,
         filter: Option<serde_json::Map<String, Value>>,
     ) -> Result<usize, CommandError> {
-        require_public_collection(&collection).map_err(CommandError::Invalid)?;
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         for name in filter.iter().flat_map(|fields| fields.keys()) {
             require_field_name(name)?;
         }
@@ -250,7 +250,7 @@ impl DataState {
         let start = Instant::now();
 
         let query = StorageQuery {
-            collection: collection.clone(),
+            collection: collection.to_owned(),
             filter: filter.map(|m| {
                 m.into_iter()
                     .map(|(k, v)| (k, FieldFilter::Value(v)))
@@ -349,8 +349,8 @@ impl DataState {
         &self,
         handle: &str,
         collection: &str,
-        id: String,
-        embedding: Vec<f64>,
+        id: &UUID,
+        embedding: &[f64],
     ) -> Result<DataRecord, VectorStoreError> {
         require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
         let start = std::time::Instant::now();
@@ -359,7 +359,7 @@ impl DataState {
         let payload = unit_f32(embedding.iter().map(|value| *value as f32), &Producer::IndexCommand)?;
         let written = adapter
             .update_binary(crate::orm::seam::BinaryWrite {
-                row: RowRef { collection, id: &id },
+                row: RowRef { collection, id },
                 payloads: std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
                 condition: crate::orm::binary::BinaryWriteCondition::Replace,
             })
@@ -368,7 +368,7 @@ impl DataState {
         self.vector_cache.invalidate(&scope, collection);
         written?;
         log_info!("data", "vector/index", "Indexed vector for {} in {}ms", id, start.elapsed().as_millis());
-        Ok(adapter.read(RowRef { collection, id: &id }).await?)
+        Ok(adapter.read(RowRef { collection, id }).await?)
     }
 
     /// Get vector index statistics for a collection.

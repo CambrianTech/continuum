@@ -47,7 +47,7 @@ async fn vector_corpus_pages_past_rows_without_embeddings() {
         let id = record_id(index as u128).to_string();
         create_row(adapter.as_ref(), "test_vector_pages", &id).await;
         if index >= page_size {
-            module.state.index_vector(&db_path, "test_vector_pages", id, vec![index as f64, 1.0])
+            module.state.index_vector(&db_path, "test_vector_pages", &id, &[index as f64, 1.0])
                 .await.expect("test: index");
         }
     }
@@ -75,7 +75,7 @@ async fn zero_vector_is_refused_at_index() {
     declare_vectors(adapter.as_ref(), "test_zero").await;
     let zero = record_id(0).to_string();
     create_row(adapter.as_ref(), "test_zero", &zero).await;
-    let refused = module.state.index_vector(&db_path, "test_zero", zero, vec![0.0; 384]).await;
+    let refused = module.state.index_vector(&db_path, "test_zero", &zero, &[0.0; 384]).await;
     assert!(matches!(refused, Err(VectorStoreError::Unit(UnitVectorError::Zero))), "{refused:?}");
     assert!(module.state.vector_corpus(&db_path, "test_zero").await.expect("test: corpus").len() == 0);
 }
@@ -157,7 +157,7 @@ async fn test_vector_search_basic() {
     for (idx, emb) in embeddings.into_iter().enumerate() {
         let id = record_id(idx as u128).to_string();
         create_row(adapter.as_ref(), "test_search", &id).await;
-        module.state.index_vector(&db_path, "test_search", id, emb).await.expect("test: index");
+        module.state.index_vector(&db_path, "test_search", &id, &emb).await.expect("test: index");
     }
 
     let query_vector: Vec<f64> = (0..384).map(|i| (i as f64) * 0.001).collect();
@@ -233,7 +233,7 @@ async fn test_vector_cache_invalidation() {
     let resident = record_id(0).to_string();
     let target = || record_id(1).to_string();
     create_row(adapter.as_ref(), "test_cache", &resident).await;
-    module.state.index_vector(&db_path, "test_cache", resident, vec![1.0; 384]).await.expect("test: index");
+    module.state.index_vector(&db_path, "test_cache", &resident, &[1.0; 384]).await.expect("test: index");
 
     // First search populates the resident matrix.
     let query: Vec<f64> = vec![1.0; 384];
@@ -270,7 +270,7 @@ async fn test_vector_cache_invalidation() {
             &alias, "test_cache".into(), Some(target()), json!({}),
         ).await.expect("create through mutation owner");
         assert_eq!(created.id, target());
-        module.state.index_vector(&alias, "test_cache", target(), vec![1.0; 384]).await.expect("alias index");
+        module.state.index_vector(&alias, "test_cache", &target(), &[1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
             &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("warm corpus");
@@ -280,7 +280,7 @@ async fn test_vector_cache_invalidation() {
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
         module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before reindex");
-        module.state.index_vector(&alias, "test_cache", target(), vec![-1.0; 384]).await.expect("reindex");
+        module.state.index_vector(&alias, "test_cache", &target(), &[-1.0; 384]).await.expect("reindex");
         let changed = module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.5, true)
             .await.expect("search reindexed corpus");
         assert!(changed.results.iter().all(|hit| hit.id != target()));

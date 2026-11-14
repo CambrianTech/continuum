@@ -1,4 +1,4 @@
-use super::{relational_evolution as evolution, relational_schema::DeclaredTable};
+use crate::orm::{relational_evolution as evolution, relational_schema::DeclaredTable};
 use sea_orm::{ActiveModelTrait, EntityTrait, Set, TransactionTrait};
 
 /// Read-only catalog inspection through the same typed projections as admission.

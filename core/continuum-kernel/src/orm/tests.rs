@@ -5,6 +5,8 @@ use super::*;
 
 #[path = "derive_test.rs"]
 mod derive_test;
+#[path = "relational_derived_tests.rs"]
+mod relational_derived_tests;
 #[path = "relational_tests.rs"]
 mod relational_tests;
 #[path = "binary_tests.rs"]
