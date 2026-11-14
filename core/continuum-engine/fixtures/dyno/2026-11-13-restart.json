@@ -1,0 +1,26 @@
+{
+  "contexts_tokens": {
+    "value": [73826, 36893, 90853, 51749],
+    "receipt": "the four residents' slot tokens on the M5 engine (Qwen3.6-35B-A3B, pin cd2e16d87), ~/.continuum/logs/llama-server-58057.log.1 lines 66, 92, 97, 98 (2026-11-13 ~23:00Z): 'slot tokens = 73826', '36893', '90853', '51749'"
+  },
+  "cold_prefill_tok_per_s": {
+    "value": 632,
+    "receipt": "aggregate prefill of four minds re-prefilling at once after the 2026-11-14 00:18Z relaunch, llama-server-58057.log lines 3640-3760, engine clock 0:58.6-1:37.5 (38.9 s): slot 0 16,431 -> 29,794 (+13,363), slot 1 11,761 -> 16,921 (+5,160), slot 2 2,528 -> 4,513 (+1,985), slot 3 0 -> 4,068; 24,576 tokens / 38.9 s"
+  },
+  "page_bytes_per_token": {
+    "value": 32273,
+    "receipt": "two restores right after that relaunch (core log 2026-11-14T00:18:13Z inference.kv_page.action): Aris slot 316,826,680 + sidecar 1,009,407,092 B for 43,389 slot tokens, Benchy 318,261,112 + 1,164,181,132 B for 43,637 tokens; 2,808,676,016 B / 87,026 tokens. Linear in tokens: a ballpark the restore cost is not sensitive to (a 2x error moves a 1 s restore to 2 s against a 100 s prefill)"
+  },
+  "restore_bytes_per_ms": {
+    "value": 1464377,
+    "receipt": "the same two restores: engine_ms 1012 and 906; 2,808,676,016 B / 1,918 ms"
+  },
+  "save_bytes_per_ms": {
+    "value": 603433,
+    "receipt": "three saves on the M5 (core log inference.kv_page.action action=save): 00:38:32Z 1,523,431,072 B in 2,253 ms, 00:48:22Z 1,140,518,392 B in 2,372 ms, 00:50:27Z 1,360,948,864 B in 2,045 ms; 4,024,898,328 B / 6,670 ms"
+  },
+  "store_pressure": {
+    "value": { "own": 0.03, "volume": 0.85 },
+    "receipt": "the KV page store on the M5, 2026-11-14 ~00:50Z: ~2.6 GB on disk (ls ~/.continuum/cache/kv-pages) of a 92.6 GiB budget (cargo_target_budget_bytes: 10% of the 926 GiB volume), volume 143 GiB free of 926 GiB (df -h /); the broker asked it for 9,946,101,555 B every few minutes and it forgot 29 minds' pages from 22:40Z to 00:50Z (inference.kv_page.store_evicted cold_minds_forgotten)"
+  }
+}

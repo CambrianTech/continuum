@@ -78,6 +78,38 @@ pub(super) struct LedgerSnapshot {
 pub(super) struct LoadedLedger {
     pub(super) keys: std::collections::HashSet<PageKey>,
     pub(super) residents: Vec<(u32, PageKey)>,
+    /// Why nothing was read, when nothing was: every page in the dir re-prefills once.
+    pub(super) unread: Option<LedgerUnread>,
+}
+
+/// Why a page dir's ledger restored nothing: each is a different thing to fix, and a restart
+/// that leaves every mind cold names which (never a silent cold start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LedgerUnread {
+    /// No ledger beside the pages: nothing was ever confirmed here, or the last stop's
+    /// checkpoint never wrote one.
+    Missing,
+    /// The file is there and could not be read.
+    Unreadable,
+    /// The file is not a ledger this core can parse.
+    Malformed,
+    /// Written before the page-format identity, with no identity files to date it against.
+    LegacyUndated,
+    /// Written under another page format (model, adapters, draft, KV cache type or flash
+    /// attention changed): its pages hold KV this engine would compute differently.
+    OtherPageFormat,
+}
+
+impl LedgerUnread {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Missing => "missing",
+            Self::Unreadable => "unreadable",
+            Self::Malformed => "malformed",
+            Self::LegacyUndated => "legacy_undated",
+            Self::OtherPageFormat => "other_page_format",
+        }
+    }
 }
 
 impl SavedLedger {
@@ -150,32 +182,32 @@ impl SavedLedger {
     /// Anything else is no eligibility, never a guess: a missing file, another format's
     /// ledger, a malformed one. Residents come back only for the same engine process.
     pub(super) fn load(&self) -> LoadedLedger {
-        let Some(dir) = self.path.parent() else {
-            return LoadedLedger::default();
-        };
-        let unread = |why: &str| {
+        let unread = |why: LedgerUnread| {
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_unread",
                 path = %self.path.display(),
-                why = why,
-                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
+                why = why.as_str(),
+                "no confirmed-save ledger restored: every page in this dir re-prefills once"
             );
-            LoadedLedger::default()
+            LoadedLedger { unread: Some(why), ..LoadedLedger::default() }
+        };
+        let Some(dir) = self.path.parent() else {
+            return unread(LedgerUnread::Missing);
         };
         let bytes = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadedLedger::default(),
-            Err(_) => return unread("unreadable"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return unread(LedgerUnread::Missing),
+            Err(_) => return unread(LedgerUnread::Unreadable),
         };
         let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
-            return unread("malformed");
+            return unread(LedgerUnread::Malformed);
         };
         let legacy = file.format < LEDGER_FORMAT && self.format == LEDGER_FORMAT;
         if legacy && self.identity_floor.is_none() {
-            return unread("written before the page-format identity, and no identity files to date it against");
+            return unread(LedgerUnread::LegacyUndated);
         }
         if !legacy && (file.format != self.format || file.fingerprint != self.fingerprint) {
-            return unread("written under another page format");
+            return unread(LedgerUnread::OtherPageFormat);
         }
         let listed = file.minds.len() + file.activities.len();
         let minds: Vec<MindKey> = file.minds.iter().copied().filter_map(MindKey::new).collect();
@@ -229,7 +261,7 @@ impl SavedLedger {
         } else {
             Vec::new()
         };
-        LoadedLedger { keys: fold.keys, residents }
+        LoadedLedger { keys: fold.keys, residents, unread: None }
     }
 }
 

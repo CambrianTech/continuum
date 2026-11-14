@@ -24,6 +24,8 @@
 
 use std::time::Duration;
 
+use continuum_base::probed::Probed;
+
 use crate::runtime::admission_gate::{AdmissionGate, Permit};
 
 static PAGE_IO: AdmissionGate = AdmissionGate::new();
@@ -92,8 +94,31 @@ async fn checkpoint_every_endpoint(cap: Duration) {
     for (root, endpoint) in endpoints {
         let started = std::time::Instant::now();
         let left = deadline.saturating_duration_since(started);
+        let (skipped, pool) = {
+            let state = endpoint.state.lock();
+            let pool = match state.pool() {
+                Probed::Known(pool) => Some(std::sync::Arc::clone(pool)),
+                Probed::NotAsked | Probed::Absent(_) => None,
+            };
+            (StopCheckpointSkip::of(&state), pool)
+        };
+        // Read outside the endpoint's state lock: no new lock order.
+        let residents = pool.map_or(0, |pool| pool.holders.lock().len() as u64);
+        if let Some(skip) = skipped {
+            // Named, never silent (the M5, 2026-11-13 23:40Z: a stop with no checkpoint receipt and
+            // a next boot that restored nothing): residents of an engine this core did not launch
+            // are not saved by this stop, and the next boot says so per mind (`cold_turn`).
+            continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_skipped", endpoint = %root,
+                reason = skip.as_str(), residents,
+                "the stop saved no resident of this endpoint: each re-prefills from her last confirmed page, or cold");
+            continue;
+        }
+        // Before the drain: a stop cut during its checkpoint still leaves who it was saving.
+        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root, residents,
+            left_ms = left.as_millis() as u64,
+            "the stop drains this endpoint's acts, then saves every resident a slot holds");
         let Some(outcome) = checkpoint_endpoint(&client, &root, &endpoint, left).await else {
-            continue; // never launched here: nothing resident
+            continue; // the generation ended between the read above and the checkpoint
         };
         continuum_base::probe!(
             class = "inference.kv_page.stop_checkpoint",
@@ -128,6 +153,35 @@ pub(crate) async fn checkpoint_endpoint(
     .map_err(|_elapsed| format!("the stop's cap ({} ms) ran out", cap.as_millis()))
     .and_then(|saved| saved);
     Some(outcome)
+}
+
+/// Why the stop's checkpoint passed an endpoint by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StopCheckpointSkip {
+    /// A running engine a previous core launched: this core holds no launch contract for it, so
+    /// its residents' KV is not saved here. A stop that also ends the engine loses it.
+    Adopted,
+    /// No engine with paging was launched or adopted here: no resident.
+    NoPagedEngine,
+}
+
+impl StopCheckpointSkip {
+    fn of(state: &super::kv_slot_pool::EndpointState) -> Option<Self> {
+        if state.generation().is_some() {
+            return None;
+        }
+        Some(match state.pool() {
+            Probed::Known(_) => Self::Adopted,
+            Probed::NotAsked | Probed::Absent(_) => Self::NoPagedEngine,
+        })
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Adopted => "adopted_engine",
+            Self::NoPagedEngine => "no_paged_engine",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

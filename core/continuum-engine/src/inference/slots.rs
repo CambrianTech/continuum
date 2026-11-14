@@ -67,7 +67,7 @@ mod saved_ledger;
 pub(crate) use saved_ledger::SavedLedger;
 use saved_ledger::{LedgerSnapshot, LoadedLedger};
 #[cfg(test)]
-use saved_ledger::{SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
+use saved_ledger::{LedgerUnread, SavedLedgerFile, LEDGER_FORMAT, SAVED_LEDGER_FILE};
 mod engine_generation;
 mod adopted_replacement;
 mod discover;
@@ -86,6 +86,8 @@ pub(crate) use page_io::admit as admit_page_io;
 pub use page_io::PageIoSettle;
 mod page_store_pool;
 pub use page_store_pool::KvPageStorePool;
+#[cfg(test)]
+pub(crate) use page_store_pool::{ColdPages, StorePressure};
 
 #[cfg(test)]
 mod tests;
