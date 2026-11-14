@@ -326,12 +326,9 @@ impl MigrationEngine {
         let collections = match &self.config.collections {
             Some(explicit) => explicit.clone(),
             None => {
-                let result = self.source.list_collections().await;
-                result.data.ok_or_else(|| {
+                self.source.list_collections().await.into_result().map_err(|error| {
                     self.running.store(false, Ordering::Relaxed);
-                    result
-                        .error
-                        .unwrap_or_else(|| "Failed to list source collections".into())
+                    error
                 })?
             }
         };
