@@ -8,52 +8,48 @@ use sea_orm::sqlx::{Row, TypeInfo, ValueRef};
 use sea_orm::{sea_query::Value as SqlValue, QueryResult};
 use serde_json::{Map, Number, Value};
 
+use super::storage_error::{StorageError, StoredFault};
+
+fn mismatch(field: &SchemaField) -> StorageError {
+    StorageError::TypeMismatch { field: field.name.clone(), declared: field.field_type.clone() }
+}
+
 /// Bind producer-owned text directly. The SQL driver owns the one required copy;
 /// callers need not allocate an intermediate JSON string to reach this codec.
-pub(super) fn encode_text(field: &SchemaField, value: &str) -> Result<SqlValue, String> {
+pub(super) fn encode_text(field: &SchemaField, value: &str) -> Result<SqlValue, StorageError> {
     match field.field_type {
         FieldType::String | FieldType::Date | FieldType::Uuid => Ok(value.into()),
-        FieldType::Json => serde_json::to_string(value)
-            .map(Into::into)
-            .map_err(|e| e.to_string()),
-        _ => Err(format!("{} does not accept text", field.name)),
+        FieldType::Json => Ok(serde_json::to_string(value)?.into()),
+        _ => Err(mismatch(field)),
     }
 }
 
 /// Metadata versions already have an exact integer representation.
-pub(super) fn encode_integer(field: &SchemaField, value: i64) -> Result<SqlValue, String> {
+pub(super) fn encode_integer(field: &SchemaField, value: i64) -> Result<SqlValue, StorageError> {
     match field.field_type {
         FieldType::Number => Ok(value.into()),
-        FieldType::Json => serde_json::to_string(&value)
-            .map(Into::into)
-            .map_err(|e| e.to_string()),
-        _ => Err(format!("{} does not accept an integer", field.name)),
+        FieldType::Json => Ok(serde_json::to_string(&value)?.into()),
+        _ => Err(mismatch(field)),
     }
 }
 
-pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, String> {
+pub(super) fn encode(field: &SchemaField, value: &Value) -> Result<SqlValue, StorageError> {
     if value.is_null() {
         return if field.nullable {
             Ok(SqlValue::String(None))
         } else {
-            Err(format!("{} is not nullable", field.name))
+            Err(StorageError::NotNullable { field: field.name.clone() })
         };
     }
     match field.field_type {
-        FieldType::String | FieldType::Date | FieldType::Uuid => encode_text(
-            field,
-            value.as_str().ok_or_else(|| format!("{} requires a string", field.name))?,
-        ),
-        FieldType::Boolean => value
-            .as_bool()
-            .map(Into::into)
-            .ok_or_else(|| format!("{} requires a boolean", field.name)),
+        FieldType::String | FieldType::Date | FieldType::Uuid => {
+            encode_text(field, value.as_str().ok_or_else(|| mismatch(field))?)
+        }
+        FieldType::Boolean => value.as_bool().map(Into::into).ok_or_else(|| mismatch(field)),
         FieldType::Number if value.is_number() => super::relational_query::value(value),
-        FieldType::Number => Err(format!("{} requires a number", field.name)),
-        FieldType::Binary => Err("binary payload requires the native typed storage interface".into()),
-        FieldType::Json => serde_json::to_string(value)
-            .map(Into::into)
-            .map_err(|e| e.to_string()),
+        FieldType::Number => Err(mismatch(field)),
+        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone() }),
+        FieldType::Json => Ok(serde_json::to_string(value)?.into()),
     }
 }
 
@@ -61,46 +57,36 @@ pub(super) fn scalar(
     row: &sea_orm::sqlx::sqlite::SqliteRow,
     index: usize,
     field: &SchemaField,
-) -> Result<Value, String> {
-    let raw = row.try_get_raw(index).map_err(|e| e.to_string())?;
+) -> Result<Value, StorageError> {
+    let raw = row.try_get_raw(index)?;
     if raw.is_null() {
         return if field.nullable {
             Ok(Value::Null)
         } else {
-            Err(format!("{} contains NULL but is not nullable", field.name))
+            Err(StorageError::NotNullable { field: field.name.clone() })
         };
     }
+    let invalid = |fault| StorageError::InvalidStored { field: field.name.clone(), fault };
     match field.field_type {
-        FieldType::String | FieldType::Date | FieldType::Uuid => row
-            .try_get::<String, _>(index)
-            .map(Value::String)
-            .map_err(|e| e.to_string()),
-        FieldType::Binary => Err("binary payload requires the native typed storage interface".into()),
+        FieldType::String | FieldType::Date | FieldType::Uuid => Ok(Value::String(row.try_get::<String, _>(index)?)),
+        FieldType::Binary => Err(StorageError::BinaryThroughJson { field: field.name.clone() }),
         FieldType::Json => {
-            let text: String = row.try_get(index).map_err(|e| e.to_string())?;
-            serde_json::from_str(&text)
-                .map_err(|e| format!("{} has invalid declared JSON: {e}", field.name))
+            let text: String = row.try_get(index)?;
+            serde_json::from_str(&text).map_err(|source| StorageError::StoredJson { field: field.name.clone(), source })
         }
-        FieldType::Boolean => match row.try_get::<i64, _>(index).map_err(|e| e.to_string())? {
+        FieldType::Boolean => match row.try_get::<i64, _>(index)? {
             0 => Ok(Value::Bool(false)),
             1 => Ok(Value::Bool(true)),
-            other => Err(format!("{} has invalid boolean {other}", field.name)),
+            other => Err(invalid(StoredFault::Boolean(other))),
         },
         FieldType::Number => match raw.type_info().name() {
-            "INTEGER" => row
-                .try_get::<i64, _>(index)
-                .map(|v| Value::Number(v.into()))
-                .map_err(|e| e.to_string()),
-            "REAL" => {
-                let v: f64 = row.try_get(index).map_err(|e| e.to_string())?;
-                Number::from_f64(v)
-                    .map(Value::Number)
-                    .ok_or_else(|| format!("{} has a non-finite number", field.name))
-            }
-            storage => Err(format!(
-                "{} requires numeric storage, found {storage}; migrate the column",
-                field.name
-            )),
+            "INTEGER" => Ok(Value::Number(row.try_get::<i64, _>(index)?.into())),
+            "REAL" => Number::from_f64(row.try_get(index)?).map(Value::Number).ok_or_else(|| invalid(StoredFault::NonFinite)),
+            storage => Err(StorageError::StorageClass {
+                field: field.name.clone(),
+                declared: field.field_type.clone(),
+                found: storage.to_owned(),
+            }),
         },
     }
 }
@@ -120,9 +106,9 @@ impl RowDecoder {
         Self { schema, fields, joined_columns: joined_columns.iter().cloned().collect() }
     }
 
-    pub(super) fn decode(&self, result: QueryResult) -> Result<DataRecord, String> {
+    pub(super) fn decode(&self, result: QueryResult) -> Result<DataRecord, StorageError> {
         let schema = &self.schema;
-        let row = result.try_as_sqlite_row().ok_or("SQLite result required")?;
+        let row = result.try_as_sqlite_row().ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;
         use sea_orm::sqlx::Column;
         let mut fields = Map::new();
         for (index, col) in row.columns().iter().enumerate() {
@@ -130,13 +116,13 @@ impl RowDecoder {
                 continue;
             }
             let field = self.fields.get(col.name()).map(|index| &schema.fields[*index])
-                .ok_or_else(|| format!("{}.{} has no declared codec", schema.collection, col.name()))?;
+                .ok_or_else(|| StorageError::Undecodable { collection: schema.collection.clone(), column: col.name().to_owned() })?;
             fields.insert(field.name.clone(), scalar(row, index, field)?);
         }
-        let metadata_string = |name: &str| -> Result<String, String> {
+        let metadata_string = |name: &'static str| -> Result<String, StorageError> {
             match fields.get(name) {
                 Some(Value::String(s)) => Ok(s.clone()),
-                _ => Err(format!("projection omitted required metadata {name}")),
+                _ => Err(StorageError::Projection { name }),
             }
         };
         // Entity decoding consumes data, including flattened BaseEntity fields. The
@@ -147,7 +133,7 @@ impl RowDecoder {
         let version = fields
             .get("version")
             .and_then(|v| v.as_u64())
-            .ok_or("missing version")?;
+            .ok_or(StorageError::Projection { name: "version" })?;
         Ok(DataRecord {
             id,
             collection: schema.collection.clone(),
@@ -155,7 +141,7 @@ impl RowDecoder {
             metadata: RecordMetadata {
                 created_at,
                 updated_at,
-                version: version.try_into().map_err(|_| "version exceeds u32")?,
+                version: version.try_into().map_err(|_| StorageError::Overflow { what: "a record version" })?,
                 tags: None,
                 schema: None,
                 ttl: None,

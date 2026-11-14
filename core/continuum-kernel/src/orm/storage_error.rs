@@ -39,6 +39,34 @@ pub enum StorageError {
     /// A native row's id is not a canonical lowercase hyphenated UUID (page cursors order by its text).
     #[error("{id} is not a canonical lowercase hyphenated UUID")]
     NotCanonicalId { id: String },
+    /// The SQLite driver failed reading a row.
+    #[error(transparent)]
+    Driver(#[from] sea_orm::sqlx::Error),
+    /// A value does not fit its field's declared type.
+    #[error("{field} is declared {declared:?} and the value is not")]
+    TypeMismatch { field: String, declared: super::types::FieldType },
+    /// A NULL for a field that is not nullable (written, or found stored).
+    #[error("{field} is not nullable")]
+    NotNullable { field: String },
+    /// A binary field reached the JSON path; native payloads have their own interface.
+    #[error("{field} is binary: it is written and read through the native interface")]
+    BinaryThroughJson { field: String },
+    /// A stored column's storage class is not its declared type's (e.g. TEXT under a number):
+    /// the column needs the schema owner's migration, never a cast at read.
+    #[error("{field} is declared {declared:?} but stored as {found}")]
+    StorageClass { field: String, declared: super::types::FieldType, found: String },
+    /// A stored value its declared type cannot hold.
+    #[error("{field} holds an invalid stored value: {fault}")]
+    InvalidStored { field: String, fault: StoredFault },
+    /// A stored JSON column that does not parse.
+    #[error("{field} holds invalid JSON: {source}")]
+    StoredJson { field: String, #[source] source: serde_json::Error },
+    /// A result column with no declared field.
+    #[error("{collection}.{column} has no declared codec")]
+    Undecodable { collection: String, column: String },
+    /// A query's projection left out a record envelope field.
+    #[error("the projection omitted {name}")]
+    Projection { name: &'static str },
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
@@ -98,4 +126,13 @@ pub enum ConfigFault {
     Namespace,
     #[error("the connection count exceeds u32")]
     CapacityRange,
+}
+
+/// What is wrong with a stored value under its declared type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum StoredFault {
+    #[error("boolean stored as {0}")]
+    Boolean(i64),
+    #[error("a non-finite number")]
+    NonFinite,
 }
