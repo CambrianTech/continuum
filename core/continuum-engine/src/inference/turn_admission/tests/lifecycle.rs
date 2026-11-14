@@ -167,10 +167,8 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
         act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
     }
     // Mind 3 was paged out at 300; minds 1 and 2 are resident at 150 and 250.
-    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, std::time::Duration::from_secs(10), || {})
-        .await
-        .expect("test: an engine was launched here");
-    stopped.expect("test: the stop saves every resident");
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
+    assert!(matches!(stopped, crate::inference::slots::page_io::StopCheckpoint::Saved), "test: the stop saves every resident: {stopped:?}");
     server_a.abort();
 
     // Core B: a new engine, an empty slot set, the same page directory.
@@ -254,7 +252,7 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
     hold.arrived.notified().await; // mind 1's save is at the engine
     hold.held.store(false, std::sync::atomic::Ordering::Release);
 
-    let settling = crate::inference::slots::page_io::settle(gate, std::time::Duration::from_secs(10));
+    let settling = crate::inference::slots::page_io::settle(gate);
     tokio::pin!(settling);
     assert!(futures::poll!(&mut settling).is_pending(), "the stop waits for the started save");
     assert_eq!(gate.in_flight(), 1, "the save holds its page permit");
@@ -262,7 +260,7 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
 
     hold.release.notify_one();
     let settled = settling.await;
-    assert_eq!((settled.in_flight_at_close, settled.cut), (1, 0), "the stop cut nothing");
+    assert_eq!(settled.in_flight_at_close, 1, "the stop waited for the one started save");
     let borrowed = borrow
         .await
         .expect("test: borrow task")

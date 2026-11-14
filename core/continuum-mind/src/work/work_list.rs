@@ -1,4 +1,5 @@
 use super::*;
+use crate::persona::board_nav::BoardGroup;
 
 // ─────────────────────────── work/list + work/get ─────────────────
 //
@@ -84,16 +85,23 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
-    /// At most this many cards: claimable first, then priority, then newest.
-    // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
-    // No default count. Measured 2026-10-16 on the M5: 776 cards went on as ONE 198k-char
-    // JSON line she could read none of (card ee003c55). A long result now goes on one card per
-    // line (`spill::result_text`) and is saved, and how much of it she sees is her act's one
-    // allocation: whole when the window holds it, else the largest level that fits (its first
-    // and last cards, the counts, and the handle that reopens the rest).
+    /// One folded group, exactly as the board folds it (each fold names its own).
     #[serde(default)]
     #[ts(optional)]
-    pub limit: Option<usize>,
+    pub group: Option<BoardGroup>,
+    // No count: with no filter the board comes back as her view shows it (`board_nav`, collapsed
+    // navigation: her cards whole, each group's most recent cards and a node for the rest), and a
+    // filter is a node opened, whole. A per-tool `limit` was a second truncation beside the act's
+    // one allocation (card e0b2b5b1).
+}
+
+/// A group of the board folded into one line: what it holds, how many, and the call that opens it.
+#[derive(Debug, Clone, Serialize, TS)]
+pub struct WorkListFold {
+    pub group: BoardGroup,
+    pub count: usize,
+    /// The call that lists this group whole, as she makes it.
+    pub open: String,
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -200,6 +208,11 @@ pub struct WorkListResult {
     #[ts(optional)]
     pub note: Option<String>,
 
+    /// With no filter, the groups folded off her focus, each one line (`board_nav`). Before
+    /// `cards`, so the board's shape survives any cut of the list.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folded: Vec<WorkListFold>,
+
     /// The matched cards. LAST by design — see the field-order note at the top of this
     /// struct. This is the divisible part of the answer, so this is what a truncated
     /// receipt sheds; the counts and the note survive.
@@ -220,7 +233,8 @@ impl ActionCommand for WorkList {
          full requirements. To find takeable work pass `claimable: true`: filtering \
          `state: \"open\"` (the column) misses held and lapsed cards. The result always reports \
          `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty \
-         board. Boards are per room (`room`).";
+         board. With no filter, groups beyond your own cards come back folded, each naming the \
+         call that lists it whole. Boards are per room (`room`).";
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -261,7 +275,7 @@ impl ActionCommand for WorkList {
         // Render EVERY card once (holder resolution is the shared projection), then
         // filter on the rendered facts. Filtering before rendering would put the
         // availability question on the raw column again — the exact split this fixes.
-        let rendered: Vec<(WorkListCard, CardState)> = board
+        let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = board
             .cards
             .iter()
             .map(|c| {
@@ -282,6 +296,8 @@ impl ActionCommand for WorkList {
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
                     },
                     c.state,
+                    crate::persona::board_nav::group_of(c, me, now_ms),
+                    c.updated_at_ms,
                 )
             })
             .collect();
@@ -289,39 +305,17 @@ impl ActionCommand for WorkList {
         let total_on_board = rendered.len();
         let awaiting_reviewer = crate::cognition::review_queue::awaiting_reviewer(&board).count();
         let unsubmitted_pull_requests = crate::cognition::review_queue::unsubmitted_pull_requests(&board).count();
-        let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
+        let claimable_now = rendered.iter().filter(|(r, ..)| r.claimable).count();
 
-        let mut cards: Vec<WorkListCard> = rendered
-            .into_iter()
-            .filter(|(_, state)| filter.map_or(true, |f| *state == f))
-            .filter(|(r, _)| p.claimable.map_or(true, |want| r.claimable == want))
-            .map(|(r, _)| r)
-            .collect();
-        let matched = cards.len();
-        // claimable first, then priority (p0 before p3), then newest: the board's own order
-        // is arrival, the one order a citizen looking for work never wants
-        cards.sort_by(|a, b| {
-            b.claimable
-                .cmp(&a.claimable)
-                .then_with(|| a.priority.cmp(&b.priority))
-                .then_with(|| a.age_hours.cmp(&b.age_hours))
-        });
-        if let Some(limit) = p.limit {
-            cards.truncate(limit.max(1));
-        }
+        let selector = Selector { state: filter, claimable: p.claimable, group: p.group };
+        let (cards, folded) = listed(selector.select(rendered), selector.filters());
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
         // and they read it the only way it can be read. The filter's answer stays
         // honest — we do not quietly widen it — but the result says what it left out
         // and which query asks the question she meant. [[observability-as-substrate]]
-        let note = if matched > cards.len() {
-            Some(format!(
-                "{} of the {matched} matching cards are listed (claimable first, then priority, then \
-                 newest) under the limit you passed; raise it or omit it for every match",
-                cards.len()
-            ))
-        } else if cards.is_empty() && total_on_board > 0 {
+        let note = if cards.is_empty() && folded.is_empty() && total_on_board > 0 {
             Some(if claimable_now > 0 {
                 format!(
                     "Your filter matched 0 of {total_on_board} cards — the board is NOT empty. \
@@ -347,6 +341,70 @@ impl ActionCommand for WorkList {
             awaiting_reviewer,
             unsubmitted_pull_requests,
             note,
+            folded,
         })
     }
+}
+
+/// What a `work/list` call selects: a column, availability, or one folded group (through
+/// `board_nav::group_of`, the owner of the board's groups, so a fold's call opens exactly it).
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Selector {
+    pub state: Option<CardState>,
+    pub claimable: Option<bool>,
+    pub group: Option<BoardGroup>,
+}
+
+impl Selector {
+    /// Whether any filter was given: a node opened, never the board's nav.
+    pub fn filters(self) -> bool {
+        self.state.is_some() || self.claimable.is_some() || self.group.is_some()
+    }
+
+    /// The rendered cards it selects, each with its group and recency.
+    pub fn select(self, rendered: impl IntoIterator<Item = (WorkListCard, CardState, Option<BoardGroup>, u64)>) -> Vec<(WorkListCard, Option<BoardGroup>, u64)> {
+        rendered
+            .into_iter()
+            .filter(|(_, state, ..)| self.state.is_none_or(|want| *state == want))
+            .filter(|(card, ..)| self.claimable.is_none_or(|want| card.claimable == want))
+            .filter(|(_, _, group, _)| self.group.is_none_or(|want| *group == Some(want)))
+            .map(|(card, _, group, recency)| (card, group, recency))
+            .collect()
+    }
+}
+
+/// What `work/list` returns of `matched` (each card with its board group and recency): a filter is
+/// a node opened, so every match whole (claimable first, then priority, then newest: the board's
+/// own order is arrival, the one order a citizen looking for work never wants); no filter is the
+/// board as her view shows it, collapsed by the one contract (`continuum_context::nav::collapse`).
+pub(crate) fn listed(matched: impl IntoIterator<Item = (WorkListCard, Option<BoardGroup>, u64)>, filtered: bool) -> (Vec<WorkListCard>, Vec<WorkListFold>) {
+    use continuum_context::nav::{collapse, Entry, Origin};
+    if filtered {
+        let mut cards: Vec<WorkListCard> = matched.into_iter().map(|(card, ..)| card).collect();
+        cards.sort_by(|a, b| b.claimable.cmp(&a.claimable).then_with(|| a.priority.cmp(&b.priority)).then_with(|| a.age_hours.cmp(&b.age_hours)));
+        return (cards, Vec::new());
+    }
+    let entries = matched.into_iter().map(|(card, group, recency)| {
+        // The entry keeps the card whole as its provenance, so its key and text are copies taken first.
+        let key = card.id.to_string();
+        let full = card.title.clone();
+        let entry = Entry::new(key, full, card);
+        match group {
+            Some(group) => entry.in_group(group.nav(), recency),
+            None => entry,
+        }
+    });
+    let (mut cards, mut folded) = (Vec::new(), Vec::new());
+    for unit in collapse(entries.collect()) {
+        match unit.origin {
+            Origin::Entry(card) => cards.push(card),
+            Origin::Node { group, count, expand } => {
+                // Every node is one of `BoardGroup`'s: they are the only groups its entries carry.
+                if let Some(group) = BoardGroup::of_label(group) {
+                    folded.push(WorkListFold { group, count, open: expand.to_string() });
+                }
+            }
+        }
+    }
+    (cards, folded)
 }
