@@ -573,14 +573,18 @@ Continuum runtime work must follow these rules:
     - **One state spread across `Option`s and `bool`s** (flags rebuilt from an
       enum, parallel `Option`s matched as a tuple with a `_ =>` fallback): does
       a combination exist the code never handles? Make it unrepresentable.
+    - **The contract carries the shape** (Joel: "group params as part of
+      structs when they belong together. Pass by reference and assign
+      mutability and optional at contract"): parameters that travel together
+      are one struct, never a long list of same-typed arguments a caller can
+      swap; a function borrows (`&T`, `&mut T` only where it mutates) instead
+      of taking ownership or cloning; what may be absent is `Option` in the
+      signature and what must be present is a required field, so a caller can
+      read mutability and optionality from the contract and the compiler
+      enforces both, never a runtime check inside.
     - And **strings as identities** (verbs, field names, producer labels,
       `format!` keys beside a typed id, `serde_json::Value.get("field")` where
       a typed input exists): an identity is an enum or newtype.
-    - And **the contract carries the shape** (Joel, 2026-11-14: "group params
-      as part of structs when they belong together. Pass by reference and
-      assign mutability and optional at contract"): values that travel
-      together are a struct, a primitive that can be swapped is a newtype, a
-      reader borrows, and `&mut` and `Option` are in the signature.
 
 #### The shape ratchets (rules 10-11)
 
@@ -1909,7 +1913,12 @@ reply edges. The view's `Item` gains the same link.
      with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
      what X said or how it ended.
   2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
-     message to the newest element of each causal thread.
+     message to the newest element of each causal thread. Her work in hand is part of that end: a source
+     marks an item `Item::in_hand` (the read of a file she is editing, her first thought after each edit's
+     result), a start keeps it whole while its source's grant holds it beside the rest at their floor
+     (`view::allot`, charged like any item, the oldest given up first), the claim's newest end counts it,
+     and the oldest run folds around it (`working_memory::in_hand`; Aris on the M5, 2026-11-14: two
+     turnovers collapsed the file she was editing and she read it whole again after each).
   3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
      keeps its outcome and a pointer back. The chain shortens and stays linked.
   4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).

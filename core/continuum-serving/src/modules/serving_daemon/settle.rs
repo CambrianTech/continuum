@@ -18,10 +18,12 @@ use super::ServingDaemonModule;
 
 impl ServingDaemonModule {
     /// Fold the host's memory reading in, off the async runtime (a Mach / procfs call). Run before
-    /// every reconcile, so a launch reads the last two readings.
+    /// every reconcile, so a launch reads the last two readings, and its pool fits the last one
+    /// (`host_fit`).
     pub(super) async fn observe_host_settle(&self) {
         // A panicked read is no reading: never calm, never a wait that cannot end.
         let reading = tokio::task::spawn_blocking(continuum_host::host_memory::read).await.ok().flatten();
+        *self.host_reading.lock() = reading;
         let mut settle = self.host_settle.lock();
         *settle = settle.observe(reading.as_ref());
     }

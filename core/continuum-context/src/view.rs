@@ -44,7 +44,8 @@ pub struct Claim {
     pub floor: usize,
     /// What the source costs in full: its want. A folded item still wants its whole.
     pub full: usize,
-    /// Its newest item in full: the newest end a start never collapses when it fits.
+    /// Its newest item in full, with every item her work in hand holds open (`Item::in_hand`): the
+    /// newest end a start never collapses when it fits.
     pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
     pub logged: usize,
@@ -228,12 +229,21 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
         priority: source.priority(),
         floor: floor(cost, source, items),
         full: items.iter().map(|item| crate::cost::whole(item, cost)).sum(),
-        newest: items.last().map_or(0, |item| crate::cost::whole(item, cost)), // map_or: a source with no items has no newest end
+        newest: newest_end(cost, items),
         logged: 0,
         held: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
         collapsible: crate::depth::collapsible(items, rereads, cost),
     }
+}
+
+/// What a start keeps whole when it fits: the newest item, and every item her work in hand holds
+/// open (`Item::in_hand`), each at its whole.
+fn newest_end<T: Block>(cost: &dyn Estimate<T>, items: &[Item<T>]) -> usize {
+    let Some((newest, older)) = items.split_last() else {
+        return 0; // a source with no items has no newest end
+    };
+    crate::cost::whole(newest, cost) + older.iter().filter(|item| item.in_hand).map(|item| crate::cost::whole(item, cost)).sum::<usize>()
 }
 
 impl Claim {

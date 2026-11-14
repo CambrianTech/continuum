@@ -110,7 +110,7 @@ impl WorkingMemory {
             let mut thoughts = self.thoughts.lock();
             for (occurrence, handle) in saved {
                 if let Some(record) = thoughts.get_mut(occurrence) {
-                    record.handle = Some(handle);
+                    record.saved_as(handle);
                 }
             }
         }

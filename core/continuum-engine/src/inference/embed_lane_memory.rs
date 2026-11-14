@@ -42,8 +42,9 @@ pub(crate) async fn lease(bytes: ContextBytes, texts: usize) -> Result<Vec<Lease
     Ok(guards)
 }
 
-/// One pool's lease, retried once after a governor tick, then refused with the availability it
-/// measured, never an allocation that would decode to degenerate zeros.
+/// One pool's lease, retried once when the authority publishes room for it (bounded by one of its
+/// own ticks), then refused with the availability it measured, never an allocation that would
+/// decode to degenerate zeros.
 async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64, floor: u64, texts: usize) -> Result<LeaseGuard, String> {
     // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
     // embedding finishes in under a second, so the TTL never decides a live lease.
@@ -55,6 +56,9 @@ async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind,
         ttl_ms: LEASE_TTL_MS,
         reclaim_policy: ReclaimPolicy::Pinned,
     };
+    // Subscribed BEFORE the first attempt, so a release between its refusal and the wait below is
+    // a change the wait still sees.
+    let mut changes = daemon.subscribe();
     let attempt = |attempt: u8| match daemon.acquire_guarded(&request) {
         Ok(guard) => {
             continuum_base::probe!(
@@ -85,8 +89,26 @@ async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind,
     let leased = match attempt(0)? {
         Ok(guard) => Ok(guard),
         Err(_) => {
-            // derived-or-floor: one governor tick, after which a transient over-commit has relief
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            // Woken by the change that makes room. The authority's own tick bounds it: a transient
+            // over-commit is relieved within one, so past it the refusal below stands.
+            let room = async {
+                while daemon.available_for(EMBED_LANE_CONSUMER_ID, pool) < bytes {
+                    if changes.changed().await.is_err() {
+                        return; // the authority closed: the second attempt reports it
+                    }
+                }
+            };
+            let bound = crate::runtime::daemon::Daemon::cadence(daemon.as_ref());
+            // Room published or a tick without it: either way the second attempt decides.
+            let published = tokio::time::timeout(bound, room).await.is_ok();
+            continuum_base::probe!(
+                class = "embed.vram.room_wait",
+                pool = ?pool,
+                requested = bytes,
+                published = published,
+                bound_ms = bound.as_millis() as u64,
+                "a refused embedding lease waited on the authority for room before its second attempt"
+            );
             attempt(1)?
         }
     };
@@ -98,4 +120,44 @@ async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind,
             available / (1024 * 1024),
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::resources::{CapacitySource, DaemonConfig, MockCapacitySource};
+    use std::sync::Arc;
+
+    // what this catches (timer audit row H17, 2026-11-14): a refused embed lease slept a fixed 2 s
+    // ("one governor tick") before its one retry, so every recall that met a transient over-commit
+    // paid the sleep even when the room came back at once. On a paused clock, the release that makes
+    // room must admit the waiting lease at that very instant.
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_embed_lease_is_granted_by_the_release_that_makes_room() {
+        let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, 100));
+        let daemon = ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        let serving = LeaseRequest {
+            consumer_id: "serving".to_string(),
+            kind: ResourceKind::Vram,
+            bytes: 60,
+            ttl_ms: u64::MAX,
+            reclaim_policy: ReclaimPolicy::Pinned,
+        };
+        let held = daemon.acquire_guarded(&serving).expect("test: serving leases 60 of 100");
+        let waiting = tokio::spawn({
+            let daemon = Arc::clone(&daemon);
+            async move { lease_part(&daemon, ResourceKind::Vram, 50, 50, 1).await }
+        });
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished(), "50 bytes do not fit in the 40 free");
+        let released_at = tokio::time::Instant::now();
+        drop(held);
+        // The bound only turns a missed wake into a failure instead of a hang.
+        let leased = tokio::time::timeout(std::time::Duration::from_secs(60), waiting)
+            .await
+            .expect("test: the release wakes the lease")
+            .expect("test: join");
+        assert!(leased.is_ok(), "the room the release made is leased: {:?}", leased.err());
+        assert_eq!(released_at.elapsed(), std::time::Duration::ZERO, "granted by the release itself, never a timer");
+    }
 }
