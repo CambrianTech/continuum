@@ -28,9 +28,9 @@ pub(super) async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
-    // The embed lane's standing floor is re-stated by each of its leases, in the pool its context
-    // resides in, at the largest context it has embedded (`inference::embed_lane_memory`): the probe
-    // and calibration passes above set it before any turn embeds.
+    // The embed lane's standing floor is its working set, restated by each grant and each release in
+    // the pool its context resides in (`inference::embed_lane_memory`): its weights plus the contexts
+    // it holds now, never a request it was refused.
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 
