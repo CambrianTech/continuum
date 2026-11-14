@@ -317,9 +317,15 @@ impl RoomBoardSource {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
         let review = reviews.first()?;
-        let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
+        // Derived, never "some verdict passed" (card 5a94e88e: d89256ed read "passed review" on one
+        // verdict while its PR's CI was red). This render holds no wall read, so it counts under the
+        // default policy, the floor: one independent pass, no self-review.
+        let state = crate::cognition::review_verdict::derive(
+            candidate, reviews.iter().copied(), &crate::experience::binding::ReviewPolicy::default(),
+            &crate::persona::work_board::review::minds(),
+        );
         let next = crate::persona::work_board::submissions::next_after_submission(
-            Some(candidate.submission_id.as_uuid()), &outcomes,
+            Some(candidate.submission_id.as_uuid()), state,
             crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),
             card.pull_request.as_ref(),

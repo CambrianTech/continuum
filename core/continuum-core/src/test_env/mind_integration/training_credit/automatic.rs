@@ -33,6 +33,10 @@ impl Resident {
         let wire = home.path().join("isolated-airc");
         let airc = Arc::new(airc_lib::Airc::open_with_wire_root_for_test(&wire, &wire).await?);
         let room = airc.join("ordinary-project").await?;
+        // These tests drive her own review's credit path, which only a room declaring `self: true`
+        // admits (card 0174211f: no policy is no permission).
+        let binding = json!({"recipe": "project", "params": {"review": {"self": true}}});
+        airc.publish_wall_post_in(&room, crate::experience::binding::RECIPE_WALL_CATEGORY.to_string(), binding.to_string(), None).await?;
         let persona = airc.peer_id().as_uuid();
         let name = "ordinary-resident";
         let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -142,6 +146,8 @@ impl Resident {
             outcome,
             evidence_text: None,
             evidence: self.params.artifact.clone(),
+            // A pass names the head it verified: the fixture's submitted head.
+            verified_head: matches!(outcome, ReviewOutcome::Passed).then(|| "b".repeat(40)),
         })
     }
 

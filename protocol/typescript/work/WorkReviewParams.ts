@@ -42,4 +42,8 @@ review_claim_id?: string,
 /**
  * Typed evidence instead of evidence_text.
  */
-evidence?: WorkArtifactReference, };
+evidence?: WorkArtifactReference, 
+/**
+ * Required to pass: the commit you ran the checks at; must be the submission's head.
+ */
+verified_head?: string, };
