@@ -103,7 +103,7 @@ impl ShellSession {
             .filter(|e| {
                 e.lock()
                     .map(|s| s.status == ShellExecutionStatus::Running)
-                    .unwrap_or(false)
+                    .unwrap_or(false) // unwrap_or: a poisoned execution lock is not counted as running; its own poll reports the poison
             })
             .count() as u32;
 
@@ -292,6 +292,7 @@ impl ShellSession {
                     return Ok(ShellExecuteResponse {
                         execution_id: s.id.clone(),
                         status: s.status.clone(),
+                        cwd: self.cwd.display().to_string(),
                         stdout: Some(s.stdout_lines.join("\n")),
                         stderr: Some(s.stderr_lines.join("\n")),
                         exit_code: s.exit_code,
