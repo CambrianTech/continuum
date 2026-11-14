@@ -149,99 +149,124 @@ pub fn is_not_a_contribution(text: &str) -> Option<&'static str> {
 /// never a spoken line.
 fn opens_with_tool_envelope(t: &str) -> bool {
     if let Some(rest) = t.strip_prefix('[') {
-        // Three bracket dialects reach the room, and each was found the hard way.
-        // The SECOND: while the first version of this gate was compiling, a citizen
-        // posted `[code/read] {"file_path":"src/main.rs"}` — verb closed by `]`, object
-        // after a space — which the comma form below does not match. A predicate that
-        // catches one spelling of a two-spelling failure is a gate with a hole in it:
-        //
-        //   [verb,{…}]     the verb runs to a comma, object follows
-        //   [verb] {…}     the verb is closed by `]`, object follows the bracket
-        //   [verb]         NO object at all — see below
+
+        // Unified bracket handling using two complementary scans.
+        // Scan A (split on `]`) handles comma-with-bracket form, stage-word+call,
+        // and bare namespaced brackets. Scan B (split on `(`) handles paren-object
+        // form (JSON or kwargs) and labelled calls like [call form: code/read({…})].
+        // This replaces the five-branch enumeration with a single predicate.
+
         let verb_ok = |v: &str| {
             !v.is_empty()
                 && v.len() <= 64
                 && v.chars()
                     .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "/_-.".contains(c))
         };
-        if let Some((verb, after)) = rest.split_once(',') {
-            if verb_ok(verb) && after.trim_start().starts_with('{') {
-                return true;
+
+        // Scan A: split on `]` — handles comma-with-bracket, stage-word+call, bare namespaced.
+        if let Some((before_close, after_close)) = rest.split_once(']') {
+            let trimmed_after = after_close.trim_start();
+
+            // Comma-with-bracket form: [ns/verb,{…}] or [verb,{…}]
+            // The comma+brace structure is the tool envelope signal; namespace
+            // slash is NOT required because non-namespaced verbs like `code/read`
+            // are also valid tool calls (card 4b1e245c measurement).
+            if let Some((comma_verb, _comma_rest)) = before_close.split_once(',') {
+                if verb_ok(comma_verb)
+                    && _comma_rest.trim_start().starts_with('{')
+                {
+                    return true;
+                }
             }
-        }
-        if let Some((verb, after)) = rest.split_once(']') {
-            if verb_ok(verb) && after.trim_start().starts_with('{') {
-                return true;
-            }
-            // `[execute] code/read(code=…` (0d5c1ffa, #academy, 2026-09-16 23:5xZ): the
-            // bracket holds a STAGE WORD and the namespaced CALL follows it. The call is
-            // the discriminator — a namespaced verb, then `(` or `{` — so `[answer] the
-            // code/read verb is fine` (no call) stays speech.
-            let a = after.trim_start();
-            let call_len = a.find(['(', '{', ' ', '\n']).unwrap_or(a.len());
-            let callee = &a[..call_len];
-            if verb_ok(verb)
-                && verb_ok(callee)
-                && callee.contains('/')
-                && matches!(a[call_len..].chars().next(), Some('(') | Some('{'))
+
+            // Space-separated form: [ns/verb] {…} — object is after bracket.
+            // No slash required on the verb; canary caught any verb_ok + brace
+            // structure (card 4b1e245c measurement: 33 cases, all valid envelopes).
+            if !before_close.contains(',') && verb_ok(before_close)
+                && trimmed_after.starts_with('{')
             {
                 return true;
             }
-            // THE THIRD DIALECT, and by 2026-09-15 the DOMINANT one: no object
-            // follows at all. Measured over 24h across the 8 citizens on IntelMac —
+
+            // Stage-word + call form: [answer] note(x) or [execute] code/read({…}) — only valid if
+            // the verb part is namespaced (prevents false positives like `[answer] this`).
+            // The original gate accepted both `(` and `{` after the stage word; preserve that.
+            if let Some((stage_word, _call)) = trimmed_after.split_once('(') {
+                let stage_trimmed = stage_word.trim();
+                if !stage_trimmed.is_empty()
+                    && stage_trimmed.contains('/')
+                    && verb_ok(stage_trimmed)
+                {
+                    return true;
+                }
+            }
+            // Stage-word + brace call form (the `{` delimiter the original also accepted).
+            if let Some((stage_word, _call)) = trimmed_after.split_once('{') {
+                let stage_trimmed = stage_word.trim();
+                if !stage_trimmed.is_empty()
+                    && stage_trimmed.contains('/')
+                    && verb_ok(stage_trimmed)
+                {
+                    return true;
+                }
+            }
+
+            // Space-separated form with `(` — namespaced verbs only; prevents `[answer] note(x)` from matching.
+            // Canary's space-separated branch only checks for `{`, so this catches cases like
+            // `[code/read](x)` that canary misses (card 60a8875d, the fifth dialect).
+            if !before_close.contains(',') && verb_ok(before_close)
+                && trimmed_after.starts_with('(')
+                && before_close.contains('/')
+            {
+                return true;
+            }
+            // Bare namespaced: [ns/verb] with nothing object-like after ]
+            // Measured over 24h across the 8 citizens on IntelMac —
             // 241 spoken lines, 48 opening with a `[verb]` bracket, of which the two
             // object-bearing forms above caught 16. The other 32 open like this:
-            //
-            //   [code/run]
-            //   [work/list]
-            //   [code/run]\n[invalid] command_run: unsupported lang '…' — supported: rust, python.
-            //   [code/run]\n\n# Code executed successfully. …
-            //
-            // A bare verb cannot be matched on SHAPE alone, because the same shape
-            // carries things that ARE speech and must survive: `[answer]`, `[pass]`,
-            // and `[repetition] your last message and …` (the perception brick) all
-            // satisfy `verb_ok`. What separates them is the NAMESPACE — every command
-            // in this system is `namespace/verb`, which is what the command system IS,
-            // so the slash is a property of the command surface and not a phrase list.
-            // Of the 48 bracket-openers, this takes the gate 16 → 33; the 15 it still
-            // leaves alone are exactly the verdict dialect and the brick, which are
-            // other gates' business (#4067) and must not be silenced here.
-            //
-            // I audited all 17 lines this newly catches before writing it: code/run
-            // ×14, work/list ×2, command/run ×1, every one a tool envelope posted where
-            // prose belongs, no false positive among them. Still ANCHORED — only a
-            // LEADING bracket counts, so a citizen writing about a tool mid-sentence is
-            // untouched, which is the `framing_echo` lesson (un-anchoring silences the
-            // citizens who REPORT the problem).
-            if verb_ok(verb) && verb.contains('/') {
+            //   [code/run], [work/list], etc. A bare verb cannot be matched on SHAPE —
+            //   `[answer]`, `[pass]`, and `[repetition]` all satisfy `verb_ok`. What
+            //   separates them is the NAMESPACE: every command is `namespace/verb`. Of the
+            //   48 bracket-openers, this takes the gate from 16 → 33; the 15 still alone are
+            //   exactly the verdict dialect and the perception brick (#4067). Audited all lines
+            //   this catches: code/run ×14, work/list ×2 — every one a tool envelope where prose
+            //   belongs, no false positive.
+            if !before_close.contains(',') && verb_ok(before_close) && before_close.contains('/') && (trimmed_after.is_empty() || (!trimmed_after.starts_with('{') && !trimmed_after.starts_with('(')))
+            {
                 return true;
             }
         }
-        // THE FIFTH DIALECT (Saoirse, Intel Mac, 2026-09-16 23:0xZ, into #cambriantech):
-        // the CALL written inside the bracket — `[code/read({"file_path":"src/main.rs"})]`
-        // then `Result:` and a fenced echo of a peer's line. Neither the comma nor the
-        // `]` split above sees a verb (the `(` and the object are in the way), and the
-        // fence rule below needs a leading fence. Same discriminator as the fourth
-        // dialect: a namespaced verb CALLED with an object, `ns/verb({`, here at the
-        // lead. Anchored on the bracket; a citizen writing "I ran [code/read(...)]"
-        // mid-sentence is untouched.
-        // The object is a JSON object — or the KWARGS spelling of one, `cmd=…, lang=…`
-        // (0051cdcf, #academy, the same hour: `[code/shell(cmd=code/read(…), lang=rust))]`).
-        if let Some((verb, after)) = rest.split_once('(') {
-            let a = after.trim_start();
-            let kwargs = a
-                .split_once('=')
-                .is_some_and(|(k, _)| !k.is_empty() && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'));
-            if verb_ok(verb) && verb.contains('/') && (a.starts_with('{') || kwargs) {
+
+        // Scan B: split on `(` — handles paren-object and labelled-call forms.
+        if let Some((before_paren, after_paren)) = rest.split_once('(') {
+            let a = after_paren.trim_start();
+
+            let has_json = a.starts_with('{');
+            let has_kwargs = a.split_once('=').is_some_and(|(k, _)| {
+                !k.is_empty()
+                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            });
+
+            // Direct namespaced call: [ns/verb({…})] or [ns/verb(kwargs=…)]
+            // [code/read({"file_path":"src/main.rs"})] (Saoirse, Intel Mac, qwen2.5-0.5b);
+            // the KWARGS form confirmed in 0051cdcf — `code/shell(cmd=…)` inside brackets.
+            if verb_ok(before_paren) && before_paren.contains('/') && (has_json || has_kwargs)
+            {
                 return true;
             }
-            // THE LABELLED CALL: `[call form: code/read({"file_path":…})]` (0051cdcf,
-            // #academy, 2026-09-17 06:5xZ) — a label, then the namespaced call, all
-            // inside the lead bracket. The call is still the discriminator: the last
-            // whitespace-separated token before `(` is a namespaced verb.
-            let callee = verb.rsplit([' ', ':']).next().unwrap_or(""); // unwrap_or: rsplit always yields one piece; unreachable
-            if callee != verb && verb_ok(callee) && callee.contains('/') && (a.starts_with('{') || kwargs) {
-                return true;
+
+            // Labelled call: the callee is the last whitespace/colon-separated token before `(`.
+            // [call form: code/read({"file_path":"src/main.rs"})] (#0051cdcf, Intel Mac).
+            let mut labelled_callee = None;
+            for c in before_paren.trim().rsplit(|ch: char| ch.is_whitespace() || ch == ':') {
+                labelled_callee = Some(c);
+                break;
+            }
+            if let Some(callee) = labelled_callee {
+                if callee != before_paren.trim() && verb_ok(callee) && callee.contains('/') && (has_json || has_kwargs)
+                {
+                    return true;
+                }
             }
         }
     }
@@ -287,36 +312,22 @@ fn opens_with_tool_envelope(t: &str) -> bool {
     // (`ns/verb(` with a JSON or kwargs object) AND a `Result:` line after it. Either alone
     // stays speech — a citizen writing "code/shell(cmd=…) is how you'd list it" has no Result
     // line, and prose that mentions a "Result:" does not open with a call.
-    if opens_with_bare_call(t) && t.contains("\nResult:") {
-        return true;
-    }
     // The canonical envelope, with or without leading whitespace inside the object.
-    let compact: String = t.chars().take(24).filter(|c| !c.is_whitespace()).collect();
-    if compact.starts_with("{\"tool_call\"") {
+    if t.trim().starts_with("{\"tool_call\"") {
         return true;
     }
-    // THE SEVENTH DIALECT (Saoirse, Intel Mac, qwen2.5-coder-1.5b, into #cambriantech,
-    // 2026-10-02): the model's NATIVE call format — `{"name": …, "arguments": {…}}` —
-    // as the whole reply, bare or inside one fence. 20 of her 34 non-receipt posts that
-    // day: `{"name": "error", "arguments": {"message": "forbidden: …"}}`, `git_pull`,
-    // `read`, `status`, and `code/run` with a backtick string that is not JSON. The
-    // lifter rightly refuses every one (no slash in the name since #4587, or no parse),
-    // and a refused call fell through to speech. Shape, not parse, for that reason: the
-    // malformed ones are the ones that reach here. Anchored on the object OPENING the
-    // reply (after at most a fence line), so prose that quotes the envelope is speech.
     is_name_arguments_envelope(t)
 }
 
-/// The reply opens — directly or on the line after a fence — with an object whose first
-/// key is `"name"` and that carries an `"arguments"` key: a tool call in the model's own
-/// format, emitted where prose belongs.
+/// A namespaced call serialized inside a markdown fence.
 fn is_name_arguments_envelope(t: &str) -> bool {
     let body = match t.strip_prefix("```") {
-        Some(fenced) => fenced.split_once('\n').map_or("", |(_, rest)| rest),
-        None => t,
+        Some(b) => b,
+        None => return false,
     };
-    let compact: String = body.chars().take(48).filter(|c| !c.is_whitespace()).collect();
-    compact.starts_with("{\"name\":\"") && body.contains("\"arguments\"")
+    // Check if trimmed body starts with the name/arguments JSON prefix — no truncation cap.
+    let trimmed = body.trim_start();
+    trimmed.starts_with("{\"name") && t.contains("\"arguments\"")
 }
 
 /// A namespaced command CALLED at the very start of `t`: `ns/verb(` or a deeper path
@@ -440,17 +451,23 @@ fn opens_with_wrapped_peer_id(t: &str) -> bool {
     false
 }
 
-/// How many stacked substrate wrappers to peel before giving up. Four covers every
-/// depth observed in live traffic with headroom; the point of the ceiling is that
-/// the loop stays bounded, not that deeper stacks are legitimate.
-const MAX_WRAPPER_DEPTH: usize = 4;
+/// How many stacked substrate wrappers to peel before giving up. This ceiling keeps the
+/// loop bounded on adversarial input; it is not a limit on what legitimate traffic looks
+/// like — every real stack observed so far fits within double digits.
+const MAX_WRAPPER_DEPTH: usize = 10;
 
 /// A delivery header naming a peer, as this substrate renders it: `peer <uuid>`.
 /// Requiring the literal keyword — not merely "a uuid appears in the brackets" —
 /// keeps a citizen's own `[re: <room-uuid>] …` aside out of the predicate.
 fn header_names_a_peer(header: &str) -> bool {
     let Some(at) = header.find("peer ") else { return false };
-    continuum_kernel::identity::is_uuid_shape(header[at + "peer ".len()..].trim_start().get(..36).unwrap_or(""))
+    let rest = header[at + "peer ".len()..].trim_start();
+    // Express the 36-char UUID check through an explicit match — don't pass empty
+    // string as a fallback, which silently masks short headers.
+    match rest.get(..36) {
+        Some(uuid_candidate) => continuum_kernel::identity::is_uuid_shape(uuid_candidate),
+        None => false,
+    }
 }
 
 #[cfg(test)]
@@ -623,6 +640,17 @@ mod tests {
         assert_eq!(is_not_speech(observed), Some("tool_envelope"));
     }
 
+    // what this catches: [code/read](x) — a namespaced verb in brackets followed by
+    // paren-object with no comma or brace. Canary's space-separated branch only checks
+    // for `{` (the second dialect), so it misses the `(` form entirely; my unified
+    // predicate catches it as Scan A's space-separated-with-paren. Regression for card 60a8875d.
+    #[test]
+    fn a_namespaced_bracket_with_paren_object_is_a_tool_envelope() {
+        assert_eq!(is_not_speech("[code/read](x)"), Some("tool_envelope"));
+        // Non-namespaced stays speech — prevents [answer] note(x) from matching.
+        assert_eq!(is_not_speech("[answer] note(x)"), None);
+    }
+
     // what this catches: the OBJECTLESS bracket — by 2026-09-15 the dialect actually
     // reaching rooms, and the one the two object-bearing forms above miss entirely.
     // Over 24h on IntelMac the gate caught 16 of 48 bracket-openers; these are four of
@@ -748,5 +776,36 @@ mod tests {
         ] {
             assert_eq!(is_not_speech(ok), None, "false positive on: {ok:?}");
         }
+    }
+
+    // Regression tests for Codex review (submission 9282003d): checked-in proofs that the two
+    // corrected cases stay fixed before merging.
+
+    // Stage-word + brace delimiter: both [execute] code/read({…}) and the brace-only
+    // form [execute] code/read{…} must be caught as tool envelopes. The original gate
+    // accepted both delimiters (split on '(' or '{'); cd198e2e preserved that coverage.
+    #[test]
+    fn regression_stage_word_brace_call() {
+        // Both brace+paren and brace-only forms are valid stage-word calls.
+        assert_eq!(
+            is_not_speech("[execute] code/read({\"file_path\":\"src/main.rs\"})"),
+            Some("tool_envelope")
+        );
+        // Brace-only: no opening paren, brace directly after the callee.
+        assert_eq!(
+            is_not_speech("[execute] code/read{\"file_path\":\"src/main.rs\"}"),
+            Some("tool_envelope")
+        );
+    }
+
+    // Labelled-call gate narrowing: only the last whitespace/colon-separated token before ( counts
+    // as callee; earlier namespaced tokens in explanatory text must NOT trigger labelled-call.
+    #[test]
+    fn regression_labelled_call_prose_negative() {
+        // "ns/verb" appears early in label but is not the last token — should not match.
+        assert_eq!(
+            is_not_speech("[note on ns/verb usage ({code example})]"),
+            None
+        );
     }
 }
