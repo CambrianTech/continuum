@@ -374,8 +374,15 @@ pub async fn run_signal_shutdown() {
             }
         }
         None => {
+            // Name the step that never completed (card b5b9bef3): a SIGTERM that joins a stop
+            // already stalled in a settle participant (the M5's page checkpoint, 2026-11-14) must
+            // say so, not only that the save is unknown.
+            let step = match crate::runtime::extensions::settling() {
+                Some(participant) => format!("the `{participant}` settle"),
+                None => "the module save".to_owned(),
+            };
             eprintln!(
-                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
+                "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
             );
         }
     }

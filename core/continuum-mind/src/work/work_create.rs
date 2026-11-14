@@ -2,7 +2,8 @@ use super::*;
 
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
-    pub(super) async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
+    /// A repeat of a card she already filed returns that card (`create_once`), never a second.
+    pub(super) async fn create(airc: &Airc, p: WorkCreateParams) -> Result<(WorkCreateResult, super::work_create_command::Filed), CommandError> {
         // A blank room would reach resolve_room as "unnamed" and land in the current room,
         // the very default this field exists to refuse (Codex on #4550). Resolved FIRST:
         // the room is the second thing that can say which repo (below).
@@ -51,14 +52,18 @@ impl WorkCreate {
             Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
-        let card_id = airc
-            .create_work_card_in(&room, req)
+        let text = super::work_similar::title_and_body(&req.title, req.body.as_deref());
+        let made = crate::persona::work_board::create_once::create_once(airc, &room, crate::persona::work_board::create_once::NewCard::Filed(req))
             .await
             .map_err(|e| CommandError::Internal(e.to_string()))?;
-        crate::persona::work_board::board_index::wrote(&airc, &room);
-        Ok(WorkCreateResult {
-            card_id: card_id.as_uuid().to_string(),
-        })
+        let (card_id, outcome) = match made.card {
+            crate::persona::work_board::create_once::CardCreation::Created(id) => (id, CardOutcome::Created),
+            crate::persona::work_board::create_once::CardCreation::Exists(id) => (id, CardOutcome::Exists),
+        };
+        Ok((
+            WorkCreateResult { card_id: card_id.as_uuid().to_string(), outcome, similar: Vec::new() },
+            super::work_create_command::Filed { text, board: made.board },
+        ))
     }
 }
 

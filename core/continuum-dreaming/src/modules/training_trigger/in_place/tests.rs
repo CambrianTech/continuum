@@ -66,7 +66,7 @@ async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
     assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
     assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
-    assert!(state.in_place.engine(engine(9)).try_lock_owned().is_ok(), "and so is the engine");
+    assert!(state.in_place.engine(engine(9)).try_acquire(None, engine_lock::Phase::Step).is_some(), "and so is the engine");
     drop(acting);
     let moved_on = tokio::time::timeout(std::time::Duration::from_secs(5), pass).await.expect("test: the pass moves on once her act ends");
     assert!(moved_on.is_err_and(|why| why.contains("has not recovered")), "past her act, the trigger's own refusal");
@@ -296,7 +296,7 @@ async fn a_drain_counts_the_learning_still_running() {
 #[tokio::test]
 async fn a_save_leaves_a_busy_engine_to_its_step() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    let stepping = state.in_place.engine(engine(9)).try_lock_owned().expect("test: the step holds the engine");
+    let stepping = state.in_place.engine(engine(9)).try_acquire(Some(Uuid::new_v4()), engine_lock::Phase::Step).expect("test: the step holds the engine");
     let saved = tokio::time::timeout(std::time::Duration::from_secs(5), state.in_place.quiesce(&state, Busy::Skip))
         .await
         .expect("test: the save does not wait on a step");

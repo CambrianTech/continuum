@@ -4,7 +4,7 @@
 prompt allocation and adaptive attention. Its ownership and acceptance gates guide
 that implementation; the broader proposal below is not evidence of deployment.
 
-> **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the substrate floor) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy on top). This document is the contract for what a persona *is* — what it sees, what it owns, what it decides, what proves the substrate treated it right.
+> **Companion to** [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) (the substrate floor) and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (the artifact economy on top). This document is the contract for what a persona *is* — what it sees, what it owns, what it decides, what proves the substrate treated it right.
 >
 > **Origin.** Asked for explicitly by codex on `#cambriantech` (2026-05-16): "Suggested next canonical design artifact: Persona Cognition Runtime Contract naming RuntimeFrame, PersonaInbox, WorkingMemoryAssembly, RecallBudget, CognitionLease, PersonaDecision, TurnReplayRecord, ResourceGovernor, plus invariants. I'll use that as the gate for Rust implementation slices."
 >
@@ -73,7 +73,7 @@ The frame is **immutable** once published. Personas receive a snapshot; no perso
 
 ### `PersonaInbox`
 
-One inbox per persona. Per the CBAR-SUBSTRATE "Persona-cognition invariants": two personas in one room do not share inbox state.
+One inbox per persona. Per the CONTINUUM-ENGINE "Persona-cognition invariants": two personas in one room do not share inbox state.
 
 ```rust
 // PROPOSED — core/continuum-core/src/cognition/inbox.rs
@@ -133,7 +133,7 @@ pub trait WorkingMemoryAssembler: Send + Sync {
 }
 ```
 
-The assembly is **per-persona, per-turn, never shared**. Two personas in the same room handling the same frame produce two different assemblies — their hippocampus recall is different, their identity state is different, their budget is different. Per CBAR-SUBSTRATE persona-cognition invariants: the frame may share *raw artifacts* across personas; it must not share the *assembled context* itself.
+The assembly is **per-persona, per-turn, never shared**. Two personas in the same room handling the same frame produce two different assemblies — their hippocampus recall is different, their identity state is different, their budget is different. Per CONTINUUM-ENGINE persona-cognition invariants: the frame may share *raw artifacts* across personas; it must not share the *assembled context* itself.
 
 ### `RecallBudget`
 
@@ -361,11 +361,11 @@ Every step is observable on the trace bus. Every step is replayable. Every step 
 
 This contract is the *cognition* layer. It sits on top of the substrate and the artifact economy, and it is consumed by every persona implementation.
 
-- **[CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md)** — defines the runtime modules and the "for free triplet." Every cognition cell is a `RuntimeModule` (after Lane D, the richer trait) and inherits the substrate's concurrency / pressure / telemetry / lifecycle.
+- **[CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md)** — defines the runtime modules and the "for free triplet." Every cognition cell is a `RuntimeModule` (after Lane D, the richer trait) and inherits the substrate's concurrency / pressure / telemetry / lifecycle.
 - **[GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md)** — defines the artifact economy and the resource governor. This contract's `DemandAlignedRecall`, `CompositionPlan`, and `ResourceGovernor` are imported from there. The governor's policy file is where Air-vs-5090 sizing lives.
 - **[ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md)** — Lane D (CBAR persona runtime frame) is the implementation path for this contract. Lane H (substrate governor + tiered genome cache) is its resource layer.
 
-If this document ever conflicts with CBAR-SUBSTRATE on substrate-shape questions, CBAR-SUBSTRATE wins per the precedence rule. If it conflicts with GENOME-FOUNDRY-SENTINEL on artifact-economy questions, that doc wins. This document is the cognition contract — agency, decision, replay, protection.
+If this document ever conflicts with CONTINUUM-ENGINE on substrate-shape questions, CONTINUUM-ENGINE wins per the precedence rule. If it conflicts with GENOME-FOUNDRY-SENTINEL on artifact-economy questions, that doc wins. This document is the cognition contract — agency, decision, replay, protection.
 
 ## Acceptance Criteria
 
@@ -413,7 +413,7 @@ The contract is "done" when the following are provable on canary, with PR-attach
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md)
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md)
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md)
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md)
 - [CONTINUUM-VISION.md](../CONTINUUM-VISION.md)

@@ -28,7 +28,7 @@ pub struct Act {
     /// continues this one only when it is the very next cycle of the same session, so a skipped
     /// capture is a broken chain, never a result filed under the wrong action (Cormac on #5432).
     pub cycle: Option<(String, u64)>,
-    /// What the act asked for (MIND-CONTEXT invariant 4): its calls' fingerprint, through the
+    /// What the act asked for (CONTINUUM-ENGINE section 5 invariant 4): its calls' fingerprint, through the
     /// core's one canonical encoding. `None` for an act with no calls.
     pub fingerprint: Option<Fingerprint>,
     /// Every call is a read tool: the only acts whose unchanged outcome can be a repeat. Until the

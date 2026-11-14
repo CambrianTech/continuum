@@ -4,7 +4,7 @@
 
 **Companion to:**
 - [ADAPTER-SYSTEM-ARCHITECTURE.md](ADAPTER-SYSTEM-ARCHITECTURE.md) — the boundary/SDK doctrine: one core, thin (zero-logic) modalities, generated bindings, "fix once, fixed everywhere." §9 of *this* doc (Pure-Rust built-ins vs WASM shipped modules) is the distribution half of that story.
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the RTOS-style runtime substrate every Rust module inherits.
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the RTOS-style runtime substrate every Rust module inherits.
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) — the per-concern inventory of substrate runtime modules (cognition, RAG, voice, vision, inference, etc.). MODULE-CATALOG covers the *runtime shape*; this document covers the *packaging shape* and the *composition kernel*.
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — the artifact-sharing economy built on top of the substrate.
 - [../UNIVERSAL-PRIMITIVES.md](../UNIVERSAL-PRIMITIVES.md) — the kernel primitives (`Commands.execute`, `Events.subscribe`).
@@ -205,7 +205,7 @@ Every command declares its return shape in the manifest (today: implicit, always
 
 ## 6. The Daemon: Where The Module's State Lives
 
-A module's `daemon/` is one Rust `ServiceModule` impl (see [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) and [MODULE-CATALOG.md](MODULE-CATALOG.md) for the substrate floor it inherits from). The daemon:
+A module's `daemon/` is one Rust `ServiceModule` impl (see [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) and [MODULE-CATALOG.md](MODULE-CATALOG.md) for the substrate floor it inherits from). The daemon:
 
 - Owns the module's mutable state (Rust struct, internal to the module).
 - Registers each of its commands with the kernel at startup (`commands::register("chat/send", Box::new(send_handler))`).
@@ -503,7 +503,7 @@ WASM Component Model is the right substrate for shipped modules (process isolati
 | [COMMAND-ARCHITECTURE-AUDIT.md](../infrastructure/COMMAND-ARCHITECTURE-AUDIT.md) | The current-state audit. The recommendations there (consistent params, `createResult`, no direct DAO access) are absorbed into this architecture's authoring rules. |
 | [GENERATOR-OOP-PHILOSOPHY.md](../infrastructure/GENERATOR-OOP-PHILOSOPHY.md) | The why-generators-and-OOP-together principle. Unchanged and load-bearing. |
 | [MODULE-CATALOG.md](MODULE-CATALOG.md) | The catalog of substrate runtime modules. This document is the packaging shell that wraps each catalog entry into an installable unit. |
-| [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) | The runtime substrate every module's daemon inherits from. Unchanged and load-bearing. |
+| [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) | The runtime substrate every module's daemon inherits from. Unchanged and load-bearing. |
 | [../UNIVERSAL-PRIMITIVES.md](../UNIVERSAL-PRIMITIVES.md) | The two-primitive kernel. This document extends it with Lifecycle / Logger / Session / Health and articulates the consequence: everything else is a module. |
 
 ---
@@ -519,7 +519,7 @@ WASM Component Model is the right substrate for shipped modules (process isolati
 - **Manifest** — the runtime projection of `package.json`'s `continuum` block. What the kernel reads.
 - **Cell shape** — one of `Value`, `Handle`, `Stream`, `Lambda` — the four return shapes a command can produce.
 - **Trust suite** — the test suite that verifies a module's behavior contract. Run by recipients before installing a third-party module.
-- **Substrate** — the CBAR-style runtime described in [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md); every Rust daemon inherits cadence, pressure, telemetry, lifecycle from it.
+- **Substrate** — the CBAR-style runtime described in [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md); every Rust daemon inherits cadence, pressure, telemetry, lifecycle from it.
 
 ---
 

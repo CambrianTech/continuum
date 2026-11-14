@@ -16,6 +16,10 @@ impl LlamaServerControl for LlamaServerProcess {
         LlamaServerProcess::launched_prompt_cache_mib(self)
     }
 
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError> {
+        super::prompt_cache_limit::post_prompt_cache_limit(&self.client, &self.root, limit_mib).await
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         if !crate::inference::slots::directory()
             .endpoint(&self.root)
@@ -109,10 +113,10 @@ impl LlamaServerControl for LlamaServerProcess {
             })
     }
 
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError> {
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError> {
         let body = self.props_json().await?;
         crate::inference::weight_residency::ContextGeometry::from_props(&body)
-            .and_then(|geometry| u32::try_from(geometry.allocated_tokens).ok())
+            .filter(|geometry| geometry.pool_tokens().is_some())
             .ok_or_else(|| {
                 LlamaServerError::Unreachable(
                     "/props has no valid context_geometry: the engine is not our fork's (refusing \
@@ -190,14 +194,16 @@ impl LlamaServerControl for LlamaServerProcess {
                 resp.status()
             )));
         }
-        let body: serde_json::Value = resp
+        /// The one `/props` field this probe reads; absent means the engine publishes no modalities.
+        #[derive(serde::Deserialize)]
+        struct Props {
+            modalities: Option<MultimodalSupport>,
+        }
+        let props: Props = resp
             .json()
             .await
             .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        Ok(body.get("modalities").map(|m| MultimodalSupport {
-            vision: m.get("vision").and_then(|v| v.as_bool()).unwrap_or(false),
-            audio: m.get("audio").and_then(|v| v.as_bool()).unwrap_or(false),
-        }))
+        Ok(props.modalities)
     }
 
     async fn decode_smoke_ok(&self) -> bool {
@@ -338,7 +344,7 @@ impl LlamaServerControl for LlamaServerProcess {
     }
 
     fn owns_child(&self) -> bool {
-        self.child.lock().unwrap().is_some()
+        self.child.lock().unwrap_or_else(std::sync::PoisonError::into_inner).is_some() // unwrap_or_else: a poisoned lock still holds the child handle; whether one exists is a plain read
     }
 
     async fn record_observed_placement(&self) {

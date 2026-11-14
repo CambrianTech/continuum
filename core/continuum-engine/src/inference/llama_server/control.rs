@@ -35,6 +35,10 @@ pub enum LlamaServerError {
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
+    /// The engine did not apply a host prompt-cache limit (card 494c99f1): it has no host
+    /// cache, it predates the route, or it named its own refusal. Nothing was evicted.
+    #[error("prompt-cache limit refused: {0}")]
+    PromptCacheRefused(super::PromptCacheRefusal),
 }
 
 
@@ -348,7 +352,10 @@ pub trait LlamaServerControl: Send + Sync {
     /// it. Never `n_ctx` x slots: under a unified cache the fork caps each slot's `n_ctx` at the
     /// model's trained window (server-context.cpp, "the slot context exceeds the training
     /// context"), so `n_ctx` reads 32,768 on a 65,536 pool (IntelMac, 2026-11-03 07:32Z).
-    async fn served_pool_tokens(&self) -> Result<u32, LlamaServerError>;
+    /// The whole geometry in one read: the pool and the most one sequence may hold
+    /// (`context_geometry.max_tokens_per_sequence`), so no reader derives a sequence's limit from
+    /// how the engine was launched.
+    async fn served_geometry(&self) -> Result<crate::inference::weight_residency::ContextGeometry, LlamaServerError>;
 
     /// The REAL number of continuous-batching slots the running server serves,
     /// read from its own `/props` (`total_slots`) — the LANE sibling of
@@ -429,6 +436,13 @@ pub trait LlamaServerControl: Send + Sync {
     fn launched_prompt_cache_mib(&self) -> Option<u32> {
         None
     }
+
+    /// Move the running engine's host prompt-cache limit to `limit_mib` (fork route
+    /// `POST /prompt-cache/limit`, 9269444f6): the cache evicts its oldest states to fit and the
+    /// receipt says what it holds and what it freed. Serving's reclaim lowers it before its heavy
+    /// levers (tier-down, unload), card 494c99f1. A refusal is typed
+    /// ([`LlamaServerError::PromptCacheRefused`]); nothing was evicted then.
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError>;
 
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200

@@ -171,8 +171,6 @@ pub enum NoGrants {
     PoolZero,
     /// The served model is not in the registry, so its trained window is unknown.
     ModelUnresolved,
-    /// The engine's pool kind cannot be read: no lane pidfile, or no recorded launch.
-    PoolKindUnknown,
 }
 
 /// Why a measured mind's requirement entered no demand on one evaluation.
@@ -311,6 +309,54 @@ pub struct Demand<K> {
     pub settled: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
+}
+
+impl Demand<uuid::Uuid> {
+    /// Her requirement as a demand on a pool whose one sequence holds `ceiling`, on a model trained
+    /// to `trained`, or why it is none. `in_flight`: a turn of hers runs now.
+    pub fn of(
+        r: &crate::inference::planning::window_allocator::LaneRequirement,
+        trained: Tokens,
+        ceiling: u32,
+        in_flight: bool,
+    ) -> Result<Self, Excluded> {
+        use crate::inference::planning::window_allocator::Measure;
+        // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not. A
+        // wish no held turn has measured is no floor, only the most she might need: clamped to what
+        // one sequence holds, so she is granted it and her first held turn measures her. Read as
+        // exact, a wish above the ceiling was never granted, never held, never measured: every act
+        // refused for good (BigMama, Sahar on 10523b95e: 'NeedAboveCeiling need127103 ceiling58112'
+        // while her fit was 28,928). A declared size stays a hard floor (an authored requirement),
+        // and the wish never enters `Observed`, so no ring reader can take it for a sample (Codex).
+        let observed = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained));
+        let need = match (r.measure, Tokens::new(ceiling)) {
+            (Measure::Wished { .. }, Some(ceiling)) => observed.value().min(ceiling),
+            _ => observed.within(ceiling),
+        };
+        let wish = r.wish.ok_or(Excluded::NoWish)?.min(trained);
+        // Her target is room to grow over what her turns hold (her held need with the sent
+        // headroom), and never less than what her view holds at full detail (her wish, measured
+        // from her items at their whole level, never from a render a grant collapsed). A grant is a
+        // ceiling, not an allocation: KV is paged on use, and the act's priced allocation decides how
+        // much of it an act holds (`continuum_context::allocation::priced`). Below her wish, her
+        // view collapses at every start, her next demand is measured from the collapse, and the
+        // grant sized from it falls again (Aris on the M5, 2026-11-13, 2b17c41df: 109,745 -> 43,807
+        // alone on a 247,040-token pool, six re-reads of one file, no edit). Growing past it stays
+        // a priced decision, never "fill because the pool has room" (the M5, 2026-11-07: targets of
+        // 150-557k from untrimmed demand grew grants to 197k, 71 acts vs 158; 7b7a696a).
+        let headroom = crate::inference::planning::serving_plan::SENT_HEADROOM;
+        let target = Tokens::new((f64::from(need.get()) * headroom) as u32).ok_or(Excluded::NoTarget)?.max(wish).min(trained);
+        Ok(Demand {
+            mind: r.persona,
+            need,
+            target,
+            wish,
+            in_flight,
+            // read off her receipts by the fair publisher, which owns them (`publish_fair_grants`)
+            settled: false,
+            ceiling,
+        })
+    }
 }
 
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
@@ -773,6 +819,29 @@ mod tests {
         assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
+
+    // what this catches (Aris on the M5, 2026-11-13, 2b17c41df: alone on a 247,040-token pool,
+    // granted 43,807 = 1.25 x her collapsed-render wish of 35,046 while her priced need read at least
+    // 56-99k): a target below what her view holds at full detail, so her settled grant was released
+    // down to it and every start collapsed again. Her target is never below her wish, and on an idle
+    // pool her grant holds it; a need still waits in order when the pool is short.
+    #[test]
+    fn an_idle_pool_grants_her_whole_view_and_never_releases_below_it() {
+        use crate::inference::planning::window_allocator::LaneRequirement;
+        let (pool, trained) = (247_040, t(262_144));
+        let aris = uuid::Uuid::from_u128(0x8044b75b);
+        let full_detail = t(63_000);
+        let requirement = LaneRequirement::wished(aris, full_detail, crate::inference::planning::serving_plan::SENT_HEADROOM)
+            .held(Observed::Exact(t(38_075)));
+        let demand = Demand::of(&requirement, trained, pool, false).expect("test: a held requirement is a demand"); // expect: a wished and held requirement has a need, target and wish
+        assert_eq!(demand.wish, full_detail);
+        assert!(demand.target >= full_detail, "her target holds her whole view: {demand:?}");
+        let settled = Demand { settled: true, ..demand };
+        let grants = DemandFollowing.grant(&[settled], &BTreeMap::from([(aris, 109_745)]), pool);
+        assert!(grants[&aris] >= full_detail.get(), "a settled grant on an idle pool never falls below her whole view: {grants:?}");
+        let fresh = DemandFollowing.grant(&[settled], &BTreeMap::new(), pool);
+        assert!(fresh[&aris] >= full_detail.get(), "granted her whole view at once: {fresh:?}");
+    }
 
     // what this catches: a floored need crossing a JSON boundary (requirements to the serving
     // daemon) read back as a bare bound with its floor dropped, because untagged reads try variants

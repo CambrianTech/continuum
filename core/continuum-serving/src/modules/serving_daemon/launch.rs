@@ -16,6 +16,21 @@ pub(super) struct ReconcileLaunch {
     pub(super) desired_adapter_paths: Vec<String>,
 }
 
+/// The engine's one pool as the launch lays it out: `-c` is `per_sequence x sequences`, and `fit`
+/// says how the host's room bounded the minds' demand (`host_fit`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EnginePool {
+    pub(super) per_sequence: u32,
+    pub(super) sequences: u32,
+    pub(super) fit: host_fit::PoolFit,
+}
+
+impl EnginePool {
+    pub(super) fn tokens(self) -> u64 {
+        u64::from(self.per_sequence) * u64::from(self.sequences)
+    }
+}
+
 impl ServingDaemonModule {
     /// The engine's one KV pool, sized ONCE when the engine starts and never by a relaunch, as
     /// `(per-sequence tokens, sequences)` so `-c` is the pool and `--parallel` the ceiling.
@@ -27,20 +42,52 @@ impl ServingDaemonModule {
     /// The size is [`launch_pool`] at the published plan's LIVE budget: what memory holds now, beside
     /// everything else on the node. Never the host's physical total (590df4bc3 sized the M5 at
     /// 5 x 262,144 from it: memory pressure 91%, 5.6 GB available, no resident hosted; rolled back)
-    /// and never a cold boot's first-tick fallback plan, which planning no longer publishes.
-    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+    /// and never a cold boot's first-tick fallback plan, which planning no longer publishes. That
+    /// demand is then fitted to the host's own reading (`host_fit`): the pool is what the host holds
+    /// beside `host_cache_bytes` of prompt cache, never more than the demand.
+    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32, host_cache_bytes: u64) -> EnginePool {
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         // Each lock is taken and released in its own statement: a guard made inside a call's
         // argument list lives to the end of the statement, so reading the budget there while
         // `seated_for` locks it again deadlocked the reconcile and wedged the core's boot (the M5,
         // 2026-11-07 19:11Z: no module past grid-capacity initialized, the IPC socket never bound).
-        let usable = self.planned_budget.lock().map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
+        let planned = *self.planned_budget.lock();
+        let usable = planned.map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
         let seated = self.seated_for(model);
-        let pool = launch_pool(footprint_for(model).as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated);
+        let footprint = footprint_for(model);
+        // The size is the seated minds' need with the grants' growth margin; the plan's pool only
+        // when no mind is remembered (`host_fit::need_with_growth`).
+        let demand = match host_fit::need_with_growth(&self.seated_claims(model), sequences, model.context_window) {
+            Some(need) => need,
+            None => launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated),
+        };
+        let released = planned.map_or(0, |b| b.credit.own_bytes()); // map_or: no plan yet credits no running engine
+        let device = match planned.map(|b| b.credit) {
+            Some(OwnCredit::Included { .. }) => governed_vram_ceiling(&self.resource_daemon),
+            Some(OwnCredit::ToApply) | None => boot_device_room(&self.resource_daemon),
+        };
+        let rooms = host_fit::Rooms { host: self.host_room(released), device };
+        let fit = host_fit::pool_fit(demand, footprint.as_ref(), rooms, host_cache_bytes, sequences, model.context_window);
+        let pool = fit.pool(sequences);
         // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
-        let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
-        (per_slot, sequences)
+        let per_sequence = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
+        EnginePool { per_sequence, sequences, fit }
+    }
+
+    /// The host's room from the last reading `observe_host_settle` folded in, beside the swap the
+    /// system monitor reads; `None` when the host gave no reading.
+    fn host_room(&self, released: u64) -> Option<host_fit::HostRoom> {
+        let reading = *self.host_reading.lock(); // its own statement: released before the monitor is read
+        let swap_used = self.system.memory().swap_used_bytes;
+        reading.map(|reading| host_fit::HostRoom::of(&reading, swap_used, released))
+    }
+
+    /// The host prompt cache a launch of `model` grants now: the one derivation the launch's
+    /// `--cache-ram` and the pool's host fit both read.
+    pub(super) fn launch_prompt_cache(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> PromptCacheGrant {
+        let memory = self.system.memory();
+        derived_prompt_cache_mib(&model.id, footprint_for(model).as_ref(), served_ctx, lanes, memory.total_bytes, memory.available_bytes, self.system.gpu_memory_mode())
     }
 
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
@@ -132,20 +179,46 @@ impl ServingDaemonModule {
         // the value changes at relaunch boundaries, never mid-serve, so there
         // is zero flap surface (Law 2 — capacity follows measurement, structure
         // does not).
-        let prompt_cache = derived_prompt_cache_mib(
-            &model.id,
-            footprint_for(&model).as_ref(),
-            served_ctx,
-            lanes,
-            self.system.memory().total_bytes,
-            self.system.memory().available_bytes,
-            self.system.gpu_memory_mode(),
-        );
+        let prompt_cache = self.launch_prompt_cache(&model, served_ctx, lanes);
         // Kept beside the grant for the divergence receipt below: the predicate that
         // separates "a bit small" from "structurally cannot cache anything".
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
-        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
+        let engine_pool = self.engine_pool(&model, served_ctx, lanes, u64::from(host_prompt_cache_mib) << 20);
+        let EnginePool { per_sequence, sequences, fit } = engine_pool;
+        if let host_fit::PoolFit::Bounded { by, .. } = fit {
+            let (demand, fitted) = fit.demand_and_fit();
+            continuum_base::probe!(
+                target: "continuum_core::modules::serving_daemon", class = "serving.launch.pool_fit",
+                model = desired.as_str(),
+                demand,
+                fit = ?fitted,
+                pool = engine_pool.tokens(),
+                bound_by = ?by,
+                bound_room_bytes = by.room_bytes(),
+                host_prompt_cache_mib,
+                "the minds' demand exceeds what the machine holds (host RAM beside the prompt cache, or the device's governed budget): the pool is what fits, and their grants share it by measured need"
+            );
+        }
+        // A launch with no engine on its port, below what the seated minds need, waits while the
+        // host is still returning memory: the one launch keeps its pool for life, and a pool sized
+        // from that reading left the M5 dark at 2,048 tokens (2026-11-13 19:36Z, `settle`).
+        if (self.inherited_lane)().is_none() {
+            let pool = engine_pool.tokens();
+            let need: u64 = self.seated_needs(&model).iter().sum();
+            let host = *self.host_settle.lock(); // its own statement: the guard is released before the gate and its probe
+            if let settle::LaunchGate::AwaitSettle { pool, need, settle: host } = settle::launch_gate(host, pool, need) {
+                continuum_base::probe!(
+                    target: "continuum_core::modules::serving_daemon", class = "serving.launch.await_settle",
+                    model = desired.as_str(),
+                    pool,
+                    need,
+                    settle = ?host,
+                    "the launch pool is below the seated minds' needs while the host is still returning memory: the next reconcile sizes it from the settled reading"
+                );
+                return None;
+            }
+        }
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
@@ -187,6 +260,7 @@ impl ServingDaemonModule {
         let force_relaunch = self.force_relaunch.clone();
         let server = self.server.clone();
         let served_pool = Arc::clone(&self.served_pool);
+        let served_sequence = Arc::clone(&self.served_sequence);
         let serving_tx = self.serving_tx.clone();
         let verified_target = self.verified_target.clone();
         let intent_owner = self.intent.clone();
@@ -329,41 +403,48 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
-            // ONE SHARED POOL: each sequence is published its share of the pool the engine
-            // reports (`served_pool_tokens`), so what the readers budget and charge is the pool.
-            // Never the slot's `n_ctx`: the fork caps it at the trained window, and dividing that
-            // again halved the IntelMac's share (2026-11-03). An unreadable pool publishes the gap
-            // and retries next tick. An engine not known to be on the pool publishes its slot.
-            let (served_window, served_lanes) =
-                match (served_window > 0, server.pool_launch().map(|launch| launch.kv_shared())) {
-                    (true, Some(true)) => match server.served_pool_tokens().await {
-                        Ok(pool) => {
-                            served_pool.store(pool, Ordering::Relaxed);
-                            crate::inference::proven_pool::observe(
-                                &target.model.id,
-                                u64::from(pool),
-                                crate::inference::proven_pool::PoolContract::running(),
-                            );
-                            sequence_share(pool, served_lanes, target.model.context_window)
-                        }
-                        Err(e) => {
-                            continuum_base::probe!(
-                                target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
-                                desired = desired.as_str(),
-                                error = %e,
-                                "server ready on the shared pool but its pool is unreadable — \
-                                 publishing the gap (no guessed share; retries next tick)",
-                            );
-                            served_pool.store(0, Ordering::Relaxed);
-                            (0, served_lanes)
-                        }
-                    },
-                    // Fixed slots: the engine's pool is literally its slots, each a full window.
-                    _ => {
-                        served_pool.store(served_window.saturating_mul(served_lanes), Ordering::Relaxed);
-                        (served_window, served_lanes)
+            // The engine's own geometry, read the same way under either launch (CONTINUUM-ENGINE.md,
+            // serving engine: admission (4.8)): the pool and the most one sequence may hold. The grants read both from
+            // here, never from argv. What sequences are PUBLISHED as their share still differs by
+            // launch: on the shared pool each is a share of the pool the engine reports (never the
+            // slot's `n_ctx`, which the fork caps at the trained window, halving the IntelMac's
+            // share, 2026-11-03); on fixed slots, its slot. An unreadable geometry publishes the gap
+            // and retries next tick.
+            let geometry = match served_window > 0 {
+                false => Err("no served window yet".to_string()),
+                true => server
+                    .served_geometry()
+                    .await
+                    .map_err(|e| e.to_string())
+                    .and_then(|g| g.pool_tokens().zip(g.sequence_tokens()).ok_or_else(|| "geometry past the grants' token width".to_string())),
+            };
+            let (served_window, served_lanes) = match geometry {
+                Ok((pool, sequence)) => {
+                    served_pool.store(pool, Ordering::Relaxed);
+                    served_sequence.store(sequence, Ordering::Relaxed);
+                    crate::inference::proven_pool::observe(
+                        &target.model.id,
+                        u64::from(pool),
+                        crate::inference::proven_pool::PoolContract::running(),
+                    );
+                    match server.pool_launch().map(|launch| launch.kv_shared()) {
+                        Some(true) => sequence_share(pool, served_lanes, target.model.context_window),
+                        _ => (served_window, served_lanes),
                     }
-                };
+                }
+                Err(e) => {
+                    continuum_base::probe!(
+                        target: "continuum_core::modules::serving_daemon", class = "serving.reconcile",
+                        desired = desired.as_str(),
+                        error = %e,
+                        "server ready but its geometry is unreadable: publishing the gap (no guessed \
+                         pool or limit; retries next tick)",
+                    );
+                    served_pool.store(0, Ordering::Relaxed);
+                    served_sequence.store(0, Ordering::Relaxed);
+                    (0, served_lanes)
+                }
+            };
             // The grant the engine was LAUNCHED with: the spawn fact on the control, or — for
             // a lane this core did not spawn (ADOPTED; every deploy leaves the lane up for
             // the next core, so this is the common case, not the rare one) — read off the
@@ -764,9 +845,35 @@ impl ServingDaemonModule {
     /// The launch floor for `model`: the seated minds' needs (the working set keeps them across an
     /// engine exit), and while the budget is a gap reading, the largest pool this model ran at.
     pub(super) fn seated_for(&self, model: &crate::model_registry::types::Model) -> Seated {
+        let need = self.seated_needs(model).iter().sum();
+        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
+        let proven = match steady {
+            true => None,
+            false => crate::inference::proven_pool::proven(&model.id),
+        };
+        Seated { need, proven }
+    }
+
+    /// Each seated mind's claim on the pool (`host_fit::MindClaim`): her held need, else her own
+    /// measured wish or declared size; a mind with no view yet claims nothing.
+    pub(super) fn seated_claims(&self, model: &crate::model_registry::types::Model) -> Vec<host_fit::MindClaim> {
         let trained = u64::from(model.context_window);
-        let need = self
-            .serving_demand()
+        self.serving_demand()
+            .requirements
+            .iter()
+            .filter_map(|requirement| match requirement.measure {
+                Measure::Held { need, .. } => Some(host_fit::MindClaim::Held { need: u64::from(need.value().get()).min(trained) }),
+                Measure::Wished { target } | Measure::Declared { target } => Some(host_fit::MindClaim::Own { target: u64::from(target.get()).min(trained) }),
+                Measure::Unmeasured => None,
+            })
+            .collect()
+    }
+
+    /// Each seated mind's HELD need on `model`, capped at its trained window: the residents a boot
+    /// remembers before its registry exists, else the live roster (`serving_demand`).
+    pub(super) fn seated_needs(&self, model: &crate::model_registry::types::Model) -> Vec<u64> {
+        let trained = u64::from(model.context_window);
+        self.serving_demand()
             .requirements
             .iter()
             .filter_map(|requirement| match requirement.measure {
@@ -775,12 +882,6 @@ impl ServingDaemonModule {
                 Measure::Held { need, .. } => Some(u64::from(need.value().get()).min(trained)),
                 Measure::Unmeasured | Measure::Wished { .. } | Measure::Declared { .. } => None,
             })
-            .sum();
-        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
-        let proven = match steady {
-            true => None,
-            false => crate::inference::proven_pool::proven(&model.id),
-        };
-        Seated { need, proven }
+            .collect()
     }
 }

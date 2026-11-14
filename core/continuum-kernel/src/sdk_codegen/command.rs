@@ -60,12 +60,13 @@ pub trait DynCommand: Send + Sync {
     /// authenticated identity the executor already gated on (threaded into [`Ctx`]
     /// so the handler can gate/scope/compose by identity). Internally just
     /// [`dispatch_with_caller`]; the type erasure happens here so the kernel can
-    /// call it without knowing `Params`/`Result`.
+    /// call it without knowing `Params`/`Result`. A refusal keeps its typed next moves
+    /// ([`super::CommandFailure`]).
     async fn invoke(
         &self,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String>;
+    ) -> Result<CommandResult, super::CommandFailure>;
 }
 
 /// Every [`CommandHandler`] IS a routable command object. This is what lets a
@@ -91,7 +92,7 @@ where
         &self,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
-    ) -> Result<CommandResult, String> {
+    ) -> Result<CommandResult, super::CommandFailure> {
         super::dispatch_with_caller(self, params, caller).await
     }
 }
@@ -393,6 +394,8 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     const EFFECT: continuum_base::tool_effect::ToolEffect = continuum_base::tool_effect::ToolEffect::Undeclared;
     /// Where this verb sits in a mind's hands. See [`CommandSpec::DISCLOSURE`]; defaults to `Core`.
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
+    /// For a `Withheld` verb: why, and what to use instead. See [`CommandSpec::WITHHELD`].
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -415,6 +418,7 @@ impl<T: ActionCommand> CommandSpec for T {
     const ALIASES: &'static [&'static str] = <T as ActionCommand>::ALIASES;
     const EFFECT: continuum_base::tool_effect::ToolEffect = <T as ActionCommand>::EFFECT;
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = <T as ActionCommand>::DISCLOSURE;
+    const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = <T as ActionCommand>::WITHHELD;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;
@@ -585,9 +589,11 @@ mod tests {
             .await
             .expect_err("an object of two keys has no one reading as a string: it must refuse");
         assert!(
-            err.starts_with("test/echo-action: [arguments]"),
-            "named + categorized: {err}"
+            err.message.starts_with("test/echo-action: [arguments]"),
+            "named + categorized: {}",
+            err.message
         );
+        assert_eq!(err.refusal, None, "an arguments refusal carries its own typed form, not next moves");
     }
 
     // what this catches (card 9ed04d88): the check a call passes before dispatch reads it

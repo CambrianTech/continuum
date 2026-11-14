@@ -31,6 +31,7 @@
 pub mod answer;
 mod arguments;
 pub mod command_executor;
+pub mod output_id;
 pub mod result_tap;
 pub mod spill;
 pub mod tool_output;

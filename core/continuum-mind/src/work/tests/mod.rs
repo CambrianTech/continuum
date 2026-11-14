@@ -573,7 +573,7 @@
                     priority: None,
                 },
             )
-            .await
+            .await.map(|(made, _)| made)
             .expect("card created");
             ids.push(WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid")));
         }

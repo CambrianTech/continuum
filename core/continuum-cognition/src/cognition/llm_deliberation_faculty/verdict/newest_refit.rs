@@ -44,12 +44,11 @@ impl LlmDeliberationFaculty {
         if refused.newest_result_reduced {
             return None;
         }
-        // The higher of the two prices: the averaged ratio may already charge the result more.
-        let calibration = match newest_result_price(refused, requested) {
-            Some(price) if denser(price, calibration) => price,
-            _ => calibration,
-        };
-        let refit = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual);
+        // The higher of the two prices for her newest result alone: the averaged ratio may already
+        // charge it more. Every other part keeps the averaged price: the excess was charged to the
+        // result, so it never reprices her framing, tools or view (Codex, Sahar 2026-11-08 19:48).
+        let newest = newest_result_price(refused, requested).filter(|price| denser(*price, calibration));
+        let refit = self.prompt_view_priced(ws, fit_window, calibration, newest, visual);
         if !refit.newest_result_reduced {
             return None;
         }
@@ -103,4 +102,63 @@ fn newest_result_price(refused: &DeliberationPromptView, requested: u32) -> Opti
 /// Whether `a` prices every estimated token higher than `b` (ratios compared exactly, in u128).
 fn denser(a: PromptCalibration, b: PromptCalibration) -> bool {
     u128::from(a.measured.get()) * b.estimated.get() as u128 > u128::from(b.measured.get()) * a.estimated.get() as u128
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::heuristic_adapter::HeuristicInferenceAdapter;
+    use crate::ai::types::ResultCustody;
+    use crate::cognition::working_memory::WorkingMemory;
+
+    // What this catches: Sahar's 2026-11-08 19:48 refusal attributed the excess
+    // to her newest result, then charged that result-only density to every source.
+    // Her unrelated framing and tools must retain the whole-prompt calibration.
+    #[test]
+    fn newest_result_refit_does_not_reprice_unrelated_sources() {
+        let memory = Arc::new(WorkingMemory::new(8));
+        let whole = (0..12_000).map(|i| format!("result line {i}: retained evidence\n")).collect::<String>();
+        memory.record_receipt_typed(&[], &whole, None,
+            ResultCustody::Whole { handle: "sahar-refit-evidence".into() });
+        let window = 187_136;
+        let faculty = LlmDeliberationFaculty::new(
+            Uuid::new_v4(), "Sahar", "You are Sahar.",
+            Arc::new(HeuristicInferenceAdapter::new()),
+        ).with_context_window(window).with_working_memory(memory);
+        let workspace = Workspace::new("Inspect the retained evidence.");
+        let first = faculty.prompt_view_with_visual_feedback(
+            &workspace, window, PromptCalibration::default(), None,
+        );
+        assert!(!first.newest_result_reduced, "fixture begins with a whole result");
+        assert!(first.newest_result_tokens > 0);
+        // The shared price and the refusal's count are chosen independently (Codex on #5889): a
+        // shared density derived from this same count would leave the newest result priced at the
+        // average once the others are subtracted at it. Shared 1.5, counted 2.0: the result's own
+        // price is 1.5 + 0.5 x (whole / newest), denser than the shared one, and 2x pages it.
+        let requested = (first.estimated_prompt_tokens * 2) as u32;
+        let Some(average) = PromptCalibration::observed(
+            first.estimated_prompt_tokens, (first.estimated_prompt_tokens * 3 / 2) as u32, Some(first.input_identity),
+        ) else { panic!("fixture has positive counts"); };
+        let Some(refit) = faculty.refit_newest_after_refusal(
+            &workspace, window, average, None, &first, requested, window,
+        ) else { panic!("denser newest result must be paged"); };
+        assert_eq!(refit.pricing.density(), average.density(),
+            "the result-only surcharge must not replace the shared prompt price");
+        // The behaviour, not just the field: against a control at the same shared price with no
+        // result-only price, every unrelated claim is charged the same and only her newest
+        // result's claim grows (Codex on #5889: a price that never reaches the charge is inert).
+        let control = faculty.prompt_view_priced(&workspace, window, average, None, None);
+        let claim = |view: &DeliberationPromptView, source: &str| {
+            view.allocation.as_ref().and_then(|receipt| receipt.claims.iter().find(|c| c.source == source)).map(|c| (c.floor, c.want))
+        };
+        use continuum_context::allocation::id as claim_id;
+        for unrelated in [claim_id::FRAMING, claim_id::TOOLS] {
+            assert_eq!(claim(&refit, unrelated), claim(&control, unrelated), "{unrelated} keeps the shared price");
+        }
+        // Its least page (the floor): its whole is past the window in both views, so its want is
+        // capped at the window alike, but the floor is the page charged at each price.
+        let floor = |view: &DeliberationPromptView| claim(view, claim_id::NEWEST).map(|(floor, _)| floor);
+        assert!(floor(&refit) > floor(&control),
+            "her newest result alone is charged the refusal's surcharge: {:?} vs {:?}", floor(&refit), floor(&control));
+    }
 }

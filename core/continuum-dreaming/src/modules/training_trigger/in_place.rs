@@ -78,7 +78,7 @@ pub(crate) fn start(journal: u32, checkpointed: Option<u32>, progress: Option<u3
 pub(crate) struct InPlace {
     /// The authorities learning answers to, handed in by the core that built the trigger.
     authority: Authority,
-    engines: dashmap::DashMap<EngineIncarnation, Arc<tokio::sync::Mutex<EngineLearning>>>,
+    engines: dashmap::DashMap<EngineIncarnation, Arc<engine_lock::EngineSlot>>,
 }
 
 /// One engine's learning: its seated learners and its one workspace.
@@ -153,19 +153,20 @@ impl InPlace {
         Self { authority, engines: Default::default() }
     }
 
-    fn engine(&self, engine: EngineIncarnation) -> Arc<tokio::sync::Mutex<EngineLearning>> {
+    fn engine(&self, engine: EngineIncarnation) -> Arc<engine_lock::EngineSlot> {
         Arc::clone(self.engines.entry(engine).or_default().value())
     }
 
     /// One step of bucket `key`, holding its gate, its engine and `slot`: seat her learner if needed,
     /// then learn her next pending example on `slot` (or restore her generation before it). A lost
     /// answer's fence runs on its own, holding this engine and the slot until the stop is confirmed.
-    async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: tokio::sync::OwnedMutexGuard<EngineLearning>, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
+    async fn step(&self, state: &Arc<TrainingTriggerState>, mut held: engine_lock::EngineGuard, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, slot: LearnSlot, renewed: &mut bool, pass: &mut BucketPass) -> Result<Next, String> {
         // Bound first: the step's borrow of `held` ends here, before the arm below moves `held` into the fence.
         let stepped = step_on(&self.authority, &mut held, key, rows, slot, renewed, pass).await?;
         match stepped {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
+                held.now(engine_lock::Phase::Fence);
                 state.spawn_owned(async move {
                     fence(mind, engine).await;
                     drop(slot);
@@ -181,7 +182,7 @@ impl InPlace {
     /// engine (holding no serving resource): the step that follows only revalidates. Seating's
     /// embeddings, competence decision and leases all happen here, never under her serving guards.
     async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation) -> Result<Prepared, String> {
-        let mut held = self.engine(engine).lock_owned().await;
+        let mut held = self.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
         for row in rows {
             let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
             match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {
@@ -218,7 +219,7 @@ impl InPlace {
     /// and restores it. Progress a checkpoint did not confirm keeps her seated, so the next pass
     /// publishes it instead of learning it again. `true` when a generation was published.
     async fn settle(&self, state: &TrainingTriggerState, key: &BucketKey, engine: EngineIncarnation) -> Result<bool, String> {
-        let mut held = self.engine(engine).lock_owned().await;
+        let mut held = self.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Settle).await;
         let Some(seated) = held.minds.get_mut(key) else {
             return Ok(false);
         };
@@ -263,7 +264,7 @@ impl InPlace {
     /// How many learners `engine` holds seated: none between passes.
     #[cfg(test)]
     pub(crate) async fn seated_on(&self, engine: EngineIncarnation) -> usize {
-        self.engine(engine).lock().await.minds.len()
+        self.engine(engine).acquire(None, engine_lock::Phase::Quiesce).await.minds.len()
     }
 }
 
@@ -602,10 +603,10 @@ impl InPlace {
         let engines: Vec<_> = self.engines.iter().map(|entry| (*entry.key(), Arc::clone(entry.value()))).collect();
         for (incarnation, engine) in engines {
             let mut held = match busy {
-                Busy::Wait => engine.lock_owned().await,
-                Busy::Skip => match engine.try_lock_owned() {
-                    Ok(held) => held,
-                    Err(_) => {
+                Busy::Wait => engine.acquire(None, engine_lock::Phase::Quiesce).await,
+                Busy::Skip => match engine.try_acquire(None, engine_lock::Phase::Quiesce) {
+                    Some(held) => held,
+                    None => {
                         quiesced.busy += 1; // a step holds it: its learner pages out when her pass ends
                         continue;
                     }
@@ -776,6 +777,7 @@ pub(crate) fn bucket_stem(key: &BucketKey) -> String {
 }
 
 
+mod engine_lock;
 mod evict;
 mod pass;
 mod snapshot;

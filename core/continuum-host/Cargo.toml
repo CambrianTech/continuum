@@ -9,7 +9,7 @@ tokio = { workspace = true } # local_stream: the async local socket (a Unix doma
 cap-std = "4.0.3" # confine: a held directory handle, so every create/open/rename below a root is resolved against it, never re-walked from a path a concurrent writer can redirect
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-libc = { workspace = true } # process_class: setpriority; process_exit: proc_pidinfo, the only call that tells a macOS zombie from a running process; process_usage: sysconf(_SC_CLK_TCK) on Linux, libproc's c_int on macOS
+libc = { workspace = true } # host_memory: host_statistics64 + sysctlbyname on macOS, sysconf(_SC_PAGESIZE); process_class: setpriority; process_exit: proc_pidinfo, the only call that tells a macOS zombie from a running process; process_usage: sysconf(_SC_CLK_TCK) on Linux, libproc's c_int on macOS
 
 [target.'cfg(target_os = "linux")'.dependencies]
 landlock = { workspace = true } # sandbox: the Linux adapter confines a child to its allow-list

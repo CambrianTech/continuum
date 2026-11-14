@@ -346,6 +346,13 @@ impl ResourceDaemon {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
     }
 
+    /// What `consumer_id` may size a successor into before its own bytes are on the board: the
+    /// pool's capacity less every other consumer's floor, grant or residency (see
+    /// [`ResourceLeaseLedger::room_beside_others`](super::ledger::ResourceLeaseLedger::room_beside_others)).
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().room_beside_others(consumer_id, kind)
+    }
+
     /// Replacement budget, the caller's own bytes it added back, and the leases charged, all
     /// from the same accounting read. Consumers must keep these together when deriving a
     /// smaller planning budget: a later board/holder read cannot justify omitting a future
@@ -554,7 +561,7 @@ impl ResourceDaemon {
             let plans = g.reconcile_for_demand(
                 now,
                 |k| pmap[kind_idx(k)],
-                |k| demand.get(&k).copied().unwrap_or(0),
+                |k| demand.get(&k).copied().unwrap_or(0), // unwrap_or: a kind no consumer asked for this tick is a demand of 0 bytes, not an unknown
             );
             (plans, g.board())
         };
@@ -796,7 +803,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().capacity(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); the broker's pool is empty and has nothing to relieve
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -807,7 +814,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().committed(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); nothing is committed in a pool that no longer exists
     }
 
     /// NON-BLOCKING. Queue the relief ask and return best-effort `0` — the

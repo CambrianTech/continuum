@@ -297,7 +297,7 @@ impl Runtime {
             // legacy per-module path. Migrated commands are absent from ModuleMetrics
             // on THIS local route (acceptable for the trivial commands migrated so
             // far; revisit before migrating a hot/contended command).
-            return Some(dispatch_object_with_panic_guard(cmd, params, caller).await);
+            return Some(dispatch_object_with_panic_guard(cmd, params, caller).await.map_err(String::from));
         }
 
         // Provided commands (perception/observe, interface/screenshot) have NO

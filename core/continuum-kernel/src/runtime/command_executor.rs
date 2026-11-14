@@ -75,16 +75,24 @@ pub struct DispatchFailure {
     /// Set when the owning module could not take the command (its initialize is past its
     /// deadline): the typed reason, so a caller matches it instead of reading the message.
     pub unavailable: Option<super::module_readiness::ModuleUnavailable>,
+    /// Set when the command refused with its next moves: the refusal typed, so the mind she
+    /// acts through admits the commands it names instead of reading them out of the message.
+    pub refusal: Option<Box<continuum_airc_protocol::CommandRefusal>>,
 }
 
 impl DispatchFailure {
     pub(crate) fn not_committed(message: String) -> Self {
-        Self { outcome: DispatchOutcome::NotCommitted, message, unavailable: None }
+        Self { outcome: DispatchOutcome::NotCommitted, message, unavailable: None, refusal: None }
     }
 
     /// A handler, interceptor or transport was reached (or may have been) and failed.
     pub fn uncertain(message: String) -> Self {
-        Self { outcome: DispatchOutcome::Uncertain, message, unavailable: None }
+        Self { outcome: DispatchOutcome::Uncertain, message, unavailable: None, refusal: None }
+    }
+
+    /// A command object's handler ran and failed, its refusal (when it has one) kept typed.
+    fn of_command(failure: crate::sdk_codegen::CommandFailure) -> Self {
+        Self { outcome: DispatchOutcome::Uncertain, message: failure.message, unavailable: None, refusal: failure.refusal }
     }
 
     /// Refused before any handler ran because the owning module is unavailable.
@@ -93,6 +101,7 @@ impl DispatchFailure {
             outcome: DispatchOutcome::NotCommitted,
             message: refused.to_string(),
             unavailable: Some(refused),
+            refusal: None,
         }
     }
 }
@@ -567,7 +576,7 @@ impl CommandExecutor {
             // handler can gate/scope/compose by identity.
             return super::runtime::dispatch_object_with_panic_guard(cmd, params, caller.cloned())
                 .await
-                .map_err(DispatchFailure::uncertain);
+                .map_err(DispatchFailure::of_command);
         }
 
         // 3. Fallback: prefix-routed local Rust module registry (un-migrated

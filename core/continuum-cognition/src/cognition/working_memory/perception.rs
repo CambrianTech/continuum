@@ -270,7 +270,7 @@ impl WorkingMemory {
     /// handle (`evict_resident_results_over`, the memory owner's shed): `full` is then the
     /// pointer, and the view prices and loads the whole through the source (`continuum_context::StoredWhole`).
     /// Her act in flight (her newest, riding whole after her view) rendered as every other act is:
-    /// what her view judges on its arrival (MIND-CONTEXT invariant 4). `None` with none in flight.
+    /// what her view judges on its arrival (CONTINUUM-ENGINE section 5 invariant 4). `None` with none in flight.
     pub(crate) fn in_flight_rendering(&self) -> Option<ActRendering> {
         let seq = self.in_flight_action_seq()?;
         self.actions.lock().get(seq).map(act_rendering)

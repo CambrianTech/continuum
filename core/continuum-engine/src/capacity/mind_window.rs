@@ -286,7 +286,7 @@ mod tests {
         let publisher = tokio::spawn(async move {
             tokio::task::yield_now().await;
             let after = std::time::Instant::now() + std::time::Duration::from_millis(1);
-            sender.send(evaluation(after, None, Some(NoGrants::PoolKindUnknown))).expect("the waiter holds a receiver");
+            sender.send(evaluation(after, None, Some(NoGrants::ModelUnresolved))).expect("the waiter holds a receiver");
         });
         let refused = tokio::time::timeout(
             std::time::Duration::from_secs(5),
@@ -295,7 +295,7 @@ mod tests {
         .await
         .expect("one evaluation ends the wait");
         publisher.await.expect("publisher");
-        assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::PoolKindUnknown))), "the newer evaluation's reason, not the stale one's");
+        assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::ModelUnresolved))), "the newer evaluation's reason, not the stale one's");
     }
 
     // what this catches (Codex on #5890; the M5 on 26960c09d, 186 failed turns an hour): a demand

@@ -54,14 +54,30 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
 /// checkpoint then ran past the CLI's 315 s wait, and the core was killed before it saved).
 pub async fn settle_before_stop(cap: Duration) {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
-    settle_within(&settlers, cap).await;
+    settle_within(&settlers, cap, &SETTLING).await;
 }
 
-async fn settle_within(settlers: &[Arc<dyn SettleBeforeStop>], cap: Duration) {
+/// The participant settling right now, so a stop whose watchdog fires names the step that never
+/// completed instead of "still running" (card b5b9bef3: the page checkpoint held the M5's stop with
+/// nothing saying so).
+static SETTLING: parking_lot::RwLock<Option<&'static str>> = parking_lot::RwLock::new(None);
+
+/// The participant a stop is waiting on now; `None` before the settle and once it is done.
+pub fn settling() -> Option<&'static str> {
+    *SETTLING.read()
+}
+
+async fn settle_within(
+    settlers: &[Arc<dyn SettleBeforeStop>],
+    cap: Duration,
+    settling: &parking_lot::RwLock<Option<&'static str>>,
+) {
     let deadline = tokio::time::Instant::now() + cap;
     for settler in settlers {
+        *settling.write() = Some(settler.name());
         settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
     }
+    *settling.write() = None;
 }
 
 #[cfg(test)]
@@ -96,12 +112,42 @@ mod tests {
             Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
         ];
         let started = tokio::time::Instant::now();
-        settle_within(&settlers, Duration::from_secs(300)).await;
+        settle_within(&settlers, Duration::from_secs(300), &parking_lot::RwLock::new(None)).await;
         assert!(started.elapsed() <= Duration::from_secs(301), "the whole stop fits its one cap");
         let given = given.lock().clone();
         assert_eq!(given[0], Duration::from_secs(300));
         assert!(given[1] <= Duration::from_secs(50), "the second gets what the first left: {:?}", given[1]);
         assert_eq!(given[2], Duration::ZERO, "nothing left for the third");
+    }
+
+    /// A participant that never finishes: the stall a stop's watchdog must name.
+    struct Wedged;
+
+    impl SettleBeforeStop for Wedged {
+        fn name(&self) -> &'static str {
+            "wedged"
+        }
+        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // what this catches (card b5b9bef3): a stop stalled in a participant reported only as "still
+    // running" (the M5's page checkpoint, 2026-11-14). While it settles, the slot names it; once
+    // the settle is over, nothing is named.
+    #[tokio::test]
+    async fn the_participant_a_stop_waits_on_is_named_until_the_settle_ends() {
+        let settling = Arc::new(parking_lot::RwLock::new(None));
+        let settlers: Vec<Arc<dyn SettleBeforeStop>> = vec![Arc::new(Wedged)];
+        let stalled = tokio::spawn({
+            let settling = Arc::clone(&settling);
+            async move { settle_within(&settlers, Duration::from_secs(300), &settling).await }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(*settling.read(), Some("wedged"), "the stalled step is named");
+        stalled.abort();
+        settle_within(&[], Duration::from_secs(1), &settling).await;
+        assert_eq!(*settling.read(), None, "a finished settle names nothing");
     }
 }
 

@@ -141,6 +141,8 @@ pub(crate) use slot_work::slot_work_of;
 mod control;
 mod retirement_refusal;
 pub use retirement_refusal::RetirementRefusal;
+mod prompt_cache_limit;
+pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
