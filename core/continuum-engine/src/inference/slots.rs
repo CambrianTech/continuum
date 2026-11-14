@@ -62,7 +62,7 @@ pub use endpoint_concurrency::{DecodeBound, DecodePermit, EndpointConcurrency};
 pub use kv_slot_pool::*;
 mod live_sequences;
 pub use live_sequences::SequenceBasis;
-use live_sequences::LiveSequences;
+use live_sequences::{HeldSequence, LiveSequences};
 mod saved_ledger;
 pub(crate) use saved_ledger::SavedLedger;
 use saved_ledger::{LedgerSnapshot, LoadedLedger};
