@@ -2,6 +2,22 @@ use super::*;
 use axum::{extract::Path, http::StatusCode, routing::post, Json, Router};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+/// Serve `app` on an OS-assigned port under a path prefix no other test shares, returning that
+/// root. The slot directory is process-global and keyed by root: a port the OS hands out again
+/// would otherwise give this test another fixture's latched entry (the first assertion of
+/// `an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint` failed exactly so, on
+/// #5954's CI). Every slot URL is appended to the root, so the prefix reaches every route.
+async fn serve_isolated(
+    app: Router,
+) -> std::io::Result<(String, std::net::SocketAddr, tokio::task::JoinHandle<std::io::Result<()>>)> {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let prefix = format!("/fixture-{}", uuid::Uuid::now_v7().simple());
+    let app = Router::new().nest(&prefix, app);
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    Ok((format!("http://{address}{prefix}"), address, server))
+}
+
 // Regression: core adoption has no Child/generation, but its physical residents
 // must still be saved. A failed save must not authorize retirement or fake warmth.
 #[tokio::test]
@@ -35,10 +51,7 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
                 }
             }
         }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let root = format!("http://{address}");
-        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let (root, address, server) = serve_isolated(app).await?;
         let pool = directory().ensure_pool(&root, 3);
         let endpoint = directory().endpoint(&root);
         let process = crate::inference::engine_residency::EngineIncarnation::of(
@@ -182,10 +195,7 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
             }
         }
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let root = format!("http://{address}");
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let (root, address, server) = serve_isolated(app).await?;
     let client = reqwest::Client::new();
     let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
         .ok_or("fixture process identity unavailable")?;
