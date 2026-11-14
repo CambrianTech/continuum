@@ -722,6 +722,11 @@
         };
         record(&serde_json::to_vec(&evidence).expect("allocation"));
         assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("tracked integration"), upstream);
+        // regression for card f2b90541: another remote branch at her tip (a PR branch fetched into
+        // her worktree) is not upstream once the integration branch is known; it would empty her patch.
+        assert!(run(&["update-ref", "refs/remotes/origin/fable/a-pr-branch", "HEAD"]).status.success());
+        assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("a foreign branch at her tip"), upstream);
+        assert!(run(&["update-ref", "-d", "refs/remotes/origin/fable/a-pr-branch"]).status.success());
         let diff = run(&["diff", &upstream, "HEAD", "--", "hers.rs"]);
         assert!(String::from_utf8(diff.stdout).expect("own diff").contains("fn hers()"), "committed own work remains in the candidate");
         for remote in ["https://foreign.example/CambrianTech/continuum.git", "ssh://git@foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git"] {

@@ -608,6 +608,16 @@ pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Opt
         if ours || (!tracked.is_empty() && short == tracked && !tracked_integration) || name.ends_with("/HEAD") {
             continue;
         }
+        // Upstream is the repository's integration branch, never any ref that happens to hold her
+        // commits: a teammate's branch or a PR branch fetched into her worktree at HEAD would win as
+        // "furthest past" and empty her patch (card f2b90541, 2026-11-14).
+        // An unknown policy (no repository) keeps the local behavior documented on
+        // `submission_repository_url`.
+        if let Some(base) = integration.as_deref() {
+            if !remote_branch.is_some_and(|(_, b)| b == base) {
+                continue;
+            }
+        }
         let Some(mb) = git(&["merge-base", "HEAD", r]) else { continue };
         if git(&["merge-base", "--is-ancestor", created, &mb]).is_none() {
             continue; // this remote does not descend from where her work began
