@@ -644,3 +644,4 @@
         assert_eq!(err.end, GitEnd::Unknown, "it exited 0 without taking its input: what it did is unknown");
         assert!(err.to_string().contains("--version"), "input the git never took is an error naming it, never its output: {err}");
     }
+
