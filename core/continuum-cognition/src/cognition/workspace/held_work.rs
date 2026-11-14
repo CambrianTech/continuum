@@ -31,6 +31,20 @@ pub struct HeldWork {
     /// the newest verdict on it, side by side (card 1e9774cc). A review that names a file then
     /// points at a path she can see, and she reads the reviewer's words, not her paraphrase.
     pub submissions: Vec<SubmissionChanges>,
+    /// Teammates' submissions awaiting a reviewer on every board she stands in, the longest waiting
+    /// first (`board_nav`'s review requests). Her board view reads only the turn's room; on the M5,
+    /// 2026-11-14, 26 of the 28 readable requests stood on a board none of her turns were in.
+    /// Informational: never a tool restriction, never an assignment.
+    pub review_requests: Vec<ReviewRequest>,
+}
+
+/// A review card a teammate's submission opened, hers to take.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewRequest {
+    pub review_card: WorkCardId,
+    pub title: String,
+    /// When the review card was opened: how long the submission has waited.
+    pub opened_at_ms: u64,
 }
 
 /// What one submission changes against its recorded base, and the newest verdict on it.

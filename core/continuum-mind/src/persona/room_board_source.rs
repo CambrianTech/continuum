@@ -525,11 +525,24 @@ impl RoomBoardSource {
         // HEADLINE below needs both counts — see its comment for why that matters.
         // A rooted workspace suppresses the detailed open-deck lead, not the
         // cards' eligibility. Explicit claims remain available while working.
+        // Every card's group off her focus, from the one owner `work/list` reads too (`board_nav`).
+        let minds = crate::persona::work_board::review::minds();
+        let reader = super::board_nav::Reader { cards: &board.cards, me: self.persona_id, minds: &minds, now_ms };
+        let group_of = |card: &airc_work::WorkCard| super::board_nav::group_of(card, &reader);
+        // The review of her own submission is never hers to take (`work/claim` refuses it).
         let open: Vec<&airc_work::WorkCard> = board
             .cards
             .iter()
             .filter(|c| crate::cognition::card_holder::claimable_now(c, now_ms))
+            .filter(|c| group_of(c) != Some(super::board_nav::BoardGroup::YoursInReview))
             .collect();
+        // A teammate's submission waiting on a verdict: counted in the headline, so the request
+        // survives any cut of her board (46 awaited a reviewer on the M5, 2026-11-14, unseen).
+        let review_requests = board
+            .cards
+            .iter()
+            .filter(|c| group_of(c) == Some(super::board_nav::BoardGroup::ReviewRequests))
+            .count();
 
         // HEADLINE — the cheapest COMPLETE statement of this board's two facts, first,
         // so a prefix-take can never deliver half of them.
@@ -560,7 +573,7 @@ impl RoomBoardSource {
             // a cross-room reader verb and is a separate slice; this stops the
             // lie today without new reads.
             let headline = format!(
-                "[board] this room only: you hold {held} card(s) here; {avail} claimable here.",
+                "[board] this room only: you hold {held} card(s) here; {avail} claimable here, {review_requests} awaiting a review.",
                 held = mine.len(),
                 avail = open.len(),
             );
@@ -574,6 +587,7 @@ impl RoomBoardSource {
                         "kind": "board-headline",
                         "held_count": mine.len(),
                         "open_count": open.len(),
+                        "review_request_count": review_requests,
                         "open_lead_suppressed": working,
                     })),
                 )
@@ -686,7 +700,7 @@ impl RoomBoardSource {
         // ~30k chars, 47% of her prompt), and 840 closed cards were 31,185 chars of it (2026-10-31).
         // The shape is `board_nav`'s, shared with `work/list`, so her tool and her view agree.
         let hers = |card: &airc_work::WorkCard| card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
-        let group = |card: &airc_work::WorkCard| super::board_nav::group_of(card, self.persona_id, now_ms).map(super::board_nav::BoardGroup::nav);
+        let group = |card: &airc_work::WorkCard| group_of(card).map(super::board_nav::BoardGroup::nav);
         let card_entry = |card: &airc_work::WorkCard| {
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             let holder = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names);
@@ -722,7 +736,11 @@ impl RoomBoardSource {
         // last), the focused card's submission.
         let mut mine_any: Vec<&airc_work::WorkCard> = board.cards.iter().filter(|c| hers(c) && group(c).is_none()).collect();
         mine_any.sort_by_key(|c| (focused_submission == Some(c.card_id), c.updated_at_ms));
-        items.extend(board.cards.iter().filter(|c| group(c).is_some()).map(card_entry));
+        // The groups in the order she reads them: review requests last, nearest her focus and her newest
+        // context (`nav::collapse` keeps the order a group first appears in).
+        let mut grouped: Vec<&airc_work::WorkCard> = board.cards.iter().filter(|c| group(c).is_some()).collect();
+        grouped.sort_by_key(|c| group_of(c) == Some(super::board_nav::BoardGroup::ReviewRequests));
+        items.extend(grouped.into_iter().map(card_entry));
         items.extend(your_lead);
         items.extend(mine_any.into_iter().map(card_entry));
         items.extend(submission);

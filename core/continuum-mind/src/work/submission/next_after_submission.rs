@@ -587,6 +587,11 @@ impl ActionCommand for WorkReview {
             )
             .map_err(super::super::refused)?;
         }
+        // EVERY MISSING PART AT ONCE, the head she verifies named (`review_verdict::review_complete`):
+        // one refusal is her whole next call, never a part per retry.
+        let evidence_given = p.evidence.is_some() || p.evidence_text.as_deref().is_some_and(|text| !text.trim().is_empty());
+        review_complete(matches!(p.outcome, ReviewOutcome::Passed), p.verified_head.as_deref(), evidence_given, submission)
+            .map_err(|incomplete| CommandError::Invalid(incomplete.to_string()))?;
         // A PASS IS COMPLETED VERIFICATION of the submitted head (card 0174211f): she names the
         // commit she ran, and it is the submission's head. Aiko's 07:04Z pass tested a file copied
         // from 905cadb while the PR head failed CI.
@@ -611,11 +616,8 @@ impl ActionCommand for WorkReview {
         let evidence = match (p.evidence.clone(), evidence_text.as_deref()) {
             (Some(e), _) => e.into_artifact()?,
             (None, Some(text)) if !text.trim().is_empty() => artifact_of_text(text).into_artifact()?,
-            _ => {
-                return Err(CommandError::Invalid(
-                    "a review carries evidence: pass evidence_text (what you ran and saw) — a verdict without evidence is not a verdict".into(),
-                ))
-            }
+            // `review_complete` refused a verdict with no evidence above; its typed refusal, said once.
+            _ => return Err(CommandError::Invalid(ReviewIncomplete { missing: vec![ReviewPart::Evidence], head: submission.head.commit().cloned() }.to_string())),
         };
         // A retry names her review as she was shown it; a full id she mints passes.
         let review_id = match &p.review_id {
