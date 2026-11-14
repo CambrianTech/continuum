@@ -229,16 +229,43 @@ pub fn choose_served_window(fits: u32, demand_tokens: u32, sticky: Option<u32>) 
     wanted.min(fits).max(MIN_SERVE_CTX)
 }
 
-/// The transient prefill compute buffer, expressed as a fraction of the KV rate
-/// (`kv_per_token / this`). llama.cpp sizes the prefill graph for the FULL served
-/// window (`O(ubatch × n_ctx)`), so the buffer GROWS with the window — a
-/// window-independent reserve under-provisions exactly as the window grows (the 53k
-/// OOM). Calibrated to Devstral-24B Q4 (MTL compute buffer 551 MiB @ ~26k → 1209 MiB
-/// @ ~53k ≈ 23.7 KiB/token; KV ≈ 112 KiB/token → ratio ≈ 1/5; rounded to 1/4 to
-/// over-reserve). Model-RELATIVE, never an absolute magic byte count — a smaller
-/// model's cheaper graph scales down with its KV rate. Refine as more (model, window)
-/// GPU-measured points land.
-pub const PREFILL_COMPUTE_KV_DIVISOR: u64 = 4;
+/// The engine's transient prefill compute buffer per token of the window it serves. llama.cpp
+/// sizes the prefill graph for the FULL window (`O(ubatch × n_ctx)`), so the buffer GROWS with
+/// the window, and a window-independent reserve under-provisions exactly as it grows (the 53k
+/// OOM). The rate is MEASURED: `/props` `memory_breakdown` compute bytes on the accelerators
+/// over `context_geometry.allocated_tokens`, one reading per engine incarnation, recorded per
+/// (model, node) in `inference::lane_footprint`. It does not follow the KV rate: on the M5
+/// (2026-11-13, Qwen3.6-35B-A3B, q4_0 KV, ubatch 2048) it read 7,199 B/token, 0.55x the KV,
+/// where the `kv_per_token / 4` it replaces assumed 0.25x.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComputeRate {
+    /// Neither this node nor the catalog has measured it: the planner sizes no window-scaled
+    /// reserve and serves the minimum window until the engine's first `/props` reports it.
+    Unknown,
+    /// The catalog's declared prior for the model (`ModelServingPrefs::prior_compute_bytes_per_token`),
+    /// a receipt from another node: it stands until this node's first reading.
+    Prior { bytes_per_token: u64 },
+    /// This node's own engine reported it.
+    Measured { bytes_per_token: u64 },
+}
+
+impl ComputeRate {
+    /// The rate, when anyone has measured it.
+    pub fn bytes_per_token(self) -> Option<u64> {
+        match self {
+            Self::Unknown => None,
+            Self::Prior { bytes_per_token } | Self::Measured { bytes_per_token } => Some(bytes_per_token),
+        }
+    }
+
+    /// Test fixture: the Devstral-24B Q4 calibration the planner's tests were written against
+    /// (MTL compute buffer 551 MiB at ~26k tokens and 1,209 MiB at ~53k, about a quarter of its
+    /// 112 KiB/token KV), stated as a quarter of the fixture's own KV rate.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn devstral_calibration(kv_per_token: u64) -> Self {
+        Self::Measured { bytes_per_token: kv_per_token / 4 }
+    }
+}
 
 /// The honest, already-netted serving memory budget for THIS host — VRAM on
 /// a discrete GPU, the unified-memory serving slice on Apple Silicon. The
@@ -328,6 +355,11 @@ pub struct ModelFootprint {
     #[serde(skip)]
     #[ts(skip)]
     pub fixed_per_lane_bytes: u64,
+    /// The engine's prefill compute buffer per window token, measured on this node, else the
+    /// catalog's prior, else unknown ([`ComputeRate`]). Runtime-learned, never on the wire.
+    #[serde(skip)]
+    #[ts(skip)]
+    pub compute: ComputeRate,
 }
 
 impl ModelFootprint {
@@ -373,11 +405,14 @@ impl ModelFootprint {
         // 27.4 GB); the planner keeps none (#4230).
         let after_weights = usable_bytes.saturating_sub(self.weights_bytes);
         let compute_floor = self.compute_buffer_per_lane();
-        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
-        let per_token_cost = self.kv_per_token.saturating_add(compute_rate).max(1);
         let after_compute = after_weights.saturating_sub(compute_floor.saturating_mul(l));
-        (((after_compute / l) / per_token_cost).min(u32::MAX as u64) as u32)
-            .min(self.context_window)
+        let fits = |per_token_cost: u64| u32::try_from((after_compute / l) / per_token_cost.max(1)).map_or(u32::MAX, |w| w);
+        match self.compute.bytes_per_token() {
+            Some(rate) => fits(self.kv_per_token.saturating_add(rate)).min(self.context_window),
+            // No measured compute rate: no window-scaled reserve is sized, so the window is the
+            // runnable minimum (what the KV alone fits, never past it) until the engine reports.
+            None => fits(self.kv_per_token).min(MIN_SERVE_CTX).min(self.context_window),
+        }
     }
 
     /// What a lane costs beyond its KV: the base compute buffer plus the fixed residency a
@@ -423,13 +458,14 @@ impl ModelFootprint {
     /// `compute_reserve`) and the SAME number the board must attribute (E=mc²: one
     /// compute-reserve decision, one place). Per lane the buffer is NOT a constant:
     /// llama.cpp sizes the prefill graph for the FULL served window, so it grows with C
-    /// as `compute_floor + compute_rate·C` (`compute_rate = kv_per_token /
-    /// PREFILL_COMPUTE_KV_DIVISOR`). Worst case — every lane prefills at once (the
+    /// as `compute_floor + compute_rate·C` (`compute_rate`: the measured [`ComputeRate`]).
+    /// Worst case — every lane prefills at once (the
     /// wake-briefing burst) — so multiply by lanes. A window-INDEPENDENT reserve
     /// under-provisions exactly as the window grows (the 53k prefill OOM), so this
-    /// window-scales.
+    /// window-scales. With no measured rate ([`ComputeRate::Unknown`]) only the floor is
+    /// reserved, and the plan serves the minimum window (`window_within`).
     pub fn prefill_compute_reserve(&self, served_window: u32, lanes: u32) -> u64 {
-        let compute_rate = self.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let compute_rate = self.compute.bytes_per_token().map_or(0, |rate| rate);
         self.compute_buffer_per_lane()
             .saturating_add(compute_rate.saturating_mul(served_window as u64))
             .saturating_mul(lanes.max(1) as u64)

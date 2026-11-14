@@ -495,8 +495,8 @@ pub(super) fn boot_squeeze() -> (HostBudget, Vec<ModelFootprint>) {
             perf_cores: 6,
         },
         vec![
-            footprint_from_parts("qwen3-27b", 19 * GB, 8192, true, None).unwrap(),
-            footprint_from_parts("coder-4b", 3 * GB, 8192, true, None).unwrap(),
+            crate::inference::planning::serving_plan::footprint::calibrated_from_parts("qwen3-27b", 19 * GB, 8192, true, None).unwrap(),
+            crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-4b", 3 * GB, 8192, true, None).unwrap(),
         ],
     )
 }

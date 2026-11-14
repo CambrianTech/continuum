@@ -20,6 +20,7 @@
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(33_000),
         };
         let host = HostBudget { usable_bytes: 30 * GB, perf_cores: 8 };
         let two = vec![
@@ -124,6 +125,7 @@
             context_window: ctx,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: rank },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(kv_per_token),
         }
     }
 
@@ -230,7 +232,7 @@
         let c = 11_008u32;
         let lanes = 4u32;
         // The reserve is window-SCALED: floor + compute_rate·C, times lanes.
-        let compute_rate = 90_000u64 / PREFILL_COMPUTE_KV_DIVISOR;
+        let compute_rate = f.compute.bytes_per_token().expect("test: the fixture carries the Devstral calibration"); // expect: `fp` always sets a measured rate
         let expect_reserve = (f.compute_buffer_per_lane() + compute_rate * c as u64) * lanes as u64;
         assert_eq!(f.prefill_compute_reserve(c, lanes), expect_reserve);
         // Peak = resident + reserve — strictly greater than resident (the pre-G5 report).
@@ -361,7 +363,7 @@
         let c = plan.served_context_window as u64;
         let lanes = plan.lanes as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
-        let compute_rate = devstral.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let compute_rate = devstral.compute.bytes_per_token().expect("test: the fixture carries the Devstral calibration"); // expect: `fp` always sets a measured rate
         let footprint = devstral.weights_bytes
             + devstral.kv_at(c as u32) * lanes
             + (compute_floor + compute_rate * c) * lanes;

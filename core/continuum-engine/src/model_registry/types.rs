@@ -419,6 +419,13 @@ pub struct ModelServingPrefs {
     /// scaling works"). A measured score outranks any weight proxy by type
     /// (`continuum_kernel::capability::Capability`); an unmeasured model keeps the proxy.
     pub measured_capability: Option<u8>,
+    /// The engine's prefill compute buffer per allocated token, as a DECLARED PRIOR with its
+    /// receipt in the catalog entry: what the planner reserves for this model before any node
+    /// has served it. A node's own reading (`/props` `memory_breakdown`, recorded per model in
+    /// `inference::lane_footprint`) replaces it on the first launch. `None` = no prior: the
+    /// planner sizes no window-scaled reserve and serves the minimum window until the engine
+    /// reports (`serving_plan::ComputeRate::Unknown`).
+    pub prior_compute_bytes_per_token: Option<u64>,
 }
 
 impl Default for ModelServingPrefs {
@@ -433,6 +440,7 @@ impl Default for ModelServingPrefs {
             reasoning_budget: None,
             verified_ctx_ceiling: None,
             measured_capability: None,
+            prior_compute_bytes_per_token: None,
         }
     }
 }

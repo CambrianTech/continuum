@@ -91,6 +91,7 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
         context_window: 262_144,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(32_888),
     };
     let physical = 64u64 << 30;
     let decision = prompt_cache_decision(
@@ -231,6 +232,7 @@ fn prompt_cache_diagnostics_preserve_priors_and_distinguish_measurements() {
         context_window: 65536,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(65536),
     };
     let missing = prompt_cache_decision(None, &[60000], 1, 65536, 1, 32 << 30, 0, 0);
     assert_eq!(missing.reason, "prior_missing_footprint");
@@ -426,6 +428,7 @@ fn a_discrete_gpu_does_not_charge_vram_residency_against_host_ram() {
         context_window: 262_144,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(262_144),
     };
     let physical = 63u64 << 30;
     let (ctx, lanes) = (144_530u32, 1u32);
@@ -544,6 +547,7 @@ fn a_full_cache_never_steps_the_serving_mode_down_by_itself() {
         context_window: 67_340,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(32_768),
     };
     let physical = 64u64 << 30;
     let demands = [67_340u32; 16]; // sixteen seeds on disk: the want is far past any box
@@ -591,6 +595,7 @@ fn the_cache_never_promises_past_what_is_available_now() {
         context_window: 262_144,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(262_144),
     };
     let physical = 63u64 << 30;
     let demands = [115_000u32, 115_000]; // ~58 GB wanted

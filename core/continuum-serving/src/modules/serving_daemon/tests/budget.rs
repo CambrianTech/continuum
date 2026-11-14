@@ -18,6 +18,7 @@ fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry()
         context_window: 131_072,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 18 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(55_000),
     };
     let small = ModelFootprint {
         model_id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF".into(),
@@ -26,6 +27,7 @@ fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry()
         context_window: 32_768,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: 11 },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(30_000),
     };
     let physical = HostBudget {
         usable_bytes: 44 * GB,
@@ -102,6 +104,7 @@ fn pin_swap_down_credits_the_evicted_incumbents_weights() {
         context_window: 32768,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: rank },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(100_000),
     };
     let candidate = footprint("devstral-24b", 14, 8);
     let incumbent = footprint("qwen-32b", 20, 10);
@@ -465,6 +468,7 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
         context_window: 32768,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: rank },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(100_000),
     };
     let big = footprint("qwen3.8-27b", 17, 9);
     let tiny = footprint("qwen-0.5b", 1, 1);
@@ -543,6 +547,7 @@ fn downshift_gate_classifies_the_transient_lobotomy() {
         context_window: 32768,
         capability_rank: continuum_kernel::capability::Capability::Proxy { score: rank },
         fixed_per_lane_bytes: 0,
+        compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(100_000),
     };
     let devstral = footprint("devstral-24b", 14, 8);
     let tiny = footprint("qwen-0.5b", 1, 1);

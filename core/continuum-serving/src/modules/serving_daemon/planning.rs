@@ -737,6 +737,7 @@ mod training_lease_tests {
         let model = ModelFootprint {
             model_id: "fixture".into(), weights_bytes: 19 * (1 << 30), kv_per_token: 33_000,
             context_window: 262_144, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 }, fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(33_000),
         };
         let budget = HostBudget { usable_bytes: 64 * (1 << 30), perf_cores: 1 };
         account_training_leases(&mut demand, &leases);
@@ -758,6 +759,7 @@ mod training_lease_tests {
         let model = ModelFootprint {
             model_id: "fixture".into(), weights_bytes: 1 << 30, kv_per_token: 33_000,
             context_window: 32_768, capability_rank: continuum_kernel::capability::Capability::Proxy { score: 1 }, fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(33_000),
         };
         let plan = ServingPlan {
             base_model: model,

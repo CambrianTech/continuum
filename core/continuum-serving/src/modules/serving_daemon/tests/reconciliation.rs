@@ -307,7 +307,7 @@ async fn reconcile_brings_planned_model_up() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
 
     // What this catches: an intent change during target preparation must not
@@ -487,7 +487,7 @@ async fn reconcile_is_noop_when_already_serving() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
 
     assert!(
@@ -539,7 +539,7 @@ async fn paging_quarantine_reconciles_an_unchanged_healthy_plan() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
     let plan = daemon
         .plan_tx
@@ -634,7 +634,7 @@ async fn degraded_reconcile_clears_gate_and_publishes_empty() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
 
     daemon.reconcile_to_plan().expect("spawned").await.unwrap();
@@ -671,7 +671,7 @@ async fn reconcile_emits_snapshot_on_the_bus() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
     daemon.reconcile_to_plan().expect("spawned").await.unwrap();
 

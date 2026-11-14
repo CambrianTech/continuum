@@ -473,6 +473,7 @@ mod tests {
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(33_000),
         }
     }
 
@@ -484,6 +485,7 @@ mod tests {
             context_window: 131_072,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 4 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(8_000),
         }
     }
 

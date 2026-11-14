@@ -34,9 +34,6 @@ pub const FRESH_MS: u64 = 60 * 60 * 1000;
 pub const SAVE_EVERY_MS: u64 = 60 * 1000;
 /// Samples are taken at most this often — one syscall a minute, not one a tick.
 pub const SAMPLE_EVERY_MS: u64 = 60 * 1000;
-/// A measured per-token cost within this much of the estimate is agreement, not a
-/// correction: the plan is not re-derived on rounding.
-pub const AGREEMENT_PCT: u64 = 20;
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq)]
 pub struct MeasuredCost {
@@ -49,11 +46,31 @@ pub struct MeasuredCost {
     pub allocated_tokens: Option<u64>,
     pub anon_bytes: u64,
     pub last_ms: u64,
+    /// This node's engine's prefill compute buffer per allocated token, from `/props`
+    /// `memory_breakdown` (one reading per engine incarnation, [`record_compute`]). Kept when a
+    /// per-token reading is withheld or retired: a starved window still reports its graph, and
+    /// the plan needs the rate to size anything above the minimum (`serving_plan::ComputeRate`).
+    #[serde(default)]
+    pub compute_per_token: Option<u64>,
+    /// The per-token readings of the last [`FRESH_MS`], `(sampled_at_ms, per_token_bytes)`,
+    /// newest last: what [`MeasuredCost::spread`] reads. Drained to the window on every sample.
+    #[serde(default)]
+    pub readings: Vec<(u64, u64)>,
 }
 
 impl MeasuredCost {
     fn fresh_at(&self, now_ms: u64) -> bool {
         self.per_token_bytes > 0 && now_ms.saturating_sub(self.last_ms) <= FRESH_MS
+    }
+
+    /// The spread of this record's own readings: `(lowest, highest)` per-token cost over the
+    /// last [`FRESH_MS`]. Estimator: the min/max band of the readings. Sample floor: two
+    /// readings (one reading has no spread); `None` under it.
+    pub fn spread(&self) -> Option<(u64, u64)> {
+        let mut values = self.readings.iter().map(|(_, v)| *v);
+        let first = values.next()?;
+        let (lo, hi, count) = values.fold((first, first, 1usize), |(lo, hi, n), v| (lo.min(v), hi.max(v), n + 1));
+        (count >= 2).then_some((lo, hi))
     }
 }
 
@@ -102,10 +119,37 @@ fn per_token_for_allocation(anon_bytes: u64, lanes: u32, allocated_tokens: u64, 
     (per_token > 0).then_some(per_token)
 }
 
-/// Whether a measured per-token cost CORRECTS an estimate: larger by more than
-/// [`AGREEMENT_PCT`]. Smaller never corrects (a footprint is a lower bound).
-pub fn corrects(estimate: u64, measured: u64) -> bool {
-    measured.saturating_mul(100) > estimate.saturating_mul(100 + AGREEMENT_PCT)
+/// Whether a record CORRECTS an estimate: every one of its readings lies above it (the
+/// estimate is below the record's measured spread, [`MeasuredCost::spread`]). Smaller never
+/// corrects (a footprint is a lower bound), and a record without a spread yet (one reading)
+/// corrects nothing: one reading cannot tell a correction from its own noise.
+pub fn corrects(estimate: u64, record: &MeasuredCost) -> bool {
+    record.spread().is_some_and(|(lowest, _)| lowest > estimate)
+}
+
+/// Whether a new reading MOVED outside the record's measured spread (a save is due); a record
+/// without a spread yet moves on every reading.
+fn moved_outside(record: &MeasuredCost, reading: u64) -> bool {
+    record.spread().is_none_or(|(lowest, highest)| reading < lowest || reading > highest)
+}
+
+/// Record this node's engine's prefill compute rate for `model` (`/props` `memory_breakdown`
+/// compute bytes on the accelerators over the allocated tokens, one reading per engine
+/// incarnation). Kept beside the per-token record and across its retirement. Saved when it
+/// changes.
+pub fn record_compute(model: &str, bytes_per_token: u64) {
+    let mut costs = COSTS.lock();
+    let entry = costs.entry(model.to_string()).or_default();
+    if entry.compute_per_token != Some(bytes_per_token) {
+        entry.compute_per_token = Some(bytes_per_token);
+        save_all(&costs);
+    }
+}
+
+/// This node's measured prefill compute rate for `model`, whatever the age of its per-token
+/// record: the graph a model's engine reserves does not drift with the box's load.
+pub fn measured_compute(model: &str) -> Option<u64> {
+    COSTS.lock().get(model).and_then(|c| c.compute_per_token)
 }
 
 static COSTS: LazyLock<parking_lot::Mutex<BTreeMap<String, MeasuredCost>>> =
@@ -198,6 +242,8 @@ pub fn observe(
         allocated_tokens: Some(allocated_tokens),
         anon_bytes,
         last_ms: now,
+        compute_per_token: None,
+        readings: Vec::new(),
     });
     use std::sync::atomic::Ordering;
     let mut costs = COSTS.lock();
@@ -216,13 +262,28 @@ pub fn observe(
 /// (2026-09-19) would otherwise survive a relaunch for [`FRESH_MS`] while every fresh
 /// sample of the new process read "nothing beyond the cache" and left it standing.
 fn apply_sample(costs: &mut BTreeMap<String, MeasuredCost>, model: &str, sample: Option<&MeasuredCost>) -> bool {
-    let before = costs.get(model).map(|c| c.per_token_bytes).unwrap_or(0);
+    let prior = costs.get(model).cloned();
     match sample {
         Some(cost) => {
-            costs.insert(model.to_string(), cost.clone());
-            before == 0 || corrects(before, cost.per_token_bytes) || corrects(cost.per_token_bytes, before)
+            let moved = prior.as_ref().is_none_or(|p| p.per_token_bytes == 0 || moved_outside(p, cost.per_token_bytes));
+            // The window's readings, this one appended; the compute rate carried when the sample has none.
+            let mut readings: Vec<(u64, u64)> = prior.as_ref().map_or_else(Vec::new, |p| p.readings.clone());
+            readings.retain(|(at, _)| cost.last_ms.saturating_sub(*at) <= FRESH_MS);
+            readings.push((cost.last_ms, cost.per_token_bytes));
+            let compute_per_token = cost.compute_per_token.or(prior.as_ref().and_then(|p| p.compute_per_token));
+            costs.insert(model.to_string(), MeasuredCost { readings, compute_per_token, ..cost.clone() });
+            moved
         }
-        None => costs.remove(model).is_some(),
+        // Retired: the per-token record and its readings go; a measured compute rate stays.
+        None => match prior {
+            Some(p) if p.compute_per_token.is_some() => {
+                let had_reading = p.per_token_bytes > 0;
+                costs.insert(model.to_string(), MeasuredCost { compute_per_token: p.compute_per_token, ..Default::default() });
+                had_reading
+            }
+            Some(_) => costs.remove(model).is_some(),
+            None => false,
+        },
     }
 }
 
@@ -359,7 +420,7 @@ fn anon_footprint_impl(pid: u32) -> Option<u64> {
         if line.starts_with("RssAnon:") {
             anon = kb(line);
         } else if line.starts_with("VmSwap:") {
-            swap = kb(line).unwrap_or(0);
+            swap = kb(line).unwrap_or(0); // unwrap_or: an unparseable VmSwap line counts no swap, never a guess
         }
     }
     anon.map(|a| a + swap)
@@ -545,8 +606,7 @@ mod tests {
                 window: 2_048,
                 allocated_tokens: None,
                 anon_bytes: 500_000_000,
-                last_ms: EpochMs::now().millis(),
-            },
+                last_ms: EpochMs::now().millis(), ..Default::default() },
         );
         assert!(measured_record(model).is_some(), "the trap record rules before retirement");
         assert!(retire(model), "a record was there to retire");
@@ -564,9 +624,16 @@ mod tests {
         // The live shape: 25.7 GB anonymous, 8 lanes × 51,712, compute floor 1.36 GB/lane.
         let per_token = per_token_from(25_700_000_000, 8, 51_712, 1_357_000_000, 0).expect("attributable");
         assert!((35_000..38_000).contains(&per_token), "{per_token} B/token");
-        assert!(corrects(10_240, per_token), "3.5× the estimate is a correction");
-        assert!(!corrects(per_token, 10_240), "a smaller reading never corrects downward");
-        assert!(!corrects(10_240, 12_000), "17% is agreement, not a correction");
+        // Fixture records: readings a minute apart, the last one the record's value.
+        let record = |readings: &[u64]| MeasuredCost {
+            per_token_bytes: readings.last().copied().map_or(0, |v| v),
+            readings: readings.iter().enumerate().map(|(i, v)| (i as u64 * SAMPLE_EVERY_MS, *v)).collect(),
+            ..Default::default()
+        };
+        assert!(corrects(10_240, &record(&[per_token, per_token + 500])), "every reading 3.5x above the estimate corrects it");
+        assert!(!corrects(per_token, &record(&[10_240, 10_500])), "smaller readings never correct downward");
+        assert!(!corrects(11_000, &record(&[10_240, 12_000])), "an estimate inside the readings' own spread is agreement");
+        assert!(!corrects(10_240, &record(&[per_token])), "one reading has no spread: nothing corrects under the floor of two");
         // Degenerate shapes attribute nothing.
         assert_eq!(per_token_from(gb, 0, 51_712, 0, 0), None);
         assert_eq!(per_token_from(gb, 2, 0, 0, 0), None);
@@ -597,7 +664,7 @@ mod tests {
         assert!(beyond < inflated && beyond > 32_768, "{beyond}: less than the inflated read, still a real excess");
 
         let mut costs = BTreeMap::new();
-        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 1 };
+        let stale = MeasuredCost { per_token_bytes: 133_720, lanes, window, allocated_tokens: None, anon_bytes: anon, last_ms: 1 , ..Default::default() };
         assert!(apply_sample(&mut costs, "m", Some(&stale)), "first record is a move");
         assert!(apply_sample(&mut costs, "m", None), "an unattributable sample retires it — a save is due");
         assert!(costs.get("m").is_none(), "nothing rules the plan from disk");
@@ -613,7 +680,7 @@ mod tests {
         let mut costs = BTreeMap::new();
         costs.insert(
             "m".to_string(),
-            MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 },
+            MeasuredCost { per_token_bytes: 36_000, lanes: 8, window: 51_712, allocated_tokens: None, anon_bytes: 25_700_000_000, last_ms: 5 , ..Default::default() },
         );
         save_to(&path, &costs);
         assert_eq!(load_from(&path), costs);
@@ -679,5 +746,24 @@ mod tests {
             assert!(own > 0);
         }
         assert_eq!(anon_footprint_of(u32::MAX - 1), None);
+    }
+
+    // what this catches: a measured compute rate lost with a starved window's per-token record
+    // (the window that cannot be measured is the one a model with no compute rate is served at,
+    // so the rate would never be learned), and readings outliving their window.
+    #[test]
+    fn a_compute_rate_survives_retirement_and_readings_drain_to_their_window() {
+        let mut costs = BTreeMap::new();
+        let at = |ms: u64, per_token: u64| MeasuredCost { per_token_bytes: per_token, last_ms: ms, compute_per_token: Some(7_199), ..Default::default() };
+        assert!(apply_sample(&mut costs, "m", Some(&at(1, 30_000))), "a first reading always moves the record");
+        assert!(apply_sample(&mut costs, "m", Some(&at(2, 31_000))), "no spread yet: a second reading moves it");
+        assert!(!apply_sample(&mut costs, "m", Some(&at(3, 30_500))), "inside the measured spread: no save due");
+        assert!(apply_sample(&mut costs, "m", Some(&at(4, 40_000))), "outside the spread: moved");
+        assert_eq!(costs["m"].readings.len(), 4);
+        assert!(apply_sample(&mut costs, "m", Some(&at(4 + FRESH_MS + 1, 50_000))), "outside the spread: moved");
+        assert_eq!(costs["m"].readings, vec![(4 + FRESH_MS + 1, 50_000)], "readings older than the window drained");
+        assert!(apply_sample(&mut costs, "m", None), "retired");
+        assert_eq!((costs["m"].per_token_bytes, costs["m"].compute_per_token), (0, Some(7_199)), "the compute rate stays");
+        assert!(costs["m"].readings.is_empty());
     }
 }

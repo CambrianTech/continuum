@@ -614,6 +614,7 @@
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: continuum_engine::inference::planning::serving_plan::ComputeRate::Measured { bytes_per_token: 32_768 / 4 }, // fixture: the Devstral calibration, a quarter of the KV rate
         };
         let host = HostBudget { usable_bytes: 25_000_000_000, perf_cores: 12 };
         let plan = plan_serving(&host, &[model], &ServingDemand::new(2, Some(70_000))).expect("a 27B fits a 25 GB budget");

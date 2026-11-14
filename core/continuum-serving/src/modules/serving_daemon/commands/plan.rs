@@ -98,6 +98,7 @@ mod tests {
                 context_window: 32_768,
                 capability_rank: continuum_kernel::capability::Capability::Proxy { score: 0 },
                 fixed_per_lane_bytes: 0,
+                compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(0),
             },
             served_context_window: 32_768,
             lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,

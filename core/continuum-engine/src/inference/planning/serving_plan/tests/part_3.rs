@@ -87,6 +87,7 @@ use super::*;
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(65_536),
         };
         let at_rest = HostBudget {
             usable_bytes: 32 * GB, // the ledger's replace-myself budget, capped at the card
@@ -121,6 +122,7 @@ use super::*;
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 9 },
             fixed_per_lane_bytes: 0,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(262_144),
         };
         let physical = HostBudget {
             usable_bytes: (33.6 * GB as f64 * 0.80) as u64,
@@ -178,6 +180,7 @@ use super::*;
             context_window: 262_144,
             capability_rank: continuum_kernel::capability::Capability::Proxy { score: 42 },
             fixed_per_lane_bytes: 922_859_520,
+            compute: crate::inference::planning::serving_plan::ComputeRate::devstral_calibration(32_768),
         };
         let models = std::slice::from_ref(&model);
         // A typical prompt of ~60k: two lanes on a tight host cannot each clear that floor.

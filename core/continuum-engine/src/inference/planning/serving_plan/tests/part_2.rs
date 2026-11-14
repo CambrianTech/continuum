@@ -28,7 +28,7 @@ use super::*;
         let lanes = plan.lanes as u64;
         let c = plan.served_context_window as u64;
         let compute_floor = devstral.compute_buffer_per_lane();
-        let compute_rate = devstral.kv_per_token / PREFILL_COMPUTE_KV_DIVISOR;
+        let compute_rate = devstral.compute.bytes_per_token().expect("test: the fixture carries the Devstral calibration"); // expect: `fp` always sets a measured rate
         let footprint = devstral.weights_bytes
             + devstral.kv_at(c as u32) * lanes
             + (compute_floor + compute_rate * c) * lanes;
