@@ -85,6 +85,12 @@ pub enum StorageError {
     /// A spawned storage task ended without its answer.
     #[error(transparent)]
     Task(#[from] tokio::task::JoinError),
+    /// An entity declaration that cannot become a table.
+    #[error("{collection}: the declaration cannot compile: {fault}")]
+    Declaration { collection: String, fault: DeclarationFault },
+    /// The control that drives a long operation (a migration's pause/resume) closed under it.
+    #[error("the {what} control closed")]
+    ControlClosed { what: &'static str },
     /// No row with this id.
     #[error("{collection} has no row {id}")]
     NotFound { collection: String, id: UUID },
@@ -146,6 +152,8 @@ pub enum ConfigFault {
     CapacityRange,
     #[error("the database path is not UTF-8")]
     PathText,
+    #[error("a migration needs a positive batch size")]
+    BatchSize,
 }
 
 /// What is wrong with a stored value under its declared type.
@@ -209,4 +217,27 @@ pub enum AppendFault {
     SequenceNotNumber,
     #[error("the record omits its unique field")]
     UniqueOmitted,
+}
+
+/// Why an entity declaration cannot compile to a table.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum DeclarationFault {
+    #[error("its collection name is empty")]
+    NoCollection,
+    #[error("it declares no id")]
+    NoId,
+    #[error("{field}: max_length needs a text field")]
+    MaxLengthNotText { field: String },
+    #[error("{field}: max_length exceeds the integer range")]
+    MaxLengthRange { field: String },
+    #[error("{field}: its descriptor column collides with another column")]
+    DescriptorCollision { field: String },
+    #[error("index {index} names no fields")]
+    EmptyIndex { index: String },
+    #[error("index {index} names undeclared field {field}")]
+    IndexField { index: String, field: String },
+    #[error("{field}: its column name is empty or collides with another field's")]
+    ColumnCollision { field: String },
+    #[error("{field}: SET NULL needs a nullable field")]
+    SetNullNotNullable { field: String },
 }
