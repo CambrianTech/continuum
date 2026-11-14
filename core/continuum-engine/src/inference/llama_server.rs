@@ -151,6 +151,7 @@ pub use control::{
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};
 mod process;
+mod registration;
 pub use process::LlamaServerProcess;
 use process::OwnedEngine;
 mod ephemeral;
