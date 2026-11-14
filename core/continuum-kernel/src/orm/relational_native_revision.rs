@@ -40,3 +40,35 @@ impl super::relational::RelationalStore {
         Ok(revision)
     }
 }
+impl super::relational::RelationalStore {
+    /// Record directly selected native deletions before physical DELETE, under the
+    /// same transaction. Cascade traversal remains a separate unimplemented contract.
+    pub(super) async fn native_deleting_on(&self, connection: &sea_orm::DatabaseTransaction,
+        schema: &super::types::CollectionSchema, query: &super::query::StorageQuery,
+    ) -> Result<(), String> {
+        use sea_orm::sea_query::{Alias, Expr};
+        if !schema.fields.iter().any(|field| field.field_type == super::types::FieldType::Binary) {
+            return Ok(());
+        }
+        let victims = Query::select().column(Alias::new("id"))
+            .from(Alias::new(super::adapter::naming::to_table_name(&schema.collection)))
+            .cond_where(super::relational_query::condition(schema, query)?).to_owned();
+        let condition = sea_orm::Condition::all()
+            .add(Expr::col(Column::Collection).eq(schema.collection.clone()))
+            .add(Expr::col(Column::Deleted).eq(false))
+            .add(Expr::col(Column::Id).in_subquery(victims));
+        // Probe one matching receipt, not row bodies or a materialized victim list.
+        let probe = Query::select().column(Column::Id).from(Entity)
+            .cond_where(condition.clone()).limit(1).to_owned();
+        if connection.query_one(connection.get_database_backend().build(&probe))
+            .await.map_err(|e| e.to_string())?.is_none() { return Ok(()); }
+        let revision = super::relational_sequence::next_on(connection,
+            super::relational_sequence::Domain::Native, &schema.collection, 1).await?;
+        let statement = Query::update().table(Entity)
+            .value(Column::Revision, revision).value(Column::Deleted, true)
+            .cond_where(condition).to_owned();
+        connection.execute(connection.get_database_backend().build(&statement))
+            .await.map_err(|e| e.to_string())?;
+        Ok(())
+    }
+}

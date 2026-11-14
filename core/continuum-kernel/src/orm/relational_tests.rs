@@ -128,8 +128,7 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
     assert_eq!(*revision.borrow(), 1);
     assert_eq!(first.batch(vec![append("a")]).await?[0]["fresh"], false);
     first
-        .delete_on(
-            &first.db,
+        .delete_matching(
             QueryBuilder::new(Child::COLLECTION)
                 .filter_eq("id", "a")
                 .build(),

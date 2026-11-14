@@ -82,15 +82,16 @@ impl super::relational::RelationalStore {
             != 0)
     }
 
-    pub async fn delete_on<C: ConnectionTrait>(
+    pub async fn delete_on(
         &self,
-        connection: &C,
+        connection: &sea_orm::DatabaseTransaction,
         query: StorageQuery,
     ) -> Result<usize, String> {
         if query.joins.is_some() || query.limit.is_some() || query.offset.is_some() {
             return Err("delete_matching accepts a predicate, not joins or pagination".into());
         }
         let schema = self.schema(&query.collection)?;
+        self.native_deleting_on(connection, &schema, &query).await?;
         let statement = Query::delete()
             .from_table(Alias::new(naming::to_table_name(&query.collection)))
             .cond_where(super::relational_query::condition(&schema, &query)?)

@@ -107,7 +107,12 @@ transaction as the bytes and descriptor. The existing sequence-head owner alloca
 revisions in a typed native domain, separate from append sequence custody; a single
 UPSERT RETURNING advances a head and refuses overflow. Failed transactions roll back
 both head and row receipt, and an unchanged conditional write consumes no revision.
-These receipts are not yet exposed as a delta watermark: deletion/cascade recording,
+Direct predicate deletes, batch deletes and owner clear now mark matching native
+receipts deleted in the same transaction. A database-side identity subquery selects
+victims without materializing bodies or a CPU victim list; no matching receipt means
+no new revision. Delete primitives require a transaction rather than an arbitrary
+connection. Rollback and recreation preserve the head and tombstone contracts.
+These receipts are not yet exposed as a delta watermark: foreign-key cascade recording,
 ordered paging, completion notifications and their replay semantics must land first.
 The sequence-head declaration now has a composite domain/collection identity; any
 previous development database needs the offline schema migration before adoption.

@@ -390,3 +390,47 @@ async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result
     assert_eq!(persisted.high, i64::MAX);
     Ok(())
 }
+#[tokio::test]
+async fn native_delete_batch_clear_and_recreate_keep_transactional_tombstones() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    use super::relational_native_revision::Entity as Revisions;
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("native-delete.sqlite");
+    let path = path.to_str().ok_or("non-UTF8 fixture path")?;
+    let store = open(path).await?;
+    let id = |n| uuid::Uuid::from_u128(n).to_string();
+    for n in 1..=3 {
+        store.create_binary(DataRecord { id: id(n), collection: NativeRow::COLLECTION.into(),
+            data: json!({}), metadata: RecordMetadata::default() },
+            std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![1, 2])?)])) .await?;
+    }
+    let delete = |n| types::BatchOperation { operation_type: types::BatchOperationType::Delete,
+        collection: NativeRow::COLLECTION.into(), id: Some(id(n)), data: None };
+    let failed = store.batch(vec![delete(1), types::BatchOperation {
+        operation_type: types::BatchOperationType::Create, collection: NativeRow::COLLECTION.into(),
+        id: Some(id(2)), data: Some(json!({"payload": null})),
+    }]).await;
+    assert!(failed.is_err());
+    let key = |n| (NativeRow::COLLECTION.to_owned(), id(n));
+    let receipt = Revisions::find_by_id(key(1)).one(&store.db).await?.ok_or("missing rollback receipt")?;
+    assert!(!receipt.deleted);
+    assert_eq!(receipt.revision, 1);
+    assert_eq!(store.count(QueryBuilder::new(NativeRow::COLLECTION).build()).await?, 3);
+    assert_eq!(store.delete_matching(QueryBuilder::new(NativeRow::COLLECTION).filter_eq("id", id(1)).build()).await?, 1);
+    assert_eq!(store.delete_matching(QueryBuilder::new(NativeRow::COLLECTION).filter_eq("id", id(1)).build()).await?, 0);
+    assert_eq!(Revisions::find_by_id(key(1)).one(&store.db).await?.ok_or("missing deleted receipt")?.revision, 4);
+    store.batch(vec![delete(2)]).await?;
+    store.clear().await?;
+    assert_eq!(Revisions::find_by_id(key(2)).one(&store.db).await?.ok_or("missing batch receipt")?.revision, 5);
+    assert_eq!(Revisions::find_by_id(key(3)).one(&store.db).await?.ok_or("missing clear receipt")?.revision, 6);
+    store.create_binary(DataRecord { id: id(1), collection: NativeRow::COLLECTION.into(),
+        data: json!({}), metadata: RecordMetadata::default() },
+        std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![3, 4])?)])) .await?;
+    drop(store);
+    let store = open(path).await?;
+    let recreated = Revisions::find_by_id(key(1)).one(&store.db).await?.ok_or("missing recreated receipt")?;
+    assert_eq!(recreated.revision, 7);
+    assert!(!recreated.deleted);
+    for n in [2, 3] { assert!(Revisions::find_by_id(key(n)).one(&store.db).await?.ok_or("missing durable tombstone")?.deleted); }
+    Ok(())
+}
