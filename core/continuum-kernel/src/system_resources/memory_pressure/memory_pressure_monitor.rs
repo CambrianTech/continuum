@@ -1,5 +1,9 @@
 use super::*;
 
+/// The process's monitor's published snapshots, for a waiter that cannot hold the monitor's handle
+/// (an engine lane waiting out a pressure spike). Set by the first [`MemoryPressureMonitor::start`].
+static PUBLISHED: std::sync::OnceLock<watch::Receiver<PressureSnapshot>> = std::sync::OnceLock::new();
+
 impl MemoryPressureMonitor {
     /// Start the monitor on its own tokio task.
     ///
@@ -49,6 +53,10 @@ impl MemoryPressureMonitor {
         // The shared runner owns the interval + per-tick catch_unwind. We don't
         // hold the returned handle — subscribers reach the channel through us.
         let _ = spawn_daemon(monitor.clone());
+        // First start wins: one monitor per process (main.rs), and a second start is a test's own.
+        if PUBLISHED.set(monitor.subscribe()).is_err() {
+            clog_info!("🧠 a second MemoryPressureMonitor started; waiters outside the kernel follow the first");
+        }
         monitor
     }
 
@@ -70,6 +78,16 @@ impl MemoryPressureMonitor {
     /// The receiver gets notified whenever a new snapshot is published.
     pub fn subscribe(&self) -> watch::Receiver<PressureSnapshot> {
         self.channel.handle().subscribe()
+    }
+
+    /// [`Self::subscribe`] on the process's started monitor, or `None` before one starts. Every
+    /// publish comes after the tick has stored the level, the gate and the free bytes, so a waiter
+    /// woken by it reads the readings it announces.
+    pub fn subscribe_published() -> Option<watch::Receiver<PressureSnapshot>> {
+        let mut snapshots = PUBLISHED.get()?.clone();
+        // Seen as of now: the next change is the next publish, not every one since start.
+        drop(snapshots.borrow_and_update());
+        Some(snapshots)
     }
 
     /// Get current RSS (lock-free atomic read, any thread).
