@@ -638,3 +638,75 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     assert_eq!(held(), 0, "no child exists before OS spawn");
 
 }
+
+// what this catches: a retired child's exit reached only by polling a collector on a cadence.
+// The reaper waits on the child itself: the exit event resolves with no collector called, and the
+// child's resource lease is already back on the board when it does (custody released, then the
+// exit announced), so a waiter woken by it never reads stale capacity.
+#[tokio::test]
+async fn the_reaper_announces_a_retired_childs_exit_after_releasing_its_custody() {
+    use super::*;
+    const CHILD_ENV: &str = "CONTINUUM_REAPER_TEST_CHILD";
+    if std::env::var_os(CHILD_ENV).is_some() {
+        use std::io::Read;
+        let mut byte = [0];
+        let _ = std::io::stdin().read(&mut byte);
+        return;
+    }
+    let resources = crate::resources::ResourceDaemon::start(
+        vec![Arc::new(crate::resources::MockCapacitySource::new(
+            crate::resources::ResourceKind::Vram,
+            10_000,
+        ))],
+        vec![],
+        crate::resources::DaemonConfig::default(),
+    );
+    let held = || resources.board().leases.iter().map(|l| l.bytes).sum::<u64>();
+    let mut command = tokio::process::Command::new(std::env::current_exe().expect("test executable"));
+    command
+        .args([
+            "--exact",
+            "inference::llama_server::tests::retirement::the_reaper_announces_a_retired_childs_exit_after_releasing_its_custody",
+        ])
+        .env(CHILD_ENV, "1")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    #[cfg(windows)]
+    command.creation_flags(0x08000000); // CREATE_NO_WINDOW: fixture never opens a console.
+    let mut child = command.spawn().expect("owned fixture child");
+    let input = child.stdin.take().expect("child input held open");
+    let process = LlamaServerProcess::with_root(format!("test://reaper-{}", uuid::Uuid::new_v4()));
+    *process.pending_resource_reservation.lock() = Some(
+        resources
+            .acquire_guarded(&crate::resources::LeaseRequest {
+                consumer_id: "reaper-fixture".into(),
+                kind: crate::resources::ResourceKind::Vram,
+                bytes: 6_000,
+                ttl_ms: 60_000,
+                reclaim_policy: crate::resources::ReclaimPolicy::Pinned,
+            })
+            .expect("fixture capacity grant"),
+    );
+    let endpoint = crate::inference::slots::directory().endpoint(&process.root);
+    let transition = endpoint.transition().await;
+    let generation = transition.start_generation().expect("fixture engine generation");
+    process.install_child(child, generation, None, None);
+    drop(transition);
+    let identity = process.owned_engine().expect("owned identity");
+    // No signal: the child lives until its input closes, so the exit is the child's own.
+    let receipt = process
+        .retire_owned_engine_with(&identity, |_| Ok(()))
+        .await
+        .expect("retirement owned");
+    let mut exit = Box::pin(process.engine_exit(&receipt).expect("owned exit").confirmed());
+    assert!(futures::poll!(&mut exit).is_pending(), "the child lives: no exit yet");
+    assert_eq!(held(), 6_000, "a live child keeps its lease");
+    drop(input);
+    tokio::time::timeout(std::time::Duration::from_secs(60), exit)
+        .await
+        .expect("last-resort guard: the fixture exits once its input closes")
+        .expect("the reaper announces the exit");
+    assert_eq!(held(), 0, "the lease was returned before the exit was announced");
+}

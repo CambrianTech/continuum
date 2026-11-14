@@ -26,15 +26,6 @@ use super::{lexer::split_code_and_comment, SourceFile, SourceRule, Violation};
 /// The marker a constant spends to say it is deliberately a constant.
 pub const JUSTIFICATION_MARKER: &str = "derived-or-floor:";
 
-/// A justification has to say something. Same bar, and the same reasoning, as the unwrap
-/// ratchet's [`super::unwrap_justification`]: a marker with nothing after it is the SHAPE
-/// of a reason, which is worse than no marker at all because it silences the guard.
-// derived-or-floor: a FLOOR on the length of a COMMENT a human types — it bounds prose, never a token, a second or a rate, and there is nothing here to measure
-// context-budget-exempt: this bounds the length of a COMMENT, not a window, prompt or
-// token budget — the de-hardcode guard matches it on the `CHARS` suffix alone, which is
-// that guard erring toward noise on purpose (same exemption its sibling in
-// `unwrap_justification` spends, for the same reason).
-const MIN_REASON_CHARS: usize = 16;
 
 /// The trees a live cognition / serving turn actually runs through. Violations are raised
 /// only here: `audio_constants.rs` and the video renderer are full of constants that are
@@ -54,33 +45,6 @@ const LIVE_PATHS: &[&str] = &[
 
 pub struct TimeBounds;
 
-impl TimeBounds {
-    /// Does the marker appear with a real reason after it — on this line, or in the
-    /// contiguous comment block directly above it?
-    ///
-    /// The block-above form exists because a `const` carries a doc comment, not a
-    /// trailing one; the same allowance the de-hardcode guard makes, for the same reason.
-    fn justified(lines: &[&str], index: usize) -> bool {
-        let reason_on = |text: &str| {
-            text.split_once(JUSTIFICATION_MARKER)
-                .is_some_and(|(_, why)| why.trim().chars().count() >= MIN_REASON_CHARS)
-        };
-        if let Some(comment) = split_code_and_comment(lines[index]).1 {
-            if reason_on(comment) {
-                return true;
-            }
-        }
-        lines[..index]
-            .iter()
-            .rev()
-            .take_while(|l| {
-                let t = l.trim_start();
-                t.starts_with("//") || t.is_empty()
-            })
-            .any(|l| reason_on(l))
-    }
-}
-
 impl SourceRule for TimeBounds {
     fn name(&self) -> &'static str {
         "underived_duration"
@@ -97,7 +61,7 @@ impl SourceRule for TimeBounds {
         let mut out = Vec::new();
         for (line_no, line) in file.production_lines() {
             let (code, _) = split_code_and_comment(line);
-            if Self::justified(&lines, line_no - 1) {
+            if crate::lexer::marker_with_reason(&lines, line_no - 1, JUSTIFICATION_MARKER) {
                 continue;
             }
             // A constant times a constant is the shape wherever it appears — it needs no

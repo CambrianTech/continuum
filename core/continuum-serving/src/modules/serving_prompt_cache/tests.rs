@@ -1,5 +1,5 @@
 //! The cache lever on the host's deficit path (card 0f631c46): asked first, by its share, and
-//! taken back when the OS reads normal. The fake engine is shared with the serving dyno.
+//! raised within the host's measured headroom when the OS reads normal. The fake engine is shared with the serving dyno.
 
 #![cfg(test)]
 
@@ -136,18 +136,26 @@ async fn only_the_os_deficit_lowers_the_cache() {
 }
 
 // what this catches: the cache staying low after the host recovered (the take-again half missing),
-// or a raise handed to a cache serving never lowered. Taken back to the launch grant once, only
-// after a lowering; the engine's reply is the receipt.
+// a raise handed to a cache serving never lowered, and a raise past the measured headroom. With
+// 1 GiB of room the cache lowered by 4 GiB is raised by 1 GiB, claiming exactly that; a second
+// offer of the same room raises nothing, since the 1 GiB it was given is not filled yet.
 #[tokio::test]
-async fn the_cache_is_taken_back_to_its_grant_only_after_it_was_lowered() {
+async fn the_cache_is_raised_by_the_measured_headroom_only_after_it_was_lowered() {
+    let room = NonZeroU64::new(GIB).expect("test: nonzero");
     let cache = FakeEngineCache::full(M5_GRANT_MIB);
     let (shedder, _serving, pressure) = rig(cache.clone(), M5_GRANT_MIB);
-    assert!(shedder.take_again_now().is_none(), "never lowered: nothing to take back");
+    assert!(shedder.take_again_now(room).is_none(), "never lowered: nothing to take back");
     pressure.send_replace(poll(&shedder, 4 * GIB, &[], QUIET_RAM));
     run(shedder.shed_now()).await;
-    run(shedder.take_again_now()).await;
-    assert_eq!(cache.asked(), vec![u64::from(M5_GRANT_MIB) - 4_096, u64::from(M5_GRANT_MIB)]);
-    assert!(shedder.take_again_now().is_none(), "at its grant: nothing more to take");
+    let (step, claimed) = shedder.take_again_now(room).expect("test: a raise within the room");
+    step.await.expect("test: the raise ran");
+    assert_eq!(claimed, GIB);
+    assert_eq!(cache.asked(), vec![u64::from(M5_GRANT_MIB) - 4_096, u64::from(M5_GRANT_MIB) - 3_072]);
+    assert!(shedder.take_again_now(room).is_none(), "the room it was given is not filled yet: nothing more");
+    let wide = NonZeroU64::new(64 * GIB).expect("test: nonzero");
+    let (step, _) = shedder.take_again_now(wide).expect("test: room past the unfilled part");
+    step.await.expect("test: the raise ran");
+    assert_eq!(cache.asked().last(), Some(&u64::from(M5_GRANT_MIB)), "never past the launch grant");
 }
 
 // what this catches: two steps racing on the engine (a lowering and a raise, or two lowerings from
@@ -167,7 +175,7 @@ async fn one_step_on_the_engine_at_a_time() {
     let first = shedder.shed_now();
     assert!(first.is_some());
     assert!(shedder.shed_now().is_none(), "a step is in flight");
-    assert!(shedder.take_again_now().is_none(), "no raise beside a lowering");
+    assert!(shedder.take_again_now(NonZeroU64::new(64 * GIB).expect("test: nonzero")).is_none(), "no raise beside a lowering");
     gate.add_permits(1);
     run(first).await;
     gate.add_permits(1);
@@ -193,7 +201,7 @@ async fn a_cache_holding_less_than_its_limit_frees_its_share_in_one_step() {
 
 // what this catches: a spent or missing lever wedging the shed path. An engine older than fork
 // 9269444f6 refuses (no route), and a later poll asks again; a cache at the route's floor (1 MiB)
-// or of unknown size (grant 0) is never asked.
+// or of unknown size (grant 0, the snapshot's one absence) is never asked.
 #[tokio::test]
 async fn a_refusal_or_a_spent_cache_is_said_and_never_wedges() {
     let refusing = FakeEngineCache::refusing(PromptCacheRefusal::RouteMissing);
@@ -221,11 +229,12 @@ fn only_a_different_engine_starts_again_from_its_launch_grant() {
     use super::lever::{current_limit, LastSet};
     let engine = |pid| Some(EngineIncarnation { pid, started_s: 100, port: 8080 });
     let set = |engine, mib| Some(LastSet { engine, limit_mib: NonZeroU64::new(mib).unwrap(), held_bytes: 0 }); // JUSTIFIED unwrap: test literals are nonzero
-    let limit = |last, now, grant| current_limit(last, now, grant).map(|known| known.limit_mib.get());
-    assert_eq!(limit(set(engine(7), 4_000), engine(7), 9_369), Some(4_000), "the same engine");
-    assert_eq!(limit(set(engine(7), 4_000), engine(8), 9_369), Some(9_369), "a relaunched engine");
-    assert_eq!(current_limit(set(engine(7), 4_000), engine(8), 9_369).and_then(|k| k.held_bytes), None, "its contents unknown");
-    assert_eq!(limit(set(engine(7), 4_000), None, 9_369), Some(4_000), "an unknown engine is never raised");
-    assert_eq!(limit(set(None, 4_000), engine(8), 0), Some(4_000), "no grant: what serving set");
-    assert_eq!(limit(None, engine(7), 0), None, "nothing known: no lever");
+    let grant = NonZeroU64::new(9_369).unwrap(); // JUSTIFIED unwrap: a nonzero test literal
+    let limit = |last, now| current_limit(last, now, grant).limit_mib.get();
+    assert_eq!(limit(set(engine(7), 4_000), engine(7)), 4_000, "the same engine");
+    assert_eq!(limit(set(engine(7), 4_000), engine(8)), 9_369, "a relaunched engine");
+    assert_eq!(current_limit(set(engine(7), 4_000), engine(8), grant).held_bytes, None, "its contents unknown");
+    assert_eq!(limit(set(engine(7), 4_000), None), 4_000, "an unknown engine is never raised");
+    assert_eq!(limit(set(engine(7), 12_000), engine(7)), 9_369, "never above the grant");
+    assert_eq!(limit(None, engine(7)), 9_369, "nothing set: the launch grant");
 }

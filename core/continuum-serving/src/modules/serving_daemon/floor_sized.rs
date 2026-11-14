@@ -57,8 +57,8 @@ impl ServingDaemonModule {
         if needs.iter().all(|&need| need <= u64::from(running_pool)) {
             return None;
         }
-        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
-        let verdict = floor_sized(running_pool, &needs, u64::from(per_sequence) * u64::from(sequences))?;
+        let cache_bytes = u64::from(self.launch_prompt_cache(&model, served_ctx, lanes).mib) << 20;
+        let verdict = floor_sized(running_pool, &needs, self.engine_pool(&model, served_ctx, lanes, cache_bytes).tokens())?;
         self.floor_sized_tried.store(pid, Ordering::Relaxed);
         Some(verdict)
     }

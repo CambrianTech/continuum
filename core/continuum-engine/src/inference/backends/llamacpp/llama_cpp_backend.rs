@@ -16,6 +16,9 @@ impl LlamaCppBackend {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into()); // unwrap_or_else: a model path with no file stem is named "unknown" in logs and receipts
 
+        let weights_bytes = std::fs::metadata(&config.model_path)
+            .map_err(|e| format!("model file metadata {}: {e}", config.model_path.display()))?
+            .len();
         let load_start = Instant::now();
         let model = Model::load(
             &config.model_path,
@@ -43,6 +46,7 @@ impl LlamaCppBackend {
             model: Arc::new(model),
             config,
             model_id,
+            weights_bytes,
             caps,
             scheduler: OnceLock::new(),
             mtmd: Mutex::new(None),
@@ -62,6 +66,16 @@ impl LlamaCppBackend {
             n if n < 0 || u32::try_from(n).is_ok_and(|n| n >= self.model.n_layer()) => super::Placement::Device,
             _ => super::Placement::Split,
         }
+    }
+
+    /// What this backend's embed lane holds while it embeds: its weights, and the context its
+    /// window allows, each in the pool it resides in. None for a model with no trained context.
+    pub(crate) fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
+        let placement = self.placement();
+        Some(crate::inference::embed_lane_memory::EmbedNeed {
+            weights: super::resident_weights(self.weights_bytes, placement),
+            context: super::EmbedWindow::for_model(self.caps.n_ctx_train)?.context_bytes(placement),
+        })
     }
 
     pub fn capabilities(&self) -> &ModelCapabilities {

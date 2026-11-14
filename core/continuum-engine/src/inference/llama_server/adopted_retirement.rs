@@ -128,14 +128,26 @@ impl LlamaServerProcess {
         budget: Duration,
     ) -> Result<(), LlamaServerError> {
         // A free port is not proof that the engine released its memory. Retain
-        // the transition until this exact process is positively gone.
+        // the transition until this exact process is positively gone: its EXIT EVENT, the moment
+        // the kernel delivers it, never a 100 ms liveness poll (card b5b9bef3). `budget` is only
+        // the watchdog that reports an engine that never went.
         let wait = async {
-            loop {
-                match incarnation.liveness() {
-                    Liveness::Dead => return Ok(()),
-                    Liveness::Unknown => return Err(LlamaServerError::RetirementPending("adopted engine exit is unverified".into())),
-                    Liveness::Alive => tokio::time::sleep(Duration::from_millis(100)).await,
-                }
+            match incarnation.liveness() {
+                Liveness::Dead => return Ok(()),
+                Liveness::Unknown => return Err(LlamaServerError::RetirementPending("adopted engine exit is unverified".into())),
+                Liveness::Alive => {}
+            }
+            match continuum_host::process_exit::exited(incarnation.pid).await {
+                // The exit of the pid this identity named; its identity re-read confirms it.
+                continuum_host::process_exit::ExitObserved::Exited => match incarnation.liveness() {
+                    Liveness::Dead => Ok(()),
+                    Liveness::Alive | Liveness::Unknown => Err(LlamaServerError::RetirementPending(
+                        "adopted engine pid exited but its identity still answers".into(),
+                    )),
+                },
+                continuum_host::process_exit::ExitObserved::Unobservable(why) => Err(
+                    LlamaServerError::RetirementPending(format!("adopted engine exit is unobservable: {why}")),
+                ),
             }
         };
         tokio::time::timeout(budget, wait).await

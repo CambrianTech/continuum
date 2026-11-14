@@ -9,7 +9,7 @@
 use super::{HostMemoryReading, OsMemoryPressure};
 
 /// The `vm_statistics64` fields a reading needs, as page counts, plus the page size, the
-/// kernel's free target in pages, and its memory-pressure level.
+/// kernel's free target in pages, and its memory-pressure verdict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MachVmCounts {
     pub page_size: u64,
@@ -21,9 +21,10 @@ pub struct MachVmCounts {
     pub swapins: u64,
     pub swapouts: u64,
     pub free_target_pages: u64,
-    /// `kern.memorystatus_vm_pressure_level`: 1 normal, 2 warn, 4 critical (`sys/kern_memorystatus.h`,
-    /// `kVMPressureNormal`/`Warning`/`Critical`); `None` = the sysctl could not be read.
-    pub memorystatus_pressure_level: Option<u32>,
+    /// The kernel's verdict from `kern.memorystatus_vm_pressure_level`, mapped once where it is read
+    /// ([`OsMemoryPressure::from_memorystatus_level`]); `None` = the sysctl could not be read, or
+    /// gave a level that is no verdict.
+    pub pressure: Option<OsMemoryPressure>,
 }
 
 impl OsMemoryPressure {
@@ -48,7 +49,7 @@ impl MachVmCounts {
             swapped_in_bytes: bytes(self.swapins),
             swapped_out_bytes: bytes(self.swapouts),
             free_target_bytes: bytes(self.free_target_pages),
-            pressure: self.memorystatus_pressure_level.and_then(OsMemoryPressure::from_memorystatus_level),
+            pressure: self.pressure,
         }
     }
 }
@@ -73,7 +74,7 @@ mod tests {
             swapins: 289_360_556,
             swapouts: 444_562_085,
             free_target_pages: 4_000,
-            memorystatus_pressure_level: Some(4),
+            pressure: OsMemoryPressure::from_memorystatus_level(4),
         }
         .reading();
         assert_eq!(reading.free_bytes, (256_602 - 193_717) * page);
@@ -91,7 +92,7 @@ mod tests {
         let verdict = OsMemoryPressure::from_memorystatus_level;
         assert_eq!((verdict(1), verdict(2), verdict(4)), (Some(OsMemoryPressure::Normal), Some(OsMemoryPressure::Warn), Some(OsMemoryPressure::Critical)));
         assert_eq!((verdict(0), verdict(3), verdict(8)), (None, None, None), "no verdict is never calm");
-        let unread = MachVmCounts { page_size: 16_384, free_count: 0, speculative_count: 0, external_page_count: 0, purgeable_count: 0, compressor_page_count: 0, swapins: 0, swapouts: 0, free_target_pages: 0, memorystatus_pressure_level: None };
+        let unread = MachVmCounts { page_size: 16_384, free_count: 0, speculative_count: 0, external_page_count: 0, purgeable_count: 0, compressor_page_count: 0, swapins: 0, swapouts: 0, free_target_pages: 0, pressure: None };
         assert_eq!(unread.reading().pressure, None, "an unread sysctl is no verdict");
     }
 }

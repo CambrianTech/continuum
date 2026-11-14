@@ -679,17 +679,11 @@ pub async fn apply_act(
     // ALONGSIDE the typed acts, so `active_act()`/`recent_acts()` read the tool result
     // by field instead of re-parsing this prose (run-18057-f1). `observation` is the
     // one-time recency rendering; `acts` are the id-correlated typed observations.
-    // The ring keeps this exact text; save THAT, so the pointer it leaves when it collapses
-    // resolves to what she saw, every call of the batch included.
-    // An act that only reopened one saved output is a view of it: its receipt's custody is that
-    // output, so reopening the act reopens the source, never her earlier selection of it.
-    let reopened = crate::cognition::tool_executor::tool_output::reopened_by_every_call(
-        acts.iter().map(|act| (act.call.name.as_str(), &act.output.result.custody)),
-    );
-    let custody = match reopened {
-        Some(source) => crate::ai::types::ResultCustody::Whole { handle: source },
-        None => pin.retain(body.persona_id, observation.trim()),
-    };
+    // What the receipt leaves behind is the one owner's to say (`receipt_output`): no id when
+    // nothing ran, the source when every call that ran reopened one output, else its own text,
+    // where a read names its source instead of holding it again. So an id never names her read of
+    // another id, and a read never nests.
+    let custody = super::receipt_output::ReceiptOutput::of(&acts, &observation).custody(&pin, body.persona_id);
     let disk = super::disk_change::DiskChange::between(
         disk_before,
         super::disk_change::fingerprint_at(acting_root).await,

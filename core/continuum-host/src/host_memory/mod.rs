@@ -113,7 +113,7 @@ mod tests {
             swapins: pages(3 * GIB),
             swapouts: pages(5 * GIB),
             free_target_pages: pages(64 * MIB),
-            memorystatus_pressure_level: Some(1),
+            pressure: Some(OsMemoryPressure::Normal),
         }
         .reading();
         let kib = |bytes: u64| bytes / 1024;
