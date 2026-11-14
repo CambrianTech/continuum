@@ -12,6 +12,7 @@
 # Requires: NO other model resident (quiesced window). Writes receipts to
 # ~/.continuum/bench-receipts/tier-battery-<name>.md
 set -e
+set -o pipefail
 NAME=$1; GGUF=$2; MMPROJ=$3; shift 3 || true
 PORT=58910
 OUT=~/.continuum/bench-receipts/tier-battery-$NAME.md

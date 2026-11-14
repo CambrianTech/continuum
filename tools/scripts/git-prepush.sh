@@ -3,6 +3,7 @@
 # Runs before code reaches the remote. Fast enough to not block workflow,
 # thorough enough to catch real problems.
 set -e
+set -o pipefail
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
