@@ -561,7 +561,7 @@ impl ResourceDaemon {
             let plans = g.reconcile_for_demand(
                 now,
                 |k| pmap[kind_idx(k)],
-                |k| demand.get(&k).copied().unwrap_or(0),
+                |k| demand.get(&k).copied().unwrap_or(0), // unwrap_or: a kind no consumer asked for this tick is a demand of 0 bytes, not an unknown
             );
             (plans, g.board())
         };
@@ -803,7 +803,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().capacity(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); the broker's pool is empty and has nothing to relieve
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -814,7 +814,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().committed(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); nothing is committed in a pool that no longer exists
     }
 
     /// NON-BLOCKING. Queue the relief ask and return best-effort `0` — the

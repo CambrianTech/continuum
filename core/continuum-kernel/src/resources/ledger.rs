@@ -164,7 +164,7 @@ impl ResourceLeaseLedger {
     }
 
     pub fn capacity(&self, kind: ResourceKind) -> u64 {
-        self.capacity.get(&kind).copied().unwrap_or(0)
+        self.capacity.get(&kind).copied().unwrap_or(0) // unwrap_or: an unscanned kind grants nothing (fail-closed: no grant against a resource not scanned)
     }
 
     /// Bytes currently spoken for of this kind — sums ALL leases, expired
@@ -188,7 +188,7 @@ impl ResourceLeaseLedger {
     /// Bytes of this kind physically resident across everyone, as last scanned.
     /// Absent → 0 (no physical monitor for this kind yet).
     pub fn physical_used(&self, kind: ResourceKind) -> u64 {
-        self.physical_used.get(&kind).copied().unwrap_or(0)
+        self.physical_used.get(&kind).copied().unwrap_or(0) // unwrap_or: no physical monitor for this kind; its capacity is unscanned too, so nothing is granted against it
     }
 
     /// What is REALLY spoken for of this kind: the larger of what we have granted
@@ -234,7 +234,7 @@ impl ResourceLeaseLedger {
         self.reservations
             .get(&(kind, consumer_id.to_string()))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: no floor reserved is a floor of 0 bytes, a fact, not an unknown
     }
 
     // ---- measurement axis (monitored residency, never reserved) ------------
@@ -546,10 +546,8 @@ impl ResourceLeaseLedger {
         candidates.sort_by(|a, b| {
             let sa = arbiter.reclaim_score(a, &ctx);
             let sb = arbiter.reclaim_score(b, &ctx);
-            // Highest score reclaimed first; NaN-safe; lease_id breaks ties.
-            sb.partial_cmp(&sa)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.lease_id.cmp(&b.lease_id))
+            // Highest score reclaimed first; a total order (NaN included); lease_id breaks ties.
+            sb.total_cmp(&sa).then_with(|| a.lease_id.cmp(&b.lease_id))
         });
 
         // Track each consumer's remaining held bytes as we choose victims, so a

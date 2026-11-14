@@ -66,7 +66,7 @@ pub(super) fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
         .map(|k| k.physical_used_bytes)
-        .unwrap_or(0)
+        .unwrap_or(0) // unwrap_or: no Vram row means no device on the board; nothing of it is in use
 }
 
 /// The serving engine's `/props`. Bounded: a localhost read of cached meta, taken only on the
