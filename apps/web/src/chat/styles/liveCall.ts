@@ -111,8 +111,9 @@ export const liveCallStyles = css`
     .live-grid {
       flex: 1;
       display: grid;
-      grid-template-columns: repeat(var(--cols, auto), minmax(0, 1fr));
-      grid-template-rows: repeat(var(--rows, auto), 1fr);
+      min-height: 0; /* allow flex item to shrink below content intrinsic size */
+      grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+      grid-template-rows: repeat(var(--rows), minmax(0, 1fr));
       gap: var(--spacing-md);
       align-content: center;
     }

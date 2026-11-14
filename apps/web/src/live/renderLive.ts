@@ -137,6 +137,8 @@ function renderComposition(body: LiveContentBody): TemplateResult {
     </div>`;
   }
   const n = body.participants.length;
+  // Guard: empty participants handled by caller; early return avoids NaN cols/rows.
+  if (n === 0) return html``;
   // Spec: cols from count — ceil(sqrt(n)) gives 2 for ≤4, 3 for ≤9, 4 for ≤16
   const cols = Math.ceil(Math.sqrt(n));
   const rows = Math.ceil(n / cols);
