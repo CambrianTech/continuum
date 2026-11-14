@@ -356,7 +356,7 @@ impl Selector {
     }
 
     /// The rendered cards it selects, each with its group and recency.
-    pub fn select(self, rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)>) -> Vec<(WorkListCard, Option<BoardGroup>, u64)> {
+    pub fn select(self, rendered: impl IntoIterator<Item = (WorkListCard, CardState, Option<BoardGroup>, u64)>) -> Vec<(WorkListCard, Option<BoardGroup>, u64)> {
         rendered
             .into_iter()
             .filter(|(_, state, ..)| self.state.is_none_or(|want| *state == want))
@@ -371,7 +371,7 @@ impl Selector {
 /// a node opened, so every match whole (claimable first, then priority, then newest: the board's
 /// own order is arrival, the one order a citizen looking for work never wants); no filter is the
 /// board as her view shows it, collapsed by the one contract (`continuum_context::nav::collapse`).
-pub(crate) fn listed(matched: Vec<(WorkListCard, Option<BoardGroup>, u64)>, filtered: bool) -> (Vec<WorkListCard>, Vec<WorkListFold>) {
+pub(crate) fn listed(matched: impl IntoIterator<Item = (WorkListCard, Option<BoardGroup>, u64)>, filtered: bool) -> (Vec<WorkListCard>, Vec<WorkListFold>) {
     use continuum_context::nav::{collapse, Entry, Origin};
     if filtered {
         let mut cards: Vec<WorkListCard> = matched.into_iter().map(|(card, ..)| card).collect();
@@ -379,7 +379,10 @@ pub(crate) fn listed(matched: Vec<(WorkListCard, Option<BoardGroup>, u64)>, filt
         return (cards, Vec::new());
     }
     let entries = matched.into_iter().map(|(card, group, recency)| {
-        let entry = Entry::new(card.id.clone(), card.title.clone(), card);
+        // The entry keeps the card whole as its provenance, so its key and text are copies taken first.
+        let key = card.id.to_string();
+        let full = card.title.clone();
+        let entry = Entry::new(key, full, card);
         match group {
             Some(group) => entry.in_group(group.nav(), recency),
             None => entry,
