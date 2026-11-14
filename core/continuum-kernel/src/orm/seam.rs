@@ -11,8 +11,10 @@
 //! - an outcome is a named state (`Deleted`, `Written`, `BinaryWritten`, `Versioning`), never a
 //!   `bool`; a failure is a [`StorageError`](super::storage_error::StorageError) variant.
 //!
-//! Phase 2 (owner: the ORM, card 370dde3e's sibling for storage): `Collection` and `RowId(Uuid)`
-//! newtypes replace the `&str` collection and `String` id, through `DataRecord` and the schemas.
+//! Phase 2: ids are the shared typed ids, never `type UUID = String`. A row id is declared with
+//! airc-core's exported `uuid_newtype!` (Copy, serde as the bare canonical string, `.shown()` for the
+//! short form `airc_core::shown_id` parses back) and minted as a UUIDv7, so id order is creation
+//! order (airc #1678). The collection becomes a typed name taken from the admitted declaration.
 
 use std::collections::BTreeMap;
 
