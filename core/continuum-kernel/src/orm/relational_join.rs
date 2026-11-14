@@ -38,7 +38,7 @@ impl super::relational::RelationalStore {
         if let Some(joins) = &query.joins {
             for (number, join) in joins.iter().enumerate() {
                 if join.alias.is_empty()
-                    || !aliases.insert(join.alias.clone())
+                    || !aliases.insert(join.alias.as_str())
                     || schema.fields.iter().any(|f| f.name == join.alias)
                 {
                     return Err(StorageError::Unqueryable(QueryFault::JoinAlias));
@@ -108,7 +108,7 @@ impl super::relational::RelationalStore {
             .db
             .query_all(DbBackend::Sqlite.build(&statement))
             .await?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &joined_columns);
+        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &joined_columns);
         rows.into_iter()
             .map(|result| {
                 let row = result.try_as_sqlite_row().ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;

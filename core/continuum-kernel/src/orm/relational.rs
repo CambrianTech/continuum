@@ -55,7 +55,7 @@ impl RelationalStore {
                 config.connection_string.replace('\\', "/")
             )
         };
-        let mut options = ConnectOptions::new(url.clone());
+        let mut options = ConnectOptions::new(url.as_str());
         options
             .max_connections(
                 config
@@ -244,7 +244,7 @@ impl RelationalStore {
         let database_ms = started.elapsed().as_millis() as u64;
         // The connection has returned to the pool before any JSON body is parsed.
         let decode_started = std::time::Instant::now();
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
         let count = rows.len();
         let result = rows.into_iter().map(|row| decoder.decode(row)).collect();
         continuum_base::probe!(class = "orm.relational.query", collection = %query.collection,

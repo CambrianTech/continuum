@@ -16,7 +16,7 @@ use super::*;
             indexes: vec![],
         };
         for adapter in [&source, &target] {
-            adapter.ensure_schema(&schema.clone()).await?;
+            adapter.ensure_schema(&schema).await?;
             adapter.create(DataRecord {
                 id: "collision".into(), collection: "items".into(),
                 data: json!({}), metadata: RecordMetadata::default(),
@@ -88,8 +88,8 @@ use super::*;
 
         // Run migration
         let mut engine = MigrationEngine::new(
-            source.clone(),
-            target.clone(),
+            std::sync::Arc::clone(&source),
+            std::sync::Arc::clone(&target),
             MigrationConfig {
                 batch_size: std::num::NonZeroUsize::MIN.saturating_add(9),
                 collections: None,
@@ -152,10 +152,10 @@ use super::*;
                 .await.expect("test: storage operation succeeds");
         }
 
-        let gated = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(target.clone()));
+        let gated = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(std::sync::Arc::clone(&target)));
         let gate = gated.pause_next_write();
         let mut engine = MigrationEngine::new(
-            source.clone(),
+            std::sync::Arc::clone(&source),
             gated,
             MigrationConfig {
                 batch_size: std::num::NonZeroUsize::MIN.saturating_add(0),
@@ -218,7 +218,7 @@ use super::*;
             .await.expect("test: storage operation succeeds");
 
         let mut engine =
-            MigrationEngine::new(source.clone(), target.clone(), MigrationConfig::default());
+            MigrationEngine::new(std::sync::Arc::clone(&source), std::sync::Arc::clone(&target), MigrationConfig::default());
 
         let status = engine.run().await.unwrap();
         assert_eq!(status.total, 0);
@@ -263,8 +263,8 @@ use super::*;
         }
 
         let mut engine = MigrationEngine::new(
-            source.clone(),
-            target.clone(),
+            std::sync::Arc::clone(&source),
+            std::sync::Arc::clone(&target),
             MigrationConfig {
                 batch_size: std::num::NonZeroUsize::MIN.saturating_add(99),
                 collections: None,

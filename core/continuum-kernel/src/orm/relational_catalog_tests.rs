@@ -16,7 +16,7 @@ async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
         let initial = store(path).await?;
         let mut text = Parent::collection_schema();
         text.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.nullable = true;
-        initial.ensure(&text.clone()).await?;
+        initial.ensure(&text).await?;
         let values = [Some(i64::MIN), Some(-1), Some(0), Some(9007199254740993), Some(i64::MAX), None];
         for (index, value) in values.iter().enumerate() {
             initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION,
@@ -31,7 +31,7 @@ async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
         }).await?;
         let mut numeric = text;
         numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
-        reopened.ensure(&numeric.clone()).await?;
+        reopened.ensure(&numeric).await?;
         reopened.db.clone().close().await?;
         let final_store = RelationalStore::open(AdapterConfig {
             connection_string: path.into(), max_connections: 1, ..Default::default()
@@ -251,7 +251,7 @@ async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure(
     assert!(initial.ensure(&invalid).await.is_err());
     let mut current = Parent::collection_schema();
     current.fields.retain(|field| field.name != "label");
-    initial.ensure(&current.clone()).await?;
+    initial.ensure(&current).await?;
     let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
     let children = initial.query(&query()).await?;
     assert_eq!(children.len(), 1, "DROP during rebuild must not cascade");
@@ -282,7 +282,7 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
         default_value: Some(json!("ready")), indexed: true, unique: false,
         max_length: None, foreign_key: None,
     });
-    initial.ensure(&current.clone()).await?;
+    initial.ensure(&current).await?;
     let query = || QueryBuilder::new(Parent::COLLECTION).limit(1).build();
     let rows = initial.query(&query()).await?;
     assert_eq!(rows[0].data["status"], "ready");

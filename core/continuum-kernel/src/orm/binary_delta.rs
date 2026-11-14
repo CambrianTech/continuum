@@ -9,6 +9,23 @@ use sea_orm::sea_query::{Alias, Expr, JoinType, Order, Query};
 use sea_orm::{ConnectionTrait, DbBackend};
 use std::{num::NonZeroUsize, ops::Range};
 
+/// The delta query's fixed identifiers. `Copy`, so a builder takes each by value and nothing
+/// is cloned; the ledger and data aliases are the query's own short names.
+#[derive(Clone, Copy, sea_orm::DeriveIden)]
+enum Delta {
+    #[sea_orm(iden = "r")]
+    Ledger,
+    #[sea_orm(iden = "d")]
+    Data,
+    Id,
+    Revision,
+    Deleted,
+    Collection,
+    LiveId,
+    Payload,
+    Descriptor,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NativeDeltaCursor {
     pub revision: u64,
@@ -91,54 +108,46 @@ impl BinarySnapshot {
         }
         let column = super::relational_query::column(&self.schema, request.field)
             .map_err(NativeDeltaError::Metadata)?;
-        let ledger = Alias::new("r");
-        let data = Alias::new("d");
-        let revision = (ledger.clone(), Alias::new("revision"));
-        let id = (ledger.clone(), Alias::new("id"));
+        let revision = (Delta::Ledger, Delta::Revision);
+        let id = (Delta::Ledger, Delta::Id);
         let mut query = Query::select();
         query
-            .from_as(super::relational_native_revision::Entity, ledger.clone())
-            .expr_as(Expr::col(id.clone()), Alias::new("id"))
-            .expr_as(Expr::col(revision.clone()), Alias::new("revision"))
+            .from_as(super::relational_native_revision::Entity, Delta::Ledger)
+            .expr_as(Expr::col(id), Delta::Id)
+            .expr_as(Expr::col(revision), Delta::Revision)
+            .expr_as(Expr::col((Delta::Ledger, Delta::Deleted)), Delta::Deleted)
+            .expr_as(Expr::col((Delta::Data, Delta::Id)), Delta::LiveId)
+            .expr_as(Expr::col((Delta::Data, column)), Delta::Payload)
             .expr_as(
-                Expr::col((ledger.clone(), Alias::new("deleted"))),
-                Alias::new("deleted"),
-            )
-            .expr_as(
-                Expr::col((data.clone(), Alias::new("id"))),
-                Alias::new("live_id"),
-            )
-            .expr_as(Expr::col((data.clone(), column)), Alias::new("payload"))
-            .expr_as(
-                Expr::col((data.clone(), Alias::new(descriptor_column(request.field)))),
-                Alias::new("descriptor"),
+                Expr::col((Delta::Data, Alias::new(descriptor_column(request.field)))),
+                Delta::Descriptor,
             )
             .join_as(
                 JoinType::LeftJoin,
                 Alias::new(super::adapter::naming::to_table_name(
                     &self.schema.collection,
                 )),
-                data.clone(),
-                Expr::col(id.clone()).equals((data, Alias::new("id"))),
+                Delta::Data,
+                Expr::col(id).equals((Delta::Data, Delta::Id)),
             )
             .and_where(
-                Expr::col((ledger, Alias::new("collection"))).eq(self.schema.collection.as_str()),
+                Expr::col((Delta::Ledger, Delta::Collection)).eq(self.schema.collection.as_str()),
             )
             .and_where(
-                Expr::col(revision.clone())
+                Expr::col(revision)
                     .gt(i64::try_from(request.since).map_err(|_| NativeDeltaError::Interval)?),
             )
             .and_where(
-                Expr::col(revision.clone())
+                Expr::col(revision)
                     .lte(i64::try_from(high).map_err(|_| NativeDeltaError::Interval)?),
             )
-            .order_by(revision.clone(), Order::Desc)
-            .order_by(id.clone(), Order::Desc)
+            .order_by(revision, Order::Desc)
+            .order_by(id, Order::Desc)
             .limit(u64::try_from(request.limit.get()).map_err(|_| NativeDeltaError::Capacity)?);
         if let Some(after) = request.after {
             let at = i64::try_from(after.revision).map_err(|_| NativeDeltaError::Interval)?;
             query.and_where(
-                Expr::col(revision.clone()).lt(at).or(Expr::col(revision)
+                Expr::col(revision).lt(at).or(Expr::col(revision)
                     .eq(at)
                     .and(Expr::col(id).lt(after.id.to_string()))),
             );

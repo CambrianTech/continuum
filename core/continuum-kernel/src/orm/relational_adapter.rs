@@ -73,7 +73,7 @@ impl StorageAdapter for SeaOrmAdapter {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
         let statement =
             super::relational_query::select(&schema, query, super::relational_query::Selection::Stream)?;
         let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement)).await?;
@@ -94,7 +94,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn delete(&self, row: RowRef<'_>) -> Result<Deleted, StorageError> {
         let removed = self
             .store
-            .delete_matching(QueryBuilder::new(row.collection).filter_eq("id", row.id.clone()).build())
+            .delete_matching(QueryBuilder::new(row.collection).filter_eq("id", row.id.as_str()).build())
             .await?;
         Ok(if removed == 0 { Deleted::Absent } else { Deleted::Removed })
     }

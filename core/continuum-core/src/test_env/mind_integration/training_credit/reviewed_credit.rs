@@ -631,7 +631,7 @@ use super::*;
         reviewed::record_pending(&fx.data, name, persona, twin).await?;
         let never_submit = continuum_client::mock::MockTransport::new();
         never_submit.respond_to("genome/training-trigger/submit", |_| panic!("held provenance must not dispatch"));
-        let held = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(executor.clone(), persona, never_submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
+        let held = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(std::sync::Arc::clone(&executor), persona, never_submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: name, persona_id: persona, room_id: room, board: &board, review_id: pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await?;
         assert_eq!(held.state, State::ProvenanceHeld, "{held:?}");
 
@@ -660,7 +660,7 @@ use super::*;
             &fx.selected,
             Some(json!({"success":true,"acceptance":{"submissionId":fx.selected.id,"replayed":false}})),
         );
-        let accepted = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(fx.executor.clone(), fx.persona, submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
+        let accepted = reviewed::consume_review_with_boundary(&reviewed::ReviewConnections { citizen: &settlement_connection(std::sync::Arc::clone(&fx.executor), fx.persona, submit, None), substrate: &substrate_conn(&fx.executor) }, &reviewed::ReviewSelection { persona_name: fx.name, persona_id: fx.persona, room_id: fx.room, board: &board, review_id: fx.pass.review_id, self_review: &reviewed::SelfReview::NotAdmitted }, None)
         .await?;
         assert_eq!(accepted.state, State::Accepted, "{accepted:?}");
         assert_eq!(accepted.staged_revision_id, Some(fx.selected.id), "the issuing turn's row");

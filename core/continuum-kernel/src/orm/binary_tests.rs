@@ -394,7 +394,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
             .select(vec!["id".into()])
             .limit(2)
             .build();
-        assert_eq!(store.count(&missing.clone()).await?, expected);
+        assert_eq!(store.count(&missing).await?, expected);
         let rows = store.query(&missing).await?;
         assert_eq!(rows.len(), expected.min(2));
         assert!(rows.iter().all(|row| row.data.get("payload").is_none()));

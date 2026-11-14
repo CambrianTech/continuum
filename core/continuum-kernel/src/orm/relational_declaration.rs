@@ -53,7 +53,7 @@ pub(super) async fn admit(
     schema: &CollectionSchema,
 ) -> Result<bool, SchemaError> {
     let actual = physical(db, &schema.collection).await?;
-    match Entity::find_by_id(schema.collection.clone())
+    match Entity::find_by_id(schema.collection.as_str())
         .one(db)
         .await
         .map_err(SchemaError::from)?

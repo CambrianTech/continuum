@@ -83,7 +83,7 @@ async fn declared_join_preserves_unmatched_null_and_filters_before_limit(
         join_type: JoinType::Left,
         select: Some(vec!["label".into()]),
     }]);
-    let rows = store.query_joined(&query.clone()).await?;
+    let rows = store.query_joined(&query).await?;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].data["parent"]["label"], "{literal text}");
     assert_eq!(rows[0].data["joinedLabel"], "keep me");
@@ -303,7 +303,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         .select(vec!["token".into()])
         .limit(2)
         .build();
-    let first = store.query(&query.clone()).await?;
+    let first = store.query(&query).await?;
     assert_eq!(
         first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["a", "b"]
@@ -314,7 +314,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         value: json!("b"),
         direction: super::query::CursorDirection::After,
     });
-    let second = store.query(&query.clone()).await?;
+    let second = store.query(&query).await?;
     assert_eq!(
         second.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["c"]
@@ -323,7 +323,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         field: "id".into(),
         direction: SortDirection::Desc,
     }]);
-    let descending_tail = store.query(&query.clone()).await?;
+    let descending_tail = store.query(&query).await?;
     assert_eq!(
         descending_tail
             .iter()
@@ -334,7 +334,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
     );
     query.cursor.as_mut().ok_or("cursor disappeared")?.direction =
         super::query::CursorDirection::Before;
-    let descending_head = store.query(&query.clone()).await?;
+    let descending_head = store.query(&query).await?;
     assert_eq!(
         descending_head
             .iter()
@@ -498,7 +498,7 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema(
     // The failed DDL transaction must leave neither a table nor a receipt behind.
     // A repaired declaration is admitted without an offline migration.
     let repaired = declaration("index_victim", "victim_version_unique");
-    owner.ensure(&repaired.clone()).await?;
+    owner.ensure(&repaired).await?;
     owner
         .create(record("first", "index_victim", json!({})))
         .await?;
@@ -554,7 +554,7 @@ async fn predicates_use_declared_scalar_codecs_before_execution(
             .filter("body", QueryOperator::Contains("pending".into()))
             .build(),
     ] {
-        assert!(store.count(&query.clone()).await.is_err());
+        assert!(store.count(&query).await.is_err());
         assert!(store.delete_matching(query).await.is_err());
     }
     assert_eq!(

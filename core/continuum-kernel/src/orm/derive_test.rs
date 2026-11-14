@@ -641,7 +641,7 @@ fn type_inference_probe_registers_cleanly() {
 #[tokio::test]
 async fn declared_optional_number_is_exact_and_rejects_text() {
     let (adapter, _tmp) = fresh_adapter().await;
-    let store = OrmStore::<EvolvingV2>::new(adapter.clone()).await.expect("declared numeric schema");
+    let store = OrmStore::<EvolvingV2>::new(std::sync::Arc::clone(&adapter)).await.expect("declared numeric schema");
     for number in [None, Some(9_007_199_254_740_993)] {
         let row = EvolvingV2 { base: BaseEntity::for_new_record(), name: "numeric".into(), rejected_at_ms: number };
         let id = Uuid::parse_str(&row.base.id).expect("fixture UUID");
@@ -662,7 +662,7 @@ async fn declared_optional_number_is_exact_and_rejects_text() {
 #[tokio::test]
 async fn derived_optional_field_evolves_without_mutating_saved_values() -> Result<(), Box<dyn std::error::Error>> {
     let (adapter, _tmp) = fresh_adapter().await;
-    let store = OrmStore::<EvolvingV1>::new(adapter.clone()).await.expect("schema");
+    let store = OrmStore::<EvolvingV1>::new(std::sync::Arc::clone(&adapter)).await.expect("schema");
     let row = EvolvingV1 { base: BaseEntity::for_new_record(), name: "retained".into() };
     let id = Uuid::parse_str(&row.base.id).expect("fixture UUID");
     store.save(id, &row).await.expect("save");

@@ -113,10 +113,10 @@ pub(super) fn condition(
             ))
         };
         if let Some(start) = &range.start {
-            all = all.add(col().gte(start.clone()));
+            all = all.add(col().gte(start.as_str()));
         }
         if let Some(end) = &range.end {
-            all = all.add(col().lte(end.clone()));
+            all = all.add(col().lte(end.as_str()));
         }
     }
     Ok(all)

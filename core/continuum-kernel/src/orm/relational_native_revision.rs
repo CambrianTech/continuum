@@ -93,11 +93,11 @@ impl super::relational::RelationalStore {
             let victims = Query::select()
                 .column(Alias::new("id"))
                 .from(Alias::new(super::relational_delete_graph::VICTIMS))
-                .and_where(Expr::col(Alias::new("collection")).eq(collection.clone()))
+                .and_where(Expr::col(Alias::new("collection")).eq(collection.as_str()))
                 .with_cte(graph.clone())
                 .to_owned();
             let condition = sea_orm::Condition::all()
-                .add(Expr::col(Column::Collection).eq(collection.clone()))
+                .add(Expr::col(Column::Collection).eq(collection.as_str()))
                 .add(Expr::col(Column::Deleted).eq(false))
                 .add(Expr::col(Column::Id).in_subquery(victims));
             // Probe one matching receipt, not row bodies or a materialized victim list.
