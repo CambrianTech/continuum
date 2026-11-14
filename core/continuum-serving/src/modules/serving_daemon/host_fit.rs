@@ -27,7 +27,7 @@
 
 use continuum_host::host_memory::HostMemoryReading;
 
-use crate::inference::planning::serving_plan::ModelFootprint;
+use crate::inference::planning::serving_plan::{ModelFootprint, SENT_HEADROOM};
 use crate::inference::planning::MIN_SERVE_CTX;
 
 /// What the host can give an engine now, every term from its own reading.
@@ -49,6 +49,41 @@ impl HostRoom {
     pub(super) fn bytes(self) -> u64 {
         self.available.saturating_add(self.released).saturating_sub(self.displaced)
     }
+}
+
+/// One seated mind's claim on the pool, from her requirement (`window_allocator::Measure`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MindClaim {
+    /// A held turn measured her floor: the pool holds it with the growth margin her grant uses
+    /// (`Demand::of`'s target, `SENT_HEADROOM` over her need).
+    Held { need: u64 },
+    /// No held turn yet: her own measured wish or declared size is her floor, as is.
+    Own { target: u64 },
+}
+
+/// What the seated minds need of the pool: each claim (capped at the trained window), plus the
+/// planner's least window for every sequence no mind claims (the scratch traffic, minds leased in).
+/// `None` when no mind claims anything (a boot that remembers nobody): the plan's pool stands.
+///
+/// The size is the need, never the room: the M5, 2026-11-14 00:57Z, held 623,070 tokens for needs of
+/// 382,706, and a pool filled to the room (566,990 at the boot's reading) leaves the core, the
+/// embedder's lease, compute buffers and the OS nothing; the 01:22Z receipts are that shortfall.
+/// Nothing holds what it is not using; a need that grows past the pool is the floor-sized rule's.
+pub(super) fn need_with_growth(claims: &[MindClaim], sequences: u32, trained_window: u32) -> Option<u64> {
+    if claims.is_empty() {
+        return None;
+    }
+    let trained = u64::from(trained_window);
+    let claimed: u64 = claims
+        .iter()
+        .map(|claim| match *claim {
+            MindClaim::Held { need } => (need as f64 * SENT_HEADROOM) as u64,
+            MindClaim::Own { target } => target,
+        })
+        .map(|tokens| tokens.min(trained))
+        .sum();
+    let unclaimed = u64::from(sequences).saturating_sub(claims.len() as u64);
+    Some(claimed + unclaimed * u64::from(MIN_SERVE_CTX))
 }
 
 /// Which room bounded the pool.
@@ -138,6 +173,16 @@ mod tests {
 
     fn room(available: u64, displaced: u64, released: u64) -> HostRoom {
         HostRoom { available, displaced, released }
+    }
+
+    // what this catches: a pool sized to fill the room instead of the minds' need (the M5, 00:57Z:
+    // 623,070 for needs of 382,706), a growth margin other than the grants', and a boot that
+    // remembers nobody launched at the floor (the 2,048-token dark node of card 8569b03d).
+    #[test]
+    fn the_need_is_each_claim_with_the_grants_growth_and_a_least_window_per_free_sequence() {
+        let claims = [MindClaim::Held { need: 100_000 }, MindClaim::Own { target: 900_000 }];
+        assert_eq!(need_with_growth(&claims, 4, 262_144), Some(125_000 + 262_144 + 2 * u64::from(MIN_SERVE_CTX)));
+        assert_eq!(need_with_growth(&[], 5, 262_144), None, "nobody remembered: the plan's pool stands");
     }
 
     // what this catches: the room's terms read with the wrong sign. Displaced pages are owed, a

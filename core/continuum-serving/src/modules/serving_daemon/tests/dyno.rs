@@ -152,9 +152,10 @@ mod boot_during_memory_settle {
 // 1794617823874), and the engine launched at `-c 623070` (124,614 x 5) beside `--cache-ram 8717`.
 // The measured cost at that pool (`state/lane-footprint.json`): 15,163 B per token. Seventeen
 // minutes later the kernel read pressure with a 3,915 MiB deficit. Driven through the daemon's own
-// demand (`launch_pool`) and host fit (`host_fit::pool_fit`).
+// demand (`launch_pool`), the minds' need (`host_fit::need_with_growth`) and host fit
+// (`host_fit::pool_fit`).
 mod the_pool_fits_the_host {
-    use super::super::super::host_fit::{pool_fit, Bound, HostRoom, PoolFit, Rooms};
+    use super::super::super::host_fit::{need_with_growth, pool_fit, Bound, HostRoom, MindClaim, PoolFit, Rooms};
     use super::super::super::launch::{launch_pool, Seated};
     use crate::inference::planning::serving_plan::ModelFootprint;
     use continuum_host::host_memory::{HostMemoryReading, OsMemoryPressure};
@@ -211,25 +212,38 @@ mod the_pool_fits_the_host {
         assert!(engine_bytes(&fp, pool) > room.bytes(), "the engine at 623k ({} B) is past the host's room ({} B)", engine_bytes(&fp, pool), room.bytes());
     }
 
-    // what this catches: the fix. The same demand against the boot's reading is Bounded: the pool is
-    // what the room holds beside the cache, every resident's need still inside it, and the engine's
-    // cost at it within the room. A replaced engine's bytes count as room; a host with no reading
-    // launches the demand.
+    // what this catches: the fix. The pool is the residents' need with the grants' growth margin,
+    // never the room: 4 x need x 1.25 plus one least window for the scratch sequence, 480,430 tokens
+    // against a room that holds 566,990, so the launch frees 142,643 tokens of the recorded 623,073
+    // (2.16 GB at the measured 15,163 B/token) for the core, the embedder and the OS. When the need
+    // exceeds the room the room bounds it; a replaced engine's bytes count; no reading launches the
+    // need.
     #[test]
-    fn after_the_pool_is_what_the_host_holds_and_the_minds_share_it() {
+    fn after_the_pool_is_the_need_and_the_room_only_its_ceiling() {
         let fp = m5_measured();
         let (reading, swap) = boot();
         let room = HostRoom::of(&reading, swap, 0);
         let host = |room| Rooms { host: Some(room), device: None };
-        let fit = pool_fit(demand(&fp), Some(&fp), host(room), CACHE_MIB * MIB, SEQUENCES, TRAINED);
-        let PoolFit::Bounded { demand: asked, fit: held, by: Bound::Host(_) } = fit else { panic!("test: the boot's demand exceeds its room: {fit:?}") };
+        // The probe recorded the four held needs' sum (382,706); split evenly here.
+        let claims = [95_676, 95_676, 95_676, 95_678].map(|need| MindClaim::Held { need });
+        let need = need_with_growth(&claims, SEQUENCES, TRAINED).expect("test: four residents claim");
+        assert_eq!(need, 478_382 + u64::from(crate::inference::planning::MIN_SERVE_CTX), "the grants' 1.25 over 382,706, plus the scratch sequence");
+        let fit = pool_fit(need, Some(&fp), host(room), CACHE_MIB * MIB, SEQUENCES, TRAINED);
+        assert_eq!(fit, PoolFit::Fits { demand: need, fit: 566_990 }, "the room would hold 566,990: never filled");
         let pool = fit.pool(SEQUENCES);
-        assert_eq!((asked, pool), (623_073, held));
-        assert!(pool < asked && pool >= NEED, "bounded below the plan, above the residents' need: {pool}");
-        assert!(engine_bytes(&fp, pool) <= room.bytes(), "the engine fits the room at {pool}");
-        let replacing = HostRoom::of(&reading, swap, 10 * (1 << 30));
-        assert!(matches!(pool_fit(asked, Some(&fp), host(replacing), CACHE_MIB * MIB, SEQUENCES, TRAINED), PoolFit::Fits { .. }), "a replaced engine's bytes come back");
-        assert_eq!(pool_fit(asked, Some(&fp), Rooms { host: None, device: None }, CACHE_MIB * MIB, SEQUENCES, TRAINED).pool(SEQUENCES), asked, "no reading: never a dark node");
+        assert_eq!(pool, 480_430);
+        let freed = demand(&fp) - pool;
+        assert_eq!(freed, 142_643);
+        assert_eq!(freed * fp.kv_per_token, 2_162_895_809, "bytes the launch no longer holds at the measured per-token cost");
+        assert_eq!(room.bytes() - engine_bytes(&fp, pool), 1_640_613_306, "left beside the engine for the core, the embedder and the OS");
+
+        let starved = HostRoom::of(&HostMemoryReading { free_bytes: 32_000 * MIB, ..reading }, swap, 0);
+        let bounded = pool_fit(need, Some(&fp), host(starved), CACHE_MIB * MIB, SEQUENCES, TRAINED);
+        assert!(matches!(bounded, PoolFit::Bounded { by: Bound::Host(_), .. }), "need past the room: the room bounds it: {bounded:?}");
+        // The engine it replaces returns its measured anonymous bytes (24,969,922,712 B).
+        let replacing = HostRoom::of(&HostMemoryReading { free_bytes: 32_000 * MIB, ..reading }, swap, 24_969_922_712);
+        assert!(matches!(pool_fit(need, Some(&fp), host(replacing), CACHE_MIB * MIB, SEQUENCES, TRAINED), PoolFit::Fits { .. }), "a replaced engine's bytes come back");
+        assert_eq!(pool_fit(need, Some(&fp), Rooms { host: None, device: None }, CACHE_MIB * MIB, SEQUENCES, TRAINED).pool(SEQUENCES), need, "no reading: never a dark node");
     }
 }
 

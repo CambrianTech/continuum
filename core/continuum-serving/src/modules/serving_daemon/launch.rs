@@ -56,7 +56,12 @@ impl ServingDaemonModule {
         let usable = planned.map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
         let seated = self.seated_for(model);
         let footprint = footprint_for(model);
-        let demand = launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated);
+        // The size is the seated minds' need with the grants' growth margin; the plan's pool only
+        // when no mind is remembered (`host_fit::need_with_growth`).
+        let demand = match host_fit::need_with_growth(&self.seated_claims(model), sequences, model.context_window) {
+            Some(need) => need,
+            None => launch_pool(footprint.as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated),
+        };
         let released = planned.map_or(0, |b| b.credit.own_bytes()); // map_or: no plan yet credits no running engine
         let device = match planned.map(|b| b.credit) {
             Some(OwnCredit::Included { .. }) => governed_vram_ceiling(&self.resource_daemon),
@@ -847,6 +852,21 @@ impl ServingDaemonModule {
             false => crate::inference::proven_pool::proven(&model.id),
         };
         Seated { need, proven }
+    }
+
+    /// Each seated mind's claim on the pool (`host_fit::MindClaim`): her held need, else her own
+    /// measured wish or declared size; a mind with no view yet claims nothing.
+    pub(super) fn seated_claims(&self, model: &crate::model_registry::types::Model) -> Vec<host_fit::MindClaim> {
+        let trained = u64::from(model.context_window);
+        self.serving_demand()
+            .requirements
+            .iter()
+            .filter_map(|requirement| match requirement.measure {
+                Measure::Held { need, .. } => Some(host_fit::MindClaim::Held { need: u64::from(need.value().get()).min(trained) }),
+                Measure::Wished { target } | Measure::Declared { target } => Some(host_fit::MindClaim::Own { target: u64::from(target.get()).min(trained) }),
+                Measure::Unmeasured => None,
+            })
+            .collect()
     }
 
     /// Each seated mind's HELD need on `model`, capped at its trained window: the residents a boot
