@@ -30,6 +30,7 @@ mod relational_declaration;
 mod relational_structure;
 mod relational_catalog_tokens;
 mod relational_evolution;
+mod relational_conversion;
 #[cfg(test)]
 mod relational_derived_tests;
 pub mod schema_error;

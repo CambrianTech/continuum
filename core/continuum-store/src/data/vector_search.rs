@@ -42,25 +42,32 @@ impl DataState {
         // wire forces, fused into the query's one normalization and its one byte copy.
         let query = unit_f32(query.values.iter().map(|value| *value as f32), &query.producer)?;
         let ranked = corpus.search(&query, k)?;
-        // Best first, so the threshold ends the walk at the first score below it.
-        let adapter = if include_data { Some(self.get_adapter(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?) } else { None };
-        let mut results = Vec::with_capacity(ranked.len());
-        for RecordHit { id, score } in ranked {
-            let score = f64::from(score);
-            if score < threshold {
-                break;
-            }
-            let data = match &adapter {
-                Some(adapter) => Some(
-                    adapter
-                        .read(collection, &id.to_string())
-                        .await
-                        .into_result()
-                        .map_err(|fault| VectorStoreError::Hydration { id, fault: fault.into() })?
-                        .data,
-                ),
-                None => None,
+        // Best first, so the threshold ends the hits at the first score below it.
+        let hits: Vec<RecordHit> = ranked.into_iter().take_while(|hit| f64::from(hit.score) >= threshold).collect();
+        // Every hit's record in ONE store query, never one read per hit.
+        let mut records: std::collections::HashMap<String, serde_json::Value> = if include_data && !hits.is_empty() {
+            let adapter = self.get_adapter(handle).await.map_err(|fault| VectorStoreError::Open(fault.into()))?;
+            let ids = hits.iter().map(|hit| serde_json::Value::String(hit.id.to_string())).collect();
+            let query = crate::orm::QueryBuilder::new(collection)
+                .filter("id", crate::orm::query::QueryOperator::In(ids))
+                .limit(hits.len())
+                .build();
+            adapter.query(&query).await?.into_iter().map(|record| (record.id, record.data)).collect()
+        } else {
+            std::collections::HashMap::new()
+        };
+        let mut results = Vec::with_capacity(hits.len());
+        for RecordHit { id, score } in hits {
+            let data = if include_data {
+                // A ranked row the query did not return was deleted after ranking.
+                Some(records.remove(&id.to_string()).ok_or_else(|| VectorStoreError::Hydration {
+                    id,
+                    fault: crate::orm::StorageError::NotFound { collection: collection.to_owned(), id: id.to_string() },
+                })?)
+            } else {
+                None
             };
+            let score = f64::from(score);
             results.push(VectorHit { id: id.to_string(), score, distance: 1.0 - score, data });
         }
         let count = results.len();

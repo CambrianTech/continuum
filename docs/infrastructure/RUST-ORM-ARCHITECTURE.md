@@ -63,6 +63,15 @@ invalid persisted value on read. Join nullability remains explicit, including an
 unmatched outer-join row. A projection has its own result type: do not deserialize a
 partial row into a full entity and manufacture missing fields.
 
+The shared evolution owner supports one exact text-to-number contract: canonical
+signed integer text within the database's signed 64-bit range. Before rebuilding,
+it proves every non-NULL value by an integer-to-text round trip inside the same
+transaction. Overflow, fractional/exponent spellings, whitespace and malformed
+values refuse the whole evolution. NULL stays NULL. The existing native
+`INSERT SELECT` rebuild applies the proven conversion; no per-table repair,
+runtime alternate decoder, application row materialization or floating intermediate
+is introduced. Boolean and REAL destinations do not use this contract.
+
 ## 3. Native binary boundary with the engine
 
 The existing migration engine reads bounded ID-keyset pages on the shared owner's

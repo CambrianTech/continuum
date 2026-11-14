@@ -2,10 +2,26 @@
 //! Callers classify these variants; diagnostic text is never a control protocol.
 #[derive(Debug, thiserror::Error)]
 pub enum SchemaError {
+    #[error("{table}.{column}: numeric conversion requires canonical signed integer text or NULL; data unchanged")]
+    NonCanonicalIntegerText { table: String, column: String },
     #[error(transparent)]
     Database(#[from] sea_orm::DbErr),
     #[error(transparent)]
     Codec(#[from] serde_json::Error),
+    #[error("{collection}.{field}: declared type {previous:?} -> {requested:?} requires an explicit conversion")]
+    DeclaredTypeConversion {
+        collection: String,
+        field: String,
+        previous: super::types::FieldType,
+        requested: super::types::FieldType,
+    },
+    #[error("{table}.{column}: physical type {previous} -> {requested} requires an explicit conversion")]
+    PhysicalTypeConversion {
+        table: String,
+        column: String,
+        previous: String,
+        requested: String,
+    },
     #[error("{collection}: declaration gap: {detail}")]
     DeclarationGap { collection: String, detail: String },
     #[error("{collection}: {difference}")]

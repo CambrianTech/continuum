@@ -86,9 +86,6 @@ pub(crate) enum VectorStoreError {
     /// A ranked record disappeared before its hydration read.
     #[error("vector result {id}: {fault}")]
     Hydration { id: super::RecordId, fault: crate::orm::StorageError },
-    /// The store holds more embedding descriptors in one collection than one page reads.
-    #[error("collection holds at least {limit} embedding descriptors; one read cannot see them all")]
-    DescriptorGroups { limit: usize },
     /// The CPU seal task ended without its matrix.
     #[error("vector seal task: {0}")]
     Seal(#[from] tokio::task::JoinError),
@@ -107,7 +104,6 @@ impl From<VectorStoreError> for CommandError {
             | VectorStoreError::Open(_)
             | VectorStoreError::Store(_)
             | VectorStoreError::PageSize
-            | VectorStoreError::DescriptorGroups { .. }
             | VectorStoreError::Seal(_)
             | VectorStoreError::CacheType
             | VectorStoreError::Hydration { .. } => CommandError::Internal(error.to_string()),

@@ -382,3 +382,34 @@ async fn the_snapshot_is_released_before_any_matrix_is_sealed() {
     let sealed: Vec<_> = groups.into_iter().map(|(_, builder)| builder.seal(RecallTarget::STORE)).collect();
     assert_eq!(sealed.iter().map(|matrix| matrix.len()).sum::<usize>(), 1);
 }
+
+// Exact-page and page-plus-one descriptor populations must both remain searchable.
+#[tokio::test]
+async fn descriptor_transfer_pages_never_cap_the_corpus() {
+    for population in [2usize, 3, 5] {
+        let module = DataModule::new(no_substrate_entities);
+        let (_tmp, db_path) = test_db_path("descriptor_pages");
+        let adapter = module.state.get_adapter(&db_path).await.expect("test: adapter");
+        declare_vectors(adapter.as_ref(), "test_groups").await;
+        for group in 0..population {
+            let producer = Producer::Embedder(EmbedderId::new(&format!("embedder-{group}")));
+            for row in 0..3 {
+                let id = record_id((group * 3 + row) as u128).to_string();
+                create_row(adapter.as_ref(), "test_groups", &id).await;
+                write_vector(adapter.as_ref(), "test_groups", &id, [1.0, 0.0], &producer).await;
+            }
+        }
+        let snapshot = adapter.binary_snapshot("test_groups").await.expect("test: snapshot");
+        let started = std::time::Instant::now();
+        let groups = crate::data::vector_corpus::read_groups(snapshot, NonZeroUsize::new(2).expect("test: positive page"))
+            .await.expect("test: every descriptor page");
+        println!("DESCRIPTOR_PAGES groups={population} rows={} elapsed_us={}", population * 3, started.elapsed().as_micros());
+        assert_eq!(groups.len(), population);
+        let mut producers = Vec::new();
+        for (descriptor, builder) in groups {
+            assert!(!producers.contains(&descriptor.producer));
+            producers.push(descriptor.producer);
+            assert_eq!(builder.seal(RecallTarget::STORE).len(), 3);
+        }
+    }
+}

@@ -3,6 +3,202 @@
 use super::*;
 
 #[tokio::test]
+async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::EntityTrait;
+    for recorded in [true, false] {
+        let directory = tempfile::tempdir()?;
+        let file = directory.path().join("integer-conversion.db");
+        let path = file.to_str().ok_or("test path encoding")?;
+        let initial = store(path).await?;
+        let mut text = Parent::collection_schema();
+        text.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.nullable = true;
+        initial.ensure(text.clone()).await?;
+        let values = [Some(i64::MIN), Some(-1), Some(0), Some(9007199254740993), Some(i64::MAX), None];
+        for (index, value) in values.iter().enumerate() {
+            initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION,
+                json!({"label": value.map(|number| number.to_string())}))).await?;
+        }
+        if !recorded {
+            super::relational_declaration::Entity::delete_by_id(Parent::COLLECTION).exec(&initial.db).await?;
+        }
+        initial.db.clone().close().await?;
+        let reopened = RelationalStore::open(AdapterConfig {
+            connection_string: path.into(), max_connections: 1, ..Default::default()
+        }).await?;
+        let mut numeric = text;
+        numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
+        reopened.ensure(numeric.clone()).await?;
+        reopened.db.clone().close().await?;
+        let final_store = RelationalStore::open(AdapterConfig {
+            connection_string: path.into(), max_connections: 1, ..Default::default()
+        }).await?;
+        final_store.ensure(numeric).await?;
+        let rows = final_store.query(QueryBuilder::new(Parent::COLLECTION).limit(6).build()).await?;
+        assert_eq!(rows.len(), values.len());
+        for row in rows {
+            let index = row.id.parse::<usize>()?;
+            assert_eq!(row.data["label"], json!(values[index]));
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn noncanonical_integer_text_refuses_without_partial_conversion()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    for invalid in ["", "01", "-0", "+1", " 1", "1 ", "1.5", "1e3", "bad", "9223372036854775808", "-9223372036854775809"] {
+        let initial = store(":memory:").await?;
+        initial.insert(&initial.db, &record("valid", Parent::COLLECTION,
+            json!({"label":"9007199254740993"}))).await?;
+        initial.insert(&initial.db, &record("invalid", Parent::COLLECTION,
+            json!({"label":invalid}))).await?;
+        let mut numeric = Parent::collection_schema();
+        numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
+        assert!(initial.ensure(numeric).await.is_err(), "accepted {invalid:?}");
+        let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(2).build()).await?;
+        assert_eq!(rows.len(), 2);
+        for row in rows {
+            assert_eq!(row.data["label"], if row.id == "valid" { "9007199254740993" } else { invalid });
+        }
+    }
+    Ok(())
+}
+
+/// Unsupported conversions identify their declaration or physical boundary.
+/// Both admission paths identify the exact boundary without changing stored evidence.
+#[tokio::test]
+async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
+    -> Result<(), Box<dyn std::error::Error>>
+{
+    use sea_orm::TransactionTrait;
+    use super::schema_error::SchemaError;
+    let original = Parent::collection_schema();
+    let initial = store(":memory:").await?;
+    initial.insert(&initial.db, &record("negative-review", Parent::COLLECTION,
+        json!({"label":"9007199254740993"}))).await?;
+    let mut requested = original.clone();
+    requested.fields.iter_mut().find(|field| field.name == "label")
+        .ok_or("fixture label missing")?.field_type = FieldType::Boolean;
+
+    let tx = initial.db.begin().await?;
+    let declared = super::relational_evolution::evolve(&tx, &original, &requested).await;
+    assert!(matches!(declared, Err(SchemaError::DeclaredTypeConversion {
+        collection, field, previous: FieldType::String, requested: FieldType::Boolean,
+    }) if collection == Parent::COLLECTION && field == "label"));
+    tx.rollback().await?;
+
+    let tx = initial.db.begin().await?;
+    let physical = super::relational_evolution::admit_table(&tx, Parent::COLLECTION,
+        super::relational_schema::compile(&requested)?).await;
+    assert!(matches!(physical, Err(SchemaError::PhysicalTypeConversion {
+        table, column, previous, requested,
+    }) if table == Parent::COLLECTION && column == "label"
+        && previous == "TEXT" && !requested.is_empty() && requested != previous));
+    tx.rollback().await?;
+    let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    assert_eq!(rows[0].id, "negative-review");
+    assert_eq!(rows[0].data["label"], "9007199254740993");
+    Ok(())
+}
+
+/// Validate the historical rejection timestamps before designing their one-time transfer.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB"]
+async fn validate_review_rejection_timestamps_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ConnectionTrait, TransactionTrait, sea_query::{Alias, Expr, Order, Query}};
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=ro", path.replace('\\', "/"))).await?;
+    let tx = db.begin().await?;
+    super::relational_conversion::prove_integer_text(&tx, "staged_credit", "rejected_at_ms").await?;
+    let mut cursor: Option<String> = None;
+    let (mut valid, mut invalid) = (0_u64, 0_u64);
+    loop {
+        let mut query = Query::select();
+        query.columns([Alias::new("id"), Alias::new("rejected_at_ms")])
+            .from(Alias::new("staged_credit"))
+            .and_where(Expr::col(Alias::new("rejected_at_ms")).is_not_null())
+            .order_by(Alias::new("id"), Order::Asc).limit(128);
+        if let Some(after) = &cursor {
+            query.and_where(Expr::col(Alias::new("id")).gt(after.as_str()));
+        }
+        let rows = tx.query_all(tx.get_database_backend().build(&query)).await?;
+        if rows.is_empty() { break; }
+        for row in rows {
+            let id: String = row.try_get("", "id")?;
+            let timestamp: String = row.try_get("", "rejected_at_ms")?;
+            match timestamp.parse::<u64>().ok().and_then(|value| i64::try_from(value).ok()) {
+                Some(_) => valid += 1,
+                None => { invalid += 1; println!("INVALID_REJECTION_TIMESTAMP id={id}"); }
+            }
+            cursor = Some(id);
+        }
+    }
+    tx.rollback().await?;
+    db.close().await?;
+    println!("REJECTION_TIMESTAMP_VALIDATION valid={valid} invalid={invalid}");
+    if invalid != 0 { return Err("invalid rejection timestamps; row identities printed above".into()); }
+    Ok(())
+}
+
+/// Aggregate scalar storage classes in the database; never load credit bodies.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB, ORM_DECLARATION_COLLECTION, ORM_DECLARATION_COLUMN"]
+async fn inspect_scalar_storage_classes_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ConnectionTrait, sea_query::{Alias, Expr, Func, Query}};
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let collection = std::env::var("ORM_DECLARATION_COLLECTION")?;
+    let column = std::env::var("ORM_DECLARATION_COLUMN")?;
+    let table = super::adapter::naming::to_table_name(&collection);
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=ro", path.replace('\\', "/"))).await?;
+    let physical = super::relational_structure::read(&db, &table).await?;
+    if !physical.columns.iter().any(|field| field.name == column) {
+        return Err("requested physical column is absent".into());
+    }
+    let query = Query::select()
+        .expr_as(Func::cust(Alias::new("typeof")).arg(Expr::col(Alias::new(&column))), Alias::new("storage_class"))
+        .expr_as(Func::count(Expr::asterisk()), Alias::new("rows"))
+        .from(Alias::new(&table))
+        .group_by_col(Alias::new("storage_class"))
+        .to_owned();
+    for row in db.query_all(db.get_database_backend().build(&query)).await? {
+        println!("SCALAR_CLASS {collection} {column} {} {}", row.try_get::<String>("", "storage_class")?, row.try_get::<i64>("", "rows")?);
+    }
+    db.close().await?;
+    Ok(())
+}
+
+/// Inspect one persisted declaration without admitting schemas or reading row bodies.
+/// The connection is read-only even when the source is a running persona's store.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB and ORM_DECLARATION_COLLECTION"]
+async fn inspect_persisted_declaration_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::EntityTrait;
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let collection = std::env::var("ORM_DECLARATION_COLLECTION")?;
+    let db = sea_orm::Database::connect(format!(
+        "sqlite://{}?mode=ro", path.replace('\\', "/")
+    )).await?;
+    let physical = super::relational_structure::read(&db, &super::adapter::naming::to_table_name(&collection)).await?;
+    for column in &physical.columns {
+        println!("PHYSICAL_COLUMN {} {} {} required={}", collection, column.name, column.r#type, column.notnull);
+    }
+    match super::relational_declaration::Entity::find_by_id(&collection).one(&db).await? {
+        Some(receipt) => {
+            let schema: CollectionSchema = serde_json::from_value(receipt.declaration)?; // Decode the persisted ORM catalog format, never application row bodies.
+            for field in &schema.fields {
+                println!("DECLARED_FIELD {} {} {:?} nullable={}", collection, field.name, field.field_type, field.nullable);
+            }
+        }
+        None => println!("NO_DECLARATION_RECEIPT {collection}"),
+    }
+    db.close().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn native_text_declaration_retires_json_codec_without_rewriting_values() -> Result<(), Box<dyn std::error::Error>> {
     use sea_orm::{ActiveModelTrait, EntityTrait, IntoActiveModel, Set};
     use super::relational_declaration as declaration;
