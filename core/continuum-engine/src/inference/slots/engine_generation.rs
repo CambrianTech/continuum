@@ -14,11 +14,16 @@ impl EngineGeneration {
         }
     }
     pub(crate) fn has_exited(&self) -> bool {
-        self.exited.load(Ordering::Acquire)
+        *self.exited.borrow()
+    }
+
+    /// The owned child's exit as an event: resolves once [`Self::observed_exit`] runs.
+    pub fn exit(&self) -> EngineExit {
+        EngineExit::of(self.exited.subscribe())
     }
 
     pub fn observed_exit(&self) {
-        self.exited.store(true, Ordering::Release);
+        self.exited.send_replace(true);
         if let Some(endpoint) = self.endpoint.upgrade() {
             let state = endpoint.state.lock();
             if state.generation().is_some_and(|g| g.id == self.id) {
@@ -567,7 +572,7 @@ impl EndpointTransition {
         }
         let generation = EngineGeneration {
             id: Uuid::new_v4(),
-            exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            exited: Arc::new(tokio::sync::watch::channel(false).0),
             endpoint: Arc::downgrade(&self.endpoint),
         };
         state.start(generation.clone());
