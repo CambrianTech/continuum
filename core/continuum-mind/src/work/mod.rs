@@ -53,7 +53,7 @@ use crate::cognition::work_preconditions;
 pub(crate) fn refused(refusal: work_preconditions::Refusal) -> CommandError {
     use work_preconditions::Unmet;
     match refusal.unmet {
-        Unmet::HeldBy(_) => CommandError::Denied(refusal.to_string()),
+        Unmet::HeldBy(_) | Unmet::AuthorCannotReview(_) => CommandError::Denied(refusal.to_string()),
         Unmet::NotHeld
         | Unmet::Settled(_)
         | Unmet::Ended(_)
