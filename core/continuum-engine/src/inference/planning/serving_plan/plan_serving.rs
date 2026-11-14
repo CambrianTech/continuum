@@ -148,7 +148,7 @@ fn plan_serving_into(
                     .cmp(&b.weights_bytes)
                     .then(a.model_id.cmp(&b.model_id))
             })
-            .expect("candidates non-empty checked above");
+            .expect("candidates non-empty checked above"); // expect: `candidates.is_empty()` returned None at the top of this function
         return Some(ServingPlan {
             base_model: (*smallest).clone(),
             served_context_window: MIN_SERVE_CTX,
@@ -220,26 +220,16 @@ fn plan_serving_into(
     // jittering demand signal is the 718-replan lane-flap that wedged three benchmark runs. The
     // served WINDOW still refines with measurement (below); the slot COUNT rests on a fixed
     // floor. THIS floor — not the `MAX_LANES` backstop — is the binding constraint (#266).
-    // Per-lane floor: the stable bootstrap, RAISED by the typical prompt. Lanes
-    // multiply only while EVERY lane still fits the floor — parallel to the max, starvation to none.
-    // LANES FOLLOW THE ROSTER AT THE TYPICAL PROMPT (2026-09-14). The floor is the
-    // residents' median sent prompt with headroom, never the ceiling: one 96k prompt
-    // sized every lane to 120k and 16 minds ran on 3 lanes with 40 GB of KV idle.
-    // The outlier is reconciled down to the served window; the roster gets its lanes.
-    // The value and the term that set it are chosen TOGETHER (Codex on #4971), so a new term
-    // can never fall silently into another's label. Ties go to the earlier term.
-    let (per_lane_floor, floor_term) = [
-        (BOOTSTRAP_WORKING_SET, FloorTerm::Bootstrap),
-        // no sent prompt measured yet = no floor from it, the bootstrap prior stands
-        (demand.typical_prompt_floor().unwrap_or(0), FloorTerm::TypicalPrompt), // JUSTIFIED unwrap_or: an absent median contributes no floor; 0 never wins the max
-    ]
-    .into_iter()
-    .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
+    // The per-lane floor of a plan with no measured mind (the cold start): the stable bootstrap,
+    // one full turn. A plan with requirements is the allocator's below, every lane at its minds'
+    // requirement; the post-fit prompt median that used to raise this floor measured the window
+    // that bounded it (card 8569b03d), so nothing but the bootstrap stands here.
+    let per_lane_floor = BOOTSTRAP_WORKING_SET;
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
-    // window, never a lane below one real turn. The median/bootstrap arithmetic below
-    // is the legacy path for demands without requirements.
+    // window, never a lane below one real turn. The bootstrap arithmetic below plans a seat
+    // with no measured mind.
     // The allocator chooses over ALL candidates: the most minds at their requirement,
     // then the most capable — a warm slot for the roster outranks capability the
     // roster cannot use, so it may pick a smaller model than `most_capable_where` did.
@@ -291,11 +281,10 @@ fn plan_serving_into(
             let lanes = (1..=lane_cap)
                 .rev()
                 .find(|&l| window_for(l as u64) >= per_lane_floor)
-                .unwrap_or(1);
+                .unwrap_or(1); // unwrap_or: no lane count clears the floor, so one lane: honest starvation, said by the PerLaneFloor bound
             let bound = if lanes < lane_cap {
                 LanesBound::PerLaneFloor {
                     floor_tokens: per_lane_floor,
-                    floor_term,
                     rejected_lanes: lanes + 1,
                     rejected_window: window_for(lanes as u64 + 1),
                 }
@@ -356,7 +345,7 @@ fn plan_serving_into(
             Some(s) if s >= a.window && s <= window_for(lanes as u64) => s,
             _ => a.window,
         },
-        None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
+        None => choose_served_window(window_for(lanes as u64), demand.window_tokens, demand.sticky_window),
     };
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via

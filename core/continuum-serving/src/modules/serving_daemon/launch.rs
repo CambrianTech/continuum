@@ -275,7 +275,7 @@ impl ServingDaemonModule {
         // boot the sidecar admitted a 35B against a 2,048-token main lane's headroom, and
         // when the 27B came back it got what was left — one lane at 2,048.
         let pinned_off: Vec<String> = intent.suppressed.iter().cloned().collect();
-        let persona_floor: Option<u32> = self.serving_demand().typical_prompt_floor();
+        let persona_floor: Option<u32> = crate::capacity::window_grant::largest_target(&self.seated_requirements(), target.model.context_window);
         let last_healthy_window = self.last_healthy_window.clone();
         let last_healthy_lanes = self.last_healthy_lanes.clone();
         // ARM the discrete footprint arm's baseline: every tick until the lane is ready
@@ -870,11 +870,10 @@ impl ServingDaemonModule {
     }
 
     /// Each seated mind's HELD need on `model`, capped at its trained window: the residents a boot
-    /// remembers before its registry exists, else the live roster (`serving_demand`).
+    /// remembers before its registry exists, else the live roster (`seated_requirements`).
     pub(super) fn seated_needs(&self, model: &crate::model_registry::types::Model) -> Vec<u64> {
         let trained = u64::from(model.context_window);
-        self.serving_demand()
-            .requirements
+        self.seated_requirements()
             .iter()
             .filter_map(|requirement| match requirement.measure {
                 // Only a need a held turn measured: a wish's target carries headroom and untrimmed

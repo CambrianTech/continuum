@@ -74,7 +74,8 @@ pub async fn follow_the_fleet(
             // node hosting ONE huge prompt drags that median over every small mind's head.
             // Measured 2026-09-21 on the M5 — Benchy's peak is ~110k while Aiko wants 22-24k
             // and Atlas 21-35k, and all three were walked off the same 75,776 seat that holds
-            // the latter two with room to spare.
+            // the latter two with room to spare. HERS is her grant's target (card 8569b03d):
+            // what her view holds at full detail, never a post-fit prompt a window bounded.
             //
             // An absence is not a number ([[unknown-is-not-a-quantity-context-needs-the-vram-machinery]]).
             // `None` is the honest answer for an unmeasured mind, and `persona_lane_holds`
@@ -82,9 +83,7 @@ pub async fn follow_the_fleet(
             // real seat holds her and nobody is evicted on a stranger's demand. The node
             // median remains right where it belongs: SIZING lanes for the whole population
             // (`ServingDemand`), never ADMITTING one mind to a seat.
-            requirement: working_set
-                .sent_median_of(&[sw.persona_id()])
-                .map(crate::inference::planning::serving_plan::prompt_floor_of),
+            requirement: crate::cognition::working_set::seat_target_of(sw.persona_id(), &working_set),
         };
         // Withheld = she would have returned had the seat offered a slot. Pure and exact:
         // the same rule with the offer granted, so a cooldown or a queued seat is never
@@ -202,8 +201,7 @@ pub async fn follow_the_fleet(
         );
     }
     let moves = choose_offloads(local, &peers, rank_of, &at_home, &|mind| {
-        working_set.sent_median_of(&[mind])
-            .map(crate::inference::planning::serving_plan::prompt_floor_of)
+        crate::cognition::working_set::seat_target_of(mind, &working_set)
     });
     if !moves.is_empty() {
         let by_id: std::collections::HashMap<Uuid, Arc<PlacementSwitch>> =

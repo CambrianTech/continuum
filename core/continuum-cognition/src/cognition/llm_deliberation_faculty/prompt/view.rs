@@ -629,28 +629,13 @@ impl LlmDeliberationFaculty {
                  optional survived and the turn composes with no room messages at all"
             );
         }
-        // WHAT THIS TURN ACTUALLY SENDS — the post-fit size the served window must
-        // hold. Recorded beside the untrimmed demand above: that one is the growth
-        // signal (and the upper bound), this one is what a slot must FIT. The planner
-        // sizes the window from this with headroom (`ServingDemand::window_target`),
-        // so a 25k working set no longer provisions a 137k slot (2026-09-13).
+        // WHAT THIS TURN ACTUALLY SENDS, the post-fit size: whether the fit held her turn, never a
+        // size any window is planned from (a post-fit size is bounded by the window that fitted it;
+        // the window follows her requirement, `working_set::requirements_for`, card 8569b03d).
         if let Some(reg) = &self.working_set {
             let sent = framing_tokens
                 .saturating_add(calibration.estimate_all(&fitted.messages))
                 .saturating_add(desired_reply);
-            // At a window that TRIMMED this turn the post-fit size is the window's
-            // echo, not the turn's — the untrimmed demand is what the plan must hear
-            // (`sent_sample_for_plan`; the 5090's self-sealed 2048, 2026-09-20).
-            let sample = crate::cognition::working_set::WorkingSetRegistry::sent_sample_for_plan(
-                demand_tokens.min(u32::MAX as usize) as u32,
-                sent.min(u32::MAX as usize) as u32,
-                context_window,
-            );
-            reg.record_sent(
-                self.persona_id,
-                sample,
-                ws.now_ms.unwrap_or(0), // JUSTIFIED unwrap_or: unstamped cycle still measures honestly
-            );
             // HER NEED, the allocator's gate (card 70706a9e): the window her act's allocation CHOSE
             // (`continuum_context::allocation::need`), the priced optimum between what she must
             // hold and the model's trained context. Never every claim's floor (sizes each part

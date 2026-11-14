@@ -104,12 +104,6 @@ pub struct PersonaDemand {
     /// How many turns have been observed. One observation is a measurement; the
     /// count is what lets a reader judge how much to trust the peak.
     pub turns: u64,
-    /// Largest growth sample: post-fit size, or untrimmed demand when the window
-    /// starved the turn (`sent_sample_for_plan`). The legacy name is retained for
-    /// persisted compatibility; this is NOT proof of successful engine service.
-    /// Legacy files without it read 0.
-    #[serde(default)]
-    pub sent_peak: u32,
     /// The last [`RECENT_TURNS`] untrimmed demands, newest overwriting oldest — what
     /// her turns TYPICALLY assemble, as opposed to `peak_tokens` (once, ever). The
     /// lane REQUIREMENT is the median of these with headroom (`typical_tokens`):
@@ -135,17 +129,6 @@ pub struct PersonaDemand {
     /// Next slot to overwrite in `need_recent`.
     #[serde(default)]
     pub need_next: u8,
-    /// The last [`RECENT_TURNS`] growth samples (what `sent_peak` takes the max of, over a
-    /// lifetime): the lane floor reads their max, so one historic giant turn stops sizing
-    /// every plan forever. On the M5, 2026-10-28, all-time `sent_peak`s of 188-370k
-    /// (recent turns 20-43k) set a 423,945-token requirement no plan could meet, every
-    /// runnable plan was refused as below the floor, and four residents shared one
-    /// 27,904-token slot. Legacy files read empty.
-    #[serde(default)]
-    pub sent_recent: [u32; RECENT_TURNS],
-    /// Next slot to overwrite in `sent_recent`.
-    #[serde(default)]
-    pub sent_next: u8,
     /// Her newest turn's IRREDUCIBLE window: framing, tools, her view's required floor and the
     /// turn's required payload, below which the turn cannot be sent at all. Recorded on every
     /// turn, held or refused, the newest replacing the last. The need ring learns only from held
@@ -172,27 +155,6 @@ fn push_recent(d: &mut PersonaDemand, demand_tokens: u32) {
     let i = (d.recent_next as usize) % RECENT_TURNS;
     d.recent[i] = demand_tokens;
     d.recent_next = ((i + 1) % RECENT_TURNS) as u8;
-}
-
-/// Push one growth sample into her sent ring (newest overwrites oldest).
-fn push_sent(d: &mut PersonaDemand, sent_tokens: u32) {
-    let i = (d.sent_next as usize) % RECENT_TURNS;
-    d.sent_recent[i] = sent_tokens;
-    d.sent_next = ((i + 1) % RECENT_TURNS) as u8;
-}
-
-/// Her growth sample for the lane floor: the largest of her RECENT growth samples, never a
-/// lifetime peak. A mind that never sent a growth sample has none, so she sets no floor. A
-/// record written before the ring existed holds only its lifetime peak: it stands on her
-/// typical demand, the same rule [`requirement_tokens`] states, else on that peak.
-pub fn growth_sample(d: &PersonaDemand) -> Option<u32> {
-    if let Some(recent) = d.sent_recent.iter().copied().max().filter(|&t| t > 0) {
-        return Some(recent);
-    }
-    if d.sent_peak == 0 {
-        return None;
-    }
-    typical_tokens(d).or(Some(d.sent_peak))
 }
 
 fn median_of(ring: &[u32; RECENT_TURNS]) -> Option<u32> {
@@ -381,7 +343,7 @@ impl WorkingSetRegistry {
             .and_modify(|d| {
                 d.peak_tokens = d.peak_tokens.max(demand_tokens);
                 d.last_tokens = demand_tokens;
-                // Only a previous TURN starts a return interval: a sent/need record can
+                // Only a previous TURN starts a return interval: a need or floor record can
                 // create the entry seconds before her first demand (turns 0), and that
                 // stamp is not a turn she came back from.
                 if d.turns > 0 {
@@ -412,52 +374,6 @@ impl WorkingSetRegistry {
         *entry
     }
 
-    /// The prompt size a turn contributes to the seat's typical-prompt pool: what it
-    /// sent — UNLESS the served window trimmed it, in which case what it NEEDED.
-    ///
-    /// A post-fit "sent" is bounded by the window by construction. Fed back as the
-    /// window's floor it can only ever confirm the window: on the 5090 (2026-09-20,
-    /// build e1c9e41a2) a boot at 2 × 2048 fitted every 56k-token turn down to ~828,
-    /// the median read 828, the plan floored from it at 2048, the store remembered
-    /// 2048 as steady, and 2,932 prompts (p50 56k, p90 136k) were refused while the
-    /// seat reported its typical prompt as 828 — the window measuring itself. A turn
-    /// the window starved is not a measurement of the turn; its untrimmed demand is.
-    pub fn sent_sample_for_plan(demand_tokens: u32, sent_tokens: u32, served_window: u32) -> u32 {
-        if served_window > 0 && demand_tokens > served_window {
-            demand_tokens
-        } else {
-            sent_tokens
-        }
-    }
-
-    /// Record the starvation-aware growth sample. Persisted with demand, never
-    /// used as evidence that the engine successfully served that many tokens.
-    pub fn record_sent(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) {
-        if sent_tokens == 0 {
-            return;
-        }
-        let updated = self.record_sent_in_memory(persona, sent_tokens, now_ms);
-        self.save(persona, &updated);
-    }
-
-    /// The in-memory half of [`Self::record_sent`], without the disk write — the
-    /// sibling of [`Self::record_in_memory`], so a test stands up a sent sample
-    /// without writing into the operator's `~/.continuum/personas`.
-    pub fn record_sent_in_memory(&self, persona: Uuid, sent_tokens: u32, now_ms: u64) -> PersonaDemand {
-        *self
-            .observed
-            .entry(persona)
-            .and_modify(|d| {
-                d.sent_peak = d.sent_peak.max(sent_tokens);
-                push_sent(d, sent_tokens);
-            })
-            .or_insert_with(|| {
-                let mut d = PersonaDemand { last_seen_ms: now_ms, sent_peak: sent_tokens, ..PersonaDemand::default() };
-                push_sent(&mut d, sent_tokens);
-                d
-            })
-    }
-
     /// Record one turn's need — exact for a turn the fit HELD (see [`need_sample`] for what
     /// counts), a lower bound for a turn whose view overflowed its grant ([`NeedSample`]).
     /// Persisted with the demand.
@@ -469,7 +385,7 @@ impl WorkingSetRegistry {
         self.save(persona, &updated);
     }
 
-    pub(crate) fn record_need_in_memory(&self, persona: Uuid, sample: NeedSample, now_ms: u64) -> PersonaDemand {
+    pub fn record_need_in_memory(&self, persona: Uuid, sample: NeedSample, now_ms: u64) -> PersonaDemand {
         *self
             .observed
             .entry(persona)
@@ -510,41 +426,6 @@ impl WorkingSetRegistry {
             .filter_map(|p| self.observed.get(p).map(|e| e.value().peak_tokens))
             .max()
             .filter(|&t| t > 0)
-    }
-
-    /// Typical growth sample among `personas` — the median of their RECENT starvation-aware
-    /// peaks ([`growth_sample`], never a lifetime max). The planner's per-lane floor follows this, not the ceiling: one mind
-    /// with a 96k prompt must not size every lane to 120k and starve the roster
-    /// (2026-09-14: 16 residents on 3 lanes). The outlier is reconciled down to the
-    /// served window instead.
-    pub fn sent_median_of(&self, personas: &[Uuid]) -> Option<u32> {
-        self.sent_median_with(personas, &[])
-    }
-    /// Growth demand over the residents' peaks PLUS `extra` requested samples —
-    /// including refused prompts from minds hosted on other nodes
-    /// ([`crate::inference::resource_admission::leased_in_sent_samples`]). ONE median for
-    /// the seat's whole demand pool: a seat that plans lanes for leased-in minds must size
-    /// those lanes to the prompts they actually send, not to one local resident's. Zeros
-    /// are not samples on either side.
-    pub fn sent_median_with(&self, personas: &[Uuid], extra: &[u32]) -> Option<u32> {
-        let mut peaks: Vec<u32> = personas
-            .iter()
-            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
-            .chain(extra.iter().copied())
-            .filter(|&t| t > 0)
-            .collect();
-        if peaks.is_empty() {
-            return None;
-        }
-        peaks.sort_unstable();
-        Some(peaks[peaks.len() / 2])
-    }
-    /// Largest recent growth sample among `personas`, including unmet demand ([`growth_sample`]).
-    pub fn sent_ceiling_of(&self, personas: &[Uuid]) -> Option<u32> {
-        personas
-            .iter()
-            .filter_map(|p| self.observed.get(p).and_then(|e| growth_sample(e.value())))
-            .max()
     }
 
     /// Record one completed generation's measured output for `persona`.
@@ -877,11 +758,30 @@ impl WorkingSetRegistry {
     }
 }
 
-/// Each mind's requirement, from the untrimmed demand her turns assemble with the
-/// standard headroom, with her parked training examples' reservation beside it (never
-/// folded into her target or floor) — the ONE derivation, shared by the serving daemon (sizing this
-/// seat's lanes) and the grid allocator daemon (sizing the grid's roles). A mind with
-/// no turn yet is `Unknown`, never a number.
+/// Her requirement, without her parked training (which [`requirements_for`] carries beside it):
+/// her wish (what her view holds at full detail) with the standard headroom, gated on what her held
+/// turns measured. A mind with no turn yet is `Unmeasured`, never a number.
+pub fn requirement_of(persona: Uuid, working_set: &WorkingSetRegistry) -> crate::inference::planning::window_allocator::LaneRequirement {
+    use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
+    let demand = working_set.demand_of(persona);
+    // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
+    let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
+    // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
+    // collapse, so admission clamps it to what one sequence holds (`resident_need`).
+    let need = demand.as_ref().and_then(resident_need);
+    let measured = match wish {
+        None => LaneRequirement::unmeasured(persona),
+        Some(wish) => LaneRequirement::wished(persona, wish, crate::inference::planning::serving_plan::SENT_HEADROOM),
+    };
+    match need {
+        Some(need) => measured.held(need),
+        None => measured,
+    }
+}
+
+/// Each mind's requirement ([`requirement_of`]) with her parked training examples' reservation
+/// beside it (never folded into her target or floor): the ONE derivation, shared by the serving
+/// daemon (sizing this seat's lanes) and the grid allocator daemon (sizing the grid's roles).
 pub fn requirements_for(
     personas: &[Uuid],
     working_set: &WorkingSetRegistry,
@@ -889,27 +789,20 @@ pub fn requirements_for(
     personas
         .iter()
         .map(|p| {
-            let demand = working_set.demand_of(*p);
-            use crate::inference::planning::window_allocator::{LaneRequirement, Tokens};
-            // Measured or not, as a type: no turn yet is unmeasured, never a zero standing in for one.
-            let wish = demand.as_ref().and_then(|d| Tokens::new(requirement_tokens(d)));
-            // Her need as measured, a bound kept a bound: an overflow is reducible by her view's
-            // collapse, so admission clamps it to what one sequence holds (`resident_need`).
-            let need = demand.as_ref().and_then(resident_need);
             // Her parked training examples' reservation, carried beside her conversational target
             // and need (card ea157b1a): the allocator grows toward it only from spare budget.
             let training = crate::genome::fine_tuning::training_demand::TrainingDemand::for_persona(*p).reservation();
-            let measured = match wish {
-                None => LaneRequirement::unmeasured(*p),
-                Some(wish) => LaneRequirement::wished(*p, wish, crate::inference::planning::serving_plan::SENT_HEADROOM),
-            };
-            match need {
-                Some(need) => measured.held(need),
-                None => measured,
-            }
-            .with_training(training)
+            requirement_of(*p, working_set).with_training(training)
         })
         .collect()
+}
+
+/// What a seat must hold for her view to be read whole: her grant's target
+/// (`window_grant::largest_target` over her requirement) with no model's limit, the seat's own
+/// window being what it is compared with. `None` until a turn measured her: an absence is never a
+/// stranger's number. The placement rule's one reading of her requirement (card 8569b03d).
+pub fn seat_target_of(persona: Uuid, working_set: &WorkingSetRegistry) -> Option<u32> {
+    crate::capacity::window_grant::largest_target(std::slice::from_ref(&requirement_of(persona, working_set)), u32::MAX)
 }
 
 #[cfg(test)]

@@ -58,7 +58,7 @@ pub(super) fn derived_prompt_cache_mib(
     let live: std::collections::HashSet<uuid::Uuid> =
         crate::persona::airc_runtime_registry::PersonaAircRuntimeRegistry::try_global()
             .map(|r| r.live_personas().into_iter().collect())
-            .unwrap_or_default();
+            .unwrap_or_default(); // unwrap_or_default: no registry yet (first launch) = no live roster; the seeds on disk stand
     let planned: Vec<uuid::Uuid> =
         crate::persona::seed::persona_ids_with_seeds_in(&crate::identity::citizen_path::citizens_kind_dir(
             &crate::paths::continuum_root(),
@@ -80,12 +80,15 @@ pub(super) fn derived_prompt_cache_mib(
     // roster bound (#4244/#4245) already says who can take a turn: `lanes × 2`; a mind
     // beyond it is dormant and re-prefills when a slot wakes it. Sizing the want by that
     // law makes the grant demand-driven again; the affordability guards stay the net.
-    let population: Vec<(u32, u32)> = crate::cognition::working_set::global()
-        .all()
-        .into_iter()
-        .filter(|(id, _)| resident.contains(id))
-        .map(|(_, d)| (d.sent_peak, d.peak_tokens))
-        .collect();
+    // Each state at most the target her grant follows (`window_grant::Demand::of`, card 8569b03d),
+    // never a post-fit prompt size: the cache holds what her view holds, as her grant does.
+    let residents: Vec<uuid::Uuid> = resident.iter().copied().collect();
+    let trained = fp.map_or(served_ctx, |f| f.context_window); // map_or: no footprint, so the served window is the most a state can be
+    let population: Vec<u32> =
+        crate::cognition::working_set::requirements_for(&residents, &crate::cognition::working_set::global())
+            .iter()
+            .filter_map(|r| crate::capacity::window_grant::largest_target(std::slice::from_ref(r), trained))
+            .collect();
     // HOW MANY STATES: the minds actually taking turns, floored at the warm-slot bound
     // (card 58ba9752, 5346e86a). lanes x 2 alone was the guard written after the M5 swap,
     // not a sizing law: on the IntelMac, 2026-10-10, it held 4 states while 7 minds
@@ -237,9 +240,9 @@ pub(super) struct PromptCacheDecision {
 
 /// PURE: the prompt STATES the host cache is sized to hold — the law behind the grant.
 /// One state per ACTIVE mind (the roster bound: `lanes × MINDS_PER_LANE_STARVED_ABOVE`,
-/// handed in as `active`), each the largest prompt that mind actually SENT (`sent_peak`;
-/// the unclamped `peak_tokens` only when nothing was ever sent), and never more than the
-/// served window — a cached state cannot exceed the slot it was prefilled in. The largest
+/// handed in as `active`), each the target her grant follows (`window_grant::Demand::of`), and
+/// never more than the served window — a cached state cannot exceed the slot it was
+/// prefilled in. The largest
 /// states are kept (the worst case must fit); the rest are dormant minds whose states the
 /// cache does not carry. `active == 0` (no bound known) keeps the FLOOR — the smallest
 /// roster that can serve (the declared population `floor`) — never the whole population:
@@ -304,20 +307,12 @@ pub fn admitted_lanes(live_ready: bool, live_lanes: u32, plan_lanes: u32) -> u32
     }
 }
 
-pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize, floor: usize) -> Vec<u32> {
+pub fn active_cache_states(population: &[u32], served_ctx: u32, active: usize, floor: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()
-        .map(|&(sent_peak, peak_tokens)| {
-            let tokens = if sent_peak > 0 {
-                sent_peak
-            } else {
-                peak_tokens
-            };
-            if served_ctx > 0 {
-                tokens.min(served_ctx)
-            } else {
-                tokens
-            }
+        .map(|&target| match served_ctx {
+            0 => target,
+            window => target.min(window),
         })
         .filter(|t| *t > 0)
         .collect();

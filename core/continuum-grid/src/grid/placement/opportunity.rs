@@ -43,9 +43,7 @@ pub(crate) async fn follow_the_allocation(now_ms: u64) -> Vec<String> {
             since_last_move_ms: now_ms.saturating_sub(sw.moved_at_ms()),
             cooldown_ms: opportunity_cooldown_ms(turn_shape_of(mind)),
             home_capability: sw.home_capability(),
-            turn_requirement: working_set
-                .sent_median_of(&[mind])
-                .map(crate::inference::planning::serving_plan::prompt_floor_of),
+            turn_requirement: crate::cognition::working_set::seat_target_of(mind, &working_set),
         };
         let Some(why) = decide_opportunity(&inputs) else {
             continue;

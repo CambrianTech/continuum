@@ -404,6 +404,21 @@ impl Demand<uuid::Uuid> {
     }
 }
 
+/// The most any of `requirements` targets ([`Demand::of`]) on a model trained to `trained` tokens,
+/// on a pool whose one sequence may hold all of it: what a persona seat must hold for the largest
+/// view among them to be read whole. `None` when no mind among them is measured. The one reading
+/// of "what the residents require" for every reader that sizes or vetoes a seat (card 8569b03d);
+/// the post-fit prompt median it replaced measured the window that bounded it.
+pub fn largest_target(requirements: &[crate::inference::planning::window_allocator::LaneRequirement], trained: u32) -> Option<u32> {
+    let trained = Tokens::new(trained)?;
+    requirements
+        .iter()
+        // An unmeasured mind has no target (`Excluded`): she sets no requirement until her first view.
+        .filter_map(|r| Demand::of(r, trained, trained.get(), false).ok())
+        .map(|demand| demand.target.get())
+        .max()
+}
+
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
 /// they hold now.
 pub trait WindowPolicy<K> {

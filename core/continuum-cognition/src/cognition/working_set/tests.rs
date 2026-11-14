@@ -1,25 +1,21 @@
 #![cfg(test)]
-    // Regression for card 7028c695: unserved demand invalidated actual restart
-    // geometry while refusal samples also masqueraded as successful service.
+    // Regression for card 7028c695: refusal samples masqueraded as successful service. And
+    // (card 8569b03d) a working-set file written before the post-fit rings were deleted
+    // (`sent_peak`, `sent_recent`, `sent_next`) still loads, its measurement whole.
     #[test]
     fn requested_growth_and_observed_service_remain_distinct_across_restart() {
-        use crate::inference::planning::serving_plan::ServingDemand;
         use crate::inference::resource_admission::PromptSample;
 
-        let local = Uuid::new_v4();
-        let registry = WorkingSetRegistry::new();
         let legacy: PersonaDemand = serde_json::from_str(
-            r#"{"peak_tokens":2866096,"last_tokens":2866096,"last_seen_ms":1,"turns":1,"sent_peak":2866096}"#,
-        ).expect("legacy demand");
-        registry.observed.insert(local, legacy);
+            r#"{"peak_tokens":2866096,"last_tokens":2866096,"last_seen_ms":1,"turns":1,"sent_peak":2866096,"sent_recent":[1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16],"sent_next":3}"#,
+        ).expect("a file from before the deletion loads");
+        assert_eq!((legacy.peak_tokens, legacy.turns), (2_866_096, 1));
+        assert_eq!(requirement_tokens(&legacy), 2_866_096, "no ring: her last measured turn, as before");
         let samples = [
             PromptSample::Requested(56_057),
             PromptSample::Served { endpoint: "seat".into(), tokens: 828, geometry: crate::inference::served_window_store::ServedGeometry { model_id: "m".into(), generation: Uuid::new_v4(), per_slot_window: 62_720, lanes: 1 } },
             PromptSample::Served { endpoint: "seat".into(), tokens: 120_000, geometry: crate::inference::served_window_store::ServedGeometry { model_id: "other".into(), generation: Uuid::new_v4(), per_slot_window: 128_000, lanes: 1 } },
         ];
-        let requested: Vec<_> = samples.iter().filter_map(PromptSample::requested).collect();
-        let growth = registry.sent_median_with(&[local], &requested).expect("requested demand");
-        assert!(ServingDemand::new(1, Some(2_866_096)).with_sent_median(Some(growth)).window_target() > 2_048);
         assert_eq!(samples[1].served("seat", Some("m")), Some(828));
         assert_eq!(samples[1].served("other-seat", Some("m")), None);
         assert_eq!(samples[1].served("seat", Some("absent")), None);
@@ -31,18 +27,10 @@
         };
         assert_eq!(PromptSample::geometry_median(&samples, "seat", &rebound), None,
             "same model and geometry on a later generation cannot reuse prior usage");
-        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2_048), 56_057, "starvation still requests growth");
-
-        assert_eq!(registry.sent_median_of(&[local]), Some(2_866_096), "geometry migration never discards requested demand");
+        assert_eq!(samples.iter().filter_map(PromptSample::requested).collect::<Vec<_>>(), vec![56_057], "a refused prompt is a request, never service");
     }
 
 
-    // what this catches (BigMama's correction on #4197, 2026-09-18): a seat whose floor is
-    // its residents' median alone. The 5090 had two residents; the median WAS one SWE
-    // prompt (~60k+), so 2 × 49k stayed under the floor and the seat kept one lane while
-    // twelve leased-in coders sending ~30k queued on it. Their prompts must pull the median
-    // to what the seat actually serves; and a seat with NO local residents but leased-in
-    // minds must still have a floor.
     // what this catches (Joel 2026-09-20, "fix it, this is the bug"): the REQUIREMENT is
     // her typical turn, not her peak. Kimi on the 5090: one 176k turn ever, ~30–60k
     // usually — the requirement is the median of recent turns, the peak stays the
@@ -58,7 +46,7 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
-        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None, overflow_tokens: None };
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, floor_tokens: None, overflow_tokens: None };
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -148,32 +136,6 @@
         assert_eq!(need_tokens(&reg.demand_of(fresh).expect("recorded")), Some(NeedSample::Exact(9_000)), "no held turn yet: the floor alone");
         let back: PersonaDemand = serde_json::from_str(&serde_json::to_string(&reg.demand_of(fresh).expect("recorded")).expect("ser")).expect("de");
         assert_eq!(back.floor_tokens, Some(9_000), "persisted across a restart");
-    }
-
-    #[test]
-    fn the_typical_prompt_includes_the_prompts_a_seat_serves_for_other_nodes() {
-        let reg = WorkingSetRegistry::new();
-        let local = Uuid::new_v4();
-        reg.record_sent_in_memory(local, 64_000, 1);
-        // what this catches (the 5090, 2026-09-20): a sample taken at a window that
-        // trimmed the turn is the window echoed back, never demand — the seat's typical
-        // prompt read 828 under a 2048 window while every real prompt was 56k, and the
-        // window sealed itself. At a starved window the untrimmed demand is the sample;
-        // at a window that held the turn, what was sent is.
-        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(56_057, 828, 2048), 56_057, "starved: the demand votes");
-        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(30_000, 25_000, 64_000), 25_000, "held: what was sent votes");
-        assert_eq!(WorkingSetRegistry::sent_sample_for_plan(30_000, 25_000, 0), 25_000, "no window known: the sent figure stands");
-        assert_eq!(reg.sent_median_of(&[local]), Some(64_000), "one resident: her prompt is the median");
-        // twelve leased-in coders at ~30k pull the typical prompt to theirs
-        let leased: Vec<u32> = (0..12).map(|i| 30_000 + i * 100).collect();
-        let m = reg.sent_median_with(&[local], &leased).expect("a pool");
-        assert!(m < 40_000, "the median follows the grid's prompts, not the one resident's: {m}");
-        assert!(m >= 30_000);
-        // no local residents at all, only leased-in: still a floor
-        assert_eq!(reg.sent_median_with(&[], &[30_000, 32_000, 34_000]), Some(32_000));
-        // zeros are not samples on either side
-        assert_eq!(reg.sent_median_with(&[], &[0, 0]), None);
-        assert_eq!(reg.sent_median_of(&[Uuid::new_v4()]), None);
     }
 
     use super::*;
@@ -443,32 +405,20 @@
     }
 
     // what this catches (the M5, 2026-09-21): `placement_switch` read a mind's seat
-    // requirement as `sent_median_of(&[her]).or(node_median)` — so a mind who had sent
-    // nothing yet was judged against the median of EVERY resident's sent peak, and
-    // `seat_starves` feeds `FallHome`, so she was EVICTED on a number that was not hers.
-    //
-    // The sibling test above pins this median for lane SIZING, which is what it is for.
-    // This one pins the fact that made it wrong for ADMISSION: on a node hosting one huge
-    // prompt, the population's answer is the outlier, and it can exceed every seat on the
-    // grid while the small mind being judged fits easily. Benchy peaks ~110k; Aiko wants
-    // 22-24k and Atlas 21-35k; all three were walked off the same 75,776 seat that holds
-    // the latter two with room to spare. Size lanes with the population; admit a mind on
-    // her own demand, or on the serve floor when she has none.
+    // requirement as the node's median when she had none, and `seat_starves` feeds `FallHome`,
+    // so a small mind was EVICTED on a number that was not hers: Benchy wanted ~110k while
+    // Aiko wanted 22-24k, and both were walked off a 75,776 seat that holds her. Her seat
+    // target is her own grant's target (card 8569b03d), and a mind with no turn has none.
     #[test]
-    fn the_population_median_sizes_lanes_and_must_never_admit_a_mind() {
+    fn a_seat_admits_a_mind_on_her_own_target_never_the_populations() {
         let reg = WorkingSetRegistry::new();
-        let benchy = Uuid::new_v4();
-        let aiko = Uuid::new_v4();
-        reg.record_sent_in_memory(benchy, 110_396, 0);
-        reg.record_sent_in_memory(aiko, 24_226, 0);
-
-        assert_eq!(reg.sent_median_of(&[aiko]), Some(24_226), "her own demand is hers");
-        let population = reg.sent_median_of(&[benchy, aiko]).expect("two residents");
-        assert_eq!(population, 110_396, "the population's answer IS the outlier here");
-        assert!(
-            population > 75_776 && 24_226 < 75_776,
-            "and it exceeds the widest seat on the grid while she fits it — the eviction this removes",
-        );
+        let (benchy, aiko, fresh) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        reg.record_in_memory(benchy, 110_396, 0);
+        reg.record_in_memory(aiko, 24_226, 0);
+        let hers = seat_target_of(aiko, &reg).expect("her own turn measured her");
+        assert!(hers >= 24_226 && hers < 75_776, "her target is hers, and the seat holds it: {hers}");
+        assert!(seat_target_of(benchy, &reg).expect("his turn measured him") > 75_776, "his is his");
+        assert_eq!(seat_target_of(fresh, &reg), None, "no turn: no requirement, never a stranger's");
     }
     // what this catches (Cormac on #4409): with the loop CLOSED and a thinking model that
     // thinks to whatever budget it is given, a think stopped AT its budget (her allowance past
@@ -516,32 +466,6 @@
             a2 = reg2.need_of(p(5)).expect("need measured").total();
         }
         assert!(a2 < start2, "the control: verbatim samples contract ({start2} → {a2})");
-    }
-
-    // what this catches: the lane floor sized by a lifetime peak (the M5, 2026-10-28: sent_peaks
-    // of 188-370k against recent turns of 20-43k set a 423,945-token requirement, every runnable
-    // plan was refused, and four residents shared one 27,904-token slot). The floor follows her
-    // recent growth samples; a legacy record with only a peak stands on her typical demand.
-    #[test]
-    fn a_historic_giant_turn_stops_setting_the_lane_floor() {
-        let reg = WorkingSetRegistry::new();
-        let (aris, benchy) = (Uuid::new_v4(), Uuid::new_v4());
-        reg.record_sent_in_memory(aris, 370_493, 1);
-        reg.record_sent_in_memory(benchy, 339_156, 1);
-        for turn in 0..RECENT_TURNS as u32 {
-            reg.record_sent_in_memory(aris, 21_000 + turn, 2);
-            reg.record_sent_in_memory(benchy, 24_000 + turn, 2);
-        }
-        let floor = reg.sent_median_of(&[aris, benchy]).expect("two residents");
-        assert!(floor < 30_000, "the floor follows recent turns, not the 339k-370k peaks: {floor}");
-        assert_eq!(reg.sent_ceiling_of(&[aris, benchy]), Some(24_000 + RECENT_TURNS as u32 - 1));
-        let legacy = PersonaDemand { sent_peak: 339_156, recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
-        assert_eq!(growth_sample(&legacy), Some(35_000), "a record from before the ring stands on her typical turn");
-        assert_eq!(growth_sample(&PersonaDemand { sent_peak: 9_000, ..PersonaDemand::default() }), Some(9_000));
-        // A mind that never sent a growth sample sets no floor, however large her typical turn:
-        // the re-home tests' plans moved when such a record contributed one (#5579 CI).
-        let never_sent = PersonaDemand { recent: [35_000; RECENT_TURNS], ..PersonaDemand::default() };
-        assert_eq!(growth_sample(&never_sent), None);
     }
 
 // what this catches: the allowance policy and the hour line disagreeing on one generation, and a

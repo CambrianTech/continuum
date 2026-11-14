@@ -316,21 +316,15 @@ use super::*;
 
     // what this catches: a persona seat holds what the residents REQUIRE — a comparison
     // against the measured-or-declared requirement, never a constant. The 5090's 2 × 2,048
-    // against residents sending 56k (× 1.25 headroom = 70k) is not a seat; a 67k window
-    // against a 30k typical is; with nothing measured or declared, only the engine's
-    // runnable floor applies.
+    // against a mind whose grant targets 70k is not a seat; a 67k window against a 37.5k target
+    // is; with nothing measured or declared, only the engine's runnable floor applies.
     #[test]
     pub(super) fn a_persona_lane_holds_what_the_residents_require() {
-        assert_eq!(prompt_floor_of(56_057), 70_071, "the one arithmetic behind typical_prompt_floor and the placement rule");
-        assert_eq!(prompt_floor_of(1), MIN_SERVE_CTX, "never under the serve floor");
-        let demand = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(56_057));
-        let requirement = demand.typical_prompt_floor();
-        assert_eq!(requirement, Some(70_071));
+        let requirement = Some(70_071);
         assert!(!persona_lane_holds(2_048, requirement));
-        assert!(!persona_lane_holds(67_072, requirement), "67k does not hold a 56k typical with headroom");
+        assert!(!persona_lane_holds(67_072, requirement), "67k does not hold a 70k target");
         assert!(persona_lane_holds(70_071, requirement));
-        let thirty = ServingDemand::new(2, Some(200_000)).with_sent_median(Some(30_000)).typical_prompt_floor();
-        assert!(persona_lane_holds(67_072, thirty));
+        assert!(persona_lane_holds(67_072, Some(37_500)));
         assert!(persona_lane_holds(MIN_SERVE_CTX, None), "nothing measured or declared → only the runnable floor");
         assert!(!persona_lane_holds(MIN_SERVE_CTX - 1, None));
     }

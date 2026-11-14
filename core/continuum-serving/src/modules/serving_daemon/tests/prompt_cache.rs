@@ -46,14 +46,13 @@ fn a_divergence_speaks_when_it_appears_and_when_it_closes_never_while_it_persist
 // astronomical, so the grant was always "everything affordable" (26,985 MiB on a
 // fresh 2 × 67k engine), the cache filled the box into swap, the plan shed a lane and
 // every deploy went dark. Two lanes → four states of at most the window; the largest
-// are kept; a mind that never sent falls back to its peak; an unknown bound keeps all.
+// are kept; each is the target her grant follows (`window_grant::Demand::of`); an unknown
+// bound keeps the floor.
 #[test]
 fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
-    // 23 minds: sent ~30k, unclamped peaks 225k–505k, one that never sent.
-    let mut population: Vec<(u32, u32)> = (0..22)
-        .map(|i| (28_000 + i * 500, 225_000 + i * 12_000))
-        .collect();
-    population.push((0, 505_000));
+    // 23 minds: grant targets of ~35-45k, and one whose view at full detail is 505k.
+    let mut population: Vec<u32> = (0..22).map(|i| 35_000 + i * 500).collect();
+    population.push(505_000);
     let active = crate::persona::spawner_module::bounded_by_warm_slots(population.len(), Some(2), 2);
     assert_eq!(active, 4, "two lanes seat four active minds");
     let states = active_cache_states(&population, 67_072, active, 2);
@@ -68,9 +67,9 @@ fn the_cache_holds_the_active_rosters_states_not_every_seed_on_disk() {
     );
     assert_eq!(
         states[0], 67_072,
-        "the never-sent mind's peak, clamped to the window, is the largest kept"
+        "the largest target, clamped to the window, is the largest kept"
     );
-    assert_eq!(states[1], 38_500, "then the largest sent prompts");
+    assert_eq!(states[1], 45_500, "then the largest targets");
     let want: u64 = states.iter().map(|t| 32_888u64 * *t as u64).sum();
     assert!(
         want < 8 * 1024 * 1024 * 1024,
