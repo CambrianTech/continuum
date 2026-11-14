@@ -80,7 +80,7 @@ pub(super) fn main_lane_mmproj_decision(
 pub(super) fn main_lane_mmproj_decision_for(
     model: &crate::model_registry::types::Model,
     is_sidecar_lane: bool,
-) -> MainLaneMmproj {
+) -> Result<MainLaneMmproj, String> {
     let mmproj_resolved =
         crate::model_registry::artifacts::resolve_mmproj_for_model(model).is_some();
     let decides = !model.serving.mmproj_on_main_lane && !is_sidecar_lane && mmproj_resolved;
@@ -89,20 +89,22 @@ pub(super) fn main_lane_mmproj_decision_for(
     let sidecar_available = if !decides || reuse_inert {
         None // not consulted: the decision does not depend on it
     } else {
-        let rows: Vec<crate::model_registry::types::Model> = crate::model_registry::try_global()
-            .map(|r| r.models().cloned().collect())
-            .unwrap_or_default();
+        let registry = crate::model_registry::try_global().ok_or_else(|| {
+            "vision placement cannot be decided before the model registry is initialized".to_string()
+        })?;
+        let rows: Vec<crate::model_registry::types::Model> =
+            registry.models().cloned().collect();
         // Availability only (does ANY sidecar row exist), not admission: the pin is judged
         // where the sidecar is launched, by the daemon that holds the operator's pins.
         Some(crate::inference::vision_sidecar::find_candidate(&rows, Some(&model.id), &[]).is_ok())
     };
-    main_lane_mmproj_decision(
+    Ok(main_lane_mmproj_decision(
         model.serving.mmproj_on_main_lane,
         is_sidecar_lane,
         mmproj_resolved,
         reuse_inert,
         sidecar_available,
-    )
+    ))
 }
 
 /// Does this model's own header declare recurrent state? Memoized per artifact path:
@@ -120,7 +122,7 @@ fn memory_cannot_shift(model: &crate::model_registry::types::Model) -> bool {
     }
     let recurrent = (|| {
         let mut file = std::fs::File::open(&path).ok()?;
-        let content = candle_core::quantized::gguf_file::Content::read(&mut file).ok()?;
+        let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false).ok()?;
         let arch = crate::inference_capability::gguf_keys::architecture(&content)?;
         Some(crate::inference_capability::gguf_keys::holds_recurrent_state(&content, &arch))
     })()

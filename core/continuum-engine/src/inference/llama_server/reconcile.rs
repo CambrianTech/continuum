@@ -143,8 +143,10 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             // that alone. A build
             // that publishes no modalities block is unverifiable and is NOT relaunched
             // in a loop for it (the daemon reports that case as unverified sight).
-            let wants_sight =
-                main_lane_mmproj_decision_for(&target.model, target.vision_sidecar).wears();
+            let wants_sight = match main_lane_mmproj_decision_for(&target.model, target.vision_sidecar) {
+                Ok(decision) => decision.wears(),
+                Err(reason) => return EnsureOutcome::Degraded { reason },
+            };
             let sight_ok = if !wants_sight {
                 true
             } else {

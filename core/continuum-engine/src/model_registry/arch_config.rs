@@ -31,9 +31,31 @@
 //! attention, i.e. kv == q), so computing them is reading the spec, not
 //! sniffing the name.
 
-use candle_core::quantized::gguf_file;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+
+/// Disk-format boundary: required HF dimensions must deserialize before any
+/// consumer receives a model architecture. Unknown HF extension fields are allowed.
+#[derive(Deserialize)]
+struct HfArchConfig {
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_attention_heads: usize,
+    num_hidden_layers: usize,
+    vocab_size: usize,
+    max_position_embeddings: usize,
+    // Only absence has HF's derivation semantics. Explicit null is malformed.
+    #[serde(default, deserialize_with = "present_dimension")]
+    num_key_value_heads: Option<usize>,
+    #[serde(default, deserialize_with = "present_dimension")]
+    head_dim: Option<usize>,
+}
+
+fn present_dimension<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<usize>, D::Error> {
+    usize::deserialize(deserializer).map(Some)
+}
 
 /// A model's architecture dimensions — the canonical, artifact-sourced
 /// model-specific struct. Constructed only via [`from_gguf`] /
@@ -113,105 +135,19 @@ impl ModelArchConfig {
     pub fn from_gguf(path: &Path) -> Result<Self, String> {
         let mut file =
             std::fs::File::open(path).map_err(|e| format!("open GGUF {}: {e}", path.display()))?;
-        let content = gguf_file::Content::read(&mut file)
-            .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
-        let md = &content.metadata;
-
-        // `general.architecture` via the ONE shared reader; this consumer's
-        // policy is "required" so it wraps the shared `Option` in its own
-        // refuse-error.
-        let arch = crate::inference_capability::gguf_keys::architecture(&content)
-            .ok_or_else(|| format!("GGUF {} missing `general.architecture`", path.display()))?;
-
-        // Required scalar dimension keyed under the model's own architecture.
-        let req = |key: &str| -> Result<usize, String> {
-            let v = md
-                .get(key)
-                .ok_or_else(|| format!("GGUF {} missing required key `{key}`", path.display()))?;
-            v.to_u32()
-                .map(|n| n as usize)
-                .map_err(|e| format!("GGUF {} key `{key}` not a u32: {e}", path.display()))
-        };
-
-        let hidden_size = req(&format!("{arch}.embedding_length"))?;
-        let intermediate_size = req(&format!("{arch}.feed_forward_length"))?;
-        let num_attention_heads = req(&format!("{arch}.attention.head_count"))?;
-        let num_kv_heads = req(&format!("{arch}.attention.head_count_kv"))?;
-        let num_layers = req(&format!("{arch}.block_count"))?;
-        // context_length through the shared reader so this path inherits the
-        // `{arch}.context_length` → `llama.context_length` fallback the other
-        // readers already have (previously ABSENT here — a GGUF carrying only
-        // the historical llama.* key failed dimension extraction while its
-        // Model row hydrated fine). Required for the KV-cache budget, so the
-        // absent case is a refuse-error.
-        let context_length = crate::inference_capability::gguf_keys::context_length(&content, &arch)
-            .ok_or_else(|| {
-                format!(
-                    "GGUF {} missing required context_length (tried `{arch}.context_length` \
-                         and `llama.context_length`)",
-                    path.display()
-                )
-            })? as usize;
-
-        // head_dim: explicit `{arch}.attention.key_length` if present, else the
-        // spec-defined derivation hidden_size / num_attention_heads (llama.cpp
-        // omits the key precisely when it equals that quotient).
-        let head_dim = match md.get(&format!("{arch}.attention.key_length")) {
-            Some(v) => v.to_u32().map(|n| n as usize).map_err(|e| {
-                format!(
-                    "GGUF {} key `{arch}.attention.key_length` not a u32: {e}",
-                    path.display()
-                )
-            })?,
-            None => {
-                if num_attention_heads == 0 {
-                    return Err(format!(
-                        "GGUF {} has 0 attention heads — cannot derive head_dim",
-                        path.display()
-                    ));
-                }
-                hidden_size / num_attention_heads
-            }
-        };
-
-        // vocab_size: explicit `{arch}.vocab_size` if present, else the length
-        // of the tokenizer's token array (the vocab IS that array). One of the
-        // two must exist — a GGUF with neither cannot be served.
-        let vocab_size = match md.get(&format!("{arch}.vocab_size")) {
-            Some(v) => v.to_u32().map(|n| n as usize).map_err(|e| {
-                format!(
-                    "GGUF {} key `{arch}.vocab_size` not a u32: {e}",
-                    path.display()
-                )
-            })?,
-            None => {
-                let tokens = md.get("tokenizer.ggml.tokens").ok_or_else(|| {
-                    format!(
-                        "GGUF {} missing both `{arch}.vocab_size` and `tokenizer.ggml.tokens`",
-                        path.display()
-                    )
-                })?;
-                tokens
-                    .to_vec()
-                    .map_err(|e| {
-                        format!(
-                            "GGUF {} `tokenizer.ggml.tokens` not an array: {e}",
-                            path.display()
-                        )
-                    })?
-                    .len()
-            }
-        };
-
+        let content =
+            crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
+                .map_err(|e| format!("read GGUF {}: {e}", path.display()))?;
+        let dims = crate::inference_capability::gguf_keys::architecture_dimensions(&content, path)?;
         Self::new(
-            num_layers,
-            hidden_size,
-            num_attention_heads,
-            num_kv_heads,
-            head_dim,
-            intermediate_size,
-            vocab_size,
-            context_length,
+            dims.num_layers,
+            dims.hidden_size,
+            dims.num_attention_heads,
+            dims.num_kv_heads,
+            dims.head_dim,
+            dims.intermediate_size,
+            dims.vocab_size,
+            dims.context_length,
         )
     }
 
@@ -226,34 +162,28 @@ impl ModelArchConfig {
         let path = dir.join("config.json");
         let text =
             std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
-        let json: serde_json::Value =
+        let config: HfArchConfig =
             serde_json::from_str(&text).map_err(|e| format!("parse {}: {e}", path.display()))?;
+        let HfArchConfig {
+            hidden_size,
+            intermediate_size,
+            num_attention_heads,
+            num_hidden_layers: num_layers,
+            vocab_size,
+            max_position_embeddings: context_length,
+            num_key_value_heads,
+            head_dim,
+        } = config;
 
-        let req = |key: &str| -> Result<usize, String> {
-            json.get(key)
-                .and_then(|x| x.as_u64())
-                .map(|n| n as usize)
-                .ok_or_else(|| format!("config.json {} missing required `{key}`", path.display()))
+        // Absent KV heads specify MHA in the HF disk format.
+        let num_kv_heads = match num_key_value_heads {
+            Some(heads) => heads,
+            None => num_attention_heads,
         };
 
-        let hidden_size = req("hidden_size")?;
-        let intermediate_size = req("intermediate_size")?;
-        let num_attention_heads = req("num_attention_heads")?;
-        let num_layers = req("num_hidden_layers")?;
-        let vocab_size = req("vocab_size")?;
-        let context_length = req("max_position_embeddings")?;
-
-        // Absent `num_key_value_heads` MEANS multi-head attention (kv == q) in
-        // the HF config spec — a defined semantic, not a guess.
-        let num_kv_heads = json
-            .get("num_key_value_heads")
-            .and_then(|x| x.as_u64())
-            .map(|n| n as usize)
-            .unwrap_or(num_attention_heads);
-
         // Absent `head_dim` MEANS hidden_size / num_attention_heads (HF spec).
-        let head_dim = match json.get("head_dim").and_then(|x| x.as_u64()) {
-            Some(n) => n as usize,
+        let head_dim = match head_dim {
+            Some(n) => n,
             None => {
                 if num_attention_heads == 0 {
                     return Err(format!(
@@ -406,6 +336,58 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
+    #[test]
+    fn malformed_optional_dimensions_are_not_spec_defaults(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        for key in ["num_key_value_heads", "head_dim"] {
+            let mut config = serde_json::json!({
+                "hidden_size": 2048, "intermediate_size": 5632,
+                "num_attention_heads": 16, "num_hidden_layers": 24,
+                "vocab_size": 32000, "max_position_embeddings": 4096
+            });
+            config[key] = serde_json::json!("invalid");
+            std::fs::write(dir.path().join("config.json"), serde_json::to_vec(&config)?)?;
+            assert!(ModelArchConfig::from_config_json(dir.path()).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn hf_schema_rejects_invalid_required_and_present_optional_dimensions() {
+        let valid = serde_json::json!({
+            "hidden_size": 2048, "intermediate_size": 5632,
+            "num_attention_heads": 16, "num_hidden_layers": 24,
+            "vocab_size": 32000, "max_position_embeddings": 4096
+        });
+        for key in [
+            "hidden_size",
+            "intermediate_size",
+            "num_attention_heads",
+            "num_hidden_layers",
+            "vocab_size",
+            "max_position_embeddings",
+        ] {
+            let mut absent = valid.clone();
+            if let Some(fields) = absent.as_object_mut() {
+                fields.remove(key);
+            }
+            assert!(serde_json::from_value::<HfArchConfig>(absent).is_err());
+        }
+        for key in ["hidden_size", "num_key_value_heads", "head_dim"] {
+            for invalid in [
+                serde_json::Value::Null,
+                serde_json::json!(-1),
+                serde_json::json!(1.5),
+                serde_json::json!("128"),
+            ] {
+                let mut config = valid.clone();
+                config[key] = invalid;
+                assert!(serde_json::from_value::<HfArchConfig>(config).is_err());
+            }
+        }
+    }
+
     // what this catches: a config.json missing a required field fails loud
     // naming that field, rather than defaulting it.
     #[test]
@@ -419,7 +401,7 @@ mod tests {
 
         let err = ModelArchConfig::from_config_json(&dir).unwrap_err();
         assert!(
-            err.contains("missing required") && err.contains("intermediate_size"),
+            err.contains("missing field") && err.contains("intermediate_size"),
             "should name the first missing required field: {err}"
         );
 

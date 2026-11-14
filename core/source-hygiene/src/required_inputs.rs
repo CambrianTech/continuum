@@ -42,8 +42,12 @@ impl SourceRule for RequiredInputComplaints {
     }
 
     fn check(&self, file: &SourceFile) -> Vec<Violation> {
-        // Build scripts read cargo's environment, an input whose type is not ours.
-        if file.rel.ends_with("build.rs") {
+        // Disk decoders reject untrusted bytes before constructing required
+        // carriers. GgufMetadataOwner independently enforces this exact owner;
+        // consumers cannot interpret raw metadata. This is a format boundary,
+        // not an optional application parameter.
+        // Build scripts read cargo's environment, whose type is not ours.
+        if crate::gguf_boundary::is_decoder(file) || file.rel.ends_with("build.rs") {
             return Vec::new();
         }
         file.production
@@ -81,6 +85,22 @@ mod tests {
     /// you added one, make the input required by its type (a required field, a constructor
     /// argument, a non-empty type, a typestate builder) instead of an Option plus a message. A
     /// file you touch leaves with none.
+    #[test]
+    fn artifact_decoder_boundary_does_not_exempt_consumers_or_neighbors() {
+        let source = r#"let field = md.get(key).ok_or("missing artifact field")?;"#;
+        let check = |path: &str| {
+            let mut file = SourceFile::fixture(path, source, source);
+            file.repo = format!("core/continuum-engine/src/{path}");
+            RequiredInputComplaints.check(&file).len()
+        };
+        assert_eq!(check("inference_capability/gguf_keys/architecture.rs"), 0);
+        assert_eq!(check("inference_capability/gguf_keys.rs"), 1);
+        assert_eq!(check("inference_capability/gguf_keys/new_consumer.rs"), 1);
+        assert_eq!(check("model_registry/arch_config.rs"), 1);
+        assert_eq!(check("inference/backends/mod.rs"), 1);
+        assert_eq!(check("inference_capability/gguf_fingerprint.rs"), 1);
+    }
+
     #[test]
     fn required_input_complaints_only_fall() {
         let violations = scan(&[&RequiredInputComplaints]);

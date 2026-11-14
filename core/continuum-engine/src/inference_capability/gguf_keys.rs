@@ -29,51 +29,46 @@
 //! arch_from_gguf_string`); this module only surfaces the raw string.
 
 use candle_core::quantized::gguf_file::{Content, Value};
+#[path = "gguf_keys/architecture.rs"]
+mod architecture_schema;
+pub use architecture_schema::{decode as architecture_dimensions, GgufArchitecture};
+#[path = "gguf_keys/residency.rs"]
+mod residency_schema;
+pub use residency_schema::{decode as residency, GgufResidency};
+#[path = "gguf_keys/common.rs"]
+mod common_schema;
+pub use common_schema::{decode as common_metadata, GgufMetadata};
 
-/// Split metadata is typed by the pinned engine: u16 count/index, i32 tensor
-/// total. Absence of count means an ordinary single-file GGUF.
-pub fn split_count(ct: &Content) -> Result<u16, String> {
-    ct.metadata
-        .get("split.count")
-        .map(|v| v.to_u16().map_err(|e| e.to_string()))
-        .transpose()
-        .map(|n| n.unwrap_or(0))
-}
 
-pub fn split_index(ct: &Content) -> Result<u16, String> {
-    ct.metadata
-        .get("split.no")
-        .ok_or("missing split.no")?
-        .to_u16()
-        .map_err(|e| e.to_string())
-}
 
-pub fn split_tensor_count(ct: &Content) -> Result<u64, String> {
-    let count = ct
-        .metadata
-        .get("split.tensors.count")
-        .ok_or("missing split.tensors.count")?
-        .to_i32()
-        .map_err(|e| e.to_string())?;
-    u64::try_from(count).map_err(|_| "negative split.tensors.count".into())
-}
 
-/// Cold launch verification uses Candle's canonical decoder only after a bounded
+#[path = "gguf_keys/split_schema.rs"]
+mod split_schema;
+pub use split_schema::{split, GgufSplit};
+#[path = "gguf_keys/projector_schema.rs"]
+mod projector_schema;
+pub use projector_schema::{projector_encoders, ProjectorEncoders};
+#[path = "gguf_keys/parameters_schema.rs"]
+mod parameters_schema;
+pub use parameters_schema::{artifact_parameter_count};
+
+/// Artifact readers use Candle's canonical decoder only after a bounded
 /// header-shape check. Candle allocates strings/arrays from on-disk counts before
 /// a reader can report EOF, so a timeout or `Read::take` alone cannot bound it.
-/// This checks allocation sizes, not model semantics, and never reads tensors.
-pub(crate) fn read_bounded_header(
-    file: &mut std::fs::File,
+/// This checks allocation sizes, not model semantics. A bounded read-ahead buffer
+/// coalesces scalar/string filesystem reads; tensor payloads are not decoded.
+pub fn read_bounded_header<R: std::io::Read + std::io::Seek>(
+    file: &mut R,
     cancelled: &dyn Fn() -> bool,
 ) -> Result<Content, String> {
     use std::io::{Read, Seek, SeekFrom};
-    struct Header<'a> {
-        file: &'a mut std::fs::File,
+    struct Header<'a, R> {
+        file: std::io::BufReader<&'a mut R>,
         bytes: Vec<u8>,
         allocation: u64,
         cancelled: &'a dyn Fn() -> bool,
     }
-    impl Header<'_> {
+    impl<R: Read + Seek> Header<'_, R> {
         fn charge(&mut self, bytes: u64) -> Result<(), String> {
             self.allocation = self
                 .allocation
@@ -101,15 +96,16 @@ pub(crate) fn read_bounded_header(
                 .map_err(|e| format!("GGUF header read: {e}"))?;
             Ok(&self.bytes[start..end])
         }
+        fn scalar<const N: usize>(&mut self) -> Result<[u8; N], String> {
+            let mut encoded = [0; N];
+            encoded.copy_from_slice(self.take(N)?);
+            Ok(encoded)
+        }
         fn u32(&mut self) -> Result<u32, String> {
-            let b = self.take(4)?;
-            Ok(u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            Ok(u32::from_le_bytes(self.scalar()?))
         }
         fn u64(&mut self) -> Result<u64, String> {
-            let b = self.take(8)?;
-            Ok(u64::from_le_bytes([
-                b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-            ]))
+            Ok(u64::from_le_bytes(self.scalar()?))
         }
         fn string(&mut self) -> Result<Vec<u8>, String> {
             let length = self.u64()?;
@@ -125,16 +121,16 @@ pub(crate) fn read_bounded_header(
             }
             match kind {
                 0 | 1 | 7 => {
-                    self.take(1)?;
+                    let _ = u8::from_le_bytes(self.scalar()?);
                 }
                 2 | 3 => {
-                    self.take(2)?;
+                    let _ = u16::from_le_bytes(self.scalar()?);
                 }
                 4..=6 => {
-                    self.take(4)?;
+                    self.u32()?;
                 }
                 10..=12 => {
-                    self.take(8)?;
+                    self.u64()?;
                 }
                 8 => {
                     self.string()?;
@@ -158,7 +154,7 @@ pub(crate) fn read_bounded_header(
     }
     file.seek(SeekFrom::Start(0)).map_err(|e| e.to_string())?;
     let mut header = Header {
-        file,
+        file: std::io::BufReader::new(file),
         bytes: Vec::new(),
         allocation: 0,
         cancelled,
@@ -196,12 +192,20 @@ pub(crate) fn read_bounded_header(
         if dimensions > 4 {
             return Err("GGUF tensor dimensions exceed engine contract".into());
         }
-        header.take(dimensions as usize * 8)?;
-        header.take(12)?; // dtype and weight offset; no tensor data is loaded.
+        for _ in 0..dimensions {
+            header.u64()?;
+        }
+        header.u32()?; // dtype
+        header.u64()?; // weight offset; no tensor data is loaded.
     }
     if cancelled() {
         return Err("GGUF header verification cancelled".into());
     }
+    // Preserve the caller's logical cursor despite buffered read-ahead.
+    header
+        .file
+        .seek(SeekFrom::Start(header.bytes.len() as u64))
+        .map_err(|e| e.to_string())?;
     Content::read(&mut std::io::Cursor::new(header.bytes))
         .map_err(|e| format!("local GGUF metadata: {e}"))
 }
@@ -347,13 +351,14 @@ pub fn embedding_length(ct: &Content, arch: &str) -> Option<u32> {
 /// the engine held a 144k window in 31.9 GB, and the window arithmetic on the
 /// wrong rate took the served window to 9,430 — every turn `over_window`.
 pub fn kv_bytes_per_token_f16(ct: &Content, arch: &str) -> Option<u64> {
-    let key_len = attention_key_length(ct, arch)
-        .or_else(|| {
-            let width = embedding_length(ct, arch)?;
-            let heads = attention_head_count(ct, arch)?;
-            (heads > 0).then(|| width / heads)
-        })? as u64;
-    let value_len = attention_value_length(ct, arch).map(|v| v as u64).unwrap_or(key_len); // unwrap_or: absent value_length means symmetric heads — every observed exporter's convention, not a guess over a present-but-unreadable key
+    let key_len = attention_key_length(ct, arch).or_else(|| {
+        let width = embedding_length(ct, arch)?;
+        let heads = attention_head_count(ct, arch)?;
+        (heads > 0).then(|| width / heads)
+    })? as u64;
+    let value_len = attention_value_length(ct, arch)
+        .map(|v| v as u64)
+        .unwrap_or(key_len); // unwrap_or: absent value_length means symmetric heads — every observed exporter's convention, not a guess over a present-but-unreadable key
     let per_head = (key_len + value_len).saturating_mul(2); // f16 = 2 bytes/element
     let total_kv_heads: u64 = match attention_head_count_kv_per_layer(ct, arch) {
         Some(per_layer) => per_layer.into_iter().map(|h| h as u64).sum(),
@@ -458,6 +463,229 @@ mod tests {
     use super::*;
     use candle_core::quantized::gguf_file::{self, Value};
     use std::io::Cursor;
+
+    #[test]
+    fn bounded_header_consumes_scalar_encodings_at_their_wire_widths(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let values = vec![
+            ("u8", Value::U8(255)),
+            ("i8", Value::I8(-1)),
+            ("u16", Value::U16(65535)),
+            ("i16", Value::I16(-2)),
+            ("u32", Value::U32(u32::MAX)),
+            ("i32", Value::I32(-3)),
+            ("u64", Value::U64(u64::MAX)),
+            ("i64", Value::I64(-4)),
+            ("f32", Value::F32(1.25)),
+            ("f64", Value::F64(2.5)),
+            ("bool", Value::Bool(true)),
+            ("array", Value::Array(vec![Value::U16(1), Value::U16(2)])),
+        ];
+        let refs: Vec<_> = values.iter().map(|(key, value)| (*key, value)).collect();
+        let mut encoded = Cursor::new(Vec::new());
+        gguf_file::write(&mut encoded, &refs, &[])?;
+        let content = read_bounded_header(&mut encoded, &|| false)?;
+        for (key, expected) in values {
+            assert_eq!(
+                format!("{:?}", content.metadata[key]),
+                format!("{expected:?}")
+            );
+        }
+        let mut truncated = Cursor::new(encoded.into_inner());
+        truncated.get_mut().truncate(30);
+        assert!(read_bounded_header(&mut truncated, &|| false).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn buffered_header_preserves_cancellation_and_allocation_bounds() {
+        assert!(
+            read_bounded_header(&mut Cursor::new(Vec::<u8>::new()), &|| true)
+                .is_err_and(|error| error.contains("cancelled"))
+        );
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&u64::MAX.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes());
+        assert!(read_bounded_header(&mut Cursor::new(bytes), &|| false)
+            .is_err_and(|error| error.contains("tensor count overflow")));
+    }
+
+    #[test]
+    fn tokenizer_metadata_reads_are_coalesced_without_changing_facts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use std::io::{Cursor, Read, Seek, SeekFrom};
+        struct Counted {
+            bytes: Cursor<Vec<u8>>,
+            reads: usize,
+        }
+        impl Read for Counted {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                self.reads += 1;
+                self.bytes.read(buf)
+            }
+        }
+        impl Seek for Counted {
+            fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+                self.bytes.seek(position)
+            }
+        }
+        fn string(bytes: &mut Vec<u8>, value: &str) {
+            bytes.extend_from_slice(&(value.len() as u64).to_le_bytes());
+            bytes.extend_from_slice(value.as_bytes());
+        }
+        // A synthetic metadata-only GGUF with a tokenizer array. No model or
+        // resident files are opened, and no tensor payload is needed.
+        let mut bytes = b"GGUF".to_vec();
+        bytes.extend_from_slice(&3_u32.to_le_bytes());
+        bytes.extend_from_slice(&0_u64.to_le_bytes()); // tensors
+        bytes.extend_from_slice(&2_u64.to_le_bytes()); // metadata entries
+        string(&mut bytes, "general.architecture");
+        bytes.extend_from_slice(&8_u32.to_le_bytes()); // string
+        string(&mut bytes, "qwen3");
+        string(&mut bytes, "tokenizer.ggml.tokens");
+        bytes.extend_from_slice(&9_u32.to_le_bytes()); // array
+        bytes.extend_from_slice(&8_u32.to_le_bytes()); // string elements
+        bytes.extend_from_slice(&4096_u64.to_le_bytes());
+        for _ in 0..4096 {
+            string(&mut bytes, "token");
+        }
+        bytes.extend_from_slice(&[0_u8; 16384]); // read-ahead beyond the header
+        let mut direct = Counted {
+            bytes: Cursor::new(bytes.clone()),
+            reads: 0,
+        };
+        let mut buffered = Counted {
+            bytes: Cursor::new(bytes),
+            reads: 0,
+        };
+        let original = Content::read(&mut direct)?;
+        let actual = read_bounded_header(&mut buffered, &|| false)?;
+        assert_eq!(architecture(&actual), architecture(&original));
+        assert_eq!(
+            actual.metadata["tokenizer.ggml.tokens"].to_vec()?.len(),
+            4096
+        );
+        for (actual, original) in actual.metadata["tokenizer.ggml.tokens"]
+            .to_vec()?
+            .iter()
+            .zip(original.metadata["tokenizer.ggml.tokens"].to_vec()?)
+        {
+            assert_eq!(actual.to_string()?, original.to_string()?);
+        }
+        assert_eq!(actual.tensor_data_offset, original.tensor_data_offset);
+        assert_eq!(buffered.stream_position()?, direct.stream_position()?);
+        assert!(
+            buffered.reads * 100 < direct.reads,
+            "metadata must not issue one filesystem read per scalar: {} vs {}",
+            buffered.reads,
+            direct.reads
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn common_metadata_requires_backend_identity_and_context() -> Result<(), String> {
+        let path = std::path::Path::new("synthetic.gguf");
+        let fields = vec![
+            ("general.architecture", Value::String("qwen2".into())),
+            ("qwen2.context_length", Value::U32(4096)),
+        ];
+        let facts = common_metadata(&content_with(fields.clone()), path)?;
+        assert_eq!((facts.architecture.as_str(), facts.context_length), ("qwen2", 4096));
+        assert_eq!(facts.model_name, None);
+        for index in 0..fields.len() {
+            let mut incomplete = fields.clone();
+            incomplete.remove(index);
+            assert!(common_metadata(&content_with(incomplete), path).is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn residency_schema_requires_complete_evidence() -> Result<(), String> {
+        let fields = vec![
+            ("general.architecture", Value::String("qwen2".into())),
+            ("qwen2.block_count", Value::U32(3)),
+            ("general.file_type", Value::U32(1)),
+            ("general.parameter_count", Value::U64(100)),
+        ];
+        let path = std::path::Path::new("synthetic.gguf");
+        let facts = residency(&content_with(fields.clone()), path)?;
+        assert_eq!((facts.layer_count, facts.file_type, facts.parameter_count), (3, 1, 100));
+        for index in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(index);
+            assert!(residency(&content_with(malformed), path).is_err());
+        }
+        let mut malformed = fields;
+        malformed[2].1 = Value::String("1".into());
+        assert!(residency(&content_with(malformed), path).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn architecture_schema_requires_artifact_dimensions() -> Result<(), String> {
+        let fields = vec![
+            ("general.architecture", Value::String("llama".into())),
+            ("llama.embedding_length", Value::U32(128)),
+            ("llama.feed_forward_length", Value::U32(256)),
+            ("llama.attention.head_count", Value::U32(4)),
+            ("llama.attention.head_count_kv", Value::U32(2)),
+            ("llama.block_count", Value::U32(3)),
+            ("llama.context_length", Value::U32(2048)),
+            ("llama.vocab_size", Value::U32(32)),
+        ];
+        let path = std::path::Path::new("synthetic.gguf");
+        let dims = architecture_dimensions(&content_with(fields.clone()), path)?;
+        assert_eq!((dims.hidden_size, dims.head_dim, dims.num_kv_heads), (128, 32, 2));
+        for index in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(index);
+            assert!(architecture_dimensions(&content_with(malformed), path).is_err());
+        }
+        let mut malformed = fields;
+        malformed.push(("llama.attention.key_length", Value::String("32".into())));
+        assert!(architecture_dimensions(&content_with(malformed), path).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn split_declaration_is_complete_and_consistent() {
+        assert_eq!(split(&content_with(vec![])), Ok(None));
+        let fields = vec![
+            ("split.count", Value::U16(2)),
+            ("split.no", Value::U16(0)),
+            ("split.tensors.count", Value::I32(9)),
+        ];
+        assert_eq!(
+            split(&content_with(fields.clone())),
+            Ok(Some(GgufSplit {
+                count: 2,
+                index: 0,
+                tensors: 9
+            }))
+        );
+        for missing in 0..fields.len() {
+            let mut malformed = fields.clone();
+            malformed.remove(missing);
+            assert!(split(&content_with(malformed)).is_err());
+        }
+        for (key, value) in [
+            ("split.count", Value::U16(0)),
+            ("split.no", Value::U16(2)),
+            ("split.tensors.count", Value::I32(-1)),
+            ("split.no", Value::String("0".into())),
+        ] {
+            let mut malformed = fields.clone();
+            for field in &mut malformed {
+                if field.0 == key {
+                    field.1 = value.clone();
+                }
+            }
+            assert!(split(&content_with(malformed)).is_err());
+        }
+    }
 
     /// Assemble an in-memory GGUF from a metadata list and read it back into a
     /// `Content` — the only way to exercise the readers against real
