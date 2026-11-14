@@ -38,10 +38,6 @@ use crate::runtime::brain_region::{
 };
 use crate::runtime::ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 
-/// Default newest-events fetch cap per digest build (mirrors `AircRagSource`'s
-/// production default). The recipe-defined grounding window slices within this.
-const DEFAULT_FETCH_LIMIT: usize = 100;
-
 /// Yields the personas to pre-stage for and, per persona, a transcript reader +
 /// the channel (room) to digest. Implemented on `PersonaAircRuntimeRegistry` in
 /// production; stubbed in tests so the region needs no live airc daemon.
@@ -62,9 +58,9 @@ pub struct ChannelDigestRegion {
     personas: Arc<dyn PersonaChannelReader>,
     digests: Arc<DigestBuffer>,
     grounding: usize,
-    fetch_limit: usize,
-    /// The room revision each (persona, room) digest was built at: unchanged means current.
-    built_at: dashmap::DashMap<(Uuid, Uuid), u64>,
+    /// The room revision each (persona, room) digest was built at (`None`: built before anything
+    /// in the room changed): unchanged means current.
+    built_at: dashmap::DashMap<(Uuid, Uuid), Option<u64>>,
 }
 
 impl ChannelDigestRegion {
@@ -89,7 +85,6 @@ impl ChannelDigestRegion {
             personas,
             digests,
             grounding: DEFAULT_GROUNDING,
-            fetch_limit: DEFAULT_FETCH_LIMIT,
             built_at: dashmap::DashMap::new(),
         }
     }
@@ -97,12 +92,6 @@ impl ChannelDigestRegion {
     /// Override the N-before-bookmark grounding window (recipe-defined in time).
     pub fn with_grounding(mut self, grounding: usize) -> Self {
         self.grounding = grounding;
-        self
-    }
-
-    /// Override the newest-events fetch cap.
-    pub fn with_fetch_limit(mut self, fetch_limit: usize) -> Self {
-        self.fetch_limit = fetch_limit;
         self
     }
 
@@ -125,22 +114,13 @@ impl ChannelDigestRegion {
         };
         // Read BEFORE the build: a change landing during the build moves it again, so the next
         // tick rebuilds rather than keeping a digest that missed it.
-        let revision = crate::cognition::channel_substrate::room_revision(room);
+        let head = crate::cognition::channel_substrate::room_head(room);
+        let revision = head.map(|head| head.revision);
         let key = (persona_id, room);
         if self.built_at.get(&key).is_some_and(|built| *built == revision) && self.digests.peek(&key).is_some() {
             return TickOutcome { cadence_hint: Some(CadenceHint::Slower), ..TickOutcome::idle() };
         }
-        match self
-            .builder
-            .build(
-                persona_id,
-                room,
-                reader.as_ref(),
-                self.fetch_limit,
-                self.grounding,
-            )
-            .await
-        {
+        match self.build(reader.as_ref(), persona_id, room, head).await {
             Ok(digest) => {
                 let has_unread = digest.has_unread();
                 self.digests.publish(key, Arc::new(digest));
@@ -169,6 +149,26 @@ impl ChannelDigestRegion {
                 TickOutcome::idle()
             }
         }
+    }
+
+    /// Her page is what the digest needs: the grounding before her bookmark and everything after
+    /// it. The feed's head lamport minus her bookmark is her unread, so no count is fixed and no
+    /// unread line is left out. Before an event of the room crossed this core's feed, its head is
+    /// unknown here and the grounding is what can be shown.
+    async fn build(
+        &self,
+        reader: &dyn AircTranscriptReader,
+        persona_id: Uuid,
+        room: Uuid,
+        head: Option<crate::cognition::channel_substrate::RoomHead>,
+    ) -> Result<ChannelDigest, airc_lib::AircError> {
+        let bookmark = reader.read_cursor(persona_id, room).await?;
+        let page = match head.and_then(|head| head.lamport) {
+            Some(newest) => self.grounding.saturating_add(usize::try_from(newest.saturating_sub(bookmark)).unwrap_or(usize::MAX)), // unwrap_or: an unread count past the address space asks for everything
+            None => self.grounding,
+        };
+        let events = reader.page_recent(page).await?;
+        Ok(self.builder.build_from_events(persona_id, room, events, self.grounding, bookmark))
     }
 }
 

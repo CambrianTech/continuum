@@ -72,7 +72,7 @@ impl AttachRegistry {
         let fresh = self
             .attached
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|e| e.into_inner()) // poisoned lock = read the last state, the crate's lock policy
             .insert(room);
         if fresh {
             continuum_base::probe!(
@@ -359,7 +359,7 @@ pub async fn publish_transcript_event(
     // 2026-10-30 00:28Z: an untrusted peer's `persona/placement/reserve` requests
     // published into #general were fed to two residents as room speech by this seam.
     // Anything in the room changed: digests built at the old revision are rebuilt, no other room.
-    crate::cognition::channel_substrate::room_touched(event.room_id.as_uuid());
+    crate::cognition::channel_substrate::room_event(event.room_id.as_uuid(), event.lamport);
     let conversation = match continuum_airc_protocol::classify_inbound(Arc::clone(event)) {
         continuum_airc_protocol::InboundEvent::Conversation(conversation) => conversation,
         continuum_airc_protocol::InboundEvent::Protocol(envelope) => {
@@ -569,7 +569,7 @@ fn posted_from_envelope(
             .and_then(|s| uuid::Uuid::parse_str(s).ok()),
         _ => None,
     }
-    .unwrap_or_else(|| event.event_id.as_uuid());
+    .unwrap_or_else(|| event.event_id.as_uuid()); // unwrap_or: a line that names no message id is identified by its event
     let mut line = posted_line(event, content)?;
     line.message_id = message_id;
     line.author = airc_core::PeerId::from_uuid(sender_id);

@@ -37,11 +37,9 @@
 use std::sync::Arc;
 
 use airc_core::TranscriptEvent;
-use airc_lib::AircError;
 use uuid::Uuid;
 
 use crate::cognition::channel_element::{ChannelElement, ChannelElementCache};
-use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
 
 /// Default N-before-bookmark grounding when a caller has no recipe-specified value.
 /// Recipe/RoomPurpose resolution belongs to the caller; this is only the floor.
@@ -121,30 +119,6 @@ pub struct ChannelDigestBuilder {
 impl ChannelDigestBuilder {
     pub fn new(cache: Arc<ChannelElementCache>) -> Self {
         Self { cache }
-    }
-
-    /// Build the consolidated digest for `persona_id` on `room_id`.
-    ///
-    /// ONE batch read (`page_recent`), filtered to the channel, resolved to shared
-    /// elements, sorted lamport-ascending, then split at the reader's cursor:
-    /// everything after it is unread; up to `grounding` elements before it are kept
-    /// for context. `grounding` is the recipe-defined N (use [`DEFAULT_GROUNDING`]
-    /// absent a recipe).
-    ///
-    /// The cursor comes from AIRC (`read_cursor`), which owns it durably. This
-    /// builder holds no cursor state of its own — there is exactly one unread
-    /// marker per (reader, room) in the system, and airc has it.
-    pub async fn build(
-        &self,
-        persona_id: Uuid,
-        room_id: Uuid,
-        reader: &dyn AircTranscriptReader,
-        fetch_limit: usize,
-        grounding: usize,
-    ) -> Result<ChannelDigest, AircError> {
-        let events = reader.page_recent(fetch_limit).await?;
-        let bookmark = reader.read_cursor(persona_id, room_id).await?;
-        Ok(self.build_from_events(persona_id, room_id, events, grounding, bookmark))
     }
 
     /// Build a digest from PRE-FETCHED events and an ALREADY-LOADED cursor — lets a
@@ -246,10 +220,26 @@ pub fn test_event_in(room: airc_core::RoomId, text: &str, lamport: u64) -> Trans
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::conversation::transcript_reader::AircTranscriptReader;
+    use airc_lib::AircError;
     use crate::ai::embedding::EmbeddingProvider;
     use airc_core::RoomId;
     use async_trait::async_trait;
     use std::sync::Mutex;
+
+    /// A digest from `reader`'s newest `limit` events and its cursor: the read the region does.
+    async fn build(
+        builder: &ChannelDigestBuilder,
+        persona_id: Uuid,
+        room_id: Uuid,
+        reader: &dyn AircTranscriptReader,
+        limit: usize,
+        grounding: usize,
+    ) -> Result<ChannelDigest, AircError> {
+        let events = reader.page_recent(limit).await?;
+        let bookmark = reader.read_cursor(persona_id, room_id).await?;
+        Ok(builder.build_from_events(persona_id, room_id, events, grounding, bookmark))
+    }
 
     /// Trivial embedder for the shared element cache (digest tests don't assert on
     /// vectors; they assert on the window split + sharing).
@@ -334,8 +324,7 @@ mod tests {
             test_event_in(room, "c", 3),
         ]);
         let b = builder();
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 0)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 0)
             .await
             .unwrap();
         assert_eq!(d.unread().len(), 3);
@@ -357,8 +346,7 @@ mod tests {
         ]);
         let b = builder();
         let reader = reader.read_through(2);
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 0)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 0)
             .await
             .unwrap();
         assert_eq!(d.unread().len(), 1);
@@ -388,8 +376,7 @@ mod tests {
             "never read"
         );
 
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 500, 0)
+        let d = build(&b, persona, room.as_uuid(), &reader, 500, 0)
             .await
             .unwrap();
 
@@ -414,8 +401,7 @@ mod tests {
         // and together the room goes QUIET with nothing new. Before the fix, the
         // whole transcript came back as unread on every single turn forever.
         let reader = StubReader::new(events).read_through(tip);
-        let d2 = b
-            .build(persona, room.as_uuid(), &reader, 500, 0)
+        let d2 = build(&b, persona, room.as_uuid(), &reader, 500, 0)
             .await
             .unwrap();
         assert!(
@@ -437,8 +423,7 @@ mod tests {
         ]);
         let b = builder();
         let reader = reader.read_through(2);
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 1)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 1)
             .await
             .unwrap();
         assert_eq!(d.grounding().len(), 1, "one before-bookmark for context");
@@ -460,8 +445,7 @@ mod tests {
         ]);
         let b = builder();
         let reader = reader.read_through(3);
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 2)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 2)
             .await
             .unwrap();
         assert!(!d.has_unread());
@@ -503,8 +487,7 @@ mod tests {
             test_event_in(room_a, "a-two", 2),
         ]);
         let b = builder();
-        let d = b
-            .build(persona, room_a.as_uuid(), &reader, 100, 0)
+        let d = build(&b, persona, room_a.as_uuid(), &reader, 100, 0)
             .await
             .unwrap();
         assert_eq!(d.elements.len(), 2);
@@ -532,8 +515,7 @@ mod tests {
         // Digest at this point still shows the operator message as unread.
         let b = builder();
         let reader = StubReader::new(events.clone());
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 5)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 5)
             .await
             .unwrap();
         assert!(d
@@ -547,8 +529,7 @@ mod tests {
             events.push(test_event_in(room, &format!("peer chatter {i}"), l));
         }
         let reader = StubReader::new(events.clone()).read_through(read_to);
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 5)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 5)
             .await
             .unwrap();
         let read_to = d.tip_lamport().unwrap();
@@ -559,8 +540,7 @@ mod tests {
             events.push(test_event_in(room, &format!("more chatter {i}"), l));
         }
         let reader = StubReader::new(events).read_through(read_to);
-        let d = b
-            .build(persona, room.as_uuid(), &reader, 100, 5)
+        let d = build(&b, persona, room.as_uuid(), &reader, 100, 5)
             .await
             .unwrap();
         assert!(
@@ -582,8 +562,8 @@ mod tests {
         let p2 = Uuid::new_v4();
         let reader = StubReader::new(vec![test_event_in(room, "shared", 1)]);
         let b = builder();
-        let d1 = b.build(p1, room.as_uuid(), &reader, 100, 0).await.unwrap();
-        let d2 = b.build(p2, room.as_uuid(), &reader, 100, 0).await.unwrap();
+        let d1 = build(&b, p1, room.as_uuid(), &reader, 100, 0).await.unwrap();
+        let d2 = build(&b, p2, room.as_uuid(), &reader, 100, 0).await.unwrap();
         assert!(
             Arc::ptr_eq(&d1.elements[0], &d2.elements[0]),
             "both personas reference one shared element"

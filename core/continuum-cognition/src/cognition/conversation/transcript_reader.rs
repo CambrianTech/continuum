@@ -133,7 +133,7 @@ impl AircTranscriptReader for airc_lib::Airc {
             airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room))
                 .await?
                 .map(|c| c.lamport)
-                .unwrap_or(0),
+                .unwrap_or(0), // unwrap_or: no cursor = she has read nothing, lamport 0 precedes every event
         )
     }
 

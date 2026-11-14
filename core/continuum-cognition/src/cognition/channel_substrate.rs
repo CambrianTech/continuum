@@ -61,21 +61,38 @@ pub fn global_channel_digest_buffer() -> Arc<DigestBuffer> {
     G.get_or_init(|| Arc::new(DigestBuffer::new())).clone()
 }
 
-/// Each room's revision: bumped when anything in the room changes (an event crossed the core's
-/// one feed, `airc::inbound_attach`, or a reader advanced its cursor there). A digest built at a
-/// revision is current until the revision moves, so the digest region rebuilds a room only when
-/// it changed, never every tick: before this, every tick paged and decoded the newest 100 events
-/// for every resident (the core's second-largest CPU use in a `sample` on the M5, 2026-11-14).
+/// Where a room stands: how many times anything in it changed (an event crossed the core's one
+/// feed, `airc::inbound_attach`, or a reader advanced her cursor there), and the newest lamport
+/// the feed carried. A digest built at a revision is current until the revision moves, so the
+/// digest region rebuilds a room only when it changed, never every tick (before: every tick paged
+/// and decoded the newest 100 events for every resident, the core's second-largest CPU use in a
+/// `sample` on the M5, 2026-11-14). The head lamport sizes the page: a reader's unread is the head
+/// minus her bookmark, so the page is what she needs, never a fixed count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RoomHead {
+    pub revision: u64,
+    /// The newest lamport the feed carried; `None` until an event of the room crossed it.
+    pub lamport: Option<u64>,
+}
+
+/// An event of `room` at `lamport` crossed the core's one feed.
+pub fn room_event(room: Uuid, lamport: u64) {
+    let mut head = room_heads().entry(room).or_insert(RoomHead { revision: 0, lamport: None });
+    head.revision += 1;
+    head.lamport = Some(head.lamport.map_or(lamport, |newest| newest.max(lamport)));
+}
+
+/// Something about `room` changed that is not a new event (a reader's cursor moved).
 pub fn room_touched(room: Uuid) {
-    *room_revisions().entry(room).or_insert(0) += 1;
+    room_heads().entry(room).or_insert(RoomHead { revision: 0, lamport: None }).revision += 1;
 }
 
-/// The room's current revision (0 before anything touched it).
-pub fn room_revision(room: Uuid) -> u64 {
-    room_revisions().get(&room).map_or(0, |revision| *revision)
+/// Where `room` stands; `None` when nothing in it has changed since this core started.
+pub fn room_head(room: Uuid) -> Option<RoomHead> {
+    room_heads().get(&room).map(|head| *head)
 }
 
-fn room_revisions() -> &'static dashmap::DashMap<Uuid, u64> {
-    static G: OnceLock<dashmap::DashMap<Uuid, u64>> = OnceLock::new();
+fn room_heads() -> &'static dashmap::DashMap<Uuid, RoomHead> {
+    static G: OnceLock<dashmap::DashMap<Uuid, RoomHead>> = OnceLock::new();
     G.get_or_init(dashmap::DashMap::new)
 }
