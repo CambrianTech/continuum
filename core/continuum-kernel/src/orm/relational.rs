@@ -388,7 +388,7 @@ mod tests {
             max_length: None,
             foreign_key: None,
         });
-        store.ensure(schema).await?;
+        store.ensure(&schema).await?;
         let record = DataRecord {
             id: "one".into(),
             collection: "projected".into(),
@@ -397,7 +397,7 @@ mod tests {
         };
         store.insert(&store.db, &record).await?;
         let rows = store
-            .query(QueryBuilder::new("projected").limit(1).build())
+            .query(&QueryBuilder::new("projected").limit(1).build())
             .await?;
         assert_eq!(rows[0].data["body"], record.data["body"]);
         assert_eq!(rows[0].data["id"], record.id);
@@ -412,7 +412,7 @@ mod tests {
             .await?;
         let rows = store
             .query(
-                QueryBuilder::new("projected")
+                &QueryBuilder::new("projected")
                     .select(vec!["id".into()])
                     .limit(1)
                     .build(),
@@ -420,11 +420,11 @@ mod tests {
             .await?;
         assert_eq!(rows.len(), 1);
         assert_eq!(
-            store.count(QueryBuilder::new("projected").build()).await?,
+            store.count(&QueryBuilder::new("projected").build()).await?,
             1
         );
         assert!(store
-            .query(QueryBuilder::new("projected").limit(1).build())
+            .query(&QueryBuilder::new("projected").limit(1).build())
             .await
             .is_err());
         Ok(())

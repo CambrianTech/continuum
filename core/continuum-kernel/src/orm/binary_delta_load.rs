@@ -10,7 +10,7 @@ pub(super) async fn replay(
     store: &RelationalStore,
     descriptor: &BinaryDescriptor,
     original: &[u8],
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
     // The existing corpus is already cached by the baseline's full scan. Its initial
     // fixture inserts have no revision receipts; this is incremental sync, not bootstrap.
     // Admit the rows participating in this mutation schedule through the real native

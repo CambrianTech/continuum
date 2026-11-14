@@ -508,7 +508,7 @@ async fn foreign_key_cascade_deletes_children_via_db_enforcement() {
     // Delete the parent widget. SQLite's CASCADE rule must propagate
     // and wipe the child note row.
     let deleted = widgets.delete(widget_id).await.expect("delete widget");
-    assert!(deleted);
+    assert_eq!(deleted, crate::orm::seam::Deleted::Removed);
 
     let after = notes
         .find_by_id(note_id)
@@ -648,9 +648,13 @@ async fn declared_optional_number_is_exact_and_rejects_text() {
         store.save(id, &row).await.expect("typed save");
         let loaded = store.find_by_id(id).await.expect("read").expect("present");
         assert_eq!(loaded.rejected_at_ms, number);
-        let result = adapter.update(EvolvingV2::COLLECTION, &id.to_string(),
-            serde_json::json!({"rejectedAtMs":"9007199254740993"}), true).await;
-        assert!(!result.success, "numeric declarations reject text instead of guessing codecs");
+        let row_id = id.to_string();
+        let result = adapter.update(crate::orm::seam::Update {
+            row: crate::orm::seam::RowRef { collection: EvolvingV2::COLLECTION, id: &row_id },
+            data: serde_json::json!({"rejectedAtMs":"9007199254740993"}),
+            versioning: crate::orm::seam::Versioning::Increment,
+        }).await;
+        assert!(matches!(result, Err(crate::orm::StorageError::TypeMismatch { .. })), "numeric declarations reject text instead of guessing codecs");
     }
     assert!(OrmStore::<EvolvingText>::new(adapter).await.is_err(), "a second declaration cannot reinterpret a numeric column");
 }

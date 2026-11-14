@@ -6,7 +6,7 @@ use super::*;
     use crate::orm::types::{CollectionSchema, FieldType, SchemaField};
 
     #[tokio::test]
-    async fn equal_counts_cannot_verify_a_rejected_migration() -> Result<(), String> {
+    async fn equal_counts_cannot_verify_a_rejected_migration() -> Result<(), Box<dyn std::error::Error>> {
         let dir = tempfile::tempdir().map_err(|e| e.to_string())?;
         let source = setup_sqlite(&dir.path().join("source.db").to_string_lossy()).await;
         let target = setup_sqlite(&dir.path().join("target.db").to_string_lossy()).await;
@@ -16,14 +16,14 @@ use super::*;
             indexes: vec![],
         };
         for adapter in [&source, &target] {
-            adapter.ensure_schema(schema.clone()).await.into_result()?;
+            adapter.ensure_schema(&schema.clone()).await?;
             adapter.create(DataRecord {
                 id: "collision".into(), collection: "items".into(),
                 data: json!({}), metadata: RecordMetadata::default(),
-            }).await.into_result()?;
+            }).await?;
         }
         let mut engine = MigrationEngine::new(source, target, MigrationConfig {
-            batch_size: 1, collections: Some(vec!["items".into()]),
+            batch_size: std::num::NonZeroUsize::MIN.saturating_add(0), collections: Some(vec!["items".into()]),
         });
         assert!(!engine.verify().await?.verified, "no run has no migration receipts");
         assert!(engine.run().await.is_err(), "a destination refusal stops migration");
@@ -59,7 +59,7 @@ use super::*;
 
         // Create schema + data in source
         source
-            .ensure_schema(CollectionSchema {
+            .ensure_schema(&CollectionSchema {
                 collection: "items".to_string(),
                 fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
                 default_value: None,
@@ -73,7 +73,7 @@ use super::*;
                 }]).collect(),
                 indexes: vec![],
             })
-            .await.into_result().expect("test: storage operation succeeds");
+            .await.expect("test: storage operation succeeds");
 
         for i in 0..25 {
             source
@@ -83,7 +83,7 @@ use super::*;
                     data: json!({"name": format!("Item {}", i)}),
                     metadata: RecordMetadata::default(),
                 })
-                .await.into_result().expect("test: storage operation succeeds");
+                .await.expect("test: storage operation succeeds");
         }
 
         // Run migration
@@ -91,7 +91,7 @@ use super::*;
             source.clone(),
             target.clone(),
             MigrationConfig {
-                batch_size: 10,
+                batch_size: std::num::NonZeroUsize::MIN.saturating_add(9),
                 collections: None,
             },
         );
@@ -107,11 +107,11 @@ use super::*;
 
         // Check target has data
         let target_count = target
-            .count(StorageQuery {
+            .count(&StorageQuery {
                 collection: "items".to_string(),
                 ..Default::default()
             })
-            .await.into_result().expect("test: storage operation succeeds");
+            .await.expect("test: storage operation succeeds");
         assert_eq!(target_count, 25);
     }
 
@@ -125,7 +125,7 @@ use super::*;
         let target = setup_sqlite(target_path.to_str().unwrap()).await;
 
         source
-            .ensure_schema(CollectionSchema {
+            .ensure_schema(&CollectionSchema {
                 collection: "items".to_string(),
                 fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
                 default_value: None,
@@ -139,7 +139,7 @@ use super::*;
                 }]).collect(),
                 indexes: vec![],
             })
-            .await.into_result().expect("test: storage operation succeeds");
+            .await.expect("test: storage operation succeeds");
 
         for i in 0..10 {
             source
@@ -149,7 +149,7 @@ use super::*;
                     data: json!({"val": format!("V{}", i)}),
                     metadata: RecordMetadata::default(),
                 })
-                .await.into_result().expect("test: storage operation succeeds");
+                .await.expect("test: storage operation succeeds");
         }
 
         let gated = Arc::new(crate::orm::gated_adapter::GatedAdapter::new(target.clone()));
@@ -158,7 +158,7 @@ use super::*;
             source.clone(),
             gated,
             MigrationConfig {
-                batch_size: 1,
+                batch_size: std::num::NonZeroUsize::MIN.saturating_add(0),
                 collections: None,
             },
         );
@@ -188,13 +188,13 @@ use super::*;
             assert!(run.as_mut().poll(context).is_pending());
             let status = handle.status();
             if status.migrated == 1 {
-                assert_eq!(status.collections[0].status, "paused");
+                assert_eq!(status.collections[0].status, crate::orm::migration::MigrationStatus::Paused);
                 std::task::Poll::Ready(())
             } else { std::task::Poll::Pending }
         }).await;
-        assert_eq!(target.count(StorageQuery {
+        assert_eq!(target.count(&StorageQuery {
             collection: "items".into(), ..Default::default()
-        }).await.into_result(), Ok(1));
+        }).await.expect("test: count"), 1);
         handle.resume();
         let status = run.await.unwrap();
         assert_eq!(status.migrated, 10);
@@ -210,12 +210,12 @@ use super::*;
         let target = setup_sqlite(target_path.to_str().unwrap()).await;
 
         source
-            .ensure_schema(CollectionSchema {
+            .ensure_schema(&CollectionSchema {
                 collection: "empty".to_string(),
                 fields: crate::orm::base_entity_fields(),
                 indexes: vec![],
             })
-            .await.into_result().expect("test: storage operation succeeds");
+            .await.expect("test: storage operation succeeds");
 
         let mut engine =
             MigrationEngine::new(source.clone(), target.clone(), MigrationConfig::default());
@@ -235,7 +235,7 @@ use super::*;
         let target = setup_sqlite(target_path.to_str().unwrap()).await;
 
         source
-            .ensure_schema(CollectionSchema {
+            .ensure_schema(&CollectionSchema {
                 collection: "verifyable".to_string(),
                 fields: crate::orm::base_entity_fields().into_iter().chain([SchemaField {
                 default_value: None,
@@ -249,7 +249,7 @@ use super::*;
                 }]).collect(),
                 indexes: vec![],
             })
-            .await.into_result().expect("test: storage operation succeeds");
+            .await.expect("test: storage operation succeeds");
 
         for i in 0..5 {
             source
@@ -259,14 +259,14 @@ use super::*;
                     data: json!({"x": i}),
                     metadata: RecordMetadata::default(),
                 })
-                .await.into_result().expect("test: storage operation succeeds");
+                .await.expect("test: storage operation succeeds");
         }
 
         let mut engine = MigrationEngine::new(
             source.clone(),
             target.clone(),
             MigrationConfig {
-                batch_size: 100,
+                batch_size: std::num::NonZeroUsize::MIN.saturating_add(99),
                 collections: None,
             },
         );
@@ -286,7 +286,7 @@ use crate::orm::{adapter::AdapterConfig, binary::{BinaryDescriptor, BinaryValue,
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 #[tokio::test]
-async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_restart() -> Result<(), String> {
+async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_restart() -> Result<(), Box<dyn std::error::Error>> {
     let home = tempfile::tempdir().map_err(|e| e.to_string())?;
     let open = |name: &str| AdapterConfig {
         connection_string: home.path().join(name).to_string_lossy().into_owned(),
@@ -298,13 +298,13 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
         name: name.into(), field_type, indexed: false, unique: false, nullable: true,
         max_length: None, default_value: None, foreign_key: None,
     };
-    source.ensure_schema(CollectionSchema {
+    source.ensure_schema(&CollectionSchema {
         collection: "native_rows".into(),
         fields: crate::orm::base_entity_fields().into_iter().chain([
             field("ordinal", FieldType::Number), field("note", FieldType::String),
             field("payload", FieldType::Binary),
         ]).collect(), indexes: vec![],
-    }).await.into_result()?;
+    }).await?;
     for index in 1_u128..=131 {
         let record = DataRecord {
             id: uuid::Uuid::from_u128(index).to_string(), collection: "native_rows".into(),
@@ -312,18 +312,18 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
             metadata: RecordMetadata::default(),
         };
         if index == 3 {
-            source.create(record).await.into_result()?;
+            source.create(record).await?;
         } else {
             let bytes = vec![0, 255, index as u8];
             let value = BinaryValue::new(BinaryDescriptor {
                 element_type: ElementType::U8, byte_order: ByteOrder::Little,
                 shape: vec![3], producer: format!("fixture-producer-{index}"), unit: false, scale: None,
             }, bytes)?;
-            source.create_binary(record, BTreeMap::from([("payload".into(), value)])).await.into_result()?;
+            source.create_binary(record, BTreeMap::from([("payload".into(), value)])).await?;
         }
     }
     let mut engine = MigrationEngine::new(source.clone(), target.clone(), MigrationConfig {
-        batch_size: 2, collections: Some(vec!["native_rows".into()]),
+        batch_size: std::num::NonZeroUsize::MIN.saturating_add(1), collections: Some(vec!["native_rows".into()]),
     });
     assert_eq!(engine.run().await?.migrated, 131);
     drop(engine);
@@ -356,23 +356,27 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     // Equal row counts cannot hide a changed native producer or payload.
     let checked = Arc::new(SeaOrmAdapter::connect(open("checked.db")).await?);
     let mut verification = MigrationEngine::new(source.clone(), checked.clone(), MigrationConfig {
-        batch_size: 2, collections: Some(vec!["native_rows".into()]),
+        batch_size: std::num::NonZeroUsize::MIN.saturating_add(1), collections: Some(vec!["native_rows".into()]),
     });
     verification.run().await?;
     assert!(verification.verify().await?.verified);
-    checked.update_binary("native_rows", &uuid::Uuid::from_u128(129).to_string(),
-        BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
+    checked.update_binary(crate::orm::seam::BinaryWrite {
+        row: crate::orm::seam::RowRef { collection: "native_rows", id: &uuid::Uuid::from_u128(129).to_string() },
+        payloads: BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
             element_type: ElementType::U8, byte_order: ByteOrder::Little,
             shape: vec![3], producer: "different-producer".into(), unit: false, scale: None,
-        }, vec![0, 255, 129])?)]), crate::orm::binary::BinaryWriteCondition::Replace,
-    ).await.into_result()?;
+        }, vec![0, 255, 129])?)]),
+        condition: crate::orm::binary::BinaryWriteCondition::Replace,
+    }).await?;
     assert!(!verification.verify().await?.verified, "same bytes and counts, wrong producer");
-    checked.update_binary("native_rows", &uuid::Uuid::from_u128(129).to_string(),
-        BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
+    checked.update_binary(crate::orm::seam::BinaryWrite {
+        row: crate::orm::seam::RowRef { collection: "native_rows", id: &uuid::Uuid::from_u128(129).to_string() },
+        payloads: BTreeMap::from([("payload".into(), BinaryValue::new(BinaryDescriptor {
             element_type: ElementType::U8, byte_order: ByteOrder::Little,
             shape: vec![3], producer: "fixture-producer-129".into(), unit: false, scale: None,
-        }, vec![0, 254, 129])?)]), crate::orm::binary::BinaryWriteCondition::Replace,
-    ).await.into_result()?;
+        }, vec![0, 254, 129])?)]),
+        condition: crate::orm::binary::BinaryWriteCondition::Replace,
+    }).await?;
     assert!(!verification.verify().await?.verified, "same descriptor and counts, wrong bytes");
 
     // Replay a corrupt descriptor on the second row of a page. The first
@@ -388,12 +392,12 @@ async fn native_rows_keep_bytes_descriptors_nulls_and_exact_integers_after_resta
     database.close().await.map_err(|e| e.to_string())?;
     let rejected = Arc::new(SeaOrmAdapter::connect(open("rejected.db")).await?);
     let mut failed = MigrationEngine::new(source, rejected.clone(), MigrationConfig {
-        batch_size: 2, collections: Some(vec!["native_rows".into()]),
+        batch_size: std::num::NonZeroUsize::MIN.saturating_add(1), collections: Some(vec!["native_rows".into()]),
     });
     assert!(failed.run().await.is_err());
-    assert_eq!(rejected.count(StorageQuery {
+    assert_eq!(rejected.count(&StorageQuery {
         collection: "native_rows".into(), ..Default::default()
-    }).await.into_result()?, 0, "a malformed page publishes no prefix");
+    }).await?, 0, "a malformed page publishes no prefix");
     assert!(!failed.verify().await?.verified);
     Ok(())
 }

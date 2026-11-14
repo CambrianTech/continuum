@@ -3,7 +3,8 @@
 use super::adapter::AdapterConfig;
 use super::query::{JoinSpec, JoinType};
 use super::relational::RelationalStore;
-use super::types::{BatchOperation, BatchOperationType};
+use super::types::{Appended, BatchOperation, BatchOutcome, RowWrite};
+use super::storage_error::StorageError;
 use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -45,15 +46,15 @@ fn record(id: &str, collection: &str, data: serde_json::Value) -> DataRecord {
         metadata: RecordMetadata::default(),
     }
 }
-async fn store(path: &str) -> Result<RelationalStore, String> {
+async fn store(path: &str) -> Result<RelationalStore, Box<dyn std::error::Error>> {
     let store = RelationalStore::open(AdapterConfig {
         connection_string: path.into(),
         max_connections: 1,
         ..Default::default()
     })
     .await?;
-    store.ensure(Parent::collection_schema()).await?;
-    store.ensure(Child::collection_schema()).await?;
+    store.ensure(&Parent::collection_schema()).await?;
+    store.ensure(&Child::collection_schema()).await?;
     Ok(store)
 }
 
@@ -82,7 +83,7 @@ async fn declared_join_preserves_unmatched_null_and_filters_before_limit(
         join_type: JoinType::Left,
         select: Some(vec!["label".into()]),
     }]);
-    let rows = store.query_joined(query.clone()).await?;
+    let rows = store.query_joined(&query.clone()).await?;
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].data["parent"]["label"], "{literal text}");
     assert_eq!(rows[0].data["joinedLabel"], "keep me");
@@ -94,7 +95,7 @@ async fn declared_join_preserves_unmatched_null_and_filters_before_limit(
     if let Some(joins) = &mut query.joins {
         joins[0].join_type = JoinType::Inner;
     }
-    assert_eq!(store.query_joined(query).await?.len(), 1);
+    assert_eq!(store.query_joined(&query).await?.len(), 1);
     Ok(())
 }
 
@@ -105,25 +106,23 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
     let path = dir.path().join("test.db");
     let path = path.to_str().ok_or("UTF8 path")?;
     let first = store(path).await?;
-    let append = |id: &str| BatchOperation {
-        operation_type: BatchOperationType::Append(SequenceSpec {
-            sequence: "seq".into(),
-            unique: "token".into(),
-        }),
-        collection: Child::COLLECTION.into(),
-        id: Some(id.into()),
-        data: Some(json!({"parentId":null,"token":id,"seq":0,"body":{}})),
+    let append = |id: &str| BatchOperation::Append {
+        row: RowWrite {
+            collection: Child::COLLECTION.into(),
+            id: id.into(),
+            data: json!({"parentId":null,"token":id,"seq":0,"body":{}}),
+        },
+        spec: SequenceSpec { sequence: "seq".into(), unique: "token".into() },
     };
-    let invalid = BatchOperation {
-        operation_type: BatchOperationType::Update,
+    let invalid = BatchOperation::Update(RowWrite {
         collection: Child::COLLECTION.into(),
-        id: Some("absent".into()),
-        data: Some(json!({"body":{}})),
-    };
+        id: "absent".into(),
+        data: json!({"body":{}}),
+    });
     assert!(first.batch(vec![append("a"), invalid]).await.is_err());
     assert_eq!(
         first
-            .count(QueryBuilder::new(Child::COLLECTION).build())
+            .count(&QueryBuilder::new(Child::COLLECTION).build())
             .await?,
         0
     );
@@ -132,9 +131,9 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
         Child::COLLECTION,
     );
     let committed = first.batch(vec![append("a")]).await?;
-    assert_eq!(committed[0]["seq"], 1);
+    assert!(matches!(committed[0], BatchOutcome::Appended { appended: Appended::Fresh(1) }));
     assert_eq!(*revision.borrow(), 1);
-    assert_eq!(first.batch(vec![append("a")]).await?[0]["fresh"], false);
+    assert!(matches!(first.batch(vec![append("a")]).await?[0], BatchOutcome::Appended { appended: Appended::Existing(1) }));
     first
         .delete_matching(
             QueryBuilder::new(Child::COLLECTION)
@@ -144,7 +143,7 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
         .await?;
     first.db.close().await?;
     let reopened = store(path).await?;
-    assert_eq!(reopened.batch(vec![append("b")]).await?[0]["seq"], 2);
+    assert!(matches!(reopened.batch(vec![append("b")]).await?[0], BatchOutcome::Appended { appended: Appended::Fresh(2) }));
     Ok(())
 }
 
@@ -179,14 +178,14 @@ async fn cancelled_request_retains_commit_and_revision_custody(
                         .await?;
                     written_tx
                         .send(())
-                        .map_err(|_| "write observer disappeared")?;
-                    release_rx.await.map_err(|_| "commit release disappeared")?;
+                        .map_err(|_| StorageError::ControlClosed { what: "write observer" })?;
+                    release_rx.await.map_err(|_| StorageError::ControlClosed { what: "commit release" })?;
                     Ok((
                         (),
                         vec![super::relational_transaction::Revision {
                             domain: super::relational_sequence::Domain::Append,
                             collection: Child::COLLECTION.into(),
-                            high: receipt.seq,
+                            high: receipt.seq(),
                         }],
                     ))
                 })
@@ -268,18 +267,16 @@ async fn typed_store_uses_seaorm_adapter_and_database_side_statistics(
     assert!(typed.find_by_id(uuid::Uuid::new_v4()).await?.is_none());
     let stats = adapter
         .collection_stats(Parent::COLLECTION)
-        .await
-        .into_result()?;
+        .await?;
     assert_eq!(stats.record_count, 1);
     assert!(stats.total_size >= "{literal}".len());
     assert!(!stats.last_modified.is_empty());
-    let cleared = adapter.clear_all().await.into_result()?;
+    let cleared = adapter.clear_all().await?;
     assert_eq!(cleared.records_deleted, 1);
     assert_eq!(
         adapter
-            .count(QueryBuilder::new(Parent::COLLECTION).build())
-            .await
-            .into_result()?,
+            .count(&QueryBuilder::new(Parent::COLLECTION).build())
+            .await?,
         0
     );
     Ok(())
@@ -290,7 +287,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = store(":memory:").await?;
     assert!(store
-        .query(QueryBuilder::new(Child::COLLECTION).build())
+        .query(&QueryBuilder::new(Child::COLLECTION).build())
         .await
         .is_err());
     for id in ["c", "a", "b"] {
@@ -306,7 +303,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         .select(vec!["token".into()])
         .limit(2)
         .build();
-    let first = store.query(query.clone()).await?;
+    let first = store.query(&query.clone()).await?;
     assert_eq!(
         first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["a", "b"]
@@ -317,7 +314,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         value: json!("b"),
         direction: super::query::CursorDirection::After,
     });
-    let second = store.query(query.clone()).await?;
+    let second = store.query(&query.clone()).await?;
     assert_eq!(
         second.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["c"]
@@ -326,7 +323,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         field: "id".into(),
         direction: SortDirection::Desc,
     }]);
-    let descending_tail = store.query(query.clone()).await?;
+    let descending_tail = store.query(&query.clone()).await?;
     assert_eq!(
         descending_tail
             .iter()
@@ -337,7 +334,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
     );
     query.cursor.as_mut().ok_or("cursor disappeared")?.direction =
         super::query::CursorDirection::Before;
-    let descending_head = store.query(query.clone()).await?;
+    let descending_head = store.query(&query.clone()).await?;
     assert_eq!(
         descending_head
             .iter()
@@ -352,7 +349,7 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         direction: super::query::CursorDirection::After,
     });
     assert!(
-        store.query(query).await.is_err(),
+        store.query(&query).await.is_err(),
         "a repeated sequence value cannot identify a page boundary"
     );
     Ok(())
@@ -377,7 +374,7 @@ async fn declared_defaults_and_length_are_enforced_by_storage(
         max_length: Some(3),
         foreign_key: None,
     });
-    store.ensure(schema).await?;
+    store.ensure(&schema).await?;
     store
         .insert(
             &store.db,
@@ -385,7 +382,7 @@ async fn declared_defaults_and_length_are_enforced_by_storage(
         )
         .await?;
     let rows = store
-        .query(QueryBuilder::new("declared_defaults").limit(1).build())
+        .query(&QueryBuilder::new("declared_defaults").limit(1).build())
         .await?;
     assert_eq!(rows[0].data["label"], json!("abc"));
     assert!(store
@@ -404,7 +401,7 @@ async fn declared_defaults_and_length_are_enforced_by_storage(
         .is_err());
     assert_eq!(
         store
-            .count(QueryBuilder::new("declared_defaults").build())
+            .count(&QueryBuilder::new("declared_defaults").build())
             .await?,
         1
     );
@@ -430,7 +427,7 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
     let reopened = store(path).await?;
     assert_eq!(
         reopened
-            .count(QueryBuilder::new(Parent::COLLECTION).build())
+            .count(&QueryBuilder::new(Parent::COLLECTION).build())
             .await?,
         1
     );
@@ -447,7 +444,10 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
         .await
         .err()
         .ok_or("physical drift was admitted")?;
-    assert!(rejected.contains("physical schema changed"), "{rejected}");
+    assert!(
+        matches!(rejected.downcast_ref::<StorageError>(), Some(StorageError::Schema(super::schema_error::SchemaError::Difference { difference: super::schema_error::SchemaDiff::RecordedPhysical, .. }))),
+        "{rejected}"
+    );
 
     let unmanaged = RelationalStore::open(AdapterConfig {
         connection_string: ":memory:".into(),
@@ -460,10 +460,10 @@ async fn restart_verifies_physical_declaration_and_refuses_unmanaged_tables(
         .db
         .execute(DbBackend::Sqlite.build(&declared.create))
         .await?;
-    unmanaged.ensure(schema).await?;
+    unmanaged.ensure(&schema).await?;
     unmanaged.insert(&unmanaged.db, &record("adopted", Parent::COLLECTION,
         json!({"label":"retained after completing declared indexes"}))).await?;
-    assert_eq!(unmanaged.count(QueryBuilder::new(Parent::COLLECTION).build()).await?, 1);
+    assert_eq!(unmanaged.count(&QueryBuilder::new(Parent::COLLECTION).build()).await?, 1);
     Ok(())
 }
 
@@ -485,11 +485,11 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema(
         }],
     };
     owner
-        .ensure(declaration("index_owner", "shared_index_name"))
+        .ensure(&declaration("index_owner", "shared_index_name"))
         .await?;
     assert!(
         owner
-            .ensure(declaration("index_victim", "shared_index_name"))
+            .ensure(&declaration("index_victim", "shared_index_name"))
             .await
             .is_err(),
         "an index owned by another table must not silently satisfy this declaration"
@@ -498,7 +498,7 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema(
     // The failed DDL transaction must leave neither a table nor a receipt behind.
     // A repaired declaration is admitted without an offline migration.
     let repaired = declaration("index_victim", "victim_version_unique");
-    owner.ensure(repaired.clone()).await?;
+    owner.ensure(&repaired.clone()).await?;
     owner
         .create(record("first", "index_victim", json!({})))
         .await?;
@@ -511,10 +511,10 @@ async fn colliding_index_names_refuse_adoption_and_roll_back_schema(
     );
     owner.db.clone().close().await?;
     let reopened = store(path).await?;
-    reopened.ensure(repaired).await?;
+    reopened.ensure(&repaired).await?;
     assert_eq!(
         reopened
-            .count(QueryBuilder::new("index_victim").build())
+            .count(&QueryBuilder::new("index_victim").build())
             .await?,
         1
     );
@@ -533,7 +533,7 @@ async fn predicates_use_declared_scalar_codecs_before_execution(
     assert_eq!(
         store
             .count(
-                QueryBuilder::new(Child::COLLECTION)
+                &QueryBuilder::new(Child::COLLECTION)
                     .filter_eq("token", "pending")
                     .build()
             )
@@ -554,19 +554,19 @@ async fn predicates_use_declared_scalar_codecs_before_execution(
             .filter("body", QueryOperator::Contains("pending".into()))
             .build(),
     ] {
-        assert!(store.count(query.clone()).await.is_err());
+        assert!(store.count(&query.clone()).await.is_err());
         assert!(store.delete_matching(query).await.is_err());
     }
     assert_eq!(
         store
-            .count(QueryBuilder::new(Child::COLLECTION).build())
+            .count(&QueryBuilder::new(Child::COLLECTION).build())
             .await?,
         1
     );
     assert_eq!(
         store
             .count(
-                QueryBuilder::new(Child::COLLECTION)
+                &QueryBuilder::new(Child::COLLECTION)
                     .filter_eq("parentId", serde_json::Value::Null)
                     .build()
             )
@@ -578,7 +578,7 @@ async fn predicates_use_declared_scalar_codecs_before_execution(
         .await?;
     assert!(store
         .count(
-            QueryBuilder::new(Child::COLLECTION)
+            &QueryBuilder::new(Child::COLLECTION)
                 .filter_eq("seq", "7")
                 .build()
         )

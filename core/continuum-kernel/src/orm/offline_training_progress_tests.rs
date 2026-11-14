@@ -2,7 +2,7 @@ use super::*;
 use sea_orm::sea_query::{ColumnDef, Query, Value};
 use sea_orm::{ConnectionTrait, DbBackend, Schema};
 
-async fn fixture(path: &Path, values: Vec<Value>) -> Result<(), String> {
+async fn fixture(path: &Path, values: Vec<Value>) -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::connect(format!(
         "sqlite://{}?mode=rwc",
         path.to_string_lossy().replace('\\', "/")
@@ -37,7 +37,7 @@ async fn fixture(path: &Path, values: Vec<Value>) -> Result<(), String> {
 }
 
 #[tokio::test]
-async fn dry_run_apply_reopen_and_repeat_preserve_exact_values_and_bytes() -> Result<(), String> {
+async fn dry_run_apply_reopen_and_repeat_preserve_exact_values_and_bytes() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let path = directory.path().join("training.db");
     fixture(
@@ -100,7 +100,7 @@ async fn dry_run_apply_reopen_and_repeat_preserve_exact_values_and_bytes() -> Re
 }
 
 #[tokio::test]
-async fn invalid_progress_rolls_back_without_replacing_unknown_nulls() -> Result<(), String> {
+async fn invalid_progress_rolls_back_without_replacing_unknown_nulls() -> Result<(), Box<dyn std::error::Error>> {
     for invalid in [
         (-1_i64).into(),
         (i64::from(u32::MAX) + 1).into(),

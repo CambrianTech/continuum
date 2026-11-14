@@ -1,5 +1,7 @@
 #![cfg(test)]
 
+use super::storage_error::StorageError;
+use super::schema_error::{SchemaDiff, SchemaError};
 use super::*;
 
 #[tokio::test]
@@ -14,7 +16,7 @@ async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
         let initial = store(path).await?;
         let mut text = Parent::collection_schema();
         text.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.nullable = true;
-        initial.ensure(text.clone()).await?;
+        initial.ensure(&text.clone()).await?;
         let values = [Some(i64::MIN), Some(-1), Some(0), Some(9007199254740993), Some(i64::MAX), None];
         for (index, value) in values.iter().enumerate() {
             initial.insert(&initial.db, &record(&index.to_string(), Parent::COLLECTION,
@@ -29,13 +31,13 @@ async fn canonical_integer_text_evolves_exactly_with_and_without_receipt()
         }).await?;
         let mut numeric = text;
         numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
-        reopened.ensure(numeric.clone()).await?;
+        reopened.ensure(&numeric.clone()).await?;
         reopened.db.clone().close().await?;
         let final_store = RelationalStore::open(AdapterConfig {
             connection_string: path.into(), max_connections: 1, ..Default::default()
         }).await?;
-        final_store.ensure(numeric).await?;
-        let rows = final_store.query(QueryBuilder::new(Parent::COLLECTION).limit(6).build()).await?;
+        final_store.ensure(&numeric).await?;
+        let rows = final_store.query(&QueryBuilder::new(Parent::COLLECTION).limit(6).build()).await?;
         assert_eq!(rows.len(), values.len());
         for row in rows {
             let index = row.id.parse::<usize>()?;
@@ -57,8 +59,8 @@ async fn noncanonical_integer_text_refuses_without_partial_conversion()
             json!({"label":invalid}))).await?;
         let mut numeric = Parent::collection_schema();
         numeric.fields.iter_mut().find(|f| f.name == "label").ok_or("label absent")?.field_type = FieldType::Number;
-        assert!(initial.ensure(numeric).await.is_err(), "accepted {invalid:?}");
-        let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(2).build()).await?;
+        assert!(initial.ensure(&numeric).await.is_err(), "accepted {invalid:?}");
+        let rows = initial.query(&QueryBuilder::new(Parent::COLLECTION).limit(2).build()).await?;
         assert_eq!(rows.len(), 2);
         for row in rows {
             assert_eq!(row.data["label"], if row.id == "valid" { "9007199254740993" } else { invalid });
@@ -98,7 +100,7 @@ async fn conversion_refusal_identifies_boundary_and_preserves_evidence()
     }) if table == Parent::COLLECTION && column == "label"
         && previous == "TEXT" && !requested.is_empty() && requested != previous));
     tx.rollback().await?;
-    let rows = initial.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    let rows = initial.query(&QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
     assert_eq!(rows[0].id, "negative-review");
     assert_eq!(rows[0].data["label"], "9007199254740993");
     Ok(())
@@ -221,15 +223,15 @@ async fn native_text_declaration_retires_json_codec_without_rewriting_values() -
     initial.db.clone().close().await?;
     for _ in 0..2 {
         let reopened = RelationalStore::open(AdapterConfig { connection_string: path.into(), ..Default::default() }).await?;
-        reopened.ensure(Parent::collection_schema()).await?;
-        let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(3).build()).await?;
+        reopened.ensure(&Parent::collection_schema()).await?;
+        let rows = reopened.query(&QueryBuilder::new(Parent::COLLECTION).limit(3).build()).await?;
         assert_eq!(rows.len(), 3);
         for value in values { assert!(rows.iter().any(|row| row.data["label"] == value)); }
         let receipt = declaration::Entity::find_by_id(Parent::COLLECTION).one(&reopened.db).await?.ok_or("receipt absent")?;
         assert_eq!(receipt.physical, physical, "codec retirement must not rewrite the table");
         let mut reverse = Parent::collection_schema();
         reverse.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.field_type = FieldType::Json;
-        assert!(reopened.ensure(reverse).await.is_err(), "text must not become JSON by guessing");
+        assert!(reopened.ensure(&reverse).await.is_err(), "text must not become JSON by guessing");
         reopened.db.clone().close().await?;
     }
     Ok(())
@@ -246,21 +248,21 @@ async fn rebuild_preserves_cascading_children_and_rolls_back_constraint_failure(
         json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"kept":true},"joinedLabel":null}))).await?;
     let mut invalid = Parent::collection_schema();
     invalid.fields.iter_mut().find(|field| field.name == "label").ok_or("label absent")?.max_length = Some(2);
-    assert!(initial.ensure(invalid).await.is_err());
+    assert!(initial.ensure(&invalid).await.is_err());
     let mut current = Parent::collection_schema();
     current.fields.retain(|field| field.name != "label");
-    initial.ensure(current.clone()).await?;
+    initial.ensure(&current.clone()).await?;
     let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
-    let children = initial.query(query()).await?;
+    let children = initial.query(&query()).await?;
     assert_eq!(children.len(), 1, "DROP during rebuild must not cascade");
     assert_eq!(children[0].data["seq"], json!(9007199254740993u64));
     initial.db.clone().close().await?;
     let reopened = RelationalStore::open(AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
-    reopened.ensure(current).await?;
-    reopened.ensure(Child::collection_schema()).await?;
-    assert_eq!(reopened.query(query()).await?.len(), 1);
+    reopened.ensure(&current).await?;
+    reopened.ensure(&Child::collection_schema()).await?;
+    assert_eq!(reopened.query(&query()).await?.len(), 1);
     // Normal writes still enforce FK constraints after the schema connection closes.
     assert!(reopened.insert(&reopened.db, &record("bad", Child::COLLECTION,
         json!({"parentId":"absent","token":"bad","seq":2,"body":{},"joinedLabel":null}))).await.is_err());
@@ -280,9 +282,9 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
         default_value: Some(json!("ready")), indexed: true, unique: false,
         max_length: None, foreign_key: None,
     });
-    initial.ensure(current.clone()).await?;
+    initial.ensure(&current.clone()).await?;
     let query = || QueryBuilder::new(Parent::COLLECTION).limit(1).build();
-    let rows = initial.query(query()).await?;
+    let rows = initial.query(&query()).await?;
     assert_eq!(rows[0].data["status"], "ready");
     assert_eq!(rows[0].data["label"], "retained");
     // A missing required value rejects the entire next declaration, including
@@ -294,7 +296,7 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
     extra.name = "missingValue".into();
     extra.default_value = None;
     invalid.fields.push(extra);
-    assert!(initial.ensure(invalid).await.is_err());
+    assert!(initial.ensure(&invalid).await.is_err());
     // Fail after ALTER has run: another table already owns this index name.
     // The admitted map, physical table and receipt must all retain current.
     let mut collision = current.clone();
@@ -305,13 +307,13 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
         name: "idx_relational_children_seq".into(), fields: vec!["status".into()],
         unique: false, descending: false,
     });
-    assert!(initial.ensure(collision).await.is_err());
+    assert!(initial.ensure(&collision).await.is_err());
     initial.db.clone().close().await?;
     let reopened = RelationalStore::open(AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
-    reopened.ensure(current).await?;
-    let rows = reopened.query(query()).await?;
+    reopened.ensure(&current).await?;
+    let rows = reopened.query(&query()).await?;
     assert_eq!(rows[0].data["status"], "ready");
     assert!(rows[0].data.get("extra").is_none());
     Ok(())
@@ -328,12 +330,12 @@ async fn receipt_free_equivalent_column_order_preserves_rows() -> Result<(), Box
     }).await?;
     let mut reordered = Parent::collection_schema();
     reordered.fields.reverse();
-    initial.ensure(reordered).await?;
+    initial.ensure(&reordered).await?;
     initial.insert(&initial.db, &record("p", Parent::COLLECTION, json!({"label":"preserved"}))).await?;
     super::relational_declaration::Entity::delete_many().exec(&initial.db).await?;
     initial.db.clone().close().await?;
     let reopened = store(path).await?;
-    let rows = reopened.query(QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    let rows = reopened.query(&QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].data["label"], "preserved");
     Ok(())
@@ -354,18 +356,18 @@ async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
     initial.insert(&initial.db, &record("c", Child::COLLECTION,
         json!({"parentId":"p","token":"unique","seq":9007199254740993u64,"body":{"original":true},"joinedLabel":null}))).await?;
     let query = || QueryBuilder::new(Child::COLLECTION).limit(1).build();
-    let before = initial.query(query()).await?;
+    let before = initial.query(&query()).await?;
     declaration::Entity::delete_many().exec(&initial.db).await?;
     initial.db.clone().close().await?;
 
     let reopened = store(path).await?;
-    let after = reopened.query(query()).await?;
+    let after = reopened.query(&query()).await?;
     assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(&after)?);
     assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&reopened.db).await?.is_some());
     // The receipt remains sufficient on another restart; it is not a repeated adoption.
     reopened.db.clone().close().await?;
     let admitted = store(path).await?;
-    assert_eq!(admitted.query(query()).await?.len(), 1);
+    assert_eq!(admitted.query(&query()).await?.len(), 1);
 
     declaration::Entity::delete_by_id(Child::COLLECTION).exec(&admitted.db).await?;
     let drift = Table::alter().table(Alias::new(Child::COLLECTION))
@@ -375,9 +377,9 @@ async fn receipt_free_current_schema_is_proved_without_rewriting_rows()
     let evolved = RelationalStore::open(AdapterConfig {
         connection_string: path.into(), max_connections: 1, ..Default::default()
     }).await?;
-    evolved.ensure(Child::collection_schema()).await?;
+    evolved.ensure(&Child::collection_schema()).await?;
     assert!(declaration::Entity::find_by_id(Child::COLLECTION).one(&evolved.db).await?.is_some());
-    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(evolved.query(query()).await?)?);
+    assert_eq!(serde_json::to_value(&before)?, serde_json::to_value(evolved.query(&query()).await?)?);
     let shape = super::relational_structure::read(&evolved.db, Child::COLLECTION).await?;
     assert!(!shape.columns.iter().any(|column| column.name == "extra"));
     Ok(())
@@ -433,7 +435,7 @@ async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
     for index in 0..131 {
         let mut schema = Parent::collection_schema();
         schema.collection = format!("catalog_{index:03}");
-        initial.ensure(schema).await?;
+        initial.ensure(&schema).await?;
     }
     initial.db.clone().close().await?;
     let started = std::time::Instant::now();
@@ -460,8 +462,10 @@ async fn restart_catalog_crosses_pages_and_rejects_late_physical_drift(
         .await
         .err()
         .ok_or("late drift was admitted")?;
-    assert!(failure.contains("catalog_130"), "{failure}");
-    assert!(failure.contains("physical schema changed"), "{failure}");
+    assert!(
+        matches!(&failure, StorageError::Schema(SchemaError::Difference { collection, difference: SchemaDiff::RecordedPhysical }) if collection == "catalog_130"),
+        "{failure}"
+    );
     Ok(())
 }
 
@@ -489,8 +493,8 @@ async fn restart_refuses_unknown_nested_receipt_metadata() -> Result<(), Box<dyn
         .err()
         .ok_or("unknown metadata was silently discarded")?;
     assert!(
-        failure.contains("unknown field `unsupportedCollation`"),
-        "{failure}"
+        matches!(failure.downcast_ref::<StorageError>(), Some(StorageError::Schema(SchemaError::Codec(_)))),
+        "unknown declaration metadata refuses as a codec failure: {failure}"
     );
     Ok(())
 }
@@ -634,6 +638,6 @@ async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
         .await
         .err()
         .ok_or("corrupt late revision was admitted")?;
-    assert!(error.contains("nonpositive persisted revision"), "{error}");
+    assert!(matches!(error, StorageError::Corrupt { .. }), "{error}");
     Ok(())
 }

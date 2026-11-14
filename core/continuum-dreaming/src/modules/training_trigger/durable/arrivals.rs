@@ -31,22 +31,14 @@ impl DurableStore {
             Some(key) => key.query(Submission::COLLECTION),
             None => QueryBuilder::new(Submission::COLLECTION),
         };
-        let result = self
-            .adapter
-            .query(
-                query
+        let result = self.adapter.query(&query
                     .filter_eq("isPending", true)
                     .filter("sequence", QueryOperator::Gt(after.into()))
                     .sort_asc("sequence")
                     .limit(limit)
                     .select(["sequence", "personaId", "traitKind", "baseModel", "learned", "arrivalSummary"].into_iter().map(String::from).collect())
-                    .build(),
-            )
-            .await;
-        if !result.success {
-            return Err(result.error.unwrap_or_else(|| "training arrivals query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
-        }
-        let records = result.data.ok_or("training arrivals query omitted rows")?;
+                    .build(),).await.map_err(|e| e.to_string());
+        let records = result?;
         let mut arrivals = Vec::with_capacity(records.len());
         for record in records {
             let row: super::arrival_summary::ArrivalHeader = record.decode().map_err(|e| e.to_string())?;

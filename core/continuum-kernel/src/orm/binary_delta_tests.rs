@@ -33,8 +33,7 @@ async fn delta_refuses_late_corruption_without_partial_output(
             Box::pin(async move {
                 transaction
                     .execute(DbBackend::Sqlite.build(&malformed))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
                 Ok(())
             })
         })
@@ -108,7 +107,7 @@ async fn delta_refuses_late_corruption_without_partial_output(
     Ok(())
 }
 
-fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, String> {
+fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, Box<dyn std::error::Error>> {
     Ok(BTreeMap::from([(
         "payload".into(),
         BinaryValue::new(descriptor(ElementType::I8, vec![2]), bytes)?,

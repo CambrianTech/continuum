@@ -4,14 +4,14 @@ use super::*;
 use crate::orm::binary::{BinaryPageOutput, BinaryPageRequest};
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
-fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, String> {
+fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, Box<dyn std::error::Error>> {
     Ok(BTreeMap::from([(
         "payload".into(),
         BinaryValue::new(descriptor(ElementType::I8, vec![2]), bytes)?,
     )]))
 }
 
-async fn insert(store: &RelationalStore, id: u128) -> Result<(), String> {
+async fn insert(store: &RelationalStore, id: u128) -> Result<(), Box<dyn std::error::Error>> {
     store
         .create_binary(
             DataRecord {
@@ -29,7 +29,7 @@ async fn insert(store: &RelationalStore, id: u128) -> Result<(), String> {
 async fn page(
     snapshot: &BinarySnapshot,
     after: Option<uuid::Uuid>,
-) -> Result<(Vec<u8>, Vec<uuid::Uuid>), String> {
+) -> Result<(Vec<u8>, Vec<uuid::Uuid>), Box<dyn std::error::Error>> {
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
     snapshot
