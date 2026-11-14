@@ -53,6 +53,7 @@
         let admission: Result<(), String> = trigger
             .state
             .run_owned(
+                Work::Journal,
                 BucketKey {
                     persona_id: Uuid::new_v4(),
                     trait_kind: "code".into(),
@@ -62,6 +63,64 @@
             )
             .await;
         assert!(admission.is_err());
+    }
+
+    // what this catches (card 2febbbe8; the M5 2026-11-14 13:25Z: `training-trigger (drain
+    // Incomplete { in_flight: 2 }, save JoinTimedOut)`): a stop that waits out a learning step,
+    // or one that loses it. A step still running at stop is handed back, the stop completes with
+    // its state durable, and a restart over the same journal still holds her example to learn.
+    #[tokio::test]
+    pub(super) async fn a_learning_step_in_flight_at_stop_is_handed_back_and_resumes() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (trigger, executor) = build_runtime(adapter.clone()).await;
+        let persona = Uuid::new_v4();
+        executor
+            .execute_json("genome/training-trigger/submit", submit_params(persona, "code", vec![ex("q", "a")]))
+            .await
+            .unwrap();
+        trigger.state.spawn_owned(std::future::pending()).await; // her step, still on the engine
+        assert_eq!(
+            trigger.drain().await,
+            Ok(crate::runtime::Quiet::HandedBack { resumable: 1 }),
+            "the step in flight is handed back, never waited out"
+        );
+        trigger.save_state().await.unwrap();
+        trigger.shutdown().await.unwrap();
+        let (restarted, _) = build_runtime(adapter).await;
+        assert_eq!(
+            restarted.state.bucket_example_count(persona, "code", "synthetic").await,
+            Some(1),
+            "her example is still pending: the next start learns it"
+        );
+    }
+
+    // what this catches (card 2febbbe8): the drain handing back a journal write as well as the
+    // learning. A submit whose row is committed and whose answer is not yet published is waited
+    // for: the drain completes only after it lands, and the restart finds it accepted.
+    #[tokio::test]
+    pub(super) async fn a_drain_waits_for_a_journal_write_to_land() {
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let (trigger, executor) = build_runtime(adapter.clone()).await;
+        let persona = Uuid::new_v4();
+        let pause = pause_at(&trigger.state, OperationPoint::AcceptanceCommitted);
+        let submit = tokio::spawn(async move {
+            executor
+                .execute_json("genome/training-trigger/submit", submit_params(persona, "code", vec![ex("q", "a")]))
+                .await
+        });
+        pause.entered.notified().await;
+        let draining = trigger.clone();
+        let drain = tokio::spawn(async move { draining.drain().await });
+        for _ in 0..8 {
+            tokio::task::yield_now().await; // the drain runs until it waits on the write
+        }
+        assert!(!drain.is_finished(), "the drain waits for the journal write in flight");
+        pause.resume.notify_one();
+        assert_eq!(drain.await.unwrap(), Ok(crate::runtime::Quiet::Finished));
+        assert!(submit.await.unwrap().is_ok(), "the write landed and answered its producer");
+        trigger.shutdown().await.unwrap();
+        let (restarted, _) = build_runtime(adapter).await;
+        assert_eq!(restarted.state.bucket_example_count(persona, "code", "synthetic").await, Some(1));
     }
 
 

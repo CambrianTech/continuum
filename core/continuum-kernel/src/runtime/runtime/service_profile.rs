@@ -43,11 +43,21 @@ pub fn install_signal_shutdown(rt: Arc<Runtime>) {
     let _ = SIGNAL_RUNTIME.set(rt);
 }
 
-/// Run the save-and-join broadcast from a signal handler, bounded overall —
-/// a stop must complete in seconds even if the runtime misbehaves.
+/// The phase of a module's stop: what the last resort names for a module that never answered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/StopPhase.ts"
+)]
+pub enum StopPhase {
+    Drain,
+    Save,
+    Join,
+}
+
 /// What one module did when the node was told to stop.
 ///
-/// Three phases, in the order the runtime broadcasts them, each with its own outcome —
+/// Three phases, in the order the runtime broadcasts them, each awaited to its own completion —
 /// because they fail differently and a caller that only learns "shutdown finished" cannot
 /// tell a clean stop from one that abandoned a half-written turn.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
@@ -56,71 +66,69 @@ pub fn install_signal_shutdown(rt: Arc<Runtime>) {
     export_to = "../../../protocol/typescript/system/ModuleStopOutcome.ts"
 )]
 pub enum ModuleStopOutcome {
-    /// Drained, saved and joined within the bound.
+    /// Drained, saved and joined, each to completion.
     Clean,
-    /// `save_state` did not finish inside its bound. THE STATE IS UNKNOWN, not merely
-    /// old: the write may have been half-applied. This is the case a caller must not
-    /// report as success.
-    SaveTimedOut,
     /// `save_state` returned an error and said why.
     SaveFailed { error: String },
-    /// Saved, but `shutdown` did not return inside its bound. Its final flush is
-    /// unconfirmed, so the receipt cannot claim durable state.
-    JoinTimedOut,
     /// `shutdown` returned an error after a successful save.
     JoinFailed { error: String },
     /// Its `initialize` never returned (it was degraded at boot and still is), so it holds no
     /// loaded state and was neither drained nor saved: a save could overwrite good durable state
     /// with an uninitialized module's.
     NeverInitialized,
+    /// The module never completed `phase` before the stop's last resort
+    /// ([`MODULE_NEVER_ANSWERED`]). THE STATE IS UNKNOWN, not merely old. The only outcome a
+    /// deadline produces: a module that answers, however slowly, is never cut by a stopwatch
+    /// (card 2febbbe8; the `SaveTimedOut`/`JoinTimedOut` a 2 s phase bound produced on every
+    /// M5 and BigMama deploy of 2026-11-14 are gone with it).
+    NeverAnswered { phase: StopPhase },
 }
 
 impl ModuleStopOutcome {
     /// Did EVERY phase this module ran complete? The only outcome that can support a
     /// durability claim.
     ///
-    /// An earlier version answered `true` for `JoinTimedOut` and `JoinFailed`, on the
-    /// reasoning that a module which saved and then failed to let go is untidy rather
-    /// than lossy. **That was wrong, and the trait's own contract says so:** `shutdown`
-    /// is documented as "release resources, FLUSH BUFFERS", and the logger's
-    /// implementation is literally `flush_all`. A module whose join failed is a module
-    /// whose final flush may not have happened, so its last writes are exactly as gone as
-    /// a failed save's. Found by Astra, who read the contract I had written and I had not.
-    ///
-    /// The phase distinction is still carried in the variant, because it tells a reader
-    /// WHERE the stop broke. It just cannot decide whether the state is on disk.
+    /// A failed JOIN is not durable either: `shutdown` is documented as "release resources,
+    /// FLUSH BUFFERS", and the logger's implementation is literally `flush_all`. A module whose
+    /// join failed is a module whose final flush may not have happened. Found by Astra.
     pub fn completed(&self) -> bool {
         matches!(self, ModuleStopOutcome::Clean)
     }
 }
 
-/// What the DRAIN phase achieved, kept separate from the save/join outcome.
-///
-/// These were one enum and it lost information: an incomplete drain followed by a join
-/// timeout produced `JoinTimedOut`, the drain result was discarded, and the module then
-/// reported its state durable — a save taken mid-turn, described as clean. They are
-/// orthogonal facts about the same module and neither may overwrite the other.
+/// How the DRAIN phase became quiet, kept separate from the save/join outcome so neither
+/// overwrites the other.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/system/DrainOutcome.ts"
 )]
 pub enum DrainOutcome {
-    /// Nothing was in flight when the module stopped taking work.
+    /// Everything in flight finished.
     Drained,
-    /// The bound expired with work outstanding, so whatever was saved next is a snapshot
-    /// taken mid-turn.
-    Incomplete { in_flight: u32 },
-    /// `drain` itself errored or timed out. How much was in flight is UNKNOWN — which is
-    /// why this is not `Incomplete { in_flight: 0 }`, a number nobody measured.
+    /// `resumable` items were still running and are held in the module's durable state; the
+    /// next start resumes them, so nothing of them is lost.
+    HandedBack { resumable: u32 },
+    /// `drain` errored, or never ran (initialize never returned), or never answered. How much
+    /// was in flight is UNKNOWN.
     Unknown { reason: String },
 }
 
+impl From<super::super::service_module::Quiet> for DrainOutcome {
+    fn from(quiet: super::super::service_module::Quiet) -> Self {
+        use super::super::service_module::Quiet;
+        match quiet {
+            Quiet::Finished => DrainOutcome::Drained,
+            Quiet::HandedBack { resumable } => DrainOutcome::HandedBack { resumable },
+        }
+    }
+}
+
 impl DrainOutcome {
-    /// Did the module stop taking work with nothing outstanding? Anything else means the
-    /// save that followed may be torn.
+    /// Did the module stop with nothing outstanding that a stop would lose? Work handed to
+    /// durable state is not lost; an unknown drain may have been.
     pub fn is_quiet(&self) -> bool {
-        matches!(self, DrainOutcome::Drained)
+        matches!(self, DrainOutcome::Drained | DrainOutcome::HandedBack { .. })
     }
 }
 
@@ -354,10 +362,9 @@ pub fn signal_runtime() -> Option<Arc<Runtime>> {
 pub async fn run_signal_shutdown() {
     // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
     // signal arriving while the verb is running joins that broadcast instead of starting
-    // a second one over the same state. The bound is deliberately larger than one phase:
-    // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
-    // and a tighter cap here would cut off the save phase on any node slow enough to
-    // need it.
+    // a second one over the same state. The bound is larger than the runtime's own last
+    // resort (`MODULE_NEVER_ANSWERED`), so the runtime's receipt, naming any module that never
+    // answered, always arrives inside it.
     // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
     // console close), not ours to spend waiting on turns.
     let rx = begin_shutdown(std::time::Duration::ZERO);

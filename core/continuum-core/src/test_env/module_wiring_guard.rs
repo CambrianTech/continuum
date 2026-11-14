@@ -73,12 +73,14 @@ const UNWIRED: &[Unwired] = &[
         why: "fixture: runtime readiness-gate test",
     },
     Unwired {
-        module: "SlowJoiner",
-        why: "fixture: a module that saves and then cannot be joined inside the                   phase bound — drives ModuleStopOutcome::JoinTimedOut, which before it                   existed only as a literal in assertions",
+        module: "SilentSaver",
+        why: "fixture: a module whose save never returns — drives ModuleStopOutcome::NeverAnswered, \
+              the one outcome the stop's last resort produces",
     },
     Unwired {
-        module: "SlowSaver",
-        why: "fixture: a module that cannot save inside the phase bound — drives                   ModuleStopOutcome::SaveTimedOut, the outcome the stop exit code keys on",
+        module: "SlowDrainer",
+        why: "fixture: a module whose drain answers after the old 2 s phase bound — the stop awaits \
+              it and its state stays durable (card 2febbbe8)",
     },
     Unwired {
         module: "StubAircModule",

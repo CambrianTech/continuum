@@ -18,7 +18,7 @@
 //! own owned operation holding that engine's lock and the slot, never on the tick.
 
 use super::durable::{Arrival, LearnCheckpoint, Position};
-use super::{BucketKey, TrainingTriggerState};
+use super::{BucketKey, TrainingTriggerState, Work};
 use crate::genome::learner::{
     example::learn_messages,
     memory::EngineWorkspace,
@@ -183,6 +183,11 @@ impl InPlace {
     /// embeddings, competence decision and leases all happen here, never under her serving guards.
     async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation) -> Result<Prepared, String> {
         let mut held = self.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+        if state.is_stopping() {
+            // a stop began while this seating waited for her engine: it was handed back, so she
+            // is not seated now, and her examples stay pending for the next start (card 2febbbe8)
+            return Ok(Prepared::Deferred);
+        }
         for row in rows {
             let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
             match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {
@@ -581,36 +586,23 @@ pub(crate) struct Quiesced {
     pub(crate) unpublished: u32,
     /// Stops and workspace releases the engine did not confirm: custody holds what they held.
     pub(crate) unconfirmed: u32,
-    /// Engines a step held, left to it (`Busy::Skip`).
+    /// Engines a step held, left to it.
     pub(crate) busy: u32,
 }
 
-/// What a quiesce does with an engine a learning step holds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Busy {
-    /// Wait for the step (the join, after every operation has ended).
-    Wait,
-    /// Leave it to the step and count it (the save, while steps may still run).
-    Skip,
-}
-
 impl InPlace {
-    /// Shutdown, after every owned operation has drained: publish what each seated learner learned
-    /// since its newest generation, stop it, and release each engine's workspace. Nothing is left
-    /// seated in the trigger; what an engine did not confirm stays in custody.
-    pub(crate) async fn quiesce(&self, state: &TrainingTriggerState, busy: Busy) -> Quiesced {
+    /// Shutdown (the save, and the join after it): publish what each idle engine's seated learners
+    /// learned since their newest generation, stop them, and release the engine's workspace. An
+    /// engine a handed-back step holds is counted and left to that step, never waited on (card
+    /// 2febbbe8): her progress since her newest generation is learned again from the journal.
+    /// What an engine did not confirm stays in custody.
+    pub(crate) async fn quiesce(&self, state: &TrainingTriggerState) -> Quiesced {
         let mut quiesced = Quiesced::default();
         let engines: Vec<_> = self.engines.iter().map(|entry| (*entry.key(), Arc::clone(entry.value()))).collect();
         for (incarnation, engine) in engines {
-            let mut held = match busy {
-                Busy::Wait => engine.acquire(None, engine_lock::Phase::Quiesce).await,
-                Busy::Skip => match engine.try_acquire(None, engine_lock::Phase::Quiesce) {
-                    Some(held) => held,
-                    None => {
-                        quiesced.busy += 1; // a step holds it: its learner pages out when her pass ends
-                        continue;
-                    }
-                },
+            let Some(mut held) = engine.try_acquire(None, engine_lock::Phase::Quiesce) else {
+                quiesced.busy += 1; // a handed-back step holds it: its learner pages out when her pass ends
+                continue;
             };
             self.engines.remove(&incarnation);
             let keys: Vec<BucketKey> = held.minds.keys().cloned().collect();

@@ -3,7 +3,7 @@
 //! print what each agent sets.
 
 use async_trait::async_trait;
-use continuum_engine::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
+use continuum_engine::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, Quiet, ServiceModule};
 use serde_json::{json, Value};
 
 use crate::listener::Listener;
@@ -104,19 +104,19 @@ impl ServiceModule for GatewayModule {
         }
     }
 
-    /// Close admission and let the calls in flight finish, within the runtime's bound. The
+    /// Close admission and let the calls in flight finish, awaited by the runtime. The
     /// listener stays owned here; `shutdown` joins it.
-    async fn drain(&self) -> Result<u32, String> {
+    async fn drain(&self) -> Result<Quiet, String> {
         let exited = {
             let slot = self.listener.lock().await;
             let Some(listener) = slot.as_ref() else {
-                return Ok(0);
+                return Ok(Quiet::Finished);
             };
             listener.close();
             listener.exited()
         };
         exited.await;
-        Ok(0)
+        Ok(Quiet::Finished)
     }
 
     /// Stop what is still in flight and cut every connection, so even an agent that stopped
@@ -153,7 +153,7 @@ mod tests {
         let port = gateway.listen(0).await.expect("test: binds a free port");
         assert_eq!(gateway.url().await, Some(format!("http://127.0.0.1:{port}")));
         assert!(gateway.listen(0).await.is_err(), "a second listener while one serves is refused");
-        assert_eq!(gateway.drain().await, Ok(0), "nothing in flight: drained");
+        assert_eq!(gateway.drain().await, Ok(Quiet::Finished), "nothing in flight: drained");
         assert_eq!(gateway.url().await, None, "admission closed: not listening");
         assert_eq!(gateway.shutdown().await, Ok(()));
         assert_eq!(gateway.listen(port).await, Ok(port), "the same port binds again after a stop");

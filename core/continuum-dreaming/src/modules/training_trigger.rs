@@ -56,14 +56,14 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::genome::fine_tuning::types::{LoRAHyperparams, ScheduleParams, TrainingExample, TrainingSource};
-use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, ServiceModule};
+use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, ModuleContext, ModulePriority, PerKeyGate, Quiet, ServiceModule};
 use crate::sdk_codegen::DynCommand;
 
 mod durable;
 mod serving_wake;
 pub(crate) mod competence;
 mod in_place;
-pub(crate) use durable::{RetireReport, RetireSelection};
+pub(crate) use durable::{RetireReport, RetireSelection, Work};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0
@@ -160,9 +160,10 @@ pub struct TrainingTriggerState {
     next_sequence: std::sync::atomic::AtomicU64,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
     in_place: in_place::InPlace,
-    /// Finite admitted operations outlive a cancelled caller. Shutdown drains
-    /// this set; dropping a caller never aborts a writer or releases its lease.
-    operations: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
+    /// Finite admitted operations outlive a cancelled caller: the stop waits for every journal
+    /// write and hands back the learning ([`durable::Work`]); dropping a caller never aborts a
+    /// writer or releases its lease.
+    operations: tokio::sync::Mutex<durable::Owned>,
     #[cfg(test)]
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
@@ -200,7 +201,7 @@ impl TrainingTriggerState {
             stopping: std::sync::atomic::AtomicBool::new(false),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
-            operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+            operations: tokio::sync::Mutex::new(durable::Owned::default()),
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
@@ -311,19 +312,29 @@ impl ServiceModule for TrainingTriggerModule {
         self
     }
 
-    /// Stop admitting passes and report the learning operations still running: a step in flight
-    /// is counted, never reported as drained.
-    async fn drain(&self) -> Result<u32, String> {
+    /// Stop admitting passes, wait for every journal write to land, and hand back the learning
+    /// still running (card 2febbbe8): a step in flight is never waited out and never lost. Its
+    /// examples stay pending in the journal until a confirmed generation moves the cursor, so the
+    /// next start learns them again.
+    async fn drain(&self) -> Result<Quiet, String> {
         self.serving_wake.stop().await;
-        let in_flight = self.state.stop_admitting().await;
-        u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
+        let stopped = self.state.stop_admitting().await;
+        if let Some(failed) = stopped.failed_writes.first() {
+            return Err(format!("{} journal writes ended without an answer at stop: {failed}", stopped.failed_writes.len()));
+        }
+        let resumable = stopped.learning;
+        let resumable = u32::try_from(resumable).map_err(|_| format!("{resumable} learning operations in flight do not fit the drain count"))?;
+        Ok(match resumable {
+            0 => Quiet::Finished,
+            resumable => Quiet::HandedBack { resumable },
+        })
     }
 
     /// Publish and page out every learner whose engine is idle; a learner mid-step is left to her
-    /// step (her progress since her newest generation is learned again from the journal if the
-    /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
+    /// handed-back step (her progress since her newest generation is learned again from the
+    /// journal). Fails, naming the count, when a learner's progress was not published.
     async fn save_state(&self) -> Result<(), String> {
-        let quiesced = self.state.in_place.quiesce(&self.state, in_place::Busy::Skip).await;
+        let quiesced = self.state.in_place.quiesce(&self.state).await;
         continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
         match quiesced.unpublished {

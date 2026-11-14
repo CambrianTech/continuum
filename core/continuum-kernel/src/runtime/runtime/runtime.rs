@@ -2,97 +2,100 @@ use super::*;
 
 impl Runtime {
 
-    /// `shutdown`, with the per-phase bound passed IN.
+    /// `shutdown`, with the last resort passed IN, so a test reaches `NeverAnswered` in virtual
+    /// time rather than describing it with a literal (IntelMac's finding, kept).
     ///
-    /// A parameter rather than a constant because the TIMEOUT arms could not otherwise be
-    /// reached: no test module takes two seconds, so `SaveTimedOut` and `JoinTimedOut`
-    /// were only ever constructed as literals and asserted on. Deleting the timeout
-    /// handling here would have left every one of those tests green — the outcomes were
-    /// described by the suite and never produced by it. Found by IntelMac.
-    pub(super) async fn shutdown_within(&self, per_phase: std::time::Duration) -> ShutdownReceipt {
+    /// Every module drains, saves and joins in parallel, and each phase is AWAITED: the next
+    /// begins on the previous one's completion, never on a stopwatch (CONTINUUM-ENGINE.md rule
+    /// 10). Card 2febbbe8: on 2026-11-14 a 2 s bound per phase cut the M5's training-trigger
+    /// (`drain Incomplete { in_flight: 2 }, save JoinTimedOut`, 13:25Z) and BigMama's cognition
+    /// (`SaveTimedOut`) while both were working. `last_resort` only names a module that never
+    /// answered: its row is `NeverAnswered { phase }`, every other row is what that module
+    /// actually did, and the receipt still publishes.
+    pub(super) async fn shutdown_within(&self, last_resort: std::time::Duration) -> ShutdownReceipt {
+        use futures::StreamExt;
         let modules = self.registry.list_modules();
         info!(
-            "Stopping {} modules (drain → save → join, parallel, 2s bound per phase)...",
+            "Stopping {} modules (drain → save → join, parallel, each phase awaited)...",
             modules.len()
         );
         let started = std::time::Instant::now();
-        let futs = modules.iter().filter_map(|name| {
-            self.registry.get_by_name(name).map(|module| {
-                // Deref, not clone: `list_modules` yields `Vec<&'static str>`, so `name`
-                // here is `&&'static str` and `.clone()` copied the OUTER reference —
-                // it never cloned a string, and the borrow it produced only compiled
-                // because the inner `&str` is 'static. Carried in from the pre-refactor
-                // `shutdown()`; saying `*name` is what was always meant.
-                let name: &'static str = *name;
-                let readiness = self.registry.readiness();
-                async move {
-                    let t = std::time::Instant::now();
-                    // A module whose initialize never returned holds no loaded state: saving it
-                    // could overwrite good durable state with an uninitialized module's. Skip it,
-                    // and say so in the receipt.
-                    if !readiness.state(name).is_none_or(|s| s.initialize_returned()) {
-                        continuum_base::probe!(
-                            class = "shutdown.step",
-                            module = %name,
-                            outcome = "NeverInitialized",
-                            "module initialize never returned; not drained, saved or joined"
-                        );
-                        return ModuleStop {
-                            module: name.to_string(),
-                            drain: DrainOutcome::Unknown {
-                                reason: "initialize never returned".to_string(),
-                            },
-                            outcome: ModuleStopOutcome::NeverInitialized,
-                            ms: t.elapsed().as_millis() as u64,
-                        };
-                    }
-                    // 1. Stop taking new work and let in-flight work finish. A module
-                    //    that cannot drain in time still gets its save attempted — a
-                    //    mid-turn snapshot beats no snapshot — but the receipt says so.
-                    let drain = match tokio::time::timeout(per_phase, module.drain()).await {
-                        Ok(Ok(0)) => DrainOutcome::Drained,
-                        Ok(Ok(in_flight)) => DrainOutcome::Incomplete { in_flight },
-                        Ok(Err(e)) => DrainOutcome::Unknown { reason: e },
-                        Err(_) => DrainOutcome::Unknown {
-                            reason: format!("drain exceeded {}s", per_phase.as_secs()),
-                        },
-                    };
-
-                    // 2. Save. This is the phase whose failure is DATA, not tidiness.
-                    let saved = tokio::time::timeout(per_phase, module.save_state()).await;
-                    let outcome = match saved {
-                        Err(_) => ModuleStopOutcome::SaveTimedOut,
-                        Ok(Err(e)) => ModuleStopOutcome::SaveFailed { error: e },
-                        Ok(Ok(())) => {
-                            // 3. Join, only meaningful once the state is durable.
-                            match tokio::time::timeout(per_phase, module.shutdown()).await {
-                                Err(_) => ModuleStopOutcome::JoinTimedOut,
-                                Ok(Err(e)) => ModuleStopOutcome::JoinFailed { error: e },
-                                Ok(Ok(())) => ModuleStopOutcome::Clean,
-                            }
-                        }
-                    };
+        let mut progress: Vec<(&'static str, Arc<StopProgress>)> = Vec::with_capacity(modules.len());
+        let mut stopping = futures::stream::FuturesUnordered::new();
+        for name in modules {
+            let Some(module) = self.registry.get_by_name(name) else { continue };
+            // A module whose initialize never returned holds no loaded state: saving it could
+            // overwrite good durable state with an uninitialized module's. Skip it, and say so.
+            let initialized = self.registry.readiness().state(name).is_none_or(|s| s.initialize_returned());
+            let index = progress.len();
+            let at = Arc::new(StopProgress::default());
+            progress.push((name, Arc::clone(&at)));
+            stopping.push(async move {
+                let t = std::time::Instant::now();
+                if !initialized {
                     continuum_base::probe!(
                         class = "shutdown.step",
                         module = %name,
-                        outcome = format!("{outcome:?}"),
-                        drain = format!("{drain:?}"),
-                        ms = t.elapsed().as_millis() as u64,
-                        "module drain-save-join"
+                        outcome = "NeverInitialized",
+                        "module initialize never returned; not drained, saved or joined"
                     );
-                    ModuleStop {
-                        // `list_modules` yields &'static str; the receipt owns its names
-                        // because it outlives the registry borrow and crosses the wire.
+                    let row = ModuleStop {
                         module: name.to_string(),
-                        drain,
-                        outcome,
+                        drain: DrainOutcome::Unknown { reason: "initialize never returned".to_string() },
+                        outcome: ModuleStopOutcome::NeverInitialized,
                         ms: t.elapsed().as_millis() as u64,
-                    }
+                    };
+                    return (index, row);
                 }
+                // 1. Stop taking new work and become quiet: what was in flight finished, or
+                //    was handed to the module's durable state as work the next start resumes.
+                let drain = match module.drain().await {
+                    Ok(quiet) => DrainOutcome::from(quiet),
+                    Err(reason) => DrainOutcome::Unknown { reason },
+                };
+                at.enter(StopStage::Saving { drain: drain.clone() });
+                // 2. Save. This is the phase whose failure is DATA, not tidiness.
+                let outcome = match module.save_state().await {
+                    Err(error) => ModuleStopOutcome::SaveFailed { error },
+                    Ok(()) => {
+                        // 3. Join, only meaningful once the state is durable.
+                        at.enter(StopStage::Joining { drain: drain.clone() });
+                        match module.shutdown().await {
+                            Err(error) => ModuleStopOutcome::JoinFailed { error },
+                            Ok(()) => ModuleStopOutcome::Clean,
+                        }
+                    }
+                };
+                continuum_base::probe!(
+                    class = "shutdown.step",
+                    module = %name,
+                    outcome = format!("{outcome:?}"),
+                    drain = format!("{drain:?}"),
+                    ms = t.elapsed().as_millis() as u64,
+                    "module drain-save-join"
+                );
+                // `list_modules` yields &'static str; the receipt owns its names because it
+                // outlives the registry borrow and crosses the wire.
+                (index, ModuleStop { module: name.to_string(), drain, outcome, ms: t.elapsed().as_millis() as u64 })
+            });
+        }
+        let mut rows: Vec<Option<ModuleStop>> = vec![None; progress.len()];
+        let deadline = tokio::time::Instant::now() + last_resort;
+        // event-exempt: a module whose drain, save or join never returns emits no completion; every module that answers arrives here as its own completion first, and the deadline only names the ones that never did
+        while let Ok(Some((index, row))) = tokio::time::timeout_at(deadline, stopping.next()).await {
+            rows[index] = Some(row);
+        }
+        let waited = started.elapsed().as_millis() as u64;
+        let modules = rows
+            .into_iter()
+            .zip(&progress)
+            .map(|(row, (name, at))| match row {
+                Some(row) => row,
+                None => at.never_answered(name, waited),
             })
-        });
+            .collect();
         let receipt = ShutdownReceipt {
-            modules: futures::future::join_all(futs).await,
+            modules,
             total_ms: started.elapsed().as_millis() as u64,
         };
         info!("{}", receipt.summary());
@@ -174,6 +177,49 @@ impl Runtime {
         Ok(())
     }
 
+}
+
+/// Where one module's stop stands: what the last resort reads to name a module that never
+/// answered, and the drain it already reported, so a silent save keeps its drain's truth.
+#[derive(Debug, Clone)]
+pub(super) enum StopStage {
+    Draining,
+    Saving { drain: DrainOutcome },
+    Joining { drain: DrainOutcome },
+}
+
+/// One module's [`StopStage`], written by its own stop as each phase completes.
+pub(super) struct StopProgress {
+    stage: parking_lot::Mutex<StopStage>,
+}
+
+impl Default for StopProgress {
+    fn default() -> Self {
+        Self { stage: parking_lot::Mutex::new(StopStage::Draining) }
+    }
+}
+
+impl StopProgress {
+    fn enter(&self, stage: StopStage) {
+        *self.stage.lock() = stage;
+    }
+
+    /// The row of a module that never completed its stop: the phase it was in, and its drain.
+    fn never_answered(&self, module: &str, ms: u64) -> ModuleStop {
+        let (drain, phase) = match self.stage.lock().clone() {
+            StopStage::Draining => (DrainOutcome::Unknown { reason: "its drain never answered".to_string() }, StopPhase::Drain),
+            StopStage::Saving { drain } => (drain, StopPhase::Save),
+            StopStage::Joining { drain } => (drain, StopPhase::Join),
+        };
+        continuum_base::probe!(
+            class = "shutdown.never_answered",
+            module = %module,
+            phase = ?phase,
+            ms = ms,
+            "a module never completed its stop; its state is unknown and the receipt names it"
+        );
+        ModuleStop { module: module.to_string(), drain, outcome: ModuleStopOutcome::NeverAnswered { phase }, ms }
+    }
 }
 
 /// Quarantine threshold for the per-module tick loop. After this many
