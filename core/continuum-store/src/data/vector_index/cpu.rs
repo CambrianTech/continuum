@@ -42,9 +42,11 @@ impl MatrixBuilder {
         if let Some(expected) = self.rows.as_ref().map(|rows| rows.dimension).filter(|expected| *expected != dimension) {
             return Err(VectorIndexError::Dimension { expected: expected.get(), found: dimension.get() });
         }
-        let overflow = VectorIndexError::PageOverflow { rows: ids.len(), dimension: dimension.get() };
-        let values = ids.len().checked_mul(dimension.get()).ok_or_else(|| overflow.clone())?;
-        let expected = values.checked_mul(std::mem::size_of::<f32>()).ok_or(overflow)?;
+        let (values, expected) = ids
+            .len()
+            .checked_mul(dimension.get())
+            .and_then(|values| Some((values, values.checked_mul(std::mem::size_of::<f32>())?)))
+            .ok_or(VectorIndexError::PageOverflow { rows: ids.len(), dimension: dimension.get() })?;
         if bytes.len() != expected {
             return Err(VectorIndexError::PageLength { expected, found: bytes.len() });
         }

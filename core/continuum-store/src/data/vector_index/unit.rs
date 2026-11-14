@@ -1,5 +1,5 @@
 //! The producer's one normalization: certify `unit = true` at write, never per query.
-use super::{EmbeddingDescriptor, Producer};
+use super::{unit_f32_descriptor, Producer};
 use crate::orm::binary::{BinaryDescriptorError, BinaryValue};
 use std::num::NonZeroUsize;
 
@@ -50,6 +50,5 @@ where
     for value in values {
         bytes.extend_from_slice(&(value * inverse).to_ne_bytes());
     }
-    let descriptor = EmbeddingDescriptor::unit_f32(producer.clone(), dimension).binary();
-    Ok(BinaryValue::new(descriptor, bytes)?)
+    Ok(BinaryValue::new(unit_f32_descriptor(producer, dimension), bytes)?)
 }

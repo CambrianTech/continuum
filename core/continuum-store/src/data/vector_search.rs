@@ -5,9 +5,9 @@ use crate::log_info;
 use std::num::NonZeroUsize;
 
 /// A `vector/search` query and the producer it names: a served embedder, or the caller.
-pub(crate) fn wire_query(values: Vec<f64>, embedder: Option<String>) -> QueryVector {
+pub(crate) fn wire_query<'a>(values: &'a [f64], embedder: Option<&str>) -> QueryVector<'a> {
     let producer = match embedder {
-        Some(id) => Producer::Embedder(EmbedderId::new(&id)),
+        Some(id) => Producer::Embedder(EmbedderId::new(id)),
         None => Producer::WireQuery,
     };
     QueryVector { values, producer }
@@ -25,12 +25,12 @@ impl DataState {
         &self,
         handle: &str,
         collection: &str,
-        query: QueryVector,
+        query: QueryVector<'_>,
         k: usize,
         threshold: f64,
         include_data: bool,
     ) -> Result<VectorSearchResults, VectorStoreError> {
-        require_public_collection(collection).map_err(VectorStoreError::Refused)?;
+        require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
         let search_start = std::time::Instant::now();
 
         let corpus = self.vector_corpus(handle, collection).await?;
@@ -43,7 +43,7 @@ impl DataState {
         let query = unit_f32(query.values.iter().map(|value| *value as f32), &query.producer)?;
         let ranked = corpus.search(&query, k)?;
         // Best first, so the threshold ends the walk at the first score below it.
-        let adapter = if include_data { Some(self.get_adapter(handle).await.map_err(VectorStoreError::Store)?) } else { None };
+        let adapter = if include_data { Some(self.get_adapter(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?) } else { None };
         let mut results = Vec::with_capacity(ranked.len());
         for RecordHit { id, score } in ranked {
             let score = f64::from(score);
@@ -56,7 +56,7 @@ impl DataState {
                         .read(collection, &id.to_string())
                         .await
                         .into_result()
-                        .map_err(|fault| VectorStoreError::Hydration { id, fault })?
+                        .map_err(|fault| VectorStoreError::Hydration { id, fault: fault.into() })?
                         .data,
                 ),
                 None => None,

@@ -33,7 +33,7 @@ use std::num::NonZeroUsize;
 
 pub(crate) use corpus::{RecordHit, VectorCorpus};
 pub(crate) use cpu::{CpuMatrix, MatrixBuilder};
-pub(crate) use descriptor::{compatible, EmbeddingDescriptor};
+pub(crate) use descriptor::{compatible, unit_f32_descriptor, EmbeddingDescriptor};
 pub(crate) use error::{VectorIndexError, VectorStoreError};
 pub(crate) use unit::{unit_f32, UnitVectorError};
 
@@ -70,7 +70,7 @@ impl Producer {
     const WIRE_QUERY: &'static str = "vector/search";
     const INDEX_COMMAND: &'static str = "vector/index";
 
-    /// The producer field of the stored descriptor; [`Producer::from_identity`] reads it back.
+    /// The producer field of the stored descriptor; `Producer::from_identity` reads it back.
     fn identity(&self) -> String {
         match self {
             Self::Embedder(EmbedderId(id)) => id.clone(),
@@ -82,9 +82,15 @@ impl Producer {
 
 /// A query vector as the `vector/search` wire carries it, with the producer that embedded it.
 /// The query's descriptor is built from both when it is normalized.
-pub(crate) struct QueryVector {
-    pub(crate) values: Vec<f64>,
+pub(crate) struct QueryVector<'a> {
+    pub(crate) values: &'a [f64],
     pub(crate) producer: Producer,
+}
+
+impl std::fmt::Display for Producer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.identity())
+    }
 }
 
 /// The fraction of calibration queries whose COMPLETE top-k must survive the prefilter.
@@ -128,12 +134,12 @@ fn searchable_dimension(descriptor: &BinaryDescriptor) -> Result<NonZeroUsize, V
         return Err(VectorIndexError::ByteOrder(descriptor.byte_order));
     }
     if !descriptor.unit {
-        return Err(VectorIndexError::NotUnit { producer: descriptor.producer.clone() });
+        return Err(VectorIndexError::NotUnit { producer: Producer::from_identity(&descriptor.producer) });
     }
     let [dimension] = descriptor.shape.as_slice() else {
         return Err(VectorIndexError::Rank(descriptor.shape.len()));
     };
     let dimension = usize::try_from(*dimension).map_err(|_| VectorIndexError::DimensionOverflow(*dimension))?;
     // No zero-dimension vector has unit length, whatever its descriptor claims.
-    NonZeroUsize::new(dimension).ok_or_else(|| VectorIndexError::NotUnit { producer: descriptor.producer.clone() })
+    NonZeroUsize::new(dimension).ok_or_else(|| VectorIndexError::NotUnit { producer: Producer::from_identity(&descriptor.producer) })
 }

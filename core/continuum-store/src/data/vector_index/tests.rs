@@ -141,7 +141,7 @@ fn producer_refuses_vectors_without_a_direction() {
 fn uncertified_rows_and_queries_are_refused() -> Result<(), Box<dyn std::error::Error>> {
     let certified = unit(&[3.0, 4.0])?;
     let (descriptor, bytes) = certified.clone().into_parts();
-    let raw = BinaryValue::new(BinaryDescriptor { unit: false, ..descriptor.clone() }, bytes.clone())?;
+    let raw = BinaryValue::new(BinaryDescriptor { unit: false, ..descriptor.clone() }, certified.bytes().to_vec())?;
     let mut builder = MatrixBuilder::default();
     assert!(matches!(builder.append_page(raw.descriptor(), raw.bytes(), &[id_of(0)]), Err(VectorIndexError::NotUnit { .. })));
     builder.append_page(certified.descriptor(), certified.bytes(), &[id_of(1)])?;

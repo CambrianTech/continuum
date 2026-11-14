@@ -24,7 +24,7 @@ impl Producer {
     }
 
     /// The inverse of the identity the descriptor stores.
-    fn from_identity(identity: &str) -> Self {
+    pub(super) fn from_identity(identity: &str) -> Self {
         match identity {
             Self::WIRE_QUERY => Self::WireQuery,
             Self::INDEX_COMMAND => Self::IndexCommand,
@@ -46,23 +46,6 @@ pub(crate) struct EmbeddingDescriptor {
 }
 
 impl EmbeddingDescriptor {
-    /// A certified unit f32 vector of `dimension` from `producer`.
-    pub(crate) fn unit_f32(producer: Producer, dimension: NonZeroUsize) -> Self {
-        Self { producer, element: ElementType::F32, dimension, scale: None }
-    }
-
-    /// The storage descriptor written with the vector's bytes.
-    pub(crate) fn binary(&self) -> BinaryDescriptor {
-        BinaryDescriptor {
-            element_type: self.element,
-            byte_order: NATIVE_ORDER,
-            shape: vec![self.dimension.get() as u64],
-            producer: self.producer.identity(),
-            unit: true,
-            scale: self.scale,
-        }
-    }
-
     /// Reads a stored descriptor; refuses anything search cannot score as-is (an
     /// uncertified, non-native, or non-f32 vector).
     pub(crate) fn from_binary(binary: &BinaryDescriptor) -> Result<Self, VectorIndexError> {
@@ -73,6 +56,20 @@ impl EmbeddingDescriptor {
             dimension,
             scale: binary.scale,
         })
+    }
+}
+
+/// The storage descriptor a producer writes with a certified unit f32 vector of `dimension`:
+/// the one constructor for row and query descriptors alike (read back by
+/// [`EmbeddingDescriptor::from_binary`]).
+pub(crate) fn unit_f32_descriptor(producer: &Producer, dimension: NonZeroUsize) -> BinaryDescriptor {
+    BinaryDescriptor {
+        element_type: ElementType::F32,
+        byte_order: NATIVE_ORDER,
+        shape: vec![dimension.get() as u64],
+        producer: producer.identity(),
+        unit: true,
+        scale: None,
     }
 }
 

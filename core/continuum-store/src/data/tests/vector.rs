@@ -188,7 +188,7 @@ async fn test_vector_search_basic() {
     for k in [0, 1, 2, 3, 99] {
         let selected = module
             .state
-            .vector_search(&db_path, "test_search", QueryVector { values: query_vector.clone(), producer: Producer::WireQuery }, k, 0.0, false)
+            .vector_search(&db_path, "test_search", QueryVector { values: &query_vector, producer: Producer::WireQuery }, k, 0.0, false)
             .await
             .expect("rank cached corpus");
         assert_eq!(selected.count, k.min(results.len()));
@@ -200,7 +200,7 @@ async fn test_vector_search_basic() {
     }
     let filtered = module
         .state
-        .vector_search(&db_path, "test_search", QueryVector { values: query_vector.clone(), producer: Producer::WireQuery }, 2, 2.0, false)
+        .vector_search(&db_path, "test_search", QueryVector { values: &query_vector, producer: Producer::WireQuery }, 2, 2.0, false)
         .await
         .expect("filter cached corpus");
     assert_eq!(filtered.count, 0);
@@ -211,7 +211,7 @@ async fn test_vector_search_basic() {
     assert!(adapter.delete("test_search", &id.to_owned()).await.success);
     let hydrated = module
         .state
-        .vector_search(&db_path, "test_search", QueryVector { values: query_vector, producer: Producer::WireQuery }, 3, 0.0, true)
+        .vector_search(&db_path, "test_search", QueryVector { values: &query_vector, producer: Producer::WireQuery }, 3, 0.0, true)
         .await;
     assert!(
         matches!(hydrated, Err(VectorStoreError::Hydration { id: missing, .. }) if missing.to_string() == id),
@@ -264,23 +264,23 @@ async fn test_vector_cache_invalidation() {
 
     // Each acknowledged mutation must retire the warmed matrix before the next search.
     for operation in ["delete", "batch", "truncate", "clear"] {
-        module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before create");
+        module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before create");
         let created = module.state.create_record(
             &alias, "test_cache".into(), Some(target.clone()), json!({}),
         ).await.expect("create through mutation owner");
         assert!(created.success, "{created:?}");
         module.state.index_vector(&alias, "test_cache", target.clone(), vec![1.0; 384]).await.expect("alias index");
         let warm = module.state.vector_search(
-            &db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
+            &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("warm corpus");
         assert!(warm.results.iter().any(|hit| hit.id == target));
         let alias_stats = module.state.vector_stats(&alias, "test_cache").await.expect("alias stats");
         assert_eq!(alias_stats.cached_vectors, warm.corpus_size);
         assert!(module.state.invalidate_vector_cache(&alias, "test_cache").await.expect("alias invalidation").cache_invalidated);
         assert_eq!(module.state.vector_stats(&db_path, "test_cache").await.expect("sentinel stats").cached_vectors, 0);
-        module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before reindex");
+        module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true).await.expect("warm before reindex");
         module.state.index_vector(&alias, "test_cache", target.clone(), vec![-1.0; 384]).await.expect("reindex");
-        let changed = module.state.vector_search(&db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.5, true)
+        let changed = module.state.vector_search(&db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.5, true)
             .await.expect("search reindexed corpus");
         assert!(changed.results.iter().all(|hit| hit.id != target));
         match operation {
@@ -297,7 +297,7 @@ async fn test_vector_cache_invalidation() {
             _ => unreachable!("fixture operation"),
         }
         let after = module.state.vector_search(
-            &db_path, "test_cache", QueryVector { values: vec![1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
+            &db_path, "test_cache", QueryVector { values: &[1.0; 384], producer: Producer::WireQuery }, 10, 0.0, true,
         ).await.expect("search after acknowledged mutation");
         assert!(after.results.iter().all(|hit| hit.id != target));
         let expected = if matches!(operation, "truncate" | "clear") { 0 } else { warm.corpus_size - 1 };
@@ -336,7 +336,7 @@ async fn each_producer_descriptor_is_its_own_matrix_and_a_foreign_query_is_refus
     assert_eq!(corpus.descriptors().len(), 2, "one matrix per producer descriptor");
     assert_eq!(corpus.len(), 3);
 
-    let search = |producer: Producer| module.state.vector_search(&db_path, "test_spaces", QueryVector { values: vec![1.0, 0.0], producer }, 10, -1.0, false);
+    let search = |producer: Producer| module.state.vector_search(&db_path, "test_spaces", QueryVector { values: &[1.0, 0.0], producer }, 10, -1.0, false);
     let caller = search(Producer::WireQuery).await.expect("test: caller-space search");
     assert_eq!(caller.results.iter().map(|hit| hit.id.as_str()).collect::<Vec<_>>(), vec![ids[0].as_str(), ids[1].as_str()]);
     let embedded = search(embedder.clone()).await.expect("test: embedder-space search");

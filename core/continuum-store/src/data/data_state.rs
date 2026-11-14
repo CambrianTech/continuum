@@ -400,10 +400,10 @@ impl DataState {
         id: String,
         embedding: Vec<f64>,
     ) -> Result<DataRecord, VectorStoreError> {
-        require_public_collection(collection).map_err(VectorStoreError::Refused)?;
+        require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
         let start = std::time::Instant::now();
 
-        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(VectorStoreError::Store)?;
+        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
         let payload = unit_f32(embedding.iter().map(|value| *value as f32), &Producer::IndexCommand)?;
         let written = adapter
             .update_binary(
@@ -416,9 +416,9 @@ impl DataState {
             .into_result();
         // The cached matrix may hold this row's previous vector, whatever the write did.
         self.vector_cache.invalidate(&scope, collection);
-        written.map_err(VectorStoreError::Store)?;
+        written.map_err(|fault| VectorStoreError::Store(fault.into()))?;
         log_info!("data", "vector/index", "Indexed vector for {} in {}ms", id, start.elapsed().as_millis());
-        adapter.read(collection, &id).await.into_result().map_err(VectorStoreError::Store)
+        adapter.read(collection, &id).await.into_result().map_err(|fault| VectorStoreError::Store(fault.into()))
     }
 
     /// Get vector index statistics for a collection.

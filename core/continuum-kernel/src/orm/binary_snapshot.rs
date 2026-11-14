@@ -8,6 +8,8 @@ use sea_orm::sea_query::{Alias, Expr, Order, Query};
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, TransactionTrait};
 use std::sync::Arc;
 
+const NOT_BINARY: &str = "native payload access requires a declared binary field";
+
 /// A database snapshot, not a consumer-adoption receipt. Drop releases the read transaction.
 pub struct BinarySnapshot {
     pub(super) transaction: DatabaseTransaction,
@@ -74,14 +76,15 @@ impl BinarySnapshot {
         limit: std::num::NonZeroUsize,
     ) -> Result<Vec<BinaryDescriptor>, String> {
         use sea_orm::sqlx::Row;
-        let header_column = self.header_column(field)?;
+        self.header_column(field).ok_or(NOT_BINARY)?;
+        let header = || Alias::new(descriptor_column(field));
         let mut query = Query::select();
         query
             .distinct()
             .from(Alias::new(naming::to_table_name(&self.schema.collection)))
-            .expr_as(Expr::col(header_column.clone()), Alias::new("descriptor"))
-            .and_where(Expr::col(header_column.clone()).is_not_null())
-            .order_by(header_column, Order::Asc)
+            .expr_as(Expr::col(header()), Alias::new("descriptor"))
+            .and_where(Expr::col(header()).is_not_null())
+            .order_by(header(), Order::Asc)
             .limit(u64::try_from(limit.get()).map_err(|_| "descriptor limit exceeds u64")?);
         let rows = self
             .transaction
@@ -99,18 +102,13 @@ impl BinarySnapshot {
             .collect()
     }
 
-    /// The descriptor column of a declared binary field.
-    fn header_column(&self, field: &str) -> Result<Alias, String> {
-        let declared = self
-            .schema
+    /// The descriptor column of `field`, when the schema declares it binary.
+    fn header_column(&self, field: &str) -> Option<Alias> {
+        self.schema
             .fields
             .iter()
-            .find(|item| item.name == field)
-            .ok_or("undeclared binary field")?;
-        if declared.field_type != FieldType::Binary {
-            return Err("native payload access requires a declared binary field".into());
-        }
-        Ok(Alias::new(descriptor_column(field)))
+            .any(|item| item.name == field && item.field_type == FieldType::Binary)
+            .then(|| Alias::new(descriptor_column(field)))
     }
 
     async fn page(
@@ -127,11 +125,11 @@ impl BinarySnapshot {
         } = *request;
         let super::binary::BinaryPageOutput { bytes, ids } = output;
         let collection = &self.schema.collection;
-        let header_column = self.header_column(field)?;
+        let header_column = self.header_column(field).ok_or(NOT_BINARY)?;
         let column = super::relational_query::column(&self.schema, field)?;
         let mut query = Query::select();
         if let Some(header) = matching {
-            query.and_where(Expr::col(header_column.clone()).eq(header.to_vec()));
+            query.and_where(Expr::col(Alias::new(descriptor_column(field))).eq(header.to_vec()));
         }
         query
             .from(Alias::new(naming::to_table_name(collection)))

@@ -282,7 +282,7 @@ use crate::orm::types::CollectionSchema;
             .vector_search(
                 handle,
                 &p.collection,
-                crate::data::wire_query(p.query_vector, p.embedder),
+                crate::data::wire_query(&p.query_vector, p.embedder.as_deref()),
                 p.k,
                 p.threshold,
                 p.include_data,

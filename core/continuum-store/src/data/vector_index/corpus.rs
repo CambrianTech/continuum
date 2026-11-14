@@ -17,11 +17,13 @@ pub(crate) struct VectorCorpus {
     matrices: Vec<(EmbeddingDescriptor, CpuMatrix)>,
 }
 
-impl VectorCorpus {
-    pub(crate) fn new(matrices: Vec<(EmbeddingDescriptor, CpuMatrix)>) -> Self {
-        Self { matrices }
+impl FromIterator<(EmbeddingDescriptor, CpuMatrix)> for VectorCorpus {
+    fn from_iter<I: IntoIterator<Item = (EmbeddingDescriptor, CpuMatrix)>>(matrices: I) -> Self {
+        Self { matrices: matrices.into_iter().collect() }
     }
+}
 
+impl VectorCorpus {
     /// Rows across every matrix.
     pub(crate) fn len(&self) -> usize {
         self.matrices.iter().map(|(_, matrix)| matrix.len()).sum()
@@ -38,7 +40,7 @@ impl VectorCorpus {
         let Some((_, matrix)) = self.matrices.iter().find(|(rows, _)| compatible(&wanted, rows)) else {
             return Err(VectorIndexError::DescriptorMismatch {
                 query: wanted,
-                available: self.matrices.iter().map(|(rows, _)| rows.clone()).collect(),
+                available: self.matrices.iter().map(|(rows, _)| rows).cloned().collect(),
             });
         };
         matrix
@@ -63,6 +65,6 @@ impl VectorCorpus {
     /// The descriptors of the sealed matrices.
     #[cfg(test)]
     pub(crate) fn descriptors(&self) -> Vec<EmbeddingDescriptor> {
-        self.matrices.iter().map(|(descriptor, _)| descriptor.clone()).collect()
+        self.matrices.iter().map(|(descriptor, _)| descriptor).cloned().collect()
     }
 }
