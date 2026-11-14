@@ -757,7 +757,12 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
     // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
     // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
-    const AGENTIC_SURFACE_CEILING: u32 = 17986;
+    // 17986 -> 18014 (card d2b6dbce, 2026-11-14, the M5: Aiko offered `claim_task` beside
+    // `work_create`, found no `work_release`, and re-created one card): every tool is now offered
+    // by its command path (`code_read`, `code_git_status`, `tool_output`), never a per-verb alias,
+    // so a family is one scheme. Path names are a few characters longer than the aliases they
+    // replace; the 28 tokens are those names, nothing added. Measured in CI at 8b69d5aea.
+    const AGENTIC_SURFACE_CEILING: u32 = 18014;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
