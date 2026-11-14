@@ -185,11 +185,11 @@
             .as_str()
             .unwrap_or("")
             .starts_with("2026-"));
-        assert_eq!(arrival["collection"], "chat_arrivals");
-        assert_eq!(arrival["data"]["messageId"], line.message_id.to_string());
-        assert_eq!(arrival["data"]["kind"], "message");
+        assert_eq!(arrival["row"]["collection"], "chat_arrivals");
+        assert_eq!(arrival["row"]["data"]["messageId"], line.message_id.to_string());
+        assert_eq!(arrival["row"]["data"]["kind"], "message");
         assert_eq!(
-            arrival["data"]["directTo"],
+            arrival["row"]["data"]["directTo"],
             json!(line.direct_to.map(|p| p.as_uuid())),
             "the addressee rides the header"
         );
