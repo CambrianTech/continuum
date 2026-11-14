@@ -91,11 +91,7 @@ pub fn reclaim_at_boot(continuum_root: &Path) {
     if let Ok(spills) = crate::cognition::tool_executor::spill::spill_root() {
         roots.push(spills);
     }
-    // A store that cannot be located is treated as present: nothing is reclaimed on a guess.
-    let holds_memory = |id: Uuid| {
-        crate::modules::data::DataState::citizen_store_path(id).map_or(true, |store| store.exists())
-    };
-    match reclaim(&roots, &citizens, holds_memory) {
+    match reclaim(&roots, &citizens, crate::modules::data::DataState::holds_citizen_store) {
         Ok(reclaimed) => continuum_base::probe!(
             class = "persona.orphans_reclaimed",
             citizens = citizens.len() as u64,
