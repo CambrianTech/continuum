@@ -117,8 +117,11 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
             .into_result()?;
         assert_eq!(count, usize::from(!creating));
         gate.release.notify_one();
-        gate.done.notified().await;
-        native_changes.changed().await?;
+        gate.done.await?;
+        assert!(
+            native_changes.has_changed()?,
+            "completed native write did not publish its revision"
+        );
         assert_eq!(
             *native_changes.borrow_and_update(),
             if creating { 1 } else { 2 }

@@ -272,6 +272,12 @@ receipt. Elapsed time is not evidence of completion, cancellation, resource rele
 or physical death. Use event barriers for ordering and fault replay; do not use sleeps
 or arbitrary timeouts to establish correctness. Model absence with Option, failure
 with Result and explicit error variants, and admissible persisted states in schemas.
+Required inputs are required fields; Option represents meaningful absence, never a
+required input deferred to a missing-parameter error. Group cohesive arguments into
+named structs, borrow requests and views where possible, and move native buffers only
+when ownership transfers. Types own validation, behavior and lifecycle through
+composition. Unwrap/expect require a rare, proven invariant; recoverable states use
+typed errors rather than panic or defaults.
 Runtime and critical startup execute in Rust owners. Shell scripts or Python require
 a concrete exceptional necessity or appropriateness; they are not orchestration
 shortcuts. Development build tooling is separate from the installed runtime.

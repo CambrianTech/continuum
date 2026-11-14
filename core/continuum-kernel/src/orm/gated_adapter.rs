@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use futures::future::BoxFuture;
 use serde_json::Value;
-use tokio::sync::Notify;
+use tokio::sync::{oneshot, Notify};
 
 use super::adapter::{AdapterCapabilities, ClearAllResult, StorageAdapter};
 use super::query::StorageQuery;
@@ -24,16 +24,21 @@ use super::types::{
 
 /// The handles of one paused write: it signals `entered` when it reaches the gate,
 /// waits for `release`, and signals `done` once the wrapped write has finished.
-#[derive(Clone)]
 pub(crate) struct PausedWrite {
     pub entered: Arc<Notify>,
     pub release: Arc<Notify>,
-    pub done: Arc<Notify>,
+    pub done: oneshot::Receiver<()>,
+}
+
+struct PendingWrite {
+    entered: Arc<Notify>,
+    release: Arc<Notify>,
+    done: oneshot::Sender<()>,
 }
 
 pub(crate) struct GatedAdapter {
     inner: Arc<dyn StorageAdapter>,
-    next: Mutex<Option<PausedWrite>>,
+    next: Mutex<Option<PendingWrite>>,
 }
 
 impl GatedAdapter {
@@ -46,12 +51,17 @@ impl GatedAdapter {
 
     /// Hold the next write at a gate. Only that one write is held.
     pub(crate) fn pause_next_write(&self) -> PausedWrite {
+        let (done_tx, done_rx) = oneshot::channel();
         let paused = PausedWrite {
             entered: Arc::new(Notify::new()),
             release: Arc::new(Notify::new()),
-            done: Arc::new(Notify::new()),
+            done: done_rx,
         };
-        *self.next.lock().expect("gate lock") = Some(paused.clone()); // test fixture: a poisoned gate means an earlier test thread panicked
+        *self.next.lock().expect("gate lock") = Some(PendingWrite {
+            entered: Arc::clone(&paused.entered),
+            release: Arc::clone(&paused.release),
+            done: done_tx,
+        }); // test fixture: poison indicates a prior fixture panic
         paused
     }
 
@@ -68,8 +78,8 @@ impl GatedAdapter {
                 gate.release.notified().await;
             }
             let out = write(inner).await;
-            if let Some(gate) = &gate {
-                gate.done.notify_one();
+            if let Some(gate) = gate {
+                let _ = gate.done.send(()); // The observer may have been cancelled.
             }
             out
         })
@@ -215,4 +225,24 @@ impl StorageAdapter for GatedAdapter {
     async fn cleanup(&self) -> Result<(), String> {
         self.inner.cleanup().await
     }
+}
+
+#[tokio::test]
+async fn detached_panic_is_a_terminal_completion_error() {
+    let (inner, _directory) = super::store::fresh_adapter().await;
+    let adapter = Arc::new(GatedAdapter::new(inner));
+    let gate = adapter.pause_next_write();
+    let request = tokio::spawn(async move {
+        adapter
+            .write::<()>(|_| Box::pin(async { panic!("injected write panic") }))
+            .await;
+    });
+    gate.entered.notified().await;
+    request.abort();
+    assert!(request.await.is_err());
+    gate.release.notify_one();
+    assert!(
+        gate.done.await.is_err(),
+        "producer death must not look like successful completion"
+    );
 }

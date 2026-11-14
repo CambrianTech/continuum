@@ -195,7 +195,13 @@ async fn cancelled_request_retains_commit_and_revision_custody(
     release_tx
         .send(())
         .map_err(|_| "transaction owner disappeared with caller")?;
-    revision.changed().await?;
+    // The write owned this gate before written_rx resolved. Its release proves
+    // commit/rollback and publication finished, including a terminal error.
+    let _completed = store.writer_gate.lock().await;
+    assert!(
+        revision.has_changed()?,
+        "completed append did not publish its revision"
+    );
     assert_eq!(*revision.borrow(), 1);
     assert!(store
         .read_on(&store.db, Child::COLLECTION, "cancelled")

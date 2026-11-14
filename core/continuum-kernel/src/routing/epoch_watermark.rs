@@ -342,7 +342,7 @@ mod tests {
         assert!(first.await.is_err(), "the first presentation was cancelled mid-write");
         assert_eq!(store.check_and_advance(g, 10, 3).await.unwrap(), WatermarkDecision::Accepted);
         paused.release.notify_one();
-        paused.done.notified().await;
+        assert!(paused.done.await.is_ok(), "detached write terminated without a result");
         assert_eq!(
             store.check_and_advance(g, 9, 4).await.unwrap(),
             WatermarkDecision::Superseded,
@@ -371,7 +371,7 @@ mod tests {
         assert!(eviction.await.is_err(), "the eviction was cancelled mid-delete");
         assert_eq!(store.check_and_advance(g, 6, 5_000).await.unwrap(), WatermarkDecision::Accepted);
         paused.release.notify_one();
-        paused.done.notified().await;
+        assert!(paused.done.await.is_ok(), "detached write terminated without a result");
         assert_eq!(
             store.check_and_advance(g, 5, 6_000).await.unwrap(),
             WatermarkDecision::Superseded,
