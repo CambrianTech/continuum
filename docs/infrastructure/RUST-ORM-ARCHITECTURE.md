@@ -90,7 +90,11 @@ delta replay and the GPU consumer remain separate implementation obligations; th
 descriptor fields alone do not establish GPU search or its quality.
 
 The bulk reader appends native rows to caller-owned contiguous bytes and parallel
-UUIDs. It borrows SQLite payload/header views while their query results remain
+UUIDs. Its borrowed BinaryPageRequest groups collection, field, cursor and a required
+NonZeroUsize page size; BinaryPageOutput groups the caller's mutable buffer views.
+Only the cursor is optional because beginning traversal is a valid state. The old
+positional signature and runtime zero-size refusal are removed.
+It borrows SQLite payload/header views while their query results remain
 owned, decodes one common descriptor, validates the whole page, and then copies each
 payload once into the destination. There is no per-row payload/header allocation and
 no numeric materialization. NULL pairs are excluded in storage before LIMIT; a partial

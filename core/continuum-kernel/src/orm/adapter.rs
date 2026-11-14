@@ -171,12 +171,8 @@ pub trait StorageAdapter: Send + Sync {
     /// Bounded native payload reads; scalar projections use the normal query owner.
     async fn binary_page_into(
         &self,
-        collection: &str,
-        field: &str,
-        after: Option<uuid::Uuid>,
-        limit: usize,
-        bytes: &mut Vec<u8>,
-        ids: &mut Vec<uuid::Uuid>,
+        request: &super::binary::BinaryPageRequest<'_>,
+        output: super::binary::BinaryPageOutput<'_>,
     ) -> StorageResult<Option<super::binary::BinaryDescriptor>>;
     async fn create_binary(
         &self,

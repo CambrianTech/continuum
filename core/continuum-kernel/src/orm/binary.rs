@@ -1,6 +1,20 @@
 //! Producer-owned native payloads. Only the small descriptor is decoded by storage.
 //! Payload bytes are never interpreted, normalized, or converted here.
 
+/// A bounded native read. Absence of a cursor means the beginning, not missing input.
+#[derive(Debug, Clone, Copy)]
+pub struct BinaryPageRequest<'a> {
+    pub collection: &'a str,
+    pub field: &'a str,
+    pub after: Option<uuid::Uuid>,
+    pub limit: std::num::NonZeroUsize,
+}
+
+/// Borrowed destination views; the caller retains allocation and buffer custody.
+pub struct BinaryPageOutput<'a> {
+    pub bytes: &'a mut Vec<u8>,
+    pub ids: &'a mut Vec<uuid::Uuid>,
+}
 /// Evaluated atomically by the write owner, never by an earlier read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryWriteCondition {

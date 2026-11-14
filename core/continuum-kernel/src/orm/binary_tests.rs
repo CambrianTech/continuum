@@ -131,12 +131,17 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
         let mut ids = Vec::new();
         let header = real
             .binary_page_into(
-                RequiredNativeRow::COLLECTION,
-                "payload",
-                None,
-                1,
-                &mut bytes,
-                &mut ids,
+                &crate::orm::binary::BinaryPageRequest {
+                    collection: RequiredNativeRow::COLLECTION,
+                    field: "payload",
+                    after: None,
+                    limit: std::num::NonZeroUsize::new(1)
+                        .ok_or("test page size must be positive")?,
+                },
+                crate::orm::binary::BinaryPageOutput {
+                    bytes: &mut bytes,
+                    ids: &mut ids,
+                },
             )
             .await
             .into_result()?
@@ -439,15 +444,20 @@ async fn read_page(
     let mut ids = Vec::new();
     let descriptor = store
         .binary_page_into(
-            collection,
-            field,
-            after
-                .map(|id| uuid::Uuid::parse_str(&id))
-                .transpose()
-                .map_err(|e| e.to_string())?,
-            limit,
-            &mut bytes,
-            &mut ids,
+            &crate::orm::binary::BinaryPageRequest {
+                collection: collection,
+                field: field,
+                after: after
+                    .map(|id| uuid::Uuid::parse_str(&id))
+                    .transpose()
+                    .map_err(|e| e.to_string())?,
+                limit: std::num::NonZeroUsize::new(limit)
+                    .ok_or("test page size must be positive")?,
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids,
+            },
         )
         .await?;
     match descriptor {
@@ -505,12 +515,16 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
         .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            3,
-            &mut bytes,
-            &mut ids
+            &crate::orm::binary::BinaryPageRequest {
+                collection: NativeRow::COLLECTION,
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(3).ok_or("test page size must be positive")?
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids
+            },
         )
         .await
         .is_err());
@@ -518,12 +532,16 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
     assert_eq!(ids, [uuid::Uuid::from_u128(99)]);
     let result = store
         .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            2,
-            &mut bytes,
-            &mut ids,
+            &crate::orm::binary::BinaryPageRequest {
+                collection: NativeRow::COLLECTION,
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?,
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids,
+            },
         )
         .await?;
     assert_eq!(result, Some(descriptor(ElementType::I8, vec![2])));
@@ -585,12 +603,16 @@ async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending
     let mut ids = vec![uuid::Uuid::from_u128(99)];
     assert!(store
         .binary_page_into(
-            NativeRow::COLLECTION,
-            "payload",
-            None,
-            2,
-            &mut bytes,
-            &mut ids
+            &crate::orm::binary::BinaryPageRequest {
+                collection: NativeRow::COLLECTION,
+                field: "payload",
+                after: None,
+                limit: std::num::NonZeroUsize::new(2).ok_or("test page size must be positive")?
+            },
+            crate::orm::binary::BinaryPageOutput {
+                bytes: &mut bytes,
+                ids: &mut ids
+            },
         )
         .await
         .is_err());

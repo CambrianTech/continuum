@@ -53,17 +53,17 @@ impl super::relational::RelationalStore {
     /// This is an ID-ordered live page, not a revision-watermarked snapshot.
     pub async fn binary_page_into(
         &self,
-        collection: &str,
-        field: &str,
-        after: Option<uuid::Uuid>,
-        limit: usize,
-        bytes: &mut Vec<u8>,
-        ids: &mut Vec<uuid::Uuid>,
+        request: &super::binary::BinaryPageRequest<'_>,
+        output: super::binary::BinaryPageOutput<'_>,
     ) -> Result<Option<BinaryDescriptor>, String> {
         use sea_orm::sqlx::Row;
-        if limit == 0 {
-            return Err("binary page size must be positive".into());
-        }
+        let super::binary::BinaryPageRequest {
+            collection,
+            field,
+            after,
+            limit,
+        } = *request;
+        let super::binary::BinaryPageOutput { bytes, ids } = output;
         let column = self.binary_column(collection, field)?;
         let header_column = Alias::new(descriptor_column(field));
         let mut query = Query::select();
@@ -78,7 +78,7 @@ impl super::relational::RelationalStore {
                     .or(Expr::col(header_column).is_not_null()),
             )
             .order_by(Alias::new("id"), Order::Asc)
-            .limit(u64::try_from(limit).map_err(|_| "page size exceeds u64")?);
+            .limit(u64::try_from(limit.get()).map_err(|_| "page size exceeds u64")?);
         if let Some(after) = after {
             query.and_where(Expr::col(Alias::new("id")).gt(after.to_string()));
         }
