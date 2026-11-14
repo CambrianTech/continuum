@@ -212,7 +212,7 @@ fn kv_rate_from_header_cached(path: &std::path::Path) -> Option<u64> {
 /// was built from raw parts while the resolver divided by 2 (2026-08-24).
 pub fn apply_kv_quantization(mut fp: ModelFootprint) -> ModelFootprint {
     fp.kv_per_token = (fp.kv_per_token / kv_cache_quant_divisor()).max(1);
-    fp,
+    fp
 }
 
 /// The resident-KV divisor of the resolved KV cache decision, so the plan sizes the

@@ -101,7 +101,7 @@ mod boot_during_memory_settle {
         let mut fp = crate::inference::planning::serving_plan::footprint::calibrated_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 8_317;
-        fp,
+        fp
     }
 
     fn compressed(bytes: u64) -> HostMemoryReading {
