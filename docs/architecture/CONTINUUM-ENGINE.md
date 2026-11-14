@@ -530,6 +530,60 @@ Continuum runtime work must follow these rules:
    ids, or swallowed command errors.
 9. Extension code should be short because the base substrate is doing the hard
    work.
+10. **Stages emit what they deliver; anything that needs it subscribes. No
+    timeout, sleep or poll is ever the mechanism that moves work forward**
+    (Joel, 2026-11-14: "Timeouts are dumb ... every stage emits what it delivers
+    and anything else can consume those via subscriptions to any number of
+    dependencies"; "every timeout is gonna be different and flaky. All of the
+    sudden you're on a faster machine"). A wait names the event it waits for
+    (process exited, port bound, checkpoint written, engine ready, artifact
+    built), so a faster machine simply arrives sooner and a slower one is never
+    failed by a stopwatch. Dependencies come from the data a stage consumes,
+    never from a hand-written order. A timeout NEVER decides deterministic flow
+    (Joel: "You only use timeouts to trigger errors like a last resort like a web
+    request failing and even then ideally you're tuned into errors, interrupts
+    and other events too. You NEVER use timeouts [for] deterministic flow"). Its
+    only place is the error path, as the last resort when a remote party may
+    never answer (a hung network request); even there the first line is the
+    error event itself (connection reset, process-exit signal, interrupt, the
+    peer's typed failure), and the timeout only names the event that never came. This holds in production, in tests (assert on the completion
+    event, never on elapsed time) and in our own tooling (a deploy is a graph:
+    artifact built -> stop -> core-exited -> start -> engine-ready -> minds
+    resume, with the build outside the dark window). Measured cost of breaking
+    it, 2026-11-13/14 on the M5: `continuum stop` hung 100 s on four deploys
+    waiting on a timer instead of the core's exit (the core's own shutdown is
+    2.2 s), and two CI tests (gateway port rebind, adopted-checkpoint save) fail
+    on whatever machine is slower than the one their duration was tuned on
+    (cards b5b9bef3, 13590777). The `time_bounds` and `wall_clock` ratchets count
+    sleeps and timeouts used as control flow, tests included.
+11. **Rust is deterministic only when states and failures are types** (Joel,
+    2026-11-14: "Rust is HIGHLY deterministic if you use it right"; "Even when
+    you code rust it looks like js"). A review of five PRs that night
+    (`~/.continuum/evidence/js-shaped-rust-2026-11-14/review.md`) found ~30
+    sites in three recurring shapes; every reviewer asks these, and a ratchet
+    counts them in touched files:
+    - **Unknown stored as a value** (0, 0.0, `usize::MAX`, `""`, `.max(1)`
+      meaning "not measured"): can this number be zero or MAX for a reason
+      other than the measurement? Absence is `Option`, `Probed` or an enum.
+    - **A typed failure turned into a `String`** (`Result<_, String>`,
+      `map_err(|e| format!(..))`, `Err(())`, variants holding a `String`,
+      `{success, error: Option<String>}` envelopes): can the caller `match` on
+      why it failed?
+    - **One state spread across `Option`s and `bool`s** (flags rebuilt from an
+      enum, parallel `Option`s matched as a tuple with a `_ =>` fallback): does
+      a combination exist the code never handles? Make it unrepresentable.
+    - **The contract carries the shape** (Joel: "group params as part of
+      structs when they belong together. Pass by reference and assign
+      mutability and optional at contract"): parameters that travel together
+      are one struct, never a long list of same-typed arguments a caller can
+      swap; a function borrows (`&T`, `&mut T` only where it mutates) instead
+      of taking ownership or cloning; what may be absent is `Option` in the
+      signature and what must be present is a required field, so a caller can
+      read mutability and optionality from the contract and the compiler
+      enforces both, never a runtime check inside.
+    - And **strings as identities** (verbs, field names, producer labels,
+      `format!` keys beside a typed id, `serde_json::Value.get("field")` where
+      a typed input exists): an identity is an enum or newtype.
 
 ### Domain Mapping
 
