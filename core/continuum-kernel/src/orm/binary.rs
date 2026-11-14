@@ -9,6 +9,14 @@ pub struct BinaryPageRequest<'a> {
     pub limit: std::num::NonZeroUsize,
 }
 
+/// One page of distinct native descriptors, ordered by their stored header bytes.
+/// The cursor is the last descriptor from the preceding page of this snapshot.
+pub struct BinaryDescriptorPageRequest<'a> {
+    pub field: &'a str,
+    pub after: Option<&'a BinaryDescriptor>,
+    pub limit: std::num::NonZeroUsize,
+}
+
 /// Borrowed destination views; the caller retains allocation and buffer custody.
 pub struct BinaryPageOutput<'a> {
     pub bytes: &'a mut Vec<u8>,

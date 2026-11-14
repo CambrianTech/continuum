@@ -68,14 +68,13 @@ impl BinarySnapshot {
         self.page(request, Some(&header), output).await
     }
 
-    /// The distinct descriptors `field` holds in this snapshot, at most `limit` of them: one
-    /// per producer layout. A consumer that receives `limit` cannot know it saw them all.
-    pub async fn descriptors(
+    /// One keyset page of distinct descriptors; the transfer limit never caps the corpus.
+    pub async fn descriptor_page(
         &self,
-        field: &str,
-        limit: std::num::NonZeroUsize,
+        request: &super::binary::BinaryDescriptorPageRequest<'_>,
     ) -> Result<Vec<BinaryDescriptor>, String> {
         use sea_orm::sqlx::Row;
+        let super::binary::BinaryDescriptorPageRequest { field, after, limit } = *request;
         self.header_column(field).ok_or(NOT_BINARY)?;
         let header = || Alias::new(descriptor_column(field));
         let mut query = Query::select();
@@ -86,6 +85,9 @@ impl BinarySnapshot {
             .and_where(Expr::col(header()).is_not_null())
             .order_by(header(), Order::Asc)
             .limit(u64::try_from(limit.get()).map_err(|_| "descriptor limit exceeds u64")?);
+        if let Some(cursor) = after {
+            query.and_where(Expr::col(header()).gt(cursor.encode()?));
+        }
         let rows = self
             .transaction
             .query_all(DbBackend::Sqlite.build(&query))
