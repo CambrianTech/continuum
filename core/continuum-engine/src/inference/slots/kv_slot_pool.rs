@@ -801,10 +801,11 @@ impl Drop for CheckpointSave {
 }
 
 /// Travels with the actual owned Child, including after retirement. The exit bit
-/// belongs to this generation even when the endpoint already has a newer child.
+/// belongs to this generation even when the endpoint already has a newer child, and is a
+/// `watch` so a waiter subscribes to the exit ([`EngineGeneration::exit`]) instead of polling it.
 #[derive(Clone)]
 pub struct EngineGeneration {
     pub(super) id: Uuid,
-    pub(super) exited: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) exited: Arc<tokio::sync::watch::Sender<bool>>,
     pub(super) endpoint: std::sync::Weak<EndpointSlots>,
 }

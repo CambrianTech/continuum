@@ -86,7 +86,7 @@ pub struct DiffHunk {
     pub content: String,
 }
 
-/// How to edit a file (four modes).
+/// How to edit a file (five modes).
 #[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, export_to = "../../../protocol/typescript/code/EditMode.ts")]
@@ -118,6 +118,11 @@ pub enum EditMode {
     },
     /// Append content to end of file.
     Append { content: String },
+    /// Several edits applied together, each to the result of the one before, and checked once on
+    /// the final result: all land or none does. For a fix that is only valid whole (move a brace,
+    /// rename at two sites), whose halves would each be refused as unparseable (Benchy on the M5,
+    /// 2026-11-11: ~25 minutes of refused halves moving one closing brace).
+    Batch { edits: Vec<EditMode> },
 }
 
 /// Result of a file write/edit/delete operation.
