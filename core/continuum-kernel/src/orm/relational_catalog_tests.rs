@@ -2,6 +2,33 @@
 
 use super::*;
 
+/// Aggregate scalar storage classes in the database; never load credit bodies.
+#[tokio::test]
+#[ignore = "requires ORM_DECLARATION_DB, ORM_DECLARATION_COLLECTION, ORM_DECLARATION_COLUMN"]
+async fn inspect_scalar_storage_classes_read_only() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::{ConnectionTrait, sea_query::{Alias, Expr, Func, Query}};
+    let path = std::env::var("ORM_DECLARATION_DB")?;
+    let collection = std::env::var("ORM_DECLARATION_COLLECTION")?;
+    let column = std::env::var("ORM_DECLARATION_COLUMN")?;
+    let table = super::adapter::naming::to_table_name(&collection);
+    let db = sea_orm::Database::connect(format!("sqlite://{}?mode=ro", path.replace('\\', "/"))).await?;
+    let physical = super::relational_structure::read(&db, &table).await?;
+    if !physical.columns.iter().any(|field| field.name == column) {
+        return Err("requested physical column is absent".into());
+    }
+    let query = Query::select()
+        .expr_as(Func::cust(Alias::new("typeof")).arg(Expr::col(Alias::new(&column))), Alias::new("storage_class"))
+        .expr_as(Func::count(Expr::asterisk()), Alias::new("rows"))
+        .from(Alias::new(&table))
+        .group_by_col(Alias::new("storage_class"))
+        .to_owned();
+    for row in db.query_all(db.get_database_backend().build(&query)).await? {
+        println!("SCALAR_CLASS {collection} {column} {} {}", row.try_get::<String>("", "storage_class")?, row.try_get::<i64>("", "rows")?);
+    }
+    db.close().await?;
+    Ok(())
+}
+
 /// Inspect one persisted declaration without admitting schemas or reading row bodies.
 /// The connection is read-only even when the source is a running persona's store.
 #[tokio::test]
