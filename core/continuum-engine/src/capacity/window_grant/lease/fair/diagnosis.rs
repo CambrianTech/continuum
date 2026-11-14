@@ -11,6 +11,7 @@ pub(super) struct QueueDiagnosis {
 struct Holder {
     live: usize,
     unresolved: usize,
+    rendered: usize,
     terminal_revision: Option<u64>,
     baseline: Option<u64>,
     armed_yield: Option<u64>,
@@ -37,11 +38,12 @@ impl QueueDiagnosis {
             .into_iter()
             .map(|mind| {
                 let entries = state.entries.get(&mind).into_iter().flatten();
-                let (mut live, mut unresolved) = (0, 0);
+                let (mut live, mut unresolved, mut rendered) = (0, 0, 0);
                 for entry in entries {
                     match entry.custody {
                         Custody::Live => live += 1,
                         Custody::Unresolved => unresolved += 1,
+                        Custody::Rendered => rendered += 1,
                     }
                 }
                 (
@@ -49,6 +51,7 @@ impl QueueDiagnosis {
                     Holder {
                         live,
                         unresolved,
+                        rendered,
                         terminal_revision: state.receipts.get(&mind).map(|(_, revision)| *revision),
                         baseline: fair.baseline.get(&mind).copied(),
                         armed_yield: state.yield_after.get(&mind).map(|(_, baseline)| *baseline),

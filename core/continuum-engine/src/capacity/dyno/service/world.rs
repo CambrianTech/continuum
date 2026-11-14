@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use super::opportunity::{Boundary, MindAt, Mind, NoOpportunity, Opportunity};
 use crate::capacity::window_grant::dyno_seam::{Observation, OwnerUnderTest};
-use crate::capacity::window_grant::{settle, Demand, FairGrantState, GrantHandoff, GrantLease, GrantReservation, PoolGrants, ReserveRefused, TerminalReceipt};
+use crate::capacity::window_grant::{settle, ActHold, Demand, FairGrantState, GrantHandoff, GrantLease, GrantReservation, PoolGrants, ReserveRefused, TerminalReceipt};
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::planning::window_allocator::test_tokens;
 
@@ -25,7 +25,7 @@ use crate::inference::planning::window_allocator::test_tokens;
 pub(crate) enum Step {
     /// The serving daemon's planning tick: one fair publication.
     Publish,
-    /// Her act is rendered and quoted against her published lease.
+    /// Her act is rendered and quoted against her published lease, which the act holds until it ends.
     Quote(usize),
     /// Dispatch compares-and-reserves the quoted lease.
     Reserve(usize),
@@ -83,6 +83,8 @@ struct MindState {
     need: u32,
     phase: Phase,
     quoted: Option<GrantLease>,
+    /// Her act's hold on the grant it is rendered against (`hold_for_act`), from the quote to its end.
+    hold: Option<ActHold>,
     reservation: Option<GrantReservation>,
     /// The engine her reservation was made on (a receipt after a replacement is late).
     reserved_on: Option<EngineIncarnation>,
@@ -98,9 +100,14 @@ struct MindState {
 }
 
 impl MindState {
-    /// A reservation is held (reserved or sent) or was let go unresolved. A quote holds nothing.
+    /// Her act holds its grant (quoted, reserved or sent) or a request was let go unresolved.
     fn owns_request(&self) -> bool {
-        matches!(self.phase, Phase::Reserved | Phase::Sent) || self.unresolved > 0
+        self.hold.is_some() || matches!(self.phase, Phase::Reserved | Phase::Sent) || self.unresolved > 0
+    }
+
+    /// Her act ended (a receipt, a cut stream, a refusal or a cancellation): its hold ends with it.
+    fn end_act(&mut self) {
+        (self.phase, self.hold) = (Phase::Idle, None);
     }
 }
 
@@ -138,7 +145,7 @@ impl World {
         let order: Vec<Mind> = (1..=minds.len() as u128).map(uuid::Uuid::from_u128).collect();
         let states = order.iter().zip(minds).map(|(id, (name, need))| {
             (*id, MindState {
-                name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, reservation: None, reserved_on: None,
+                name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, hold: None, reservation: None, reserved_on: None,
                 unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, idle_at_last_publish: false,
             })
         }).collect();
@@ -217,20 +224,25 @@ impl World {
             Step::Publish => self.publish(),
             Step::ReplaceEngine => {
                 self.engine = EngineIncarnation { pid: self.engine.pid + 1, started_s: self.engine.started_s + 1, port: self.engine.port };
-                // The old engine's KV is gone and its unresolved requests are fenced. A quote,
-                // a reservation and a handoff ticket made against it stay with their holders: a
+                // The old engine's KV is gone and its unresolved requests and act holds are fenced. A
+                // quote, a reservation and a handoff ticket made against it stay with their holders: a
                 // late reserve or receipt for them is exactly what must be refused or ignored.
                 for s in self.minds.values_mut() {
                     (s.resident, s.unresolved, s.published, s.completed_since_grant, s.idle_at_last_publish) = (0, 0, 0, false, false);
+                    s.hold = None;
                 }
                 Applied::default()
             }
             Step::Quote(i) => {
                 let id = self.mind(i);
-                let lease = self.lease_now(id);
-                let s = self.minds.get_mut(&id).expect("test: indexed mind");
-                if let (Phase::Idle, Some(lease)) = (s.phase, lease) {
-                    (s.phase, s.quoted) = (Phase::Quoted, Some(lease));
+                let held = match self.minds[&id].phase {
+                    Phase::Idle => self.owner.hold(id, self.lease_now(id)),
+                    _ => None,
+                };
+                // No hold (none published, handed off, or owed to a waiter): her act waits for a grant.
+                if let Some(hold) = held {
+                    let s = self.minds.get_mut(&id).expect("test: indexed mind");
+                    (s.phase, s.quoted, s.hold) = (Phase::Quoted, Some(hold.lease()), Some(hold));
                 }
                 Applied::default()
             }
@@ -250,7 +262,7 @@ impl World {
                 if s.phase == Phase::Sent {
                     let reservation = s.reservation.take().expect("test: a sent request holds its reservation");
                     let current = s.reserved_on == Some(engine);
-                    s.phase = Phase::Idle;
+                    s.end_act();
                     if matches!(step, Step::Terminal(_)) {
                         settle(reservation, Some(&TerminalReceipt { finish: "stop".into() }));
                         *self.completions.entry(id).or_insert(0) += 1;
@@ -265,7 +277,8 @@ impl World {
             Step::CancelQuoted(i) => {
                 let s = self.minds.get_mut(&self.order[i % self.order.len()]).expect("test: indexed mind");
                 if s.phase == Phase::Quoted {
-                    (s.phase, s.quoted) = (Phase::Idle, None);
+                    s.end_act();
+                    s.quoted = None;
                 }
                 Applied::default()
             }
@@ -275,7 +288,7 @@ impl World {
                 if s.phase == Phase::Reserved {
                     drop(s.reservation.take());
                     s.unresolved += u32::from(s.reserved_on == Some(engine));
-                    s.phase = Phase::Idle;
+                    s.end_act();
                 }
                 Applied::default()
             }
@@ -317,7 +330,8 @@ impl World {
                 Applied::default()
             }
             Err(refused) => {
-                (s.phase, s.quoted) = (Phase::Idle, None);
+                s.end_act();
+                s.quoted = None;
                 Applied { refused: Some(refused), ..Applied::default() }
             }
         }

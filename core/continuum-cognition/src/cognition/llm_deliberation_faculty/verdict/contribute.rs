@@ -76,13 +76,14 @@ impl LlmDeliberationFaculty {
             }
         };
         let decided_window = decided.tokens();
-        // The grant LEASE this turn is rendered against (size and revision), when she is on the
-        // shared pool: the grant owner reserves that revision at dispatch, after any lane wait.
-        let lease_now = || crate::capacity::window_grant::current_lease(self.persona_id);
-        let mut rendered_lease = match decided {
-            crate::capacity::mind_window::Decided::Granted(_) => lease_now(),
+        // The grant LEASE this act is rendered against, HELD until the act ends (`hold_granted`): no
+        // replan moves it and no handoff takes it under her act; a change applies at her next act.
+        let hold_now = || crate::capacity::mind_window::hold_granted(self.persona_id);
+        let mut act_hold = match decided {
+            crate::capacity::mind_window::Decided::Granted(_) => match hold_now() { Ok(hold) => Some(hold), Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())) },
             _ => None,
         };
+        let mut rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
             self.binding.clone(),
@@ -474,7 +475,8 @@ impl LlmDeliberationFaculty {
                         "her grant changed between render and dispatch: re-rendered against it, never sent"
                     );
                     grant_rerendered = true;
-                    rendered_lease = lease_now();
+                    act_hold = Some(match hold_now() { Ok(hold) => hold, Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())) });
+                    rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
                     fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
                     view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
