@@ -229,13 +229,13 @@ fn a_node_without_a_home_lane_parks_instead_of_downgrading() {
 }
 
 // what this catches: the pooled-demand rule — 16 minds on 7 lanes borrow a fresh
-// peer's two free lanes (27B measured 42 ≥ local proxy 40) for the two least-served
+// peer's two free lanes (27B measured 42 ≥ local measured 40) for the two least-served
 // minds; a stale beacon, a lower-ranked model, or a full peer lends nothing; and a
 // node with lanes to spare moves nobody.
 #[test]
 fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
     let gpu = Uuid::from_u128(0x5090);
-    let rank = |m: &str| -> Option<u8> { match m { "qwen-27b" => Some(42), "tiny" => Some(10), _ => None } };
+    let rank = |m: &str| -> Option<continuum_kernel::capability::Capability> { match m { "qwen-27b" => Some(continuum_kernel::capability::Capability::Measured { score: 42 }), "tiny" => Some(continuum_kernel::capability::Capability::Measured { score: 10 }), _ => None } };
     let peers = vec![
         PeerOffer { peer: gpu, served_model: Some("qwen-27b".into()), lanes: 2, residents: 0, beacon_age_ms: 5_000, free_slots_live: 2, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
         PeerOffer { peer: Uuid::from_u128(1), served_model: Some("tiny".into()), lanes: 4, residents: 0, beacon_age_ms: 5_000, free_slots_live: 4, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
@@ -243,12 +243,12 @@ fn a_node_with_more_minds_than_lanes_borrows_a_peers_free_lanes() {
         PeerOffer { peer: Uuid::from_u128(3), served_model: Some("qwen-27b".into()), lanes: 8, residents: 0, beacon_age_ms: REMOTE_SEAT_FRESH_MS + 1, free_slots_live: 8, lane_wait_p50_ms: 0, lane_wait_samples: 0, served_context_window: None },
     ];
     let minds: Vec<(Uuid, u64)> = (1..=16u128).map(|i| (Uuid::from_u128(0x100 + i), 20 - (i as u64 % 5))).collect();
-    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None);
+    let moves = choose_offloads(LocalShape { resident: 16, lanes: 7, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None);
     assert_eq!(moves.len(), 2, "two free lanes on the only eligible peer: {moves:?}");
     assert!(moves.iter().all(|(_, p, m)| *p == gpu && m == "qwen-27b"));
     let least = minds.iter().min_by_key(|(_, g)| *g).map(|(m, _)| *m).expect("a mind");
     assert_eq!(moves[0].0, least, "the least-served mind goes first");
-    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: 40, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None).is_empty());
+    assert!(choose_offloads(LocalShape { resident: 5, lanes: 7, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: None }, &peers, &rank, &minds, &|_| None).is_empty());
 }
 
 // what this catches (card 73eefbbb): which decided moves the workspace must be
@@ -282,9 +282,9 @@ fn offer(peer: u128, free: u32, wait_p50_ms: u64, wait_samples: u32) -> PeerOffe
     PeerOffer { peer: Uuid::from_u128(peer), served_model: Some("qwen-27b".into()), lanes: 4, residents: 4, beacon_age_ms: 5_000, free_slots_live: free, lane_wait_p50_ms: wait_p50_ms, lane_wait_samples: wait_samples, served_context_window: None }
 }
 fn local(resident: u32, lanes: u32, home_wait: Option<u64>) -> LocalShape {
-    LocalShape { resident, lanes, rank: 40, lane_wait_p50_ms: home_wait }
+    LocalShape { resident, lanes, rank: continuum_kernel::capability::Capability::Measured { score: 40 }, lane_wait_p50_ms: home_wait }
 }
-fn rank27(m: &str) -> Option<u8> { (m == "qwen-27b").then_some(42) }
+fn rank27(m: &str) -> Option<continuum_kernel::capability::Capability> { (m == "qwen-27b").then_some(continuum_kernel::capability::Capability::Measured { score: 42 }) }
 fn minds(n: u128) -> Vec<(Uuid, u64)> { (1..=n).map(|i| (Uuid::from_u128(0x100 + i), i as u64)).collect() }
 
 // what this catches (card c84d885a, S1b — Cormac's "NO RESERVATION" location): `free`
