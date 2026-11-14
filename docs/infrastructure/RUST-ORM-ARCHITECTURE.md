@@ -126,9 +126,14 @@ Declared foreign-key cascades now contribute their transitive identity closure t
 one recursive ORM query, using UNION to deduplicate cycles and converging paths. Only
 reachable native collections receive tombstones; SET NULL survivors stay live and a
 RESTRICT failure rolls back every receipt. The owner restores and physically verifies
-its persisted schema catalog once at open, so children participate even before their
+its persisted schema catalog once at open using primary-key receipt pages (64 per
+transfer, with no collection-count cap), so children participate even before their
 caller re-admits a declaration. A new external declaration requires admission or a
 new owner before deletion; an incomplete catalog cannot silently miss descendants.
+Receipt validation currently retains exact declaration/physical equality. Removing its
+JSON comparison requires strict declaration decoding first: permissive serde defaults
+and ignored unknown fields must not silently admit unsupported metadata. This remains
+an explicit CPU/schema improvement gap; paging alone does not remove serialization.
 The existing committing owner publishes typed domain/collection revision notices only
 after commit. Append and native receivers share that owner but never share a revision
 domain. Native create/update, direct deletes, batch deletes, cascades and clear return

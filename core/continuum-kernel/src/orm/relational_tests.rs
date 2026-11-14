@@ -6,6 +6,9 @@ use super::*;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+#[path = "relational_catalog_tests.rs"]
+mod catalog_tests;
+
 #[derive(Serialize, Deserialize, Entity)]
 #[entity(collection = "relational_parents")]
 struct Parent {
