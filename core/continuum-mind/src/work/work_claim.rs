@@ -91,7 +91,7 @@ impl ActionCommand for WorkClaim {
                 }
             }
         }
-        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS); // unwrap_or: an omitted ttl_ms is the declared default lease, the param's documented meaning
         let origin = p.origin.into();
         let mut claim_attempt = airc
             .claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
@@ -132,7 +132,7 @@ impl ActionCommand for WorkClaim {
                     .caller
                     .as_ref()
                     .map(|c| short8(c.peer_id.as_uuid()))
-                    .unwrap_or_else(|| "-".to_string());
+                    .unwrap_or_else(|| "-".to_string()); // unwrap_or_else: a log label for an anonymous caller, never a decision
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await
