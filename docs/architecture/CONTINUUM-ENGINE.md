@@ -530,6 +530,27 @@ Continuum runtime work must follow these rules:
    ids, or swallowed command errors.
 9. Extension code should be short because the base substrate is doing the hard
    work.
+10. **Stages emit what they deliver; anything that needs it subscribes. No
+    timeout, sleep or poll is ever the mechanism that moves work forward**
+    (Joel, 2026-11-14: "Timeouts are dumb ... every stage emits what it delivers
+    and anything else can consume those via subscriptions to any number of
+    dependencies"; "every timeout is gonna be different and flaky. All of the
+    sudden you're on a faster machine"). A wait names the event it waits for
+    (process exited, port bound, checkpoint written, engine ready, artifact
+    built), so a faster machine simply arrives sooner and a slower one is never
+    failed by a stopwatch. Dependencies come from the data a stage consumes,
+    never from a hand-written order. A bound may exist only as a watchdog that
+    reports a stall loudly, naming the event that never came; it never decides
+    the outcome. This holds in production, in tests (assert on the completion
+    event, never on elapsed time) and in our own tooling (a deploy is a graph:
+    artifact built -> stop -> core-exited -> start -> engine-ready -> minds
+    resume, with the build outside the dark window). Measured cost of breaking
+    it, 2026-11-13/14 on the M5: `continuum stop` hung 100 s on four deploys
+    waiting on a timer instead of the core's exit (the core's own shutdown is
+    2.2 s), and two CI tests (gateway port rebind, adopted-checkpoint save) fail
+    on whatever machine is slower than the one their duration was tuned on
+    (cards b5b9bef3, 13590777). The `time_bounds` and `wall_clock` ratchets count
+    sleeps and timeouts used as control flow, tests included.
 
 ### Domain Mapping
 
