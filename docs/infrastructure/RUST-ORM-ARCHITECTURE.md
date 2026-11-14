@@ -333,6 +333,15 @@ are unfinished. The f64-specific codec was rejected and deleted. Existing
 JSON row hydration, optional unbounded query surfaces and static resource caps remain
 implementation gaps. This document states the contract, not that those gaps are fixed.
 
+Measured isolated native-sync replay (2026-11-14): 10,003 initial 768-f32 rows,
+28 native updates and four deletions. A warm full read selected 9,999 live rows and
+30,716,928 payload bytes in 95.561/98.267 ms; the native delta selected 32 changes
+and 86,016 payload bytes in 0.958/0.457 ms. Alternating runs include validation and
+exclude snapshot acquisition. This is a synthetic sparse-update storage comparison
+with an assumed previously cached corpus, not bootstrap, CPU/RSS measurement,
+GPU transfer/quality, resident latency or deployment proof. Exact changed identities,
+descriptors, bytes and removals are checked; cold/restart load remains to be measured.
+
 ## 8. Simulation is part of every iteration
 
 Before changing a data path, capture a reproducible workload and a failing or costly

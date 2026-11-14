@@ -6,6 +6,9 @@ use super::{adapter::AdapterConfig, relational::RelationalStore};
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 
+#[path = "binary_delta_load.rs"]
+mod delta_load;
+
 #[derive(Serialize, Deserialize, Entity)]
 #[entity(collection = "binary_load_native")]
 struct Native {
@@ -126,5 +129,6 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
     for native in [false, true, true, false] {
         replay(store.clone(), native, expected.clone(), bytes.clone()).await?;
     }
+    delta_load::replay(&store, &descriptor, &bytes).await?;
     Ok(())
 }
