@@ -163,6 +163,7 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         run: None,
         body: None,
         received_ms: Some(at),
+        verbs: Vec::new(),
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };
     let log = super::super::action_log::ActionLog::from_records(vec![
@@ -231,6 +232,7 @@ fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
         run: None,
         body: None,
         received_ms: Some(seq),
+        verbs: Vec::new(),
         act: Some(continuum_context::cause::Act {
             fingerprint: continuum_context::cause::Fingerprint::of([("outputId", b"59db1a33".as_slice())]),
             effect: ToolEffect::Reopens,
@@ -249,4 +251,23 @@ fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
     assert_eq!(log.repeat_run(4), None, "another room's act starts its own run");
     log.push(read(5, room, "a different output"));
     assert_eq!(log.repeat_run(5), None, "a changed outcome ends it");
+}
+
+// what this catches: a checkpointed thought naming neither its text nor a saved whole with its
+// length (three `Option`s allowed it, and her view rendered it as an empty message) failing her
+// whole checkpoint or reaching her view. Decoded, it is dropped with a probe; every other thought
+// restores, and the wire shape a reverted build reads is unchanged.
+#[test]
+fn an_unreadable_checkpointed_thought_is_dropped_and_the_rest_restore() {
+    let wm = WorkingMemory::new(8);
+    wm.record("a resident thought");
+    let mut wire = serde_json::to_value(wm.snapshot()).expect("test: a snapshot encodes"); // expect: a snapshot is plain data
+    assert_eq!(wire["thoughts"][0]["text"], "a resident thought", "the wire shape every build reads");
+    if let Some(thoughts) = wire["thoughts"].as_array_mut() {
+        thoughts.push(serde_json::json!({ "occurrence": 999, "at_ms": 1 }));
+    }
+    let snapshot: VolatileSnapshot = serde_json::from_value(wire).expect("test: the checkpoint decodes"); // expect: an unreadable thought never fails it
+    let restored = WorkingMemory::new(8);
+    restored.restore(snapshot);
+    assert_eq!(restored.thoughts(), wm.thoughts(), "the readable thought restores; the unreadable one is gone");
 }

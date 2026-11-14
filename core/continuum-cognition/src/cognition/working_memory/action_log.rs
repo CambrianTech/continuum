@@ -159,6 +159,11 @@ pub(crate) struct ActionRecord {
     /// act with no identity or outcome, and for a record from a build before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run: Option<u32>,
+    /// What each of its calls did, classed once at the act seam (`ToolVerb`): what reads her edits
+    /// off her log (`working_memory::in_hand`), never her call names parsed again. Empty for a
+    /// record from a build before it was kept, and for a text receipt with no typed acts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub verbs: Vec<crate::cognition::act_observe::ToolVerb>,
 }
 
 impl ActionRecord {

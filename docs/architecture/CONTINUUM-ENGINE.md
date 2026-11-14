@@ -1874,7 +1874,12 @@ reply edges. The view's `Item` gains the same link.
      with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
      what X said or how it ended.
   2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
-     message to the newest element of each causal thread.
+     message to the newest element of each causal thread. Her work in hand is part of that end: a source
+     marks an item `Item::in_hand` (the read of a file she is editing, her first thought after each edit's
+     result), a start keeps it whole while its source's grant holds it beside the rest at their floor
+     (`view::allot`, charged like any item, the oldest given up first), the claim's newest end counts it,
+     and the oldest run folds around it (`working_memory::in_hand`; Aris on the M5, 2026-11-14: two
+     turnovers collapsed the file she was editing and she read it whole again after each).
   3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
      keeps its outcome and a pointer back. The chain shortens and stays linked.
   4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
