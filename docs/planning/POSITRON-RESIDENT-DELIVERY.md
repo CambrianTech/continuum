@@ -1,7 +1,32 @@
-# Positron clients built and verified by residents
+# Autonomous product development, proven on Positron
 
 Status: delivery contract, 2026-11-14. Implementation and live acceptance remain to be proven.
 Joel's direction: stable, fast personas build the product they can actually see and use.
+
+## General capability, first product
+
+Personas are general-purpose autonomous developers. They must work on people's existing web,
+iOS and other projects using those projects' frameworks, build systems and navigation models.
+Neither Positron, Lit, a Continuum activity embedded in the product, nor a framework rewrite is
+required. Positron is our first demanding product and an optional integration we can offer others.
+The Positron-specific client contracts below apply to our product, not to every user's project.
+
+The common capability is to own work, edit source, run the project, observe the real result,
+interact, diagnose, correct and deliver. Project adapters declare actual capabilities and typed
+targets; they do not impose one UI framework. Browser DOM/accessibility/pixels and iOS simulator
+or device feedback must work without Positron instrumentation. Positron can enrich the same
+observations with semantic state and revision receipts when the project uses it.
+
+Codex must dogfood this exact command path while building it, recording failures and fixes.
+A private developer-only browser workflow does not prove residents have the capability. Prove
+both the developer and resident can reach the same supported target and consume its feedback.
+
+Residents retain their own identity, task ownership, workspace, observations and unfinished work
+across disconnection and restart. They choose and advance useful work without a supervising
+agent or human supplying every next action. Recipes provide reusable activity contracts, not a
+mandatory scripted agent loop. External review and assistance remain available; continual human
+attendance is not an operating dependency. Measure independently completed and reviewed tasks,
+not command volume. Do not build a second agent runner or harness around the persona runtime.
 
 ## Product and boundaries
 
@@ -116,6 +141,8 @@ create a parallel demo application. Capture baseline before changing the real cl
 | Resident CSS/JS edit, including compile failure | Applied asset revision or explicit failure; state survives; resident sees actual visual change |
 | Click/navigation plus stale or closed target | Correlated result and new observation; typed refusal for stale target; no timer-based success |
 | Narrow viewport, keyboard and touch | Same task completes, content remains reachable, focus and edits preserved |
+| Existing non-Positron web project and iOS project | Edit/run/observe/interact/correct works through declared project capabilities without converting the app to Positron or Lit |
+| Developer disconnects and resident process restarts | Durable task and observation context resumes; resident advances work without a supplied next-action script |
 | Restart while saving a projection | One complete compatible snapshot or explicit invalid-cache state; no mixed revisions or cross-identity data |
 
 Every iteration replays measured faults and representative bursts: multiple subscribed views,
