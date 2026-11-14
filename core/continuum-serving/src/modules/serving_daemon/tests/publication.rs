@@ -191,8 +191,8 @@ async fn publish_plan_drives_the_watch() {
     // The candidates carry real trained windows (2eec3977: a persona seat holds what the
     // residents require; an 8k-window model cannot).
     let candidates = vec![
-        crate::inference::planning::serving_plan::footprint::calibrated_from_parts("small", GB, 4096, false, None).unwrap(),
-        crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap(),
+        crate::inference::planning::serving_plan::footprint::footprint_from_parts("small", GB, 4096, false, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap(),
+        crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap(),
     ];
     daemon.publish_plan(budget, &candidates, &candidates);
     let plan = rx.borrow().clone().expect("plan published");
@@ -244,7 +244,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
     daemon.set_leased_in_sent_source(Arc::new(Vec::new));
     let rx = daemon.subscribe();
-    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 262_144, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-14b", 9 * GB, 262_144, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap()];
     // The residents' requirement: a 56k typical prompt (the 5090's p50). No ring here holds a
     // working session, so no growth is measured and none is added.
     // No residents are live in this harness, so the seat's leased-in samples carry it —
@@ -305,7 +305,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
         .intent
         .set_pin(Some("different-model".into()), true)
         .is_ok());
-    let different = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("different-model", GB, 8192, true, None).unwrap()];
+    let different = vec![crate::inference::planning::serving_plan::footprint::footprint_from_parts("different-model", GB, 8192, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap()];
     daemon.publish_plan_for_intent(
         HostBudget {
             usable_bytes: 2 * GB,
@@ -338,7 +338,7 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     cold.set_leased_in_sent_source(Arc::new(Vec::new));
     cold.working_set.record_in_memory(uuid::Uuid::new_v4(), 200_000, 1);
     let rx_cold = cold.subscribe();
-    let small = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-1.5b", GB, 32_768, true, None).unwrap()];
+    let small = vec![crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-1.5b", GB, 32_768, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap()];
     cold.publish_plan(
         HostBudget {
             usable_bytes: 12 * GB,
@@ -456,7 +456,7 @@ async fn an_engine_bound_to_live_work_is_never_replaced_under_it() {
         usable_bytes: 45 * GB,
         perf_cores: 6,
     };
-    let candidates = vec![crate::inference::planning::serving_plan::footprint::calibrated_from_parts("coder-14b", 9 * GB, 8192, true, None).unwrap()];
+    let candidates = vec![crate::inference::planning::serving_plan::footprint::footprint_from_parts("coder-14b", 9 * GB, 8192, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated).unwrap()];
     daemon.publish_plan(budget, &candidates, &candidates);
 
     let store = store_path(&crate::paths::continuum_home().expect("test: a test home"));

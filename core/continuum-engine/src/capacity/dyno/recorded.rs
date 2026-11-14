@@ -138,13 +138,13 @@ impl Recorded {
     /// weights, trained window and KV rate over the planner's own constructor. `None` only for
     /// zero weights.
     pub fn qwen36_on_m5(&self) -> Option<ModelFootprint> {
-        let mut footprint = crate::inference::planning::serving_plan::footprint::calibrated_from_parts(
+        let mut footprint = crate::inference::planning::serving_plan::footprint::footprint_from_parts(
             "ggml-org/Qwen3.6-35B-A3B-GGUF",
             self.qwen36_weights_bytes.value,
             self.qwen36_trained_window.value,
             true,
             None,
-        )?;
+        ).map(crate::inference::planning::serving_plan::footprint::calibrated)?;
         footprint.kv_per_token = self.m5_kv_bytes_per_token.value;
         Some(footprint)
     }

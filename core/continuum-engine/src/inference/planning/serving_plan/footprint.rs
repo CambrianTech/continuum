@@ -233,21 +233,12 @@ fn kv_cache_quant_divisor() -> u64 {
 /// fs/registry IO so the (coarse, tunable) heuristics are unit-testable.
 /// `None` when there are no weights to serve.
 
-/// Test fixture: [`footprint_from_parts`] with the Devstral calibration as its measured compute
-/// rate (`ComputeRate::devstral_calibration`), so a fixture plans a real window instead of the
+/// Test fixture: a footprint with the Devstral calibration as its measured compute rate
+/// (`ComputeRate::devstral_calibration`), so a fixture plans a real window instead of the
 /// minimum an unknown rate is served at.
 #[cfg(any(test, feature = "test-fixtures"))]
-pub fn calibrated_from_parts(
-    id: &str,
-    weights_bytes: u64,
-    context_window: u32,
-    tool_capable: bool,
-    measured_capability: Option<u8>,
-) -> Option<ModelFootprint> {
-    footprint_from_parts(id, weights_bytes, context_window, tool_capable, measured_capability).map(|fp| ModelFootprint {
-        compute: super::ComputeRate::devstral_calibration(fp.kv_per_token),
-        ..fp
-    })
+pub fn calibrated(fp: ModelFootprint) -> ModelFootprint {
+    ModelFootprint { compute: super::ComputeRate::devstral_calibration(fp.kv_per_token), ..fp }
 }
 
 pub fn footprint_from_parts(

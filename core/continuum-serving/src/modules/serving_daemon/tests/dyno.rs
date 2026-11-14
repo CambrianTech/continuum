@@ -98,7 +98,7 @@ mod boot_during_memory_settle {
     const GROWN_WINDOW: u32 = 134_690;
 
     fn m5() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::calibrated_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 8_317;
         fp
@@ -168,7 +168,7 @@ mod the_pool_fits_the_host {
     const CACHE_MIB: u64 = 8_717;
 
     fn m5_measured() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::calibrated_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 15_163;
         // Fixture: the Devstral calibration at this KV rate, the compute rate the recorded boot planned with.
@@ -273,7 +273,7 @@ mod boot_counts_the_device_room {
     const TRAINED: u32 = 262_144;
 
     fn m5_measured() -> ModelFootprint {
-        let mut fp = crate::inference::planning::serving_plan::footprint::calibrated_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None)
+        let mut fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("ggml-org/Qwen3.6-35B-A3B-GGUF", 20_690_000_000, TRAINED, true, None).map(crate::inference::planning::serving_plan::footprint::calibrated)
             .expect("test: a footprint from the weights");
         fp.kv_per_token = 13_520;
         // Fixture: the Devstral calibration at this KV rate, the compute rate the recorded boot planned with.
