@@ -34,7 +34,8 @@ pub(super) async fn evolve(
         .map_err(|error| SchemaError::gap(&current.collection, error))?;
     let table = naming::to_table_name(&current.collection);
     if rebuild {
-        return rebuild_table(db, &table, &before, after).await;
+        let names: Vec<_> = before.create.get_columns().iter().map(|column| column.get_column_name()).collect();
+        return rebuild_table(db, &table, &names, after).await;
     }
     for column in after.create.get_columns() {
         if !before.create.get_columns().iter().any(|old| old.get_column_name() == column.get_column_name()) {
@@ -62,15 +63,14 @@ pub(super) async fn evolve(
 
 async fn rebuild_table(
     db: &DatabaseTransaction, table: &str,
-    before: &super::relational_schema::DeclaredTable,
+    before: &[String],
     mut after: super::relational_schema::DeclaredTable,
 ) -> Result<(), SchemaError> {
     let temporary = format!("orm_rebuild_{}", uuid::Uuid::new_v4().simple());
     after.create.table(Alias::new(&temporary));
     db.execute(DbBackend::Sqlite.build(&after.create)).await?;
     let columns: Vec<_> = after.create.get_columns().iter()
-        .filter(|column| before.create.get_columns().iter().any(|old|
-            old.get_column_name() == column.get_column_name()))
+        .filter(|column| before.contains(&column.get_column_name()))
         .map(|column| Alias::new(column.get_column_name())).collect();
     let selection = Query::select().columns(columns.clone()).from(Alias::new(table)).to_owned();
     let mut copy = Query::insert();
@@ -81,6 +81,45 @@ async fn rebuild_table(
     db.execute(DbBackend::Sqlite.build(&Table::rename().table(Alias::new(&temporary), Alias::new(table)).to_owned())).await?;
     for index in after.indexes { db.execute(DbBackend::Sqlite.build(&index)).await?; }
     Ok(())
+}
+
+/// SeaORM derives and application declarations use the same native rebuild.
+pub(super) async fn admit_table(
+    db: &DatabaseTransaction, table: &str, declaration: super::relational_schema::DeclaredTable,
+) -> Result<(), SchemaError> {
+    let actual = super::relational_structure::read(db, table).await?;
+    if actual.columns.is_empty() {
+        db.execute(DbBackend::Sqlite.build(&declaration.create)).await?;
+        for index in declaration.indexes { db.execute(DbBackend::Sqlite.build(&index)).await?; }
+        return Ok(());
+    }
+    let expected_db = sea_orm::Database::connect("sqlite::memory:").await?;
+    let expected = async {
+        expected_db.execute(DbBackend::Sqlite.build(&declaration.create)).await?;
+        for index in &declaration.indexes { expected_db.execute(DbBackend::Sqlite.build(index)).await?; }
+        super::relational_structure::read(&expected_db, table).await
+    }.await;
+    expected_db.close().await?;
+    let expected = expected?;
+    if actual == expected { return Ok(()); }
+    for column in &expected.columns {
+        match actual.columns.iter().find(|old| old.name == column.name) {
+            Some(old) if old.r#type != column.r#type =>
+                return Err(SchemaError::gap(table, "type conversion requires a declared conversion contract")),
+            None if column.notnull != 0 && column.dflt_value.is_none() =>
+                return Err(SchemaError::gap(table, "added required column has no declared default")),
+            _ => {}
+        }
+    }
+    let names: Vec<_> = actual.columns.into_iter().map(|column| column.name).collect();
+    rebuild_table(db, table, &names, declaration).await
+}
+
+pub(super) async fn schema_connection(url: &str) -> Result<sea_orm::DatabaseConnection, SchemaError> {
+    let mut options = sea_orm::ConnectOptions::new(url);
+    options.max_connections(1).sqlx_logging(false)
+        .map_sqlx_sqlite_opts(|options| options.foreign_keys(false));
+    Ok(sea_orm::Database::connect(options).await?)
 }
 
 pub(super) async fn verify_references(db: &DatabaseTransaction) -> Result<(), SchemaError> {

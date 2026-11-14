@@ -55,7 +55,7 @@ struct ForeignKey {
 
 #[derive(Debug, PartialEq, Eq)]
 pub(super) struct Structure {
-    columns: Vec<Column>,
+    pub(super) columns: Vec<Column>,
     indexes: Vec<IndexShape>,
     foreign_keys: Vec<ForeignKey>,
 }

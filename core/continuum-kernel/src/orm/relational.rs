@@ -72,30 +72,24 @@ impl RelationalStore {
         let db = Database::connect(options)
             .await
             .map_err(|e| e.to_string())?;
-        let heads = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_sequence::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&heads))
-            .await
-            .map_err(|e| e.to_string())?;
-        let native_revisions = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_native_revision::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&native_revisions))
-            .await
-            .map_err(|e| e.to_string())?;
-        db.execute(DbBackend::Sqlite.build(&super::relational_native_revision::revision_index()))
-            .await
-            .map_err(|e| e.to_string())?;
-        let declarations = sea_orm::Schema::new(DbBackend::Sqlite)
-            .create_table_from_entity(super::relational_declaration::Entity)
-            .if_not_exists()
-            .to_owned();
-        db.execute(DbBackend::Sqlite.build(&declarations))
-            .await
-            .map_err(|e| e.to_string())?;
+        let schema_db = super::relational_evolution::schema_connection(&url).await.map_err(|error| error.to_string())?;
+        let initialized = async {
+            use super::relational_schema::DeclaredTable;
+            use sea_orm::EntityName;
+            use super::relational_evolution::{admit_table, verify_references};
+            let transaction = schema_db.begin().await?;
+            admit_table(&transaction, super::relational_sequence::Entity.table_name(), DeclaredTable::from_entity(super::relational_sequence::Entity)).await?;
+            let mut native = DeclaredTable::from_entity(super::relational_native_revision::Entity);
+            native.indexes.push(super::relational_native_revision::revision_index());
+            admit_table(&transaction, super::relational_native_revision::Entity.table_name(), native).await?;
+            admit_table(&transaction, super::relational_declaration::Entity.table_name(), DeclaredTable::from_entity(super::relational_declaration::Entity)).await?;
+            verify_references(&transaction).await?;
+            transaction.commit().await?;
+            Ok::<(), super::schema_error::SchemaError>(())
+        }.await;
+        let closed = schema_db.close().await;
+        initialized.map_err(|error| error.to_string())?;
+        closed.map_err(|error| error.to_string())?;
         let catalog_read = db.begin().await.map_err(|e| e.to_string())?;
         let schemas = super::relational_declaration::restore(&catalog_read).await.map_err(|error| error.to_string())?;
         use super::relational_sequence::{Column, Entity};
@@ -169,10 +163,7 @@ impl RelationalStore {
         // SQLite DROP TABLE executes FK actions even during a rebuild. Use a
         // short-lived, pinned schema connection; normal read/write connections
         // keep FK enforcement enabled. Validate all references before commit.
-        let mut options = ConnectOptions::new(self.schema_url.clone());
-        options.max_connections(1).sqlx_logging(false)
-            .map_sqlx_sqlite_opts(|options| options.foreign_keys(false));
-        let schema_db = Database::connect(options).await.map_err(|error| error.to_string())?;
+        let schema_db = super::relational_evolution::schema_connection(&self.schema_url).await.map_err(|error| error.to_string())?;
         let result = async {
         let transaction = schema_db.begin().await.map_err(|e| e.to_string())?;
         if super::relational_declaration::admit(&transaction, &schema).await.map_err(|error| error.to_string())? {
