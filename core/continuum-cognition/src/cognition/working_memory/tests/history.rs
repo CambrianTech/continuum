@@ -160,3 +160,25 @@ fn a_fold_past_the_file_she_is_editing_leaves_its_read_resident() {
     wm.release_through(wm.actions_taken() - 1);
     assert_eq!(wm.resident_acts() as u64, wm.actions_taken() - (read - 1), "every act from the read on stays resident");
 }
+
+// what this catches: her thought log only growing (every thought she ever had, in RAM and in every
+// checkpoint), the shape her action log had before her view's fold edge drained it. Thoughts up to
+// the edge whose wholes are saved leave; a thought whose body is in RAM alone, her note on an edit
+// in hand, and everything past the edge stay.
+#[test]
+fn her_thoughts_drain_through_her_views_fold_edge() {
+    let persona = Uuid::new_v4();
+    let wm = archived_mind(persona);
+    for n in 0..6 {
+        wm.record(&format!("thought {n}"));
+    }
+    wm.save_unsaved_thoughts(persona);
+    wm.record("thought 6, not yet saved");
+    let occurrences: Vec<u64> = wm.thoughts().iter().map(|thought| thought.occurrence).collect();
+    let key_of = |occurrence| crate::cognition::context_streams::thoughts::Thoughts::key_of(persona, occurrence);
+    let kept = std::collections::HashSet::from([ThoughtOccurrence(occurrences[1])]);
+    let released = wm.thoughts.lock().drain_through(key_of, &key_of(occurrences[3]), &kept);
+    assert_eq!(released, [0, 2, 3].map(|index| key_of(occurrences[index])).into_iter().collect::<std::collections::HashSet<String>>(), "saved thoughts up to the edge leave, her note in hand stays");
+    let left: Vec<u64> = wm.thoughts().iter().map(|thought| thought.occurrence).collect();
+    assert_eq!(left, vec![occurrences[1], occurrences[4], occurrences[5], occurrences[6]], "past the edge, and unsaved, they stay");
+}

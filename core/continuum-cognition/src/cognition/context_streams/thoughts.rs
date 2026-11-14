@@ -22,7 +22,16 @@ pub(crate) struct Thoughts<'a> {
     pub persona: uuid::Uuid,
 }
 
+/// The source's name: her view's fold edge for it is what bounds her thought log
+/// (`WorkingMemory::release_folded`).
+pub(crate) const NAME: &str = "thoughts";
+
 impl Thoughts<'_> {
+    /// The key her view holds thought `occurrence` under: its id.
+    pub(crate) fn key_of(persona: uuid::Uuid, occurrence: u64) -> String {
+        element(persona, Producer::Thought, &occurrence.to_be_bytes()).key()
+    }
+
     /// One entry of her chain as her view's item, following `previous` (the entry before it), which
     /// it then becomes.
     fn item(persona: uuid::Uuid, occurrence: u64, entry: Entry, previous: &mut Option<ElementId>) -> Item<ContextMessage> {
@@ -69,7 +78,7 @@ impl Thoughts<'_> {
 
 impl Source<ContextMessage> for Thoughts<'_> {
     fn name(&self) -> &str {
-        "thoughts"
+        NAME
     }
 
     fn priority(&self) -> u8 {

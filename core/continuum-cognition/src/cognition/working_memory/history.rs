@@ -33,7 +33,8 @@ impl WorkingMemory {
     /// Her view just started an epoch: every act up to its fold edge leaves RAM for her archive,
     /// and the view forgets their ids (its fold block's bytes stay). Nothing when her view folded
     /// no act or she has no archive.
-    pub(crate) fn release_folded(&self, view: &mut ContextView) {
+    pub(crate) fn release_folded(&self, persona: Uuid, view: &mut ContextView) {
+        self.release_folded_thoughts(persona, view);
         let actions_source = crate::cognition::context_streams::actions::NAME;
         let Some(edge) = view.fold_edge(actions_source).and_then(|key| key.parse::<u64>().ok()) else {
             return;
@@ -41,6 +42,22 @@ impl WorkingMemory {
         let edge = self.release_edge(edge);
         if self.release_through(edge) > 0 {
             view.release(actions_source, |key| key.parse::<u64>().is_ok_and(|seq| seq <= edge));
+        }
+    }
+
+    /// Her thoughts up to her view's fold edge whose wholes are saved leave her log (her work in
+    /// hand excepted), and the view forgets their ids: her thought log drains like her acts do.
+    fn release_folded_thoughts(&self, persona: Uuid, view: &mut ContextView) {
+        let source = crate::cognition::context_streams::thoughts::NAME;
+        let Some(edge) = view.fold_edge(source).map(str::to_owned) else {
+            return;
+        };
+        let kept = self.in_hand().notes;
+        let key_of = |occurrence| crate::cognition::context_streams::thoughts::Thoughts::key_of(persona, occurrence);
+        let released = self.thoughts.lock().drain_through(key_of, &edge, &kept);
+        if !released.is_empty() {
+            self.touch();
+            view.release(source, |key| released.contains(key));
         }
     }
 

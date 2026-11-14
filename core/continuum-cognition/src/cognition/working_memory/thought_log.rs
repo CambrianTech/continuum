@@ -183,8 +183,9 @@ pub(super) struct ThoughtLog {
 }
 
 impl ThoughtLog {
-    /// A log from records in any order. Nothing here bounds it: her RAM is the one memory owner's
-    /// to shed (`residency`), and what she sees of it is her view's.
+    /// A log from records in any order. Its bound is her view's measured fold edge
+    /// ([`Self::drain_through`]); what of each body stays in RAM is the one memory owner's to shed
+    /// (`residency`).
     pub fn from_records(mut records: Vec<ThoughtRecord>) -> Self {
         records.sort_by_key(|record| record.occurrence);
         records.dedup_by_key(|record| record.occurrence);
@@ -193,6 +194,25 @@ impl ThoughtLog {
 
     pub fn push(&mut self, record: ThoughtRecord) {
         self.records.push(record);
+    }
+
+    /// Drain every thought up to her view's fold edge (`edge`, the key `key_of` gives the newest
+    /// thought a start folded) whose whole is saved: it renders only inside her fold block, and its
+    /// saved whole reopens it. A thought whose body is in RAM alone, and her work in hand (`kept`),
+    /// stay. Returns the keys that left, for her view to forget. Nothing when the edge is not here.
+    pub fn drain_through(&mut self, key_of: impl Fn(u64) -> String, edge: &str, kept: &std::collections::HashSet<super::ThoughtOccurrence>) -> std::collections::HashSet<String> {
+        let mut released = std::collections::HashSet::new();
+        let Some(edge) = self.records.iter().find(|record| key_of(record.occurrence) == edge).map(|record| record.occurrence) else {
+            return released;
+        };
+        self.records.retain(|record| {
+            let leaves = record.occurrence <= edge && record.saved_handle().is_some() && !kept.contains(&super::ThoughtOccurrence(record.occurrence));
+            if leaves {
+                released.insert(key_of(record.occurrence));
+            }
+            !leaves
+        });
+        released
     }
 
     /// Every thought, oldest first.
