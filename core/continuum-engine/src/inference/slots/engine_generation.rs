@@ -781,28 +781,40 @@ impl SlotDirectory {
         }
     }
 
-    /// Install (or return the already-installed) pool for a probed server.
+    /// A fixture's pool for `root`, published with no page-store decision. Serving publishes a
+    /// pool only settled: discovery through [`Self::install_settled_pool`], a spawn through
+    /// [`EndpointTransition::ready`] (an admission once raced the ledger adoption: M5 2026-11-14).
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+        self.install_pool(root, || Arc::new(KvSlotPool::new(root, n_slots)))
+    }
+
+    /// Install `born` (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
     /// The endpoint's permits are sized to the pool this returns while the state lock still
     /// holds it, so a stale discovery can never resize them after a newer generation installs.
-    pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+    pub(super) fn install_pool(&self, root: &str, born: impl FnOnce() -> Arc<KvSlotPool>) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        let pool = installed_pool(&mut state, root, n_slots);
+        let pool = installed_pool(&mut state, root, born);
         endpoint.concurrency.retarget(pool.n_slots() as usize);
         pool
     }
 }
 
-/// The pool serving `root`: the installed one, or a first writer's.
-fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+/// The pool serving `root`: the installed one, or a first writer's (`born`).
+fn installed_pool(
+    state: &mut super::kv_slot_pool::EndpointState,
+    root: &str,
+    born: impl FnOnce() -> Arc<KvSlotPool>,
+) -> Arc<KvSlotPool> {
     let pool = match &mut state.engine {
         Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
         Engine::Owned { serving: Serving::Before(before), .. } => match before {
             Probed::Known(pool) => Some(Arc::clone(pool)),
             Probed::Absent(PropsAbsent) => None,
             not_asked @ Probed::NotAsked => {
-                let pool = Arc::new(KvSlotPool::new(root, n_slots));
+                let pool = born();
                 *not_asked = Probed::Known(Arc::clone(&pool));
                 Some(pool)
             }
@@ -810,7 +822,7 @@ fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_
         Engine::Adopted(pool) => return Arc::clone(pool),
         Engine::Unsupported => None,
         unprobed @ Engine::Unprobed => {
-            let pool = Arc::new(KvSlotPool::new(root, n_slots));
+            let pool = born();
             *unprobed = Engine::Adopted(Arc::clone(&pool));
             Some(pool)
         }
@@ -852,13 +864,30 @@ pub fn register_engine_for_fixture(root: &str, slots: u32, pid: u32, started_s: 
 /// this core did not spawn. If that engine is the live lane `(pid, started_s)` and left a
 /// ledger in `page_dir` stamped with that same process, its confirmed saves become
 /// restorable here (same process, same contract). Returns the keys loaded; `None` when
-/// the ledger is not this engine's.
+/// the ledger is not this engine's. Written at once: a pool the test already holds.
+#[cfg(test)]
 pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Result<usize, AdoptRefusal> {
+    let (adopted, snapshot) = settle_engine_ledger(pool, page_dir, pid, started_s);
+    pool.persist_ledger(snapshot);
+    adopted
+}
+
+/// The adoption decided on a pool not yet published: its first ledger snapshot is returned
+/// for the publisher to write ([`KvSlotPool::settle_ledger`]).
+pub(super) fn settle_engine_ledger(
+    pool: &KvSlotPool,
+    page_dir: &std::path::Path,
+    pid: u32,
+    started_s: u64,
+) -> (Result<usize, AdoptRefusal>, Option<LedgerSnapshot>) {
     if started_s == 0 {
-        return Err(AdoptRefusal::NoStartTime);
+        return (Err(AdoptRefusal::NoStartTime), None);
     }
     match SavedLedger::of_running_engine(page_dir, (pid, started_s)) {
-        Ok(ledger) => Ok(pool.attach_ledger(ledger, true)),
+        Ok(ledger) => {
+            let (loaded, snapshot) = pool.settle_ledger(ledger, true);
+            (Ok(loaded), snapshot)
+        }
         Err(refusal) => {
             // Nothing of this process's to restore, but it IS this process (the caller verified
             // the live lane): start its ledger now, empty, so what it saves from here on is
@@ -869,8 +898,8 @@ pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path,
             // loads it, and a spawned engine's contract fingerprint never equals it.
             let ledger = SavedLedger::in_dir(page_dir, format!("incarnation:{pid}:{started_s}"));
             let _ = ledger.incarnation.set((pid, started_s));
-            pool.attach_ledger(ledger, false);
-            Err(refusal)
+            let (_, snapshot) = pool.settle_ledger(ledger, false);
+            (Err(refusal), snapshot)
         }
     }
 }

@@ -220,6 +220,15 @@ pub async fn settle_step(
                     );
                 }
                 if fenced || staged {
+                    // The discovery verb under the one name her tool list offers it (card d2b6dbce).
+                    let unfulfilled_fenced = format!(
+                        "[unfulfilled] I said I would run commands, but no tool ran — \
+                         the fenced text was words only. Nothing exists in the \
+                         workspace until a tool call actually executes it. If I \
+                         named a tool, that name may not exist: `{}` \
+                         shows the tools that are real.",
+                        crate::sdk_codegen::wire_name("commands/list")
+                    );
                     body.working_memory.record_fact(if fenced {
                         // The name-diagnosis tail (2026-07-12): the room looped an
                         // INVENTED tool name (`file_tree`) for an hour while this
@@ -227,11 +236,7 @@ pub async fn settle_step(
                         // firings with zero behavior change. "It didn't run" without
                         // "the name may not exist; here's how to find real ones" is
                         // a symptom without a diagnosis.
-                        "[unfulfilled] I said I would run commands, but no tool ran — \
-                         the fenced text was words only. Nothing exists in the \
-                         workspace until a tool call actually executes it. If I \
-                         named a tool, that name may not exist: `list_commands` \
-                         shows the tools that are real."
+                        unfulfilled_fenced.as_str()
                     } else {
                         "[unfulfilled] I wrote a stage direction like [doing the task], \
                          but a stage direction is words only — no tool ran, no file \

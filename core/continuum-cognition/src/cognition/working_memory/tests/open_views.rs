@@ -221,7 +221,7 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     view.turn_over(&continuum_context::cost::Chars, Vec::new(), sources, floor).expect("matching grants");
     let reduced = text(&view);
     assert!(reduced.contains(PATH) && reduced.contains("read 1-498 (all of it)"), "{reduced}");
-    assert!(reduced.contains("read_file") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
+    assert!(reduced.contains("code_read") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
     assert!(!reduced.contains("I need to inspect"), "pre-read planning must yield: {reduced}");
     assert_eq!(claims(&continuum_context::cost::Chars, sources), demand, "allocation does not rewrite stored wants");
 

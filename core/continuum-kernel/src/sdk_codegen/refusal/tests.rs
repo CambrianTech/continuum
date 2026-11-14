@@ -42,7 +42,7 @@ impl RefusalCause for UnknownAct {
 
 // what this catches: a refusal she reads without a next call, or one naming the verb by a name
 // her tool list does not offer, or arguments that are not the verb's own params. The call is
-// rendered as offered (its first alias), its arguments decode as the verb's params, the cause
+// rendered as offered (its path, never its alias), its arguments decode as the verb's params, the cause
 // chain is kept, and the category is the cause's own.
 #[test]
 fn a_refusal_renders_its_cause_chain_and_a_next_call_she_can_make() {
@@ -56,7 +56,7 @@ fn a_refusal_renders_its_cause_chain_and_a_next_call_she_can_make() {
     assert_eq!(refusal.category(), Category::NotFound);
     assert_eq!(
         refusal.to_string(),
-        "act #9 is not on your record: because the record ends at #3. Next: reopen_fixture({\"act\":3}): your latest act;"
+        "act #9 is not on your record: because the record ends at #3. Next: fixture_refusal-reopen({\"act\":3}): your latest act;"
     );
     let Some(call) = refusal.next().calls().next() else { panic!("one next call") };
     assert_eq!(call.verb().canonical(), "fixture/refusal-reopen");
@@ -135,7 +135,7 @@ async fn a_refusal_leaves_dispatch_with_its_next_moves_typed() {
         Ok(_) => panic!("the handler refuses"),
     };
     let sentence = &failure.message;
-    assert!(sentence.contains("reopen_fixture({\"act\":3})"), "the sentence renders the call as offered: {sentence}");
+    assert!(sentence.contains("fixture_refusal-reopen({\"act\":3})"), "the sentence renders the call as offered: {sentence}");
     let Some(refusal) = failure.refusal else { panic!("a refusal with next moves crosses typed: {}", failure.message) };
     assert_eq!(refusal.category, Category::NotFound);
     assert_eq!(refusal.next.commands().collect::<Vec<_>>(), ["fixture/refusal-reopen"]);
