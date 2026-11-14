@@ -161,7 +161,7 @@ async fn inspect_scalar_storage_classes_read_only() -> Result<(), Box<dyn std::e
     }
     let query = Query::select()
         .expr_as(Func::cust(Alias::new("typeof")).arg(Expr::col(Alias::new(&column))), Alias::new("storage_class"))
-        .expr_as(Func::count(Expr::asterisk()), Alias::new("rows"))
+        .expr_as(Func::count(Expr::col(sea_orm::sea_query::Asterisk)), Alias::new("rows"))
         .from(Alias::new(&table))
         .group_by_col(Alias::new("storage_class"))
         .to_owned();

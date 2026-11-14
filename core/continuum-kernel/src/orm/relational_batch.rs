@@ -35,7 +35,7 @@ impl super::relational::RelationalStore {
                             if deleted.count == 0 { BatchOutcome::Absent } else { BatchOutcome::Removed }
                         }
                         BatchOperation::Update(row) => {
-                            if !store.update_on(transaction, &row.collection, &row.id, row.data, true).await? {
+                            if !store.update_on(transaction, super::seam::RowRef { collection: &row.collection, id: &row.id }, row.data, super::seam::Versioning::Increment).await? {
                                 return Err(StorageError::NotFound { collection: row.collection.into(), id: row.id });
                             }
                             BatchOutcome::Updated

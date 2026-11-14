@@ -151,7 +151,7 @@ async fn failed_batch_rolls_back_and_sequence_survives_pruning_and_restart(
 async fn cancelled_request_retains_commit_and_revision_custody(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let store = store(":memory:").await?;
-    let mut revision = store.revision(
+    let revision = store.revision(
         super::relational_sequence::Domain::Append,
         Child::COLLECTION,
     );

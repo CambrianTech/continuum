@@ -4,7 +4,7 @@ use super::{
     adapter::{AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter},
     query::{QueryBuilder, StorageQuery},
     relational::RelationalStore,
-    seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Versioning, Written},
+    seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Written},
     types::{BatchOperation, BatchOutcome, CollectionSchema, CollectionStats, DataRecord, UUID},
 };
 use async_trait::async_trait;
@@ -86,10 +86,8 @@ impl StorageAdapter for SeaOrmAdapter {
         self.store.count(query).await
     }
     async fn update(&self, update: Update<'_>) -> Result<DataRecord, StorageError> {
-        let increment = update.versioning == Versioning::Increment;
-        self.store
-            .update(update.row.collection.to_owned(), update.row.id.clone(), update.data, increment)
-            .await
+        let row = super::types::RowKey { collection: update.row.collection.to_owned(), id: update.row.id.to_owned() };
+        self.store.update(row, update.data, update.versioning).await
     }
     async fn delete(&self, row: RowRef<'_>) -> Result<Deleted, StorageError> {
         let removed = self
@@ -136,7 +134,7 @@ impl StorageAdapter for SeaOrmAdapter {
     async fn update_binary(&self, write: BinaryWrite<'_>) -> Result<BinaryWritten, StorageError> {
         let written = self
             .store
-            .update_binary(write.row.collection.to_owned(), write.row.id.clone(), write.payloads, write.condition)
+            .update_binary(write)
             .await?;
         Ok(if written { BinaryWritten::Written } else { BinaryWritten::Unchanged })
     }

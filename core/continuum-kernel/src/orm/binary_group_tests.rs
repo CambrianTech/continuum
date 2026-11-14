@@ -97,12 +97,7 @@ async fn required_native_fields_create_atomically_without_body_readback(
         BinaryValue::new(descriptor(ElementType::U8, vec![1]), vec![1])?,
     );
     assert!(store
-        .update_binary(
-            RequiredNativeRow::COLLECTION.into(),
-            record().id,
-            invalid,
-            BinaryWriteCondition::Replace
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: invalid, condition: BinaryWriteCondition::Replace })
         .await
         .is_err());
     assert_eq!(*revision.borrow(), 1);
@@ -112,33 +107,18 @@ async fn required_native_fields_create_atomically_without_body_readback(
     }
     assert!(
         !store
-            .update_binary(
-                RequiredNativeRow::COLLECTION.into(),
-                record().id,
-                changed()?,
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: changed()?, condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     assert_eq!(*revision.borrow(), 1);
     assert!(
         store
-            .update_binary(
-                RequiredNativeRow::COLLECTION.into(),
-                record().id,
-                changed()?,
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: changed()?, condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(*revision.borrow(), 2);
     assert!(store
-        .update_binary(
-            RequiredNativeRow::COLLECTION.into(),
-            record().id,
-            std::collections::BTreeMap::new(),
-            BinaryWriteCondition::Replace
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &record().id }, payloads: std::collections::BTreeMap::new(), condition: BinaryWriteCondition::Replace })
         .await
         .is_err());
     drop(store);

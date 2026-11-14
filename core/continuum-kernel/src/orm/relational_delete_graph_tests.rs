@@ -1,6 +1,5 @@
 #![cfg(test)]
 
-use super::*;
 use crate::orm::{
     adapter::AdapterConfig,
     binary::{BinaryDescriptor, BinaryValue, ByteOrder, ElementType},
@@ -249,10 +248,9 @@ async fn cyclic_cascade_deduplicates_identities_and_uses_one_revision(
                 store
                     .update_on(
                         transaction,
-                        "cascade_cycle",
-                        &id(1),
+                        crate::orm::seam::RowRef { collection: "cascade_cycle", id: &id(1) },
                         json!({"parent":id(2)}),
-                        true,
+                        crate::orm::seam::Versioning::Increment,
                     )
                     .await
             })

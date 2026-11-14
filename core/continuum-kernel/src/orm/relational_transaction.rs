@@ -55,23 +55,22 @@ impl RelationalStore {
         .await
     }
 
+    /// Change `row`'s declared fields to `data`; the row is owned because the committing task
+    /// takes it.
     pub async fn update(
         &self,
-        collection: String,
-        id: String,
+        row: super::types::RowKey,
         data: serde_json::Value,
-        increment: bool,
+        versioning: super::seam::Versioning,
     ) -> Result<DataRecord, StorageError> {
         self.write(move |store, transaction| {
             Box::pin(async move {
-                if !store
-                    .update_on(transaction, &collection, &id, data, increment)
-                    .await?
-                {
-                    return Err(StorageError::NotFound { collection: collection.to_string().into(), id: id.clone() });
+                let at = super::seam::RowRef { collection: &row.collection, id: &row.id };
+                if !store.update_on(transaction, at, data, versioning).await? {
+                    return Err(StorageError::NotFound { collection: row.collection.as_str().into(), id: row.id.clone() });
                 }
                 store
-                    .read_on(transaction, &collection, &id)
+                    .read_on(transaction, &row.collection, &row.id)
                     .await?
                     .ok_or(StorageError::Corrupt { what: "an updated row vanished inside its own transaction" })
             })

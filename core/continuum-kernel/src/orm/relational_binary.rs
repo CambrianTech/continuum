@@ -46,14 +46,12 @@ impl super::relational::RelationalStore {
         super::relational_query::column(&schema, field)
     }
 
-    pub async fn update_binary(
-        &self,
-        collection: String,
-        id: String,
-        payloads: std::collections::BTreeMap<String, BinaryValue>,
-        condition: super::binary::BinaryWriteCondition,
-    ) -> Result<bool, StorageError> {
-        super::binary::native_identity(&id)?;
+    /// Write `write`'s payloads; `true` when a row changed. The row is owned from here on,
+    /// because the committing task takes it.
+    pub async fn update_binary(&self, write: super::seam::BinaryWrite<'_>) -> Result<bool, StorageError> {
+        let super::seam::BinaryWrite { row, payloads, condition } = write;
+        super::binary::native_identity(row.id)?;
+        let (collection, id) = (row.collection.to_owned(), row.id.to_owned());
         if payloads.is_empty() {
             return Err(StorageError::NoPayloads);
         }
@@ -76,10 +74,11 @@ impl super::relational::RelationalStore {
                 let changed = store
                     .update_fields_matching_on(
                         transaction,
-                        &collection,
-                        &id,
-                        fields,
-                        true,
+                        super::relational_write::FieldWrite {
+                            row: super::seam::RowRef { collection: &collection, id: &id },
+                            fields,
+                            versioning: super::seam::Versioning::Increment,
+                        },
                         predicate,
                     )
                     .await?;

@@ -69,12 +69,7 @@ async fn snapshot_pins_empty_head_and_pages_while_writer_commits(
     assert_eq!(page(&snapshot, None).await?, (vec![1, 2], vec![first]));
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                second.to_string(),
-                payload(vec![3, 4])?,
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &second.to_string() }, payloads: payload(vec![3, 4])?, condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
