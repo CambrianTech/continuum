@@ -199,7 +199,7 @@ mod tests {
             assert!(appended.appended);
 
             // The durable row exists NOW — not merely the cache — in THIS citizen's bucket.
-            let counted: crate::orm::types::StorageResult<usize> = h
+            let counted: usize = h
                 .execute(
                     "data/count",
                     serde_json::json!({
@@ -210,7 +210,7 @@ mod tests {
                 .await
                 .expect("data/count");
             assert_eq!(
-                counted.into_result(), Ok(1),
+                counted, 1,
                 "append must write through to {persona_id}'s longterm.db"
             );
         }

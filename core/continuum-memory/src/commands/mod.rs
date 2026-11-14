@@ -146,7 +146,7 @@ async fn persist_memory_on<T: continuum_client::Transport>(
     if let Some(embedding) = &memory.embedding {
         data[EMBEDDING_KEY] = serde_json::json!(embedding);
     }
-    let receipt: crate::orm::types::StorageResult<crate::orm::types::DataRecord> = connection.commands()
+    let _created: crate::orm::types::DataRecord = connection.commands()
         .execute(
             "data/create",
             serde_json::json!({
@@ -163,7 +163,6 @@ async fn persist_memory_on<T: continuum_client::Transport>(
                 persona_db_handle(persona_id)
             ))
         })?;
-    receipt.into_result().map_err(CommandError::Internal)?;
     Ok(())
 }
 
