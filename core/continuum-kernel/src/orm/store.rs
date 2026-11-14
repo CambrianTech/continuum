@@ -530,13 +530,13 @@ mod tests {
         let id = Uuid::new_v4();
         store.save(id, &tiny(id, "doomed")).await.expect("save");
         let deleted = store.delete(id).await.expect("delete");
-        assert!(deleted, "first delete reports row was removed");
+        assert_eq!(deleted, Deleted::Removed, "first delete reports row was removed");
 
         let absent = store.find_by_id(id).await.expect("find_by_id");
         assert!(absent.is_none(), "deleted row is gone");
 
         let again = store.delete(id).await.expect("delete absent");
-        assert!(!again, "second delete reports nothing-to-do");
+        assert_eq!(again, Deleted::Absent, "second delete reports nothing-to-do");
     }
 
     /// What this catches: collection() returns the entity's COLLECTION

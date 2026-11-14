@@ -21,7 +21,6 @@
 
 pub mod list_result;
 pub mod adapter;
-pub mod connection_manager;
 pub mod entity;
 pub mod migration;
 pub mod query;
@@ -55,7 +54,6 @@ pub mod vector;
 pub(crate) mod gated_adapter; // test-only: the file is `#![cfg(test)]`
 
 pub use adapter::StorageAdapter;
-pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
 pub use entity::{
     base_entity_fields, is_base_entity_column, BaseEntity, OrmEntity, OrmEntityRegistry,
     RegistrationError,
