@@ -1,9 +1,9 @@
 //! The OS half of the teardown: taking a capability on Windows and spending it.
 //!
 //! The DECISION — which process may be ended, in what order, and what a refusal means —
-//! lives in `continuum_cli_lifecycle::elevated_teardown`, where it is exercised on every
+//! lives in `crate::elevated_teardown`, where it is exercised on every
 //! machine in seconds rather than on the one platform that cannot link it. What stays
-//! here is the part that needs the OS with the problem: ONE handle opened for QUERY and
+//! in this platform module is the OS capability: ONE handle opened for QUERY and
 //! TERMINATE, held across the drain, and the consent boundary that borrows the privilege
 //! the CLI does not hold.
 //!
@@ -12,7 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use continuum_cli_lifecycle::elevated_teardown::{
+use crate::elevated_teardown::{
     bind_plan_bytes, digest, elevation_outcome, teardown_sequence, HeldCapability, TeardownPlan,
 };
 
@@ -165,7 +165,7 @@ impl HeldCapability for HeldTerminate {
     }
 }
 
-pub(crate) async fn teardown_elevated<F, Fut>(
+pub async fn teardown_elevated<F, Fut>(
     plan_path: &Path,
     plan_sha: &str,
     drain: F,
@@ -205,7 +205,7 @@ where
 /// the alternative reading ("the teardown failed") sends the next reader hunting for
 /// damage that does not exist. Every other outcome carries the child's receipt, or says
 /// plainly that there was none.
-pub(crate) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
+pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
     let plan = TeardownPlan {
         pid,
         install_dir: install_dir.to_string(),
