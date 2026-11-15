@@ -1484,7 +1484,7 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 | P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
 | P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
 | P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
-| P5 Decode concurrency (F5) | Fable (fork), after Q1 | fork `update_slots`, SV-S3 per-task priority | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
+| P5 Decode concurrency chosen by measured act latency (F5, Q1) | Fable (fork) | fork `update_slots`, SV-S3 per-task priority, the measured knees as inputs | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
 
 #### 4.9.5 Simulator first (section 7.0)
 
@@ -1495,14 +1495,18 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 | `simultaneous::a_mind_growing_under_her_own_act_never_queues_the_others` (dyno service) | F1 | written, green with #6038 |
 | `simultaneous::memory_follows_the_mind_that_is_acting` (dyno service) | I3, I4 | written, known-red |
 | `a_demand_move_publishes_the_grants_without_a_tick` (serving) | I5 | written |
-| decode concurrency at recorded context lengths (dyno `batch`, 45-85k) | Q1 | to write |
+| the engine's choice of concurrency follows measured act latency at recorded context lengths (dyno `batch`, 45-85k), up and down | Q1 | to write |
 
 #### 4.9.6 Open questions (answer before P4/P5 code)
 
-- **Q1.** At 45-85k-token contexts, what per-step concurrency finishes the most acts per hour, and at
-  what act latency? 4.1b measured 20.6 tok/s alone and 8.3 with three others decoding (aggregate ~1.6x);
-  the batch replay at recorded lengths answers it, and the answer lives in the engine's own scheduler
-  (fork priority), never in a core permit.
+- **Q1, answered by the system, never by us** (Joel, 2026-11-15: "The whole point of a self optimizing
+  system is to not hard code it. It measures latency."). How many sequences decode at once, who stays
+  resident and how large the host cache is are each a choice the engine makes from its own measured
+  act latency (per-step decode and prefill cost at the contexts it is actually serving), and keeps
+  re-making as the measurement moves (both ways, so a downward move is always re-tested upward). No
+  author picks a count, a cap or a threshold; the knee measurement that exists (`decode_knee`) is an
+  input to that choice, never a clamp. The open part is only where the choice is applied: the engine's
+  own scheduler (fork priority, SV-S3), never a core permit.
 - **Q2.** Why did a restored page go unused (Aris 17:03:07Z, cached 0 of 79,185)? Candidates to check
   against her capture: the page was older than her view (F3), or her view turned over across the restart
   (4.7.2: "her view is not carried over a restart", CX-3).
