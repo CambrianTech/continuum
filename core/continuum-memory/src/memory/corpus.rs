@@ -95,8 +95,7 @@ impl MemoryCorpus {
         let mut result: Vec<&MemoryRecord> = self.memories.iter().collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
                 .then_with(|| b.timestamp.cmp(&a.timestamp))
         });
         result
@@ -111,8 +110,7 @@ impl MemoryCorpus {
             .collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
         });
         result.truncate(limit);
         result
@@ -160,8 +158,7 @@ impl MemoryCorpus {
             .collect();
         result.sort_by(|a, b| {
             b.0.importance
-                .partial_cmp(&a.0.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.0.importance)
         });
         result.truncate(limit);
         result
@@ -190,8 +187,7 @@ impl MemoryCorpus {
             .collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
                 .then_with(|| b.timestamp.cmp(&a.timestamp))
         });
         result.truncate(limit);
@@ -273,8 +269,7 @@ impl MemoryCorpus {
         // Sort by importance DESC, keep top N
         self.memories.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
         });
         let evicted = self.memories.len() - max_count;
         // Collect IDs of memories being removed so we can clean up embeddings
