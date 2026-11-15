@@ -134,7 +134,7 @@ pub(crate) async fn persist_memory(
     use crate::sdk_codegen::CommandError;
     use crate::memory::persistent::PersistentMemory;
     use crate::orm::store::{NativeEntityWrite, OrmStore};
-    use continuum_store::data::vector_index::{unit_f32, Producer};
+
     if memory.record.persona_id != persona_id.as_str() {
         return Err(CommandError::Invalid("memory owner differs from the destination persona".into()));
     }
@@ -146,8 +146,7 @@ pub(crate) async fn persist_memory(
         .map_err(|error| CommandError::Internal(error.to_string()))?;
     let mut payloads = std::collections::BTreeMap::new();
     if let Some(embedding) = &memory.embedding {
-        let payload = unit_f32(embedding.values.iter().copied(), &Producer::Embedder(embedding.producer.clone()))
-            .map_err(|error| CommandError::Invalid(error.to_string()))?;
+        let payload = persistence::native_embedding(embedding)?;
         payloads.insert(EMBEDDING_KEY.to_owned(), payload);
     }
     let entity = PersistentMemory::from_record(memory.record.clone());
@@ -177,4 +176,3 @@ pub(crate) async fn hydrate_corpus_if_missing(
         .load_corpus(persona_id, memories, Vec::new());
     Ok(Some(count))
 }
-

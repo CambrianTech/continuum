@@ -4,7 +4,7 @@ use crate::orm::{
 };
 use crate::{
     identity::PersonaRef,
-    memory::{persistent::PersistentMemory, MemoryRecord},
+    memory::{persistent::PersistentMemory, types::MemoryEmbedding, MemoryRecord},
 };
 use continuum_store::data::vector_index::{unit_f32, EmbedderId, Producer};
 use std::{collections::BTreeMap, sync::Arc};
@@ -42,10 +42,9 @@ async fn native_memory_survives_reopen_with_exact_scalars_and_producer(
         let adapter: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&path).await?);
         let store = OrmStore::<PersistentMemory>::new(adapter).await?;
         let entity = record(id, &persona);
-        let payload = unit_f32(
-            [1.0, 0.0, 0.0].into_iter(),
-            &Producer::Embedder(producer.clone()),
-        )?;
+        let payload = super::persistence::native_embedding(&MemoryEmbedding {
+            values: vec![3.0, 4.0, -0.0], producer: producer.clone(),
+        })?;
         store
             .save_native(NativeEntityWrite {
                 id,
@@ -60,10 +59,9 @@ async fn native_memory_survives_reopen_with_exact_scalars_and_producer(
         // A malformed native write must not leave a scalar row behind.
         let refused_id = uuid::Uuid::from_u128(3);
         let refused = record(refused_id, &persona);
-        let payload = unit_f32(
-            [1.0, 0.0, 0.0].into_iter(),
-            &Producer::Embedder(producer.clone()),
-        )?;
+        let payload = super::persistence::native_embedding(&MemoryEmbedding {
+            values: vec![3.0, 4.0, -0.0], producer: producer.clone(),
+        })?;
         assert!(store
             .save_native(NativeEntityWrite {
                 id: refused_id,
@@ -84,12 +82,12 @@ async fn native_memory_survives_reopen_with_exact_scalars_and_producer(
         loaded[0].record.context,
         serde_json::json!({"task": "native-restart"})
     );
-    let embedding = loaded[0]
-        .embedding
-        .as_ref()
-        .ok_or("missing native embedding")?;
-    assert_eq!(embedding.values, [1.0, 0.0, 0.0]);
-    assert_eq!(embedding.producer, producer);
+    assert!(loaded[0].embedding.is_some());
+    if let Some(embedding) = &loaded[0].embedding {
+        assert_eq!(embedding.values.iter().map(|value| value.to_bits()).collect::<Vec<_>>(),
+            [3.0_f32, 4.0, -0.0].map(f32::to_bits));
+        assert_eq!(embedding.producer, producer);
+    }
     assert!(loaded[1].embedding.is_none());
     Ok(())
 }
@@ -166,5 +164,29 @@ async fn shared_lessons_page_past_256_and_filter_before_submission(
         uuid::Uuid::from_u128(520).to_string()
     );
     assert!(records.iter().all(|record| record.source.is_none()));
+    Ok(())
+}
+
+#[tokio::test]
+async fn foreign_persona_payload_cannot_poison_hydration() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let adapter: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&directory.path().join("isolation.db")).await?);
+    let store = OrmStore::<PersistentMemory>::new(Arc::clone(&adapter)).await?;
+    let persona = PersonaRef("selected".into());
+    let foreign = PersonaRef("foreign".into());
+    let own_id = uuid::Uuid::from_u128(1);
+    store.save(own_id, &record(own_id, &persona)).await?;
+    let foreign_id = uuid::Uuid::from_u128(2);
+    store.save_native(NativeEntityWrite {
+        id: foreign_id,
+        entity: &record(foreign_id, &foreign),
+        payloads: BTreeMap::from([("embedding".into(),
+            unit_f32([1.0, 0.0].into_iter(), &Producer::IndexCommand)?)]),
+    }).await?;
+    let loaded = super::persistence::load(Arc::clone(&adapter), &persona).await?;
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].record.id, own_id.to_string());
+    assert!(loaded[0].embedding.is_none());
+    assert!(super::persistence::load(adapter, &foreign).await.is_err());
     Ok(())
 }

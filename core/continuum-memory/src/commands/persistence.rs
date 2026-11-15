@@ -1,5 +1,5 @@
 //! Hydration through the shared typed store and its native snapshot owner.
-use crate::orm::binary::{BinaryDescriptorPageRequest, BinaryPageOutput, BinaryPageRequest};
+use crate::orm::binary::{BinarySelection, BinaryDescriptor, BinaryValue, ByteOrder, ElementType};
 use crate::orm::{
     query::{QueryBuilder, QueryOperator},
     store::OrmStore,
@@ -10,7 +10,7 @@ use crate::{
     memory::{persistent::PersistentMemory, types::MemoryEmbedding, CorpusMemory},
     sdk_codegen::CommandError,
 };
-use continuum_store::data::vector_index::{EmbeddingDescriptor, Producer};
+use continuum_store::data::vector_index::{EmbedderId, Producer};
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 const PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
@@ -85,64 +85,6 @@ pub(super) async fn load(
     let snapshot = adapter
         .binary_snapshot(PersistentMemory::COLLECTION)
         .await?;
-    let mut embeddings = HashMap::new();
-    let mut descriptor_cursor = None;
-    loop {
-        let descriptors = snapshot
-            .descriptor_page(&BinaryDescriptorPageRequest {
-                field: super::EMBEDDING_KEY,
-                after: descriptor_cursor.as_ref(),
-                limit: PAGE,
-            })
-            .await?;
-        if descriptors.is_empty() {
-            break;
-        }
-        for descriptor in &descriptors {
-            let embedding = EmbeddingDescriptor::from_binary(descriptor).map_err(internal)?;
-            let Producer::Embedder(producer) = embedding.producer() else {
-                return Err(CommandError::Invalid(
-                    "memory payload requires its embedder identity".into(),
-                ));
-            };
-            let width = descriptor.byte_len().map_err(internal)?;
-            let mut after = None;
-            loop {
-                let mut bytes = Vec::new();
-                let mut ids = Vec::new();
-                snapshot
-                    .page_matching_into(
-                        &BinaryPageRequest {
-                            field: super::EMBEDDING_KEY,
-                            after,
-                            limit: PAGE,
-                        },
-                        descriptor,
-                        BinaryPageOutput {
-                            bytes: &mut bytes,
-                            ids: &mut ids,
-                        },
-                    )
-                    .await?;
-                if ids.is_empty() {
-                    break;
-                }
-                after = ids.last().copied();
-                for (id, payload) in ids.into_iter().zip(bytes.chunks_exact(width)) {
-                    // The consumer materializes its f32 working set once, after descriptor validation.
-                    let values = bytemuck::pod_collect_to_vec::<u8, f32>(payload);
-                    embeddings.insert(
-                        id,
-                        MemoryEmbedding {
-                            values,
-                            producer: producer.clone(),
-                        },
-                    );
-                }
-            }
-        }
-        descriptor_cursor = descriptors.last().cloned();
-    }
     let mut after = None;
     let mut memories = Vec::new();
     loop {
@@ -161,6 +103,18 @@ pub(super) async fn load(
             break;
         }
         after = page.last().map(|(id, _)| id.to_string());
+        let ids: Vec<_> = page.iter().map(|(id, _)| *id).collect();
+        let mut embeddings = HashMap::new();
+        for (id, payload) in snapshot.read_selected(&BinarySelection {
+            field: super::EMBEDDING_KEY,
+            ids: &ids,
+        }).await? {
+            let producer = memory_producer(payload.descriptor())?;
+            embeddings.insert(id, MemoryEmbedding {
+                values: bytemuck::pod_collect_to_vec::<u8, f32>(payload.bytes()),
+                producer,
+            });
+        }
         for (id, entity) in page {
             memories.push(CorpusMemory {
                 record: entity.into_record(),
@@ -173,4 +127,39 @@ pub(super) async fn load(
 
 fn internal(error: impl std::fmt::Display) -> CommandError {
     CommandError::Internal(error.to_string())
+}
+
+const NATIVE_ORDER: ByteOrder = if cfg!(target_endian = "little") {
+    ByteOrder::Little
+} else {
+    ByteOrder::Big
+};
+
+/// Memory preserves the embedder's buffer; normalization belongs to its producer.
+pub(super) fn native_embedding(embedding: &MemoryEmbedding) -> Result<BinaryValue, CommandError> {
+    let descriptor = BinaryDescriptor {
+        element_type: ElementType::F32,
+        byte_order: NATIVE_ORDER,
+        shape: vec![embedding.values.len() as u64],
+        producer: embedding.producer.as_str().to_owned(),
+        unit: false,
+        scale: None,
+    };
+    memory_producer(&descriptor)?;
+    BinaryValue::new(descriptor, bytemuck::cast_slice::<f32, u8>(&embedding.values).to_vec())
+        .map_err(internal)
+}
+
+fn memory_producer(descriptor: &BinaryDescriptor) -> Result<EmbedderId, CommandError> {
+    if descriptor.element_type != ElementType::F32
+        || descriptor.byte_order != NATIVE_ORDER
+        || !matches!(descriptor.shape.as_slice(), [dimension] if *dimension > 0)
+        || descriptor.scale.is_some()
+    {
+        return Err(CommandError::Invalid("memory embedding requires a nonempty native f32 vector".into()));
+    }
+    match Producer::from_identity(&descriptor.producer) {
+        Producer::Embedder(producer) => Ok(producer),
+        _ => Err(CommandError::Invalid("memory payload requires its embedder identity".into())),
+    }
 }
