@@ -194,19 +194,23 @@ impl ServingDaemonModule {
     pub fn give_host_memory_back_first(self: &Arc<Self>, monitor: &MemoryPressureMonitor, runtime: tokio::runtime::Handle) {
         let pool = KvPoolShedder { module: Arc::downgrade(self), pressure: monitor.subscribe() };
         monitor.add_reporter(Arc::new(pool));
-        self.publish_grants_when_the_pool_moves(&runtime);
+        self.publish_grants_on_events(&runtime);
         self.register_prompt_cache(monitor, runtime);
     }
 
-    /// The grant publisher subscribes to the pool: a step publishes the minds' grants the moment it
-    /// lands, not at serving's next tick (RTOS rule 10). The tick still publishes each evaluation
+    /// The grant publisher wakes on events: a pool step, a ready mind without a grant, or an act's
+    /// end publishes the minds' grants the moment it lands, not at serving's next tick (RTOS rule 10). The tick still publishes each evaluation
     /// as the waiting minds' heartbeat (`GrantEvaluation::cadence`); it no longer carries a pool
     /// change. Holds the module weakly: the subscription never keeps a stopped daemon alive.
-    pub(super) fn publish_grants_when_the_pool_moves(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
+    pub(super) fn publish_grants_on_events(self: &Arc<Self>, runtime: &tokio::runtime::Handle) {
         let module = Arc::downgrade(self);
         let mut moved = self.live_pool.subscribe();
         runtime.spawn(async move {
-            while moved.changed().await.is_ok() {
+            loop {
+                tokio::select! {
+                    pool = moved.changed() => if pool.is_err() { break },
+                    () = crate::capacity::window_grant::demand_moves() => {}
+                }
                 let Some(module) = module.upgrade() else { break };
                 module.publish_grants();
             }
