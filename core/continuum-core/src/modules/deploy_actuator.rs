@@ -154,25 +154,25 @@ pub(crate) fn decide_actuation(
     req: &DeployRequest,
     stranded: bool,
     now_ms: u64,
-) -> ActuateDecision {
+) -> Decided {
     let Some(prev) = prev
         .filter(|p| same_commit(&p.tip_sha, &req.tip_sha))
         .filter(|p| p.spawned_ms >= req.requested_ms)
     else {
-        return ActuateDecision::Act { attempt: 1 };
+        return Decided::Act { attempt: 1 };
     };
     let elapsed_ms = now_ms.saturating_sub(prev.spawned_ms);
     if !stranded {
-        return ActuateDecision::AlreadyActuated { attempt: prev.attempt, elapsed_ms };
+        return Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt: prev.attempt, elapsed_ms });
     }
-    if prev.attempt >= ACTUATE_MAX_ATTEMPTS {
-        return ActuateDecision::GaveUp { attempts: prev.attempt };
+    if prev.attempt >= CONSUME_MAX_ATTEMPTS {
+        return Decided::Skip(ActuateSkipReason::GaveUp { attempts: prev.attempt });
     }
     let bound_ms = reactuation_bound_ms(prev.last_deploy_ms);
     if elapsed_ms < bound_ms {
-        return ActuateDecision::AwaitingBound { attempt: prev.attempt, elapsed_ms, bound_ms };
+        return Decided::Skip(ActuateSkipReason::AwaitingBound { attempt: prev.attempt, elapsed_ms, bound_ms });
     }
-    ActuateDecision::Act { attempt: prev.attempt + 1 }
+    Decided::Act { attempt: prev.attempt + 1 }
 }
 
 /// What the last actuation produced, judged at boot against the build now running.
@@ -422,9 +422,10 @@ impl DeployActuator {
         }
         let prev = self.receipt();
         let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
-        let attempt = match decision.clone() {
-            ActuateDecision::Act { attempt } => attempt,
-            ActuateDecision::GaveUp { attempts } => {
+        let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
+        let attempt = match &decision {
+            Decided::Act { attempt } => *attempt,
+            Decided::Skip(ActuateSkipReason::GaveUp { attempts }) => {
                 let mut said = self.said_gave_up.lock();
                 if said.as_deref() != Some(req.tip_sha.as_str()) {
                     *said = Some(req.tip_sha.clone());
@@ -435,21 +436,23 @@ impl DeployActuator {
                         "the consumer was launched this many times for this tip and it is not running — not launching again; a new tip resets this"
                     );
                 }
-                return ActuateOutcome::Skipped(decision.into());
+                return ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts });
             }
-            ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => {
+            Decided::Skip(ActuateSkipReason::AwaitingBound { attempt, elapsed_ms, bound_ms }) => {
                 continuum_base::probe!(
                     class = "deploy.actuate.decision",
                     verdict = "awaiting_bound",
                     tip = req.tip_sha.as_str(),
-                    attempt,
-                    elapsed_ms,
-                    bound_ms,
+                    *attempt,
+                    *elapsed_ms,
+                    *bound_ms,
                     "stranded, but inside the bound derived from the last measured deploy — not re-actuated blindly"
                 );
-                return ActuateOutcome::Skipped(decision.into());
+                return ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: *attempt, elapsed_ms: *elapsed_ms, bound_ms: *bound_ms });
             }
-            ActuateDecision::AlreadyActuated { .. } => return ActuateOutcome::Skipped(decision.into()),
+            Decided::Skip(ActuateSkipReason::AlreadyActuated { .. }) => {
+                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { .. });
+            }
         };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
