@@ -1419,6 +1419,112 @@ On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn 
 no grant below a mind's irreducible part; no view collapsed while another mind's idle state held
 the memory she needed; the admission code is smaller than before it.
 
+### 4.9 Minds share the engine by switching, never by shares (2026-11-15, design for review)
+
+Joel, 2026-11-15: "We try to be as simultaneous as possible and this is done with fast context
+switching with efficiency in mind. From the perspective of these minds it's all mostly simultaneous
+if we've done our jobs right"; "It's like a cpu. You switch them out and they get full speed";
+"Stopping is supposed to preserve caches and therefore not be any slowdown"; "design it PRIOR TO
+CODING IT". This section is that design. No grant, admission or stop code changes until Joel and
+Codex have reviewed it (Fable and Codex agreed on airc, 17:55Z).
+
+#### 4.9.1 What happened (receipts; the M5 unless named)
+
+| # | Fact | Receipt | Mechanism (file:line at canary) |
+|---|---|---|---|
+| F1 | Three minds queued for a window grant, positions 2-4 of 4, while 439,705 of 587,707 pool tokens were free and 3 of 5 slots idle; Aiko waited 15:20:48-15:45:06Z for one act | ba52dd603, 15:20-15:53Z: `delib.window.waiting` 1,177; `serving.grants` minds=1 granted=148,002; `serving.grants.queue_custody` holder Atlas `unresolved: 1` | `window_grant/lease/fair.rs` head-of-line protection (the oldest waiter was Atlas growing under her own act); grants are standing shares for every measured mind (`serving_daemon/grants.rs` `grant_inputs`) |
+| F2 | A ready mind without a grant waits for the publisher's next tick | `GrantEvaluation::cadence` = serving's `TICK`; the publisher woke on pool moves and the 5 s tick only | `serving_daemon/tick.rs:88`, `live_pool.rs` `publish_grants_when_the_pool_moves`, `mind_window.rs` `decide_window` |
+| F3 | The stop saved no resident: the engine had been adopted from a previous core, so the stop skipped its checkpoint; `--engine` then ended the engine and the four minds' newest KV with it | 16:48:43Z `inference.kv_page.stop_checkpoint_skipped reason=Adopted residents=Known(4)` | `inference/slots/page_io.rs:106`, `StopCheckpointSkip::Adopted` (:188): "this core holds no launch contract for it, so its residents' KV is not saved here" |
+| F4 | After the restart minds restored OLDER pages (7 restores, ~2.0-2.4 s each); restored KV went unused at least 4 times | 16:52-17:55Z: `kv_page.action` Restore 7 / Save 3 / Erase 3; `restored_turn` cold 1 (Aris, prompt 79,185, cached 0) / warm 1; `resident_prefix_lost` 3 | consequence of F3, plus a restore whose page is not her newest (cause per turn: open, see 4.9.6 Q2) |
+| F5 | Four minds decoded at once at 6.1-9.6 tok/s each; the engine had already measured a decode knee of 2 | 16:58-17:31Z `serving.throughput.degraded` inflight 3-4; `serving.decode_knee.clamped knee=2 roster_lanes=5`; engine `--parallel 5`, prompts 45-85k tokens | the knee clamps the PLAN's lanes; the running engine keeps its launch slots (no live `reconfigure`, `POST /reconfigure` 404), and nothing else consumes the knee |
+| F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading is never adopted; a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
+| F7 | A fresh core over a live engine published a 0-lane NoFit plan and seated nobody all night (Windows, e7ef) | Codex 04:38Z receipt | fixed in #6037 (`adopt_inherited`) |
+
+What these say together: every slowdown today was a wait or a loss the design already forbids (4.1a: every
+retirement is a pause that saves; 4.1c: no permit in front of the engine; 4.8.4: a grant is held for the
+act that uses it). The mechanisms each hold a piece of a standing-share model that the design replaced.
+
+#### 4.9.2 The model
+
+A CPU, and the graphics pipeline's residency (section 2.3):
+- A mind is a process. Her KV and recurrent state are its saved context. A context switch saves and
+  restores it in milliseconds on unified memory (4.1b: 0.22 s save, 0.1 s restore isolated).
+- A mind that is ready runs now. Nothing makes her wait for permission; she waits only for the engine
+  itself, and only while every byte is held by minds mid-act (4.8.1).
+- Nobody holds memory between acts. What stays resident between acts is CACHE, kept by predicted reuse
+  (activity temperature) and evicted coolest first the moment a ready mind needs the room (4.8.4).
+- A stop is a pause: every resident is saved, and the next engine restores her where she was. A deploy
+  therefore costs the restore, seconds, never a re-prefill (section 7.0 restart scenario: ~5.6 s against
+  ~401 s cold).
+- From her side all of this is simultaneous. Any wait she can perceive is a defect.
+
+#### 4.9.3 Invariants (each a simulator assertion before it is code)
+
+- **I1, a stop saves every resident.** Every endpoint this core serves, launched OR adopted, is paused
+  through the one owner (`MindMemory::pause`, 4.1a) with a confirmed save per resident before the engine
+  may end. Adoption carries custody through the ledger's incarnation (4.6, saved_ledger), so "no launch
+  contract" is not a reason to skip. A resident whose save fails is named lost, never silent.
+- **I2, a restart restores her newest state.** Her first act after a restart reuses at least the tokens
+  her saved page holds; a cold first act carries a classified cause (4.7, 5 "Restart"), never `cached=0`
+  on a restored page.
+- **I3, a ready mind is dispatched at once.** No queue position, no grant state, no tick. At her act
+  she takes free cells; if short, the coolest NON-acting holders are paged out (Codex's reclaim seam,
+  #6040: `reclaim_grant` returns `Busy` instead of waiting, so dispatch moves to the next holder). Only
+  when every holder is mid-act does she wait, in the engine's own queue, woken by an act's end.
+- **I4, memory is held for an act.** A grant exists from her dispatch to her act's end
+  (`ActHold`/reservation already bind it). Between acts her KV is cache, not a claim.
+- **I5, every wait is an event.** Grants are evaluated when demand moves (a ready mind, an act's end,
+  a pool step), never on a tick (RTOS rule 10).
+
+#### 4.9.4 Target shape and what each piece deletes
+
+| Piece | Owner | Builds on | Deletes |
+|---|---|---|---|
+| P1 Stop saves adopted engines (I1) | Fable (stop), Codex (adopt custody, F6) | `checkpoint_endpoint` already drains and saves a launched endpoint; adoption must install the generation it needs | `StopCheckpointSkip::Adopted` |
+| P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
+| P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
+| P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
+| P5 Decode concurrency (F5) | Fable (fork), after Q1 | fork `update_slots`, SV-S3 per-task priority | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
+
+#### 4.9.5 Simulator first (section 7.0)
+
+| Scenario | Proves | State |
+|---|---|---|
+| stop over an adopted engine saves every resident (MindMemory lifecycle validator, 4.1a: "a second stop after an adoption") | I1 | to write, red today |
+| restart restores the newest page: dyno `restart.rs` with the 2026-11-15 receipts | I2 | to write |
+| `simultaneous::a_mind_growing_under_her_own_act_never_queues_the_others` (dyno service) | F1 | written, green with #6038 |
+| `simultaneous::memory_follows_the_mind_that_is_acting` (dyno service) | I3, I4 | written, known-red |
+| `a_demand_move_publishes_the_grants_without_a_tick` (serving) | I5 | written |
+| decode concurrency at recorded context lengths (dyno `batch`, 45-85k) | Q1 | to write |
+
+#### 4.9.6 Open questions (answer before P4/P5 code)
+
+- **Q1.** At 45-85k-token contexts, what per-step concurrency finishes the most acts per hour, and at
+  what act latency? 4.1b measured 20.6 tok/s alone and 8.3 with three others decoding (aggregate ~1.6x);
+  the batch replay at recorded lengths answers it, and the answer lives in the engine's own scheduler
+  (fork priority), never in a core permit.
+- **Q2.** Why did a restored page go unused (Aris 17:03:07Z, cached 0 of 79,185)? Candidates to check
+  against her capture: the page was older than her view (F3), or her view turned over across the restart
+  (4.7.2: "her view is not carried over a restart", CX-3).
+- **Q3.** Should P1 save on a core-only stop as well? A core-only stop leaves the engine and its KV up for
+  adoption; saving anyway is the safety copy if the next core cannot adopt (F7, F6).
+
+#### 4.9.7 Order
+
+1. P1 (I1): the largest harm per change and the smallest change; its validator first.
+2. P2 (I5), then P3 (I3, I4) against #6040, dyno red-then-green, one deploy, core-only stop.
+3. Q2 then P4; Q1 then P5.
+
+Every deploy in this order is a core-only stop: the engine and every mind's KV stay up for the new core
+to adopt (P1 makes even an engine stop lossless). Each step posts the section 2.5 measurements before and
+after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
+
+#### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
+
+#6038's first commit tuned the head-of-line rule instead of removing the queue (F1 is fixed by P3, not by
+the tweak); a "decoding cores" cap was a permit in front of the engine (4.1c) and is reverted
+(aa46cb886); and the 16:48Z deploy used `stop --engine`, which with F3 lost every mind's newest KV.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
