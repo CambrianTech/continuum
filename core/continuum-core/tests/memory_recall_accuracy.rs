@@ -17,7 +17,7 @@ use continuum_core::memory::recall::{
 };
 use continuum_core::memory::{
     CorpusMemory, CorpusTimelineEvent, DeterministicEmbeddingProvider, EmbeddingProvider,
-    MemoryCorpus, MemoryRecord, MultiLayerRecallRequest, PersonaMemoryManager, TimelineEvent,
+    MemoryCorpus, MemoryEmbedding, MemoryRecord, MultiLayerRecallRequest, PersonaMemoryManager, TimelineEvent,
 };
 use std::sync::Arc;
 
@@ -56,7 +56,10 @@ async fn make_memory(
     room_id: &str,
 ) -> CorpusMemory {
     let provider = DeterministicEmbeddingProvider;
-    let embedding = Some(provider.embed(content).await);
+    let embedding = Some(MemoryEmbedding {
+        values: provider.embed(content).await,
+        producer: continuum_store::data::vector_index::EmbedderId::new(provider.id()),
+    });
 
     CorpusMemory {
         record: MemoryRecord {
@@ -651,7 +654,10 @@ async fn test_recall_performance_with_many_memories() {
                 "Memory #{i}: Discussion about topic {topic} with importance level {}",
                 (50 + (i % 50)) as f64 / 100.0
             );
-            let embedding = Some(provider.embed(&content).await);
+            let embedding = Some(MemoryEmbedding {
+                values: provider.embed(&content).await,
+                producer: continuum_store::data::vector_index::EmbedderId::new(provider.id()),
+            });
 
             CorpusMemory {
                 record: MemoryRecord {
@@ -811,11 +817,12 @@ async fn test_corpus_replacement_clears_old_data() {
             origin_seq: None,
             relevance_score: None,
         },
-        embedding: Some(
-            provider
+        embedding: Some(MemoryEmbedding {
+            values: provider
                 .embed("This is the old memory that should disappear")
                 .await,
-        ),
+            producer: continuum_store::data::vector_index::EmbedderId::new(provider.id()),
+        }),
     }];
     manager.load_corpus(&persona(), initial, vec![]);
 
@@ -839,7 +846,10 @@ async fn test_corpus_replacement_clears_old_data() {
             origin_seq: None,
             relevance_score: None,
         },
-        embedding: Some(provider.embed("This is the new replacement memory").await),
+        embedding: Some(MemoryEmbedding {
+            values: provider.embed("This is the new replacement memory").await,
+            producer: continuum_store::data::vector_index::EmbedderId::new(provider.id()),
+        }),
     }];
     manager.load_corpus(&persona(), replacement, vec![]);
 

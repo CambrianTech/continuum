@@ -1,6 +1,20 @@
 //! Genome responsibility of the llama-server process owner.
 use super::*;
 use std::collections::BTreeMap;
+
+/// A retirement is bound to the ledger that identified the adapter.
+#[derive(serde::Serialize)]
+#[serde(untagged)]
+pub(super) enum LoraChange<'a> {
+    Load { name: &'a str },
+    Unload(super::learn_residency::UnloadAdapter<'a>),
+}
+
+impl LoraChange<'_> {
+    fn route(&self) -> &'static str {
+        match self { Self::Load { .. } => "load", Self::Unload(_) => "unload" }
+    }
+}
 /// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
 /// once-per-binary probe that reads its KV cache types. An engine older than the flag REJECTS
 /// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
@@ -167,6 +181,7 @@ impl LlamaServerProcess {
         &self,
         dir: &std::path::Path,
         target: &ServingTarget,
+        engine: &LedgerEngine,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         let Some(active) = self.served_adapters.lock().unwrap().clone() else { // JUSTIFIED: poison means a prior panic while recording the served set.
             return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
@@ -208,7 +223,7 @@ impl LlamaServerProcess {
                     record(gene, false)?; // not loaded: nothing to retire, and not served
                     continue;
                 };
-                match self.lora_post("unload", serde_json::json!({ "id": id })).await? {
+                match self.lora_post(&LoraChange::Unload(super::learn_residency::UnloadAdapter { engine, id })).await? {
                     LoraPost::Done => {
                         record(gene, false)?;
                         let _ = std::fs::remove_file(dir.join(&stage)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
@@ -225,7 +240,7 @@ impl LlamaServerProcess {
                 .await
                 .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
-            match self.lora_post("load", serde_json::json!({ "name": name })).await? {
+            match self.lora_post(&LoraChange::Load { name: &name }).await? {
                 LoraPost::Done => record(&gene_key, true)?,
                 LoraPost::Busy => return Ok(GenomeInPlace::Busy),
                 LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
@@ -264,18 +279,28 @@ impl LlamaServerProcess {
 
     /// `POST /lora-adapters/{load,unload}`. 404 = an engine without the route (older than
     /// fork #26); 503 = the adapter is active in a turn in flight (unload only).
-    pub(super) async fn lora_post(&self, verb: &str, body: serde_json::Value) -> Result<LoraPost, LlamaServerError> {
+    pub(super) async fn lora_post(&self, change: &LoraChange<'_>) -> Result<LoraPost, LlamaServerError> {
+        let verb = change.route();
         let url = format!("{}/lora-adapters/{verb}", self.root);
         let resp = self
             .client
             .post(&url)
-            .json(&body)
+            .json(change)
             .timeout(LORA_LOAD_TIMEOUT)
             .send()
             .await
             .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
         match resp.status().as_u16() {
-            200..=299 => Ok(LoraPost::Done),
+            200..=299 => {
+                if let LoraChange::Unload(request) = change {
+                    let receipt = resp.json::<super::learn_residency::LoadedAdapter>().await
+                        .map_err(|error| LlamaServerError::Unreachable(error.to_string()))?;
+                    if receipt.id != request.id {
+                        return Err(LlamaServerError::Unreachable("adapter retirement receipt names another id".into()));
+                    }
+                }
+                Ok(LoraPost::Done)
+            }
             404 | 405 => Ok(LoraPost::NoRoute),
             503 => Ok(LoraPost::Busy),
             status => {

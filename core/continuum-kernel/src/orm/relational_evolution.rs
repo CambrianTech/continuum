@@ -1,9 +1,17 @@
 //! Declaration-driven evolution within the admitting owner's transaction.
 use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend};
-use sea_orm::sea_query::{Alias, Asterisk, Func, Query, Table};
+use sea_orm::sea_query::{Alias, Asterisk, Expr, Func, Query, Table};
 use super::{adapter::naming, schema_error::SchemaError, types::{CollectionSchema, FieldType, SchemaField}};
 
 use super::schema_error::GapFault;
+
+/// Prove emptiness in the same transaction that replaces the declaration.
+/// An empty table has no values to convert or required fields to backfill.
+async fn has_rows(db: &DatabaseTransaction, table: &str) -> Result<bool, SchemaError> {
+    let query = Query::select().expr(Expr::val(1))
+        .from(Alias::new(table)).limit(1).to_owned();
+    Ok(db.query_one(DbBackend::Sqlite.build(&query)).await?.is_some())
+}
 /// Changing JSON to native text explicitly exposes the stored text verbatim.
 /// This is not JSON string extraction: quotes, objects and whitespace remain bytes.
 /// The entity's typed consumer still validates its domain (for example enum tags).
@@ -30,7 +38,8 @@ pub(super) async fn evolve(
         || previous.indexes.iter().any(|index| !current.indexes.contains(index))
         || current.fields.iter().any(|field| !previous.fields.iter().any(|old| old.name == field.name)
             && (field.unique || field.foreign_key.is_some()));
-    for field in &current.fields {
+    let populated = has_rows(db, &naming::to_table_name(&current.collection)).await?;
+    for field in current.fields.iter().filter(|_| populated) {
         if let Some(old) = previous.fields.iter().find(|old| old.name == field.name) {
             if !preserves_native_storage(&old.field_type, &field.field_type) {
                 if matches!((&old.field_type, &field.field_type), (FieldType::String, FieldType::Number)) {
@@ -50,7 +59,7 @@ pub(super) async fn evolve(
     let added: Vec<_> = current.fields.iter().filter(|field|
         !previous.fields.iter().any(|old| old.name == field.name)).collect();
     for field in &added {
-        if !field.nullable && field.default_value.is_none() {
+        if populated && !field.nullable && field.default_value.is_none() {
             return Err(gap(GapFault::AddedFieldNeedsValue));
         }
     }
@@ -128,7 +137,8 @@ pub(super) async fn admit_table(
     expected_db.close().await?;
     let expected = expected?;
     if actual == expected { return Ok(()); }
-    for column in &expected.columns {
+    let populated = has_rows(db, table).await?;
+    for column in expected.columns.iter().filter(|_| populated) {
         match actual.columns.iter().find(|old| old.name == column.name) {
             Some(old) if super::relational_structure::integer_text_assignment(&old.r#type, &column.r#type) => {
                 super::relational_conversion::prove_integer_text(db, table, &column.name).await?;

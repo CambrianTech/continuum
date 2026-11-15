@@ -117,21 +117,16 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                         false
                     }
                     Err(e) => {
-                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
-                            model = target.model_id(),
-                            error = %e,
-                            "the in-place gene change failed: relaunching onto the target set"
-                        );
-                        false
+                        return EnsureOutcome::Degraded {
+                            reason: format!("genome change refused: {e}"),
+                        };
                     }
                 }
             }
             Err(e) => {
-                tracing::warn!(target: "continuum_core::inference::llama_server", error = %e,
-                    "could not read the served genome set — treating it as UNKNOWN and \
-                     falling through to relaunch rather than risk serving a stale genome"
-                );
-                false
+                return EnsureOutcome::Degraded {
+                    reason: format!("served genome catalog unreadable: {e}"),
+                };
             }
         };
         if genome_matches {

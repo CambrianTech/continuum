@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::orm::binary::{BinaryPageOutput, BinaryPageRequest};
+use crate::orm::binary::{BinaryPageOutput, BinaryPageRequest, BinarySelection};
 use std::{collections::BTreeMap, num::NonZeroUsize};
 
 fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, Box<dyn std::error::Error>> {
@@ -60,12 +60,19 @@ async fn snapshot_pins_empty_head_and_pages_while_writer_commits(
     insert(&store, 1).await?;
     insert(&store, 2).await?;
     assert_eq!(page(&empty, None).await?, (vec![], vec![]));
+    let scalars = QueryBuilder::new(NativeRow::COLLECTION).sort_asc("id").limit(2).build();
+    assert!(empty.query(&scalars).await?.is_empty());
     drop(empty);
 
     let snapshot = store.binary_snapshot(NativeRow::COLLECTION).await?;
     assert_eq!(snapshot.revision(), 2);
     let first = uuid::Uuid::from_u128(1);
     let second = uuid::Uuid::from_u128(2);
+    assert!(snapshot.read_selected(&BinarySelection { field: "payload", ids: &[] }).await?.is_empty());
+    assert_eq!(snapshot.query(&scalars).await?.len(), 2);
+    let wrong_collection = QueryBuilder::new("another_collection").limit(2).build();
+    assert!(matches!(snapshot.query(&wrong_collection).await,
+        Err(StorageError::SnapshotCollection { .. })));
     assert_eq!(page(&snapshot, None).await?, (vec![1, 2], vec![first]));
     assert!(
         store
@@ -77,9 +84,15 @@ async fn snapshot_pins_empty_head_and_pages_while_writer_commits(
         (vec![1, 2], vec![second])
     );
     assert_eq!(snapshot.revision(), 2);
+    let selected = snapshot.read_selected(&BinarySelection { field: "payload", ids: &[second] }).await?;
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].0, second);
+    assert_eq!(selected[0].1.bytes(), &[1, 2]);
     let fresh = store.binary_snapshot(NativeRow::COLLECTION).await?;
     assert_eq!(fresh.revision(), 3);
     assert_eq!(page(&fresh, Some(first)).await?, (vec![3, 4], vec![second]));
+    let selected = fresh.read_selected(&BinarySelection { field: "payload", ids: &[second] }).await?;
+    assert_eq!(selected[0].1.bytes(), &[3, 4]);
     drop(fresh);
     assert_eq!(
         store

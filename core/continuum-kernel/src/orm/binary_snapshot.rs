@@ -39,6 +39,65 @@ impl super::relational::RelationalStore {
     }
 }
 impl BinarySnapshot {
+    /// Read only the selected identities. Empty selection reads nothing; absent
+    /// optional payloads are omitted. Mixed descriptors retain their own custody.
+    pub async fn read_selected(
+        &self,
+        selection: &super::binary::BinarySelection<'_>,
+    ) -> Result<Vec<(uuid::Uuid, super::binary::BinaryValue)>, StorageError> {
+        use sea_orm::sqlx::Row;
+        let header = self.header_column(selection.field)
+            .ok_or_else(|| self.not_binary(selection.field))?;
+        if selection.ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let column = super::relational_query::column(&self.schema, selection.field)?;
+        let query = Query::select()
+            .from(Alias::new(naming::to_table_name(&self.schema.collection)))
+            .column(Alias::new("id"))
+            .expr_as(Expr::col(column), Alias::new("payload"))
+            .expr_as(Expr::col(header), Alias::new("descriptor"))
+            .and_where(Expr::col(Alias::new("id")).is_in(selection.ids.iter().map(uuid::Uuid::to_string)))
+            .order_by(Alias::new("id"), Order::Asc)
+            .to_owned();
+        let rows = self.transaction.query_all(DbBackend::Sqlite.build(&query)).await?;
+        let mut values = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let row = row.try_as_sqlite_row()
+                .ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;
+            let payload: Option<&[u8]> = row.try_get("payload")?;
+            let header: Option<&[u8]> = row.try_get("descriptor")?;
+            let (payload, header) = match (payload, header) {
+                (None, None) => continue,
+                (Some(payload), Some(header)) => (payload, header),
+                _ => return Err(StorageError::Corrupt { what: "a binary payload and its descriptor disagree on NULL" }),
+            };
+            let id: &str = row.try_get("id")?;
+            let value = super::binary::BinaryValue::new(BinaryDescriptor::decode(header)?, payload.to_vec())?;
+            values.push((super::binary::native_identity(id)?, value));
+        }
+        Ok(values)
+    }
+
+    /// Scalar rows and native payloads share this transaction's committed view.
+    pub(super) async fn query(
+        &self,
+        query: &super::query::StorageQuery,
+    ) -> Result<Vec<super::types::DataRecord>, StorageError> {
+        if query.collection != self.schema.collection {
+            return Err(StorageError::SnapshotCollection {
+                expected: (&self.schema.collection).into(),
+                found: (&query.collection).into(),
+            });
+        }
+        let statement = super::relational_query::select(
+            &self.schema, query, super::relational_query::Selection::Page,
+        )?;
+        let rows = self.transaction.query_all(DbBackend::Sqlite.build(&statement)).await?;
+        let decoder = super::relational_codec::RowDecoder::new(self.schema.as_ref(), &[]);
+        rows.into_iter().map(|row| decoder.decode(row)).collect()
+    }
+
     /// Native payload revision visible to these reads, not proof of applied GPU work.
     pub fn revision(&self) -> u64 {
         self.revision

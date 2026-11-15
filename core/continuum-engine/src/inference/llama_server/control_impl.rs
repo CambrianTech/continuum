@@ -88,7 +88,14 @@ impl LlamaServerControl for LlamaServerProcess {
         let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        self.converge_genome(&dir, target).await
+        let process = self.served_incarnation().ok_or_else(||
+            LlamaServerError::Unreachable("genome change requires the served engine incarnation".into()))?;
+        let ledger = match LearningEngine::of(process).learn_ledger().await? {
+            LedgerAnswer::Ledger(ledger) => ledger,
+            LedgerAnswer::NoLedger => return Err(LlamaServerError::Unreachable(
+                "genome change requires the engine ledger".into())),
+        };
+        self.converge_genome(&dir, target, &ledger.engine).await
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {

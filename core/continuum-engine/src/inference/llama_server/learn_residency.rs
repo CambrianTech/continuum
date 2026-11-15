@@ -10,6 +10,13 @@
 //! ledger, only this reference to the core's.
 
 use super::learn_ledger::{LearningEngine, LedgerAnswer, LedgerEngine, LedgerReply, Registered};
+
+/// Numeric adapter ids belong to the ledger that issued them.
+#[derive(serde::Serialize)]
+pub(super) struct UnloadAdapter<'a> {
+    pub engine: &'a LedgerEngine,
+    pub id: i64,
+}
 use super::*;
 
 /// A residency the core mints, never reused (a released id is retired by the engine).
@@ -311,7 +318,7 @@ impl LearningEngine {
     /// `POST /lora-adapters/unload`: the shadow leaves the engine (its optimizer released first).
     pub async fn unseat(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
         // bound to the incarnation that loaded it: a relaunch reusing the id refuses, never unloads
-        let body = serde_json::json!({ "engine": engine, "id": lora_id });
+        let body = UnloadAdapter { engine, id: lora_id };
         self.adapter_change(self.client.post(format!("{}/lora-adapters/unload", self.root)).json(&body)).await
     }
 

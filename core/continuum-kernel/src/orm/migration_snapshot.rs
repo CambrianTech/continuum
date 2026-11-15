@@ -56,7 +56,7 @@ impl super::BinarySnapshot {
             query.and_where(Expr::col(Alias::new("id")).gt(after));
         }
         let rows = self.transaction.query_all(DbBackend::Sqlite.build(&query)).await?;
-        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&self.schema), &omitted);
+        let decoder = super::relational_codec::RowDecoder::new(self.schema.as_ref(), &omitted);
         let mut output = Vec::with_capacity(rows.len());
         for result in rows {
             use sea_orm::sqlx::Row;

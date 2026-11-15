@@ -1,6 +1,12 @@
 //! Producer-owned native payloads. Only the small descriptor is decoded by storage.
 //! Payload bytes are never interpreted, normalized, or converted here.
 
+/// Native payloads for an already selected scalar page, in the same snapshot.
+pub struct BinarySelection<'a> {
+    pub field: &'a str,
+    pub ids: &'a [uuid::Uuid],
+}
+
 /// A bounded native read. Absence of a cursor means the beginning, not missing input.
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryPageRequest<'a> {

@@ -9,6 +9,9 @@ use crate::modules::data::DataModule;
 /// returns how many collections the registry resolves afterwards. A conflict refuses boot.
 pub fn wire_substrate_orm_entities() -> Result<usize, String> {
     let registry = crate::orm::OrmEntityRegistry::global();
+    registry
+        .register::<continuum_memory::memory::persistent::PersistentMemory>()
+        .map_err(|e| format!("memory ORM entity registration conflict — boot refused: {e}"))?;
     crate::persona::register_substrate_orm_entities(registry)
         .map_err(|e| format!("substrate ORM entity registration conflict — boot refused: {e}"))?;
     continuum_mind::chat::orm_entities::register_chat_orm_entities(registry)
@@ -24,6 +27,7 @@ fn substrate_collections() -> Vec<&'static str> {
     crate::persona::SUBSTRATE_ORM_COLLECTIONS
         .iter()
         .chain(continuum_mind::chat::orm_entities::CHAT_ORM_COLLECTIONS)
+        .chain(std::iter::once(&"memories"))
         .copied()
         .collect()
 }
@@ -45,10 +49,19 @@ mod tests {
     #[test]
     fn boot_wiring_makes_every_substrate_collection_resolvable_on_the_global_registry() {
         let n = wire_substrate_orm_entities().expect("no conflict on a fresh or repeated wiring"); // JUSTIFIED: the invariant under test
-        assert_eq!(n, substrate_collections().len(), "every substrate collection resolves");
+        assert_eq!(
+            n,
+            substrate_collections().len(),
+            "every substrate collection resolves"
+        );
         for c in substrate_collections() {
-            assert!(crate::orm::OrmEntityRegistry::global().resolve(c).is_some(), "{c} must resolve");
+            assert!(
+                crate::orm::OrmEntityRegistry::global().resolve(c).is_some(),
+                "{c} must resolve"
+            );
         }
-        assert!(crate::orm::OrmEntityRegistry::global().resolve("staged_credit").is_some());
+        assert!(crate::orm::OrmEntityRegistry::global()
+            .resolve("staged_credit")
+            .is_some());
     }
 }

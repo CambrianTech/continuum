@@ -25,7 +25,7 @@ impl super::relational::RelationalStore {
         id: &str,
     ) -> Result<Option<DataRecord>, StorageError> {
         let schema = self.schema(collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(schema.as_ref(), &[]);
         let query = QueryBuilder::new(collection)
             .filter_eq("id", id)
             .limit(1)

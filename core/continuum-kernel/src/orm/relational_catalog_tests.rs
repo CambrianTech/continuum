@@ -641,3 +641,32 @@ async fn revision_restart_crosses_domain_pages_and_rejects_late_corruption(
     assert!(matches!(error, StorageError::Corrupt { .. }), "{error}");
     Ok(())
 }
+
+#[tokio::test]
+async fn empty_declaration_replacement_survives_restart() -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let file = directory.path().join("empty-declaration.db");
+    let path = file.to_str().ok_or("test path encoding")?;
+    let initial = store(path).await?;
+    let mut requested = Parent::collection_schema();
+    requested.fields.iter_mut().find(|field| field.name == "label")
+        .ok_or("fixture label absent")?.field_type = FieldType::Boolean;
+    let mut required = requested.fields.iter().find(|field| field.name == "label")
+        .ok_or("fixture label absent")?.clone();
+    required.name = "requiredFlag".into();
+    required.nullable = false;
+    requested.fields.push(required);
+    initial.ensure(&requested).await?;
+    initial.insert(&initial.db, &record("new-row", Parent::COLLECTION,
+        json!({"label": true, "requiredFlag": false}))).await?;
+    initial.db.clone().close().await?;
+    let reopened = RelationalStore::open(&AdapterConfig {
+        connection_string: path.into(), max_connections: 1, ..Default::default()
+    }).await?;
+    reopened.ensure(&requested).await?;
+    let rows = reopened.query(&QueryBuilder::new(Parent::COLLECTION).limit(1).build()).await?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].data["label"], true);
+    assert_eq!(rows[0].data["requiredFlag"], false);
+    Ok(())
+}

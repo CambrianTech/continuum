@@ -108,7 +108,7 @@ impl super::relational::RelationalStore {
             .db
             .query_all(DbBackend::Sqlite.build(&statement))
             .await?;
-        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &joined_columns);
+        let decoder = super::relational_codec::RowDecoder::new(schema.as_ref(), &joined_columns);
         rows.into_iter()
             .map(|result| {
                 let row = result.try_as_sqlite_row().ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;

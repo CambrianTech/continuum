@@ -2,6 +2,43 @@
 #![cfg(test)]
 use super::*;
 
+#[tokio::test]
+async fn refused_or_invalid_retirement_never_changes_the_served_set() {
+    use axum::http::StatusCode;
+    for (status, body) in [
+        (StatusCode::BAD_REQUEST, r#"{"error":"stale_engine"}"#),
+        (StatusCode::OK, r#"{"id":7,"path":"/genes/other.gguf"}"#),
+        (StatusCode::OK, r#"{"not":"a receipt"}"#),
+    ] {
+        let app = axum::Router::new()
+            .route("/lora-adapters", axum::routing::get(|| async {
+                axum::Json(serde_json::json!([{"id":0,"path":"/genes/a.gguf"}]))
+            }))
+            .route("/lora-adapters/unload", axum::routing::post(
+                move |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                    // Even if another incarnation reuses ID zero, send the original authority.
+                    assert_eq!(request, serde_json::json!({"engine":"original-engine","id":0}));
+                    (status, body)
+                },
+            ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture bind");
+        let root = format!("http://{}", listener.local_addr().expect("fixture address"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let process = LlamaServerProcess::with_root(root);
+        let held = vec!["/genes/a.gguf".to_owned()];
+        *process.served_adapters.lock().expect("fixture lock") = Some(held.clone());
+        let dir = tempfile::tempdir().expect("fixture directory");
+        let engine = serde_json::from_value(serde_json::json!("original-engine"))
+            .expect("fixture engine identity");
+        let result = process.converge_genome(
+            dir.path(), &target_with_adapters("coder-14b", &[]), &engine,
+        ).await;
+        assert!(result.is_err(), "refusal or invalid receipt cannot acknowledge retirement");
+        assert_eq!(*process.served_adapters.lock().expect("fixture lock"), Some(held));
+        server.abort();
+    }
+}
+
 #[cfg(windows)]
 #[tokio::test]
 async fn review_failed_other_binary_probe_preserves_the_first_binary_answer() {
@@ -44,10 +81,11 @@ async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds
         .route(
             "/lora-adapters/unload",
             axum::routing::post(|axum::Json(body): axum::Json<serde_json::Value>| async move {
+                assert_eq!(body["engine"], "fixture-engine");
                 if body["id"] == 0 {
-                    axum::http::StatusCode::OK
+                    axum::response::IntoResponse::into_response(axum::Json(serde_json::json!({"id": 0, "path": "/genes/a.gguf"})))
                 } else {
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE
+                    axum::response::IntoResponse::into_response(axum::http::StatusCode::SERVICE_UNAVAILABLE)
                 }
             }),
         )
@@ -65,7 +103,7 @@ async fn a_busy_second_retire_leaves_the_served_set_naming_what_the_engine_holds
     *process.served_adapters.lock().unwrap() = Some(vec!["/genes/a.gguf".into(), "/genes/b.gguf".into()]); // JUSTIFIED: test-owned lock, never poisoned
     let dir = tempfile::tempdir().expect("test: tempdir");
     let got = process
-        .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]))
+        .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]), &serde_json::from_value(serde_json::json!("fixture-engine")).expect("fixture ledger identity"))
         .await
         .expect("test: the engine answered");
     assert_eq!(got, GenomeInPlace::Busy);
