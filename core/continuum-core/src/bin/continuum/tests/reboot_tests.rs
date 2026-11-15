@@ -6,17 +6,17 @@ fn empty_receipt() -> continuum_core::runtime::ShutdownReceipt {
     continuum_core::runtime::ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: Vec::new() }
 }
 
-// what this catches (CONTINUUM-ENGINE 4.9, I1; Codex's acceptance cases on #6041): `stop --engine`
-// ending an engine whose residents' newest KV no receipt shows saved (the M5, 2026-11-15 16:48Z:
-// an adopted engine's four residents were never saved and the engine was ended anyway). Only
-// custody bound to exactly this engine process authorizes the end; no answer, a stale receipt, a
-// reused pid or a retained save refuses, and only the explicit discard overrides.
+// what this catches (CONTINUUM-ENGINE 4.9, I1; Codex on #6041/#6042): `stop --engine` ending an
+// engine no receipt shows saved (the M5, 2026-11-15 16:48Z: an adopted engine's four residents
+// were never saved and it was ended anyway), or ending a second engine on proof made for the first.
+// The authority judges each engine the sweep finds on its own record: no answer, no custody, a
+// reused pid or a retained save refuses that engine; only the explicit discard overrides.
 #[test]
-fn the_engine_ends_only_on_custody_for_exactly_its_process() {
+fn every_engine_ends_only_on_custody_for_exactly_its_process() {
     use continuum_core::runtime::{CustodyState, SettledCustody};
-    let lane = continuum_core::inference::lane_registry::LaneRecord {
-        pid: 49_553,
-        port: 58_057,
+    let engine = |pid: u32, port: u16| continuum_core::inference::lane_registry::LaneRecord {
+        pid,
+        port,
         role: continuum_core::inference::lane_registry::LaneRole::Live,
         model: "qwen".into(),
         context_window: 1,
@@ -27,21 +27,22 @@ fn the_engine_ends_only_on_custody_for_exactly_its_process() {
         started_s: 1_794_679_637,
         placement: None,
     };
+    let (first, second) = (engine(49_553, 58_057), engine(49_600, 58_058));
     let answered = |pid: u32, started_s: u64, state: CustodyState| {
         let mut receipt = empty_receipt();
-        receipt.custody.push(SettledCustody { participant: "page_io".into(), endpoint: lane.root_url(), pid, started_s, state });
+        receipt.custody.push(SettledCustody { participant: "page_io".into(), endpoint: first.root_url(), pid, started_s, state });
         GracefulStop::Durable(Stopped { summary: "saved".into(), receipt })
     };
-    let saved = answered(lane.pid, lane.started_s, CustodyState::Saved { residents: 4 });
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &saved).is_ok(), "saved for exactly this process");
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s, CustodyState::NothingHeld)).is_ok());
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s, CustodyState::Retained)).is_err(), "a retained save refuses");
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s + 1, CustodyState::Saved { residents: 4 })).is_err(), "a reused pid refuses");
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).is_err(), "no custody for it refuses");
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::NothingRunning).is_err(), "no core answered: nothing speaks for the engine");
-    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::NoAnswer("timed out".into())).is_err());
-    assert!(may_end_engine(EngineFate::EndDiscardingKv, &lane, &GracefulStop::NothingRunning).is_ok(), "only the explicit discard overrides");
-    assert!(may_end_engine(EngineFate::Keep, &lane, &saved).is_err(), "a kept engine is never ended");
+    let saved = EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Saved { residents: 4 }));
+    assert!(saved.may_end(&first).is_ok(), "saved for exactly this process");
+    assert!(saved.may_end(&second).is_err(), "a second engine never ends on the first one's proof");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Retained)).may_end(&first).is_err(), "a retained save refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s + 1, CustodyState::Saved { residents: 4 })).may_end(&first).is_err(), "a reused pid refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).may_end(&first).is_err(), "no custody for it refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NothingRunning).may_end(&first).is_err(), "no core answered: nothing speaks for the engine");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NoAnswer("timed out".into())).may_end(&first).is_err());
+    assert!(EngineEndAuthority::of(EngineFate::EndDiscardingKv, &GracefulStop::NothingRunning).may_end(&second).is_ok(), "only the explicit discard overrides");
+    assert!(EngineEndAuthority::of(EngineFate::Keep, &answered(first.pid, first.started_s, CustodyState::Saved { residents: 4 })).may_end(&first).is_err(), "a kept engine is never ended");
 }
 
 // Regression for #3929/#3940: a core that answered but cannot attest a final checkpoint stays

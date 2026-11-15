@@ -131,43 +131,15 @@ pub(super) fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), St
     })
 }
 
-/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the
-/// OS answered.
-#[cfg(windows)]
+/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the OS answered
+/// (`continuum_host::termination_authority`): a pid positively gone is nothing to refuse; an answer
+/// that proves neither authority nor absence refuses (Codex on #6042: only ESRCH proves gone).
 pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
-    // SAFETY: OpenProcess is a read-only capability query here; the handle is closed
-    // immediately and nothing is terminated by this call.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
-    if handle.is_null() {
-        let err = std::io::Error::last_os_error();
-        // ABSENCE IS NOT REFUSAL, and Windows spells absence differently from unix: a
-        // pid that is not in the table answers ERROR_INVALID_PARAMETER here where unix
-        // answers ESRCH. Reading it as "no authority" would abandon every stop whose
-        // pidfile is merely stale — which is most of them (Astra, 2026-09-22).
-        if err.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-            return Ok(());
-        }
-        return Err(format!("OpenProcess(pid {pid}, PROCESS_TERMINATE) failed: {err}"));
-    }
-    // SAFETY: handle came from a successful OpenProcess above and is closed once.
-    unsafe { CloseHandle(handle) };
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
-    // SAFETY: signal 0 performs the permission and existence check WITHOUT delivering
-    // a signal — the standard capability probe.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    match err.raw_os_error() {
-        Some(libc::EPERM) => Err(format!("signal 0 to pid {pid} refused: {err}")),
-        // ESRCH = already gone: nothing to tear down, so nothing to refuse.
-        _ => Ok(()),
+    use continuum_host::termination_authority::{may_terminate, TerminationAuthority};
+    match may_terminate(pid as u32) {
+        TerminationAuthority::Granted | TerminationAuthority::Absent => Ok(()),
+        TerminationAuthority::Refused(error) => Err(format!("no authority to terminate pid {pid}: {error}")),
+        TerminationAuthority::Unknown(error) => Err(format!("cannot tell whether pid {pid} may be terminated: {error}")),
     }
 }
 

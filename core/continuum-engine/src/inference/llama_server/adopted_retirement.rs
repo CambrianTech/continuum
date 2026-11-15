@@ -90,8 +90,9 @@ impl LlamaServerProcess {
             Some(endpoint.pending_discard(DiscardReason::PagingUncertain))
         } else {
             transition.checkpoint_adopted_before_replacement(
-                &self.client, &self.root, incarnation, current,
-                crate::inference::slots::AdoptedCheckpointIntent::Replace,
+                &self.client, &self.root,
+                crate::inference::slots::AdoptedCheckpoint { incarnation, intent: crate::inference::slots::AdoptedCheckpointIntent::Replace },
+                current,
             ).await.map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))?;
             None
         };

@@ -333,10 +333,10 @@ impl EndpointTransition {
         &mut self,
         client: &reqwest::Client,
         root: &str,
-        incarnation: crate::inference::engine_residency::EngineIncarnation,
+        target: AdoptedCheckpoint,
         current: &(dyn Fn() -> bool + Send + Sync),
-        intent: AdoptedCheckpointIntent,
     ) -> Result<(), AdoptedCheckpointRefusal> {
+        let AdoptedCheckpoint { incarnation, intent } = target;
         use crate::inference::engine_residency::Liveness;
 
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
@@ -942,6 +942,14 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+/// The adopted engine a checkpoint saves and why: its live incarnation, verified against the
+/// ledger, and the lifecycle intent that decides what a refusal leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdoptedCheckpoint {
+    pub(crate) incarnation: crate::inference::engine_residency::EngineIncarnation,
+    pub(crate) intent: AdoptedCheckpointIntent,
 }
 
 /// Why an adopted engine is checkpointed: its lifecycle decides what a refusal leaves.

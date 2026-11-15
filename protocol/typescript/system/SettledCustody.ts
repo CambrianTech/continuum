@@ -5,6 +5,6 @@ import type { CustodyState } from "./CustodyState";
  * What a stop-settle participant left in custody for ONE process: the participant, the
  * endpoint it serves and the exact process incarnation (pid and start time) there, and the
  * state. Bound to that incarnation, so a receipt can never authorize ending another process
- * (a reused pid, a replaced engine). Only `Saved` and `NothingHeld` let a stop end it.
+ * (a reused pid, a replaced engine). Only `Saved` lets a stop end it.
  */
 export type SettledCustody = { participant: string, endpoint: string, pid: number, started_s: number, state: CustodyState, };

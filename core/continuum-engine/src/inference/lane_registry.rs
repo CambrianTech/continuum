@@ -282,13 +282,19 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub async fn sweep_all(deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
+/// `may_end` decides each live engine on its own record, right before it would be signalled: an
+/// engine may hold minds' only KV, so none ends on proof made for another (CONTINUUM-ENGINE 4.9,
+/// I1; Codex on #6042). A refusal leaves that engine running, as `TerminationRefused`.
+pub async fn sweep_all(
+    deadline: std::time::Instant,
+    may_end: impl Fn(&LaneRecord) -> Result<(), String> + Send + 'static,
+) -> Result<Vec<SweepOutcome>, String> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
     let (outcomes, pending) = tokio::task::spawn_blocking(move || {
         let mut pending = Vec::new();
-        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending);
+        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending, &may_end);
         (outcomes, pending)
     })
     .await
@@ -552,10 +558,15 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
-    sweep_collect(dir, mode, &mut Vec::new())
+    sweep_collect(dir, mode, &mut Vec::new(), &|_| Ok(()))
 }
 
-fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
+fn sweep_collect(
+    dir: &Path,
+    mode: SweepMode,
+    pending: &mut Vec<(PathBuf, LaneRecord)>,
+    may_end: &dyn Fn(&LaneRecord) -> Result<(), String>,
+) -> Vec<SweepOutcome> {
     let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
@@ -606,7 +617,9 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             // Capture the stamped incarnation before signalling. Unstamped
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;
-            let outcome = if identified {
+            let outcome = if let Err(reason) = may_end(&rec) {
+                SweepOutcome::TerminationRefused { pid: rec.pid, started_s: rec.started_s, reason }
+            } else if identified {
                 finish_signal(&path, &rec, continuum_process::signal_if_same(lane_identity(&rec)))
             } else {
                 // No stamped incarnation: retain evidence instead of signalling

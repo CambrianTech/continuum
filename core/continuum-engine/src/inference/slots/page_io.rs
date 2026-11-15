@@ -105,15 +105,16 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
             Probed::NotAsked => Probed::NotAsked,
             Probed::Absent(why) => Probed::Absent(why),
         };
-        // The one process this evidence may speak for: the live lane recorded at this endpoint.
-        let process = crate::inference::lane_registry::live_lane()
+        // An adopted engine's checkpoint needs the live process recorded at this endpoint; the
+        // checkpoint itself verifies it against the engine's ledger.
+        let lane = crate::inference::lane_registry::live_lane()
             .filter(|lane| lane.root_url() == root)
             .map(|lane| lane.incarnation());
         // Before the drain: a stop cut during its checkpoint still leaves whom it was saving.
         continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
-            route = ?route, residents = ?residents, process = ?process,
+            route = ?route, residents = ?residents, lane = ?lane,
             "the stop drains this endpoint's acts, then saves every resident a slot holds, all at once");
-        let state = match (route, process) {
+        let state = match (route, lane) {
             (StopRoute::Owned, _) => {
                 let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
                 StopCheckpoint::Owned(checkpoint_endpoint(client, &root, &endpoint, condemn).await)
@@ -122,6 +123,13 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
             // An adopted pool with no live lane recorded here: no identity to bind a save to.
             (StopRoute::Adopted, None) => StopCheckpoint::Adopted(Err(super::AdoptedCheckpointRefusal::IdentityUnverified)),
             (StopRoute::NoPaging, _) => StopCheckpoint::NoPaging,
+        };
+        // The one process this evidence speaks for: the incarnation stamped on the pool that was
+        // checkpointed (at its verified ready or its adoption), read after the checkpoint, never a
+        // separate process read beside it (Codex on #6042).
+        let process = match endpoint.state.lock().pool() {
+            Probed::Known(pool) => pool.incarnation(),
+            Probed::NotAsked | Probed::Absent(_) => None,
         };
         // A pool never asked or without paging seated no resident this core counted; the state,
         // not the count, decides whether the process may end.
@@ -134,17 +142,18 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
             outcome = ?state,
+            failure = ?state.failure(),
             custody = ?held,
             process = ?process,
             residents = ?residents,
             ms = started.elapsed().as_millis() as u64,
             "every resident a slot holds saved before the stop, or named as still held by the live engine"
         );
-        process.map(|process| crate::runtime::SettledCustody {
+        process.map(|(pid, started_s)| crate::runtime::SettledCustody {
             participant: "page_io".to_owned(),
             endpoint: root,
-            pid: process.pid,
-            started_s: process.started_s,
+            pid,
+            started_s,
             state: held,
         })
     }))
@@ -168,7 +177,7 @@ async fn checkpoint_adopted_for_stop(
         return Err(super::AdoptedCheckpointRefusal::IntentChanged);
     };
     transition
-        .checkpoint_adopted_before_replacement(client, root, process, &|| true, super::AdoptedCheckpointIntent::Stop)
+        .checkpoint_adopted_before_replacement(client, root, super::AdoptedCheckpoint { incarnation: process, intent: super::AdoptedCheckpointIntent::Stop }, &|| true)
         .await
 }
 
@@ -205,16 +214,34 @@ pub(crate) enum StopCheckpoint {
 }
 
 impl StopCheckpoint {
-    /// The custody it leaves: saved only on a confirmed save of every resident; anything else the
-    /// live engine still holds.
+    /// The custody it leaves: saved only on a confirmed save of every resident. Anything else,
+    /// including an engine without paging or a generation that ended under the stop, is no proof
+    /// that the live process holds nothing, so the live engine still holds it (Codex on #6042).
     fn custody(&self, residents: u64) -> crate::runtime::CustodyState {
         use crate::runtime::CustodyState;
         match self {
             Self::Owned(OwnedStopCheckpoint::Saved) | Self::Adopted(Ok(())) => CustodyState::Saved { residents },
-            Self::Owned(OwnedStopCheckpoint::Ended) | Self::NoPaging => CustodyState::NothingHeld,
-            Self::Owned(OwnedStopCheckpoint::EngineChanged | OwnedStopCheckpoint::Failed(_)) | Self::Adopted(Err(_)) => CustodyState::Retained,
+            Self::Owned(OwnedStopCheckpoint::Ended | OwnedStopCheckpoint::EngineChanged | OwnedStopCheckpoint::Failed(_))
+            | Self::Adopted(Err(_))
+            | Self::NoPaging => CustodyState::Retained,
         }
     }
+
+    /// Why it did not save, typed, for its probe.
+    fn failure(&self) -> Option<StopFailure<'_>> {
+        match self {
+            Self::Owned(owned) => owned.failure().map(StopFailure::Owned),
+            Self::Adopted(Err(refusal)) => Some(StopFailure::Adopted(refusal)),
+            Self::Adopted(Ok(())) | Self::NoPaging => None,
+        }
+    }
+}
+
+/// Why a stop's checkpoint did not save, by route.
+#[derive(Debug)]
+enum StopFailure<'a> {
+    Owned(&'a super::CheckpointFailure<super::OwnedCheckpointRefusal>),
+    Adopted(&'a super::AdoptedCheckpointRefusal),
 }
 
 /// What the stop's checkpoint of an owned endpoint came to.

@@ -94,32 +94,42 @@ pub(super) enum EngineFate {
     EndDiscardingKv,
 }
 
-/// May the stop end `lane`? Only on evidence bound to exactly that process (its endpoint, pid and
-/// start time) that nothing is lost, or on the operator's explicit instruction to discard. A core
-/// that answered with no custody for it, a stale receipt, a reused pid or no answer at all
-/// speaks for nothing, so it refuses.
-pub(super) fn may_end_engine(
+/// Who may end which engine after a stop: the fate the operator asked for and the stopped core's
+/// receipt, owned so the lane sweep can judge every engine it finds on its own record.
+pub(super) struct EngineEndAuthority {
     fate: EngineFate,
-    lane: &continuum_core::inference::lane_registry::LaneRecord,
-    graceful: &GracefulStop,
-) -> Result<(), String> {
-    let custody = graceful
-        .receipt()
-        .and_then(|receipt| receipt.custody_of(&lane.root_url(), lane.pid, lane.started_s));
-    match (fate, custody) {
-        (EngineFate::Keep, _) => Err("the engine is kept for the next core".into()),
-        (EngineFate::EndIfSaved, Some(state)) if state.ends_safely() => Ok(()),
-        (EngineFate::EndDiscardingKv, _) => Ok(()),
-        (EngineFate::EndIfSaved, Some(_)) => Err(format!(
-            "the engine (pid {}) still holds residents' KV the stop could not save; it is left up. \
-             `continuum stop --engine --discard-kv` ends it and loses that KV",
-            lane.pid
-        )),
-        (EngineFate::EndIfSaved, None) => Err(format!(
-            "no stop receipt speaks for the engine (pid {}, started {}): nothing proves its residents' \
-             KV was saved, so it is left up. `continuum stop --engine --discard-kv` ends it and loses that KV",
-            lane.pid, lane.started_s
-        )),
+    receipt: Option<continuum_core::runtime::ShutdownReceipt>,
+}
+
+impl EngineEndAuthority {
+    pub(super) fn of(fate: EngineFate, graceful: &GracefulStop) -> Self {
+        Self { fate, receipt: graceful.receipt().cloned() }
+    }
+
+    /// May the stop end the engine `lane` records? Only on custody bound to exactly that process
+    /// (its endpoint, pid and start time) proving every resident saved, or on the operator's
+    /// explicit instruction to discard. No answer, no custody for it, a stale receipt, a reused
+    /// pid or a retained save speaks for nothing, so it refuses, per engine (Codex on #6042).
+    pub(super) fn may_end(&self, lane: &continuum_core::inference::lane_registry::LaneRecord) -> Result<(), String> {
+        let custody = self
+            .receipt
+            .as_ref()
+            .and_then(|receipt| receipt.custody_of(&lane.root_url(), lane.pid, lane.started_s));
+        match (self.fate, custody) {
+            (EngineFate::Keep, _) => Err("the engine is kept for the next core".into()),
+            (EngineFate::EndIfSaved, Some(state)) if state.ends_safely() => Ok(()),
+            (EngineFate::EndDiscardingKv, _) => Ok(()),
+            (EngineFate::EndIfSaved, Some(_)) => Err(format!(
+                "the engine (pid {}) still holds residents' KV the stop could not save; it is left up. \
+                 `continuum stop --engine --discard-kv` ends it and loses that KV",
+                lane.pid
+            )),
+            (EngineFate::EndIfSaved, None) => Err(format!(
+                "no stop receipt speaks for the engine (pid {}, started {}): nothing proves its residents' \
+                 KV was saved, so it is left up. `continuum stop --engine --discard-kv` ends it and loses that KV",
+                lane.pid, lane.started_s
+            )),
+        }
     }
 }
 
@@ -214,7 +224,9 @@ pub(super) async fn stop_with_fate(fate: EngineFate, operator_present: bool, req
             .map_err(|e| format!("cannot establish lane teardown ownership before drain: {e}"))?;
     }
     let pids = cores_to_tear_down();
-    let target = if cfg!(windows) && (keep_lanes || require_durable) {
+    // Every platform asks for the receipt-bound target: whether a stop is durable is lifecycle
+    // policy, never an OS capability (Codex on #6042).
+    let target = if keep_lanes || require_durable {
         probe_shutdown_target(&pids).await?
     } else {
         None
@@ -421,21 +433,17 @@ pub(super) async fn stop_with_fate(fate: EngineFate, operator_present: bool, req
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
         return Ok(graceful);
     }
-    // THE ENGINE ENDS ONLY ON EVIDENCE (CONTINUUM-ENGINE 4.9, I1). The live engine holds every
-    // resident's newest KV; the stopped core's receipt says, for exactly this process, whether it
-    // was saved. Without that it stays up and the operator is told why: the M5, 2026-11-15
-    // 16:48Z, a stop that never saved an adopted engine's four residents ended it anyway.
-    if let Some(lane) = continuum_core::inference::lane_registry::live_lane() {
-        if let Err(why) = may_end_engine(fate, &lane, &graceful) {
-            let _ = std::fs::remove_file(&socket);
-            return Err(why);
-        }
-        if fate == EngineFate::EndDiscardingKv {
-            println!("  discarding the engine's residents' newest KV on the operator's instruction");
-        }
+    // THE ENGINE ENDS ONLY ON EVIDENCE (CONTINUUM-ENGINE 4.9, I1). Each engine holds its
+    // residents' newest KV; the stopped core's receipt says, for exactly that process, whether it
+    // was saved, and the sweep asks for every engine it would signal. An engine without that proof
+    // stays up as `TerminationRefused`, named below: the M5, 2026-11-15 16:48Z, a stop that never
+    // saved an adopted engine's four residents ended it anyway.
+    if fate == EngineFate::EndDiscardingKv {
+        println!("  discarding the engines' residents' newest KV on the operator's instruction");
     }
+    let authority = EngineEndAuthority::of(fate, &graceful);
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline).await? {
+    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline, move |lane| authority.may_end(lane)).await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),

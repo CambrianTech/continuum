@@ -3,4 +3,4 @@
 /**
  * What a participant's process holds after the settle.
  */
-export type CustodyState = { "Saved": { residents: number, } } | "NothingHeld" | "Retained";
+export type CustodyState = { "Saved": { residents: number, } } | "Retained";

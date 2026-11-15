@@ -173,7 +173,7 @@ pub struct ShutdownReceipt {
 /// What a stop-settle participant left in custody for ONE process: the participant, the
 /// endpoint it serves and the exact process incarnation (pid and start time) there, and the
 /// state. Bound to that incarnation, so a receipt can never authorize ending another process
-/// (a reused pid, a replaced engine). Only `Saved` and `NothingHeld` let a stop end it.
+/// (a reused pid, a replaced engine). Only `Saved` lets a stop end it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
@@ -196,32 +196,28 @@ pub struct SettledCustody {
     export_to = "../../../protocol/typescript/system/CustodyState.ts"
 )]
 pub enum CustodyState {
-    /// Every resident it held was saved, each save confirmed.
+    /// Every resident it held was saved, each save confirmed (none held is `residents: 0`).
     Saved {
         #[ts(type = "number")]
         residents: u64,
     },
-    /// It held no resident state.
-    NothingHeld,
-    /// Not saved (refused, failed or uncertain): the live process keeps the only copy, and
-    /// ending it loses that copy.
+    /// Not saved, or not proven saved (refused, failed, uncertain, no paging): the live process
+    /// may keep the only copy, and ending it would lose that copy.
     Retained,
 }
 
 impl CustodyState {
     /// Whether ending the process loses nothing the participant was responsible for.
     pub fn ends_safely(self) -> bool {
-        matches!(self, Self::Saved { .. } | Self::NothingHeld)
+        matches!(self, Self::Saved { .. })
     }
 
     /// Two participants' custody of one process: retained by either is retained; saved
     /// residents add.
     pub fn combine(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
             (Self::Saved { residents: a }, Self::Saved { residents: b }) => Self::Saved { residents: a + b },
-            (saved @ Self::Saved { .. }, Self::NothingHeld) | (Self::NothingHeld, saved @ Self::Saved { .. }) => saved,
-            (Self::NothingHeld, Self::NothingHeld) => Self::NothingHeld,
+            (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
         }
     }
 }
@@ -249,29 +245,42 @@ impl ShutdownReceipt {
 
     /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
-        self.unsaved().is_empty()
+        self.unsaved().is_empty() && self.retained().is_empty()
+    }
+
+    /// Processes whose custody a participant retained: state the stop did not prove saved and
+    /// that only the live process still holds (CONTINUUM-ENGINE 4.9, I1; Codex on #6042).
+    pub fn retained(&self) -> Vec<&SettledCustody> {
+        self.custody.iter().filter(|c| !c.state.ends_safely()).collect()
     }
 
     /// One line a human can act on, without reading the process's log after it exited.
     pub fn summary(&self) -> String {
         let unsaved = self.unsaved();
-        if unsaved.is_empty() {
+        let retained = self.retained();
+        if unsaved.is_empty() && retained.is_empty() {
             return format!(
                 "{} modules stopped, all state durable, {}ms",
                 self.modules.len(),
                 self.total_ms
             );
         }
-        let names: Vec<String> = unsaved
-            .iter()
-            .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
-            .collect();
-        format!(
-            "{} of {} modules did NOT save: {}",
-            unsaved.len(),
-            self.modules.len(),
-            names.join(", ")
-        )
+        let mut lines: Vec<String> = Vec::new();
+        if !unsaved.is_empty() {
+            let names: Vec<String> = unsaved
+                .iter()
+                .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
+                .collect();
+            lines.push(format!("{} of {} modules did NOT save: {}", unsaved.len(), self.modules.len(), names.join(", ")));
+        }
+        if !retained.is_empty() {
+            let held: Vec<String> = retained
+                .iter()
+                .map(|c| format!("{} at {} (pid {})", c.participant, c.endpoint, c.pid))
+                .collect();
+            lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+        }
+        lines.join("; ")
     }
 }
 
@@ -325,11 +334,10 @@ impl ShutdownOperation {
                 // In THIS task, never a connection's: the settle closes the turn
                 // door, and a door closed by a handler whose client went away
                 // would leave every citizen refusing work with no stop behind it.
-                let custody = if settle.is_zero() {
-                    Vec::new()
-                } else {
-                    crate::runtime::extensions::settle_before_stop(settle).await
-                };
+                // Every participant runs on every path, the signal's too: a zero cap gives the
+                // turns no time, but never skips a participant that ends on events (the page
+                // checkpoint), so a SIGTERM saves every resident as a stop does (Codex on #6042).
+                let custody = crate::runtime::extensions::settle_before_stop(settle).await;
                 let mut receipt = rt.shutdown().await;
                 receipt.custody = custody;
                 // send_replace, NEVER send: `send` returns Err and DROPS the value
@@ -422,8 +430,9 @@ pub async fn run_signal_shutdown() {
     // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
     // and a tighter cap here would cut off the save phase on any node slow enough to
     // need it.
-    // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
-    // console close), not ours to spend waiting on turns.
+    // No time for turns: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
+    // console close), not ours to spend waiting on them. The settle participants still run
+    // (`ShutdownOperation::begin`): the page checkpoint ends on its own events.
     let rt = match signal_runtime() {
         Ok(rt) => rt,
         Err(reason) => {
