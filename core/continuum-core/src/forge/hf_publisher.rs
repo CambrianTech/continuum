@@ -141,6 +141,7 @@ fn download_args(repo_id: &str, files: &[String], revision: &str, dir: &str) -> 
 /// caller cannot read with a 401 and a `RepositoryNotFound` class, so a class name never
 /// decides it; only the status does (Codex on #4529).
 fn is_definitely_absent(stderr: &str) -> bool {
+    // CLI stderr parsing of hf CLI output — typed boundary: 404=absent, 401/403=auth refusal
     stderr.contains("404") && !stderr.contains("401") && !stderr.contains("403")
 }
 
@@ -164,7 +165,7 @@ fn revision_and_path(location: &str) -> Option<(&str, &str)> {
 
 /// HF's API token: `HF_TOKEN`, else the token the `hf` CLI stored at login.
 fn hf_token() -> Option<String> {
-    std::env::var("HF_TOKEN").ok().filter(|t| !t.trim().is_empty()).or_else(|| {
+    continuum_base::config_env::read("HF_TOKEN").filter(|t| !t.trim().is_empty()).or_else(|| {
         let home = std::env::var("HF_HOME")
             .map(std::path::PathBuf::from)
             .ok()
