@@ -1551,6 +1551,25 @@ Each deploy chooses the lifecycle its changed artifact needs (a core change keep
 adoption; an engine change stops it) and proves the exact save and restore per resident (I1, I2). Each step posts the section 2.5 measurements before and
 after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
 
+#### 4.9.9 Glass box of the live M5 (2026-11-15 19:54-20:41Z, build 1e31e03c5) and its pieces
+
+Joel, 2026-11-15: "glass box and examine for stupid tool clipping, hard coded constants (forbidden just
+like fallbacks/legacy), and invalid feedback"; "You guys have to be constantly reminded not to code like
+JavaScript". Read from the core log and the residents' prompt captures (`fixtures/prompt-captures`).
+
+| # | Finding | Receipt | Piece | Owner | Deletes |
+|---|---|---|---|---|---|
+| G1 | Every tool result reaches her as a raw JSON dump (`ok code/git/status()` then `{"added":[],"branch":..,"success":true,..}`), never text rendered from the typed result | Aiko's capture, result #9215 | each tool's typed output renders through its `ToolContract` (the one renderer, [[her-text-is-rendered-from-typed-data]]); a JSON body only where the tool's own output IS a document | Fable | the generic JSON pretty-print of tool outputs |
+| G2 | Her working-memory depth is a constant: `WORKING_MEMORY_STEPS` = `TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM` (16), "window-independent by construction"; her prompt says "Among my 16 most recent retained calls ... Older calls may have aged out" | `continuum-prompt/src/context_budget.rs:343`; Aiko's capture | the depth is a claim in the one allocation (goal 7, CX-9), sized from her measured need and the window she is granted | Fable | the two denominators and the constant |
+| G3 | `const POINTER_INDEX: usize = 12`, documented as serving "the legacy results ring" | `working_memory/action_log.rs:17` | the legacy ring goes; the view's fold (5, "one codec") already lists her collapsed results | Fable | the ring, the constant, `indexed_pointers` |
+| G4 | A shedder that sheds nothing: working memory is asked for 72,700 on every ~6 s pressure tick and answers `before=365202 after=365202`, 460 times in 47 min | `wm.results.shed` | a shedder reports what it can give back before it is asked; the pressure owner asks only owners that can give, and a no-op is a typed `NothingToGive`, never a repeated success | Fable (shedder), Codex (pressure owner) | the no-op loop |
+| G5 | A grant wait ended her act: `no window granted after her measure ... Reclaiming` then `settle.inference_failed` (Aiko); on BigMama Kimi `Reclaiming`, Sahar `Queued 1 of 1` for an hour with a slot idle | `delib.window.refused`; Codex 20:19Z | P3 (I3, I4) | Fable, Codex | `FairGrantState` queue rules |
+| G6 | Raw `pid as pid_t` casts on process calls in five places across four crates, two of them `SIGKILL` (a wrapped id signals a group) | `continuum-host` process_exit, process_presence; kernel `eye_reaper.rs:193`, `bounded_command.rs:176`; `continuum-process/owned.rs:17,49` | one host owner addresses a process by `continuum_host::process_id::ProcessId` (#6042); the raw `libc` calls leave the kernel and `continuum-process` | Fable | every `as libc::pid_t` and the inline OS branches around them |
+| G7 | Decode 2.0-3.5 tok/s per stream: four sequences at 45-49k tokens decoding at once, engine 33.2 GB, swap 6.6 GB | `delib.turn.output_allowance measured_tps`; `/slots`; `vm.swapusage` | P5 (Q1: the engine chooses concurrency from measured act latency) | Fable | the core-side lane permits |
+
+No clipping was found: her newest result arrives whole, output room is 32k-200k tokens against needs
+under 1,500, and older results fold behind expand handles by design.
+
 #### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
 
 #6038's first commit tuned the head-of-line rule instead of removing the queue (F1 is fixed by P3, not by
