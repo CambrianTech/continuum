@@ -304,6 +304,15 @@ pub fn admitted_lanes(live_ready: bool, live_lanes: u32, plan_lanes: u32) -> u32
     }
 }
 
+/// How many sequences decode at once: the engine's slots, capped by the measured knee (the
+/// tighter of decode and prefill). Like a CPU's cores: past the knee a sequence added to the
+/// batch slows every other (the M5, 2026-11-15: 4 in flight at 6-9 tok/s each, knee 2), so
+/// the rest wait in the run queue with their KV resident in their slots and switch in, at
+/// full speed, the moment a core frees. No knee measured yet: every slot decodes.
+pub fn decoding_cores(admitted: u32, knee: Option<u32>) -> u32 {
+    knee.map_or(admitted, |knee| admitted.min(knee.max(1)))
+}
+
 pub fn active_cache_states(population: &[(u32, u32)], served_ctx: u32, active: usize, floor: usize) -> Vec<u32> {
     let mut states: Vec<u32> = population
         .iter()

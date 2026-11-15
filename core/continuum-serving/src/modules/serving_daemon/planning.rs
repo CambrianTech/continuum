@@ -606,9 +606,11 @@ impl ServingDaemonModule {
                 // take. On the M5, 2026-10-11 01:41Z, the plan moved 2,2,1,1,1,1 lanes in 40 s
                 // with no relaunch, and the gate followed it: a 2-lane engine admitted as one
                 // lane, half its seats reserved for directed turns that never came.
+                // Decoding cores, not slots: the slots past the measured knee keep their minds'
+                // KV resident and switch in when a core frees (`decoding_cores`).
                 let admitted = {
                     let live = self.serving_tx.borrow();
-                    admitted_lanes(live.ready, live.lanes, plan.lanes as u32)
+                    decoding_cores(admitted_lanes(live.ready, live.lanes, plan.lanes as u32), demand.knee)
                 };
                 crate::inference::resource_admission::set_served_lane_count(admitted as usize);
                 // And the prefill throttle's demand facts (#56): the served model's per-spike

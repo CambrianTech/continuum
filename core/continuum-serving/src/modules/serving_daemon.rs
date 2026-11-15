@@ -678,7 +678,7 @@ pub(crate) struct PromptCacheGrant {
     pub(crate) one_conversation_mib: u32,
 }
 pub use prompt_cache::{
-    active_cache_states, admitted_lanes, rotating_minds, rotation_window_ms, with_measured_state,
+    active_cache_states, admitted_lanes, decoding_cores, rotating_minds, rotation_window_ms, with_measured_state,
 };
 use prompt_cache::{derived_prompt_cache_mib, say_on_change};
 mod catalog;
