@@ -89,6 +89,9 @@ use super::*;
             "dbPath": handle,
             "operations": [{"op": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
         })).await.unwrap();
+        let removed: crate::orm::data_outputs::BatchOutcomes =
+            serde_json::from_value(removed).expect("typed batch deletion receipt");
+        assert!(matches!(removed.outcomes.as_slice(), [crate::orm::types::BatchOutcome::Removed]));
         assert!(matches!(
             reviewed::bind_submission_generation(
                 &data,
@@ -105,6 +108,10 @@ use super::*;
             "dbPath": handle,
             "operations": [{"op": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
         })).await.unwrap();
+        let restored: crate::orm::data_outputs::BatchOutcomes =
+            serde_json::from_value(restored).expect("typed batch restoration receipt");
+        assert!(matches!(restored.outcomes.as_slice(),
+            [crate::orm::types::BatchOutcome::Created { record }] if record.id == child.id.to_string()));
         let bound = reviewed::bind_submission_generation(
             &data,
             name,
