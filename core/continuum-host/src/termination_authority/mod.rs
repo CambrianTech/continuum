@@ -16,8 +16,7 @@ mod held;
 pub struct HeldProcess(held::Handle);
 
 impl HeldProcess {
-    pub fn take(pid: u32) -> std::io::Result<Self> {
-        validate_pid(pid)?;
+    pub fn take(pid: crate::process_id::ProcessId) -> std::io::Result<Self> {
         held::Handle::take(pid).map(Self)
     }
 
@@ -45,43 +44,23 @@ pub enum TerminationAuthority {
     Unknown(std::io::Error),
 }
 
-/// Ask whether this process may terminate `pid`.
-pub fn may_terminate(pid: u32) -> TerminationAuthority {
-    if let Err(error) = validate_pid(pid) {
-        return TerminationAuthority::Unknown(error);
-    }
+/// Ask whether this process may terminate `pid`: one process, never a group, by its type.
+pub fn may_terminate(pid: crate::process_id::ProcessId) -> TerminationAuthority {
     os::may_terminate(pid)
-}
-
-fn validate_pid(pid: u32) -> std::io::Result<()> {
-    // Zero names a process group on Unix, and a narrowing cast of a larger value
-    // can name another group. This capability answers only for individual pids.
-    if pid == 0 || i32::try_from(pid).is_err() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "termination authority requires a positive process id representable by pid_t",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn process_group_and_overflow_ids_never_prove_authority_or_absence() {
-        for pid in [0, 1_u32 << 31, u32::MAX] {
-            assert!(matches!(may_terminate(pid), TerminationAuthority::Unknown(error)
-                if error.kind() == std::io::ErrorKind::InvalidInput));
-        }
-    }
-
     // what this catches (Codex on #6042): a probe that reads an unknown OS answer as "gone", or an
     // unused pid as terminable. This process may terminate itself; no process has the unused pid.
     #[test]
     fn this_process_is_terminable_and_an_unused_pid_is_absent() {
-        assert!(matches!(may_terminate(std::process::id()), TerminationAuthority::Granted));
-        assert!(matches!(may_terminate(u32::MAX >> 2), TerminationAuthority::Absent));
+        use crate::process_id::ProcessId;
+        let this = ProcessId::try_from(std::process::id()).expect("this process's id is a pid"); // expect: the running process has a positive pid
+        let unused = ProcessId::new(i32::MAX >> 1).expect("a positive literal"); // expect: positive by construction
+        assert!(matches!(may_terminate(this), TerminationAuthority::Granted));
+        assert!(matches!(may_terminate(unused), TerminationAuthority::Absent));
     }
 }

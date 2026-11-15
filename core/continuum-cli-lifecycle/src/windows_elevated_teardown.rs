@@ -91,7 +91,8 @@ where
     let result = async {
         let plan = read_bound_plan(plan_path, plan_sha)?;
         let (image, graceful) = teardown_sequence(&plan, |pid| {
-            let pid = u32::try_from(pid).map_err(|error| error.to_string())?;
+            let pid = continuum_host::process_id::ProcessId::try_from(pid)
+                .map_err(|error| error.to_string())?;
             continuum_host::termination_authority::HeldProcess::take(pid)
                 .map(HeldTerminate).map_err(|error| error.to_string())
         }, drain).await?;

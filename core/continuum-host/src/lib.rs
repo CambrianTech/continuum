@@ -18,6 +18,7 @@ pub mod own_group;
 pub mod positioned;
 pub mod process_class;
 pub mod process_exit;
+pub mod process_id;
 pub mod process_presence;
 pub mod process_usage;
 pub mod read_pin;

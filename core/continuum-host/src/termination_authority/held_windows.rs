@@ -15,10 +15,10 @@ impl Drop for Handle {
 }
 
 impl Handle {
-    pub(super) fn take(pid: u32) -> std::io::Result<Self> {
+    pub(super) fn take(pid: crate::process_id::ProcessId) -> std::io::Result<Self> {
         // SAFETY: acquiring a handle does not signal the process. Ownership passes to Drop.
         let handle = unsafe {
-            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0, pid)
+            OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE, 0, pid.unsigned())
         };
         if handle.is_null() {
             return Err(std::io::Error::last_os_error());
@@ -54,10 +54,12 @@ impl Handle {
 mod tests {
     #[test]
     fn a_held_process_reports_its_native_image_without_terminating_it() -> std::io::Result<()> {
-        let process = super::super::HeldProcess::take(std::process::id())?;
+        let pid = crate::process_id::ProcessId::try_from(std::process::id())
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+        let process = super::super::HeldProcess::take(pid)?;
         assert_eq!(process.image()?, std::env::current_exe()?);
         drop(process);
-        assert!(matches!(super::super::may_terminate(std::process::id()),
+        assert!(matches!(super::super::may_terminate(pid),
             super::super::TerminationAuthority::Granted));
         Ok(())
     }
