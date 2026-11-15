@@ -1,9 +1,11 @@
 //! Physical custody for a grant transfer. Save is not reclamation: only a validated erase
 //! receipt can produce ReclaimedGrant. Caller cancellation does not cancel endpoint-owned IO.
 use super::{directory, page_io, EndpointAdmission, KvSlotPool, PageKey, SlotPermit, SlotPin};
-use crate::capacity::window_grant::GrantHandoff;
+use crate::capacity::window_grant::{GrantHandoff, GrantLease};
 use crate::inference::turn_admission::{kv_page_action, PageAction, PageOutcome, PageResolution};
 use std::sync::Arc;
+mod outcome;
+pub use outcome::{NotReclaimable, ReclaimBusy, ReclaimError};
 
 /// Constructed only after a confirmed save followed by the engine's erase receipt.
 pub(crate) struct ReclaimedGrant(GrantHandoff);
@@ -52,16 +54,17 @@ pub fn reclaim_grant(
     client: reqwest::Client,
     root: String,
     ticket: GrantHandoff,
-) -> tokio::sync::oneshot::Receiver<Result<(), String>> {
+) -> tokio::sync::oneshot::Receiver<Result<(), ReclaimError>> {
     let endpoint = directory().endpoint(&root);
     let (tx, rx) = tokio::sync::oneshot::channel();
     endpoint.retain_paging(async move {
         let persona = ticket.persona();
-        let result = match prepare(&client, &root, &ticket).await {
+        let result = match prepare(&client, &root, ticket.persona(), ticket.lease()).await {
             Ok((mut custody, pool, slot, key)) => {
                 custody.ticket = Some(ticket);
                 reclaim(&client, &root, pool, slot, key, custody).await
-                    .and_then(crate::capacity::window_grant::record_reclaimed_grant)
+                    .and_then(|proof| crate::capacity::window_grant::record_reclaimed_grant(proof)
+                        .map_err(ReclaimError::Publication))
             }
             Err(reason) => return_refused(ticket, reason),
         };
@@ -73,39 +76,41 @@ pub fn reclaim_grant(
     rx
 }
 
-fn return_refused<T>(ticket: GrantHandoff, reason: String) -> Result<T, String> {
-    crate::capacity::window_grant::record_refused_grant(RefusedGrant(ticket))?;
+fn return_refused<T>(ticket: GrantHandoff, reason: ReclaimError) -> Result<T, ReclaimError> {
+    crate::capacity::window_grant::record_refused_grant(RefusedGrant(ticket))
+        .map_err(ReclaimError::Publication)?;
     Err(reason)
 }
 
-async fn prepare(client: &reqwest::Client, root: &str, ticket: &GrantHandoff)
-    -> Result<(Custody, Arc<KvSlotPool>, u32, PageKey), String> {
-    let engine = ticket.lease().engine.ok_or_else(|| "handoff requires an engine incarnation".to_string())?;
-    let url = reqwest::Url::parse(&root).map_err(|e| e.to_string())?;
+async fn prepare(client: &reqwest::Client, root: &str, persona: uuid::Uuid, lease: GrantLease)
+    -> Result<(Custody, Arc<KvSlotPool>, u32, PageKey), ReclaimError> {
+    let engine = lease.engine.ok_or(NotReclaimable::MissingEngine)?;
+    let url = reqwest::Url::parse(&root).map_err(|e| NotReclaimable::InvalidEndpoint(e.to_string()))?;
     if url.port_or_known_default() != Some(engine.port) {
-        return Err("handoff endpoint port does not match the leased engine".into());
+        return Err(NotReclaimable::WrongPort.into());
     }
-    let mind = super::MindTurn::reclaim(ticket.persona()).await;
+    let mind = super::MindTurn::try_reclaim(persona)
+        .ok_or(ReclaimError::Busy(ReclaimBusy::Mind))?;
     let endpoint = directory().endpoint(&root);
-    let admission = endpoint.admit().await?;
+    let admission = endpoint.admit().await.map_err(NotReclaimable::Endpoint)?;
     if admission.incarnation() != Some((engine.pid, engine.started_s)) {
-        return Err("handoff endpoint incarnation changed".into());
+        return Err(NotReclaimable::ChangedEngine.into());
     }
-    let pool = admission.pool.clone().ok_or_else(|| "handoff endpoint has no owned pool".to_string())?;
-    directory().discover_page_admission(&client, &root).await?;
-    let key = PageKey::mind(ticket.persona()).ok_or_else(|| "handoff requires a resident identity".to_string())?;
-    if pool.holders.lock().values().any(|resident| resident.persona() == ticket.persona() && *resident != key) {
-        return Err("handoff still has fork pages; resident-only reclaim cannot free their claim".into());
+    let pool = admission.pool.clone().ok_or(NotReclaimable::MissingPool)?;
+    directory().discover_page_admission(&client, &root).await.map_err(NotReclaimable::Endpoint)?;
+    let key = PageKey::mind(persona).ok_or(NotReclaimable::MissingIdentity)?;
+    if pool.holders.lock().values().any(|resident| resident.persona() == persona && *resident != key) {
+        return Err(NotReclaimable::ForkPages.into());
     }
     let slot = pool.holders.lock().iter().find_map(|(slot, resident)| (*resident == key).then_some(*slot))
-        .ok_or_else(|| "handoff has no attributed resident slot; no reclamation proved".to_string())?;
+        .ok_or(NotReclaimable::MissingSlot)?;
     let pin = pool.pin(&key);
-    let permit = pool.acquire_slot(slot).await?;
-    admission.check_ready()?;
+    let permit = pool.try_acquire_slot(slot).ok_or(ReclaimError::Busy(ReclaimBusy::Slot))?;
+    admission.check_ready().map_err(NotReclaimable::Endpoint)?;
     if pool.holders.lock().get(&slot) != Some(&key) {
-        return Err("handoff slot attribution changed before physical custody".into());
+        return Err(NotReclaimable::ChangedSlot.into());
     }
-    let page_io = super::admit_page_io(page_io::gate()).map_err(|e| e.to_string())?;
+    let page_io = super::admit_page_io(page_io::gate()).map_err(|e| NotReclaimable::PageIo(e.to_string()))?;
     let custody = Custody { endpoint: admission, _mind: mind, _permit: permit, _pin: pin, _page_io: page_io, ticket: None, pending: false };
     Ok((custody, pool, slot, key))
 }
@@ -113,15 +118,15 @@ async fn prepare(client: &reqwest::Client, root: &str, ticket: &GrantHandoff)
 async fn reclaim(
     client: &reqwest::Client, root: &str, pool: Arc<KvSlotPool>, slot: u32,
     key: PageKey, mut custody: Custody,
-) -> Result<ReclaimedGrant, String> {
+) -> Result<ReclaimedGrant, ReclaimError> {
     // An interrupted overwrite must not leave an older save marked valid.
     pool.note_page_lost(&key);
     custody.pending = true;
     let (returned, saved) = resolve(kv_page_action(client, root, slot, &key, PageAction::Save).await, custody).await?;
     custody = returned;
     if !saved {
-        let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
-        return return_refused(ticket, "handoff save refused; holder claim will be restored".into());
+        let ticket = custody.ticket.take().ok_or_else(|| ReclaimError::Uncertain("handoff ticket already consumed".into()))?;
+        return return_refused(ticket, ReclaimError::SaveRefused);
     }
     pool.note_saved(key);
     // No checkpoint or returner may call this erased/uncertain slot warm. The confirmed file
@@ -131,25 +136,25 @@ async fn reclaim(
     custody.pending = true;
     let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, PageAction::Erase).await, custody).await?;
     if !erased {
-        let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
-        return return_refused(ticket, "handoff erase refused; holder claim will be restored".into());
+        let ticket = custody.ticket.take().ok_or_else(|| ReclaimError::Uncertain("handoff ticket already consumed".into()))?;
+        return return_refused(ticket, ReclaimError::EraseRefused);
     }
-    let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
+    let ticket = custody.ticket.take().ok_or_else(|| ReclaimError::Uncertain("handoff ticket already consumed".into()))?;
     Ok(ReclaimedGrant(ticket))
 }
 
-async fn resolve(outcome: PageOutcome, mut custody: Custody) -> Result<(Custody, bool), String> {
+async fn resolve(outcome: PageOutcome, mut custody: Custody) -> Result<(Custody, bool), ReclaimError> {
     match outcome {
         PageOutcome::Completed => { custody.pending = false; Ok((custody, true)) }
         PageOutcome::Rejected => { custody.pending = false; Ok((custody, false)) }
-        PageOutcome::Uncertain => Err("handoff page operation has no verified receipt".into()),
+        PageOutcome::Uncertain => Err(ReclaimError::Uncertain("page operation has no verified receipt".into())),
         PageOutcome::Unresolved(operation) => {
             custody.pending = false; // retained page owner now owns quarantine and custody
             match operation.resume(custody).await {
                 Ok(PageResolution::Completed(custody)) => Ok((custody, true)),
                 Ok(PageResolution::Rejected(custody)) => Ok((custody, false)),
-                Ok(PageResolution::Fenced) => Err("handoff page operation fenced; no reclamation proof".into()),
-                Err(_) => Err("handoff page continuation lost; capacity remains charged".into()),
+                Ok(PageResolution::Fenced) => Err(ReclaimError::Uncertain("page operation fenced".into())),
+                Err(_) => Err(ReclaimError::Uncertain("page continuation lost".into())),
             }
         }
     }
@@ -169,9 +174,9 @@ pub(crate) async fn fixture_for_publication() -> (String, Arc<KvSlotPool>, PageK
 }
 
 #[cfg(test)]
-pub(crate) async fn reclaim_for_publication(root: &str, ticket: GrantHandoff) -> Result<ReclaimedGrant, String> {
+pub(crate) async fn reclaim_for_publication(root: &str, ticket: GrantHandoff) -> Result<ReclaimedGrant, ReclaimError> {
     let client = reqwest::Client::new();
-    let (mut custody, pool, slot, key) = prepare(&client, root, &ticket).await?;
+    let (mut custody, pool, slot, key) = prepare(&client, root, ticket.persona(), ticket.lease()).await?;
     custody.ticket = Some(ticket);
     reclaim(&client, root, pool, slot, key, custody).await
 }
