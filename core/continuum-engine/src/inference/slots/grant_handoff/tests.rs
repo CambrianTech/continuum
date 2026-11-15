@@ -58,8 +58,11 @@ async fn dispatch_skips_a_busy_slot_and_preserves_the_engine_fence() {
     assert!(super::super::MindTurn::try_begin(key).is_some(), "failed preparation released mind custody");
     assert!(engine.actions.lock().expect("actions").is_empty());
     drop(occupied);
-    pool.mark_incarnation((8, 124));
-    let result = prepare(&client, &root, key.persona(), lease_at(&root, key)).await;
+    let mut stale_lease = lease_at(&root, key);
+    stale_lease.engine = Some(crate::inference::engine_residency::EngineIncarnation {
+        pid: 6, started_s: 122, port: reqwest::Url::parse(&root).expect("fixture URL").port().expect("fixture port"),
+    });
+    let result = prepare(&client, &root, key.persona(), stale_lease).await;
     assert!(matches!(result, Err(ReclaimError::NotReclaimable(NotReclaimable::ChangedEngine))));
     assert!(engine.actions.lock().expect("actions").is_empty(), "replacement engine receives no page IO");
     server.abort();
