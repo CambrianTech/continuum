@@ -7,6 +7,30 @@
 #[cfg_attr(not(any(unix, windows)), path = "other.rs")]
 mod os;
 
+#[cfg_attr(windows, path = "held_windows.rs")]
+#[cfg_attr(not(windows), path = "held_other.rs")]
+mod held;
+
+/// An individual process held across inspection and termination. Acquiring this
+/// capability never drains or terminates anything; callers own that policy.
+pub struct HeldProcess(held::Handle);
+
+impl HeldProcess {
+    pub fn take(pid: u32) -> std::io::Result<Self> {
+        validate_pid(pid)?;
+        held::Handle::take(pid).map(Self)
+    }
+
+    pub fn image(&self) -> std::io::Result<std::path::PathBuf> {
+        self.0.image()
+    }
+
+    /// Terminate through the same handle used by `image`, never by a second pid lookup.
+    pub fn terminate(self, exit_code: u32) -> std::io::Result<()> {
+        self.0.terminate(exit_code)
+    }
+}
+
 /// What the OS answered about terminating one pid.
 #[derive(Debug)]
 pub enum TerminationAuthority {
@@ -23,15 +47,22 @@ pub enum TerminationAuthority {
 
 /// Ask whether this process may terminate `pid`.
 pub fn may_terminate(pid: u32) -> TerminationAuthority {
+    if let Err(error) = validate_pid(pid) {
+        return TerminationAuthority::Unknown(error);
+    }
+    os::may_terminate(pid)
+}
+
+fn validate_pid(pid: u32) -> std::io::Result<()> {
     // Zero names a process group on Unix, and a narrowing cast of a larger value
     // can name another group. This capability answers only for individual pids.
     if pid == 0 || i32::try_from(pid).is_err() {
-        return TerminationAuthority::Unknown(std::io::Error::new(
+        return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             "termination authority requires a positive process id representable by pid_t",
         ));
     }
-    os::may_terminate(pid)
+    Ok(())
 }
 
 #[cfg(test)]
