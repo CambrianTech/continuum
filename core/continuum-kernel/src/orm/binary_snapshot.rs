@@ -94,7 +94,7 @@ impl BinarySnapshot {
             &self.schema, query, super::relational_query::Selection::Page,
         )?;
         let rows = self.transaction.query_all(DbBackend::Sqlite.build(&statement)).await?;
-        let decoder = super::relational_codec::RowDecoder::new(self.schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(self.schema.as_ref(), &[]);
         rows.into_iter().map(|row| decoder.decode(row)).collect()
     }
 

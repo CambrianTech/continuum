@@ -73,9 +73,9 @@ impl StorageAdapter for SeaOrmAdapter {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
         let statement =
             super::relational_query::select(&schema, query, super::relational_query::Selection::Stream)?;
+        let decoder = super::relational_codec::RowDecoder::new(schema, &[]);
         let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement)).await?;
         Ok(rows.map(move |row| row.map_err(StorageError::from).and_then(|row| decoder.decode(row))).boxed())
     }

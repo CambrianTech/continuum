@@ -93,21 +93,21 @@ pub(super) fn scalar(
 
 /// Compile physical field names once per query, not once per cell in every row.
 /// The schema allocation stays shared; the plan stores only names and field ordinals.
-pub(super) struct RowDecoder {
-    schema: std::sync::Arc<CollectionSchema>,
+pub(super) struct RowDecoder<S> {
+    schema: S,
     fields: std::collections::HashMap<String, usize>,
     joined_columns: std::collections::HashSet<String>,
 }
 
-impl RowDecoder {
-    pub(super) fn new(schema: std::sync::Arc<CollectionSchema>, joined_columns: &[String]) -> Self {
-        let fields = schema.fields.iter().enumerate()
+impl<S: std::borrow::Borrow<CollectionSchema>> RowDecoder<S> {
+    pub(super) fn new(schema: S, joined_columns: &[String]) -> Self {
+        let fields = schema.borrow().fields.iter().enumerate()
             .map(|(index, field)| (naming::to_snake_case(&field.name), index)).collect();
         Self { schema, fields, joined_columns: joined_columns.iter().cloned().collect() }
     }
 
     pub(super) fn decode(&self, result: QueryResult) -> Result<DataRecord, StorageError> {
-        let schema = &self.schema;
+        let schema = self.schema.borrow();
         let row = result.try_as_sqlite_row().ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;
         use sea_orm::sqlx::Column;
         let mut fields = Map::new();

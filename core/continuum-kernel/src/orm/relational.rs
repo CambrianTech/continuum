@@ -244,7 +244,7 @@ impl RelationalStore {
         let database_ms = started.elapsed().as_millis() as u64;
         // The connection has returned to the pool before any JSON body is parsed.
         let decode_started = std::time::Instant::now();
-        let decoder = super::relational_codec::RowDecoder::new(std::sync::Arc::clone(&schema), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(schema.as_ref(), &[]);
         let count = rows.len();
         let result = rows.into_iter().map(|row| decoder.decode(row)).collect();
         continuum_base::probe!(class = "orm.relational.query", collection = %query.collection,
