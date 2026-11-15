@@ -672,7 +672,7 @@ mod tests {
     fn vrm_loader_preserves_all_meshes() {
         let mut app = App::new();
         app.add_plugins(bevy::asset::AssetPlugin {
-            file_path: std::env::current_dir().unwrap_or_default(),
+            file_path: std::env::current_dir().expect("process must have a current directory"),
             ..default()
         })
         .add_plugins(bevy::asset::loaders::EmbeddedAssetPlugin)
@@ -681,11 +681,11 @@ mod tests {
         );
 
         let gltf_path = "models/avatars/vroid-sample-d.vrm";
-        if !std::path::Path::new(gltf_path).exists() {
-            // Skip test if the VRM file is not present at expected path.
-            return;
-        }
-
+        assert!(
+            std::path::Path::new(gltf_path).exists(),
+            "VRM fixture missing at {}; run `git lfs pull` or ensure test fixtures are present",
+            gltf_path
+);
         let handle: Handle<bevy::gltf::Gltf> = app.world().resource::<bevy::asset::AssetServer>()
             .load(gltf_path);
 
@@ -727,7 +727,7 @@ mod tests {
                     ..default()
                 })
                 .set(bevy::asset::AssetPlugin {
-                    file_path: std::env::current_dir().unwrap_or_default(),
+                    file_path: std::env::current_dir().expect("process must have a current directory"),
                     ..default()
                 }),
         )
@@ -735,10 +735,11 @@ mod tests {
         .add_plugins(bevy::scene::ScenePlugin);
 
         let gltf_path = "models/avatars/vroid-sample-d.vrm";
-        if !std::path::Path::new(gltf_path).exists() {
-            return;
-        }
-
+        assert!(
+            std::path::Path::new(gltf_path).exists(),
+            "VRM fixture missing at {}; run `git lfs pull` or ensure test fixtures are present",
+            gltf_path
+);
         // Spawn a root entity and load the VRM as SceneRoot under it.
         let avatar_root = app.world_mut().spawn_empty().id();
         let asset_path = format!("{gltf_path}#Scene0");
@@ -788,5 +789,6 @@ mod tests {
                     "Avatar root should contain a Body mesh entity. Entities found: [{body_info}]");
             }
         }
+        assert!(ready, "scene never became ready within 30 frames");
     }
 }

@@ -43,9 +43,10 @@ pub(in crate::live::video::bevy_renderer) fn animate_idle(
             break;
         }
         // torso_target_y is the single owner of mid-torso Y: measured bone or documented proportion.
-        let look_target_y = skeleton::torso_target_y(head_y, spine_y);
+        let look_target_y = torso_target_y(head_y, spine_y);
 
         // Camera Y: midway between head and torso for natural downward angle.
+        let cam_y = (head_y + look_target_y) / 2.0;
 
         transform.translation.x = 0.0;
         transform.translation.y = cam_y;
