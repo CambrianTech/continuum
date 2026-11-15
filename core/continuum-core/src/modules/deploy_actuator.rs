@@ -43,16 +43,18 @@ pub(crate) const ACTUATION_LOG: &str = "deploy-actuate.log";
 /// switch only — there is no other value and no tuning here.
 pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
-pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
-/// Actuations per request before the actuator stops and lets `deploy.stranded` speak.
-/// Mirrors [`crate::bin::continuum::deploy_ledger::CONSUME_MAX_ATTEMPTS`] (one owner,
-/// two sites that cannot drift): measured at 3 on a slow tier (Intel Mac ~70 min deploy)
-/// — one for a transient failure (network glitch, cargo cache miss), one to confirm
-/// the tip lands, no third of a rebuild loop — the tracker's bound prevents blind re-launching.
-pub(crate) const ACTUATE_MAX_ATTEMPTS: u32 = 3;
+/// The outcome of deciding whether to actuate — either launch with a given attempt number,
+/// or skip for one of the recorded reasons (no conversion needed; Act never reaches Skip).
+#[derive(Debug)]
+pub(crate) enum Decided {
+    /// Launch the consumer at this attempt number.
+    Act { attempt: u32 },
+    /// One of the skip reasons below — carried through for observability.
+    Skip(ActuateSkipReason),
+}
+
+use crate::bin::continuum::deploy_ledger::CONSUME_MAX_ATTEMPTS;
 /// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
-/// minutes). Firing it on demand is how the core actuates without becoming the parent of
-/// a process that will stop the core.
 
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
 /// action so the next tick can refuse to act twice on one request and the next boot can
@@ -142,7 +144,7 @@ pub(crate) enum ActuateDecision {
     /// Stranded, but not yet past the bound derived from the last measured deploy — a
     /// slow tier is not re-actuated blindly into its own handoff window.
     AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
-    /// [`ACTUATE_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
+    /// [`CONSUME_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
     /// tracker's `deploy.stranded` is the standing receipt and a new tip resets this.
     GaveUp { attempts: u32 },
 }
