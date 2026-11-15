@@ -162,7 +162,7 @@ crate::action_command! {
         // The settle comes first (card 32fa22ba): admitted turns finish, bounded by their
         // measured remaining time and capped by TURN_SETTLE_CAP, before any module saves.
         let settle = crate::cognition::turn_ingress::TURN_SETTLE_CAP;
-        let rx = crate::runtime::begin_shutdown(runtime, settle);
+        let rx = crate::runtime::begin_shutdown(&runtime, settle);
 
         // Bounded so a wedged module cannot hold the connection open forever. A timeout
         // here does NOT cancel the shutdown — it is still running, un-cancelled, in the

@@ -46,7 +46,7 @@ pub(super) mod conditional_modules_tests {
             runtime.register(module);
 
             // The only observer disconnects — the CLI died, was interrupted, timed out.
-            let rx = op.begin(runtime, std::time::Duration::ZERO);
+            let rx = op.begin(&runtime, std::time::Duration::ZERO);
             drop(rx);
 
             // Wait for the owner to publish. It is a detached task, so this polls a FRESH
@@ -88,9 +88,9 @@ pub(super) mod conditional_modules_tests {
             let saves = module.saves.clone();
             runtime.register(module);
 
-            let _first = op.begin(runtime.clone(), std::time::Duration::ZERO);
+            let _first = op.begin(&runtime, std::time::Duration::ZERO);
             // A second caller with a runtime it would otherwise stop.
-            let _second = op.begin(runtime, std::time::Duration::ZERO);
+            let _second = op.begin(&runtime, std::time::Duration::ZERO);
 
             let mut receipt = None;
             for _ in 0..200 {

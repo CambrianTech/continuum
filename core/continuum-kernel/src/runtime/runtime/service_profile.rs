@@ -311,10 +311,11 @@ impl ShutdownOperation {
     /// FIRST caller's settle applies, as only its broadcast runs.
     pub(super) fn begin(
         &self,
-        rt: Arc<Runtime>,
+        rt: &Arc<Runtime>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
         if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            let rt = Arc::clone(rt);
             let tx = self.result.clone();
             // Detached ON PURPOSE: this is the task whose whole point is that no
             // connection owns it. A socket handler is cancelled when its client
@@ -361,7 +362,7 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown(rt: Arc<Runtime>, settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+pub fn begin_shutdown(rt: &Arc<Runtime>, settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
     process_shutdown().begin(rt, settle)
 }
 
@@ -430,7 +431,7 @@ pub async fn run_signal_shutdown() {
             return;
         }
     };
-    let rx = begin_shutdown(rt, std::time::Duration::ZERO);
+    let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
             // A signal handler cannot return an exit code to anyone, so the receipt's only
