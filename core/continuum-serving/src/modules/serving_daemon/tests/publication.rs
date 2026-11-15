@@ -401,6 +401,29 @@ async fn a_cold_core_over_a_live_engine_adopts_it_never_a_starved_zero_lane_plan
     assert_eq!(plan.base_model.model_id, "qwen3-27b");
     assert!(plan.fits_on_gpu, "an adopted plan fits, so hosting proceeds: {plan:?}");
     assert!(plan.lanes >= 1 && plan.served_context_window > 0, "never 0 lanes / window 0: {plan:?}");
+
+    // Adoption impossible (the inherited model is not a candidate): the NoFit plan still
+    // never publishes over the live engine — nothing is published instead.
+    let mut orphan = ServingDaemonModule::new(
+        Arc::new(GpuMemoryManager::simulated("RTX 5090", 32 * GB)),
+        Arc::new(SystemResourceMonitor::new()),
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    );
+    orphan.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+    orphan.set_leased_in_sent_source(Arc::new(Vec::new));
+    for i in 0..8 {
+        orphan.working_set.record_sent_in_memory(resident, 6_000, 1 + i);
+    }
+    orphan.working_set.record_in_memory(uuid::Uuid::new_v4(), 40_000, 1);
+    orphan.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+    let rx_orphan = orphan.subscribe();
+    let other = vec![footprint_from_parts("coder-14b", 9 * GB, 131_072, true, None).unwrap()];
+    orphan.publish_plan(HostBudget { usable_bytes: GB, perf_cores: 8 }, &other, &other);
+    if let Some(p) = rx_orphan.borrow().clone() {
+        assert!(p.fits_on_gpu && p.lanes >= 1, "a NoFit plan never publishes over a live engine: {p:?}");
+    }
 }
 
 // what this catches: the `serving/*` surface (plan · status · load · unload) is

@@ -351,6 +351,12 @@ impl ServingDaemonModule {
                             if self.adopt_inherited(intent_revision, candidates, inc, &demand, "starved") {
                                 return PlanOutcome::Decided;
                             }
+                            // Adoption failed: a plan that does not fit is still never published
+                            // over the live engine (hosting would wait on it forever). Nothing is
+                            // published; the next tick plans from a budget that has credited it.
+                            if !plan.fits_on_gpu || plan.lanes == 0 {
+                                return PlanOutcome::Decided;
+                            }
                         }
                     }
                     match starved_plan(previous_stands, retired) {
