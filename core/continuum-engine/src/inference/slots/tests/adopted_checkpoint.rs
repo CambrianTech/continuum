@@ -276,14 +276,18 @@ async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), B
 // the endpoint stays suspended afterwards: the node is stopping.
 #[tokio::test]
 async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() -> Result<(), Box<dyn std::error::Error>> {
-    let saves = Arc::new(AtomicUsize::new(0));
+    // Each save the engine received: the slot and the page file it was asked to write.
+    let saves = Arc::new(parking_lot::Mutex::new(Vec::<(u32, String)>::new()));
     let app = Router::new()
         .route("/props", axum::routing::get(|| async { Json(serde_json::json!({"total_slots": 2})) }))
         .route("/slots/{slot}", post({
             let saves = saves.clone();
             move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
-                saves.fetch_add(1, Ordering::SeqCst);
-                async move { Json(serde_json::json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10})) }
+                let filename = body["filename"].as_str().map(str::to_owned);
+                if let Some(file) = &filename {
+                    saves.lock().push((slot, file.clone()));
+                }
+                async move { Json(serde_json::json!({"id_slot": slot, "filename": filename, "n_saved": 10})) }
             }
         }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -298,17 +302,22 @@ async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() 
     let pages = tempfile::tempdir()?;
     let adopted = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
     assert!(matches!(adopted, Ok(_) | Err(AdoptRefusal::NoLedger)), "fixture ledger: {adopted:?}");
-    pool.plan_paging(0, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
-    pool.plan_paging(1, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
+    let first = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
+    let second = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
+    pool.plan_paging(0, first);
+    pool.plan_paging(1, second);
     let endpoint = directory().endpoint(&root);
     let mut transition = endpoint.transition().await;
     let saved = transition
         .checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Stop }, &|| true)
         .await;
     assert!(saved.is_ok(), "every resident saved: {saved:?}");
-    assert_eq!(saves.load(Ordering::SeqCst), 2, "both residents' slots were saved");
-    assert!(!endpoint.is_ready(), "the stopping node's endpoint stays suspended");
+    let mut received = saves.lock().clone();
+    received.sort();
+    assert_eq!(received.iter().map(|(slot, _)| *slot).collect::<Vec<_>>(), vec![0, 1], "each resident's own slot was saved once: {received:?}");
+    assert_ne!(received[0].1, received[1].1, "each resident to her own page file: {received:?}");
     drop(transition);
+    assert!(!endpoint.is_ready(), "the stopping node's endpoint stays suspended after the checkpoint's writer is gone");
     server.abort();
     Ok(())
 }
