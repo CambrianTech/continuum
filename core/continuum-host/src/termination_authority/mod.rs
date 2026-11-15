@@ -23,12 +23,28 @@ pub enum TerminationAuthority {
 
 /// Ask whether this process may terminate `pid`.
 pub fn may_terminate(pid: u32) -> TerminationAuthority {
+    // Zero names a process group on Unix, and a narrowing cast of a larger value
+    // can name another group. This capability answers only for individual pids.
+    if pid == 0 || i32::try_from(pid).is_err() {
+        return TerminationAuthority::Unknown(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "termination authority requires a positive process id representable by pid_t",
+        ));
+    }
     os::may_terminate(pid)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn process_group_and_overflow_ids_never_prove_authority_or_absence() {
+        for pid in [0, 1_u32 << 31, u32::MAX] {
+            assert!(matches!(may_terminate(pid), TerminationAuthority::Unknown(error)
+                if error.kind() == std::io::ErrorKind::InvalidInput));
+        }
+    }
 
     // what this catches (Codex on #6042): a probe that reads an unknown OS answer as "gone", or an
     // unused pid as terminable. This process may terminate itself; no process has the unused pid.
