@@ -170,10 +170,11 @@ pub struct ShutdownReceipt {
     pub custody: Vec<SettledCustody>,
 }
 
-/// What a stop-settle participant left in custody for ONE process: the participant, the
-/// endpoint it serves and the exact process incarnation (pid and start time) there, and the
-/// state. Bound to that incarnation, so a receipt can never authorize ending another process
-/// (a reused pid, a replaced engine). Only `Saved` lets a stop end it.
+/// What a stop-settle participant left in custody at ONE endpoint: the participant, the endpoint,
+/// the exact process incarnation its outcome was sealed against (absent when it could not be
+/// bound), and the state. Bound to that incarnation, so a receipt can never authorize ending
+/// another process (a reused pid, a replaced engine); only a bound `Saved` lets a stop end one.
+/// An unbound `Retained` still makes the stop not durable.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
     export,
@@ -182,11 +183,21 @@ pub struct ShutdownReceipt {
 pub struct SettledCustody {
     pub participant: String,
     pub endpoint: String,
+    pub process: Option<SettledProcess>,
+    pub state: CustodyState,
+}
+
+/// One process incarnation: its pid and OS start time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SettledProcess.ts"
+)]
+pub struct SettledProcess {
     #[ts(type = "number")]
     pub pid: u32,
     #[ts(type = "number")]
     pub started_s: u64,
-    pub state: CustodyState,
 }
 
 /// What a participant's process holds after the settle.
@@ -229,7 +240,7 @@ impl ShutdownReceipt {
     pub fn custody_of(&self, endpoint: &str, pid: u32, started_s: u64) -> Option<CustodyState> {
         self.custody
             .iter()
-            .filter(|c| c.endpoint == endpoint && c.pid == pid && c.started_s == started_s)
+            .filter(|c| c.endpoint == endpoint && c.process == Some(SettledProcess { pid, started_s }))
             .map(|c| c.state)
             .reduce(CustodyState::combine)
     }
@@ -276,7 +287,10 @@ impl ShutdownReceipt {
         if !retained.is_empty() {
             let held: Vec<String> = retained
                 .iter()
-                .map(|c| format!("{} at {} (pid {})", c.participant, c.endpoint, c.pid))
+                .map(|c| match c.process {
+                    Some(process) => format!("{} at {} (pid {})", c.participant, c.endpoint, process.pid),
+                    None => format!("{} at {} (process unidentified)", c.participant, c.endpoint),
+                })
                 .collect();
             lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
         }

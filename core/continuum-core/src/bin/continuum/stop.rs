@@ -110,25 +110,21 @@ impl EngineEndAuthority {
     /// (its endpoint, pid and start time) proving every resident saved, or on the operator's
     /// explicit instruction to discard. No answer, no custody for it, a stale receipt, a reused
     /// pid or a retained save speaks for nothing, so it refuses, per engine (Codex on #6042).
-    pub(super) fn may_end(&self, lane: &continuum_core::inference::lane_registry::LaneRecord) -> Result<(), String> {
+    pub(super) fn may_end(
+        &self,
+        lane: &continuum_core::inference::lane_registry::LaneRecord,
+    ) -> Result<(), continuum_core::inference::lane_registry::EngineEndRefusal> {
+        use continuum_core::inference::lane_registry::EngineEndRefusal;
         let custody = self
             .receipt
             .as_ref()
             .and_then(|receipt| receipt.custody_of(&lane.root_url(), lane.pid, lane.started_s));
         match (self.fate, custody) {
-            (EngineFate::Keep, _) => Err("the engine is kept for the next core".into()),
+            (EngineFate::Keep, _) => Err(EngineEndRefusal::Kept),
             (EngineFate::EndIfSaved, Some(state)) if state.ends_safely() => Ok(()),
             (EngineFate::EndDiscardingKv, _) => Ok(()),
-            (EngineFate::EndIfSaved, Some(_)) => Err(format!(
-                "the engine (pid {}) still holds residents' KV the stop could not save; it is left up. \
-                 `continuum stop --engine --discard-kv` ends it and loses that KV",
-                lane.pid
-            )),
-            (EngineFate::EndIfSaved, None) => Err(format!(
-                "no stop receipt speaks for the engine (pid {}, started {}): nothing proves its residents' \
-                 KV was saved, so it is left up. `continuum stop --engine --discard-kv` ends it and loses that KV",
-                lane.pid, lane.started_s
-            )),
+            (EngineFate::EndIfSaved, Some(_)) => Err(EngineEndRefusal::Retained),
+            (EngineFate::EndIfSaved, None) => Err(EngineEndRefusal::NoProof),
         }
     }
 }
@@ -436,7 +432,7 @@ pub(super) async fn stop_with_fate(fate: EngineFate, operator_present: bool, req
     // THE ENGINE ENDS ONLY ON EVIDENCE (CONTINUUM-ENGINE 4.9, I1). Each engine holds its
     // residents' newest KV; the stopped core's receipt says, for exactly that process, whether it
     // was saved, and the sweep asks for every engine it would signal. An engine without that proof
-    // stays up as `TerminationRefused`, named below: the M5, 2026-11-15 16:48Z, a stop that never
+    // stays up as `EndRefused`, named below: the M5, 2026-11-15 16:48Z, a stop that never
     // saved an adopted engine's four residents ended it anyway.
     if fate == EngineFate::EndDiscardingKv {
         println!("  discarding the engines' residents' newest KV on the operator's instruction");
@@ -448,6 +444,7 @@ pub(super) async fn stop_with_fate(fate: EngineFate, operator_present: bool, req
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),
             S::TerminationRefused { pid, started_s, reason } => unconfirmed_lanes.push(format!("pid={pid} started={started_s}: {reason}")),
+            S::EndRefused { pid, started_s, why } => unconfirmed_lanes.push(format!("pid={pid} started={started_s}: {why}")),
             S::ReapedLive { pid, port } => {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }

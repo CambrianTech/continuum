@@ -84,8 +84,8 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
 /// Save every resident of every endpoint, launched here or adopted, through the one checkpoint
 /// owner for each (`checkpoint_endpoint`; `checkpoint_adopted_before_replacement` with a `Stop`
 /// intent). Endpoints are independent, so each is checkpointed at once and the stop joins on
-/// their receipts. Each outcome is returned bound to the live engine process at that endpoint;
-/// an endpoint with no such process (no live lane there) yields no evidence, which authorizes
+/// their receipts. Each outcome is returned bound to the engine process its checkpoint sealed; an
+/// outcome with no such identity still counts against the stop's durability and authorizes ending
 /// nothing.
 async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
     let client = reqwest::Client::new();
@@ -119,18 +119,16 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
                 let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
                 StopCheckpoint::Owned(checkpoint_endpoint(client, &root, &endpoint, condemn).await)
             }
-            (StopRoute::Adopted, Some(process)) => StopCheckpoint::Adopted(checkpoint_adopted_for_stop(client, &root, &endpoint, process).await),
+            (StopRoute::Adopted, Some(lane)) => StopCheckpoint::Adopted(checkpoint_adopted_for_stop(client, &root, &endpoint, lane).await),
             // An adopted pool with no live lane recorded here: no identity to bind a save to.
             (StopRoute::Adopted, None) => StopCheckpoint::Adopted(Err(super::AdoptedCheckpointRefusal::IdentityUnverified)),
             (StopRoute::NoPaging, _) => StopCheckpoint::NoPaging,
         };
-        // The one process this evidence speaks for: the incarnation stamped on the pool that was
-        // checkpointed (at its verified ready or its adoption), read after the checkpoint, never a
-        // separate process read beside it (Codex on #6042).
-        let process = match endpoint.state.lock().pool() {
-            Probed::Known(pool) => pool.incarnation(),
-            Probed::NotAsked | Probed::Absent(_) => None,
-        };
+        // The one process this evidence speaks for, sealed inside the checkpoint while it held the
+        // endpoint's writer: the incarnation stamped on the pool it saved (owned), or the live
+        // incarnation the adopted checkpoint verified against the ledger. Never a reread of the
+        // endpoint after the writer is released, which a replacement could change (Codex on #6042).
+        let process = state.process();
         // A pool never asked or without paging seated no resident this core counted; the state,
         // not the count, decides whether the process may end.
         let counted = match residents {
@@ -149,16 +147,17 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
             ms = started.elapsed().as_millis() as u64,
             "every resident a slot holds saved before the stop, or named as still held by the live engine"
         );
-        process.map(|(pid, started_s)| crate::runtime::SettledCustody {
+        // Retention with no identity still counts against the stop's durability; it only cannot
+        // authorize ending a process.
+        crate::runtime::SettledCustody {
             participant: "page_io".to_owned(),
             endpoint: root,
-            pid,
-            started_s,
+            process: process.map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
             state: held,
-        })
+        }
     }))
     .await;
-    custody.into_iter().flatten().collect()
+    custody
 }
 
 /// Drain an adopted endpoint's acts and save its residents through the adopted checkpoint owner,
@@ -168,7 +167,7 @@ async fn checkpoint_adopted_for_stop(
     root: &str,
     endpoint: &std::sync::Arc<super::EndpointSlots>,
     process: crate::inference::engine_residency::EngineIncarnation,
-) -> Result<(), super::AdoptedCheckpointRefusal> {
+) -> Result<(u32, u64), super::AdoptedCheckpointRefusal> {
     let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
     let drained = endpoint
         .drain_for_replacement(None, None, || Ok::<(), std::convert::Infallible>(()), condemn, &|| true)
@@ -179,6 +178,7 @@ async fn checkpoint_adopted_for_stop(
     transition
         .checkpoint_adopted_before_replacement(client, root, super::AdoptedCheckpoint { incarnation: process, intent: super::AdoptedCheckpointIntent::Stop }, &|| true)
         .await
+        .map(|()| (process.pid, process.started_s))
 }
 
 /// Which checkpoint owner an endpoint's engine stops through.
@@ -209,7 +209,8 @@ impl StopRoute {
 #[derive(Debug)]
 pub(crate) enum StopCheckpoint {
     Owned(OwnedStopCheckpoint),
-    Adopted(Result<(), super::AdoptedCheckpointRefusal>),
+    /// The incarnation the adopted checkpoint verified and saved, or why it refused.
+    Adopted(Result<(u32, u64), super::AdoptedCheckpointRefusal>),
     NoPaging,
 }
 
@@ -220,7 +221,7 @@ impl StopCheckpoint {
     fn custody(&self, residents: u64) -> crate::runtime::CustodyState {
         use crate::runtime::CustodyState;
         match self {
-            Self::Owned(OwnedStopCheckpoint::Saved) | Self::Adopted(Ok(())) => CustodyState::Saved { residents },
+            Self::Owned(OwnedStopCheckpoint::Saved { .. }) | Self::Adopted(Ok(_)) => CustodyState::Saved { residents },
             Self::Owned(OwnedStopCheckpoint::Ended | OwnedStopCheckpoint::EngineChanged | OwnedStopCheckpoint::Failed(_))
             | Self::Adopted(Err(_))
             | Self::NoPaging => CustodyState::Retained,
@@ -232,7 +233,17 @@ impl StopCheckpoint {
         match self {
             Self::Owned(owned) => owned.failure().map(StopFailure::Owned),
             Self::Adopted(Err(refusal)) => Some(StopFailure::Adopted(refusal)),
-            Self::Adopted(Ok(())) | Self::NoPaging => None,
+            Self::Adopted(Ok(_)) | Self::NoPaging => None,
+        }
+    }
+
+    /// The process a confirmed save speaks for, as the checkpoint sealed it; `None` when nothing
+    /// was saved or the saved pool carried no stamped incarnation.
+    fn process(&self) -> Option<(u32, u64)> {
+        match self {
+            Self::Owned(OwnedStopCheckpoint::Saved { process }) => *process,
+            Self::Adopted(Ok(process)) => Some(*process),
+            Self::Owned(_) | Self::Adopted(Err(_)) | Self::NoPaging => None,
         }
     }
 }
@@ -251,8 +262,9 @@ pub(crate) enum OwnedStopCheckpoint {
     Ended,
     /// Another engine took the endpoint before the checkpoint held it.
     EngineChanged,
-    /// Every resident's save confirmed.
-    Saved,
+    /// Every resident's save confirmed, with the incarnation stamped on the pool it saved, read
+    /// while the checkpoint held the endpoint's writer.
+    Saved { process: Option<(u32, u64)> },
     Failed(super::CheckpointFailure<super::OwnedCheckpointRefusal>),
 }
 
@@ -261,7 +273,7 @@ impl OwnedStopCheckpoint {
     fn failure(&self) -> Option<&super::CheckpointFailure<super::OwnedCheckpointRefusal>> {
         match self {
             Self::Failed(failure) => Some(failure),
-            Self::Ended | Self::EngineChanged | Self::Saved => None,
+            Self::Ended | Self::EngineChanged | Self::Saved { .. } => None,
         }
     }
 }
@@ -291,7 +303,7 @@ pub(crate) async fn checkpoint_endpoint(
         return OwnedStopCheckpoint::EngineChanged;
     };
     match transition.checkpoint_residents(client, root).await {
-        Ok(_) => OwnedStopCheckpoint::Saved,
+        Ok(saved) => OwnedStopCheckpoint::Saved { process: saved.pool.incarnation() },
         Err(failure) => OwnedStopCheckpoint::Failed(failure),
     }
 }
