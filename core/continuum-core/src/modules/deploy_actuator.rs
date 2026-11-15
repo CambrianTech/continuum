@@ -133,6 +133,17 @@ pub(crate) fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<E
 }
 
 
+/// The reason one tick skips actuation (the decision to skip comes from outside
+/// [`decide_actuation`]: either an external claim or one of the pure reasons above).
+#[derive(Debug)]
+pub(crate) enum ActuateSkipReason {
+    /// Another deploy-consume build holds the claim on this node — serialise against it.
+    ConcurrentClaim,
+    AlreadyActuated { attempt: u32, elapsed_ms: u64 },
+    AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
+    GaveUp { attempts: u32 },
+}
+
 /// How long after an actuation a stranded request may be re-actuated: the tracker's own
 /// grace at least, and 1.5× the last measured request-to-settle time on this tier when
 /// one exists (the Intel Mac deploys in ~70 min; a 20-min bound there would re-launch a
@@ -421,7 +432,6 @@ impl DeployActuator {
             return ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim);
         }
         let prev = self.receipt();
-        let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
         let decision = decide_actuation(prev.as_ref(), req, stranded, now_ms);
         let attempt = match &decision {
             Decided::Act { attempt } => *attempt,
