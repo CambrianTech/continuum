@@ -248,13 +248,11 @@ async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), B
             let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
                 .ok_or("fixture process identity unavailable")?;
             let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
-            let Probed::Known(pool) = directory().get(&root) else { return Err("discovery installed no pool".into()) };
+            let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
             let pages = tempfile::tempdir()?;
             // An empty page directory holds no ledger to carry: the pool is adopted fresh.
-            match adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s) {
-                Ok(_) | Err(AdoptRefusal::NoLedger) => {}
-                Err(other) => return Err(format!("fixture ledger: {other:?}").into()),
-            }
+            let adopted = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+            assert!(matches!(adopted, Ok(_) | Err(AdoptRefusal::NoLedger)), "fixture ledger: {adopted:?}");
             pool.plan_paging(0, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
             let endpoint = directory().endpoint(&root);
             let mut transition = endpoint.transition().await;
