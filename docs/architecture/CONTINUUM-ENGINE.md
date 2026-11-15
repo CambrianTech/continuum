@@ -1499,6 +1499,21 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 | P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
 | P5 Decode concurrency chosen by measured act latency (F5, Q1) | Fable (fork) | fork `update_slots`, SV-S3 per-task priority, the measured knees as inputs | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
 
+**P1 in detail** (three existing owners, no new mechanism):
+1. *Evidence.* `SettleBeforeStop::settle` (`continuum-kernel` `runtime/extensions.rs:35`) returns a typed
+   durability outcome instead of `()`; `ShutdownReceipt` (`runtime/service_profile.rs:165`) carries the
+   participants' outcomes beside its modules', and `state_is_durable()` counts them. The kernel type stays
+   generic (durable, custody retained, lost, each with its participant); the per-resident detail stays in
+   the engine's ledger and probe.
+2. *One save path.* `page_io::checkpoint_every_endpoint` saves an owned endpoint through
+   `checkpoint_endpoint` and an adopted one through `checkpoint_adopted_before_replacement`, its live
+   incarnation read from `lane_registry::live_lane()` exactly as `adopted_retirement.rs` reads it. The
+   owner takes an explicit intent (`Stop`: stays suspended after every outcome; `Replace`: may hand
+   readiness back after a terminal refusal, `:360` today). `StopCheckpointSkip::Adopted` is deleted.
+3. *The engine-stop authority refuses.* `continuum stop --engine` (`bin/continuum/stop.rs`) already holds
+   the receipt before it commits; when the KV participant is not durable it leaves the engine up, says why,
+   and reaps it only on an explicit operator instruction to discard the residents' newest KV.
+
 #### 4.9.5 Simulator first (section 7.0)
 
 | Scenario | Proves | State |
