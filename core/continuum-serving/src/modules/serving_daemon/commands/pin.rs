@@ -224,7 +224,8 @@ mod tests {
             fits_on_gpu: fits,
             rationale: String::from("test"),
             lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
-                        window_target: 0,        }
+            window_target: 0,
+        }
     }
 
     /// A fit-checker that returns a fixed verdict regardless of the model.
