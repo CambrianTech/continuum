@@ -619,10 +619,8 @@ impl ServingPlan {
         if self.window_target == 0 {
             return Self::CLOSENESS_MAX_PER_MILLE as u16;
         }
-        let ratio = (self.served_context_window as u32).saturating_mul(Self::CLOSENESS_MAX_PER_MILLE)
-            .checked_div(self.window_target)
-            .unwrap_or(Self::CLOSENESS_MAX_PER_MILLE); // JUSTIFIED unwrap_or: division overflow is impossible here (served ≤ window_target * lanes, and both fit in u32), so this fallback only fires if checked_div returns None on an arithmetic path that should not — treating it as full closeness prevents a false-zero from freezing the ratchet
-        ratio.min(Self::CLOSENESS_MAX_PER_MILLE) as u16
+        ((self.served_context_window as u32).saturating_mul(Self::CLOSENESS_MAX_PER_MILLE)
+            / self.window_target).min(Self::CLOSENESS_MAX_PER_MILLE) as u16
     }
 }
 
