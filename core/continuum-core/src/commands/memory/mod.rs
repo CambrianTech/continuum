@@ -252,7 +252,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_load_corpus_refuses_to_clobber_a_live_corpus() {
         use crate::runtime::module_harness::ModuleHarness;
-        let h = ModuleHarness::with(fresh_memory_module()).await;
+        let h = ModuleHarness::with_modules([
+            fresh_memory_module(),
+            Arc::new(crate::modules::data_wiring::data_module())
+                as Arc<dyn crate::runtime::ServiceModule>,
+        ])
+        .await;
         let persona = "clobber-guard-persona";
         // Fresh persona: an empty load is a legitimate bring-up — allowed.
         let first = h
