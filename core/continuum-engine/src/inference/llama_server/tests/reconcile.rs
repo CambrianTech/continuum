@@ -454,3 +454,15 @@ async fn a_refused_replacement_keeps_a_verified_incumbent_and_only_that() {
     );
 }
 
+#[tokio::test]
+async fn genome_protocol_refusal_preserves_the_running_engine() {
+    let mut refused = FakeControl::probe(Ok(Some("coder-14b".into())))
+        .with_active_adapters(vec!["/genes/old.gguf".into()]);
+    refused.in_place_error = Some("stale_engine");
+    let unreadable = FakeControl::probe(Ok(Some("coder-14b".into()))).adapters_unreadable();
+    for ctrl in [refused, unreadable] {
+        let outcome = ensure_model_serving(&ctrl, &target("coder-14b"), false).await;
+        assert!(matches!(outcome, EnsureOutcome::Degraded { .. }));
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "a protocol error cannot authorize replacement");
+    }
+}
