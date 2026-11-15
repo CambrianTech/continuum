@@ -198,7 +198,7 @@ pub(super) async fn run(args: Vec<String>) -> Result<(), String> {
         .await
         .map_err(|e| format!("engine custody worker: {e}"))??;
     let outgoing = cores_to_tear_down();
-    stop_with_policy(EngineFate::EndIfSaved, true, true)
+    stop_with_policy(false, true, true)
         .await?
         .require_durable()?;
     confirm_exited()?;
