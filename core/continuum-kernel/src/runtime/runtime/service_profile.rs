@@ -311,48 +311,34 @@ impl ShutdownOperation {
     /// FIRST caller's settle applies, as only its broadcast runs.
     pub(super) fn begin(
         &self,
-        rt: Option<Arc<Runtime>>,
+        rt: Arc<Runtime>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
         if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            match rt {
-                Some(rt) => {
-                    let tx = self.result.clone();
-                    // Detached ON PURPOSE: this is the task whose whole point is that no
-                    // connection owns it. A socket handler is cancelled when its client
-                    // goes away, and a shutdown cancelled after ingress closed leaves the
-                    // node refusing work with nothing saved.
-                    tokio::spawn(async move {
-                        // In THIS task, never a connection's: the settle closes the turn
-                        // door, and a door closed by a handler whose client went away
-                        // would leave every citizen refusing work with no stop behind it.
-                        let custody = if settle.is_zero() {
-                            Vec::new()
-                        } else {
-                            crate::runtime::extensions::settle_before_stop(settle).await
-                        };
-                        let mut receipt = rt.shutdown().await;
-                        receipt.custody = custody;
-                        // send_replace, NEVER send: `send` returns Err and DROPS the value
-                        // when the last receiver has gone — and the receiver that goes
-                        // away is the disconnecting CLI, so `send` loses the terminal
-                        // receipt in precisely the case this design exists for. A later
-                        // subscriber would then wait forever on a `None` that never
-                        // changes.
-                        let _ = tx.send_replace(Some(receipt));
-                    });
-                }
-                None => {
-                    // No runtime: nothing to save AND nothing that could have saved.
-                    // Publishing an empty receipt says exactly that, rather than leaving
-                    // every observer waiting on a broadcast that will never run.
-                    let _ = self.result.send_replace(Some(ShutdownReceipt {
-                        modules: Vec::new(),
-                        total_ms: 0,
-                        custody: Vec::new(),
-                    }));
-                }
-            }
+            let tx = self.result.clone();
+            // Detached ON PURPOSE: this is the task whose whole point is that no
+            // connection owns it. A socket handler is cancelled when its client
+            // goes away, and a shutdown cancelled after ingress closed leaves the
+            // node refusing work with nothing saved.
+            tokio::spawn(async move {
+                // In THIS task, never a connection's: the settle closes the turn
+                // door, and a door closed by a handler whose client went away
+                // would leave every citizen refusing work with no stop behind it.
+                let custody = if settle.is_zero() {
+                    Vec::new()
+                } else {
+                    crate::runtime::extensions::settle_before_stop(settle).await
+                };
+                let mut receipt = rt.shutdown().await;
+                receipt.custody = custody;
+                // send_replace, NEVER send: `send` returns Err and DROPS the value
+                // when the last receiver has gone — and the receiver that goes
+                // away is the disconnecting CLI, so `send` loses the terminal
+                // receipt in precisely the case this design exists for. A later
+                // subscriber would then wait forever on a `None` that never
+                // changes.
+                let _ = tx.send_replace(Some(receipt));
+            });
         }
         self.result.subscribe()
     }
@@ -375,8 +361,8 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
-    process_shutdown().begin(signal_runtime(), settle)
+pub fn begin_shutdown(rt: Arc<Runtime>, settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(rt, settle)
 }
 
 /// Observe the retained terminal receipt without starting a shutdown.
@@ -417,11 +403,15 @@ pub async fn await_shutdown(
     }
 }
 
-/// The runtime the signal handlers stop, for callers that need the SAME one — the
-/// resident `system/shutdown` verb runs the identical broadcast, so it must not reach
-/// for a second registry. One runtime, one stop path, two triggers.
-pub fn signal_runtime() -> Option<Arc<Runtime>> {
-    SIGNAL_RUNTIME.get().cloned()
+/// Shutdown cannot begin before the process has installed its runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("runtime is not installed; shutdown cannot establish durable state")]
+pub struct ShutdownUnavailable;
+
+/// The same installed runtime for command and signal shutdown, required before
+/// either caller can start the retained operation. Absence creates no receipt.
+pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
+    SIGNAL_RUNTIME.get().cloned().ok_or(ShutdownUnavailable)
 }
 
 pub async fn run_signal_shutdown() {
@@ -433,7 +423,14 @@ pub async fn run_signal_shutdown() {
     // need it.
     // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
     // console close), not ours to spend waiting on turns.
-    let rx = begin_shutdown(std::time::Duration::ZERO);
+    let rt = match signal_runtime() {
+        Ok(rt) => rt,
+        Err(reason) => {
+            eprintln!("[continuum-core] shutdown unavailable: {reason}");
+            return;
+        }
+    };
+    let rx = begin_shutdown(rt, std::time::Duration::ZERO);
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
             // A signal handler cannot return an exit code to anyone, so the receipt's only
