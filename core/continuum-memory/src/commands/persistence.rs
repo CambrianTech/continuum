@@ -15,6 +15,66 @@ use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 
 const PAGE: NonZeroUsize = NonZeroUsize::MIN.saturating_add(255);
 
+/// A durable lesson selection. Absence of a watermark means the first traversal.
+pub struct SharedLessonSelection<'a> {
+    pub persona: &'a PersonaRef,
+    pub since_timestamp: Option<&'a str>,
+}
+
+/// Read scalar lessons from one pinned view without fetching their native embeddings.
+/// Complete the read before returning any lessons to a training submitter.
+pub async fn shared_lessons(
+    state: &super::MemoryState,
+    selection: &SharedLessonSelection<'_>,
+) -> Result<Vec<crate::memory::MemoryRecord>, CommandError> {
+    let adapter = state
+        .storage()
+        .map_err(internal)?
+        .adapter(&super::persona_db_handle(selection.persona))
+        .await
+        .map_err(internal)?;
+    read_shared_lessons(&adapter, selection).await
+}
+
+pub(super) async fn read_shared_lessons(
+    adapter: &Arc<dyn StorageAdapter>,
+    selection: &SharedLessonSelection<'_>,
+) -> Result<Vec<crate::memory::MemoryRecord>, CommandError> {
+    let store = OrmStore::<PersistentMemory>::new(adapter.clone())
+        .await
+        .map_err(internal)?;
+    let snapshot = adapter
+        .binary_snapshot(PersistentMemory::COLLECTION)
+        .await?;
+    let mut after = None;
+    let mut records = Vec::new();
+    loop {
+        let mut query = QueryBuilder::new(PersistentMemory::COLLECTION)
+            .filter_eq("personaId", selection.persona.as_str())
+            .filter_eq("memoryType", "shared")
+            .sort_asc("id")
+            .limit(PAGE.get());
+        if let Some(timestamp) = selection.since_timestamp {
+            query = query.filter("timestamp", QueryOperator::Gt(timestamp.into()));
+        }
+        if let Some(id) = after {
+            query = query.filter("id", QueryOperator::Gt(serde_json::Value::String(id)));
+        }
+        let page = store
+            .find_matching_in(&snapshot, &query.build())
+            .await
+            .map_err(internal)?;
+        if page.is_empty() {
+            break;
+        }
+        after = page.last().map(|(id, _)| id.to_string());
+        records.extend(page.into_iter().map(|(_, entity)| entity.into_record()));
+    }
+    records.retain(|record| !record.content.trim().is_empty());
+    records.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.id.cmp(&b.id)));
+    Ok(records)
+}
+
 pub(super) async fn load(
     adapter: Arc<dyn StorageAdapter>,
     persona: &PersonaRef,

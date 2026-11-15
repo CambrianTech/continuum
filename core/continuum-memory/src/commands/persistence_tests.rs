@@ -118,3 +118,53 @@ async fn hydration_refuses_vectors_without_embedder_provenance(
     ));
     Ok(())
 }
+
+#[tokio::test]
+async fn shared_lessons_page_past_256_and_filter_before_submission(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let path = directory.path().join("lessons.db");
+    let persona = PersonaRef("lesson-recipient".into());
+    let adapter: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&path).await?);
+    let store = OrmStore::<PersistentMemory>::new(Arc::clone(&adapter)).await?;
+    for number in 1..=520 {
+        let id = uuid::Uuid::from_u128(number);
+        let mut entity = record(id, &persona);
+        entity.memory_type = "shared".into();
+        if number == 1 {
+            entity.persona_id = "other".into();
+        }
+        if number == 2 {
+            entity.memory_type = "observation".into();
+        }
+        if number == 3 {
+            entity.content = "  ".into();
+        }
+        if number == 4 {
+            entity.timestamp = "2026-11-13T00:00:00Z".into();
+        }
+        store.save(id, &entity).await?;
+    }
+    drop(store);
+    drop(adapter);
+    let reopened: Arc<dyn StorageAdapter> = Arc::new(SeaOrmAdapter::open(&path).await?);
+    let records = super::persistence::read_shared_lessons(
+        &reopened,
+        &super::SharedLessonSelection {
+            persona: &persona,
+            since_timestamp: Some("2026-11-13T00:00:00Z"),
+        },
+    )
+    .await?;
+    assert_eq!(records.len(), 516);
+    assert_eq!(
+        records.first().ok_or("no first lesson")?.id,
+        uuid::Uuid::from_u128(5).to_string()
+    );
+    assert_eq!(
+        records.last().ok_or("no last lesson")?.id,
+        uuid::Uuid::from_u128(520).to_string()
+    );
+    assert!(records.iter().all(|record| record.source.is_none()));
+    Ok(())
+}

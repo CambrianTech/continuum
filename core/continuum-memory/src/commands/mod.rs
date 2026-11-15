@@ -35,6 +35,7 @@ pub mod load_corpus;
 pub mod multi_layer_recall;
 pub mod share;
 mod persistence;
+pub use persistence::{shared_lessons, SharedLessonSelection};
 #[cfg(test)]
 mod persistence_tests;
 
