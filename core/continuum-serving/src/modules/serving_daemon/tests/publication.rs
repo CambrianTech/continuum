@@ -360,6 +360,73 @@ async fn a_plan_below_one_coding_turn_is_not_published_and_the_previous_stands()
     );
 }
 
+// what this catches (Windows e7ef, 2026-11-15): a fresh core beside a live inherited engine
+// samples a budget that has not yet credited that engine back (~1 GB), plans NoFit (0 lanes,
+// window 0) and must NOT publish it as a "starved seat" over the engine: hosting waits on a
+// plan that fits, so the node hosted nobody all night. With no published plan and an
+// inherited lane, the engine is adopted at its own geometry against the physical budget.
+#[tokio::test]
+async fn a_cold_core_over_a_live_engine_adopts_it_never_a_starved_zero_lane_plan() {
+    let mut daemon = ServingDaemonModule::new(
+        Arc::new(GpuMemoryManager::simulated("RTX 5090", 32 * GB)),
+        Arc::new(SystemResourceMonitor::new()),
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    );
+    daemon.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+    daemon.set_leased_in_sent_source(Arc::new(Vec::new));
+    let resident = uuid::Uuid::new_v4();
+    for i in 0..8 {
+        daemon.working_set.record_sent_in_memory(resident, 6_000, 1 + i);
+    }
+    daemon.working_set.record_in_memory(uuid::Uuid::new_v4(), 40_000, 1);
+    daemon.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+    let rx = daemon.subscribe();
+    let candidates =
+        vec![footprint_from_parts("qwen3-27b", 17 * GB, 131_072, true, None).unwrap()];
+    // The predecessor's engine still holds its bytes: the live reading is ~1 GB.
+    daemon.publish_plan(
+        HostBudget {
+            usable_bytes: GB,
+            perf_cores: 8,
+        },
+        &candidates,
+        &candidates,
+    );
+    let plan = rx
+        .borrow()
+        .clone()
+        .expect("the inherited engine is adopted, never left without a plan");
+    assert_eq!(plan.base_model.model_id, "qwen3-27b");
+    assert!(plan.fits_on_gpu, "an adopted plan fits, so hosting proceeds: {plan:?}");
+    assert!(plan.lanes >= 1 && plan.served_context_window > 0, "never 0 lanes / window 0: {plan:?}");
+
+    // Adoption impossible (the inherited model is not a candidate): the NoFit plan still
+    // never publishes over the live engine — nothing is published instead.
+    let mut orphan = ServingDaemonModule::new(
+        Arc::new(GpuMemoryManager::simulated("RTX 5090", 32 * GB)),
+        Arc::new(SystemResourceMonitor::new()),
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    );
+    orphan.working_set = crate::cognition::working_set::WorkingSetRegistry::new();
+    orphan.set_leased_in_sent_source(Arc::new(Vec::new));
+    for i in 0..8 {
+        orphan.working_set.record_sent_in_memory(resident, 6_000, 1 + i);
+    }
+    orphan.working_set.record_in_memory(uuid::Uuid::new_v4(), 40_000, 1);
+    orphan.set_inherited_lane(Arc::new(|| Some(inherited_27b())));
+    let rx_orphan = orphan.subscribe();
+    let other = vec![footprint_from_parts("coder-14b", 9 * GB, 131_072, true, None).unwrap()];
+    orphan.publish_plan(HostBudget { usable_bytes: GB, perf_cores: 8 }, &other, &other);
+    let published = rx_orphan.borrow().clone();
+    if let Some(p) = published {
+        assert!(p.fits_on_gpu && p.lanes >= 1, "a NoFit plan never publishes over a live engine: {p:?}");
+    }
+}
+
 // what this catches: the `serving/*` surface (plan · status · load · unload) is
 // migrated to the typed registry; the legacy handle_command is gone, so for any
 // command name it must fail loud — never silently fall back to an empty result.
