@@ -94,7 +94,7 @@ pub(super) enum ConsumeVerdict {
 /// Attempts per tip before the consumer stops trying it and lets `deploy.stranded`
 /// speak. Three: one for a transient (a fetch hiccup, a RAM dip), one to confirm it
 /// is not, one more than that is a rebuild loop.
-pub(super) const CONSUME_MAX_ATTEMPTS: u32 = 3;
+pub(crate) const CONSUME_MAX_ATTEMPTS: u32 = 3;
 
 pub(super) fn consume_verdict(
     request_tip: Option<&str>,
