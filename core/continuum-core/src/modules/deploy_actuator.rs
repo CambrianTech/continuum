@@ -450,8 +450,8 @@ impl DeployActuator {
                 );
                 return ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: *attempt, elapsed_ms: *elapsed_ms, bound_ms: *bound_ms });
             }
-            Decided::Skip(ActuateSkipReason::AlreadyActuated { .. }) => {
-                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { .. });
+            Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms }) => {
+                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms });
             }
         };
         let plan = SpawnPlan {
