@@ -1435,7 +1435,7 @@ Codex have reviewed it (Fable and Codex agreed on airc, 17:55Z).
 | F1 | Three minds queued for a window grant, positions 2-4 of 4, while 439,705 of 587,707 pool tokens were free and 3 of 5 slots idle; Aiko waited 15:20:48-15:45:06Z for one act | ba52dd603, 15:20-15:53Z: `delib.window.waiting` 1,177; `serving.grants` minds=1 granted=148,002; `serving.grants.queue_custody` holder Atlas `unresolved: 1` | `window_grant/lease/fair.rs` head-of-line protection (the oldest waiter was Atlas growing under her own act); grants are standing shares for every measured mind (`serving_daemon/grants.rs` `grant_inputs`) |
 | F2 | A ready mind without a grant waits for the publisher's next tick | `GrantEvaluation::cadence` = serving's `TICK`; the publisher woke on pool moves and the 5 s tick only | `serving_daemon/tick.rs:88`, `live_pool.rs` `publish_grants_when_the_pool_moves`, `mind_window.rs` `decide_window` |
 | F3 | The stop saved no resident: the engine had been adopted from a previous core, so the stop skipped its checkpoint; `--engine` then ended the engine and the four minds' newest KV with it | 16:48:43Z `inference.kv_page.stop_checkpoint_skipped reason=Adopted residents=Known(4)` | `inference/slots/page_io.rs:106`, `StopCheckpointSkip::Adopted` (:188): "this core holds no launch contract for it, so its residents' KV is not saved here" |
-| F4 | After the restart minds restored OLDER pages (7 restores, ~2.0-2.4 s each); restored KV went unused at least 4 times | 16:52-17:55Z: `kv_page.action` Restore 7 / Save 3 / Erase 3; `restored_turn` cold 1 (Aris, prompt 79,185, cached 0) / warm 1; `resident_prefix_lost` 3 | consequence of F3, plus a restore whose page is not her newest (cause per turn: open, see 4.9.6 Q2) |
+| F4 | After the restart the minds' pages restored (7 restores, ~2.0-2.4 s each). The `restored_turn` probe then reported them cold, `cached=0`, but it fires 5-7 s BEFORE the stream's `prefill.complete` for the same prompt, which reported 12,220 of 12,221 cached (Aiko, 19:55Z) and 11,514 of 11,515 (Aris, 19:56Z): restores are warm and the probe reads the counts before they exist. The earlier "Aris, 0 of 79,185" is that probe and is not a receipt. What is real: the first act after a restart re-prefilled cold for Benchy (12,283 tokens, 26 s) and Aris (11,515, 69 s) | 16:52-17:55Z and 19:54-19:57Z: `kv_page.action` Restore 7; `restored_turn` vs `inference.prefill.complete` per prompt | the probe's timing (`openai_adapter::stream`); the cold first acts are 4.7.2's "her view is not carried over a restart" (CX-3) |
 | F5 | Four minds decoded at once at 6.1-9.6 tok/s each; the engine had already measured a decode knee of 2 | 16:58-17:31Z `serving.throughput.degraded` inflight 3-4; `serving.decode_knee.clamped knee=2 roster_lanes=5`; engine `--parallel 5`, prompts 45-85k tokens | the knee clamps the PLAN's lanes; the running engine keeps its launch slots (no live `reconfigure`, `POST /reconfigure` 404), and nothing else consumes the knee |
 | F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading keeps its original ReadyTail with no checkpointable ledger (the defect is that custody, not the mismatch itself); a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
 | F7 | A fresh core over a live engine published a 0-lane NoFit plan and seated nobody all night (Windows, e7ef) | Codex 04:38Z receipt | fixed in #6037 (`adopt_inherited`) |
@@ -1496,7 +1496,7 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 | P1 Stop saves adopted engines (I1) | Fable (stop path), Codex (review; adopted custody is his) | the one checkpoint owner: `checkpoint_endpoint` (owned) and `checkpoint_adopted_before_replacement` (adopted) behind one entry with an explicit `Stop` intent; typed evidence returned to the engine-stop authority | `StopCheckpointSkip::Adopted`; the log-only `checkpoint_every_endpoint` result |
 | P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
 | P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
-| P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
+| P4 A restart's first act stays warm; `restored_turn` reads the stream's counts (I2) | Fable | `prefill.complete`'s cached/fresh counts; CX-3 (her view durable beside her page) | the probe's early read |
 | P5 Decode concurrency chosen by measured act latency (F5, Q1) | Fable (fork) | fork `update_slots`, SV-S3 per-task priority, the measured knees as inputs | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
 
 **P1 in detail** (three existing owners, no new mechanism):
@@ -1535,9 +1535,9 @@ A CPU, and the graphics pipeline's residency (section 2.3):
   author picks a count, a cap or a threshold; the knee measurement that exists (`decode_knee`) is an
   input to that choice, never a clamp. The open part is only where the choice is applied: the engine's
   own scheduler (fork priority, SV-S3), never a core permit.
-- **Q2.** Why did a restored page go unused (Aris 17:03:07Z, cached 0 of 79,185)? Candidates to check
-  against her capture: the page was older than her view (F3), or her view turned over across the restart
-  (4.7.2: "her view is not carried over a restart", CX-3).
+- **Q2, answered (F4).** Restored pages are reused; the `restored_turn` probe reads its counts before
+  the stream reports them. P4 becomes: the probe reads the stream's own counts, and the first act after
+  a restart stays warm once her view survives the restart (CX-3).
 - **Q3, answered (Codex).** A core-only stop uses the same checkpoint owner as a safety copy; while the
   engine stays alive no loss is claimed.
 
@@ -1545,11 +1545,30 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 
 1. P1 (I1): the largest harm per change and the smallest change; its validator first.
 2. P2 (I5), then P3 (I3, I4) against #6040, dyno red-then-green, one deploy, core-only stop.
-3. Q2 then P4; Q1 then P5.
+3. P4 (with CX-3); Q1 then P5.
 
 Each deploy chooses the lifecycle its changed artifact needs (a core change keeps the engine up for
 adoption; an engine change stops it) and proves the exact save and restore per resident (I1, I2). Each step posts the section 2.5 measurements before and
 after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
+
+#### 4.9.9 Glass box of the live M5 (2026-11-15 19:54-20:41Z, build 1e31e03c5) and its pieces
+
+Joel, 2026-11-15: "glass box and examine for stupid tool clipping, hard coded constants (forbidden just
+like fallbacks/legacy), and invalid feedback"; "You guys have to be constantly reminded not to code like
+JavaScript". Read from the core log and the residents' prompt captures (`fixtures/prompt-captures`).
+
+| # | Finding | Receipt | Piece | Owner | Deletes |
+|---|---|---|---|---|---|
+| G1 | Every tool result reaches her as a raw JSON dump (`ok code/git/status()` then `{"added":[],"branch":..,"success":true,..}`), never text rendered from the typed result | Aiko's capture, result #9215 | each tool's typed output renders through its `ToolContract` (the one renderer, [[her-text-is-rendered-from-typed-data]]); a JSON body only where the tool's own output IS a document | Fable | the generic JSON pretty-print of tool outputs |
+| G2 | Her working-memory depth is a constant: `WORKING_MEMORY_STEPS` = `TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM` (16), "window-independent by construction"; her prompt says "Among my 16 most recent retained calls ... Older calls may have aged out" | `continuum-prompt/src/context_budget.rs:343`; Aiko's capture | the depth is a claim in the one allocation (goal 7, CX-9), sized from her measured need and the window she is granted | Fable | the two denominators and the constant |
+| G3 | `const POINTER_INDEX: usize = 12`, documented as serving "the legacy results ring" | `working_memory/action_log.rs:17` | the legacy ring goes; the view's fold (5, "one codec") already lists her collapsed results | Fable | the ring, the constant, `indexed_pointers` |
+| G4 | A shedder that sheds nothing: working memory is asked for 72,700 on every ~6 s pressure tick and answers `before=365202 after=365202`, 460 times in 47 min | `wm.results.shed` | a shedder reports what it can give back before it is asked; the pressure owner asks only owners that can give, and a no-op is a typed `NothingToGive`, never a repeated success | Fable (shedder), Codex (pressure owner) | the no-op loop |
+| G5 | A grant wait ended her act: `no window granted after her measure ... Reclaiming` then `settle.inference_failed` (Aiko); on BigMama Kimi `Reclaiming`, Sahar `Queued 1 of 1` for an hour with a slot idle | `delib.window.refused`; Codex 20:19Z | P3 (I3, I4) | Fable, Codex | `FairGrantState` queue rules |
+| G6 | Raw `pid as pid_t` casts on process calls in five places across four crates, two of them `SIGKILL` (a wrapped id signals a group) | `continuum-host` process_exit, process_presence; kernel `eye_reaper.rs:193`, `bounded_command.rs:176`; `continuum-process/owned.rs:17,49` | one host owner addresses a process by `continuum_host::process_id::ProcessId` (#6042); the raw `libc` calls leave the kernel and `continuum-process` | Fable | every `as libc::pid_t` and the inline OS branches around them |
+| G7 | Decode 2.0-3.5 tok/s per stream: four sequences at 45-49k tokens decoding at once, engine 33.2 GB, swap 6.6 GB | `delib.turn.output_allowance measured_tps`; `/slots`; `vm.swapusage` | P5 (Q1: the engine chooses concurrency from measured act latency) | Fable | the core-side lane permits |
+
+No clipping was found: her newest result arrives whole, output room is 32k-200k tokens against needs
+under 1,500, and older results fold behind expand handles by design.
 
 #### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
 
