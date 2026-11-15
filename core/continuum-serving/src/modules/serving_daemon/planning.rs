@@ -135,6 +135,48 @@ impl ServingDaemonModule {
         self.publish_plan_with_leases(&budget, candidates, on_disk, intent_revision)
     }
 
+    /// Publishes the plan that ADOPTS an inherited engine: the incumbent alone, at the
+    /// geometry it is running, against the PHYSICAL budget (its residency is ours). Says
+    /// which arm asked, and says so when the incumbent cannot be planned; `true` only
+    /// when a plan was published.
+    fn adopt_inherited(
+        &self, intent_revision: u64, candidates: &[ModelFootprint], incumbent: &str,
+        demand: &ServingDemand, arm: &'static str,
+    ) -> bool {
+        let physical = self.physical_budget();
+        let geometry = crate::inference::served_window_store::load_geometry()
+            .filter(|g| g.model_id == incumbent)
+            .and_then(|g| g.cache_geometry());
+        match incumbent_adoption_plan(&physical, candidates, incumbent, demand, geometry) {
+            Some(plan) if plan.fits_on_gpu && plan.lanes > 0 => {
+                continuum_base::probe!(
+                    target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
+                    arm = arm,
+                    model = incumbent,
+                    lanes = plan.lanes as u64,
+                    window = plan.served_context_window as u64,
+                    physical_usable_gb = (physical.usable_bytes / 1_000_000_000),
+                    "no plan to retain and an inherited engine is live: it is planned at its own \
+                     geometry against the physical budget — adopt, never nothing and never a starved seat"
+                );
+                self.publish_plan_snapshot(intent_revision, Some(plan));
+                true
+            }
+            _ => {
+                continuum_base::probe!(
+                    target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
+                    arm = arm,
+                    model = incumbent,
+                    candidate = candidates.iter().any(|c| c.model_id == incumbent),
+                    physical_usable_gb = (physical.usable_bytes / 1_000_000_000),
+                    "no plan to retain and the inherited engine cannot be planned even against the \
+                     physical budget — named; the caller decides what stands"
+                );
+                false
+            }
+        }
+    }
+
     fn publish_plan_with_leases(
         &self, planned: &PlanBudget, candidates: &[ModelFootprint],
         on_disk: &[ModelFootprint], intent_revision: u64,
@@ -297,6 +339,20 @@ impl ServingDaemonModule {
                     // count (Cormac on #5739): a record can be retired only once, so the next tick's
                     // plan comes from inputs that survived, and a plan starved by those (a node that
                     // genuinely cannot hold the requirement) is published as before.
+                    // A STARVED PLAN NEVER REPLACES A LIVE ENGINE (Windows e7ef, 2026-11-15): a fresh
+                    // core beside a healthy inherited engine sampled ~1 GB before that engine's bytes
+                    // were credited, planned NoFit (0 lanes, window 0), and published it as a
+                    // "starved seat" over the engine serving 3 lanes; every later tick retained it and
+                    // the node hosted nobody all night. With no published plan and an inherited lane,
+                    // the engine is the measurement: adopt it at its own geometry, as the refused-
+                    // demotion arm does.
+                    if !previous_stands {
+                        if let Some(inc) = incumbent.as_deref() {
+                            if self.adopt_inherited(intent_revision, candidates, inc, &demand, "starved") {
+                                return PlanOutcome::Decided;
+                            }
+                        }
+                    }
                     match starved_plan(previous_stands, retired) {
                         Starved::PreviousStands => {
                             self.retain_plan_for_intent(intent_revision, candidates);
@@ -382,41 +438,7 @@ impl ServingDaemonModule {
                         // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
                         if self.plan_tx.borrow().plan.is_none() {
                             if let Some(inc) = incumbent.as_deref() {
-                                let geometry = crate::inference::served_window_store::load_geometry()
-                                    .filter(|g| g.model_id == inc)
-                                    .and_then(|g| g.cache_geometry());
-                                match incumbent_adoption_plan(
-                                    &self.physical_budget(),
-                                    candidates,
-                                    inc,
-                                    &demand,
-                                    geometry,
-                                ) {
-                                    Some(plan) => {
-                                        continuum_base::probe!(
-                                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
-                                            model = inc,
-                                            lanes = plan.lanes as u64,
-                                            window = plan.served_context_window as u64,
-                                            usable_gb = (budget.usable_bytes / 1_000_000_000),
-                                            physical_usable_gb =
-                                                (self.physical_budget().usable_bytes / 1_000_000_000),
-                                            "a demotion was refused with NO plan to retain: the \
-                                             inherited engine is planned at its own geometry \
-                                             against the physical budget — adopt, never nothing"
-                                        );
-                                        self.publish_plan_snapshot(intent_revision, Some(plan));
-                                    }
-                                    None => continuum_base::probe!(
-                                        target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
-                                        model = inc,
-                                        physical_usable_gb =
-                                            (self.physical_budget().usable_bytes / 1_000_000_000),
-                                        "a demotion was refused with no plan to retain and the \
-                                         inherited engine cannot be planned even against the \
-                                         physical budget — refused, named; the reconcile stays idle"
-                                    ),
-                                }
+                                self.adopt_inherited(intent_revision, candidates, inc, &demand, "demotion_refused");
                             }
                         }
                         return PlanOutcome::Decided;
