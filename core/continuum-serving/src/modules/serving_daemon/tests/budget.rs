@@ -555,6 +555,7 @@ fn downshift_gate_classifies_the_transient_lobotomy() {
         resident_models: 1,
         fits_on_gpu: true,
         rationale: String::new(),
+        lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
         window_target: 0,
     };
 
