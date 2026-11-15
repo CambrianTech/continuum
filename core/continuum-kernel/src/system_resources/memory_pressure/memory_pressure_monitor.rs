@@ -517,13 +517,11 @@ impl MemoryPressureMonitor {
                 Vec::new()
             };
             // The take-again half: while the OS reads normal with room to spare (`HostDeficitReading::
-            // headroom`), every reporter that can shed is offered what it may take back.
+            // headroom`), every healthy reporter is offered what it may take back.
+            // Current shed availability cannot gate recovery: an emptied cache has
+            // nothing to shed precisely when it needs this offer to grow again.
             let take_again_targets: Vec<Arc<dyn MemoryReporter>> = if headroom.is_some() {
-                st.reporters
-                    .iter()
-                    .filter(|e| !e.disabled && e.reporter.can_shed())
-                    .map(|e| e.reporter.clone())
-                    .collect()
+                recovery_targets(&st.reporters)
             } else {
                 Vec::new()
             };
@@ -610,6 +608,14 @@ impl MemoryPressureMonitor {
         }
     }
 }
+
+fn recovery_targets(entries: &[ReporterEntry]) -> Vec<Arc<dyn MemoryReporter>> {
+    entries.iter().filter(|entry| !entry.disabled).map(|entry| entry.reporter.clone()).collect()
+}
+
+#[cfg(test)]
+#[path = "recovery_tests.rs"]
+mod recovery_tests;
 
 /// What one poll's first phase read, carried out of the state lock by name.
 struct Ingested {
