@@ -42,24 +42,14 @@ pub(super) enum GracefulStop {
     /// the budget. NOT the same as "it stopped": the caller must still tear the process
     /// down, and must not report a clean stop.
     NoAnswer(String),
-    /// The running core PREDATES this rail: it has no `system/shutdown` verb, so it was
-    /// never going to save and no fix in this binary can change that.
+    /// The running core answered `system/shutdown` with an error, or with a receipt that does
+    /// not decode, and so cannot attest a final checkpoint. A fault, whatever it said: the
+    /// verdict never depends on the error's text (#3940).
     ///
-    /// Distinct from `NoAnswer` on purpose. Both are non-durable, but they are different
-    /// facts and an operator needs to tell them apart: this one is the expected, one-time
-    /// cost of the FIRST upgrade — the core being replaced was built before the rail
-    /// existed — whereas `NoAnswer` is a core that HAS the capability and would not use
-    /// it, which is a fault. Collapsing them would make every first rollout look like a
-    /// malfunction, and every malfunction look like a rollout.
-    LegacyCore(String),
-    /// The running core HAS the rail but answered `system/shutdown` with an error and cannot
-    /// attest a final checkpoint — e.g. "checkpoint not found". That is a fault in a SUPPORTED
-    /// core, not evidence it predates the rail: it must not render as a first rollout.
-    ///
-    /// Fail-closed on purpose, like `LegacyCore`: a core that cannot attest a final checkpoint
-    /// must not be killed mid-upgrade, so `ensure_teardown_supported` refuses reboot for both.
-    /// Distinct from `NoAnswer`, which passes the guard — an error from a core that DID answer
-    /// is not "no core ever answered".
+    /// Fail-closed on purpose: a core that cannot attest a final checkpoint must not be killed
+    /// mid-upgrade, so `ensure_teardown_supported` refuses reboot. Distinct from `NoAnswer`,
+    /// which passes the guard — an error from a core that DID answer is not "no core ever
+    /// answered".
     CannotAttest(String),
     /// Nothing was listening in the first place. Distinct from `NoAnswer` on purpose: a
     /// core that never ran lost nothing, so `stop` on an already-stopped node must exit 0
@@ -82,7 +72,7 @@ impl GracefulStop {
     pub(super) fn receipt(&self) -> Option<&continuum_core::runtime::ShutdownReceipt> {
         match self {
             Self::Durable(stopped) | Self::Incomplete(stopped) => Some(&stopped.receipt),
-            Self::NoAnswer(_) | Self::LegacyCore(_) | Self::CannotAttest(_) | Self::NothingRunning => None,
+            Self::NoAnswer(_) | Self::CannotAttest(_) | Self::NothingRunning => None,
         }
     }
 
@@ -93,12 +83,11 @@ impl GracefulStop {
         }
     }
 
-    /// A core that cannot attest a final checkpoint — whether it predates the rail or is
-    /// failing inside it — must keep running until the operator can stop it explicitly and
-    /// preserve/adopt its selected checkpoint. Both fail-closed outcomes refuse reboot here;
+    /// A core that cannot attest a final checkpoint must keep running until the operator can
+    /// stop it explicitly and preserve/adopt its selected checkpoint. That refuses reboot here;
     /// `NoAnswer` deliberately does not (nothing ever answered, so nothing attested a save).
     pub(super) fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
-        if let (true, Self::LegacyCore(reason) | Self::CannotAttest(reason)) = (reboot, self) {
+        if let (true, Self::CannotAttest(reason)) = (reboot, self) {
             return Err(format!(
                 "keeping the engine refused before teardown (reboot, install handoff or \
                  a plain `stop`): {reason}. The existing core is still running. Use \
@@ -380,11 +369,11 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
                 Err(undecodable) => GracefulStop::CannotAttest(format!("its shutdown receipt does not decode: {undecodable}")),
             }
         }
-        Ok(Err(e)) => {
-            // The verdict must not depend on what the core said — see
-            // `classify_shutdown_error`: any error from a reachable core fails closed.
-            classify_shutdown_error(&format!("{e}"))
-        }
+        // Any error from a core that answered fails closed; its text is kept for the operator and
+        // never decides the verdict (#3940).
+        Ok(Err(e)) => GracefulStop::CannotAttest(format!(
+            "the running core answered system/shutdown with an error and cannot attest a final checkpoint ({e})"
+        )),
         Err(_) => GracefulStop::NoAnswer(format!(
             "no answer within {}s",
             GRACEFUL_STOP_BUDGET.as_secs()
@@ -393,46 +382,8 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
 }
 
 
-/// Turn an error answer to `system/shutdown` into a stop outcome — never `NoAnswer`.
-///
-/// The verdict must not depend on what the core said (#3940): any error from a reachable
-/// core fails closed, because such a core cannot attest a final checkpoint and therefore
-/// must not be killed mid-upgrade (`ensure_teardown_supported` refuses reboot for both
-/// fail-closed outcomes). What the phrasing may still decide is WHICH of them:
-/// phrasings that mean "this name is not in the command registry" are positive evidence
-/// the core predates the rail (`LegacyCore`, a first rollout); every other error is a fault
-/// inside a supported core (`CannotAttest`) and must not be rendered as one.
-/// `NoAnswer` keeps its meaning for paths where no core ever answered (pre-check failures
-/// and timeouts); an error from a core that DID answer can no longer masquerade as one.
-pub(super) fn classify_shutdown_error(rendered: &str) -> GracefulStop {
-    let m = rendered.to_lowercase();
-    // Recognition now only picks WHICH fail-closed outcome — never whether to fail closed.
-    // Only phrasings that specifically mean "this name is not in the command registry" earn
-    // the pre-rail label; the old list's weak markers ("not found", bare "unsupported") could
-    // mislabel an internal error like `checkpoint not found` as a core from before the rail.
-    let predates_rail = m.contains("unknown command") || m.contains("no handler");
-    if predates_rail {
-        GracefulStop::LegacyCore(format!(
-            "the running core has no system/shutdown verb ({rendered}) — it predates this \
-             rail, so its modules were never going to save and this stop cannot be called durable"
-        ))
-    } else {
-        // Fail closed (#3940): the old code fell through here to NoAnswer for any phrasing that
-        // matched no marker string — and NoAnswer passes the reboot guard, so an un-attested core
-        // could be killed mid-upgrade. Any error from a reachable core is now fail-closed, with its
-        // own text preserved so the operator can diagnose what it actually said; the outcome says
-        // this is a fault in a supported core, not evidence of a first rollout.
-        GracefulStop::CannotAttest(format!(
-            "the running core answered system/shutdown with an error and cannot attest a final \
-             checkpoint ({rendered})"
-        ))
-    }
-}
-
 /// What the operator sees for each outcome, and whether it goes to stderr. Extracted from
-/// `stop_with_authority` so a regression test can pin the wording: `CannotAttest` is a fault in a
-/// supported core and must never render as a first rollout — that label belongs only to
-/// `LegacyCore`, whose phrasing came from a core that positively predates this rail.
+/// `stop_with_authority` so a regression test can pin the wording.
 pub(super) fn render_graceful_outcome(outcome: &GracefulStop) -> (bool, String) {
     match outcome {
         GracefulStop::Durable(stopped) => (false, format!("core stopped gracefully — {}", stopped.summary)),
@@ -445,9 +396,6 @@ pub(super) fn render_graceful_outcome(outcome: &GracefulStop) -> (bool, String) 
             format!("no graceful stop ({why}); forcing — modules did not save"),
         ),
         GracefulStop::NothingRunning => (false, "no core is listening; sweeping for survivors".into()),
-        GracefulStop::LegacyCore(why) => {
-            (true, format!("FIRST UPGRADE — {why}; forcing, and its volatile state is lost"))
-        }
         GracefulStop::CannotAttest(why) => (
             true,
             format!(

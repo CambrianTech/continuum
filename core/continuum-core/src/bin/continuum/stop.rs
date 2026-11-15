@@ -56,15 +56,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
         GracefulStop::NoAnswer(why) => Err(format!(
             "the core was forced down without saving ({why}) — volatile state since the last              save-on-write is gone"
         )),
-        // Also a failure, and deliberately so: the operator asked for a stop and did not
-        // get a durable one. It is EXPECTED once, on the upgrade that installs the rail,
-        // and the message says which it is rather than making a rollout look like a fault.
-        GracefulStop::LegacyCore(why) => Err(format!(
-            "the outgoing core could not stop gracefully ({why}); this is the one-time cost              of installing the shutdown rail, and it is still not a durable stop"
-        )),
-        // Fail-closed like a first rollout, but NOT one: this is a fault in a supported core.
-        // The message must say so — an operator seeing "one-time cost of installing the rail"
-        // on every failed checkpoint would learn to ignore it.
+        // Fail-closed: a core that answered but cannot attest a final checkpoint is a fault.
         GracefulStop::CannotAttest(why) => Err(format!(
             "the core answered system/shutdown with an error and could not attest a final \
              checkpoint ({why}); this is a fault, not a first rollout — do not reboot until it \
