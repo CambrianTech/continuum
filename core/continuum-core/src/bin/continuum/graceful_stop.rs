@@ -136,7 +136,10 @@ pub(super) fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), St
 /// that proves neither authority nor absence refuses (Codex on #6042: only ESRCH proves gone).
 pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
     use continuum_host::termination_authority::{may_terminate, TerminationAuthority};
-    match may_terminate(pid as u32) {
+    let Ok(process) = u32::try_from(pid) else {
+        return Err(format!("pid {pid} names no process: a pid is positive"));
+    };
+    match may_terminate(process) {
         TerminationAuthority::Granted | TerminationAuthority::Absent => Ok(()),
         TerminationAuthority::Refused(error) => Err(format!("no authority to terminate pid {pid}: {error}")),
         TerminationAuthority::Unknown(error) => Err(format!("cannot tell whether pid {pid} may be terminated: {error}")),

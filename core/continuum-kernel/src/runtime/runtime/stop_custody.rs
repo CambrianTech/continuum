@@ -4,7 +4,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::runtime::{CustodyState, SettledCustody, SettledProcess};
+use crate::runtime::{CustodyState, HeldCustody, SettledCustody, SettledProcess};
 
 /// A stop participant that speaks for one process, saved: the shape of the page checkpoint.
 struct SavesOneProcess;
@@ -13,13 +13,12 @@ impl crate::runtime::extensions::SettleBeforeStop for SavesOneProcess {
     fn name(&self) -> &'static str {
         "saves_one_process"
     }
-    fn settle(&self, _cap: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<SettledCustody>> + Send + 'static>> {
+    fn settle(&self, _cap: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HeldCustody>> + Send + 'static>> {
         Box::pin(async {
-            vec![SettledCustody {
-                participant: "saves_one_process".into(),
+            vec![HeldCustody {
                 endpoint: "test://signal-path".into(),
                 process: Some(SettledProcess { pid: 7, started_s: 11 }),
-                state: CustodyState::Saved { residents: 0 },
+                state: CustodyState::Saved,
             }]
         })
     }
@@ -37,9 +36,10 @@ async fn a_zero_settle_still_runs_every_stop_participant() {
     let receipt = rx.wait_for(Option::is_some).await.expect("the owner publishes").clone().expect("published");
     assert_eq!(
         receipt.custody_of("test://signal-path", 7, 11),
-        Some(CustodyState::Saved { residents: 0 }),
+        Some(CustodyState::Saved),
         "the participant ran and its custody reached the receipt: {:?}", receipt.custody
     );
+    assert!(receipt.custody.iter().any(|c| c.participant == "saves_one_process"), "the kernel stamps the participant's own name");
 }
 
 // what this catches (CONTINUUM-ENGINE 4.9, I1; Codex's acceptance cases on #6041/#6042): a receipt
@@ -56,8 +56,8 @@ fn custody_authorizes_only_the_exact_process_it_names() {
         state,
     };
     let engine = Some(SettledProcess { pid: 49_553, started_s: 1_794_679_637 });
-    let mut receipt = ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: vec![held("page_io", engine, CustodyState::Saved { residents: 4 })] };
-    assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Saved { residents: 4 }));
+    let mut receipt = ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: vec![held("page_io", engine, CustodyState::Saved)] };
+    assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Saved));
     assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_638), None, "a reused pid is another process");
     assert_eq!(receipt.custody_of("http://127.0.0.1:58058", 49_553, 1_794_679_637), None, "another endpoint");
     assert!(receipt.state_is_durable(), "every module durable and the KV saved");
@@ -73,5 +73,5 @@ fn custody_authorizes_only_the_exact_process_it_names() {
     receipt.custody.push(held("page_io", None, CustodyState::Retained));
     assert!(!receipt.state_is_durable(), "a retention bound to no process is still unsaved state");
     assert!(receipt.summary().contains("process unidentified"), "{}", receipt.summary());
-    assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Saved { residents: 4 }), "an unbound entry never speaks for a process");
+    assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Saved), "an unbound entry never speaks for a process");
 }
