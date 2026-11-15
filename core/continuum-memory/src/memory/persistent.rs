@@ -9,7 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct PersistentMemory {
     #[serde(flatten)]
     pub base: BaseEntity,
-    pub persona_id: String,
+    #[entity(text)]
+    pub persona_id: crate::identity::PersonaRef,
     pub memory_type: String,
     pub content: String,
     #[entity(json)]
@@ -40,7 +41,7 @@ impl PersistentMemory {
                 updated_at: admitted_at,
                 version: 1,
             },
-            persona_id: record.persona_id,
+            persona_id: record.persona_id.into(),
             memory_type: record.memory_type,
             content: record.content,
             context: record.context,
@@ -61,7 +62,7 @@ impl PersistentMemory {
     pub fn into_record(self) -> super::types::MemoryRecord {
         super::types::MemoryRecord {
             id: self.base.id,
-            persona_id: self.persona_id,
+            persona_id: self.persona_id.0,
             memory_type: self.memory_type,
             content: self.content,
             context: self.context,
