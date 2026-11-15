@@ -43,6 +43,8 @@ pub(crate) const ACTUATION_LOG: &str = "deploy-actuate.log";
 /// switch only — there is no other value and no tuning here.
 pub(crate) const ACTUATOR_SWITCH_KEY: &str = "CONTINUUM_DEPLOY_ACTUATOR";
 /// The CLI verb the actuator launches — the consumer that turns a request into a reboot.
+pub(crate) const CONSUMER_VERB: &str = "deploy-consume";
+
 /// The outcome of deciding whether to actuate — either launch with a given attempt number,
 /// or skip for one of the recorded reasons (no conversion needed; Act never reaches Skip).
 #[derive(Debug)]
@@ -54,10 +56,7 @@ pub(crate) enum Decided {
 }
 
 use crate::bin::continuum::deploy_ledger::CONSUME_MAX_ATTEMPTS;
-/// The Windows consumer task `continuum install --supervisor` registers (S4U, every ten
-
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
-/// action so the next tick can refuse to act twice on one request and the next boot can
 /// grade the action against the build it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ActuationReceipt {
@@ -133,45 +132,6 @@ pub(crate) fn external_owner(user_home: &Path, switch: Option<&str>) -> Option<E
     None
 }
 
-/// What this tick does about a wanted deploy, given the last receipt.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ActuateDecision {
-    /// Launch the consumer; this is actuation number `attempt` for the request.
-    Act { attempt: u32 },
-    /// Already launched for this request and the tracker has not called it stranded —
-    /// the deploy is working (or inside its grace). Quiet.
-    AlreadyActuated { attempt: u32, elapsed_ms: u64 },
-    /// Stranded, but not yet past the bound derived from the last measured deploy — a
-    /// slow tier is not re-actuated blindly into its own handoff window.
-    AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
-    /// [`CONSUME_MAX_ATTEMPTS`] launches did not land this tip here. Stop; the
-    /// tracker's `deploy.stranded` is the standing receipt and a new tip resets this.
-    GaveUp { attempts: u32 },
-}
-
-/// The reason one tick skips actuation (the decision to skip comes from outside
-/// [`decide_actuation`]: either an external claim or one of the pure reasons above).
-#[derive(Debug)]
-pub(crate) enum ActuateSkipReason {
-    /// Another deploy-consume build holds the claim on this node — serialise against it.
-    ConcurrentClaim,
-    /// [`ActuateDecision`] returned a non-Act outcome; the fields are carried through
-    /// for observability (the probe at each call site already has them).
-    AlreadyActuated { attempt: u32, elapsed_ms: u64 },
-    AwaitingBound { attempt: u32, elapsed_ms: u64, bound_ms: u64 },
-    GaveUp { attempts: u32 },
-}
-
-impl From<ActuateDecision> for ActuateSkipReason {
-    fn from(d: ActuateDecision) -> Self {
-        match d {
-            ActuateDecision::AlreadyActuated { attempt, elapsed_ms } => Self::AlreadyActuated { attempt, elapsed_ms },
-            ActuateDecision::AwaitingBound { attempt, elapsed_ms, bound_ms } => Self::AwaitingBound { attempt, elapsed_ms, bound_ms },
-            ActuateDecision::GaveUp { attempts } => Self::GaveUp { attempts },
-            _ => unreachable!(), // unwrap_or: Act is never converted
-        }
-    }
-}
 
 /// How long after an actuation a stranded request may be re-actuated: the tracker's own
 /// grace at least, and 1.5× the last measured request-to-settle time on this tier when
