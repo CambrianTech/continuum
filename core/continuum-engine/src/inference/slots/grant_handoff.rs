@@ -174,9 +174,9 @@ pub(crate) async fn fixture_for_publication() -> (String, Arc<KvSlotPool>, PageK
 }
 
 #[cfg(test)]
-pub(crate) async fn reclaim_for_publication(root: &str, ticket: GrantHandoff) -> Result<ReclaimedGrant, String> {
+pub(crate) async fn reclaim_for_publication(root: &str, ticket: GrantHandoff) -> Result<ReclaimedGrant, ReclaimError> {
     let client = reqwest::Client::new();
-    let (mut custody, pool, slot, key) = prepare(&client, root, ticket.persona(), ticket.lease()).await.map_err(|e| e.to_string())?;
+    let (mut custody, pool, slot, key) = prepare(&client, root, ticket.persona(), ticket.lease()).await?;
     custody.ticket = Some(ticket);
-    reclaim(&client, root, pool, slot, key, custody).await.map_err(|e| e.to_string())
+    reclaim(&client, root, pool, slot, key, custody).await
 }
