@@ -27,7 +27,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
         (true, false) => EngineFate::EndIfSaved,
         (true, true) => EngineFate::EndDiscardingKv,
     };
-    match stop_with_policy(fate, false, false).await? {
+    match stop_with(fate).await? {
         // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
         // loss that did not happen, and `stop` is used in scripts that would then treat a
         // clean no-op as a failure.
@@ -57,11 +57,11 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 /// core swap alone (Joel 2026-08-23: "if it's taking so long we need to fix
 /// that first"). Only `stop --engine` passes false: the full teardown, for when the engine's
 /// memory is wanted back (Joel 2026-10-29: "The engine is supposed to stay up").
-pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
+pub(super) async fn stop_with(fate: impl Into<EngineFate>) -> Result<GracefulStop, String> {
     // Unattended callers — the deploy consumer above all — NEVER escalate:
     // a consent prompt needs a human at the machine, and one raised from the supervisor
     // would hang the consumer on a dialog nobody can see until the consent times out.
-    stop_with_authority(keep_lanes, false).await
+    stop_with_authority(fate, false).await
 }
 
 /// Keeping the lanes keeps the engine; otherwise it ends only on custody.
@@ -177,8 +177,8 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
 }
 
 /// `stop_with`, plus whether the operator can answer a required consent prompt.
-pub(super) async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
-    stop_with_policy(keep_lanes, operator_present, false).await
+pub(super) async fn stop_with_authority(fate: impl Into<EngineFate>, operator_present: bool) -> Result<GracefulStop, String> {
+    stop_with_policy(fate, operator_present, false).await
 }
 
 // Maintenance may not turn a missing save receipt into permission to force an

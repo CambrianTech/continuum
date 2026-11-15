@@ -140,7 +140,7 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
             outcome = ?state,
-            failure = ?state.failure(),
+            failure = ?state.owned_failure(),
             custody = ?held,
             process = ?process,
             residents = ?residents,
@@ -228,12 +228,11 @@ impl StopCheckpoint {
         }
     }
 
-    /// Why it did not save, typed, for its probe.
-    fn failure(&self) -> Option<StopFailure<'_>> {
+    /// An owned checkpoint's typed failure, for its probe (an adopted refusal is in the outcome).
+    fn owned_failure(&self) -> Option<&super::CheckpointFailure<super::OwnedCheckpointRefusal>> {
         match self {
-            Self::Owned(owned) => owned.failure().map(StopFailure::Owned),
-            Self::Adopted(Err(refusal)) => Some(StopFailure::Adopted(refusal)),
-            Self::Adopted(Ok(_)) | Self::NoPaging => None,
+            Self::Owned(owned) => owned.failure(),
+            Self::Adopted(_) | Self::NoPaging => None,
         }
     }
 
@@ -246,13 +245,6 @@ impl StopCheckpoint {
             Self::Owned(_) | Self::Adopted(Err(_)) | Self::NoPaging => None,
         }
     }
-}
-
-/// Why a stop's checkpoint did not save, by route.
-#[derive(Debug)]
-enum StopFailure<'a> {
-    Owned(&'a super::CheckpointFailure<super::OwnedCheckpointRefusal>),
-    Adopted(&'a super::AdoptedCheckpointRefusal),
 }
 
 /// What the stop's checkpoint of an owned endpoint came to.
