@@ -1437,7 +1437,7 @@ Codex have reviewed it (Fable and Codex agreed on airc, 17:55Z).
 | F3 | The stop saved no resident: the engine had been adopted from a previous core, so the stop skipped its checkpoint; `--engine` then ended the engine and the four minds' newest KV with it | 16:48:43Z `inference.kv_page.stop_checkpoint_skipped reason=Adopted residents=Known(4)` | `inference/slots/page_io.rs:106`, `StopCheckpointSkip::Adopted` (:188): "this core holds no launch contract for it, so its residents' KV is not saved here" |
 | F4 | After the restart minds restored OLDER pages (7 restores, ~2.0-2.4 s each); restored KV went unused at least 4 times | 16:52-17:55Z: `kv_page.action` Restore 7 / Save 3 / Erase 3; `restored_turn` cold 1 (Aris, prompt 79,185, cached 0) / warm 1; `resident_prefix_lost` 3 | consequence of F3, plus a restore whose page is not her newest (cause per turn: open, see 4.9.6 Q2) |
 | F5 | Four minds decoded at once at 6.1-9.6 tok/s each; the engine had already measured a decode knee of 2 | 16:58-17:31Z `serving.throughput.degraded` inflight 3-4; `serving.decode_knee.clamped knee=2 roster_lanes=5`; engine `--parallel 5`, prompts 45-85k tokens | the knee clamps the PLAN's lanes; the running engine keeps its launch slots (no live `reconfigure`, `POST /reconfigure` 404), and nothing else consumes the knee |
-| F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading is never adopted; a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
+| F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading keeps its original ReadyTail with no checkpointable ledger (the defect is that custody, not the mismatch itself); a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
 | F7 | A fresh core over a live engine published a 0-lane NoFit plan and seated nobody all night (Windows, e7ef) | Codex 04:38Z receipt | fixed in #6037 (`adopt_inherited`) |
 
 What these say together: every slowdown today was a wait or a loss the design already forbids (4.1a: every
@@ -1453,26 +1453,39 @@ A CPU, and the graphics pipeline's residency (section 2.3):
   itself, and only while every byte is held by minds mid-act (4.8.1).
 - Nobody holds memory between acts. What stays resident between acts is CACHE, kept by predicted reuse
   (activity temperature) and evicted coolest first the moment a ready mind needs the room (4.8.4).
-- A stop is a pause: every resident is saved, and the next engine restores her where she was. A deploy
-  therefore costs the restore, seconds, never a re-prefill (section 7.0 restart scenario: ~5.6 s against
-  ~401 s cold).
+- A stop is a pause: every resident is saved, and the next engine restores her where she was, so a
+  restart costs the restore, seconds, not a re-prefill (section 7.0 restart scenario: ~5.6 s against
+  ~401 s cold) whenever her input is unchanged.
 - From her side all of this is simultaneous. Any wait she can perceive is a defect.
 
 #### 4.9.3 Invariants (each a simulator assertion before it is code)
 
-- **I1, a stop saves every resident.** Every endpoint this core serves, launched OR adopted, is paused
-  through the one owner (`MindMemory::pause`, 4.1a) with a confirmed save per resident before the engine
-  may end. Adoption carries custody through the ledger's incarnation (4.6, saved_ledger), so "no launch
-  contract" is not a reason to skip. A resident whose save fails is named lost, never silent.
-- **I2, a restart restores her newest state.** Her first act after a restart reuses at least the tokens
-  her saved page holds; a cold first act carries a classified cause (4.7, 5 "Restart"), never `cached=0`
-  on a restored page.
+- **I1, a stop saves every resident, and never ends a live engine it did not save.** Every endpoint
+  this core serves goes through ONE checkpoint owner: an owned engine through its generation's
+  checkpoint, an adopted one through `EndpointTransition::checkpoint_adopted_before_replacement`
+  (`slots/engine_generation.rs:330`, already used by adopted retirement), which verifies the live
+  incarnation and the ledger and never invents ownership of the process (Codex). The lifecycle intent
+  is explicit in that owner: a stop stays suspended after any outcome; a replacement may hand readiness
+  back after a terminal refusal (`:360`). The checkpoint returns typed evidence (saved, refused, uncertain,
+  per resident) to the authority that may end the engine; a log line is not evidence. A failed or
+  uncertain save on a live engine refuses its destructive retirement and keeps custody; a resident is
+  named lost only after the engine's death is verified or a destructive stop was explicitly authorized.
+- **I2, a restart restores her newest state.** The page restored is her newest saved version, its
+  native bytes under a compatible engine, model and adapter identity. Separately: for unchanged input
+  her first act reuses the longest matching prefix; when her input differs (her view turned over, her
+  adapter or the model changed) the act carries the typed invalidation cause, never a silent `cached=0`
+  (Codex).
 - **I3, a ready mind is dispatched at once.** No queue position, no grant state, no tick. At her act
   she takes free cells; if short, the coolest NON-acting holders are paged out (Codex's reclaim seam,
   #6040: `reclaim_grant` returns `Busy` instead of waiting, so dispatch moves to the next holder). Only
-  when every holder is mid-act does she wait, in the engine's own queue, woken by an act's end.
-- **I4, memory is held for an act.** A grant exists from her dispatch to her act's end
-  (`ActHold`/reservation already bind it). Between acts her KV is cache, not a claim.
+  when every holder is mid-act does she wait, in the engine's own queue, woken by an act's end. Every
+  other no-room case is a typed outcome with its own event (pages still saving, a generation not yet
+  verified, paging uncertain, a need no sequence can hold), never free capacity pretended or a queue
+  standing in for unknown custody (Codex).
+- **I4, a CLAIM is held for an act; KV occupies until its erase is verified.** A grant exists from her
+  dispatch to her act's end (`ActHold`/reservation). Between acts her KV is cache, reclaimable by
+  temperature, but it still occupies its cells until the engine confirms the save and erase: dropping
+  a logical lease never frees physical cells (Codex; #6040's sealed receipts).
 - **I5, every wait is an event.** Grants are evaluated when demand moves (a ready mind, an act's end,
   a pool step), never on a tick (RTOS rule 10).
 
@@ -1480,7 +1493,7 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 
 | Piece | Owner | Builds on | Deletes |
 |---|---|---|---|
-| P1 Stop saves adopted engines (I1) | Fable (stop), Codex (adopt custody, F6) | `checkpoint_endpoint` already drains and saves a launched endpoint; adoption must install the generation it needs | `StopCheckpointSkip::Adopted` |
+| P1 Stop saves adopted engines (I1) | Fable (stop path), Codex (review; adopted custody is his) | the one checkpoint owner: `checkpoint_endpoint` (owned) and `checkpoint_adopted_before_replacement` (adopted) behind one entry with an explicit `Stop` intent; typed evidence returned to the engine-stop authority | `StopCheckpointSkip::Adopted`; the log-only `checkpoint_every_endpoint` result |
 | P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
 | P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
 | P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
@@ -1490,7 +1503,7 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 
 | Scenario | Proves | State |
 |---|---|---|
-| stop over an adopted engine saves every resident (MindMemory lifecycle validator, 4.1a: "a second stop after an adoption") | I1 | to write, red today |
+| stop over an adopted engine saves every resident; a failed, cancelled or uncertain save keeps custody and the engine is not signalled; PID reuse is refused; a second stop after an adoption (slots `tests/adopted_checkpoint.rs`, the lifecycle validator, 4.1a) | I1 | to write, red today |
 | restart restores the newest page: dyno `restart.rs` with the 2026-11-15 receipts | I2 | to write |
 | `simultaneous::a_mind_growing_under_her_own_act_never_queues_the_others` (dyno service) | F1 | written, green with #6038 |
 | `simultaneous::memory_follows_the_mind_that_is_acting` (dyno service) | I3, I4 | written, known-red |
@@ -1510,8 +1523,8 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 - **Q2.** Why did a restored page go unused (Aris 17:03:07Z, cached 0 of 79,185)? Candidates to check
   against her capture: the page was older than her view (F3), or her view turned over across the restart
   (4.7.2: "her view is not carried over a restart", CX-3).
-- **Q3.** Should P1 save on a core-only stop as well? A core-only stop leaves the engine and its KV up for
-  adoption; saving anyway is the safety copy if the next core cannot adopt (F7, F6).
+- **Q3, answered (Codex).** A core-only stop uses the same checkpoint owner as a safety copy; while the
+  engine stays alive no loss is claimed.
 
 #### 4.9.7 Order
 
@@ -1519,8 +1532,8 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 2. P2 (I5), then P3 (I3, I4) against #6040, dyno red-then-green, one deploy, core-only stop.
 3. Q2 then P4; Q1 then P5.
 
-Every deploy in this order is a core-only stop: the engine and every mind's KV stay up for the new core
-to adopt (P1 makes even an engine stop lossless). Each step posts the section 2.5 measurements before and
+Each deploy chooses the lifecycle its changed artifact needs (a core change keeps the engine up for
+adoption; an engine change stops it) and proves the exact save and restore per resident (I1, I2). Each step posts the section 2.5 measurements before and
 after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
 
 #### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
