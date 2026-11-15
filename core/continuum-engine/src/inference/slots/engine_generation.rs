@@ -327,12 +327,15 @@ impl EndpointTransition {
     /// Save an adopted engine without inventing ownership of its process. The
     /// persisted ledger and the caller's lane record must identify the same live
     /// incarnation. Retirement still requires a fresh identity check by its owner.
+    /// `intent` decides what a terminal refusal leaves: a replacement hands the untouched
+    /// endpoint back to serving, a stop keeps it suspended (CONTINUUM-ENGINE 4.9, I1).
     pub(crate) async fn checkpoint_adopted_before_replacement(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         incarnation: crate::inference::engine_residency::EngineIncarnation,
         current: &(dyn Fn() -> bool + Send + Sync),
+        intent: AdoptedCheckpointIntent,
     ) -> Result<(), AdoptedCheckpointRefusal> {
         use crate::inference::engine_residency::Liveness;
 
@@ -358,7 +361,7 @@ impl EndpointTransition {
                 CheckpointFailure::Admission(detail) => AdoptedCheckpointRefusal::Admission(detail),
                 CheckpointFailure::Save { slot, kind } => AdoptedCheckpointRefusal::Save { slot, kind },
             });
-        if result.is_err() && current() && verify().is_ok() {
+        if intent == AdoptedCheckpointIntent::Replace && result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
@@ -939,4 +942,14 @@ pub fn directory() -> &'static SlotDirectory {
     DIR.get_or_init(|| SlotDirectory {
         endpoints: dashmap::DashMap::new(),
     })
+}
+
+/// Why an adopted engine is checkpointed: its lifecycle decides what a refusal leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptedCheckpointIntent {
+    /// A replacement: a terminal refusal that did not touch the engine hands the endpoint back
+    /// to serving.
+    Replace,
+    /// A stop: the endpoint stays suspended after every outcome; the node is stopping.
+    Stop,
 }

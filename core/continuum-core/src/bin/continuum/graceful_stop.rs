@@ -34,10 +34,10 @@ pub(super) fn say_turns_may_settle() {
 #[derive(Debug)]
 pub(super) enum GracefulStop {
     /// The core ran the broadcast and every module's state reached disk.
-    Durable(String),
+    Durable(Stopped),
     /// The core ran the broadcast and something did NOT save. The message names it.
     /// The process is still stopping; the operator needs the names, not a retry.
-    Incomplete(String),
+    Incomplete(Stopped),
     /// No answer — a core too wedged to answer, or a response that did not arrive inside
     /// the budget. NOT the same as "it stopped": the caller must still tear the process
     /// down, and must not report a clean stop.
@@ -68,7 +68,24 @@ pub(super) enum GracefulStop {
     NothingRunning,
 }
 
+/// What a core that answered its stop returned: the line for the operator and the typed
+/// receipt, whose custody decides whether its engine may end (CONTINUUM-ENGINE 4.9, I1).
+#[derive(Debug)]
+pub(super) struct Stopped {
+    pub(super) summary: String,
+    pub(super) receipt: continuum_core::runtime::ShutdownReceipt,
+}
+
 impl GracefulStop {
+    /// The receipt of a core that answered its stop; `None` when nothing answered with one,
+    /// which speaks for no process.
+    pub(super) fn receipt(&self) -> Option<&continuum_core::runtime::ShutdownReceipt> {
+        match self {
+            Self::Durable(stopped) | Self::Incomplete(stopped) => Some(&stopped.receipt),
+            Self::NoAnswer(_) | Self::LegacyCore(_) | Self::CannotAttest(_) | Self::NothingRunning => None,
+        }
+    }
+
     pub(super) fn require_durable(&self) -> Result<(), String> {
         match self {
             Self::Durable(_) | Self::NothingRunning => Ok(()),
@@ -355,22 +372,12 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
     say_turns_may_settle();
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
-            let durable = value
-                .get("state_is_durable")
-                .and_then(Value::as_bool)
-                // A response whose shape we do not recognise is not a durable stop. An
-                // older core answering `system/shutdown` with something else must not be
-                // read as a clean save.
-                .unwrap_or(false);
-            let summary = value
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("the core answered without a summary")
-                .to_string();
-            if durable {
-                GracefulStop::Durable(summary)
-            } else {
-                GracefulStop::Incomplete(summary)
+            // Decoded once, typed, at the wire's edge: the receipt's custody decides what may
+            // end next. A receipt that does not decode is a fault in the core, never a stop.
+            match serde_json::from_value::<continuum_core::commands::system::shutdown::ShutdownResult>(value) { // Decode the lifecycle IPC answer at its edge.
+                Ok(result) if result.state_is_durable => GracefulStop::Durable(Stopped { summary: result.summary, receipt: result.receipt }),
+                Ok(result) => GracefulStop::Incomplete(Stopped { summary: result.summary, receipt: result.receipt }),
+                Err(undecodable) => GracefulStop::CannotAttest(format!("its shutdown receipt does not decode: {undecodable}")),
             }
         }
         Ok(Err(e)) => {
@@ -428,10 +435,10 @@ pub(super) fn classify_shutdown_error(rendered: &str) -> GracefulStop {
 /// `LegacyCore`, whose phrasing came from a core that positively predates this rail.
 pub(super) fn render_graceful_outcome(outcome: &GracefulStop) -> (bool, String) {
     match outcome {
-        GracefulStop::Durable(summary) => (false, format!("core stopped gracefully — {summary}")),
-        GracefulStop::Incomplete(summary) => (
+        GracefulStop::Durable(stopped) => (false, format!("core stopped gracefully — {}", stopped.summary)),
+        GracefulStop::Incomplete(stopped) => (
             true,
-            format!("core stopped WITH UNSAVED STATE — {summary}"),
+            format!("core stopped WITH UNSAVED STATE — {}", stopped.summary),
         ),
         GracefulStop::NoAnswer(why) => (
             true,

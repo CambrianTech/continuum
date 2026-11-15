@@ -166,9 +166,78 @@ pub struct ShutdownReceipt {
     pub modules: Vec<ModuleStop>,
     #[ts(type = "number")]
     pub total_ms: u64,
+    // What each stop-settle participant left in custody, per process it covers.
+    pub custody: Vec<SettledCustody>,
+}
+
+/// What a stop-settle participant left in custody for ONE process: the participant, the
+/// endpoint it serves and the exact process incarnation (pid and start time) there, and the
+/// state. Bound to that incarnation, so a receipt can never authorize ending another process
+/// (a reused pid, a replaced engine). Only `Saved` and `NothingHeld` let a stop end it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SettledCustody.ts"
+)]
+pub struct SettledCustody {
+    pub participant: String,
+    pub endpoint: String,
+    #[ts(type = "number")]
+    pub pid: u32,
+    #[ts(type = "number")]
+    pub started_s: u64,
+    pub state: CustodyState,
+}
+
+/// What a participant's process holds after the settle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/CustodyState.ts"
+)]
+pub enum CustodyState {
+    /// Every resident it held was saved, each save confirmed.
+    Saved {
+        #[ts(type = "number")]
+        residents: u64,
+    },
+    /// It held no resident state.
+    NothingHeld,
+    /// Not saved (refused, failed or uncertain): the live process keeps the only copy, and
+    /// ending it loses that copy.
+    Retained,
+}
+
+impl CustodyState {
+    /// Whether ending the process loses nothing the participant was responsible for.
+    pub fn ends_safely(self) -> bool {
+        matches!(self, Self::Saved { .. } | Self::NothingHeld)
+    }
+
+    /// Two participants' custody of one process: retained by either is retained; saved
+    /// residents add.
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
+            (Self::Saved { residents: a }, Self::Saved { residents: b }) => Self::Saved { residents: a + b },
+            (saved @ Self::Saved { .. }, Self::NothingHeld) | (Self::NothingHeld, saved @ Self::Saved { .. }) => saved,
+            (Self::NothingHeld, Self::NothingHeld) => Self::NothingHeld,
+        }
+    }
 }
 
 impl ShutdownReceipt {
+    /// The custody the receipt records for exactly this process at this endpoint: every
+    /// participant's entry for it, combined. `None` means no participant spoke for it, which
+    /// authorizes nothing.
+    pub fn custody_of(&self, endpoint: &str, pid: u32, started_s: u64) -> Option<CustodyState> {
+        self.custody
+            .iter()
+            .filter(|c| c.endpoint == endpoint && c.pid == pid && c.started_s == started_s)
+            .map(|c| c.state)
+            .reduce(CustodyState::combine)
+    }
+
     /// Modules whose durable state did NOT reach disk intact. Empty is the only value
     /// that justifies reporting a clean stop.
     pub fn unsaved(&self) -> Vec<&ModuleStop> {
@@ -257,10 +326,13 @@ impl ShutdownOperation {
                         // In THIS task, never a connection's: the settle closes the turn
                         // door, and a door closed by a handler whose client went away
                         // would leave every citizen refusing work with no stop behind it.
-                        if !settle.is_zero() {
-                            crate::runtime::extensions::settle_before_stop(settle).await;
-                        }
-                        let receipt = rt.shutdown().await;
+                        let custody = if settle.is_zero() {
+                            Vec::new()
+                        } else {
+                            crate::runtime::extensions::settle_before_stop(settle).await
+                        };
+                        let mut receipt = rt.shutdown().await;
+                        receipt.custody = custody;
                         // send_replace, NEVER send: `send` returns Err and DROPS the value
                         // when the last receiver has gone — and the receiver that goes
                         // away is the disconnecting CLI, so `send` loses the terminal
@@ -277,6 +349,7 @@ impl ShutdownOperation {
                     let _ = self.result.send_replace(Some(ShutdownReceipt {
                         modules: Vec::new(),
                         total_ms: 0,
+                        custody: Vec::new(),
                     }));
                 }
             }

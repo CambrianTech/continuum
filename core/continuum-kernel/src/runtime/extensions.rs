@@ -28,11 +28,13 @@ pub fn resolve_command_name(command: &str) -> String {
 }
 
 /// Something that must finish before a stop saves (admitted turns, for one), given at most
-/// `cap`. It reports its own outcome; the kernel only waits for it.
+/// `cap`. It returns what it left in custody per process it covers (empty when it covers none),
+/// and the stop's receipt carries that to whoever may end those processes: a log line is not
+/// evidence (CONTINUUM-ENGINE 4.9, I1).
 pub trait SettleBeforeStop: Send + Sync + 'static {
     /// Its description, for logs. Identity is the participant's type.
     fn name(&self) -> &'static str;
-    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::SettledCustody>> + Send + 'static>>;
 }
 
 static SETTLERS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn SettleBeforeStop>)>> =
@@ -52,9 +54,9 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
 /// the ones before it left. The stop's caller waits for `cap` and the save after it, never for
 /// a cap per participant (the M5, 2026-10-27 22:20Z: the turns took the whole 300 s, the page
 /// checkpoint then ran past the CLI's 315 s wait, and the core was killed before it saved).
-pub async fn settle_before_stop(cap: Duration) {
+pub async fn settle_before_stop(cap: Duration) -> Vec<super::SettledCustody> {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
-    settle_within(&settlers, cap, &SETTLING).await;
+    settle_within(&settlers, cap, &SETTLING).await
 }
 
 /// The participant settling right now, so a stop whose watchdog fires names the step that never
@@ -71,13 +73,15 @@ async fn settle_within(
     settlers: &[Arc<dyn SettleBeforeStop>],
     cap: Duration,
     settling: &parking_lot::RwLock<Option<&'static str>>,
-) {
+) -> Vec<super::SettledCustody> {
     let deadline = tokio::time::Instant::now() + cap;
+    let mut custody = Vec::new();
     for settler in settlers {
         *settling.write() = Some(settler.name());
-        settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
+        custody.extend(settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await);
     }
     *settling.write() = None;
+    custody
 }
 
 #[cfg(test)]
@@ -94,10 +98,13 @@ mod tests {
         fn name(&self) -> &'static str {
             "spends"
         }
-        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::SettledCustody>> + Send + 'static>> {
             self.given.lock().push(cap);
             let takes = self.takes.min(cap);
-            Box::pin(async move { tokio::time::sleep(takes).await })
+            Box::pin(async move {
+                tokio::time::sleep(takes).await;
+                Vec::new()
+            })
         }
     }
 
@@ -127,7 +134,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "wedged"
         }
-        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::SettledCustody>> + Send + 'static>> {
             Box::pin(std::future::pending())
         }
     }

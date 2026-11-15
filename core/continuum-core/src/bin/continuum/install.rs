@@ -667,7 +667,7 @@ pub(super) async fn install_supervisor_macos(check: bool, user: bool) -> Result<
             "▶ a core (pid {pid}) is serving {socket}{} — stopping it through the save rail before re-registering",
             if owned { " under the existing launchd job" } else { " outside launchd" }
         );
-        let _ = stop_with(true).await?;
+        let _ = stop_with(EngineFate::Keep).await?;
     }
     let job = live::install(want.clone(), &artifact, &slot, &socket, &env)?;
     // `resolve_core_artifact` prefers the installed slot over a fresh build, so on a node

@@ -91,6 +91,7 @@ impl LlamaServerProcess {
         } else {
             transition.checkpoint_adopted_before_replacement(
                 &self.client, &self.root, incarnation, current,
+                crate::inference::slots::AdoptedCheckpointIntent::Replace,
             ).await.map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))?;
             None
         };

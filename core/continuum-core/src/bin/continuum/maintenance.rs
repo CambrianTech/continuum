@@ -114,7 +114,7 @@ impl RestoringWindow for Window {
             return Err("registered core changed before durable drain".into());
         }
         self.expectation.verify().await?;
-        stop_with_policy(false, true, true)
+        stop_with_policy(EngineFate::EndIfSaved, true, true)
             .await?
             .require_durable()?;
         tokio::task::spawn_blocking(confirm_exited)

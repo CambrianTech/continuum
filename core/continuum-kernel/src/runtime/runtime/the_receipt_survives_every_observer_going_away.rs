@@ -133,6 +133,7 @@ pub(super) mod conditional_modules_tests {
             let receipt = ShutdownReceipt {
                 modules: Vec::new(),
                 total_ms: 3,
+                custody: Vec::new(),
             };
             tx.send_replace(Some(receipt.clone()));
             assert_eq!(
@@ -426,6 +427,29 @@ pub(super) mod conditional_modules_tests {
         // what this catches: a summary that hides which module lost state. "3 modules did
         // not save" without names sends the reader to a log that the exiting process may
         // not have flushed.
+        // what this catches (CONTINUUM-ENGINE 4.9, I1; Codex's acceptance cases): a receipt read
+        // as permission to end a process it does not name. Custody is bound to the exact endpoint
+        // and incarnation; a reused pid, another start time or another endpoint finds nothing, and
+        // one participant that retained the process outweighs every other that saved it.
+        #[test]
+        fn custody_authorizes_only_the_exact_process_it_names() {
+            use crate::runtime::{CustodyState, SettledCustody};
+            let held = |participant: &str, state| SettledCustody {
+                participant: participant.into(),
+                endpoint: "http://127.0.0.1:58057".into(),
+                pid: 49_553,
+                started_s: 1_794_679_637,
+                state,
+            };
+            let mut receipt = ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: vec![held("page_io", CustodyState::Saved { residents: 4 })] };
+            assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Saved { residents: 4 }));
+            assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_638), None, "a reused pid is another process");
+            assert_eq!(receipt.custody_of("http://127.0.0.1:58058", 49_553, 1_794_679_637), None, "another endpoint");
+            receipt.custody.push(held("other", CustodyState::Retained));
+            assert_eq!(receipt.custody_of("http://127.0.0.1:58057", 49_553, 1_794_679_637), Some(CustodyState::Retained), "one retention outweighs every save");
+            assert!(!CustodyState::Retained.ends_safely());
+        }
+
         #[test]
         fn the_summary_names_the_modules_that_did_not_save() {
             let receipt = ShutdownReceipt {
@@ -434,6 +458,7 @@ pub(super) mod conditional_modules_tests {
                     stop("cognition", ModuleStopOutcome::SaveTimedOut),
                 ],
                 total_ms: 42,
+                custody: Vec::new(),
             };
             assert!(!receipt.state_is_durable());
             assert_eq!(receipt.unsaved().len(), 1);
@@ -454,6 +479,7 @@ pub(super) mod conditional_modules_tests {
             let receipt = ShutdownReceipt {
                 modules: Vec::new(),
                 total_ms: 0,
+                custody: Vec::new(),
             };
             assert!(receipt.state_is_durable());
             assert!(

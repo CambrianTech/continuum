@@ -2,6 +2,48 @@
 use super::*;
 use serde_json::json;
 
+fn empty_receipt() -> continuum_core::runtime::ShutdownReceipt {
+    continuum_core::runtime::ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: Vec::new() }
+}
+
+// what this catches (CONTINUUM-ENGINE 4.9, I1; Codex's acceptance cases on #6041): `stop --engine`
+// ending an engine whose residents' newest KV no receipt shows saved (the M5, 2026-11-15 16:48Z:
+// an adopted engine's four residents were never saved and the engine was ended anyway). Only
+// custody bound to exactly this engine process authorizes the end; no answer, a stale receipt, a
+// reused pid or a retained save refuses, and only the explicit discard overrides.
+#[test]
+fn the_engine_ends_only_on_custody_for_exactly_its_process() {
+    use continuum_core::runtime::{CustodyState, SettledCustody};
+    let lane = continuum_core::inference::lane_registry::LaneRecord {
+        pid: 49_553,
+        port: 58_057,
+        role: continuum_core::inference::lane_registry::LaneRole::Live,
+        model: "qwen".into(),
+        context_window: 1,
+        lanes: 1,
+        page_dir: None,
+        engine_bin: None,
+        weights: None,
+        started_s: 1_794_679_637,
+        placement: None,
+    };
+    let answered = |pid: u32, started_s: u64, state: CustodyState| {
+        let mut receipt = empty_receipt();
+        receipt.custody.push(SettledCustody { participant: "page_io".into(), endpoint: lane.root_url(), pid, started_s, state });
+        GracefulStop::Durable(Stopped { summary: "saved".into(), receipt })
+    };
+    let saved = answered(lane.pid, lane.started_s, CustodyState::Saved { residents: 4 });
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &saved).is_ok(), "saved for exactly this process");
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s, CustodyState::NothingHeld)).is_ok());
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s, CustodyState::Retained)).is_err(), "a retained save refuses");
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &answered(lane.pid, lane.started_s + 1, CustodyState::Saved { residents: 4 })).is_err(), "a reused pid refuses");
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).is_err(), "no custody for it refuses");
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::NothingRunning).is_err(), "no core answered: nothing speaks for the engine");
+    assert!(may_end_engine(EngineFate::EndIfSaved, &lane, &GracefulStop::NoAnswer("timed out".into())).is_err());
+    assert!(may_end_engine(EngineFate::EndDiscardingKv, &lane, &GracefulStop::NothingRunning).is_ok(), "only the explicit discard overrides");
+    assert!(may_end_engine(EngineFate::Keep, &lane, &saved).is_err(), "a kept engine is never ended");
+}
+
 // Regression for #3929: a first upgrade must leave the legacy core available
 // for explicit checkpoint recovery, while normal reboot outcomes may continue.
 #[test]
@@ -28,8 +70,8 @@ fn legacy_core_requires_explicit_recovery_before_reboot_teardown() {
     assert!(fault.require_durable().is_err());
     for outcome in [
         GracefulStop::NothingRunning,
-        GracefulStop::Durable("saved".into()),
-        GracefulStop::Incomplete("save failed".into()),
+        GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() }),
+        GracefulStop::Incomplete(Stopped { summary: "save failed".into(), receipt: empty_receipt() }),
         GracefulStop::NoAnswer("timed out".into()),
     ] {
         assert!(outcome.ensure_teardown_supported(true).is_ok());
@@ -632,7 +674,7 @@ fn cannot_attest_refuses_reboot_and_never_renders_as_first_rollout() {
     ));
     assert!(legacy_stderr && legacy_line.contains("FIRST UPGRADE"));
     // And the clean outcomes keep their placement.
-    assert!(!render_graceful_outcome(&GracefulStop::Durable("saved".into())).0);
+    assert!(!render_graceful_outcome(&GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).0);
     assert!(!render_graceful_outcome(&GracefulStop::NothingRunning).0);
 }
 
