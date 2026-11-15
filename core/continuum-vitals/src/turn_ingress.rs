@@ -150,7 +150,7 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
     fn settle(
         &self,
         cap: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'static>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<continuum_kernel::runtime::HeldCustody>> + Send + 'static>> {
         Box::pin(async move {
             let s = settle(cap).await;
             continuum_base::probe!(
@@ -166,6 +166,8 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
                 cap_ms = cap.as_millis() as u64,
                 "the stop let unconfirmed message turns finish before saving; `handed_back` are confirmed turns the next start resumes, `self_ticks` initiative a cut loses nothing of, `cut` the ones it still tore"
             );
+            // Turns hold no process: handed back, they are durable in the core's own ledger.
+            Vec::new()
         })
     }
 }
