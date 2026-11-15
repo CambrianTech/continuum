@@ -421,7 +421,8 @@ async fn a_cold_core_over_a_live_engine_adopts_it_never_a_starved_zero_lane_plan
     let rx_orphan = orphan.subscribe();
     let other = vec![footprint_from_parts("coder-14b", 9 * GB, 131_072, true, None).unwrap()];
     orphan.publish_plan(HostBudget { usable_bytes: GB, perf_cores: 8 }, &other, &other);
-    if let Some(p) = rx_orphan.borrow().clone() {
+    let published = rx_orphan.borrow().clone();
+    if let Some(p) = published {
         assert!(p.fits_on_gpu && p.lanes >= 1, "a NoFit plan never publishes over a live engine: {p:?}");
     }
 }
