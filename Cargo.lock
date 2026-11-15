@@ -3337,7 +3337,6 @@ dependencies = [
  "landlock",
  "libc",
  "tempfile",
- "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.60.2",
 ]

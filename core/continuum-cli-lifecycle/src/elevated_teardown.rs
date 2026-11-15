@@ -58,10 +58,6 @@ pub struct StopOptions {
     /// and nobody's KV (Joel, 2026-10-29: "The engine is supposed to stay up"). `--engine` is
     /// for when its memory is wanted back.
     pub engine: bool,
-    /// `--discard-kv` (with `--engine`): end the engine even when the stop's receipt does not
-    /// show every resident's KV saved, losing that KV. Without it an unsaved engine stays up
-    /// (CONTINUUM-ENGINE 4.9, I1).
-    pub discard_kv: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -74,7 +70,6 @@ impl StopOptions {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--engine" => options.engine = true,
-                "--discard-kv" => options.discard_kv = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -91,9 +86,6 @@ impl StopOptions {
                  exactly one process, bound by its digest)"
                     .to_string(),
             );
-        }
-        if options.discard_kv && !options.engine {
-            return Err("stop: --discard-kv ends the engine and needs --engine".to_string());
         }
         if options.engine && options.elevated {
             return Err("stop: --engine is an operator's stop; the consented child ends exactly one process".to_string());

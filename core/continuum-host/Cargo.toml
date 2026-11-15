@@ -6,7 +6,6 @@ description = "The host OS seam: one module per capability whose behaviour diffe
 
 [dependencies]
 tokio = { workspace = true } # local_stream: the async local socket (a Unix domain socket, a Windows named pipe)
-thiserror = { workspace = true } # process_id: the typed reason an id names no single process
 cap-std = "4.0.3" # confine: a held directory handle, so every create/open/rename below a root is resolved against it, never re-walked from a path a concurrent writer can redirect
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]

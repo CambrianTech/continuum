@@ -40,23 +40,26 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
     // actually asking. A stop that could not save is a failure the shell can see.
     // A stop ends the core; the engine stays for the next core to adopt (the reboot path), so
     // a build costs no model reload and nobody's KV. Only `--engine` reaps it.
-    let fate = match (options.engine, options.discard_kv) {
-        (false, _) => EngineFate::Keep,
-        (true, false) => EngineFate::EndIfSaved,
-        (true, true) => EngineFate::EndDiscardingKv,
-    };
-    match stop_with(fate).await? {
+    match stop_with(!options.engine).await? {
         // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
         // loss that did not happen, and `stop` is used in scripts that would then treat a
         // clean no-op as a failure.
         GracefulStop::Durable(_) | GracefulStop::NothingRunning => Ok(()),
-        GracefulStop::Incomplete(stopped) => Err(format!(
-            "the core stopped but its state is not durable: {}", stopped.summary
+        GracefulStop::Incomplete(summary) => Err(format!(
+            "the core stopped but its state is not durable: {summary}"
         )),
         GracefulStop::NoAnswer(why) => Err(format!(
             "the core was forced down without saving ({why}) — volatile state since the last              save-on-write is gone"
         )),
-        // Fail-closed: a core that answered but cannot attest a final checkpoint is a fault.
+        // Also a failure, and deliberately so: the operator asked for a stop and did not
+        // get a durable one. It is EXPECTED once, on the upgrade that installs the rail,
+        // and the message says which it is rather than making a rollout look like a fault.
+        GracefulStop::LegacyCore(why) => Err(format!(
+            "the outgoing core could not stop gracefully ({why}); this is the one-time cost              of installing the shutdown rail, and it is still not a durable stop"
+        )),
+        // Fail-closed like a first rollout, but NOT one: this is a fault in a supported core.
+        // The message must say so — an operator seeing "one-time cost of installing the rail"
+        // on every failed checkpoint would learn to ignore it.
         GracefulStop::CannotAttest(why) => Err(format!(
             "the core answered system/shutdown with an error and could not attest a final \
              checkpoint ({why}); this is a fault, not a first rollout — do not reboot until it \
@@ -75,65 +78,11 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 /// core swap alone (Joel 2026-08-23: "if it's taking so long we need to fix
 /// that first"). Only `stop --engine` passes false: the full teardown, for when the engine's
 /// memory is wanted back (Joel 2026-10-29: "The engine is supposed to stay up").
-pub(super) async fn stop_with(fate: impl Into<EngineFate>) -> Result<GracefulStop, String> {
+pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> {
     // Unattended callers — the deploy consumer above all — NEVER escalate:
     // a consent prompt needs a human at the machine, and one raised from the supervisor
     // would hang the consumer on a dialog nobody can see until the consent times out.
-    stop_with_authority(fate, false).await
-}
-
-/// Keeping the lanes keeps the engine; otherwise it ends only on custody.
-impl From<bool> for EngineFate {
-    fn from(keep_lanes: bool) -> Self {
-        if keep_lanes { Self::Keep } else { Self::EndIfSaved }
-    }
-}
-
-/// What a stop does with the serving engine (CONTINUUM-ENGINE 4.9, I1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum EngineFate {
-    /// The engine stays up for the next core to adopt (reboot, the install handoff, a plain stop).
-    Keep,
-    /// End the engine only when the stopped core's receipt says every resident it held was saved
-    /// (or it held none), for exactly that engine process; otherwise it stays up, and why is said.
-    EndIfSaved,
-    /// End it on the operator's explicit instruction to discard its residents' newest KV.
-    EndDiscardingKv,
-}
-
-/// Who may end which engine after a stop: the fate the operator asked for and the stopped core's
-/// receipt, owned so the lane sweep can judge every engine it finds on its own record.
-pub(super) struct EngineEndAuthority {
-    fate: EngineFate,
-    receipt: Option<continuum_core::runtime::ShutdownReceipt>,
-}
-
-impl EngineEndAuthority {
-    pub(super) fn of(fate: EngineFate, graceful: &GracefulStop) -> Self {
-        Self { fate, receipt: graceful.receipt().cloned() }
-    }
-
-    /// May the stop end the engine `lane` records? Only on custody bound to exactly that process
-    /// (its endpoint, pid and start time) proving every resident saved, or on the operator's
-    /// explicit instruction to discard. No answer, no custody for it, a stale receipt, a reused
-    /// pid or a retained save speaks for nothing, so it refuses, per engine (Codex on #6042).
-    pub(super) fn may_end(
-        &self,
-        lane: &continuum_core::inference::lane_registry::LaneRecord,
-    ) -> Result<(), continuum_core::inference::lane_registry::EngineEndRefusal> {
-        use continuum_core::inference::lane_registry::EngineEndRefusal;
-        let custody = self
-            .receipt
-            .as_ref()
-            .and_then(|receipt| receipt.custody_of(&lane.root_url(), lane.pid, lane.started_s));
-        match (self.fate, custody) {
-            (EngineFate::Keep, _) => Err(EngineEndRefusal::Kept),
-            (EngineFate::EndIfSaved, Some(state)) if state.ends_safely() => Ok(()),
-            (EngineFate::EndDiscardingKv, _) => Ok(()),
-            (EngineFate::EndIfSaved, Some(_)) => Err(EngineEndRefusal::Retained),
-            (EngineFate::EndIfSaved, None) => Err(EngineEndRefusal::NoProof),
-        }
-    }
+    stop_with_authority(keep_lanes, false).await
 }
 
 /// Discover receipt-acknowledged exit without beginning shutdown.
@@ -166,11 +115,10 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
         .map_err(|e| format!("invalid shutdown receipt; no exit acknowledgment sent: {e}"))?;
     // We HAVE the receipt before sending commit. A successful commit has no RPC
     // reply: the core closes its own process, and OS exit is the completion proof.
-    let summary = result.receipt.summary();
     let graceful = if result.receipt.state_is_durable() {
-        GracefulStop::Durable(Stopped { summary, receipt: result.receipt.clone() })
+        GracefulStop::Durable(result.receipt.summary())
     } else {
-        GracefulStop::Incomplete(Stopped { summary, receipt: result.receipt.clone() })
+        GracefulStop::Incomplete(result.receipt.summary())
     };
     if require_durable {
         graceful.require_durable()?;
@@ -195,16 +143,13 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
 }
 
 /// `stop_with`, plus whether the operator can answer a required consent prompt.
-pub(super) async fn stop_with_authority(fate: impl Into<EngineFate>, operator_present: bool) -> Result<GracefulStop, String> {
-    stop_with_policy(fate, operator_present, false).await
+pub(super) async fn stop_with_authority(keep_lanes: bool, operator_present: bool) -> Result<GracefulStop, String> {
+    stop_with_policy(keep_lanes, operator_present, false).await
 }
 
 // Maintenance may not turn a missing save receipt into permission to force an
 // exit. Ordinary stop keeps its existing explicit forced-stop behavior.
-/// The one teardown, by what happens to the engine (`true` keeps it, `false` ends it only on custody).
-pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
-    let fate = fate.into();
-    let keep_lanes = fate == EngineFate::Keep;
+pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
     // report what reached disk. The kill still runs afterwards either way: a core that
@@ -222,9 +167,7 @@ pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_prese
             .map_err(|e| format!("cannot establish lane teardown ownership before drain: {e}"))?;
     }
     let pids = cores_to_tear_down();
-    // Every platform asks for the receipt-bound target: whether a stop is durable is lifecycle
-    // policy, never an OS capability (Codex on #6042).
-    let target = if keep_lanes || require_durable {
+    let target = if cfg!(windows) && (keep_lanes || require_durable) {
         probe_shutdown_target(&pids).await?
     } else {
         None
@@ -431,22 +374,12 @@ pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_prese
         let _ = std::fs::remove_file(&socket); // socket cleanup still ours — only the lane fate changed
         return Ok(graceful);
     }
-    // THE ENGINE ENDS ONLY ON EVIDENCE (CONTINUUM-ENGINE 4.9, I1). Each engine holds its
-    // residents' newest KV; the stopped core's receipt says, for exactly that process, whether it
-    // was saved, and the sweep asks for every engine it would signal. An engine without that proof
-    // stays up as `EndRefused`, named below: the M5, 2026-11-15 16:48Z, a stop that never
-    // saved an adopted engine's four residents ended it anyway.
-    if fate == EngineFate::EndDiscardingKv {
-        println!("  discarding the engines' residents' newest KV on the operator's instruction");
-    }
-    let authority = EngineEndAuthority::of(fate, &graceful);
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline, move |lane| authority.may_end(lane)).await? {
+    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline).await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),
             S::TerminationRefused { pid, started_s, reason } => unconfirmed_lanes.push(format!("pid={pid} started={started_s}: {reason}")),
-            S::EndRefused { pid, started_s, why } => unconfirmed_lanes.push(format!("pid={pid} started={started_s}: {why}")),
             S::ReapedLive { pid, port } => {
                 println!("  reaping serving lane (pid {pid}, port {port}) — live lane, this core is stopping")
             }
