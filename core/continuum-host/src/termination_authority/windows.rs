@@ -2,10 +2,10 @@ use super::TerminationAuthority;
 use windows_sys::Win32::Foundation::{CloseHandle, ERROR_ACCESS_DENIED, ERROR_INVALID_PARAMETER};
 use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
 
-pub(super) fn may_terminate(pid: u32) -> TerminationAuthority {
+pub(super) fn may_terminate(pid: crate::process_id::ProcessId) -> TerminationAuthority {
     // SAFETY: OpenProcess is a capability query here; the handle is closed at once and nothing
     // is terminated by this call.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid) };
+    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid.unsigned()) };
     if !handle.is_null() {
         // SAFETY: `handle` came from a successful OpenProcess and is closed once, here.
         unsafe { CloseHandle(handle) };
