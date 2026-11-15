@@ -269,3 +269,46 @@ async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), B
     }
     Ok(())
 }
+
+// what this catches (CONTINUUM-ENGINE 4.9.5, I1; the M5 2026-11-15 16:48:43Z
+// `stop_checkpoint_skipped reason=Adopted`): a stop over an engine this core adopted saving none of
+// its residents. With the Stop intent the adopted checkpoint saves every resident a slot holds, and
+// the endpoint stays suspended afterwards: the node is stopping.
+#[tokio::test]
+async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() -> Result<(), Box<dyn std::error::Error>> {
+    let saves = Arc::new(AtomicUsize::new(0));
+    let app = Router::new()
+        .route("/props", axum::routing::get(|| async { Json(serde_json::json!({"total_slots": 2})) }))
+        .route("/slots/{slot}", post({
+            let saves = saves.clone();
+            move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+                saves.fetch_add(1, Ordering::SeqCst);
+                async move { Json(serde_json::json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10})) }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let root = format!("http://{address}");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = reqwest::Client::new();
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+        .ok_or("fixture process identity unavailable")?;
+    let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
+    let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
+    let pages = tempfile::tempdir()?;
+    let adopted = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+    assert!(matches!(adopted, Ok(_) | Err(AdoptRefusal::NoLedger)), "fixture ledger: {adopted:?}");
+    pool.plan_paging(0, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
+    pool.plan_paging(1, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
+    let endpoint = directory().endpoint(&root);
+    let mut transition = endpoint.transition().await;
+    let saved = transition
+        .checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Stop }, &|| true)
+        .await;
+    assert!(saved.is_ok(), "every resident saved: {saved:?}");
+    assert_eq!(saves.load(Ordering::SeqCst), 2, "both residents' slots were saved");
+    assert!(!endpoint.is_ready(), "the stopping node's endpoint stays suspended");
+    drop(transition);
+    server.abort();
+    Ok(())
+}
