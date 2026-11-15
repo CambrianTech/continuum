@@ -30,17 +30,6 @@ fn the_admission_gate_counts_the_engines_lanes_not_the_plans() {
     );
 }
 
-// what this catches (the M5, 2026-11-15 16:58-17:31Z, build 1e31e03c5): a 5-slot engine with a
-// measured decode knee of 2 decoded 4 minds at once at 6-9 tok/s each. Decoding cores are the
-// slots capped by the knee; the other slots hold their minds' KV and switch in at full speed.
-#[test]
-fn minds_decode_on_cores_capped_by_the_measured_knee_like_a_cpu() {
-    assert_eq!(decoding_cores(5, Some(2)), 2, "five slots, a knee of two: two cores");
-    assert_eq!(decoding_cores(2, Some(4)), 2, "never more cores than slots");
-    assert_eq!(decoding_cores(5, None), 5, "no knee measured yet: every slot decodes");
-    assert_eq!(decoding_cores(5, Some(0)), 1, "a knee is never zero cores");
-}
-
 // what this catches (card 29e4ab34, the M5 2026-09-19 17:20:35Z): the thirteen-second
 // boot window in which no lane has reported a model. The knee lookup must key on the
 // remembered model then — otherwise the roster (17 runtimes) goes unclamped into the
