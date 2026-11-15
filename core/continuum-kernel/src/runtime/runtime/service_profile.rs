@@ -187,6 +187,22 @@ pub struct SettledCustody {
     pub state: CustodyState,
 }
 
+/// What one stop participant reports holding at one endpoint. The kernel stamps the participant's
+/// own name on it (`SettleBeforeStop::name`), so no participant spells its identity twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldCustody {
+    pub endpoint: String,
+    pub process: Option<SettledProcess>,
+    pub state: CustodyState,
+}
+
+impl HeldCustody {
+    /// As settled by the participant named `participant`.
+    pub fn settled_by(self, participant: &'static str) -> SettledCustody {
+        SettledCustody { participant: participant.to_owned(), endpoint: self.endpoint, process: self.process, state: self.state }
+    }
+}
+
 /// One process incarnation: its pid and OS start time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
 #[ts(
@@ -207,11 +223,8 @@ pub struct SettledProcess {
     export_to = "../../../protocol/typescript/system/CustodyState.ts"
 )]
 pub enum CustodyState {
-    /// Every resident it held was saved, each save confirmed (none held is `residents: 0`).
-    Saved {
-        #[ts(type = "number")]
-        residents: u64,
-    },
+    /// Every resident it held was saved, each save confirmed (holding none is saved too).
+    Saved,
     /// Not saved, or not proven saved (refused, failed, uncertain, no paging): the live process
     /// may keep the only copy, and ending it would lose that copy.
     Retained,
@@ -220,14 +233,13 @@ pub enum CustodyState {
 impl CustodyState {
     /// Whether ending the process loses nothing the participant was responsible for.
     pub fn ends_safely(self) -> bool {
-        matches!(self, Self::Saved { .. })
+        matches!(self, Self::Saved)
     }
 
-    /// Two participants' custody of one process: retained by either is retained; saved
-    /// residents add.
+    /// Two participants' custody of one process: retained by either is retained.
     pub fn combine(self, other: Self) -> Self {
         match (self, other) {
-            (Self::Saved { residents: a }, Self::Saved { residents: b }) => Self::Saved { residents: a + b },
+            (Self::Saved, Self::Saved) => Self::Saved,
             (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
         }
     }

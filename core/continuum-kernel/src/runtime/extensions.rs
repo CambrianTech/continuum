@@ -34,7 +34,7 @@ pub fn resolve_command_name(command: &str) -> String {
 pub trait SettleBeforeStop: Send + Sync + 'static {
     /// Its description, for logs. Identity is the participant's type.
     fn name(&self) -> &'static str;
-    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::SettledCustody>> + Send + 'static>>;
+    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::HeldCustody>> + Send + 'static>>;
 }
 
 static SETTLERS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn SettleBeforeStop>)>> =
@@ -78,7 +78,14 @@ async fn settle_within(
     let mut custody = Vec::new();
     for settler in settlers {
         *settling.write() = Some(settler.name());
-        custody.extend(settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await);
+        let name = settler.name();
+        custody.extend(
+            settler
+                .settle(deadline.saturating_duration_since(tokio::time::Instant::now()))
+                .await
+                .into_iter()
+                .map(|held| held.settled_by(name)),
+        );
     }
     *settling.write() = None;
     custody
@@ -98,7 +105,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "spends"
         }
-        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::SettledCustody>> + Send + 'static>> {
+        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             self.given.lock().push(cap);
             let takes = self.takes.min(cap);
             Box::pin(async move {
@@ -134,7 +141,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "wedged"
         }
-        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::SettledCustody>> + Send + 'static>> {
+        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             Box::pin(std::future::pending())
         }
     }

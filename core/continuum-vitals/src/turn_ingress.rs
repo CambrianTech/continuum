@@ -150,7 +150,7 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
     fn settle(
         &self,
         cap: std::time::Duration,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<continuum_kernel::runtime::SettledCustody>> + Send + 'static>> {
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<continuum_kernel::runtime::HeldCustody>> + Send + 'static>> {
         Box::pin(async move {
             let s = settle(cap).await;
             continuum_base::probe!(

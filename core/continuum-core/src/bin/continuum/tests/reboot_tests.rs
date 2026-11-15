@@ -34,16 +34,16 @@ fn every_engine_ends_only_on_custody_for_exactly_its_process() {
         receipt.custody.push(SettledCustody { participant: "page_io".into(), endpoint: first.root_url(), process: Some(SettledProcess { pid, started_s }), state });
         GracefulStop::Durable(Stopped { summary: "saved".into(), receipt })
     };
-    let saved = EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Saved { residents: 4 }));
+    let saved = EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Saved));
     assert!(saved.may_end(&first).is_ok(), "saved for exactly this process");
     assert_eq!(saved.may_end(&second), Err(EngineEndRefusal::NoProof), "a second engine never ends on the first one's proof");
     assert_eq!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Retained)).may_end(&first), Err(EngineEndRefusal::Retained), "a retained save refuses");
-    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s + 1, CustodyState::Saved { residents: 4 })).may_end(&first).is_err(), "a reused pid refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s + 1, CustodyState::Saved)).may_end(&first).is_err(), "a reused pid refuses");
     assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).may_end(&first).is_err(), "no custody for it refuses");
     assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NothingRunning).may_end(&first).is_err(), "no core answered: nothing speaks for the engine");
     assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NoAnswer("timed out".into())).may_end(&first).is_err());
     assert!(EngineEndAuthority::of(EngineFate::EndDiscardingKv, &GracefulStop::NothingRunning).may_end(&second).is_ok(), "only the explicit discard overrides");
-    assert_eq!(EngineEndAuthority::of(EngineFate::Keep, &answered(first.pid, first.started_s, CustodyState::Saved { residents: 4 })).may_end(&first), Err(EngineEndRefusal::Kept), "a kept engine is never ended");
+    assert_eq!(EngineEndAuthority::of(EngineFate::Keep, &answered(first.pid, first.started_s, CustodyState::Saved)).may_end(&first), Err(EngineEndRefusal::Kept), "a kept engine is never ended");
 }
 
 // Regression for #3929/#3940: a core that answered but cannot attest a final checkpoint stays

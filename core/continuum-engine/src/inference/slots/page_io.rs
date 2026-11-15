@@ -66,7 +66,7 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
     /// receipt. A deterministic step is never decided by a stopwatch (RTOS rule 10, #5986).
     /// Returns, per engine process, what the stop left in custody: the evidence `stop --engine`
     /// needs before it may end that process (CONTINUUM-ENGINE 4.9, I1).
-    fn settle(&self, _cap: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<crate::runtime::SettledCustody>> + Send + 'static>> {
+    fn settle(&self, _cap: Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
         Box::pin(async move {
             let started = std::time::Instant::now();
             let s = settle(&PAGE_IO).await;
@@ -87,7 +87,7 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
 /// their receipts. Each outcome is returned bound to the engine process its checkpoint sealed; an
 /// outcome with no such identity still counts against the stop's durability and authorizes ending
 /// nothing.
-async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
+async fn checkpoint_every_endpoint() -> Vec<crate::runtime::HeldCustody> {
     let client = reqwest::Client::new();
     let endpoints: Vec<(String, std::sync::Arc<super::EndpointSlots>)> =
         super::directory().endpoints.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
@@ -129,13 +129,7 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
         // incarnation the adopted checkpoint verified against the ledger. Never a reread of the
         // endpoint after the writer is released, which a replacement could change (Codex on #6042).
         let process = state.process();
-        // A pool never asked or without paging seated no resident this core counted; the state,
-        // not the count, decides whether the process may end.
-        let counted = match residents {
-            Probed::Known(n) => n,
-            Probed::NotAsked | Probed::Absent(_) => 0,
-        };
-        let held = state.custody(counted);
+        let held = state.custody();
         continuum_base::probe!(
             class = "inference.kv_page.stop_checkpoint",
             endpoint = %root,
@@ -149,8 +143,7 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::SettledCustody> {
         );
         // Retention with no identity still counts against the stop's durability; it only cannot
         // authorize ending a process.
-        crate::runtime::SettledCustody {
-            participant: "page_io".to_owned(),
+        crate::runtime::HeldCustody {
             endpoint: root,
             process: process.map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
             state: held,
@@ -218,10 +211,10 @@ impl StopCheckpoint {
     /// The custody it leaves: saved only on a confirmed save of every resident. Anything else,
     /// including an engine without paging or a generation that ended under the stop, is no proof
     /// that the live process holds nothing, so the live engine still holds it (Codex on #6042).
-    fn custody(&self, residents: u64) -> crate::runtime::CustodyState {
+    fn custody(&self) -> crate::runtime::CustodyState {
         use crate::runtime::CustodyState;
         match self {
-            Self::Owned(OwnedStopCheckpoint::Saved { .. }) | Self::Adopted(Ok(_)) => CustodyState::Saved { residents },
+            Self::Owned(OwnedStopCheckpoint::Saved { .. }) | Self::Adopted(Ok(_)) => CustodyState::Saved,
             Self::Owned(OwnedStopCheckpoint::Ended | OwnedStopCheckpoint::EngineChanged | OwnedStopCheckpoint::Failed(_))
             | Self::Adopted(Err(_))
             | Self::NoPaging => CustodyState::Retained,

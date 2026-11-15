@@ -120,7 +120,7 @@ pub use admission_gate::{AdmissionGate, Permit};
 pub use runtime::{
     await_shutdown, begin_shutdown, install_signal_shutdown, run_signal_shutdown,
     signal_runtime, shutdown_receipt, ShutdownUnavailable, DrainOutcome, InitPlan, InitSettled, ModuleStop,
-    MeshPresence, ModuleStopOutcome, Runtime, ShutdownReceipt, SettledCustody, SettledProcess, CustodyState,
+    MeshPresence, ModuleStopOutcome, Runtime, ShutdownReceipt, SettledCustody, SettledProcess, HeldCustody, CustodyState,
 };
 pub use module_init_record::{InitRecordStore, SlowestHealthyInit};
 pub use module_readiness::{
