@@ -45,7 +45,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
         (true, false) => EngineFate::EndIfSaved,
         (true, true) => EngineFate::EndDiscardingKv,
     };
-    match stop_with_fate(fate, false, false).await? {
+    match stop_with_policy(fate, false, false).await? {
         // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
         // loss that did not happen, and `stop` is used in scripts that would then treat a
         // clean no-op as a failure.
@@ -80,6 +80,13 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
     // a consent prompt needs a human at the machine, and one raised from the supervisor
     // would hang the consumer on a dialog nobody can see until the consent times out.
     stop_with_authority(keep_lanes, false).await
+}
+
+/// Keeping the lanes keeps the engine; otherwise it ends only on custody.
+impl From<bool> for EngineFate {
+    fn from(keep_lanes: bool) -> Self {
+        if keep_lanes { Self::Keep } else { Self::EndIfSaved }
+    }
 }
 
 /// What a stop does with the serving engine (CONTINUUM-ENGINE 4.9, I1).
@@ -194,14 +201,9 @@ pub(super) async fn stop_with_authority(keep_lanes: bool, operator_present: bool
 
 // Maintenance may not turn a missing save receipt into permission to force an
 // exit. Ordinary stop keeps its existing explicit forced-stop behavior.
-/// Keeping the lanes keeps the engine; otherwise it ends only on custody (`EngineFate::EndIfSaved`).
-pub(super) async fn stop_with_policy(keep_lanes: bool, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
-    let fate = if keep_lanes { EngineFate::Keep } else { EngineFate::EndIfSaved };
-    stop_with_fate(fate, operator_present, require_durable).await
-}
-
-/// The one teardown, by what happens to the engine.
-pub(super) async fn stop_with_fate(fate: EngineFate, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
+/// The one teardown, by what happens to the engine (`true` keeps it, `false` ends it only on custody).
+pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_present: bool, require_durable: bool) -> Result<GracefulStop, String> {
+    let fate = fate.into();
     let keep_lanes = fate == EngineFate::Keep;
     // ASK BEFORE KILLING. Everything below this point is a kill, and a kill runs no
     // module's `save_state` — so before it, the core gets the chance to stop itself and
