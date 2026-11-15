@@ -85,9 +85,10 @@ impl MindTurn {
         }
     }
 
-    /// All page users of this persona (including forks) drain before physical reclamation.
-    pub(crate) async fn reclaim(persona: uuid::Uuid) -> tokio::sync::OwnedRwLockWriteGuard<()> {
-        custody(persona).write_owned().await
+    /// Reclaim only an idle mind. Never enqueue a writer behind an act: dispatch must
+    /// try the next cool holder, and active forks protect their parent's pages too.
+    pub(crate) fn try_reclaim(persona: uuid::Uuid) -> Option<tokio::sync::OwnedRwLockWriteGuard<()>> {
+        custody(persona).try_write_owned().ok()
     }
 
     /// The act now, or `None` when the mind is mid-act (best-effort callers such as
@@ -126,7 +127,7 @@ mod tests {
         }, || blocked.load(Ordering::SeqCst));
         tokio::pin!(begin);
         assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err());
-        let physical = tokio::time::timeout(std::time::Duration::from_secs(1), MindTurn::reclaim(persona)).await.expect("waiting turn holds no read custody");
+        let physical = MindTurn::try_reclaim(persona).expect("waiting turn holds no read custody");
         drop(physical);
         tx.send(1).expect("publication");
         assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut begin).await.is_err(), "still blocked after unrelated publication");
@@ -135,17 +136,15 @@ mod tests {
         assert!(tokio::time::timeout(std::time::Duration::from_secs(1), begin).await.expect("wake").is_ok());
     }
     #[tokio::test]
-    async fn reclaim_drains_forks_and_bars_new_page_users_without_stopping_other_minds() {
+    async fn reclaim_skips_active_forks_and_bars_new_users_only_after_acquiring_custody() {
         let persona = uuid::Uuid::new_v4();
         let fork = PageKey::fork(persona, uuid::Uuid::new_v4()).expect("fork");
         let active = MindTurn::begin(fork).await.expect("active fork");
-        let reclaim = MindTurn::reclaim(persona);
-        tokio::pin!(reclaim);
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut reclaim).await.is_err());
+        assert!(MindTurn::try_reclaim(persona).is_none(), "active fork is immediately busy");
         let other = PageKey::mind(uuid::Uuid::new_v4()).expect("other mind");
         assert!(MindTurn::try_begin(other).is_some(), "unrelated residents keep running");
         drop(active);
-        let reclaimed = tokio::time::timeout(std::time::Duration::from_secs(1), reclaim).await.expect("writer progresses");
+        let reclaimed = MindTurn::try_reclaim(persona).expect("idle holder can be reclaimed");
         assert!(MindTurn::try_begin(fork).is_none());
         assert!(MindTurn::try_begin(PageKey::mind(persona).expect("mind")).is_none());
         drop(reclaimed);
