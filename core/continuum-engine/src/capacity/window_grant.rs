@@ -334,6 +334,21 @@ pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<Gran
     EVALUATIONS.get().cloned()
 }
 
+static DEMAND_MOVED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// A mind became ready without a grant, or an act ended and its cells came free: the grants
+/// publisher evaluates now, never at its next tick (RTOS rule 10; the M5 2026-11-15: every ready
+/// mind waited up to a 5 s tick for a grant the free cells already held). A notify with no
+/// waiter keeps one permit, so a move during an evaluation is never lost.
+pub fn demand_moved() {
+    DEMAND_MOVED.notify_one();
+}
+
+/// Resolves at the next [`demand_moved`] (or at once, for one made while nobody waited).
+pub async fn demand_moves() {
+    DEMAND_MOVED.notified().await;
+}
+
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
 /// is in flight now. A mind not measured yet has no `Demand`: there is no number to grant her
 /// (`Measure::Unmeasured`), and her first view measures her.

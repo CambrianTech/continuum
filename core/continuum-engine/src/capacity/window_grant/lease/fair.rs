@@ -165,7 +165,12 @@ impl Reservations {
                 .collect();
             let mut grants =
                 grant_with_reservations(&mut DemandFollowing, &open, held, pool, &fixed);
-            if let Some(first) = fair.waiters.front() {
+            // Head-of-line protection exists so reclaimed cells accumulate for the oldest waiter.
+            // When her OWN act pins her grant, no reclamation can serve her until that act ends,
+            // so she blocks no one (the M5, 2026-11-15 15:20-15:45Z: Atlas held 148,002 under a
+            // long act and waited to grow; Aiko, Aris and Benchy queued 24 min behind her with
+            // 439,705 of 587,707 tokens free).
+            if let Some(first) = fair.waiters.front().filter(|first| !state.entries.contains_key(first)) {
                 if ordered.iter().any(|d| d.mind == *first
                     && !grants.get(first).is_some_and(|tokens| *tokens >= d.need.get())) {
                     // Multiple holders may need reclamation. Do not re-admit a smaller

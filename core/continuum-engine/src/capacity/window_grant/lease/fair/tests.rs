@@ -104,6 +104,33 @@ fn a_need_that_grows_under_a_rendered_act_moves_her_grant_at_the_next_act() {
     assert_eq!(current.as_ref().expect("published").grant_for(a), Some(90), "her grant grows at her next act");
 }
 
+// what this catches (the M5, 2026-11-15 15:20-15:45Z): the oldest waiter was a holder whose own
+// rendered act pinned her grant while her need grew; head-of-line protection then kept every other
+// waiter out of free cells for 24 minutes. Her act blocks only her own growth, never the queue.
+#[test]
+fn a_waiter_pinned_by_her_own_act_never_blocks_the_queue_from_free_cells() {
+    let owner = Box::leak(Box::new(Reservations::new()));
+    let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
+    let mut fair = FairGrantState::default();
+    let mut current = None;
+    let mut publish = |needs: &[(uuid::Uuid, u32)], current: &mut Option<PoolGrants>| {
+        let demands: Vec<_> = needs.iter().map(|&(mind, n)| Demand {
+            mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 300,
+        }).collect();
+        let before = current.clone();
+        owner.fair_publish(&mut fair, &demands, 600, 300, engine(), || before, |next| *current = Some(next)).1
+    };
+    publish(&[(a, 150)], &mut current);
+    let rendered = current.as_ref().expect("published").lease_for(a).expect("granted");
+    let _act = owner.hold_act(a, || Some(rendered)).expect("her act holds her grant");
+    // Her need grows under the act (she queues to grow) and two minds arrive behind her.
+    publish(&[(a, 250), (b, 100), (c, 100)], &mut current);
+    let grants = &current.as_ref().expect("published").by_mind;
+    assert_eq!(grants.get(&a), Some(&150), "her act keeps her grant");
+    assert_eq!(grants.get(&b), Some(&100), "free cells seat the next waiter: {grants:?}");
+    assert_eq!(grants.get(&c), Some(&100), "and the one after: {grants:?}");
+}
+
 fn engine() -> Option<EngineIncarnation> {
     Some(EngineIncarnation {
         pid: 7,

@@ -177,6 +177,12 @@ impl World {
         self.minds[&self.mind(index)].published
     }
 
+    /// Her measured need moves (her context grew under an act, or a new act measured smaller).
+    pub(crate) fn set_need(&mut self, index: usize, need: u32) {
+        let id = self.mind(index);
+        self.minds.get_mut(&id).expect("test: an indexed mind").need = need;
+    }
+
     pub(crate) fn observe(&self) -> Observation {
         self.owner.observe(Some(self.engine))
     }
