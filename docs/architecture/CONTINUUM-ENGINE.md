@@ -1634,7 +1634,15 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
     different answers by measurement alone.
   Mechanism: the fork's `update_slots` runs the chosen set; the rest wait with their KV wherever residency
   put it (per-task priority, SV-S3); slots are sequence handles sized by the pool, not one per mind. The
-  core's lane permits are deleted. Simulator:
+  core's lane permits are deleted.
+  *Recording production is a capture, never a script.* The dyno's batch fixture of 2026-11-06 was made by
+  three Python scripts over the engine log (`batches2.py`, `solo_chunks.py`, `extract_steps.py`): not
+  repeatable, Python load-bearing, and a parse of a log our fork should report typed (4.7.3). Instead the
+  fork reports each engine step typed (sequences in the batch, each one's depth, prompt and decode tokens,
+  accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
+  (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
+  `Evidence` reads. Recording any hour of any node becomes a query of that capture; the simulator and
+  production read one instrument (7.0). Owner: Fable (capture, replay), Codex (fork report review). Simulator:
   the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
   before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
 - **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
