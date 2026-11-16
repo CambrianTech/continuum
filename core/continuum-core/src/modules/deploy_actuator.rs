@@ -496,10 +496,13 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms });
             }
         };
+        // Property 2: the deploy owns its build tree — create a detached worktree at
+        // the tip SHA so no other process can move HEAD while we build.
+        let worktree_path = Self::create_deploy_worktree(&self.root, &req.tip_sha)?;
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
             args: vec![CONSUMER_VERB.to_string()],
-            cwd: self.root.clone(),
+            cwd: worktree_path,
             log: self.root.join("logs").join(ACTUATION_LOG),
         };
         // The previous cycle's measurement rides along so the re-actuation bound is real.
