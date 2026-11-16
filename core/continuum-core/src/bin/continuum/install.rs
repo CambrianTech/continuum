@@ -11,7 +11,7 @@ use super::*;
 
 pub(super) async fn install(options: supervisor_install::InstallOptions) -> Result<(), String> {
     #[cfg(any(windows, target_os = "macos"))]
-    use supervisor_install::{Arm, ArmReport};
+    use supervisor_install::Arm;
     #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = options;
@@ -31,24 +31,17 @@ pub(super) async fn install(options: supervisor_install::InstallOptions) -> Resu
             return Ok(());
         }
         let check = options.check;
-        let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
-        let mut failed: Vec<(Arm, String)> = Vec::new();
-        let mut take = |arm: Arm, r: Result<ArmReport, String>| match r {
-            Ok(report) => reports.push((arm, report)),
-            Err(why) => {
-                println!("✗ {}: {why}", arm.name());
-                failed.push((arm, why));
+        let user = options.user;
+        let selected = [Arm::Supervisor, Arm::Core, Arm::Airc]
+            .into_iter().filter(|arm| options.runs(*arm));
+        let result = supervisor_install::arms::run(selected, |arm| async move {
+            match arm {
+                Arm::Supervisor => install_supervisor_macos(check, user).await,
+                Arm::Core => install_core(check).await,
+                Arm::Airc => install_airc(check).await,
+                Arm::Cli => Err("the macOS CLI arm is not available".to_owned()),
             }
-        };
-        if options.runs(Arm::Supervisor) {
-            take(Arm::Supervisor, install_supervisor_macos(check, options.user).await);
-        }
-        if options.runs(Arm::Core) {
-            take(Arm::Core, install_core(check).await);
-        }
-        if options.runs(Arm::Airc) {
-            take(Arm::Airc, install_airc(check).await);
-        }
+        }).await;
         if options.runs(Arm::Cli) {
             // The macOS CLI arm (PATH copies follow the slot's CLI) is owed: on this OS the
             // slot carries no CLI descriptor yet. Said, never counted as converged.
@@ -57,7 +50,7 @@ pub(super) async fn install(options: supervisor_install::InstallOptions) -> Resu
             }
             println!("  cli: the macOS arm is owed — skipped, not counted");
         }
-        return finish_install(check, &reports, &failed);
+        return finish_install(check, &result.reports, &result.failed);
     }
     #[cfg(windows)]
     {
@@ -68,39 +61,17 @@ pub(super) async fn install(options: supervisor_install::InstallOptions) -> Resu
             return Err("install --user is the macOS agent choice; Windows registers the S4U task".to_string());
         }
         let check = options.check;
-        // Every arm runs, whatever the one before it did: an arm that cannot do its
-        // job is REPORTED as one remaining drift (with its reason) and the next arm
-        // still runs. 2026-09-19, Joel's first run: the core arm's error ended the
-        // verb before the CLI arm ever ran — the supervisor was converged, the CLI on
-        // PATH stayed stale, and the line said "run from the repository".
-        let mut reports: Vec<(Arm, ArmReport)> = Vec::new();
-        let mut failed: Vec<(Arm, String)> = Vec::new();
-        let mut take = |arm: Arm, r: Result<ArmReport, String>| match r {
-            Ok(report) => reports.push((arm, report)),
-            Err(why) => {
-                println!("✗ {}: {why}", arm.name());
-                failed.push((arm, why));
+        let selected = [Arm::Supervisor, Arm::Core, Arm::Cli, Arm::Airc]
+            .into_iter().filter(|arm| options.runs(*arm));
+        let result = supervisor_install::arms::run(selected, |arm| async move {
+            match arm {
+                Arm::Supervisor => supervisor_install::install_supervisor(check, installed_cli_from_descriptor).await,
+                Arm::Core => install_core(check).await,
+                Arm::Cli => install_cli(check).await,
+                Arm::Airc => install_airc(check).await,
             }
-        };
-        // 1. The supervisor: a core can only be handed to a prepared one.
-        if options.runs(Arm::Supervisor) {
-            take(Arm::Supervisor, supervisor_install::install_supervisor(check, installed_cli_from_descriptor).await);
-        }
-        // 2. The core: the running build is the tracked checkout's HEAD, or it is built,
-        //    staged into the slot and handed to the supervisor — `reboot --service`, the
-        //    same path the unattended consumer takes. Hand-run, the tip is what you have.
-        if options.runs(Arm::Core) {
-            take(Arm::Core, install_core(check).await);
-        }
-        // 3. The CLI on PATH follows the slot's CLI (fresh after a stage).
-        if options.runs(Arm::Cli) {
-            take(Arm::Cli, install_cli(check).await);
-        }
-        // 4. The mesh: airc installed and started at login.
-        if options.runs(Arm::Airc) {
-            take(Arm::Airc, install_airc(check).await);
-        }
-        finish_install(check, &reports, &failed)
+        }).await;
+        finish_install(check, &result.reports, &result.failed)
     }
 }
 
