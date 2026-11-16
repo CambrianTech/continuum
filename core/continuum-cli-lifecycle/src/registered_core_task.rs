@@ -231,8 +231,8 @@ mod tests {
     fn query_descriptor_bytes_are_never_lossily_repaired() -> Result<(), Box<dyn std::error::Error>> {
         let descriptor = "{\"engine\":\"C:/minds/雪/engine.exe\"}";
         assert_eq!(decode_query_output(format!("{descriptor}\r\n").into_bytes())?, descriptor);
-        let invalid = vec![b'{', b'"', 0xff, b'"', b'}'];
-        match decode_query_output(invalid.clone()) {
+        let invalid = [b'{', b'"', 0xff, b'"', b'}'];
+        match decode_query_output(invalid.to_vec()) {
             Err(QueryOutputError::Encoding(error)) => assert_eq!(error.into_bytes(), invalid),
             other => return Err(format!("expected retained invalid bytes, got {other:?}").into()),
         }
