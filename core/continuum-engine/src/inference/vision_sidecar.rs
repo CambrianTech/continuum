@@ -247,7 +247,6 @@ pub async fn ensure_sidecar(
     }
 
     let target = ServingTarget {
-        minds: 0, // a single-purpose lane keeps no resident minds
         // Single-purpose lane: no citizen population to derive from — the
         // declared cold-start prior is the honest value (restore-economy 1.b).
         host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,

@@ -194,6 +194,9 @@ pub struct KvSlotPool {
     /// one it verified (`slots/discover.rs`), with or without a page ledger: the identity every
     /// endpoint admission on this pool is bound to (`EndpointAdmission::incarnation`).
     pub(super) incarnation: std::sync::OnceLock<(u32, u64)>,
+    /// The engine's resident minds (fork #139), from the same `/props` that installed this pool and set before
+    /// the pool is published: a pool and its paging authority are visible together or not at all.
+    pub(super) resident_minds: std::sync::OnceLock<crate::inference::weight_residency::ResidentMinds>,
     /// Numbers each change of [`Self::saved`] for the ledger, so a write taken outside the
     /// lock never replaces a newer one ([`Self::ledger_snapshot`]).
     pub(super) ledger_generation: AtomicU64,

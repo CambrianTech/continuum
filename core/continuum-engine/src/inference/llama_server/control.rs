@@ -255,6 +255,10 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// The resident minds the next launch keeps beside its lanes (`--minds`, fork #139): the seated minds plus
+    /// the learner's side sequence. Only the resident lane's controller holds them; no other lane is asked.
+    fn seat_minds(&self, _minds: std::num::NonZeroU32) {}
+
     async fn serve_if_current(
         &self,
         target: &ServingTarget,

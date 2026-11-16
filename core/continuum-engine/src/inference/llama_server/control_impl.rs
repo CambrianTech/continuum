@@ -477,6 +477,10 @@ impl LlamaServerControl for LlamaServerProcess {
         self.last_started.lock().clone()
     }
 
+    fn seat_minds(&self, minds: std::num::NonZeroU32) {
+        self.seated_minds.store(minds.get(), std::sync::atomic::Ordering::Relaxed);
+    }
+
     async fn serve_if_current(
         &self,
         target: &ServingTarget,

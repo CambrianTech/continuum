@@ -43,9 +43,6 @@ pub struct ServingTarget {
     /// lanes` of KV against the host budget, so `-c (context_window * lanes)`
     /// is memory-safe by the planner's own arithmetic.
     pub lanes: u32,
-    /// Resident minds the engine keeps beside its lanes as parked sequences (`--minds`, fork #139): the seated
-    /// minds plus one side sequence for learning. 0: none (a single-purpose lane).
-    pub minds: u32,
     /// The trained LoRA genome layers to load into the serving catalog at spawn
     /// (`llama-server --lora <path>` per entry). This is the SET — which genes
     /// are *loadable*; the per-request `"lora":[{id,scale}]` body field decides

@@ -100,10 +100,7 @@ impl PageKey {
         match self {
             Self::Mind(m) => m.persona(),
             Self::Fork(k) => {
-                let mut name = [0u8; 32];
-                name[..16].copy_from_slice(k.persona.as_bytes());
-                name[16..].copy_from_slice(k.room.as_bytes());
-                Uuid::new_v5(&FORK_ENGINE_NAMESPACE, &name)
+                Uuid::new_v5(&FORK_ENGINE_NAMESPACE, &[*k.persona.as_bytes(), *k.room.as_bytes()].concat())
             }
         }
     }

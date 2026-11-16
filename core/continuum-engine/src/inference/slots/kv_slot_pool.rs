@@ -63,6 +63,7 @@ impl KvSlotPool {
             scratch_released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
+            resident_minds: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
             sequences: Mutex::new(LiveSequences::default()),
         }
@@ -128,6 +129,12 @@ impl KvSlotPool {
     /// The engine process this pool belongs to, when stamped.
     pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
         self.incarnation.get().copied()
+    }
+
+    /// Whether this pool's engine owns mind switches (fork #139), as its `/props` declared when the pool was
+    /// installed. `None`: the core pages minds itself.
+    pub(crate) fn resident_minds(&self) -> Option<crate::inference::weight_residency::ResidentMinds> {
+        self.resident_minds.get().copied()
     }
 
     pub fn n_slots(&self) -> u32 {

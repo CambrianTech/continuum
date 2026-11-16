@@ -220,9 +220,10 @@ impl ServingDaemonModule {
             }
         }
         // the engine keeps every seated mind resident beside its lanes, plus one side sequence for learning
-        let minds = u32::try_from(self.seated_needs(&model).len()).map_or(u32::MAX, |n| n.saturating_add(1));
+        if let Some(minds) = u32::try_from(self.seated_needs(&model).len()).ok().and_then(|n| n.checked_add(1)).and_then(std::num::NonZeroU32::new) {
+            self.server.seat_minds(minds);
+        }
         let target = ServingTarget {
-            minds,
             host_prompt_cache_mib,
             model,
             context_window: per_sequence,

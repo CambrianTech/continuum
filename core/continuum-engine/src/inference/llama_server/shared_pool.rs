@@ -28,11 +28,11 @@ const RESIDENT_MINDS: &str = "--minds";
 
 /// Launch on the shared pool: every sequence draws on all of `-c`, and an idle one keeps what
 /// she holds until the core pages her. `minds`: parked sequence ids beside the lanes, given only to an engine
-/// that lists `--minds`: the seated minds plus one side sequence for learning (`ServingTarget::minds`).
-pub(super) fn on_shared_pool(mut invocation: LaneInvocation, minds: Option<u32>) -> LaneInvocation {
+/// that lists `--minds`: the seated minds plus one side sequence for learning (`LlamaServerControl::seat_minds`).
+pub(super) fn on_shared_pool(mut invocation: LaneInvocation, minds: Option<std::num::NonZeroU32>) -> LaneInvocation {
     invocation.args.push(SHARED_POOL.to_string());
     invocation.args.push(KEEP_IDLE_SLOTS.to_string());
-    if let Some(n) = minds.filter(|n| *n > 0) {
+    if let Some(n) = minds {
         invocation.args.push(RESIDENT_MINDS.to_string());
         invocation.args.push(n.to_string());
     }

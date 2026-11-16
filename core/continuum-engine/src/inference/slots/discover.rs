@@ -42,6 +42,9 @@ pub enum PoolDiscoveryMiss {
     /// The pool already installed for this server disagrees with what `/props` reports.
     #[error("installed pool has {installed} slots, props reports {props}")]
     GeometryMismatch { installed: u32, props: u32 },
+    /// The installed pool's resident-minds declaration (or its incarnation token) is not this `/props`'s.
+    #[error("installed pool's resident minds disagree with props")]
+    MindsMismatch,
     /// The page-admission negotiation refused this pool.
     #[error("page admission refused this pool")]
     PageAdmissionRefused,
@@ -71,6 +74,7 @@ impl PoolDiscoveryMiss {
             Self::NoGeometry => "no_geometry",
             Self::Superseded => "superseded",
             Self::GeometryMismatch { .. } => "geometry_mismatch",
+            Self::MindsMismatch => "minds_mismatch",
             Self::PageAdmissionRefused => "page_admission_refused",
         }
     }
@@ -114,13 +118,6 @@ impl PoolDiscoveryMiss {
 pub(crate) fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     static CTX: std::sync::OnceLock<dashmap::DashMap<String, u32>> = std::sync::OnceLock::new();
     CTX.get_or_init(dashmap::DashMap::new)
-}
-
-/// Which engines declared that they own mind switches (`/props.context_geometry.resident_minds`, fork #139),
-/// recorded from the same `/props` body that installs the pool. Absent: not declared (the core pages minds).
-pub(crate) fn resident_minds_by_root() -> &'static dashmap::DashMap<String, crate::inference::weight_residency::ResidentMinds> {
-    static MINDS: std::sync::OnceLock<dashmap::DashMap<String, crate::inference::weight_residency::ResidentMinds>> = std::sync::OnceLock::new();
-    MINDS.get_or_init(dashmap::DashMap::new)
 }
 
 /// Does this `/props` status PROVE the endpoint does not exist — the only verdict
@@ -193,15 +190,6 @@ impl SlotDirectory {
         {
             served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
         }
-        // whether this engine owns mind switches, declared in the same body (never inferred from a 404)
-        match crate::inference::weight_residency::ContextGeometry::from_props(&body).and_then(|g| g.resident_minds) {
-            Some(minds) => {
-                resident_minds_by_root().insert(root.to_owned(), minds);
-            }
-            None => {
-                resident_minds_by_root().remove(root);
-            }
-        }
         // Missing geometry is not proof that activity paging is unsupported.
         let n_slots = match body.get("total_slots").and_then(|v| v.as_u64()) {
             Some(n) if n > 0 => n as u32,
@@ -213,12 +201,22 @@ impl SlotDirectory {
         // The directory arbitrates the probe race: only the first writer installs the pool, once
         // per SERVER, and it installs it with its page store already settled. A pool known here
         // was published by that writer, so no caller ever admits against an undecided store.
+        // whether this engine owns mind switches, declared in the same body (never inferred from a 404)
+        let minds = crate::inference::weight_residency::ContextGeometry::from_props(&body).and_then(|g| g.resident_minds);
         let pool = match existing_pool {
             Some(pool) => pool,
-            None => self.install_settled_pool(root, n_slots, |pool| settle_adopted_page_store(pool, root)),
+            None => self.install_settled_pool(root, n_slots, |pool| {
+                if let Some(minds) = minds {
+                    let _ = pool.resident_minds.set(minds); // a fresh candidate no other caller sees: the first set
+                }
+                settle_adopted_page_store(pool, root)
+            }),
         };
         if pool.n_slots() != n_slots {
             return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
+        }
+        if pool.resident_minds() != minds {
+            return Err(Miss::MindsMismatch); // the installed pool's paging authority belongs to another engine
         }
         if !self.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
             return Err(Miss::PageAdmissionRefused);

@@ -306,7 +306,8 @@ impl LlamaServerProcess {
             max_ubatch: target.model.serving.max_ubatch,
             reasoning_budget: target.model.serving.reasoning_budget,
         });
-        let minds = super::genome::engine_accepts_minds(&bin).then_some(target.minds);
+        let seated = std::num::NonZeroU32::new(self.seated_minds.load(std::sync::atomic::Ordering::Relaxed));
+        let minds = seated.filter(|_| super::genome::engine_accepts_minds(&bin));
         let mut invocation = super::shared_pool::on_shared_pool(invocation, minds);
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs
@@ -493,7 +494,8 @@ impl LlamaServerProcess {
         let ambiguous_adapter = lora_paths
             .iter()
             .any(|p| p.to_str().is_none_or(|p| p.contains(',')));
-        let local_inputs = if !cfg!(windows) || engine_install.is_none() {
+        // the receipt is made only where the engine contract exists (`EngineInstallReceipt::load`): none elsewhere
+        let local_inputs = if engine_install.is_none() {
             Err(
                 "exact restoration requires original Windows application and local input pins"
                     .into(),
