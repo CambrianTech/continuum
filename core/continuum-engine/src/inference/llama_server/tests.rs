@@ -177,11 +177,12 @@ impl LlamaServerControl for FakeControl {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+        _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         if let Some(reason) = self.in_place_error {
             return Err(LlamaServerError::Unreachable(reason.into()));
         }
-        Ok(self.in_place)
+        Ok(self.in_place.clone())
     }
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);

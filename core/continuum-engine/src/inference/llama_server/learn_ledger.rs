@@ -18,6 +18,14 @@ use super::*;
 #[serde(transparent)]
 pub struct LedgerEngine(String);
 
+impl LedgerEngine {
+    /// An engine identity a test's fake engine reports as `id`.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn fixture(id: &str) -> Self {
+        Self(id.to_owned())
+    }
+}
+
 /// One serving engine PROCESS's learning routes: separate from the owner of the engine's lifecycle,
 /// so the learner in the genome reaches the ledger without it. Bound to the physical incarnation
 /// (pid and OS start time), never to an endpoint alone: a relaunch on the same port is another
