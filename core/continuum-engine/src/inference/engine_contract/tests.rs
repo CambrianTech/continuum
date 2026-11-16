@@ -45,7 +45,8 @@ fn both_edges_compiled_in_the_same_schema() {
 fn both_edges_give_every_frame_the_same_verdict() {
     let mut p = c::ctm_prefetch { header: header(c::CTM_KIND_PREFETCH, std::mem::size_of::<c::ctm_prefetch>()), ..Default::default() };
     assert_eq!(agree(bytes_of(&p)), c::CTM_VALID as i32);
-    assert_eq!(agree(&bytes_of(&p)[..31]), c::CTM_INVALID_SHORT as i32);
+    let one_short = std::mem::size_of::<c::ctm_frame_header>() - 1;
+    assert_eq!(agree(&bytes_of(&p)[..one_short]), c::CTM_INVALID_SHORT as i32);
     p.header.magic ^= 1;
     assert_eq!(agree(bytes_of(&p)), c::CTM_INVALID_MAGIC as i32);
     p.header.magic ^= 1;

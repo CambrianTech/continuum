@@ -116,8 +116,8 @@ impl Frame<'_> {
     }
 }
 
-fn in_range(v: u32, lo: u32, count: u32) -> bool {
-    (lo..count).contains(&v)
+fn in_range(v: u32, valid: std::ops::Range<u32>) -> bool {
+    valid.contains(&v)
 }
 
 /// Validate `bytes` as one frame of this build's schema; its kind when valid.
@@ -160,7 +160,7 @@ fn check_tags(kind: FrameKind, f: &Frame<'_>) -> Result<(), FrameError> {
         }
         FrameKind::ActSubmit => {
             zero(f.u16(offset_of!(c::ctm_act_submit, reserved0)) == 0)?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_submit, mode))), 1, c::CTM_ACT_MODE_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_submit, mode))), 1..c::CTM_ACT_MODE_COUNT))?;
             tag(f.u32(offset_of!(c::ctm_act_submit, flags)) & !c::CTM_ACT_FLAGS_ALL == 0)?;
             for at in [
                 offset_of!(c::ctm_act_submit, prompt),
@@ -173,30 +173,30 @@ fn check_tags(kind: FrameKind, f: &Frame<'_>) -> Result<(), FrameError> {
             Ok(())
         }
         FrameKind::ActDone => {
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, outcome))), 1, c::CTM_OUTCOME_COUNT))?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, reason))), 0, c::CTM_REASON_COUNT))?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, mind_from))), 0, c::CTM_MIND_FROM_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, outcome))), 1..c::CTM_OUTCOME_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, reason))), 0..c::CTM_REASON_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_act_done, mind_from))), 0..c::CTM_MIND_FROM_COUNT))?;
             tag(u32::from(f.u16(offset_of!(c::ctm_act_done, flags))) & !c::CTM_DONE_FLAGS_ALL == 0)?;
             bounds(f.buffer_ok(offset_of!(c::ctm_act_done, observations)))
         }
         FrameKind::Placed => {
             zero(f.u16(offset_of!(c::ctm_placed, reserved0)) == 0 && f.u32(offset_of!(c::ctm_placed, reserved1)) == 0)?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_placed, place))), 1, c::CTM_PLACE_COUNT))
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_placed, place))), 1..c::CTM_PLACE_COUNT))
         }
         FrameKind::Released => {
             zero(f.u16(offset_of!(c::ctm_released, reserved0)) == 0 && f.u32(offset_of!(c::ctm_released, reserved1)) == 0)?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_released, outcome))), 1, c::CTM_PIN_COUNT))
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_released, outcome))), 1..c::CTM_PIN_COUNT))
         }
         FrameKind::GenomeSet => bounds(f.buffer_ok(offset_of!(c::ctm_genome_set, layers))),
         FrameKind::LearnDuty => {
             zero(f.u16(offset_of!(c::ctm_learn_duty, reserved0)) == 0)?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_learn_duty, mode))), 1, c::CTM_LEARN_MODE_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_learn_duty, mode))), 1..c::CTM_LEARN_MODE_COUNT))?;
             tag(f.u32(offset_of!(c::ctm_learn_duty, share_ppm)) <= 1_000_000)
         }
         FrameKind::Refused => {
             zero(f.u32(offset_of!(c::ctm_refused, reserved0)) == 0)?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_refused, refused_kind))), 0, c::CTM_KIND_KIND_COUNT))?;
-            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_refused, reason))), 0, c::CTM_REASON_COUNT))
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_refused, refused_kind))), 0..c::CTM_KIND_KIND_COUNT))?;
+            tag(in_range(u32::from(f.u16(offset_of!(c::ctm_refused, reason))), 0..c::CTM_REASON_COUNT))
         }
         FrameKind::Attach | FrameKind::Cancel | FrameKind::Prefetch | FrameKind::PinRelease => Ok(()),
     }
