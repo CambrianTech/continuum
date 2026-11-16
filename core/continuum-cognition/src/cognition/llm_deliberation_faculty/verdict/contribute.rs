@@ -47,36 +47,22 @@ impl LlmDeliberationFaculty {
         // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
         // Her window, decided and (a grant) HELD for this act (`decide_and_hold`): a seat being reclaimed
         // or moved before the hold is waited for within her turn, never a failed turn (card d50e8e66).
-        let (decided, mut act_hold) = match super::admission_clock::stage(
-            "deliberation.window_grant",
-            crate::capacity::mind_window::decide_and_hold(
-                self.persona_id,
-                || {
-                    crate::capacity::mind_window::mind_window(
-                        self.persona_id,
-                        loaded.adapter.as_ref(),
-                        loaded.context_window,
-                    )
-                },
-                || {
-                    continuum_base::probe!(
-                        class = "delib.window.ungranted",
-                        persona = %self.persona_name,
-                        "no grant on the shared pool yet: measuring her view, then waiting for one"
-                    );
-                    // Her wish priced at HER measured density, not the default: a default under-asks by her
-                    // excess and the grant she then waits for is too small (Fable's audit, 2026-11-09).
-                    let (_, calibration) = self.prompt_fit(&loaded);
-                    let _measured = self.prompt_view_with_visual_feedback(
-                        ws,
-                        loaded.context_window,
-                        calibration,
-                        None,
-                    );
-                },
-                crate::capacity::mind_window::evaluation_after,
-            ),
-        )
+        let (decided, mut act_hold) = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_and_hold(
+            self.persona_id,
+            || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
+            || {
+                continuum_base::probe!(
+                    class = "delib.window.ungranted",
+                    persona = %self.persona_name,
+                    "no grant on the shared pool yet: measuring her view, then waiting for one"
+                );
+                // Her wish priced at HER measured density, not the default: a default under-asks by her
+                // excess and the grant she then waits for is too small (Fable's audit, 2026-11-09).
+                let (_, calibration) = self.prompt_fit(&loaded);
+                let _measured = self.prompt_view_with_visual_feedback(ws, loaded.context_window, calibration, None);
+            },
+            crate::capacity::mind_window::evaluation_after,
+        ))
         .await
         {
             Ok(decided) => decided,
@@ -92,9 +78,7 @@ impl LlmDeliberationFaculty {
             }
         };
         let decided_window = decided.tokens();
-        let mut rendered_lease = act_hold
-            .as_ref()
-            .map(crate::capacity::window_grant::ActHold::lease);
+        let mut rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
             self.binding.clone(),
@@ -176,10 +160,7 @@ impl LlmDeliberationFaculty {
         };
         let (mut fit_window, mut calibration) = self.prompt_fit(&binding);
         let capacity_readiness = Arc::new(
-            capacity_readiness
-                .as_ref()
-                .clone()
-                .with_fit_window(fit_window),
+            capacity_readiness.as_ref().clone().with_fit_window(fit_window),
         );
         let visual = match self.active_visual_feedback(&binding).await {
             Ok(visual) => visual,
@@ -224,17 +205,7 @@ impl LlmDeliberationFaculty {
             }
             // Her measured output need does not fit: never sent, parked on her window's readiness.
             if let Some(short) = view.output_shortfall {
-                return Some(
-                    self.output_room_refused(
-                        short,
-                        Arc::new(
-                            capacity_readiness
-                                .as_ref()
-                                .clone()
-                                .with_fit_window(fit_window),
-                        ),
-                    ),
-                );
+                return Some(self.output_room_refused(short, Arc::new(capacity_readiness.as_ref().clone().with_fit_window(fit_window))));
             }
             if let Some(error) = view.capacity_error {
                 continuum_base::probe!(
@@ -286,32 +257,18 @@ impl LlmDeliberationFaculty {
             );
             // This view's cap ([`request_allowance`]): a pass's grant, an act's window room after
             // the prompt at its input's price: a refusal's count for the same input, fresh for a changed one.
-            let measured = self
-                .working_set
-                .as_ref()
-                .and_then(|reg| reg.need_or_pooled(self.persona_id))
-                .is_some();
+            let measured = self.working_set.as_ref().and_then(|reg| reg.need_or_pooled(self.persona_id)).is_some();
             let allowance = match request_allowance(
                 kind,
                 measured,
                 view.completion_reserve,
                 fit_window,
-                calibration
-                    .for_input(view.input_identity)
-                    .charge(view.estimated_prompt_tokens),
+                calibration.for_input(view.input_identity).charge(view.estimated_prompt_tokens),
             ) {
                 Ok(allowance) => allowance,
                 // The room is below the reply's grant: never sent past a bound (`act_room.rs`).
                 Err(short) => {
-                    return Some(
-                        self.room_short_refused(
-                            short,
-                            capacity_readiness
-                                .as_ref()
-                                .clone()
-                                .with_fit_window(fit_window),
-                        ),
-                    )
+                    return Some(self.room_short_refused(short, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
                 }
             };
             // SINGLE SHOT: one accepted generation → one verdict. A strictly
@@ -378,20 +335,9 @@ impl LlmDeliberationFaculty {
             // is built once, and a template's `max_tokens` from an earlier plan would
             // bound the reply to a window the prompt no longer leaves.
             request.max_tokens = Some(allowance);
-            let (terms, output_room) = self.dispatch_terms(
-                kind,
-                &view,
-                calibration,
-                (fit_window, rendered_lease),
-                &request,
-            );
+            let (terms, output_room) = self.dispatch_terms(kind, &view, calibration, (fit_window, rendered_lease), &request);
             sent_reasoning_budget = terms.think.budget().map(|think| think.0);
-            let allocation = view.allocation.clone().map(|allocation| {
-                crate::ai::provenance::AllocationReceipt {
-                    output_room,
-                    ..allocation
-                }
-            });
+            let allocation = view.allocation.clone().map(|allocation| crate::ai::provenance::AllocationReceipt { output_room, ..allocation });
             let estimated_prompt_tokens = view.estimated_prompt_tokens;
             if rejected_prompt_tokens.is_some_and(|previous| estimated_prompt_tokens >= previous) {
                 return Some(Contribution::deliberation_fault(
@@ -408,9 +354,7 @@ impl LlmDeliberationFaculty {
             sent_allowance = request.max_tokens.or(sent_allowance);
             self.prefix_warm_settled(ws.room_id).await; // her prefix, warmed while her last tool ran
             let result = self
-                .generate_for_workspace(
-                    ws, &binding, fit_window, request, terms, allocation, receipts,
-                )
+                .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
             gen_await_ms = gen_await_ms.saturating_add(started.elapsed().as_millis() as u64);
             match result {
@@ -423,18 +367,10 @@ impl LlmDeliberationFaculty {
                     // refusal only ever raises the price.
                     let observed = match calibration.admission {
                         crate::ai::provenance::PromptAdmission::EngineCounted => {
-                            PromptCalibration::counted(
-                                estimated_prompt_tokens,
-                                requested,
-                                view.input_identity,
-                            )
+                            PromptCalibration::counted(estimated_prompt_tokens, requested, view.input_identity)
                         }
                         crate::ai::provenance::PromptAdmission::Estimated => {
-                            PromptCalibration::observed(
-                                estimated_prompt_tokens,
-                                requested,
-                                Some(view.input_identity),
-                            )
+                            PromptCalibration::observed(estimated_prompt_tokens, requested, Some(view.input_identity))
                         }
                     };
                     let Some(observed) = observed else {
@@ -475,30 +411,15 @@ impl LlmDeliberationFaculty {
                         continue;
                     }
                     if newest_refit_sent {
-                        let error = self.newest_refit_refused(
-                            requested,
-                            available,
-                            view.completion_reserve,
-                        );
+                        let error = self.newest_refit_refused(requested, available, view.completion_reserve);
                         return Some(
-                            Contribution::prompt_capacity_refused(error).with_capacity_readiness(
-                                Arc::new(
-                                    capacity_readiness
-                                        .as_ref()
-                                        .clone()
-                                        .with_fit_window(fit_window),
-                                ),
-                            ),
+                            Contribution::prompt_capacity_refused(error).with_capacity_readiness(Arc::new(
+                                capacity_readiness.as_ref().clone().with_fit_window(fit_window),
+                            )),
                         );
                     }
                     if let Some(refit) = self.refit_newest_after_refusal(
-                        ws,
-                        fit_window,
-                        calibration,
-                        visual.as_ref(),
-                        &view,
-                        requested,
-                        available,
+                        ws, fit_window, calibration, visual.as_ref(), &view, requested, available,
                     ) {
                         newest_refit_sent = true;
                         rejected_prompt_tokens = Some(estimated_prompt_tokens);
@@ -522,21 +443,13 @@ impl LlmDeliberationFaculty {
                         // the measured price, so her view's own allocation collapses oldest first.
                         Err(_) if !view_rerendered_at_measured_price => {
                             view_rerendered_at_measured_price = true;
-                            self.prompt_view_with_visual_feedback(
-                                ws,
-                                fit_window,
-                                calibration,
-                                visual.as_ref(),
-                            )
+                            self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref())
                         }
                         Err(error) => {
                             return Some(
                                 Contribution::prompt_capacity_refused(error)
                                     .with_capacity_readiness(Arc::new(
-                                        capacity_readiness
-                                            .as_ref()
-                                            .clone()
-                                            .with_fit_window(fit_window),
+                                        capacity_readiness.as_ref().clone().with_fit_window(fit_window),
                                     )),
                             )
                         }
@@ -546,10 +459,9 @@ impl LlmDeliberationFaculty {
                 // at the estimate, at the same window, never sent unguarded.
                 // Her grant moved while she waited for a lane: re-rendered ONCE against the grant
                 // she now has, never sent at the old one; withdrawn, or moved again, she parks.
-                Err(crate::ai::inference_error::InferenceError::GrantChanged {
-                    rendered,
-                    current: Some(current),
-                }) if !grant_rerendered => {
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current: Some(current) })
+                    if !grant_rerendered =>
+                {
                     continuum_base::probe!(
                         class = "delib.turn.grant_changed",
                         persona = %self.persona_name,
@@ -559,35 +471,15 @@ impl LlmDeliberationFaculty {
                     );
                     grant_rerendered = true;
                     act_hold = crate::capacity::window_grant::hold_for_act(self.persona_id); // None: none published, priced at the refusal's own count
-                    rendered_lease = act_hold
-                        .as_ref()
-                        .map(crate::capacity::window_grant::ActHold::lease);
+                    rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
                     fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
-                    view = self.prompt_view_with_visual_feedback(
-                        ws,
-                        fit_window,
-                        calibration,
-                        visual.as_ref(),
-                    );
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
-                Err(crate::ai::inference_error::InferenceError::GrantChanged {
-                    rendered,
-                    current,
-                }) => {
-                    return Some(
-                        self.grant_moved_refused(
-                            rendered,
-                            current,
-                            capacity_readiness
-                                .as_ref()
-                                .clone()
-                                .with_fit_window(fit_window),
-                        ),
-                    )
+                Err(crate::ai::inference_error::InferenceError::GrantChanged { rendered, current }) => {
+                    return Some(self.grant_moved_refused(rendered, current, capacity_readiness.as_ref().clone().with_fit_window(fit_window)))
                 }
                 Err(crate::ai::inference_error::InferenceError::AdmissionUncounted { model })
-                    if calibration.admission
-                        == crate::ai::provenance::PromptAdmission::EngineCounted =>
+                    if calibration.admission == crate::ai::provenance::PromptAdmission::EngineCounted =>
                 {
                     continuum_base::probe!(
                         class = "delib.act.admission_uncounted",
@@ -595,18 +487,10 @@ impl LlmDeliberationFaculty {
                         model = %model,
                         "the engine her request reaches cannot count it: re-priced at its estimate"
                     );
-                    calibration =
-                        calibration.behind(crate::ai::provenance::PromptAdmission::Estimated);
-                    view = self.prompt_view_with_visual_feedback(
-                        ws,
-                        fit_window,
-                        calibration,
-                        visual.as_ref(),
-                    );
+                    calibration = calibration.behind(crate::ai::provenance::PromptAdmission::Estimated);
+                    view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }
-                Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model })
-                    if !tail_refused =>
-                {
+                Err(crate::ai::inference_error::InferenceError::TailToolsUnreachable { model }) if !tail_refused => {
                     continuum_base::probe!(
                         class = "delib.tool_head.tail_refused",
                         persona = %self.persona_name,
@@ -644,16 +528,8 @@ impl LlmDeliberationFaculty {
         // here before any await after the generation: a cancellation at the read receipt below
         // must not lose the stop of a generation that already completed (Codex on #5616).
         let allowance = sent_allowance.unwrap_or(view.completion_reserve); // unwrap_or: a request built with no max_tokens was bounded by the reserve alone
-        let crate::cognition::working_set::ResponseEmission {
-            reasoning_tokens,
-            answered,
-            reasoned,
-            stop,
-        } = crate::cognition::working_set::ResponseEmission::of(
-            &resp,
-            sent_reasoning_budget,
-            allowance,
-        );
+        let crate::cognition::working_set::ResponseEmission { reasoning_tokens, answered, reasoned, stop } =
+            crate::cognition::working_set::ResponseEmission::of(&resp, sent_reasoning_budget, allowance);
         crate::cognition::health_ledger::note_stop(stop.counted(answered, reasoned));
         // Sent and answered: she read what this prompt rendered (read_receipt.rs), never before.
         self.send_read_receipt(ws).await;
@@ -686,9 +562,7 @@ impl LlmDeliberationFaculty {
         // handles below is still counted exactly once (Aris's three cuts inside thinking read
         // "think-only 0" while the count sat in one branch, the M5 2026-10-30).
         {
-            if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } =
-                stop
-            {
+            if let super::super::super::working_set::EmissionStop::ThinkBudgetHit { allowance } = stop {
                 continuum_base::probe!(
                     class = "delib.emission.think_budget_hit",
                     persona = %self.persona_name,
@@ -880,16 +754,9 @@ impl LlmDeliberationFaculty {
         // JSON at the limit is still a cut, since nothing proves its framing closed.
         if !self.tools.is_empty() {
             let end = resp.finish_reason.generation_end();
-            let cut = |calls: &&[crate::ai::types::ToolCall]| {
-                calls
-                    .iter()
-                    .any(|call| call.ending(end) == crate::ai::types::CallEnding::Cut)
-            };
+            let cut = |calls: &&[crate::ai::types::ToolCall]| calls.iter().any(|call| call.ending(end) == crate::ai::types::CallEnding::Cut);
             if let Some(calls) = resp.tool_calls.as_deref().filter(cut) {
-                let composing: String = calls
-                    .iter()
-                    .map(|call| format!("{}({})", call.name, call.input))
-                    .collect();
+                let composing: String = calls.iter().map(|call| format!("{}({})", call.name, call.input)).collect();
                 continuum_base::probe!(
                     class = "delib.emission.cut_tool_call",
                     persona = %self.persona_name,
@@ -902,8 +769,7 @@ impl LlmDeliberationFaculty {
                 }
                 let call = crate::ai::types::ToolCall {
                     id: "tool-attempt-cut-at-limit".to_string(),
-                    name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL
-                        .to_string(),
+                    name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.to_string(),
                     input: serde_json::json!({}),
                 };
                 return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));
@@ -965,9 +831,7 @@ impl LlmDeliberationFaculty {
         //      ignore the native tool channel) — strictly better than dropping it.
         if !self.tools.is_empty() {
             // A ToolUse finish with no calls carries none to run: it falls to the prose path below.
-            if let (FinishReason::ToolUse, Some(mut calls)) =
-                (&resp.finish_reason, resp.tool_calls.clone())
-            {
+            if let (FinishReason::ToolUse, Some(mut calls)) = (&resp.finish_reason, resp.tool_calls.clone()) {
                 // Wire dialect → canonical command names, BEFORE the
                 // authorization gate and the executor ever see them (the
                 // reverse half of the offer-side rename above).
@@ -978,13 +842,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
-                    self.prefill_during_tool(
-                        &binding.adapter,
-                        ws.room_id,
-                        request_template.as_ref(),
-                        &view.messages,
-                        view.resumes_at(),
-                    );
+                    self.prefill_during_tool(&binding.adapter, ws.room_id, request_template.as_ref(), &view.messages, view.resumes_at());
                     return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }
@@ -1063,10 +921,7 @@ impl LlmDeliberationFaculty {
                 // 2026-10-06: a half-formed code/run lifted from a cut 8,504-token think).
                 if matches!(resp.finish_reason, FinishReason::Length)
                     && !self.tools.is_empty()
-                    && resp
-                        .reasoning
-                        .as_deref()
-                        .is_some_and(|r| !r.trim().is_empty())
+                    && resp.reasoning.as_deref().is_some_and(|r| !r.trim().is_empty())
                 {
                     continuum_base::probe!(
                         class = "persona.act.thought_cut",
@@ -1076,9 +931,8 @@ impl LlmDeliberationFaculty {
                     );
                     let call = crate::ai::types::ToolCall {
                         id: "tool-attempt-thought-cut".to_string(),
-                        name:
-                            crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL
-                                .to_string(),
+                        name: crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL
+                            .to_string(),
                         input: serde_json::json!({}),
                     };
                     return Some(self.act_verdict(vec![call], &resp, ws.activity_room_id));

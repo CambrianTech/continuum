@@ -71,10 +71,7 @@ impl DependentStage for WarmPrefix {
         let timing = response.timing.ok_or(PrefixMiss::Unmeasured)?;
         let prefill = std::time::Duration::try_from_secs_f64(timing.prefill_ms / 1000.0)
             .map_err(|_| PrefixMiss::Unmeasured)?;
-        Ok(PrefixWarm {
-            prefix_tokens: timing.cached_tokens.saturating_add(timing.prefill_tokens),
-            prefill,
-        })
+        Ok(PrefixWarm { prefix_tokens: timing.cached_tokens.saturating_add(timing.prefill_tokens), prefill })
     }
 }
 
@@ -113,24 +110,13 @@ impl LlmDeliberationFaculty {
         messages: &[ChatMessage],
         view_messages: Option<u32>,
     ) {
-        let (Some(page), Some(template), PromptCache::PinnedSlot) =
-            (self.page(room), template, adapter.prompt_cache())
-        else {
+        let (Some(page), Some(template), PromptCache::PinnedSlot) = (self.page(room), template, adapter.prompt_cache()) else {
             return;
         };
         let request = warm_request(template, messages, view_messages);
-        let pass = WarmPrefix {
-            adapter: Arc::clone(adapter),
-            request,
-        };
+        let pass = WarmPrefix { adapter: Arc::clone(adapter), request };
         let warm = spawn_when_ready(pass, ());
-        if self
-            .prefix_warm
-            .0
-            .lock()
-            .replace(Warming { page, warm })
-            .is_some()
-        {
+        if self.prefix_warm.0.lock().replace(Warming { page, warm }).is_some() {
             missed("superseded", &self.persona_name);
         }
     }
@@ -141,14 +127,8 @@ impl LlmDeliberationFaculty {
         let page = self.page(room);
         let taken = {
             let mut pending = self.prefix_warm.0.lock();
-            let ours = pending
-                .as_ref()
-                .is_some_and(|warming| Some(warming.page) == page);
-            if ours {
-                pending.take()
-            } else {
-                None
-            }
+            let ours = pending.as_ref().is_some_and(|warming| Some(warming.page) == page);
+            if ours { pending.take() } else { None }
         };
         let Some(mut warming) = taken else {
             return;
@@ -187,11 +167,7 @@ impl LlmDeliberationFaculty {
 }
 
 /// The warm pass's request: her act's template and prompt, her act's view end, one token.
-fn warm_request(
-    template: &TextGenerationRequest,
-    messages: &[ChatMessage],
-    view_messages: Option<u32>,
-) -> TextGenerationRequest {
+fn warm_request(template: &TextGenerationRequest, messages: &[ChatMessage], view_messages: Option<u32>) -> TextGenerationRequest {
     let mut request = TextGenerationRequest::clone(template);
     request.messages = messages.to_vec();
     request.view_messages = view_messages;
@@ -208,22 +184,10 @@ mod tests {
     // forget where her next prompt diverges (regression, the M5 2026-11-16: ~100k-token re-prefills)
     #[test]
     fn the_warm_pass_names_her_acts_view_end() {
-        let template = TextGenerationRequest {
-            view_messages: None,
-            max_tokens: Some(900),
-            ..Default::default()
-        };
-        let messages = vec![
-            ChatMessage::text("system", "s"),
-            ChatMessage::text("user", "board"),
-            ChatMessage::text("user", "pick"),
-        ];
+        let template = TextGenerationRequest { view_messages: None, max_tokens: Some(900), ..Default::default() };
+        let messages = vec![ChatMessage::text("system", "s"), ChatMessage::text("user", "board"), ChatMessage::text("user", "pick")];
         let warm = warm_request(&template, &messages, Some(2));
-        assert_eq!(
-            warm.view_messages,
-            Some(2),
-            "the warm pass carries her act's view end"
-        );
+        assert_eq!(warm.view_messages, Some(2), "the warm pass carries her act's view end");
         assert_eq!(warm.max_tokens, Some(1), "it decodes one token");
         assert_eq!(warm.messages.len(), 3, "it sends the prompt she just sent");
     }
