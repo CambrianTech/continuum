@@ -4,10 +4,10 @@
 //!
 //! Each clean interval is one measured step shape: how many streams decoded, their summed depth,
 //! and the seconds per token each gained (1 / its tok/s; MTP's accepted drafts are gained tokens).
-//! The steps are kept as a running mean per (decoders, depth band) group, the grouping the dyno fits
-//! the recorded hour with, so what is held is bounded by the shapes seen, never by a count. A model
-//! with too few distinct shapes has no plane yet, and no width is published: the engine decodes every
-//! generating slot, as it does today.
+//! The fit keeps only its normal equations, so what is held per model does not grow with the
+//! evidence, and nothing is grouped by a chosen size. A plane is only claimed once the evidence
+//! spans more than one stream count and more than one depth (otherwise it determines no slope); until
+//! then no width is published and the engine decodes every generating slot, as it does today.
 
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
@@ -15,18 +15,39 @@ use std::sync::LazyLock;
 
 use parking_lot::Mutex;
 
-use super::{DecodePlane, DecodeStep, FIT_DEPTH_BAND};
+use super::{DecodePlane, DecodeStep, NormalEquations};
 
-/// One (decoders, depth band) group's running mean of seconds per token, and how many intervals
-/// made it (the fit's weight).
-#[derive(Debug, Clone, Copy, Default)]
-struct Group {
-    mean: f64,
-    count: u64,
+/// One model's evidence: the fit's normal equations and the span it covers.
+#[derive(Debug, Clone)]
+struct Evidence {
+    equations: NormalEquations,
+    decoders: (usize, usize),
+    depth: (u64, u64),
 }
 
-/// Per model, the measured step shapes.
-static OBSERVED: LazyLock<Mutex<BTreeMap<String, BTreeMap<(usize, u64), Group>>>> = LazyLock::new(Default::default);
+impl Evidence {
+    fn of(step: &DecodeStep) -> Self {
+        Self { equations: NormalEquations::new(3), decoders: (step.decoders, step.decoders), depth: (step.summed_depth, step.summed_depth) }
+    }
+
+    fn add(&mut self, step: &DecodeStep) {
+        self.equations.add(&DecodePlane::row(step.decoders, step.summed_depth), step.seconds_per_token, 1.0);
+        self.decoders = (self.decoders.0.min(step.decoders), self.decoders.1.max(step.decoders));
+        self.depth = (self.depth.0.min(step.summed_depth), self.depth.1.max(step.summed_depth));
+    }
+
+    /// The plane, once the evidence spans more than one stream count and more than one depth.
+    fn plane(&self) -> Option<DecodePlane> {
+        if self.decoders.0 == self.decoders.1 || self.depth.0 == self.depth.1 {
+            return None;
+        }
+        let c = self.equations.solve()?;
+        Some(DecodePlane { base: c[0], per_decoder: c[1], per_kdepth: c[2] })
+    }
+}
+
+/// Per model, the measured evidence.
+static OBSERVED: LazyLock<Mutex<BTreeMap<String, Evidence>>> = LazyLock::new(Default::default);
 
 /// The width last told to each engine process (`None`: every generating slot, the engine's own
 /// default, so an engine never told, a new process included, needs no publication to be there).
@@ -41,33 +62,17 @@ pub fn tell(pid: u32, width: Option<NonZeroUsize>) -> bool {
     told != width
 }
 
-/// Fold one measured interval of `model` into its shapes.
+/// Fold one measured interval of `model` into its evidence.
 pub fn observe(model: &str, step: DecodeStep) {
     if step.decoders == 0 || !step.seconds_per_token.is_finite() || step.seconds_per_token <= 0.0 {
         return;
     }
-    let mut observed = OBSERVED.lock();
-    let group = observed
-        .entry(model.to_owned())
-        .or_default()
-        .entry((step.decoders, step.summed_depth / FIT_DEPTH_BAND))
-        .or_default();
-    group.count += 1;
-    group.mean += (step.seconds_per_token - group.mean) / group.count as f64;
+    OBSERVED.lock().entry(model.to_owned()).or_insert_with(|| Evidence::of(&step)).add(&step);
 }
 
-/// The plane `model`'s measured shapes determine, `None` while they do not determine one.
+/// The plane `model`'s evidence determines, `None` while it does not determine one.
 pub fn plane(model: &str) -> Option<DecodePlane> {
-    let steps: Vec<(DecodeStep, f64)> = OBSERVED
-        .lock()
-        .get(model)?
-        .iter()
-        .map(|((decoders, band), group)| {
-            let step = DecodeStep { decoders: *decoders, summed_depth: band * FIT_DEPTH_BAND + FIT_DEPTH_BAND / 2, seconds_per_token: group.mean };
-            (step, group.count as f64)
-        })
-        .collect();
-    DecodePlane::fit(&steps).map(|fitted| fitted.plane)
+    OBSERVED.lock().get(model)?.plane()
 }
 
 /// The width for `model` with sequences generating at `depths`; `None` with no plane yet or nothing
@@ -81,18 +86,21 @@ mod tests {
     use super::*;
 
     // what this catches: a live width published from too little evidence, or one that does not
-    // follow the measured shapes. One shape determines nothing; spread shapes from a depth-bound
-    // engine choose one decoder at long contexts.
+    // follow the measured steps. One stream count determines no slope; spread steps from a
+    // depth-bound engine recover its plane and choose one decoder at long contexts.
     #[test]
-    fn a_width_follows_only_from_measured_shapes_that_determine_a_plane() {
+    fn a_width_follows_only_from_measured_steps_that_determine_a_plane() {
         let model = "test: depth-bound";
         let truth = DecodePlane { base: 0.005, per_decoder: 0.001, per_kdepth: 0.002 };
-        observe(model, DecodeStep { decoders: 2, summed_depth: 60_000, seconds_per_token: truth.step_s(2, 75_000) });
-        assert_eq!(width(model, &[150_000, 100_000]), None, "one shape determines no plane");
+        let step = |n: usize, d: u64| DecodeStep { decoders: n, summed_depth: d, seconds_per_token: truth.step_s(n, d) };
+        observe(model, step(2, 60_000));
+        observe(model, step(2, 160_000));
+        assert_eq!(width(model, &[150_000, 100_000]), None, "one stream count determines no slope");
         for (n, d) in [(1usize, 10_000u64), (3, 160_000), (4, 260_000), (1, 120_000)] {
-            let mid = d / FIT_DEPTH_BAND * FIT_DEPTH_BAND + FIT_DEPTH_BAND / 2;
-            observe(model, DecodeStep { decoders: n, summed_depth: d, seconds_per_token: truth.step_s(n, mid) });
+            observe(model, step(n, d));
         }
+        let fitted = plane(model).expect("test: spread steps determine the plane"); // test: three stream counts, several depths
+        assert!((fitted.per_kdepth - truth.per_kdepth).abs() < 1e-9, "{fitted:?}");
         assert_eq!(width(model, &[150_000, 100_000, 60_000, 1_200]).map(NonZeroUsize::get), Some(1));
         assert_eq!(width("test: never measured", &[1_000, 2_000]), None);
     }
