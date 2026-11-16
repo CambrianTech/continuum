@@ -86,9 +86,9 @@ fn calibration(hour: &Hour, costs: &Costs) -> Vec<(String, f64, f64, f64)> {
 const CALIBRATION_BOUND: f64 = 0.20;
 
 fn print_calibration(rows: &[(String, f64, f64, f64)], costs: &Costs) {
-    eprintln!("fits: prefill chunk {:.3} + {:.4} d + t ({:.3} + {:.4} d) s, t and d in k tokens (median residual {:.0}%); decode step {:.3} + {:.3} n + {:.4} D/1k s (median residual {:.0}%)",
-        costs.prefill[0], costs.prefill[1], costs.prefill[2], costs.prefill[3], costs.prefill_residual * 100.0,
-        costs.decode[0], costs.decode[1], costs.decode[2], costs.decode_residual * 100.0);
+    eprintln!("fits: prefill chunk {:.3} + {:.4} d + t ({:.3} + {:.4} d) s, t and d in k tokens (median residual {:.0?}%); decode step {:.3} + {:.3} n + {:.4} D/1k s (median residual {:.0?}%)",
+        costs.prefill[0], costs.prefill[1], costs.prefill[2], costs.prefill[3], costs.prefill_residual.map(|r| r * 100.0),
+        costs.decode[0], costs.decode[1], costs.decode[2], costs.decode_residual.map(|r| r * 100.0));
     for (n, r, m, e) in rows {
         eprintln!("   {n:34} recorded {r:9.1} modeled {m:9.1} ({:+.0}%)", e * 100.0);
     }

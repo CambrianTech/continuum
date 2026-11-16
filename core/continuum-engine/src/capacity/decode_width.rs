@@ -87,6 +87,11 @@ impl DecodePlane {
         let mut left = left.to_vec();
         let (mut now, mut finished) = (0.0, 0.0);
         for done in 0..left.len() {
+            // finished together with an earlier one (equal work): no further step is spent on it
+            if left[done] <= 0.0 {
+                finished += now;
+                continue;
+            }
             let active = done..left.len().min(done + width.get());
             let summed: u64 = depths[active.clone()].iter().sum();
             let steps = left[done].max(1.0);
