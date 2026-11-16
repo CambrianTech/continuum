@@ -489,7 +489,7 @@ pub async fn room_board(airc: &Airc, room: Option<uuid::Uuid>) -> Result<Arc<Boa
                     "work board requested for room {id}, which this scope is not subscribed to; refusing to substitute the default room's board"
                 ))
             })?,
-        None => airc.current_room().await?,
+        None => Err(AircError::NotSubscribed("explicit target room required; cannot silently substitute default".into()))?
     };
     let now_ms = EpochMs::now().millis(); // pre-1970 reads 0: leases read as not yet crossed
     for_peer(airc.peer_id()).board(airc, &room, now_ms).await
