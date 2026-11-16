@@ -88,6 +88,10 @@ where
         CommandDescriptor::of::<H::Spec>()
     }
 
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
     async fn invoke(
         &self,
         params: Value,
