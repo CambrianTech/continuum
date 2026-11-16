@@ -28,6 +28,7 @@ pub mod auth;
 pub mod benchmark_grade;
 pub mod citizen_health;
 pub(crate) mod deploy_actuator;
+pub use deploy_actuator::CONSUME_MAX_ATTEMPTS;
 pub mod deploy_tracker;
 pub mod deploy_candidate;
 pub mod floor_fetch;

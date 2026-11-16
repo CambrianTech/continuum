@@ -55,7 +55,8 @@ pub(crate) enum Decided {
     Skip(ActuateSkipReason),
 }
 
-use crate::bin::continuum::deploy_ledger::CONSUME_MAX_ATTEMPTS;
+/// The attempt cap shared between the actuator's decision logic and the consumer's own ledger. Defined here so both the library (deploy_actuator) and binary (deploy_ledger) see a single source of truth — no drift risk.
+pub(crate) const CONSUME_MAX_ATTEMPTS: u32 = 3;
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
 /// grade the action against the build it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -91,10 +91,7 @@ pub(super) enum ConsumeVerdict {
     GaveUp,
 }
 
-/// Attempts per tip before the consumer stops trying it and lets `deploy.stranded`
-/// speak. Three: one for a transient (a fetch hiccup, a RAM dip), one to confirm it
-/// is not, one more than that is a rebuild loop.
-pub(crate) const CONSUME_MAX_ATTEMPTS: u32 = 3;
+use continuum_core::modules::CONSUME_MAX_ATTEMPTS;
 
 pub(super) fn consume_verdict(
     request_tip: Option<&str>,
