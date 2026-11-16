@@ -1459,6 +1459,28 @@ the M5 with its process footprint flat, swap not growing, and decode at par.
 - *The core's reading.* The core applies a grant only when the reply (or a later `/props`) names the same instance
   and generation; anything else is not applied. A restart is a new instance, so its generation 0 is the launch grant.
 
+**Revision: where the bytes live, and no allocation or lock on the path** (Joel, 2026-11-16: "Strings are the
+enemy. Memory allocation and locking is the enemy. We don't have a data center man."; "It's graphics engine running
+ml efficiently, not some gigantic 1.5tb vram device and rack"). The contract above stands; its first cut (fork #136)
+held each resident in its own heap vector behind a `shared_ptr`, returned a fresh eviction list per reservation, kept
+residents in a node-allocating map and locked the pool on every call. A texture streamer does none of that:
+- *One arena, carved once.* The grant is one host region the pool maps at launch (on unified memory the same
+  physical pages the GPU reads), carved into fixed blocks. A resident is a typed handle `{block, count, generation}`
+  into it, never an owning container; a stale handle (its generation moved on) resolves to nothing. Raising or
+  lowering the grant remaps the region's tail; it never reallocates what lives below.
+- *Fixed tables, no per-call allocation.* Residents, reservations and the free list are fixed arrays sized from
+  the grant at launch; eviction candidates come from an intrusive order kept on the residents themselves; a
+  reservation's evictions are written into storage the caller owns. Nothing on the allocation path touches the heap.
+- *One owner thread, no lock.* The pool belongs to the engine thread that mutates native state (as above). Other
+  threads (page IO, the control seam) send it request frames and receive completions over the frame rings of
+  4.7.12; nobody else touches its tables, so there is no mutex to take.
+- *Typed outcomes, no strings.* Every result is a status enum of the API that returns it (admitted, oversized,
+  pinned_pressure, awaiting_release; applied, pending, wrong_instance, stale_generation, generation_conflict;
+  committed, unknown_reservation, larger_than_reserved). Names are rendered only at the export edge (`/props`).
+- *Proof.* The native test fills a small grant under concurrent save and restore requests over the rings, asserts
+  the accounting invariant at every allocation, and counts heap allocations on the path with an interposed
+  allocator: zero after launch.
+
 **Receipt since the stopgap restart.** The fresh engine (pid 97364, 13:01Z) decoded at 17.4 and 39.1 tok/s on its first
 acts, against 1.7 before; five minutes after launch it already held 7.6 GB compressed as the minds re-prefilled cold.
 A restart buys hours, not the fix.
