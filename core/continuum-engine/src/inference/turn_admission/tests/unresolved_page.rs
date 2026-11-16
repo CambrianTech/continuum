@@ -86,8 +86,11 @@ async fn delayed_engine() -> DelayedEngine {
                 }
             }
         }));
+    // Keep fixture identity distinct even when the OS reuses a former port.
+    let namespace = format!("/{}", Uuid::new_v4());
+    let app = Router::new().nest(&namespace, app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: address"));
+    let root = format!("http://{}{namespace}", listener.local_addr().expect("test: address"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     DelayedEngine { root, release, landed, drops_reply, entered, cut, server }
 }
