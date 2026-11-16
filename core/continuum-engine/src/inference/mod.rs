@@ -23,6 +23,7 @@ pub mod backends;
 pub mod batching_probe;
 pub mod child_log;
 pub mod embed_lane_memory;
+pub mod engine_contract;
 pub mod engine_client;
 pub use engine_client::engine_client;
 pub mod engine_stall;

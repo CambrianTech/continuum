@@ -14,6 +14,7 @@ use std::path::PathBuf;
 
 mod cpu_target;
 mod msvc_cache;
+mod contract_build;
 #[path = "../continuum-cli-lifecycle/src/cargo_cache_custody.rs"]
 mod cargo_cache_custody;
 
@@ -447,6 +448,8 @@ fn main() {
     bindings
         .write_to_file(&out_path)
         .expect("Failed to write bindings");
+    // the core<->engine contract (CONTINUUM-ENGINE 4.11): its bindings, schema identity and the engine's validator
+    contract_build::build(&submodule, &PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR is set when cargo runs this build script")));
     // These children supply static link inputs only; Metal's library is embedded
     // above. System runtime libraries remain outside this output. The generation
     // is also recorded in Cargo's captured producer output for legacy rollback.
