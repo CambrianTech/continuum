@@ -378,7 +378,7 @@ fn an_adopted_engines_report_reads_back_as_the_genes_it_holds() {
 #[test]
 fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
     let probes = std::collections::BTreeMap::from([
-        ("/slots/engine-a/llama-server".to_string(), ProbeOutcome::Answered { train_dir: true }),
+        ("/slots/engine-a/llama-server".to_string(), ProbeOutcome::Answered { train_dir: true, minds: false }),
         ("/slots/engine-b/llama-server".to_string(), ProbeOutcome::Unanswered),
     ]);
     assert_eq!(answer_for(&probes, "/slots/engine-a/llama-server"), Some(true));
@@ -394,8 +394,8 @@ fn a_train_dir_answer_is_about_the_binary_asked_and_no_other() {
 #[test]
 fn an_in_place_decision_rests_only_on_an_answer() {
     let probes = std::collections::BTreeMap::from([
-        ("answered-yes".to_string(), ProbeOutcome::Answered { train_dir: true }),
-        ("answered-no".to_string(), ProbeOutcome::Answered { train_dir: false }),
+        ("answered-yes".to_string(), ProbeOutcome::Answered { train_dir: true, minds: false }),
+        ("answered-no".to_string(), ProbeOutcome::Answered { train_dir: false, minds: false }),
         ("timed-out".to_string(), ProbeOutcome::Unanswered),
     ]);
     assert_eq!(train_dir_known(&probes, "answered-yes"), Some(true));

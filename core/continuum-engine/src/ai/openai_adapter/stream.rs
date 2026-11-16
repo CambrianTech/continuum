@@ -212,6 +212,11 @@ impl OpenAICompatibleAdapter {
             })?;
             // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
             let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
+            // Her state streams in while she waits for a lane (fork #139: a mind on flash is inserted into a
+            // parked sequence now, so her switch is a sequence move). Not awaited: it never delays her turn.
+            if let Some(key) = turn_key.filter(|_| class.holds_a_page()) {
+                crate::inference::minds::prefetch(self.client.clone(), root.to_string(), key);
+            }
             let adm = crate::inference::turn_admission::admit_turn(
                 endpoint_permits,
                 class,
@@ -273,6 +278,11 @@ impl OpenAICompatibleAdapter {
             if let Some(slot) = placement {
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert("id_slot".to_string(), json!(slot));
+                    // the mind this turn is (fork #139): the engine switches minds on a lane by sequence moves,
+                    // never through its prompt cache; an engine without minds ignores the field
+                    if let (true, Some(key)) = (keyed_turn, turn_key.as_ref()) {
+                        obj.insert("page".to_string(), json!(key.engine_id().simple().to_string()));
+                    }
                 }
                 if let (true, Some(persona)) = (
                     keyed_turn,

@@ -120,8 +120,10 @@ fn the_engine_launches_on_one_shared_pool() {
         Path::new("fixture.gguf"), planned.model_id(), "127.0.0.1", 1,
         planned.parallel_lanes(), planned.served_total_ctx(),
         planned.host_prompt_cache_mib, Path::new("pages"),
-    ));
+    ), Some(planned.parallel_lanes()));
     assert_eq!(invocation.value_of("-c"), Some("290560"));
     assert_eq!(invocation.value_of("--parallel"), Some("5"));
+    // what this catches: a mind switch serialized through the prompt cache because the engine had no parked ids
+    assert_eq!(invocation.value_of("--minds"), Some("5"), "an engine that lists --minds keeps one parked id per lane");
     assert_eq!(super::super::shared_pool::pool_launch(&invocation.args), super::super::PoolLaunch::Shared, "the launch and the read-back agree");
 }

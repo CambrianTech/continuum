@@ -39,6 +39,7 @@ pub mod handle_store;
 pub mod kv_cache_plan;
 pub mod kv_quant;
 pub mod lane_args;
+pub mod minds;
 pub mod lane_demand;
 pub mod lane_health;
 pub mod lane_send;
