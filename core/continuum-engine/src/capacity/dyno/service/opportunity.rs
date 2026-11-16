@@ -13,8 +13,9 @@
 //! - [`Opportunity::Grant`]: the cells not claimed by anyone (published, charged or physically
 //!   resident) plus what W herself holds cover her need. The publication must grant her.
 //! - [`Opportunity::Reclaim`]: they do not, no handoff is already in flight, and some other holder
-//!   H has completed a turn since her grant (a terminal receipt the scenario delivered on this
-//!   engine) and owns no request (no live, unsent or unresolved custody). The publication must
+//!   H owns no request (no live, unsent or unresolved custody) and has either used her seat (a
+//!   terminal receipt since her grant) or held it no longer than W has waited (aging, 4.10 P3: a
+//!   seat is protected until used, unless the waiter has waited at least as long). The publication must
 //!   begin a handoff (issue a ticket). Reclaiming H may not suffice alone; the owner accumulates
 //!   (`fair::tests::a_large_waiter_accumulates_reclaimed_capacity_across_two_holders`), and each
 //!   further completed holder is a further opportunity.
@@ -44,6 +45,8 @@ pub(crate) struct MindAt {
     pub completed_since_grant: bool,
     /// The publication at which she became owed service (`None` while not owed).
     pub owed_since: Option<u64>,
+    /// The publication she had been owed since when her current seat was granted (`None` with no seat).
+    pub seat_waited: Option<u64>,
     /// The owner is handing her publication off (charged until physical proof or fence).
     pub retiring: bool,
 }
@@ -82,6 +85,9 @@ pub(crate) enum NoOpportunity {
     CustodyOutstanding { waiter: Mind, holders: Vec<Mind> },
     /// No other mind holds a grant to reclaim.
     NoHolder { waiter: Mind },
+    /// Every holder not mid-act was seated after waiting longer than the waiter and has not used her
+    /// seat yet (4.10 P3's aging): her turn comes first.
+    SeatsProtected { waiter: Mind, holders: Vec<Mind> },
     /// A demand no sequence or pool can hold: an explicit placement shortfall, never a promise.
     Infeasible { mind: Mind, need: u32, limit: u32 },
 }
@@ -128,10 +134,16 @@ impl Boundary {
         }
         let holders: BTreeMap<Mind, MindAt> =
             self.minds.iter().filter(|(mind, m)| *mind != waiter && m.published > 0).map(|(mind, m)| (*mind, *m)).collect();
-        // any holder not mid-act is reclaimable (CONTINUUM-ENGINE 4.9 P3): completing a turn since her
-        // grant is no longer required, a seat she is not acting on is not hers to keep
-        if let Some((holder, _)) = holders.iter().find(|(_, m)| !m.custody) {
+        // a holder not mid-act is reclaimable once she has used her seat, or when the waiter has
+        // waited at least as long as she did for it (4.10 P3's aging): never a seat granted to a
+        // mind who waited longer and has not had her turn
+        let aged = |m: &MindAt| m.completed_since_grant || at.owed_since.zip(m.seat_waited).is_some_and(|(waited, seat)| waited <= seat);
+        if let Some((holder, _)) = holders.iter().find(|(_, m)| !m.custody && aged(m)) {
             return Ok(Opportunity::Reclaim { waiter, holder: *holder });
+        }
+        let protected: Vec<Mind> = holders.iter().filter(|(_, m)| !m.custody).map(|(mind, _)| *mind).collect();
+        if !protected.is_empty() {
+            return Err(NoOpportunity::SeatsProtected { waiter, holders: protected });
         }
         let pinned: Vec<Mind> = holders.iter().filter(|(_, m)| m.custody).map(|(mind, _)| *mind).collect();
         match pinned.len() == holders.len() && !pinned.is_empty() {
@@ -146,7 +158,7 @@ mod tests {
     use super::*;
 
     fn at(need: u32, published: u32) -> MindAt {
-        MindAt { need, published, charged: published, resident: published, custody: false, completed_since_grant: false, owed_since: None, retiring: false }
+        MindAt { need, published, charged: published, resident: published, custody: false, completed_since_grant: false, owed_since: None, seat_waited: (published > 0).then_some(1), retiring: false }
     }
 
     // what this catches: reading a released turn as released residency (section 4). A holder not
@@ -159,6 +171,12 @@ mod tests {
         let waiter = MindAt { owed_since: Some(1), ..at(40, 0) };
         let mut boundary = Boundary { pool: 100, ceiling: 100, minds: vec![(a, at(90, 90)), (b, waiter)] };
         assert_eq!(boundary.opportunity(), Ok(Opportunity::Reclaim { waiter: b, holder: a }));
+        // aging: a holder seated after waiting longer than the waiter, not yet served, keeps her seat
+        boundary.minds[0].1.seat_waited = Some(0);
+        assert_eq!(boundary.opportunity(), Err(NoOpportunity::SeatsProtected { waiter: b, holders: vec![a] }));
+        boundary.minds[0].1.completed_since_grant = true;
+        assert_eq!(boundary.opportunity(), Ok(Opportunity::Reclaim { waiter: b, holder: a }), "a used seat is reclaimable");
+        boundary.minds[0].1 = at(90, 90);
         assert_eq!(Boundary { pool: 100, ceiling: 100, minds: vec![(b, MindAt { owed_since: Some(1), ..at(140, 0) })] }.opportunity(),
             Err(NoOpportunity::Infeasible { mind: b, need: 140, limit: 100 }));
         boundary.minds[0].1.custody = true;

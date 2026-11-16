@@ -92,6 +92,9 @@ struct MindState {
     published: u32,
     completed_since_grant: bool,
     owed_since: Option<u64>,
+    /// The publication she had been owed since when her current seat was granted: what the aging
+    /// rule compares a waiter's wait against (4.10 P3).
+    seat_waited: Option<u64>,
 }
 
 impl MindState {
@@ -141,7 +144,7 @@ impl World {
         let states = order.iter().zip(minds).map(|(id, (name, need))| {
             (*id, MindState {
                 name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, hold: None, reservation: None, reserved_on: None,
-                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None,
+                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, seat_waited: None,
             })
         }).collect();
         Self {
@@ -212,7 +215,7 @@ impl World {
             (*mind, MindAt {
                 need: s.need, published: s.published, charged: seen.charged.get(mind).copied().unwrap_or(0), // unwrap_or: nothing charged
                 resident: s.resident, custody: s.owns_request(),
-                completed_since_grant: s.completed_since_grant, owed_since: s.owed_since, retiring: seen.retiring.contains_key(mind),
+                completed_since_grant: s.completed_since_grant, owed_since: s.owed_since, seat_waited: s.seat_waited, retiring: seen.retiring.contains_key(mind),
             })
         }).collect();
         Boundary { pool: self.pool, ceiling: self.ceiling, minds }
@@ -364,6 +367,8 @@ impl World {
             let s = self.minds.get_mut(&mind).expect("test: ordered mind");
             if s.published < s.need && granted >= s.need {
                 s.completed_since_grant = false;
+                // seated at once without waiting: she has waited since this publication
+                s.seat_waited = Some(s.owed_since.unwrap_or(publication)); // unwrap_or: never owed is owed since now
                 s.owed_since = None;
                 self.first_served.entry(mind).or_insert(publication);
                 applied.newly_served.push(index);

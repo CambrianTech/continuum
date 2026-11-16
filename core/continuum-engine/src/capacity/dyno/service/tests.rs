@@ -162,9 +162,10 @@ mod interleavings {
         let mut world = World::new(100, 100, &[("A", 40), ("C", 40), ("B", 60)]);
         run(&mut world, &[Step::Publish]);
         assert_eq!((world.published(0), world.published(1), world.published(2)), (40, 40, 0), "B waits");
-        run(&mut world, &turn(0));
-        run(&mut world, &[Step::Terminal(0), Step::Quote(0)]);
-        assert_eq!(world.phase(0), Phase::Quoted, "her next act holds the grant it is rendered against");
+        // her act is rendered before her seat's first use: a mind owed a seat stops her NEXT act after
+        // a completed one (P3's yield at the receipt boundary), never the one already rendered
+        run(&mut world, &[Step::Quote(0)]);
+        assert_eq!(world.phase(0), Phase::Quoted, "her act holds the grant it is rendered against");
         let applied = world.apply(Step::Publish);
         assert!(applied.tickets.is_empty(), "no handoff under a rendered act\n{}", world.log.join("\n"));
         assert_eq!(world.published(0), 40, "her grant does not move under the act");
