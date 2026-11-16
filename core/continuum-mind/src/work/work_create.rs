@@ -240,6 +240,25 @@ impl ActionCommand for WorkState {
                 "another's card taken over on the record before its column moved"
             );
         }
+        if route == work_preconditions::StateRoute::ReviseOwnSubmission {
+            // Her own reviewed work, nobody holding it: reopened by its state first (airc reopens
+            // settled work by a transition, never a claim), then held through the one claim path,
+            // which stages the card's checkout so her hands stand in her own work again.
+            let actor = ctx.caller.as_ref().map(|c| c.peer_id.as_uuid());
+            advance_card_state_effective(&airc, card_id, CardState::InProgress, "work-state-revise", actor)
+                .await
+                .map_err(CommandError::Internal)?;
+            let claim = WorkClaim { registry: self.registry.clone() }
+                .run(ctx, WorkClaimParams { origin: WorkClaimOrigin::Explicit, card_id: p.card_id.clone(), ttl_ms: None })
+                .await?;
+            continuum_base::probe!(
+                class = "work.state.revise_own_submission",
+                card_id = %card_id.as_uuid(),
+                claim_id = %claim.claim_id,
+                "her reviewed card reopened and held again, so she revises her own submission in its checkout"
+            );
+            return Ok(WorkStateResult { card_id: p.card_id, state: state_str(&CardState::InProgress).to_string() });
+        }
         if route == work_preconditions::StateRoute::ThroughClaim {
             let claim = WorkClaim {
                 registry: self.registry.clone(),
