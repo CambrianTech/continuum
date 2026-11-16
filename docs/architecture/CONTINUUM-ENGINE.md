@@ -1377,42 +1377,66 @@ user's own programs. The core also cannot see what it got: its launch probe says
 telemetry are not exposed by current engine API" (`serving.prompt_cache.launch`, 13:01:01Z).
 
 **The design: one pool, one budget, eviction by value at the allocation, reported every request.**
-1. *One host pool in the fork.* Prompt-cache entries and checkpoints (and, when 4.1a's pager lands, RAM pages) are
-   residents of ONE host pool with ONE byte budget. There is no per-holder size and no count: `--cache-ram` and
-   `--ctx-checkpoints` as separate limits are deleted (slice 3b already lists their derivations for deletion).
-2. *An allocation never exceeds the budget.* Before a resident is admitted (a checkpoint taken, a cache entry
-   stored), the pool frees the lowest-valued residents until it fits; if it cannot fit even alone, it is not taken
-   and the miss is reported (typed, counted), never an overflow. This happens on the engine's thread at the
-   allocation, the way a texture streamer evicts before it uploads, never by a later sweep.
-3. *Value is the restore it buys.* A checkpoint's value is the prefill it saves (the tokens from its position to its
-   sequence's end, at the measured prefill rate) times the chance its sequence resumes from it; a placed checkpoint at
-   a mind's stable end (4.7.3) is worth her every next act, a blind step checkpoint behind it is worth almost nothing
-   once she has a later one. A cache entry's value is its measured restore hits. Until the core's solver supplies values
-   (slice 3b), the fork orders by these two measured terms itself, so the rule exists before the solver does.
-4. *The budget is the core's, and it moves live.* The authority's device tier grants serving's host pool its bytes
+1. *One host pool in the fork.* Prompt-cache entries, checkpoints and RAM pages are resource kinds of ONE host pool
+   with ONE byte budget. There is no per-holder size and no count: `--cache-ram` and `--ctx-checkpoints` as separate
+   limits are deleted (slice 3b already lists their derivations for deletion). RAM pages join the accounting contract
+   now as a kind; allocating them stays with the pager that owns paging (4.1a), never a second pager or heap here.
+2. *Bytes are reserved before they exist.* A checkpoint save or cache store first reserves its full peak in the pool:
+   the serialized size, its temporary serialization buffers, the overlap while a replacement and the entry it
+   replaces are both alive, and the allocator capacity it will hold. Reserving evicts the lowest-valued evictable
+   residents until the reservation fits; the copy runs only inside a granted reservation, the reservation is rolled
+   back on failure, and the old valid entry stays until its replacement is committed. A size check after serializing
+   would already have allowed the peak that swaps. This runs on the engine's thread at the allocation, the way a
+   texture streamer evicts before it uploads, never by a later sweep. The pool owns reservations and eligibility; the
+   engine thread owns native state mutation; disk work, when it comes, goes through the existing asynchronous
+   completion owner, never blocking decode.
+3. *Pinned is not evictable.* A checkpoint being restored, a cache entry an act is resuming from, and a save in
+   flight are pinned. An allocation that cannot fit after legal eviction of every unpinned resident is a typed refusal
+   (oversized, or pinned pressure), counted, never an overflow. A shrink below what pinned residents hold cannot apply
+   at once: it returns a typed outcome naming the target, the committed, pinned and reserved bytes (applied, pending,
+   or refused), and the pending part completes through the existing owner as physical custody ends.
+4. *One value unit: expected seconds saved per byte kept.* A checkpoint's value is the prefill time it saves (the
+   tokens from its position to its sequence's end, at the measured prefill rate) times the measured chance its
+   sequence resumes from it, per byte it holds; a cache entry's is its measured restores times the prefill time each
+   saved, per byte. Each value carries its provenance; an unmeasured resident is in an explicit `Unmeasured` state,
+   never a guessed number; ties break deterministically (oldest use first, then id). This is the one ordering until
+   the core's solver supplies values (slice 3b): no second, independent sizing policy in the meantime.
+5. *The budget is the core's, and it moves live.* The authority's device tier grants serving's host pool its bytes
    (the machine's measured memory less every other claim, the user's own programs included, ONE-BUDGET acceptance);
    the core sets it over the engine's control seam and may raise or lower it at any time without a relaunch (S2's
-   `reconfigure`, 4.5). Lowering it evicts down to it before the call returns.
-5. *The pool says what it holds.* `/props` (and `/slots` per sequence) reports the budget as applied, the bytes in use
-   by class (cache, checkpoint, page), the count per class, and the evictions and refused admissions since start. The
-   core reads the applied budget back and refuses to treat an unreported limit as applied.
-6. *The invariant is checked, not hoped.* The engine's footprint stays at or under its fixed holders plus the pool's
-   budget, at every sample; swap that grows while the engine's footprint grows is a defect with a probe
-   (`serving.host_pool.over_budget`), never a cost. The simulator scenario (7.0) replays a day of the four residents'
-   captured requests against a budget a quarter of their unbounded need and asserts the footprint stays flat, nothing
-   is refused that fit, and decode stays at its measured par.
+   `reconfigure`, 4.5), each grant carrying a generation.
+6. *The pool says what it holds, keyed by instance and generation.* `/props` (and `/slots` per sequence) reports the
+   budget as applied with its grant generation and the engine instance, the committed, reserved and pinned bytes by
+   kind (cache, checkpoint, page), the count per kind, and the evictions and typed refusals since start. The core
+   matches each readback to the engine instance and grant generation it sent (through a concurrent resize or a
+   restart) and refuses to treat an unreported or stale limit as applied.
+7. *Two invariants, measured separately.* (a) The pool's accounting: committed plus reserved bytes stay at or under
+   the grant at every allocation, asserted in the fork. (b) The process: its private, resident, compressed and swapped
+   bytes are measured on their own, because logical pool bytes do not bound them (scratch and graph allocations,
+   allocator-retained capacity, mapped weights and the OS's compression are outside the pool); a process that grows
+   past its fixed holders plus the grant is a defect with a probe (`serving.host_pool.over_budget`), never a cost. The
+   simulator (7.0) proves admission and accounting: a day of the four residents' captured requests against a grant a
+   quarter of their unbounded need, every allocation within the grant, everything served that fits the grant after
+   legal eviction of unpinned residents, and only oversized or pinned-pressure refusals. Decode at par and a flat
+   process footprint are proven by native replay and the live read, not by the simulator.
 
 **What this makes of the pieces already in flight.** Placed checkpoints (fork #121) stop making the worthless ones;
 the pool makes even a wrong placement unable to swap the machine. The safe stop (4.9, #6042) keeps a mind's KV across a
 restart; the pool removes the reason a restart was the only relief. Slice 3b's solver later supplies the values and
 the budget; the pool is the primitive it drives, the way a renderer drives a streaming pool it does not reimplement.
 
-**Order.** (1) The fork's pool with one budget, eviction by the two measured values, and its report (Fable), proven by a
-native test that fills a small budget with checkpoints and cache entries and asserts it never exceeds it and keeps the
-highest-valued. (2) The core sets the budget from the authority and verifies the applied figure, deleting
-`host_prompt_cache_mib`'s sizing and the checkpoint-count derivation (Fable, review Codex). (3) The day-long simulator
-scenario above as the gate, then the live read: an engine up 24 h on the M5 with its footprint flat, swap not growing,
-and decode at par.
+**Order and owners** (agreed with Codex on #6081, 2026-11-16). (1) Fable: the fork's pool (reservations, pinning,
+eviction by value per byte, typed outcomes, the instance- and generation-keyed report), proven by native tests that
+fill a small grant with checkpoints and cache entries under concurrent saves and restores, and assert the accounting
+invariant at every allocation, the highest value per byte kept, and only typed refusals. (2) Codex: the core's
+authority grant to the pool, applying it live with its generation and reading it back by instance, and the deletion of
+both independent sizers (`host_prompt_cache_mib`'s figure and the checkpoint-count derivation). (3) The simulator
+scenario above as the accounting gate; then native replay for decode at par, and the live read: an engine up 24 h on
+the M5 with its process footprint flat, swap not growing, and decode at par.
+
+**Receipt since the stopgap restart.** The fresh engine (pid 97364, 13:01Z) decoded at 17.4 and 39.1 tok/s on its first
+acts, against 1.7 before; five minutes after launch it already held 7.6 GB compressed as the minds re-prefilled cold.
+A restart buys hours, not the fix.
 
 ### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
 
