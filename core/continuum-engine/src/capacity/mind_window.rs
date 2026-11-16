@@ -347,37 +347,31 @@ mod tests {
     #[tokio::test]
     async fn a_mind_whose_seat_is_reclaimed_waits_within_her_turn_then_runs() {
         let her = uuid::Uuid::from_u128(5);
-        let listed = |at| evaluation(at, grants(&[(her, 30_000)]), None).expect("evaluation");
-        let (sender, installed) = tokio::sync::watch::channel(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1))));
         let measured = Cell::new(0);
-        let reseated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let publisher = {
-            let reseated = reseated.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                sender.send(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1)))).expect("the waiter holds a receiver");
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-                reseated.store(true, std::sync::atomic::Ordering::SeqCst);
-                sender.send(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1)))).expect("the waiter holds a receiver");
-            })
-        };
-        let decided = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            decide_window(
-                her,
-                || match reseated.load(std::sync::atomic::Ordering::SeqCst) {
-                    false => MindWindow::Ungranted,
-                    true => MindWindow::Decided(Decided::Granted(t(30_000))),
-                },
-                || measured.set(measured.get() + 1),
-                |at| Ok(next_evaluation(installed.clone(), at)),
-            ),
+        let reseated = Cell::new(false);
+        let evaluations = Cell::new(0);
+        // each evaluation lists her seat (it is retiring, so she is ungranted); from the second on the
+        // reclaim has finished and she is seated again
+        let decided = decide_window(
+            her,
+            || match reseated.get() {
+                false => MindWindow::Ungranted,
+                true => MindWindow::Decided(Decided::Granted(t(30_000))),
+            },
+            || measured.set(measured.get() + 1),
+            |at| {
+                evaluations.set(evaluations.get() + 1);
+                reseated.set(evaluations.get() >= 2);
+                match evaluations.get() {
+                    n if n > 3 => Err(GrantsUnavailable), // a wait that never ends would show here, not hang
+                    _ => Ok(std::future::ready(evaluation(at, grants(&[(her, 30_000)]), None).ok_or(WindowRefused::Unavailable(GrantsUnavailable)))),
+                }
+            },
         )
-        .await
-        .expect("seated again within the publisher's beats, never a refused turn");
-        publisher.await.expect("publisher");
+        .await;
         assert_eq!(decided, Ok(Decided::Granted(t(30_000))), "she waited while her seat was reclaimed and ran");
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
+        assert_eq!(evaluations.get(), 2, "one evaluation saw her seat retiring, the next seated her");
     }
 
     // what this catches (Codex on #5890; the M5 on 26960c09d, 186 failed turns an hour): a demand
