@@ -27,7 +27,7 @@ fn began(at: u64, (engine, step): (EngineIncarnation, u64), chosen: &[u64]) -> S
 }
 
 fn ended(at: u64, (engine, step): (EngineIncarnation, u64), ran: &[u64]) -> Stamped<WorkloadEvent> {
-    let work = ran.iter().map(|&id| StepWork { sequence: SequenceId(id), depth: 0, prefilled: 0, decoded: 1, accepted_draft: 0 }).collect();
+    let work = ran.iter().map(|&id| StepWork { sequence: SequenceId(id), depth: 0, prefilled: 0, decoded: 1, accepted_draft: None }).collect();
     Stamped { at: ms(at), event: WorkloadEvent::StepEnded { engine, step: StepId(step), work } }
 }
 

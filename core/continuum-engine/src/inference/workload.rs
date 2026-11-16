@@ -75,9 +75,11 @@ pub struct StepWork {
     pub depth: u32,
     pub prefilled: u32,
     pub decoded: u32,
-    /// Of the decoded tokens, those a draft proposed and the model accepted.
-    pub accepted_draft: u32,
+    /// Of the decoded tokens, those a draft proposed and the model accepted; `None` when the engine
+    /// could not count them (the task finished inside the step and its counters reset).
+    pub accepted_draft: Option<u32>,
 }
 
 mod ready;
+pub mod steps;
 pub use ready::{MindProgress, Replay, ReplayError, Replayed, SequenceKey, StepView};

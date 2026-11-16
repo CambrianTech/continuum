@@ -19,6 +19,9 @@ use std::time::{Duration, Instant};
 /// Where one kind of record goes, with the moment it happened on the producer's monotonic clock.
 pub trait CaptureSink<E>: Send + Sync {
     fn record(&self, happened: Instant, event: E);
+    /// `count` records the producer lost before they reached this sink (its own full buffer, a gap
+    /// in its sequence): the interval they fell in is incomplete.
+    fn missed(&self, count: u64);
 }
 
 /// Nobody is watching.
@@ -27,6 +30,7 @@ pub struct Noop;
 
 impl<E> CaptureSink<E> for Noop {
     fn record(&self, _happened: Instant, _event: E) {}
+    fn missed(&self, _count: u64) {}
 }
 
 /// One capture: every interval drained from one ring.
@@ -231,6 +235,11 @@ impl<E: Send> CaptureSink<E> for Ring<E> {
         state.events.insert(place, Stamped { at, event });
         state.last = state.last.max(at);
     }
+
+    fn missed(&self, count: u64) {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); // poison holds valid records: a panic elsewhere never loses the capture
+        state.missing.dropped = state.missing.dropped.saturating_add(count);
+    }
 }
 
 #[cfg(test)]
@@ -270,6 +279,18 @@ mod tests {
         let second = sink.drain();
         assert_eq!(second.missing.misordered, 1, "its interval was already drained");
         assert!(first.complete().is_ok() && second.complete().is_err());
+    }
+
+    /// what this catches: a producer's own loss (its full buffer) never reaching the sink would let
+    /// that interval gate; reported loss voids it like a drop here.
+    #[test]
+    fn loss_reported_by_the_producer_voids_the_interval() {
+        let sink = ring(8);
+        sink.record(Instant::now(), 1);
+        sink.missed(2);
+        let interval = sink.drain();
+        assert_eq!(interval.missing.dropped, 2);
+        assert!(interval.complete().is_err());
     }
 
     /// what this catches: intervals must tile time from the capture's origin with no gap and no
