@@ -12,7 +12,8 @@
 use std::path::{Path, PathBuf};
 
 use crate::elevated_teardown::{
-    bind_plan_bytes, digest, elevation_outcome, teardown_sequence, HeldCapability, TeardownPlan,
+    bind_plan_bytes, digest, elevation_outcome, teardown_sequence, ElevationError, HeldCapability,
+    TeardownPlan, TeardownPlanError,
 };
 
 pub(crate) fn receipt_path(plan: &Path) -> PathBuf {
@@ -21,15 +22,23 @@ pub(crate) fn receipt_path(plan: &Path) -> PathBuf {
 
 /// SHA-256 (hex) of some bytes. The same function binds the supervisor plan; a digest
 /// is a digest, and having two of them would be the first place they drift.
-pub(crate) fn read_bound_plan(plan_path: &Path, plan_sha: &str) -> Result<TeardownPlan, String> {
-    let bytes = std::fs::read(plan_path)
-        .map_err(|e| format!("cannot read the teardown plan {}: {e}", plan_path.display()))?;
+pub(crate) fn read_bound_plan(
+    plan_path: &Path,
+    plan_sha: &str,
+) -> Result<TeardownPlan, TeardownPlanError> {
+    let bytes = std::fs::read(plan_path).map_err(|source| TeardownPlanError::Read {
+        path: plan_path.to_path_buf(),
+        source,
+    })?;
     bind_plan_bytes(&bytes, plan_sha, plan_path)
 }
 
 /// The digest gate itself, over bytes rather than a path.
-pub(crate) fn digest_file(path: &Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+pub(crate) fn digest_file(path: &Path) -> Result<String, TeardownPlanError> {
+    let bytes = std::fs::read(path).map_err(|source| TeardownPlanError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
     Ok(digest(&bytes))
 }
 
@@ -68,13 +77,11 @@ struct HeldTerminate(continuum_host::termination_authority::HeldProcess);
 /// nothing about the order; a Windows-only sequence could only ever
 /// have been asserted in a comment from here.
 impl HeldCapability for HeldTerminate {
-    fn image(&self) -> Result<String, String> {
-        self.0.image().map_err(|error| error.to_string())?
-            .into_os_string().into_string()
-            .map_err(|_| "the process image is not representable by the teardown plan".to_owned())
+    fn image(&self) -> Result<PathBuf, TeardownPlanError> {
+        self.0.image().map_err(TeardownPlanError::Image)
     }
-    fn spend(self) -> Result<(), String> {
-        self.0.terminate(1).map_err(|error| error.to_string())
+    fn spend(self) -> Result<(), TeardownPlanError> {
+        self.0.terminate(1).map_err(TeardownPlanError::Terminate)
     }
 }
 
@@ -82,7 +89,7 @@ pub async fn teardown_elevated<F, Fut>(
     plan_path: &Path,
     plan_sha: &str,
     drain: F,
-) -> Result<(), String>
+) -> Result<(), TeardownPlanError>
 where
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = String>,
@@ -92,16 +99,16 @@ where
         let plan = read_bound_plan(plan_path, plan_sha)?;
         let (image, graceful) = teardown_sequence(&plan, |pid| {
             let pid = continuum_host::process_id::ProcessId::try_from(pid)
-                .map_err(|error| error.to_string())?;
+                .map_err(TeardownPlanError::InvalidPid)?;
             continuum_host::termination_authority::HeldProcess::take(pid)
-                .map(HeldTerminate).map_err(|error| error.to_string())
+                .map(HeldTerminate).map_err(TeardownPlanError::Take)
         }, drain).await?;
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
-        let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
-        Ok::<String, String>(format!(
-            "elevated teardown: drained ({graceful}) and terminated pid {} running {image} (sha256 {sha})",
-            plan.pid
+        let sha = digest_file(&image).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
+        Ok::<String, TeardownPlanError>(format!(
+            "elevated teardown: drained ({graceful}) and terminated pid {} running {} (sha256 {sha})",
+            plan.pid, image.display()
         ))
     }
     .await;
@@ -122,39 +129,36 @@ where
 /// the alternative reading ("the teardown failed") sends the next reader hunting for
 /// damage that does not exist. Every other outcome carries the child's receipt, or says
 /// plainly that there was none.
-pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
+pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(), ElevationError> {
     let plan = TeardownPlan {
         pid,
-        install_dir: install_dir.to_string(),
+        install_dir: install_dir.to_path_buf(),
     };
     let plan_path =
         std::env::temp_dir().join(format!("continuum-teardown-{}.json", std::process::id()));
     let receipt = receipt_path(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    let bytes = serde_json::to_vec_pretty(&plan).map_err(|e| e.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&plan).map_err(ElevationError::Encode)?;
     let plan_sha = digest(&bytes);
-    std::fs::write(&plan_path, &bytes)
-        .map_err(|e| format!("install: cannot write the teardown plan: {e}"))?;
-    let exe = std::env::current_exe().map_err(|e| format!("install: own path: {e}"))?;
-    let quote = |s: String| s.replace('\'', "''");
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList \
-         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait \
-         -PassThru; exit $p.ExitCode",
-        quote(exe.display().to_string()),
-        quote(plan_path.display().to_string()),
-    );
-    // The consent prompt waits for a human; ten minutes is the wall past which nobody
-    // is there. Same budget the supervisor's one consent gets.
+    std::fs::write(&plan_path, &bytes).map_err(ElevationError::Write)?;
+    let exe = std::env::current_exe().map_err(ElevationError::OwnPath)?;
+    let script = consent_script(&exe, &plan_path, &plan_sha);
+    // Consent waits for a human, bounded by the supervisor's existing ten-minute budget.
     let elevated =
-        super::supervisor_install::powershell(&script, std::time::Duration::from_secs(600)).await;
-    // unwrap_or_default: an absent receipt is reported below as "none", never as success.
-    let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default(); // unwrap_or_default: an absent receipt is reported below as "none", never as success
+        continuum_host::powershell::run(&script, std::time::Duration::from_secs(600)).await;
+    let receipt_text = match std::fs::read_to_string(&receipt) {
+        Ok(text) => Ok(Some(crate::elevated_teardown::TeardownReceipt(text))),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ElevationError::Receipt(error)),
+    };
     let _ = std::fs::remove_file(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    elevation_outcome(pid, elevated, &receipt_text)?;
-    if !receipt_text.is_empty() {
-        println!("{}", receipt_text.trim());
+    let outcome: crate::elevated_teardown::ConsentOutcome =
+        serde_json::from_slice(&elevated?.stdout)?;
+    let receipt_text = receipt_text?;
+    elevation_outcome(pid, outcome, receipt_text.as_ref())?;
+    if let Some(text) = receipt_text {
+        println!("{text}");
     }
     // THE PROCESS BEING GONE IS THE PROOF, not the child's exit code — the whole defect
     // this module exists for was a kill path that trusted its own return. The caller
@@ -163,3 +167,113 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<()
     Ok(())
 }
 
+fn consent_script(exe: &Path, plan_path: &Path, plan_sha: &str) -> String {
+    // A PowerShell string is UTF-16 too. Construct its native units directly:
+    // Display/UTF-8 conversion would replace an unpaired surrogate in an OS path.
+    fn native_literal(path: &Path) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        let units = path
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| unit.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("[string]::new([char[]]@({units}))")
+    }
+    let executable = native_literal(exe);
+    let plan = native_literal(plan_path);
+    format!(
+        r#"$ErrorActionPreference='Stop'; $exe=({executable}); $plan=({plan});          try {{ $p = Start-Process -FilePath $exe -ArgumentList          @('stop','--elevated','--plan',('"' + $plan + '"'),'--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait          -PassThru }} catch [System.ComponentModel.Win32Exception] {{          if ($_.Exception.NativeErrorCode -eq 1223) {{ @{{kind='refused'}} | ConvertTo-Json -Compress; exit 0 }}; throw }};          @{{kind='completed';exitCode=[int]$p.ExitCode}} | ConvertTo-Json -Compress"#
+    )
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elevated_teardown::ConsentOutcome;
+    use continuum_host::powershell::{run as powershell, PowerShellError};
+
+    #[tokio::test]
+    async fn launch_paths_keep_native_units_and_quote_the_plan_argument() {
+        use std::os::windows::ffi::OsStringExt;
+        let mut units: Vec<u16> = r"C:\a folder\a'".encode_utf16().collect();
+        units.push(0xd800);
+        units.extend(".exe".encode_utf16());
+        let exe = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let plan = Path::new(r"C:\a folder\plan.json");
+        let expected = units
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mock = format!(
+            r#"
+function Start-Process {{
+    param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru)
+    if ((($FilePath.ToCharArray() | ForEach-Object {{ [int]$_ }}) -join ',') -cne '{expected}') {{ throw 'native path changed' }}
+    if ($ArgumentList[3] -cne '"C:\a folder\plan.json"') {{ throw 'plan argument was not quoted' }}
+    [pscustomobject]@{{ExitCode=0}}
+}}
+"#
+        );
+        // Use a string-valued WindowStyle like the real Start-Process contract.
+
+        let raw = powershell(
+            &format!(
+                "{mock}
+{}",
+                consent_script(&exe, plan, "digest")
+            ),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("native path argument replay succeeds");
+        assert!(matches!(
+            serde_json::from_slice::<ConsentOutcome>(&raw.stdout).expect("typed outcome"),
+            ConsentOutcome::Completed { exit_code: 0 }
+        ));
+    }
+    // Exercise the real Windows PowerShell exception/protocol boundary without
+    // asking for consent or touching a resident process.
+    #[tokio::test]
+    async fn native_consent_codes_do_not_confuse_refusal_and_child_failure() {
+        let script = consent_script(Path::new("unused.exe"), Path::new("unused.json"), "digest");
+        for (mock, expected) in [
+            (
+                "function Start-Process { throw [ComponentModel.Win32Exception]::new(1223, 'operator declined') }",
+                "refused",
+            ),
+            (
+                "function Start-Process { [pscustomobject]@{ExitCode=1223} }",
+                "completed",
+            ),
+        ] {
+            let raw = powershell(
+                &format!(
+                    "{mock}
+{script}"
+                ),
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("the typed launcher protocol succeeds");
+            let outcome: ConsentOutcome = serde_json::from_slice(&raw.stdout).expect("typed launch outcome");
+            match (expected, outcome) {
+                ("refused", ConsentOutcome::Refused) => {}
+                ("completed", ConsentOutcome::Completed { exit_code: 1223 }) => {}
+                other => panic!("wrong consent outcome: {other:?}"),
+            }
+        }
+        let denied = powershell(
+            &format!(
+                "function Start-Process {{ throw [ComponentModel.Win32Exception]::new(5) }}
+{script}"
+            ),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(PowerShellError::Exit { .. })),
+            "access denied is a launch failure, never an untouched/refused claim"
+        );
+    }
+}

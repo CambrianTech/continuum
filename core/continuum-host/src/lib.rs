@@ -14,6 +14,8 @@ pub mod file_identity;
 pub mod host_memory;
 pub mod local_stream;
 pub mod output_handoff;
+pub mod path_spelling;
+pub mod powershell;
 pub mod own_group;
 pub mod positioned;
 pub mod process_class;
