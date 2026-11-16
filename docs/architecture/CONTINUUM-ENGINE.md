@@ -1700,6 +1700,15 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
     when tied. A generating slot outside the set stays GENERATING with its KV in place and its sampler
     state untouched; it simply adds no token to this batch. Prompt slots are untouched (the fork's
     fill and its time-fair interleave are unchanged).
+  - *Measured on the dyno (2026-11-16, #6067):* the width with each sequence's remaining work known,
+    shortest remaining first, beats `Fork` on median, p90 and oldest wait. The live shape, a width with
+    remaining work unknown and the engine filling it by wait (`PublishedWidth`), does not yet: (145,
+    365, 151) s against the fork's (142, 377, 234): a shorter tail and oldest wait, a longer median.
+    So the request carries her expected remaining output (her measured need, think plus answer, the
+    same figure the output allowance reports as `need_term`), the engine fills the width shortest
+    expected remaining first (aging still bounds every wait), and the live publisher goes on only
+    when the live shape passes the same gate (`the_published_width_beats_every_slot_decoding_on_the_
+    recorded_hour`, ignored until then).
   - *Proof before live:* the dyno replay shows the measured width beats `Fork` on the recorded hour
     (median and p90 act, oldest waiter, longest decode gap), then the slice 1 capture of a live hour
     replays to the live act times (7.0). Thinking stays uncapped (Joel, 2026-11-09): only the
