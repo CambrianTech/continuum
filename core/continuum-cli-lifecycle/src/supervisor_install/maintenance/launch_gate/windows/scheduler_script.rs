@@ -126,7 +126,7 @@ pub(super) async fn pin_verified_bootstrap(root: &Path, cooperative: bool) -> Re
     let core = super::super::super::super::task_report(super::super::super::super::CORE_TASK).await?;
     let deploy = super::super::super::super::task_report(super::super::super::super::DEPLOY_TASK).await?;
     let sid = super::super::super::super::caller_sid().await?;
-    let envelope = installed_release::envelope(&core.description)?
+    let envelope = installed_release::envelope(&core.description).map_err(|error| error.to_string())?
         .ok_or("maintenance requires a protected supervisor; finish the supported installer transition first")?;
     let program_files =
         PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);

@@ -32,18 +32,28 @@ pub struct Release {
     pub eye_root: Option<String>,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum InstallerRootError {
+    #[error("installed release has no installer root")]
+    Missing,
+    #[error("installed installer root must be absolute: {0}")]
+    Relative(PathBuf),
+    #[error("installed installer root {root} lacks {module}")]
+    MissingModule { root: PathBuf, module: &'static str },
+}
+
 impl Release {
     /// Installed binaries run beside their DLLs, not inside the installer checkout.
     /// Handoff and recovery must use the root registered with this release, never
     /// a build-time path or an unrelated tracked main checkout.
-    pub fn installer_root(&self) -> Result<PathBuf, String> {
+    pub fn installer_root(&self) -> Result<PathBuf, InstallerRootError> {
         let root = PathBuf::from(
             self.eye_root
                 .as_deref()
-                .ok_or("installed release has no installer root")?,
+                .ok_or(InstallerRootError::Missing)?,
         );
         if !root.is_absolute() {
-            return Err("installed installer root must be absolute".into());
+            return Err(InstallerRootError::Relative(root));
         }
         for module in [
             "install-common.ps1",
@@ -52,10 +62,7 @@ impl Release {
             "win-modules.ps1",
         ] {
             if !root.join("tools/scripts/lib").join(module).is_file() {
-                return Err(format!(
-                    "installed installer root {} lacks {module}",
-                    root.display()
-                ));
+                return Err(InstallerRootError::MissingModule { root, module });
             }
         }
         Ok(root)
@@ -70,16 +77,26 @@ struct Receipt {
     hashes: BTreeMap<String, String>,
 }
 
-pub fn envelope(description: &str) -> Result<Option<Envelope>, String> {
+#[derive(Debug, thiserror::Error)]
+pub enum EnvelopeError {
+    #[error("invalid supervisor descriptor: {0}")]
+    Descriptor(#[source] serde_json::Error),
+    #[error("invalid supervisor envelope: {0}")]
+    Structure(#[source] serde_json::Error),
+    #[error("unsupported supervisor envelope schema {actual}; required 2")]
+    Schema { actual: u32 },
+}
+
+pub fn envelope(description: &str) -> Result<Option<Envelope>, EnvelopeError> {
     let value: serde_json::Value = serde_json::from_str(description)
-        .map_err(|e| format!("invalid supervisor descriptor: {e}"))?;
+        .map_err(EnvelopeError::Descriptor)?;
     if value.get("schema").is_none() {
         return Ok(None);
     }
     let envelope: Envelope =
-        serde_json::from_value(value).map_err(|e| format!("invalid supervisor envelope: {e}"))?;
+        serde_json::from_value(value).map_err(EnvelopeError::Structure)?;
     if envelope.schema != 2 {
-        return Err("unsupported supervisor envelope schema".into());
+        return Err(EnvelopeError::Schema { actual: envelope.schema });
     }
     Ok(Some(envelope))
 }
@@ -411,13 +428,21 @@ fn validate_receipt_inner(
 
 /// Integrity is authoritative: Safer NORMALUSER may still report TokenIsElevated.
 /// Unknown integrity and a still-privileged marked child are refusals, not fallbacks.
-pub fn needs_medium_relaunch(rid: Result<u32, String>, marker: bool) -> Result<bool, String> {
+#[derive(Debug, thiserror::Error)]
+pub enum IntegrityError {
+    #[error("cannot read service token integrity: {0}")]
+    Query(#[from] std::io::Error),
+    #[error("service token remains above Medium after relaunch (RID {rid:#x})")]
+    StillPrivileged { rid: u32 },
+}
+
+pub fn needs_medium_relaunch(rid: std::io::Result<u32>, marker: bool) -> Result<bool, IntegrityError> {
     let rid = rid?;
     if rid <= 0x2000 {
         return Ok(false);
     }
     if marker {
-        return Err("service token remains above Medium after relaunch".into());
+        return Err(IntegrityError::StillPrivileged { rid });
     }
     Ok(true)
 }
@@ -428,11 +453,11 @@ mod tests {
     // Regression: forged relaunch marker or failed token query must never authorize selection.
     #[test]
     fn token_selection_fails_closed() {
-        assert_eq!(needs_medium_relaunch(Ok(0x2000), true), Ok(false));
-        assert_eq!(needs_medium_relaunch(Ok(0x3000), false), Ok(true));
-        assert!(needs_medium_relaunch(Ok(0x3000), true).is_err());
-        assert!(needs_medium_relaunch(Err("unreadable".into()), false).is_err());
-        assert_eq!(needs_medium_relaunch(Ok(0x2100), false), Ok(true));
+        assert!(matches!(needs_medium_relaunch(Ok(0x2000), true), Ok(false)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x3000), false), Ok(true)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x3000), true), Err(IntegrityError::StillPrivileged { rid: 0x3000 })));
+        assert!(matches!(needs_medium_relaunch(Err(std::io::Error::from_raw_os_error(5)), false), Err(IntegrityError::Query(error)) if error.raw_os_error() == Some(5)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x2100), false), Ok(true)));
     }
     // Regression: active selection cannot trust unowned, corrupted or incomplete runtime closure.
     #[test]

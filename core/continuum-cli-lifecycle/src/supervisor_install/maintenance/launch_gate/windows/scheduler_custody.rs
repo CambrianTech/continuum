@@ -208,7 +208,7 @@ impl LegacySchedulerWindow {
         require_idle_claim(root)?;
         let core =
             super::super::super::super::task_report(super::super::super::super::CORE_TASK).await?;
-        let envelope = crate::installed_release::envelope(&core.description)?
+        let envelope = crate::installed_release::envelope(&core.description).map_err(|error| error.to_string())?
             .ok_or("protected bootstrap absent")?;
         let active = crate::installed_release::read_receipt(&root.join("install-active.json"))?;
         let previous = previous_receipt(root)?;

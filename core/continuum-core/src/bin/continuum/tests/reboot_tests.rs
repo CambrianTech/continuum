@@ -240,7 +240,7 @@ fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
         path: artifact.canonicalize().unwrap(),
         build_sha: "123456789".to_string(),
     };
-    task.validate(&candidate, &socket, &shell).unwrap();
+    task.validate(&candidate.path, &socket, &shell).unwrap();
     // regression for the 5090 2026-10-06 outage: an engine slot the release names, moved
     // aside, must fail the PRE-stop check (which needs no staged artifact), not only the
     // post-stop `validate`.
@@ -254,12 +254,12 @@ fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
     let mut with_eye = description.clone();
     with_eye["eyeRoot"] = serde_json::json!(directory);
     task.description = with_eye.to_string();
-    assert!(task.validate(&candidate, &socket, &shell).is_err());
+    assert!(task.validate(&candidate.path, &socket, &shell).is_err());
     task.arguments = format!("{arguments} -EyeRoot \"{}\"", directory.display());
-    task.validate(&candidate, &socket, &shell).unwrap();
+    task.validate(&candidate.path, &socket, &shell).unwrap();
     with_eye["eyeRoot"] = serde_json::json!("relative/assets");
     task.description = with_eye.to_string();
-    assert!(task.validate(&candidate, &socket, &shell).is_err());
+    assert!(task.validate(&candidate.path, &socket, &shell).is_err());
     task.description = description.to_string();
     task.arguments = arguments.clone();
     // Engine-only migration can change the selected release without
@@ -279,13 +279,13 @@ fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
         &artifact.display().to_string(),
         &stale.display().to_string(),
     );
-    assert!(task.validate(&candidate, &socket, &shell).is_err());
+    assert!(task.validate(&candidate.path, &socket, &shell).is_err());
     task.arguments = arguments;
-    assert!(task.validate(&candidate, "different.sock", &shell).is_err());
+    assert!(task.validate(&candidate.path, "different.sock", &shell).is_err());
     task.enabled = false;
-    assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("disabled"));
+    assert!(matches!(task.validate(&candidate.path, &socket, &shell), Err(continuum_cli_lifecycle::registered_core_task::ValidationError::Disabled)));
     task.enabled = true;
-    assert!(task.validate(&candidate, "different.sock", &shell).unwrap_err().contains("different.sock"), "the socket refusal names both sockets");
+    assert!(matches!(task.validate(&candidate.path, "different.sock", &shell), Err(continuum_cli_lifecycle::registered_core_task::ValidationError::Socket { requested, .. }) if requested == std::path::Path::new("different.sock")), "the socket refusal names both sockets");
     // regression for the 5090 2026-10-12 19:31Z (ce84f63ac; Codex traced it): the staged
     // core's path as the installer's receipt names it, RAW, and not already canonical. On
     // Windows that is the ordinary path, whose resolved form carries the verbatim `\\?\`
@@ -306,14 +306,14 @@ fn service_reboot_rejects_stale_action_and_artifact_before_teardown() {
     };
     assert_ne!(raw, super::resolve_service_path(&raw).unwrap(), "the receipt path is not already canonical");
     let staged = super::PrebuiltCore { path: super::resolve_service_path(&raw).unwrap(), build_sha: "123456789".to_string() };
-    task.validate(&staged, &socket, &shell).unwrap();
+    task.validate(&staged.path, &socket, &shell).unwrap();
     let unresolved = super::PrebuiltCore { path: raw.clone(), build_sha: "123456789".to_string() };
-    let refused = task.validate(&unresolved, &socket, &shell).unwrap_err();
-    assert!(refused.contains("selects artifact") && refused.contains(&raw.display().to_string()), "the artifact refusal names both paths: {refused}");
+    let refused = task.validate(&unresolved.path, &socket, &shell).unwrap_err();
+    assert!(matches!(&refused, continuum_cli_lifecycle::registered_core_task::ValidationError::Artifact { requested, .. } if requested == &raw), "the artifact refusal names both paths: {refused}");
     let mut old_description = description;
     old_description["artifact"] = serde_json::json!(stale);
     task.description = old_description.to_string();
-    assert!(task.validate(&candidate, &socket, &shell).unwrap_err().contains("selects artifact"));
+    assert!(matches!(task.validate(&candidate.path, &socket, &shell), Err(continuum_cli_lifecycle::registered_core_task::ValidationError::Artifact { .. })));
 }
 
 // what this catches: card 67f53b63 — provenance is checked before a
@@ -517,7 +517,7 @@ fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
     assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), true).is_ok());
     assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), false).unwrap_err().contains("normal-user terminal"));
     assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), true).is_err());
-    assert!(super::require_prebuilt_runtime_medium(Err("token unavailable".into()), false).is_err());
+    assert!(super::require_prebuilt_runtime_medium(Err(std::io::Error::from_raw_os_error(5)), false).is_err());
     let candidate = super::PrebuiltCore::from_report(
         std::path::PathBuf::from("verified release/core.exe"),
         "abc123f".into(),

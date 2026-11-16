@@ -131,7 +131,7 @@ pub(super) async fn check_legacy_sources(
         return Err("installed selections changed during legacy maintenance".into());
     }
     let core = super::super::super::super::task_report(super::super::super::super::CORE_TASK).await?;
-    let envelope = crate::installed_release::envelope(&core.description)?
+    let envelope = crate::installed_release::envelope(&core.description).map_err(|error| error.to_string())?
         .ok_or("protected bootstrap absent")?;
     if envelope.bootstrap != purpose.bootstrap {
         return Err("protected bootstrap changed during maintenance".into());

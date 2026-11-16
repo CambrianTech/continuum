@@ -101,7 +101,7 @@ pub(super) async fn verify_registered_consumer(root: &Path) -> Result<continuum_
     let mut selected_text = None;
     for (task, mode) in [(supervisor_install::CORE_TASK, "core"), (supervisor_install::DEPLOY_TASK, "deploy")] {
         let report = supervisor_install::task_report(task).await?;
-        let envelope = installed_release::envelope(&report.description)?
+        let envelope = installed_release::envelope(&report.description).map_err(|error| error.to_string())?
             .ok_or_else(|| format!("{task} has a legacy/unreadable launcher; complete supervisor rollout before retry"))?;
         envelope.validate(root, &program_files, &sid)?;
         if !retry_task_matches(&report, &envelope, mode, &sid) {

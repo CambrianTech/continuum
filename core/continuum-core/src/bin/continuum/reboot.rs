@@ -148,7 +148,12 @@ impl PrebuiltCore {
         // checkout the artifact anchors its own receipt; unknown/malformed
         // provenance still fails. With a checkout it must match the checkout's
         // build key (its HEAD when git cannot name the key).
-        let (expected_sha, source) = expected.unwrap_or((&build_sha, "selected prebuilt artifact"));
+        let (expected_sha, source) = match expected {
+            Some(checkout) => checkout,
+            // Outside a checkout the selected binary is the provenance authority;
+            // deploy_verdict still rejects a missing or malformed revision.
+            None => (build_sha.as_str(), "selected prebuilt artifact"),
+        };
         deploy_verdict(Some(&build_sha), expected_sha, source, &path.display().to_string())?;
         Ok(Self { path, build_sha })
     }
@@ -306,12 +311,12 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         return Ok(());
     }
     #[cfg(windows)]
-    let _install_lease = take_install_lease(&PathBuf::from(home_dir()?).join(".continuum"))?;
+    let _install_lease = take_install_lease(&continuum_core::paths::continuum_home()?)?;
     #[cfg(windows)]
     if let Some(expected) = &options.service_descriptor_sha {
         PreparedCoreService::query()
             .await?
-            .validate_description_sha(expected)?;
+            .validate_description_sha(expected).map_err(|error| error.to_string())?;
     }
     let force = options.force;
     let socket = socket_path();
@@ -438,8 +443,9 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
     let target_sha = prebuilt
         .as_ref()
         .map(|p| p.build_sha.clone())
-        .or_else(git_head_short_sha);
-    let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+        .or_else(git_head_short_sha)
+        .ok_or_else(|| PublishedCoreError::OperationalBlocked("reboot has no selected artifact revision or source revision; running core preserved".into()))?;
+    let _deploy_claim = DeployClaimGuard::take(&target_sha);
     // THE BUILD RUNS DARK (Joel, 2026-10-24: "No. Take down serving while building."). The
     // warm build beside a serving core is gone: on unified memory the compiler and the
     // residents' KV share one pool, and no gate taken at start follows either of them for
@@ -494,8 +500,8 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         // Staging above may have selected a new release. Promote only that
         // registered published engine, before stopping any serving generation.
         let selected = service.as_mut().ok_or("published handoff has no prepared supervisor")?;
-        let release = selected.task.runtime_paths_resolve()?;
-        let repo = release.installer_root()?;
+        let release = selected.task.runtime_paths_resolve().map_err(|error| error.to_string())?;
+        let repo = release.installer_root().map_err(|error| error.to_string())?;
         let home = continuum_core::paths::continuum_home()?;
         let root = continuum_core::inference::engine_slots::root(&home)?;
         let selection = continuum_core::inference::engine_slots::HandoffSelection::capture(&root, Path::new(&release.engine))?;
@@ -597,7 +603,7 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
             // either endpoint is not proof of a coherent source tree (2026-10-01).
             let after = git_head_short_sha();
             continuum_cli_lifecycle::deploy_provenance::source_build_verdict(
-                target_sha.as_deref(), after.as_deref(), &artifact.build_sha,
+                Some(target_sha.as_str()), after.as_deref(), &artifact.build_sha,
             )?;
             dark.built();
             println!("✓ dark build validated: {} (build {})", artifact.path.display(), artifact.build_sha);
