@@ -73,6 +73,7 @@ mod adopted_replacement;
 mod discover;
 pub use discover::{PoolDiscoveryMiss, PropsAbsent};
 pub(crate) use discover::served_ctx_by_root;
+pub(crate) use discover::resident_minds_by_root;
 mod checkpoint_failure;
 pub use checkpoint_failure::{CheckpointFailure, OwnedCheckpointRefusal, SaveFailure};
 use checkpoint_failure::CheckpointSave;

@@ -15,6 +15,7 @@ pub fn generation_has_exited(generation: &crate::inference::slots::EngineGenerat
 pub(super) fn target(id: &str) -> ServingTarget {
     use crate::model_registry::types::{Arch, MultiPartyChatStrategy};
     ServingTarget {
+        minds: 0, // a single-purpose lane keeps no resident minds
         host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
         model: Model {
             weights_bytes: None,

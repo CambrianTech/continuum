@@ -214,8 +214,8 @@ impl OpenAICompatibleAdapter {
             let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
             // Her state streams in while she waits for a lane (fork #139: a mind on flash is inserted into a
             // parked sequence now, so her switch is a sequence move). Not awaited: it never delays her turn.
-            if let Some(key) = turn_key.filter(|_| class.holds_a_page()) {
-                crate::inference::minds::prefetch(self.client.clone(), root.to_string(), key);
+            if let (Some(key), Some((pid, _))) = (turn_key.filter(|_| class.holds_a_page()), pool.incarnation()) {
+                crate::inference::minds::prefetch(self.client.clone(), root.to_string(), pid, key);
             }
             let adm = crate::inference::turn_admission::admit_turn(
                 endpoint_permits,

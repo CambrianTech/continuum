@@ -306,7 +306,7 @@ impl LlamaServerProcess {
             max_ubatch: target.model.serving.max_ubatch,
             reasoning_budget: target.model.serving.reasoning_budget,
         });
-        let minds = super::genome::engine_accepts_minds(&bin).then_some(lanes);
+        let minds = super::genome::engine_accepts_minds(&bin).then_some(target.minds);
         let mut invocation = super::shared_pool::on_shared_pool(invocation, minds);
         // MoE glass-box env seam (#278): when expert paging is active, the DAEMON
         // hands the fork its capture + plan file locations. Previously these envs

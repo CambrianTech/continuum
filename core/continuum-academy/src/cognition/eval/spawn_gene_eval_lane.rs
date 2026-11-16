@@ -55,6 +55,7 @@ pub(super) async fn spawn_gene_eval_lane(gene: &EvalGene) -> Result<EvalLane, Co
     //    the per-request `lora` field decides per turn whether it actually pages in,
     //    which is exactly the base-vs-gene A/B below).
     let target = ServingTarget {
+        minds: 0, // a single-purpose lane keeps no resident minds
         // Single-purpose lane: no citizen population to derive from — the
         // declared cold-start prior is the honest value (restore-economy 1.b).
         host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
@@ -217,6 +218,7 @@ pub(super) async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLane
     let (placement_evidence, vram_lease) =
         crate::inference::single_purpose_lane::decide_lane_placement(&base, lane_ctx, &format!("eval-lane base:{base_id}"), EVAL_LANE_TERMS);
     let target = ServingTarget {
+        minds: 0, // a single-purpose lane keeps no resident minds
         // Single-purpose lane: no citizen population to derive from — the
         // declared cold-start prior is the honest value (restore-economy 1.b).
         host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
@@ -320,6 +322,7 @@ impl PrivateTeacherLane {
         };
         let placement = crate::inference::llama_server::LanePlacement::Gpu;
         let target = ServingTarget {
+            minds: 0, // a single-purpose lane keeps no resident minds
             host_prompt_cache_mib: crate::inference::lane_args::CACHE_RAM_MIB,
             context_window: crate::inference::single_purpose_lane::plan_lane_ctx(base),
             model: base.clone(),

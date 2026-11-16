@@ -116,6 +116,13 @@ pub(crate) fn served_ctx_by_root() -> &'static dashmap::DashMap<String, u32> {
     CTX.get_or_init(dashmap::DashMap::new)
 }
 
+/// Which engines declared that they own mind switches (`/props.context_geometry.resident_minds`, fork #139),
+/// recorded from the same `/props` body that installs the pool. Absent: not declared (the core pages minds).
+pub(crate) fn resident_minds_by_root() -> &'static dashmap::DashMap<String, crate::inference::weight_residency::ResidentMinds> {
+    static MINDS: std::sync::OnceLock<dashmap::DashMap<String, crate::inference::weight_residency::ResidentMinds>> = std::sync::OnceLock::new();
+    MINDS.get_or_init(dashmap::DashMap::new)
+}
+
 /// Does this `/props` status PROVE the endpoint does not exist — the only verdict
 /// allowed to latch the slot directory Unsupported for the process's life? 404/501
 /// are the server saying "no such surface"; everything else (above all the 503 of a
@@ -185,6 +192,15 @@ impl SlotDirectory {
             .and_then(|v| v.as_u64())
         {
             served_ctx_by_root().insert(root.to_owned(), n_ctx as u32);
+        }
+        // whether this engine owns mind switches, declared in the same body (never inferred from a 404)
+        match crate::inference::weight_residency::ContextGeometry::from_props(&body).and_then(|g| g.resident_minds) {
+            Some(minds) => {
+                resident_minds_by_root().insert(root.to_owned(), minds);
+            }
+            None => {
+                resident_minds_by_root().remove(root);
+            }
         }
         // Missing geometry is not proof that activity paging is unsupported.
         let n_slots = match body.get("total_slots").and_then(|v| v.as_u64()) {

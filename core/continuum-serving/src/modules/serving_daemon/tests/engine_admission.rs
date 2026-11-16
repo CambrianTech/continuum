@@ -107,6 +107,7 @@ fn the_sidecar_headroom_is_planned_not_a_relaunch_window_free_read() {
     model.weights_bytes = Some(21 * 1024 * 1024 * 1024);
     model.context_window = 262_144;
     let target = ServingTarget {
+        minds: 0, // a single-purpose lane keeps no resident minds
         host_prompt_cache_mib: 2505,
         model,
         context_window: 59_392,
@@ -132,6 +133,7 @@ fn the_sidecar_headroom_is_planned_not_a_relaunch_window_free_read() {
     let mut blind = target.model.clone();
     blind.weights_bytes = None;
     let blind_target = ServingTarget {
+        minds: 0, // a single-purpose lane keeps no resident minds
         model: blind,
         ..target.clone()
     };

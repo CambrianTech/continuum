@@ -28,7 +28,7 @@ const RESIDENT_MINDS: &str = "--minds";
 
 /// Launch on the shared pool: every sequence draws on all of `-c`, and an idle one keeps what
 /// she holds until the core pages her. `minds`: parked sequence ids beside the lanes, given only to an engine
-/// that lists `--minds`; the plan's lane count, one parked id per lane (a mind leaving any lane always has one).
+/// that lists `--minds`: the seated minds plus one side sequence for learning (`ServingTarget::minds`).
 pub(super) fn on_shared_pool(mut invocation: LaneInvocation, minds: Option<u32>) -> LaneInvocation {
     invocation.args.push(SHARED_POOL.to_string());
     invocation.args.push(KEEP_IDLE_SLOTS.to_string());
