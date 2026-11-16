@@ -311,6 +311,28 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
 }
 
+// A rejected mutation or a lost reply is not permission to destroy retained KV.
+// Replay both an adopted engine and an owned engine with a turn in flight.
+#[tokio::test]
+async fn failed_genome_mutation_preserves_the_running_engine() {
+    for owns in [false, true] {
+        for fault in ["engine incarnation is required", "residency not registered", "reply lost after mutation"] {
+            let mut ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+                .with_active_adapters(vec!["/genes/a.gguf".into()])
+                .slots_busy();
+            ctrl.owns = owns;
+            ctrl.in_place_error = Some(fault);
+            let desired = target_with_adapters("coder-14b", &["/genes/b.gguf"]);
+            for _ in 0..3 {
+                let got = ensure_model_serving(&ctrl, &desired, false).await;
+                assert!(matches!(got, EnsureOutcome::Degraded { ref reason } if reason.contains(fault)), "{got:?}");
+                assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "a mutation failure must not request replacement");
+                assert_eq!(ctrl.placements_recorded.load(Ordering::SeqCst), 0, "the requested genome was not adopted");
+            }
+        }
+    }
+}
+
 // what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading
 // its adapter set as empty and relaunching it cold. The engine's own report maps back to genome
 // paths: a gene loaded at launch by its path, one loaded in place by its staged name, matched to
