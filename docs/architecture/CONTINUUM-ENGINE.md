@@ -1808,23 +1808,29 @@ place. Lora layer(s) becomes trained with inference still capable. Not some sepa
 switch on and off too. Like everything." And: "It's not a separate version of the persona. Same base model not a
 sep one."
 
+Joel, then: "Learn is like a continuous or at least on/off marginally more memory just for the extra backprop and
+the layers learning. Genome is supposed to be on all the time. This reorganization should make all of this
+easier. The standardization of this memory."
+
 **The model.** She is one persona: the one loaded base model plus her genome, a set of LoRA layers. Learning never
-makes a separate version of her or a separate model. A layer is one resource:
-- **It serves and trains in the same tensors.** When it is trainable, optimizer steps update the very weights
-  her acts read, between decode steps, and she keeps acting on it the whole time. No shadow copy awaiting
-  adoption, no second model, no trainer, no learning lane.
-- **Learning is an act on the one path.** An act either generates (tokens out) or learns (labels in, a gradient
-  step on her trainable layers out). Both go through the same verb, the same scheduler, the same sequences and the
-  same layers; a turn outranks a learning act at the next decode boundary, so she is never dark.
-- **Every switch is fast.** A layer is on or off for an act by its scale in her set (nothing moves). A layer pages
-  between the GPU pool, RAM and flash through the same mover as a mind's KV (`buffer_ref`, `memory_mover`), in
-  milliseconds, and is streamed in ahead of the act that needs it, like her KV (4.11.3 `prefetch`).
+makes a separate version of her or a separate model.
+- **Her genome is always on.** Her layers are attached to every act she takes; nothing switches them per act.
+  They leave the GPU only the way any memory does, under the one budget (4.11.8), and come back in milliseconds.
+- **Learning is a switch on her layers, continuous while on.** Turning a layer's learning on makes it trainable in
+  the same tensors her acts read: as examples reach her (her reviewed outcomes, corrections, dreaming, coursework),
+  optimizer steps update it between decode steps while she keeps acting on it. Turning it off stops the steps;
+  nothing else changes. No shadow copy, no adoption swap, no trainer, no learning lane.
+- **Its cost is marginal memory, nothing else.** Learning on adds the backprop workspace (activations at
+  serving-sized chunks) and the learning layers' optimizer state. Both are memory classes in the one standard
+  (4.11.8): charged to the one budget, paged by the one mover, spilled to flash when short, never a lease.
+- **Examples ride the one act path.** An example is an act with `mode: learn` (labels in, a gradient step on her
+  learning layers out), scheduled by the same scheduler on the same sequences; a generating act outranks it at the
+  next decode boundary, so she is never dark.
 - **Exact accounting instead of a frozen copy.** A layer counts its committed steps (a quantity on the same layer,
   never a new identity); every act's terminal frame names `(layer, step)` for each layer it ran on, so a reply is
-  attributed to the exact weights that made it, and a bad step is undone by switching the layer off (scale 0) or
-  paging back the bytes saved at an earlier step, instantly. This
-  replaces the shadow/stable two-adapter rule of ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md section 2.1 (to be
-  revised there to match).
+  attributed to the exact weights that made it, and a bad step is undone by paging back the bytes saved at an
+  earlier step, instantly. This replaces the shadow/stable two-adapter rule of
+  ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md section 2.1 (to be revised there to match).
 
 **Ids** (UUIDv7, 16 bytes, exact equality):
 
@@ -1838,8 +1844,9 @@ makes a separate version of her or a separate model. A layer is one resource:
 
 | Request | Reply | Replaces today's |
 |---|---|---|
-| `act_submit { act (TurnId), mind, layers: { layer, scale, trainable }[], mode: generate \| learn, ... }`; for `learn`: `source: act \| example`, `labels: buffer_ref`, `grant` | `generate`: token frames; `learn`: `learn_step { act, step, loss, ms }` frames. Then one terminal frame naming `(layer, step)` for each layer it ran on (and, for `learn`, the steps it committed, `live_sequence_preserved`, typed refusal) | `/completion` + `"lora":[{id,scale}]`, `/learn`, polling `/learn/events` |
-| `layer_page { layer, step, to: gpu \| ram \| flash, bytes: buffer_ref }` | the layer's residency, in milliseconds | `/lora-adapters/load`, `/unload`, `/fresh`, `/save` |
+| `act_submit { act (TurnId), mind, mode: generate \| learn, ... }` (her layers come from her genome, always on); for `learn`: `source: act \| example`, `labels: buffer_ref` | `generate`: token frames; `learn`: `learn_step { act, step, loss, ms }` frames. Then one terminal frame naming `(layer, step)` for each layer it ran on (and, for `learn`, the steps it committed, `live_sequence_preserved`, typed refusal) | `/completion` + `"lora":[{id,scale}]`, `/learn`, polling `/learn/events` |
+| `genome_set { mind, layers: { layer, scale, learning: on \| off }[] }` | the genome as the engine holds it | per-request `"lora":[{id,scale}]`, `/lora-adapters/fresh` |
+| `layer_save { layer, step, to: buffer_ref }` / layer residency moves | the standard memory frames (4.11.8) | `/lora-adapters/load`, `/unload`, `/save` |
 | `learn_duty { grant, share, mode: trickle \| dream }` | `learn_duty_set` | `/learn/grants`, `/learn/residency*` |
 | `learn_measure { layers, rows }` | `learn_cost { workspace bytes, step us, spill bytes }` (the engine's own allocator) | `/learn/preflight` |
 
@@ -1851,16 +1858,16 @@ makes a separate version of her or a separate model. A layer is one resource:
   `dream` while asleep.
 - **One memory budget:** optimizer state and activations are charged to the same host budget as KV and
   checkpoints (fork #138) and spill through the same pager when short, slower, never refused for want of a lease.
-- **Retained across restart** (the learning acceptance test): `layer_page { to: flash }` writes the layer's bytes
-  at a step durably, and paging them back restores exactly that `(layer, step)`.
-- **Owners:** in the engine, the layer registry owns her layers, their steps and residency, and the act
-  scheduler owns when a learning act runs. In the core, `EngineLink` carries `act_submit`, `layer_page` and
-  `learn_duty`; the academy (`continuum-academy`) is their caller through typed seams.
+- **Retained across restart** (the learning acceptance test): `layer_save` writes the layer's bytes at a step
+  durably, and paging them back restores exactly that `(layer, step)`.
+- **Owners:** in the engine, the layer registry owns her layers and their steps, the memory owner (4.11.8) their
+  residency, and the act scheduler when a learning act runs. In the core, `EngineLink` carries `act_submit`,
+  `genome_set`, `layer_save` and `learn_duty`; the academy (`continuum-academy`) is their caller through typed seams.
 - **Deleted, not ported:** `/train*` (the separate trainer nothing calls), every `/lora-adapters/*` and `/learn/*`
   route, and the `learn_submit` / `shadow_open` verbs of this section's first draft.
 
-Slice 5 of 4.11.7 is the learning vertical: `act_submit` with `mode: learn`, the layer registry with revisions and
-paging, and `learn_duty`, end to end. Its gates: the learning acceptance test (a reviewed correction applied on
+Slice 5 of 4.11.7 is the learning vertical: `genome_set` with the learning switch, `act_submit` with
+`mode: learn`, the layer registry with steps, `layer_save` and `learn_duty`, end to end, on the memory standard. Its gates: the learning acceptance test (a reviewed correction applied on
 unseen tasks, retained after restart, against the same base with the layer off) and the never-dark check (four
 residents keep acting, each generating act delayed by at most one learning step, while a dream runs).
 
@@ -1870,7 +1877,7 @@ Each slice replaces one call path completely: schema, owner, producer, consumer,
 replay, together. No new minds or learning behavior ships on a transitional JSON seam.
 
 1. **The contract alone:** the header, the generated Rust types, the validation at both edges, the shared ring
-   layout, and a cross-language fixture (frames and the ring round-trip byte-identically; a bad tag, size,
+   layout, the memory resource descriptor and the mover's frames (4.11.8), and a cross-language fixture (frames and the ring round-trip byte-identically; a bad tag, size,
    reserved byte or schema identity is refused). No behavior.
 2. **`EngineLink` consolidation over today's HTTP:** an internal refactor of existing owners under one module, no
    new behavior.
@@ -1889,6 +1896,36 @@ replay, together. No new minds or learning behavior ships on a transitional JSON
 while decoding; a lost terminal or cancel acknowledgement; two turns at the same position with distinct pins;
 long-context side learning under a full memory grant. Native timing, charged and physical memory, and exact
 preserved state compared against the JSON path they replace.
+
+#### 4.11.8 One memory standard
+
+Every byte the engine holds for a mind is one kind of thing: a **memory resource** with an owner, a class, its
+bytes and its tier. Today each class is managed its own way (KV by the pool, checkpoints by thirteen call sites
+until #140, pages by the page worker, adapters by their endpoints, learning by its own workspace lease); the
+standard makes them one.
+
+| Class | Owner | Tiers |
+|---|---|---|
+| a mind's KV (her sequence) | the resident-minds table | GPU pool, RAM, flash |
+| her checkpoints | her `checkpoint_store` (#140) | RAM, flash (with her) |
+| her genome's layers | the layer registry | GPU, RAM, flash |
+| learning: backprop workspace, optimizer state | the layer registry, while learning is on | GPU, RAM, flash (spill) |
+| the prompt cache | the cache | RAM |
+
+- **One descriptor:** every resource is `{ owner, class, mind, bytes, tier, buffer_ref }`; a frame names it, never
+  carries it.
+- **One mover:** every tier change is a transfer through `memory_mover` (`server-frames.h`): within unified memory a
+  new reference (nothing copied), otherwise one copy by the backend's own engine, completion as a frame.
+- **One budget, one eviction order:** the host budget (fork #138) charges every class; under pressure the coldest
+  mind's resources go down a tier first (by activity temperature), and within a mind her store's own order holds
+  (4.11.4, #140). Pins and the active act's resources never go. Nothing is refused for want of a lease: it spills.
+- **One prefetch:** a mind's resources (her KV, checkpoints, layers) are streamed up ahead of her act together.
+- **Reported, not estimated:** the engine reports each class's live bytes from its own allocator in the descriptor
+  (4.11.3); the core's ledger reads it.
+
+So learning on is one more class appearing in the same table, and a layer, a page and a checkpoint move, spill and
+come back the same way. Slice 1 of 4.11.7 includes the descriptor and the mover's frame types; each later slice
+moves its class onto them.
 
 ## 5. A mind's context and the engine it runs on
 
