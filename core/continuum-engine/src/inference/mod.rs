@@ -94,6 +94,7 @@ pub mod weight_residency;
 pub mod vendored;
 pub mod vision_sidecar;
 pub mod wedge;
+pub mod workload;
 
 // Re-export commonly used types
 pub use backends::read_gguf_metadata;
