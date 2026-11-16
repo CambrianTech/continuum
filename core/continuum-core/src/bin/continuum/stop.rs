@@ -411,7 +411,7 @@ pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_prese
     }
     let authority = EngineEndAuthority::of(fate, &graceful);
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline, move |lane| authority.may_end(lane)).await? {
+    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline, move |lane| authority.may_end(lane)).await.map_err(|interrupted| interrupted.to_string())? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),

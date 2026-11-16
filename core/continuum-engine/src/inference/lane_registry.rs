@@ -299,10 +299,13 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 /// `may_end` decides each live engine on its own record, right before it would be signalled: an
 /// engine may hold minds' only KV, so none ends on proof made for another (CONTINUUM-ENGINE 4.9,
 /// I1; Codex on #6042). A refusal leaves that engine running, as `TerminationRefused`.
+///
+/// Err only when the sweep's own blocking task did not finish (it panicked or was cancelled): the
+/// records were not all read, so nothing about the lanes may be concluded from it.
 pub async fn sweep_all(
     deadline: std::time::Instant,
     may_end: impl Fn(&LaneRecord) -> Result<(), EngineEndRefusal> + Send + 'static,
-) -> Result<Vec<SweepOutcome>, String> {
+) -> Result<Vec<SweepOutcome>, SweepInterrupted> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
@@ -312,7 +315,7 @@ pub async fn sweep_all(
         (outcomes, pending)
     })
     .await
-    .map_err(|e| format!("lane shutdown sweep failed: {e}"))?;
+    .map_err(SweepInterrupted::Sweep)?;
     confirm_pending(outcomes, pending, deadline.saturating_duration_since(std::time::Instant::now())).await
 }
 
@@ -320,7 +323,7 @@ async fn confirm_pending(
     mut outcomes: Vec<SweepOutcome>,
     pending: Vec<(PathBuf, LaneRecord)>,
     within: std::time::Duration,
-) -> Result<Vec<SweepOutcome>, String> {
+) -> Result<Vec<SweepOutcome>, SweepInterrupted> {
     let identities = pending.iter().map(|(_, rec)| lane_identity(rec)).collect();
     let survivors = continuum_process::confirm_gone(identities, within).await;
     tokio::task::spawn_blocking(move || {
@@ -338,7 +341,16 @@ async fn confirm_pending(
         outcomes
     })
     .await
-    .map_err(|e| format!("lane exit confirmation failed: {e}"))
+    .map_err(SweepInterrupted::Confirmation)
+}
+
+/// A lane sweep whose blocking task did not finish: which half, and the runtime's own answer.
+#[derive(Debug, thiserror::Error)]
+pub enum SweepInterrupted {
+    #[error("lane shutdown sweep did not finish: {0}")]
+    Sweep(tokio::task::JoinError),
+    #[error("lane exit confirmation did not finish: {0}")]
+    Confirmation(tokio::task::JoinError),
 }
 
 fn lane_identity(rec: &LaneRecord) -> crate::system_resources::process_tree::ProcessIdentity {
