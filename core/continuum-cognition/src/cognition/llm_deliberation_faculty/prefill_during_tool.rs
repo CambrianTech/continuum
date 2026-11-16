@@ -96,7 +96,7 @@ fn missed(reason: &'static str, persona: &str) {
 }
 
 impl LlmDeliberationFaculty {
-    /// Her act dispatched its tool: warm the prompt she just sent (`template` with `messages`) into
+    /// Her act dispatched its tool: warm the prompt she just sent (`template` with `view`'s messages) into
     /// her page's slot while the tool runs. Never blocks the act; a newer pass supersedes an older
     /// one nobody took. It names the same view end as her act (`view_messages`): a warm pass that
     /// named none made the engine forget where her next prompt diverges, so her saved page dropped
@@ -107,13 +107,12 @@ impl LlmDeliberationFaculty {
         adapter: &Arc<dyn AIProviderAdapter>,
         room: Uuid,
         template: Option<&TextGenerationRequest>,
-        messages: &[ChatMessage],
-        view_messages: Option<u32>,
+        view: &DeliberationPromptView,
     ) {
         let (Some(page), Some(template), PromptCache::PinnedSlot) = (self.page(room), template, adapter.prompt_cache()) else {
             return;
         };
-        let request = warm_request(template, messages, view_messages);
+        let request = warm_request(template, &view.messages, view.resumes_at());
         let pass = WarmPrefix { adapter: Arc::clone(adapter), request };
         let warm = spawn_when_ready(pass, ());
         if self.prefix_warm.0.lock().replace(Warming { page, warm }).is_some() {

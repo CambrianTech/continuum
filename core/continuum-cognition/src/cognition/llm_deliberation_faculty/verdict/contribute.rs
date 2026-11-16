@@ -842,7 +842,7 @@ impl LlmDeliberationFaculty {
                     return Some(v);
                 }
                 if !calls.is_empty() {
-                    self.prefill_during_tool(&binding.adapter, ws.room_id, request_template.as_ref(), &view.messages, view.resumes_at());
+                    self.prefill_during_tool(&binding.adapter, ws.room_id, request_template.as_ref(), &view);
                     return Some(self.act_verdict(calls, &resp, ws.activity_room_id));
                 }
             }
