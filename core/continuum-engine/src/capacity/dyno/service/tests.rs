@@ -213,7 +213,11 @@ mod simultaneous {
         let mut world = World::new(100, 100, &[("A", 60), ("B", 60)]);
         run(&mut world, &[Step::Publish]);
         assert_eq!(world.published(0), 60, "A is granted");
-        run(&mut world, &[Step::Publish]);
+        // A's seat leaves through the engine's save and erase (no local receipt is no proof her KV is
+        // absent), and B is granted at the publication after the receipt
+        let applied = world.apply(Step::Publish);
+        assert_eq!(applied.tickets, vec![0], "A's unused seat is handed off for B\n{}", world.log.join("\n"));
+        run(&mut world, &[Step::Reclaimed(0), Step::Publish]);
         assert_eq!(world.published(1), 60, "B, ready, takes the cells A is not using\n{}", world.log.join("\n"));
         assert_clean(&world);
     }

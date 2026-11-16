@@ -182,7 +182,7 @@ fn cells_being_reclaimed_count_for_their_mind_until_they_arrive_or_she_leaves() 
     assert!(later.is_empty(), "b's cells are still on their way to c: nothing more is reclaimed ({later:?})");
     assert_eq!(bench.dispatch.reclaiming.get(&b), Some(&c), "b's seat stays counted for c");
     bench.publish(&[need(a, 40), need(b, 40), need(d, 30)], 100);
-    assert!(bench.dispatch.reclaiming.is_empty(), "c left: what is still being reclaimed is no one's");
+    assert!(!bench.dispatch.reclaiming.values().any(|beneficiary| *beneficiary == c), "c left: nothing is reclaimed for her ({:?})", bench.dispatch.reclaiming);
 }
 
 // what this catches: a refused handoff returns authority, never free capacity, and is not retried
