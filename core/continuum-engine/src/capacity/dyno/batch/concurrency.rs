@@ -19,8 +19,8 @@ pub(crate) struct MeasuredConcurrency {
 }
 
 impl MeasuredConcurrency {
-    pub(crate) fn new(costs: Costs) -> Self {
-        Self { costs, fill: Fork::default() }
+    pub(crate) fn new(costs: &Costs) -> Self {
+        Self { costs: costs.clone(), fill: Fork::default() }
     }
 }
 
