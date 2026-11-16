@@ -53,8 +53,9 @@ pub trait DynCommand: Send + Sync {
     /// [`CommandSpec`], so the object map and the static registry describe the
     /// SAME command.
     fn descriptor(&self) -> Result<CommandDescriptor, super::CodegenDefect>;
+    /// Return `self` as `&dyn Any` for downcasting back to the concrete type.
+    fn as_any(&self) -> &dyn std::any::Any;
 
-    /// Parse the JSON envelope → run the typed handler → shape the reply per the
     /// command's [`WireShape`] → map errors to the refusal channel. `caller` is the
     /// authenticated identity the executor already gated on (threaded into [`Ctx`]
     /// so the handler can gate/scope/compose by identity). Internally just
