@@ -41,6 +41,7 @@ struct FakeControl {
     /// What an in-place genome change comes to. Defaults to `Unsupported`, the
     /// engine every pre-S1 test modelled: a genome change relaunches.
     in_place: GenomeInPlace,
+    in_place_error: Option<&'static str>,
     /// How many times the reconcile asked this lane to record its observed placement.
     placements_recorded: AtomicUsize,
     /// `serve` refuses to retire the incumbent and signals nothing (card 931cfd22).
@@ -65,6 +66,7 @@ impl FakeControl {
             served_lanes: 0,
             served_window: 32768,
             in_place: GenomeInPlace::Unsupported,
+            in_place_error: None,
             placements_recorded: AtomicUsize::new(0),
             retirement_refused: false,
             adapters_unreadable: false,
@@ -175,8 +177,12 @@ impl LlamaServerControl for FakeControl {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+        _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
-        Ok(self.in_place)
+        if let Some(reason) = self.in_place_error {
+            return Err(LlamaServerError::Unreachable(reason.into()));
+        }
+        Ok(self.in_place.clone())
     }
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);

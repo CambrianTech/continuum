@@ -1435,7 +1435,7 @@ Codex have reviewed it (Fable and Codex agreed on airc, 17:55Z).
 | F1 | Three minds queued for a window grant, positions 2-4 of 4, while 439,705 of 587,707 pool tokens were free and 3 of 5 slots idle; Aiko waited 15:20:48-15:45:06Z for one act | ba52dd603, 15:20-15:53Z: `delib.window.waiting` 1,177; `serving.grants` minds=1 granted=148,002; `serving.grants.queue_custody` holder Atlas `unresolved: 1` | `window_grant/lease/fair.rs` head-of-line protection (the oldest waiter was Atlas growing under her own act); grants are standing shares for every measured mind (`serving_daemon/grants.rs` `grant_inputs`) |
 | F2 | A ready mind without a grant waits for the publisher's next tick | `GrantEvaluation::cadence` = serving's `TICK`; the publisher woke on pool moves and the 5 s tick only | `serving_daemon/tick.rs:88`, `live_pool.rs` `publish_grants_when_the_pool_moves`, `mind_window.rs` `decide_window` |
 | F3 | The stop saved no resident: the engine had been adopted from a previous core, so the stop skipped its checkpoint; `--engine` then ended the engine and the four minds' newest KV with it | 16:48:43Z `inference.kv_page.stop_checkpoint_skipped reason=Adopted residents=Known(4)` | `inference/slots/page_io.rs:106`, `StopCheckpointSkip::Adopted` (:188): "this core holds no launch contract for it, so its residents' KV is not saved here" |
-| F4 | After the restart minds restored OLDER pages (7 restores, ~2.0-2.4 s each); restored KV went unused at least 4 times | 16:52-17:55Z: `kv_page.action` Restore 7 / Save 3 / Erase 3; `restored_turn` cold 1 (Aris, prompt 79,185, cached 0) / warm 1; `resident_prefix_lost` 3 | consequence of F3, plus a restore whose page is not her newest (cause per turn: open, see 4.9.6 Q2) |
+| F4 | After the restart the minds' pages restored (7 restores, ~2.0-2.4 s each). The `restored_turn` probe then reported them cold, `cached=0`, but it fires 5-7 s BEFORE the stream's `prefill.complete` for the same prompt, which reported 12,220 of 12,221 cached (Aiko, 19:55Z) and 11,514 of 11,515 (Aris, 19:56Z): restores are warm and the probe reads the counts before they exist. The earlier "Aris, 0 of 79,185" is that probe and is not a receipt. What is real: the first act after a restart re-prefilled cold for Benchy (12,283 tokens, 26 s) and Aris (11,515, 69 s) | 16:52-17:55Z and 19:54-19:57Z: `kv_page.action` Restore 7; `restored_turn` vs `inference.prefill.complete` per prompt | the probe's timing (`openai_adapter::stream`); the cold first acts are 4.7.2's "her view is not carried over a restart" (CX-3) |
 | F5 | Four minds decoded at once at 6.1-9.6 tok/s each; the engine had already measured a decode knee of 2 | 16:58-17:31Z `serving.throughput.degraded` inflight 3-4; `serving.decode_knee.clamped knee=2 roster_lanes=5`; engine `--parallel 5`, prompts 45-85k tokens | the knee clamps the PLAN's lanes; the running engine keeps its launch slots (no live `reconfigure`, `POST /reconfigure` 404), and nothing else consumes the knee |
 | F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading keeps its original ReadyTail with no checkpointable ledger (the defect is that custody, not the mismatch itself); a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
 | F7 | A fresh core over a live engine published a 0-lane NoFit plan and seated nobody all night (Windows, e7ef) | Codex 04:38Z receipt | fixed in #6037 (`adopt_inherited`) |
@@ -1496,7 +1496,7 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 | P1 Stop saves adopted engines (I1) | Fable (stop path), Codex (review; adopted custody is his) | the one checkpoint owner: `checkpoint_endpoint` (owned) and `checkpoint_adopted_before_replacement` (adopted) behind one entry with an explicit `Stop` intent; typed evidence returned to the engine-stop authority | `StopCheckpointSkip::Adopted`; the log-only `checkpoint_every_endpoint` result |
 | P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
 | P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
-| P4 Restore-then-unused (I2) | Fable | `restored_turn`, `resident_prefix_lost` probes | nothing until Q2 names the cause |
+| P4 A restart's first act stays warm; `restored_turn` reads the stream's counts (I2) | Fable | `prefill.complete`'s cached/fresh counts; CX-3 (her view durable beside her page) | the probe's early read |
 | P5 Decode concurrency chosen by measured act latency (F5, Q1) | Fable (fork) | fork `update_slots`, SV-S3 per-task priority, the measured knees as inputs | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
 
 **P1 in detail** (three existing owners, no new mechanism):
@@ -1535,9 +1535,9 @@ A CPU, and the graphics pipeline's residency (section 2.3):
   author picks a count, a cap or a threshold; the knee measurement that exists (`decode_knee`) is an
   input to that choice, never a clamp. The open part is only where the choice is applied: the engine's
   own scheduler (fork priority, SV-S3), never a core permit.
-- **Q2.** Why did a restored page go unused (Aris 17:03:07Z, cached 0 of 79,185)? Candidates to check
-  against her capture: the page was older than her view (F3), or her view turned over across the restart
-  (4.7.2: "her view is not carried over a restart", CX-3).
+- **Q2, answered (F4).** Restored pages are reused; the `restored_turn` probe reads its counts before
+  the stream reports them. P4 becomes: the probe reads the stream's own counts, and the first act after
+  a restart stays warm once her view survives the restart (CX-3).
 - **Q3, answered (Codex).** A core-only stop uses the same checkpoint owner as a safety copy; while the
   engine stays alive no loss is claimed.
 
@@ -1545,17 +1545,152 @@ A CPU, and the graphics pipeline's residency (section 2.3):
 
 1. P1 (I1): the largest harm per change and the smallest change; its validator first.
 2. P2 (I5), then P3 (I3, I4) against #6040, dyno red-then-green, one deploy, core-only stop.
-3. Q2 then P4; Q1 then P5.
+3. P4 (with CX-3); Q1 then P5.
 
 Each deploy chooses the lifecycle its changed artifact needs (a core change keeps the engine up for
 adoption; an engine change stops it) and proves the exact save and restore per resident (I1, I2). Each step posts the section 2.5 measurements before and
 after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
+
+#### 4.9.9 Glass box of the live M5 (2026-11-15 19:54-20:41Z, build 1e31e03c5) and its pieces
+
+Joel, 2026-11-15: "glass box and examine for stupid tool clipping, hard coded constants (forbidden just
+like fallbacks/legacy), and invalid feedback"; "You guys have to be constantly reminded not to code like
+JavaScript". Read from the core log and the residents' prompt captures (`fixtures/prompt-captures`).
+
+| # | Finding | Receipt | Piece | Owner | Deletes |
+|---|---|---|---|---|---|
+| G1 | Every tool result reaches her as a raw JSON dump (`ok code/git/status()` then `{"added":[],"branch":..,"success":true,..}`), never text rendered from the typed result | Aiko's capture, result #9215 | each tool's typed output renders through its `ToolContract` (the one renderer, [[her-text-is-rendered-from-typed-data]]); a JSON body only where the tool's own output IS a document | Fable | the generic JSON pretty-print of tool outputs |
+| G2 | Her working-memory depth is a constant: `WORKING_MEMORY_STEPS` = `TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM` (16), "window-independent by construction"; her prompt says "Among my 16 most recent retained calls ... Older calls may have aged out" | `continuum-prompt/src/context_budget.rs:343`; Aiko's capture | the depth is a claim in the one allocation (goal 7, CX-9), sized from her measured need and the window she is granted | Fable | the two denominators and the constant |
+| G3 | `const POINTER_INDEX: usize = 12`, documented as serving "the legacy results ring" | `working_memory/action_log.rs:17` | the legacy ring goes; the view's fold (5, "one codec") already lists her collapsed results | Fable | the ring, the constant, `indexed_pointers` |
+| G4 | A shedder that sheds nothing: working memory is asked for 72,700 on every ~6 s pressure tick and answers `before=365202 after=365202`, 460 times in 47 min | `wm.results.shed` | a shedder reports what it can give back before it is asked; the pressure owner asks only owners that can give, and a no-op is a typed `NothingToGive`, never a repeated success | Fable (shedder), Codex (pressure owner) | the no-op loop |
+| G5 | A grant wait ended her act: `no window granted after her measure ... Reclaiming` then `settle.inference_failed` (Aiko); on BigMama Kimi `Reclaiming`, Sahar `Queued 1 of 1` for an hour with a slot idle | `delib.window.refused`; Codex 20:19Z | P3 (I3, I4) | Fable, Codex | `FairGrantState` queue rules |
+| G6 | Raw `pid as pid_t` casts on process calls in five places across four crates, two of them `SIGKILL` (a wrapped id signals a group) | `continuum-host` process_exit, process_presence; kernel `eye_reaper.rs:193`, `bounded_command.rs:176`; `continuum-process/owned.rs:17,49` | one host owner addresses a process by `continuum_host::process_id::ProcessId` (#6042); the raw `libc` calls leave the kernel and `continuum-process` | Fable | every `as libc::pid_t` and the inline OS branches around them |
+| G7 | Decode 2.0-3.5 tok/s per stream: four sequences at 45-49k tokens decoding at once, engine 33.2 GB, swap 6.6 GB | `delib.turn.output_allowance measured_tps`; `/slots`; `vm.swapusage` | P5 (Q1: the engine chooses concurrency from measured act latency) | Fable | the core-side lane permits |
+
+No clipping was found: her newest result arrives whole, output room is 32k-200k tokens against needs
+under 1,500, and older results fold behind expand handles by design.
 
 #### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
 
 #6038's first commit tuned the head-of-line rule instead of removing the queue (F1 is fixed by P3, not by
 the tweak); a "decoding cores" cap was a permit in front of the engine (4.1c) and is reverted
 (aa46cb886); and the 16:48Z deploy used `stop --engine`, which with F3 lost every mind's newest KV.
+
+### 4.10 Fast minds, concurrently: every optimization, its state, and the order (2026-11-15)
+
+Joel, 2026-11-15: "We need to take all optimizations of continuum-engine.md and get this fast. The entire
+project depends on fast minds working concurrently (yes I refer to how single core cpus did this in os,
+later multi core which we also have in cases)"; "It should quickly learn to settle at one lane ... or start
+there and go up". The model: an OS scheduler. Each mind is a process; her KV is its saved context; the
+engine is a core that runs whichever sequences the scheduler picks this step; a switch costs nothing while
+her KV stays resident and milliseconds when it pages (4.1b). A node with more GPU or more nodes is
+multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
+
+**Where the time goes today (the M5, Qwen3.6-35B-A3B, 2026-11-15):**
+
+| | Measured | This model on this chip (4.1b, receipts) | Gap |
+|---|---|---|---|
+| decode per stream | 2.0-5.6 tok/s, 4 sequences at 45-68k tokens | 57-59 alone, 80 with MTP | 10-40x |
+| aggregate decode | ~8-22 tok/s | 59-80 one at a time | 3-8x |
+| prefill | 65-196 tok/s on residents' prompts | 190-475 on this engine | 2-5x |
+| first act after a restart | 150-267 s, 0 of 12-68k cached | ~1 s restore, then the appended tail | 100x+ |
+| grant wait | BigMama: 0 of 98 asked turns served in an hour | 0 | total |
+| memory | 6.6 GB swap in use, engine 33 GB | no swap (unified memory: swap slows the GPU) | |
+
+**Every optimization in this document, its state:**
+
+| # | Optimization (section) | State, receipt | Next |
+|---|---|---|---|
+| O1 | Batch across minds, never queue them (2.4, 4.1c) | WRONG SHAPE: all sequences batch together at long context, where per-sequence KV reads do not amortize (4.1b SV-F5); the decode knee samples only the concurrency it runs (always 4) and one sample moved it 2 to 5 | P5 below |
+| O2 | One event-woken dispatcher; no permits (4.1c, SV-DISP) | PARTIAL: lane permits remain (`resource_admission/lanes.rs`), admission sized to all slots (`desired=5`) | folded into P5 |
+| O3 | A mind is never refused; grant at her act; expand first (4.8, P3) | MISSING: standing grants + FIFO; BigMama starved an hour; M5 acts failed `Reclaiming` | P3 (Codex page-out seam #6040 ready) |
+| O4 | KV pages GPU<->RAM<->disk by temperature (4.3, SV-MM) | WORKS for stop/start: 4 residents saved in 21.7 s, restores ~1 s | P4 |
+| O5 | A restart pages minds back warm (4.3 "a relaunch is a pause", CX-3) | BROKEN: the core restores pages over KV the slots still hold, then the first act reuses 0 (Aris 12,199 / 150 s, Aiko 68,065 / 267 s) though her prompt text is 94% identical | P4 |
+| O6 | Prefill only the appended tail; epoch view (5, CX-1) | WORKS: 85-90% reuse; Aiko's prompt identical for 135,154 of 144,402 chars across a restart | keep; measure fresh tokens per act |
+| O7 | The streaming pool: the cache gives memory back under pressure (2.3, 2.6, SV-POOL) | PARTIAL: the prompt cache shrinks and regrows, but the node still swaps 6.6 GB and embeddings are refused VRAM | P6 |
+| O8 | Live reconfigure, no relaunch (4.5 S2) | MISSING: `POST /reconfigure` 404; the running engine keeps its launch `--parallel 5` | after P5 shows the target geometry |
+| O9 | MTP only while a sequence decodes alone (4.1b) | PRESENT in the engine (`draft acceptance 1.0` on solo tasks); value depends on P5 running one at a time | measure under P5 |
+| O10 | Shared prefix held once, `seq_cp` (4.1, 4.7.3, S7) | NOT YET: minds share only ~6k chars of system prompt | after P5, P4 |
+| O11 | Prefill during her tool call (2.3 RDG row, SB-10) | PRESENT (`delib.prefill.during_tool`) | measure submit-to-first-token |
+| O12 | Page IO off the engine's main loop (SV-F3) | NOT YET: save/restore run on the server loop and stall every stream (4.1b: 4.6-5.6 tok/s during page IO) | with P4 |
+| O13 | Every wait is an event (rule 10) | PARTIAL: grants evaluate on a 5 s tick (event wake written, #6038 unmerged); a no-op shedder fires every ~6 s (4.9.9 G4) | merge the wake with P3; fix G4 |
+| O14 | Decisions are pluggable learned policies (Joel; plan line 14) | MISSING: ~12 private `*Policy` traits, none learns | P5 is the first user |
+
+**The pieces, in order of gain per change:**
+
+- **P5, the scheduler (O1, O2, O9, O14).** Two decisions, both measured, neither a count anyone picks:
+  - *Memory follows the acting minds (4.8.4).* No mind holds a standing share or a fixed slot of a fixed
+    `--parallel`. The mind acting now may take the whole pool if her need is the whole pool; minds not
+    acting page out (RAM in milliseconds, disk behind it) and page back at their own next act. What stays
+    resident between acts is cache, kept while its predicted reuse beats re-prefilling it (computed once,
+    phased out by usage and prediction).
+  - *Concurrency follows measured act time.* How many sequences decode in one engine step is one decision
+    behind the pluggable policy interface: observation = the ready sequences, their context lengths, the
+    measured per-step cost curve at those lengths; action = which sequences run this step; reward =
+    measured act latency and resident-perceived wait. Its starting point is the measured curve (the step
+    count it predicts minimizes act time at the contexts being served), never a constant; it keeps
+    re-testing both directions, and a learned policy replaces the curve's argmin only by beating it on the
+    replay. A memory-bound engine at long context and a compute-bound one at short context land on
+    different answers by measurement alone.
+  Mechanism: the fork's `update_slots` runs the chosen set; the rest wait with their KV wherever residency
+  put it (per-task priority, SV-S3); slots are sequence handles sized by the pool, not one per mind. The
+  core's lane permits are deleted.
+  *Recording production is a capture, never a script.* The dyno's batch fixture of 2026-11-06 was made by
+  three Python scripts over the engine log (`batches2.py`, `solo_chunks.py`, `extract_steps.py`): not
+  repeatable, Python load-bearing, and a parse of a log our fork should report typed (4.7.3). Instead the
+  fork reports each engine step typed (sequences in the batch, each one's depth, prompt and decode tokens,
+  accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
+  (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
+  `Evidence` reads. The simulator and production read one instrument (7.0). Owner: Fable (capture,
+  replay), Codex (fork report review).
+  The capture is the WORKLOAD, not only the chosen steps (Codex review, comment 6904421902): steps
+  alone hide the runnable work the live policy did not pick, so no other policy could be compared on
+  them. Every event carries the sequence and mind identity, the engine incarnation and a monotonic time:
+  arrival and readiness, blocked and resumed, completion and cancellation, page-out and page-in, and each
+  engine step with its chosen set. Replay rebuilds the ready set at every instant and each resident's wait
+  and progress, so an alternative policy is scored on the same arrivals, starvation included.
+  A capture records its own interval and its loss (dropped events, gaps); an incomplete interval is a
+  typed state that cannot enter the live-versus-replay gate. Capture is Noop by default, so "an hour" is
+  an interval that was actually recorded, never arbitrary history. The gate compares context-matched
+  solo and batched steps and keeps per-resident progress, preserved memory and output quality beside
+  aggregate speed. Simulator:
+  the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
+  before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
+- **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
+  `Queued 1 of 1`, 98 asked, 0 served) is its first recorded scenario. Owner: Fable (admission), Codex
+  (page-out, #6040).
+- **P4, a restart is warm (O5, O12).** Adoption keeps a slot's live KV as resident (no restore over it);
+  a restored page that reuses 0 is found by its token-level divergence and fixed; page IO leaves the main
+  loop. Simulator: the dyno restart replay with today's two restarts. Owner: Fable.
+- **P6, no swap (O7).** The engine's KV, host cache and checkpoints share one measured budget with the
+  OS's own pressure verdict, so the node never swaps; the no-op shedder (G4) goes. Owner: Codex (pressure
+  owner), Fable (shedder).
+- **Then O8 (reconfigure to the geometry P5 settles on), O10 (shared prefix), O11 measured.**
+
+- **P4a, genes change in place through their one owner (prerequisite of P4; Codex's Windows cutover
+  blocker, airc 00:29Z).** `llama_server/genome.rs::converge_genome` is a second, untyped path for adapter
+  catalog changes: it unloads by bare id with no engine identity (`lora_post("unload", {id})`, the fork
+  refuses: "engine incarnation required", the 03:27 adoption failure that relaunched over retained KV)
+  and loads with no residency (the fork requires `claim_weight_residency`). The typed owner already
+  exists: `learn_residency` (`plan_load`, `register_residency`, `unseat` bound to the loading
+  incarnation) under the genome's custody, and `GeneResidency` is the node's one owner of where loaded
+  genes live (a `DeviceTenant` of the lanes' pool, paging device and host). Catalog membership is the tier
+  above that paging, so it moves there: a load is plan, lease from the one authority into custody,
+  register the residency, load inside it; an unload is `unseat` with the engine identity captured BEFORE
+  the catalog read and carried unchanged, so a replaced engine (or a reused id) refuses instead of
+  unloading the wrong engine's adapter. The engine crate sits below the genome, so its reconcile asks
+  through a trait it declares (`GenomeCatalog`: converge to a target set, answering Adopted, Busy,
+  Refused{typed reason}) and the genome implements it; a refusal surfaces Degraded, never a relaunch
+  (Codex's prerequisite). `converge_genome`, `lora_post` and `LoraPost` are deleted. Gate: a native
+  replay of unload+load on an adopted engine preserves every resident's KV, and an engine replaced
+  between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
+  the Degraded rail).
+
+**Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
+live act time matches what the replay predicted for the chosen policy on the same recorded load (the
+simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
+warm; on BigMama, every asked turn served. Each piece lands with its simulator
+scenario red then green, then a live read against a restart-only control.
 
 ## 5. A mind's context and the engine it runs on
 
