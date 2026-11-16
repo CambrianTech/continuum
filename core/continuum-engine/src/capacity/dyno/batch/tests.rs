@@ -190,7 +190,8 @@ fn the_measured_decode_width_beats_every_slot_decoding_on_the_recorded_hour() {
         assert!(out.iter().all(|o| o.release_s.is_finite()), "{} left tasks unfinished", policy.name());
         let acts: Vec<f64> = resident.iter().map(|i| out[*i].act_s()).collect();
         let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
-        (median(acts.clone()), quantile(acts, 0.9), oldest)
+        let p90 = quantile(acts.iter().copied().collect(), 0.9);
+        (median(acts), p90, oldest)
     };
     let fork = run(&mut Fork::default());
     let measured = run(&mut MeasuredConcurrency::new(&costs));
