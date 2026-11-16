@@ -1686,28 +1686,27 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
   the Degraded rail).
 
-- **The checkpoint store is a claim in the one memory budget (measured on the M5, 2026-11-16 05:00Z).**
-  Decode had fallen from ~80 tok/s solo to 1-4 tok/s per stream (even a 1.2k-token slot) because the
-  host was thrashing: 60 of 64 GB used, 36 GB wired, a 14 GB compressor holding ~37 GB, swap 11.5 of
-  12 GB, 5.4 billion pageins; on unified memory the compressor's traffic is the GPU's bandwidth. The
-  engine's footprint was 26 GB beside the 20 GB mapped model: 11 GB KV and 15 GB of host allocations,
-  of which the 6.7 GB prompt cache (`--cache-ram`) is budgeted (`host_fit::pool_fit` subtracts it) and
-  the context checkpoints are not: `--ctx-checkpoints 32` per slot (a constant, `CTX_CHECKPOINTS`) at
-  ~110 MB each on this hybrid model (saved sidecars: 3-5 checkpoints in 347-601 MB) is up to ~17.6 GB
-  across 5 slots, grown over hours, never priced.
-  - *A byte budget the engine keeps, not a count the core polices:* the core grants the checkpoint
-    store a host byte budget in the one allocation, beside the prompt cache (`--cache-ram`), and the
-    fork keeps every slot's checkpoints within it (a new checkpoint past the budget evicts the oldest
-    across slots, as its prompt cache does), so the host fit subtracts a number the core decided,
-    never an unmeasured one. `CTX_CHECKPOINTS` stays the coverage the spacing needs
-    (`checkpoint_min_step`), an upper bound on count, never the memory decision.
-  - *Its size is a cache's:* Batch priority with the prompt cache, derived the same way (the minds'
-    measured reuse, what the host affords after the minds' KV); lowered live by the host deficit
-    before the minds' KV (a fork verb sets it; the engine stays up).
-  - *Observed:* `/slots` reports each slot's checkpoints (count, bytes; llama.cpp#121), so the live
-    read shows the budget held and what one checkpoint costs on each model.
-  - *Gate:* on the M5 with four residents, swap and compressor flat over an hour, and a lone stream's
-    decode back to the solo rate (~60-80 tok/s) at the same depths.
+- **Placed checkpoints only: 4.7.3, finished (measured on the M5, 2026-11-16 05:00Z).** Decode fell
+  from ~80 tok/s solo to 1-4 tok/s per stream (even a 1.2k-token slot) because the host thrashed: 60 of
+  64 GB used, 36 GB wired, a 14 GB compressor holding ~37 GB, swap 11.5 of 12 GB, 5.4 billion pageins;
+  on unified memory the compressor's traffic is the GPU's bandwidth. The engine held 26 GB beside the
+  20 GB mapped model: 11 GB KV and 15 GB of host allocations, the 6.7 GB prompt cache and the context
+  checkpoints, ~110 MB each (saved sidecars: 3-5 in 347-601 MB), up to 32 per slot.
+  4.7.2-4.7.3 already decided the cure: blind checkpoints covered upstream defects, and the engine
+  keeps one at her stable end per activity, never by count or step. The code never finished it: every
+  prefill still checkpoints at user-message starts every `checkpoint_min_step` (~3.6k tokens, the
+  upstream rule), at the view end (ours), and at 4 + n_ubatch, 4 and 1 from the end (MTP rollback and
+  `--train-dir` learning need these); they pile to `--ctx-checkpoints 32` per slot. So:
+  - *Placed only:* when the request carries her view spans, the engine makes no step checkpoint; it
+    keeps her stable-end checkpoint, her newest view-end one, and the current act's end checkpoints,
+    and erases what a newer view end supersedes. About 4 per slot instead of 32 (~0.4 GB, not ~3.5 GB,
+    per mind on this model). A request with no spans (an external driver) keeps upstream behaviour.
+  - *Held at measured bytes in the one budget (4.3):* `/slots` reports each slot's checkpoints and
+    bytes (4.7.3's engine-to-core contract; llama.cpp#121), and the host fit and the one solver
+    (4.7.4) price them as they are, never by a count. No separate eviction policy in the engine.
+  - *Gate:* on the M5 with four residents, checkpoints per slot <= 4 and their bytes flat; swap and
+    compressor flat over an hour; a lone stream's decode back to the solo rate (~60-80 tok/s) at the
+    same depths; checkpoint resumes as close to the end as 4.7.2's 80% within 8k tokens.
 
 **Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
 live act time matches what the replay predicted for the chosen policy on the same recorded load (the
