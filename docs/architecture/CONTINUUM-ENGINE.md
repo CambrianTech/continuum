@@ -1525,10 +1525,13 @@ A CPU, and the graphics pipeline's residency (section 2.3):
    no head-of-line hold and no "idle for two evaluations".
 4. *Free cells first, then every non-acting holder at once.* A ready mind takes free cells. Short,
    the owner reclaims NON-acting holders coolest first (oldest last service receipt), as many as her
-   need takes, in ONE evaluation: a seat whose holder never served on this engine holds no KV and is
-   withdrawn at once; a seat with KV leaves through a `GrantHandoff` ticket and its cells are charged
-   until the engine's reclaim receipt (#6040; a `Busy` answer moves to the next holder). Cells a
-   reclaim frees go to the mind it was made for.
+   need takes, in ONE evaluation. Every seat leaves through a `GrantHandoff` ticket, even one this owner
+   never saw serve (after an adoption her KV may be resident with no receipt here; the engine's save
+   and erase are the proof, never the absence of a receipt), and its cells stay charged until the
+   engine's reclaim receipt (#6040; a `Busy` answer moves to the next holder). Each seat being
+   reclaimed is recorded for the mind it is reclaimed for, across evaluations: those cells count toward
+   her need until they arrive, so no later evaluation reclaims extra donors, and if she leaves they are
+   no one's and go to the pool.
 5. *A seat is held for one act (aging).* A seat granted to a ready mind is protected until she has
    used it (a service receipt after it was granted), unless the mind now asking has waited at least as
    long as she did for it. Why this does not contradict "memory follows the mind that is acting": the
