@@ -1636,7 +1636,12 @@ therefore hold on the order of 16 GiB of host copies, outside `--cache-ram`'s bo
 swap and compression in 4.7.6's receipt. Parked, the fixed part is one recurrent cell on the device and no copy; the
 per-token part must be identified before the count is set (if it is the draft's or a sliding window's KV, parking
 shares those cells by id and it costs nothing; if it is per-token recurrent history, it is the cell's own size). The
-number of parked cells is then a budget the pool grants from measured value per byte, never a fixed 32 per slot.
+number of parked cells is then a budget the pool grants from measured value per byte, never a fixed 32 per slot. Measured
+next (fork `test-seq-park`, `TEST_SEQ_PARK_N`, qwen35-0.8b): the TARGET's partial state is constant, 20,201,932 bytes
+at 300, 1,500 and 3,000 tokens, so it is the recurrent cell alone and parks for one fixed cell. The live checkpoints'
+per-token growth therefore comes from the other parts a server checkpoint copies (`data_dft`, the draft context's
+state, and `data_spec`); identifying which, and whether it is KV that parking shares by id, is the next measurement
+before the count is set.
 
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
