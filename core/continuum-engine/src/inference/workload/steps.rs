@@ -15,7 +15,6 @@ use continuum_base::capture::CaptureSink;
 use continuum_kernel::runtime::stage::MindId;
 
 use super::{EngineIncarnation, SequenceChange, SequenceId, StepId, StepWork, WorkloadEvent};
-use crate::inference::llama_server::LlamaServerError;
 
 /// What a sequence's change is on the wire.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -77,8 +76,10 @@ enum Record {
 pub enum StepStreamEnd {
     /// The engine closed it (its incarnation ended, or it stopped publishing).
     Closed,
-    /// The engine could not be reached, or answered without the stream.
-    Unreachable(LlamaServerError),
+    /// The engine could not be reached, or its stream broke.
+    Unreachable(reqwest::Error),
+    /// The engine refused the subscription (another subscriber holds it, or no bound was named).
+    Refused(reqwest::StatusCode),
     /// A record the core could not read: the capture cannot be trusted past it.
     Unreadable(serde_json::Error),
     /// The stream did not open with its clock origin.
@@ -154,8 +155,8 @@ pub async fn record_steps(client: &reqwest::Client, source: StepSource<'_>, sink
     let StepSource { root, engine, capacity } = source;
     let response = match client.get(format!("{root}/engine/steps")).query(&[("capacity", capacity.get())]).send().await {
         Ok(response) if response.status().is_success() => response,
-        Ok(response) => return StepStreamEnd::Unreachable(LlamaServerError::Unreachable(format!("/engine/steps status {}", response.status()))),
-        Err(error) => return StepStreamEnd::Unreachable(LlamaServerError::Unreachable(error.to_string())),
+        Ok(response) => return StepStreamEnd::Refused(response.status()),
+        Err(error) => return StepStreamEnd::Unreachable(error),
     };
     let mut reader = Reader { engine, sink, anchor: None, next_seq: 0 };
     let mut pending = String::new();
@@ -163,7 +164,7 @@ pub async fn record_steps(client: &reqwest::Client, source: StepSource<'_>, sink
     while let Some(chunk) = body.next().await {
         let chunk = match chunk {
             Ok(chunk) => chunk,
-            Err(error) => return StepStreamEnd::Unreachable(LlamaServerError::Unreachable(error.to_string())),
+            Err(error) => return StepStreamEnd::Unreachable(error),
         };
         pending.push_str(&String::from_utf8_lossy(&chunk));
         while let Some(end) = pending.find("\n\n") {
