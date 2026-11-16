@@ -65,6 +65,16 @@ pub mod sys {
     include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 }
 
+/// The core<->engine contract (CONTINUUM-ENGINE 4.11), generated from the fork's `server-continuum.h`: the raw
+/// frames, the engine's own validator and the schema identity. Safe types and the Rust edge's validation live in
+/// `continuum-engine` (`inference::engine_contract`), which checks itself against this validator byte for byte.
+pub mod contract {
+    #![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]
+    include!(concat!(env!("OUT_DIR"), "/contract.rs"));
+    /// The schema identity this core was built with: the first 16 bytes of the header's SHA-256.
+    pub const SCHEMA_ID: [u8; 16] = include!(concat!(env!("OUT_DIR"), "/contract_schema_id.rs"));
+}
+
 mod mtmd;
 mod safe;
 mod decode_boundary;
