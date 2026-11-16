@@ -95,6 +95,9 @@ struct MindState {
     /// The publication she had been owed since when her current seat was granted: what the aging
     /// rule compares a waiter's wait against (4.10 P3).
     seat_waited: Option<u64>,
+    /// The engine refused her seat's reclaim, and she has completed no act since (4.10 P3: a refused
+    /// reclaim is not retried before her next act).
+    refused: bool,
 }
 
 impl MindState {
@@ -144,7 +147,7 @@ impl World {
         let states = order.iter().zip(minds).map(|(id, (name, need))| {
             (*id, MindState {
                 name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, hold: None, reservation: None, reserved_on: None,
-                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, seat_waited: None,
+                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, seat_waited: None, refused: false,
             })
         }).collect();
         Self {
@@ -215,7 +218,7 @@ impl World {
             (*mind, MindAt {
                 need: s.need, published: s.published, charged: seen.charged.get(mind).copied().unwrap_or(0), // unwrap_or: nothing charged
                 resident: s.resident, custody: s.owns_request(),
-                completed_since_grant: s.completed_since_grant, owed_since: s.owed_since, seat_waited: s.seat_waited, retiring: seen.retiring.contains_key(mind),
+                completed_since_grant: s.completed_since_grant, owed_since: s.owed_since, seat_waited: s.seat_waited, refused: s.refused, retiring: seen.retiring.contains_key(mind),
             })
         }).collect();
         Boundary { pool: self.pool, ceiling: self.ceiling, minds }
@@ -271,6 +274,7 @@ impl World {
                         settle(reservation, Some(&TerminalReceipt { finish: "stop".into() }));
                         *self.completions.entry(id).or_insert(0) += 1;
                         s.completed_since_grant |= current;
+                        s.refused &= !current;
                     } else {
                         settle(reservation, None);
                         s.unresolved += u32::from(current);
@@ -304,8 +308,10 @@ impl World {
                         _ => self.owner.refused(ticket),
                     };
                     let s = self.minds.get_mut(&id).expect("test: indexed mind");
-                    if let (Step::Reclaimed(_), Ok(())) = (step, &outcome) {
-                        s.resident = 0;
+                    match (step, &outcome) {
+                        (Step::Reclaimed(_), Ok(())) => s.resident = 0,
+                        (Step::RefusedHandoff(_), Ok(())) => s.refused = true,
+                        _ => {}
                     }
                     self.log.push(format!("{:>4} {} physical receipt {step:?}: {outcome:?}", self.steps, s.name));
                 }

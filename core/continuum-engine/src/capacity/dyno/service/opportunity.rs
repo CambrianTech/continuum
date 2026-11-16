@@ -47,6 +47,8 @@ pub(crate) struct MindAt {
     pub owed_since: Option<u64>,
     /// The publication she had been owed since when her current seat was granted (`None` with no seat).
     pub seat_waited: Option<u64>,
+    /// The engine refused her seat's reclaim and she has completed no act since.
+    pub refused: bool,
     /// The owner is handing her publication off (charged until physical proof or fence).
     pub retiring: bool,
 }
@@ -137,7 +139,8 @@ impl Boundary {
         // a holder not mid-act is reclaimable once she has used her seat, or when the waiter has
         // waited at least as long as she did for it (4.10 P3's aging): never a seat granted to a
         // mind who waited longer and has not had her turn
-        let aged = |m: &MindAt| m.completed_since_grant || at.owed_since.zip(m.seat_waited).is_some_and(|(waited, seat)| waited <= seat);
+        // ... and never a seat whose reclaim the engine refused, before her next act
+        let aged = |m: &MindAt| !m.refused && (m.completed_since_grant || at.owed_since.zip(m.seat_waited).is_some_and(|(waited, seat)| waited <= seat));
         if let Some((holder, _)) = holders.iter().find(|(_, m)| !m.custody && aged(m)) {
             return Ok(Opportunity::Reclaim { waiter, holder: *holder });
         }
@@ -158,7 +161,7 @@ mod tests {
     use super::*;
 
     fn at(need: u32, published: u32) -> MindAt {
-        MindAt { need, published, charged: published, resident: published, custody: false, completed_since_grant: false, owed_since: None, seat_waited: (published > 0).then_some(1), retiring: false }
+        MindAt { need, published, charged: published, resident: published, custody: false, completed_since_grant: false, owed_since: None, seat_waited: (published > 0).then_some(1), refused: false, retiring: false }
     }
 
     // what this catches: reading a released turn as released residency (section 4). A holder not
@@ -176,6 +179,8 @@ mod tests {
         assert_eq!(boundary.opportunity(), Err(NoOpportunity::SeatsProtected { waiter: b, holders: vec![a] }));
         boundary.minds[0].1.completed_since_grant = true;
         assert_eq!(boundary.opportunity(), Ok(Opportunity::Reclaim { waiter: b, holder: a }), "a used seat is reclaimable");
+        boundary.minds[0].1.refused = true;
+        assert_eq!(boundary.opportunity(), Err(NoOpportunity::SeatsProtected { waiter: b, holders: vec![a] }), "a refused reclaim waits for her next act");
         boundary.minds[0].1 = at(90, 90);
         assert_eq!(Boundary { pool: 100, ceiling: 100, minds: vec![(b, MindAt { owed_since: Some(1), ..at(140, 0) })] }.opportunity(),
             Err(NoOpportunity::Infeasible { mind: b, need: 140, limit: 100 }));
