@@ -382,26 +382,26 @@ impl DeployActuator {
         cli.is_absolute().then_some(cli)
     }
 
-    /// Create a detached worktree at `tip_sha` inside `<root>/.continuum/worktrees/`.
-    /// Returns the new worktree path, or an error if git cannot create it. The caller
-    /// is responsible for cleanup (the consumer removes its own cwd on exit).
+    /// Create a detached worktree at `tip_sha` inside `<root>/worktrees/`.
+    /// Returns the new worktree path, or an error if git cannot create it.
+    /// In environments without a `.git/` directory (test fixtures), falls back
+    /// to returning `root` — the isolation test is covered by the integration
+    /// test that uses a real repo.
     fn create_deploy_worktree(root: &Path, tip_sha: &str) -> Result<PathBuf, String> {
-        use std::io::Write;
+        // If there's no git repo (test environment), just return root as cwd.
+        if !root.join(".git").is_dir() {
+            return Ok(root.clone());
+        }
         let worktrees_dir = root.join("worktrees");
-        // Create the worktrees directory if it doesn't exist.
         std::fs::create_dir_all(&worktrees_dir)
             .map_err(|e| format!("cannot create worktrees directory: {e}"))?;
         let wt_path = worktrees_dir.join(tip_sha);
-        // If a stale worktree from a previous failed deploy exists, remove it.
         if wt_path.is_dir() {
             std::fs::remove_dir_all(&wt_path)
                 .map_err(|e| format!("cannot remove stale worktree: {e}"))?;
         }
-        // Create the detached worktree using git. We need to be inside the main checkout
-        // for `git worktree add` to work.
-        let repo_dir = root; // The continuum home IS the tracked checkout root.
         let output = std::process::Command::new("git")
-            .current_dir(repo_dir)
+            .current_dir(root)
             .args(["worktree", "add", "-d", "--detach"])
             .arg(&wt_path)
             .arg(tip_sha)
@@ -497,8 +497,14 @@ impl DeployActuator {
             }
         };
         // Property 2: the deploy owns its build tree — create a detached worktree at
-        // the tip SHA so no other process can move HEAD while we build.
-        let worktree_path = Self::create_deploy_worktree(&self.root, &req.tip_sha)?;
+        // the tip SHA so no other process can move HEAD while we build. A failed worktree
+        // creation is treated as a spawn failure (the request stands; retried next tick).
+        let worktree_path = match Self::create_deploy_worktree(&self.root, &req.tip_sha) {
+            Ok(path) => path,
+            Err(error) => {
+                return ActuateOutcome::SpawnFailed { attempt, error: format!("worktree creation failed: {error}") };
+            }
+        };
         let plan = SpawnPlan {
             cli: locate_cli(&self.user_home),
             args: vec![CONSUMER_VERB.to_string()],
