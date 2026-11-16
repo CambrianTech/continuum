@@ -15,8 +15,10 @@
 //! (`PressureSnapshot::deficit_at`). Taking back runs the other way: the pool registers before the
 //! cache, so the minds are offered the headroom first.
 //!
-//! Never below what the minds need: the floor is every mind's need, and a mind whose act is in
-//! flight keeps the grant her act began on (`need_floor`). Never above the engine's pool, and never
+//! Never below what the minds need NOW: a mind whose act is in flight keeps the grant her act began
+//! on, and the largest need among the rest is held so one more mind can always be seated
+//! (`need_floor`). A waiting mind holds no standing share (CONTINUUM-ENGINE 4.10 P3: the acting mind
+//! may take the whole pool). Never above the engine's pool, and never
 //! by relaunching it: the engine's `-c` stays, the grants the minds' bindings follow are what move
 //! (`grants.rs`), and a new engine (another incarnation: pid and start time) starts whole from its
 //! own launch fit.
@@ -127,14 +129,23 @@ impl LivePool {
     }
 }
 
-/// The least the minds' grants hold now: each mind's need, and a mind whose act is in flight keeps
-/// the grant her act began on when it is larger; never less than one prompt's least window.
+/// The least the minds' grants hold now: every act in flight keeps the grant it began on (or her need
+/// when larger), and the largest need among the minds not acting is held so the next one can always
+/// be seated; never less than one prompt's least window.
+///
+/// Why not every mind's need (the M5, 2026-11-16 04:29Z, Qwen3.6-35B-A3B, four residents): the sum of
+/// the four windows was 734,853 tokens against an engine pool of 581,632, so the floor sat above the
+/// pool, every owed poll (4-5 GB) moved nothing, and the embedder's 178 MiB context was refused at 0
+/// available on every recall (`embed.vram.refused`, 24 in the log window): recall ran with no
+/// relevance. Waiting minds holding standing shares is what P3 removed; the pool follows the acts.
 pub(super) fn need_floor(demands: &[Demand<uuid::Uuid>], granted: Option<&PoolGrants>) -> u32 {
-    let held = |d: &Demand<uuid::Uuid>| match d.in_flight {
-        true => granted.and_then(|g| g.grant_for(d.mind)).map_or(d.need.get(), |grant| grant.max(d.need.get())), // map_or: an act in flight with no grant on record holds her need
-        false => d.need.get(),
-    };
-    demands.iter().map(held).fold(0, u32::saturating_add).max(MIN_SERVE_CTX)
+    let acting = demands
+        .iter()
+        .filter(|d| d.in_flight)
+        .map(|d| granted.and_then(|g| g.grant_for(d.mind)).map_or(d.need.get(), |grant| grant.max(d.need.get()))) // map_or: an act in flight with no grant on record holds her need
+        .fold(0, u32::saturating_add);
+    let next = demands.iter().filter(|d| !d.in_flight).map(|d| d.need.get()).fold(0, u32::max);
+    acting.saturating_add(next).max(MIN_SERVE_CTX)
 }
 
 impl ServingDaemonModule {
@@ -328,9 +339,9 @@ mod tests {
         let served = NonZeroU32::new(480_430).expect("test: the M5's pool after #5989"); // expect: a positive literal
         let (her, other) = (1, 2);
         let granted = PoolGrants { pool_tokens: served.get(), per_sequence_cap: 262_144, by_mind: [(uuid::Uuid::from_u128(her), 140_000)].into(), engine: None, revisions: Default::default() };
-        let demands = [demand(her, 100_000, true), demand(other, 60_000, false)];
+        let demands = [demand(her, 100_000, true), demand(other, 60_000, false), demand(3, 40_000, false)];
         let floor = need_floor(&demands, Some(&granted));
-        assert_eq!(floor, 140_000 + 60_000, "her act in flight keeps the grant it began on; the other mind keeps her need");
+        assert_eq!(floor, 140_000 + 60_000, "her act in flight keeps the grant it began on; the largest waiting need is held for the next seat, the smaller waiter holds no standing share");
         let now = PoolNow { engine: ENGINE, served, kv_per_token: kv, floor };
 
         let mut host = HostDeficit::default();
