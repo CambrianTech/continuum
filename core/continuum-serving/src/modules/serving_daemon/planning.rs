@@ -338,17 +338,6 @@ impl ServingDaemonModule {
                 // teardown transient (one low reading while a predecessor dies) clears
                 // in a tick or two; a real shortfall holds for hours. The two are orders
                 // of magnitude apart in duration, so the grace is not delicate.
-                static BELOW_FLOOR_SINCE: parking_lot::Mutex<Option<std::time::Instant>> =
-                    parking_lot::Mutex::new(None);
-                let below_for = {
-                    let mut since = BELOW_FLOOR_SINCE.lock();
-                    if matches!(verdict, FloorVerdict::Below { .. }) && incumbent.is_none() {
-                        since.get_or_insert_with(std::time::Instant::now).elapsed()
-                    } else {
-                        *since = None;
-                        std::time::Duration::ZERO
-                    }
-                };
                 // THE REQUIREMENT IS A TARGET, NOT A GATE (card 53a8d49b).
                 // The old behavior — refuse any plan below floor when an incumbent exists —
                 // was the trap: a node whose requirement is unreachable (e.g. 176,730 tokens
