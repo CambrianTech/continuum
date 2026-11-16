@@ -45,7 +45,9 @@ impl LlmDeliberationFaculty {
         // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
         // ungranted mind is measured first (her view records her wish, never submitted), then waits for the
         // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
-        let decided = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_window(
+        // Her window, decided and (a grant) HELD for this act (`decide_and_hold`): a seat being reclaimed
+        // or moved before the hold is waited for within her turn, never a failed turn (card d50e8e66).
+        let (decided, mut act_hold) = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_and_hold(
             self.persona_id,
             || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
             || {
@@ -76,13 +78,6 @@ impl LlmDeliberationFaculty {
             }
         };
         let decided_window = decided.tokens();
-        // The grant LEASE this act is rendered against, HELD until the act ends (`hold_granted`): no
-        // replan moves it and no handoff takes it under her act; a change applies at her next act.
-        let hold_now = || crate::capacity::mind_window::hold_granted(self.persona_id);
-        let mut act_hold = match decided {
-            crate::capacity::mind_window::Decided::Granted(_) => match hold_now() { Ok(hold) => Some(hold), Err(refused) => return Some(Contribution::deliberation_fault(refused.to_string())) },
-            _ => None,
-        };
         let mut rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
