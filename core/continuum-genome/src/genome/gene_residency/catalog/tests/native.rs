@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! The gene catalog's owner against a REAL engine (CONTINUUM-ENGINE 4.10 P4a; the Windows cutover
 //! gate Codex named): the fork's llama-server, adopted (this process never owned it), with residents'
 //! KV in its slots. A gene the engine itself wrote is loaded and retired through `GeneCatalog`, and
@@ -20,7 +21,7 @@ use crate::inference::llama_server::{FreshShadow, LedgerAnswer};
 
 const GENE: &str = "native-gene.gguf";
 
-/// A real engine process serving `port`, killed when dropped.
+/// A real engine process serving `port`, killed when dropped (`kill_on_drop`).
 struct Engine {
     child: tokio::process::Child,
     root: String,
@@ -30,12 +31,6 @@ impl Engine {
     /// Stop the engine and wait for its exit, so its port is free for a replacement.
     async fn stop(mut self) {
         self.child.kill().await.expect("test: the engine stops"); // test: a live child we own
-    }
-}
-
-impl Drop for Engine {
-    fn drop(&mut self) {
-        let _killed = self.child.start_kill(); // test teardown: an engine already gone needs no kill
     }
 }
 
@@ -151,7 +146,8 @@ async fn an_adopted_engines_gene_change_keeps_every_residents_kv() {
     let authority = Authority::isolated(u64::MAX / 2);
     let learner = learning(&engine, port);
     let shadow = FreshShadow { name: GENE.into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 1 };
-    let written = seat(&authority, learner.clone(), "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
+    let writer = learner.clone();
+    let written = seat(&authority, writer, "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
     written.unload().await.expect("test: the writer's shadow unloads"); // test: it was just loaded
     if let Err((_seat, why)) = written.release().await {
         panic!("test: the writer's residency did not release: {why}");
@@ -160,8 +156,10 @@ async fn an_adopted_engines_gene_change_keeps_every_residents_kv() {
     residents_kept_their_kv(&client, &engine.root, &before, "after the engine wrote the gene").await;
 
     // adopted: the catalog's owner, under a held serving gate, bound to the identity read first
-    let operation = authority.serving.try_operation().expect("test: a fresh gate is free"); // test: nothing else holds it
-    let catalog = GeneCatalog::new(Authority::isolated(u64::MAX / 2));
+    // the operation is held on the catalog's OWN gate: admission inside another gate's operation refuses
+    let catalog_authority = Authority::isolated(u64::MAX / 2);
+    let operation = catalog_authority.serving.try_operation().expect("test: a fresh gate is free"); // test: nothing else holds it
+    let catalog = GeneCatalog::new(catalog_authority);
     let ledger = identity(&learner).await;
     let gene = train_dir.path().join(GENE).to_string_lossy().into_owned();
     let add = CatalogChange {
@@ -196,7 +194,8 @@ async fn a_replacement_on_the_same_port_refuses_the_change_bound_to_the_old_engi
     let authority = Authority::isolated(u64::MAX / 2);
     let learner = learning(&first, port);
     let shadow = FreshShadow { name: GENE.into(), rank: 4, alpha: 8.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 1, seed: 1 };
-    let written = seat(&authority, learner.clone(), "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
+    let writer = learner.clone();
+    let written = seat(&authority, writer, "native:writer", shadow).await.expect("test: the engine writes a shadow"); // test: a live engine with --train-dir
     written.unload().await.expect("test: the writer's shadow unloads"); // test: it was just loaded
     if let Err((_seat, why)) = written.release().await {
         panic!("test: the writer's residency did not release: {why}");
