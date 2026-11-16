@@ -40,10 +40,10 @@ pub struct DispatchState {
     /// For each mind seated since: the publication her wait began and her receipt revision when
     /// seated. Until she completes an act on it, her seat is reclaimed only for a mind that has waited
     /// at least as long (aging both ways, so no fresh seat thrashes).
-    seated: BTreeMap<uuid::Uuid, (u64, u64)>,
+    seated: BTreeMap<uuid::Uuid, (u64, Option<u64>)>,
     /// A holder whose reclaim the engine refused, at her receipt revision then: she is not asked again
     /// until she completes another act.
-    refused_at: BTreeMap<uuid::Uuid, u64>,
+    refused_at: BTreeMap<uuid::Uuid, Option<u64>>,
     /// Each mind's receipt revision when her grant last changed: she is settled (her grant may shrink
     /// toward her share) once a receipt past it says she served on it.
     changed: BTreeMap<uuid::Uuid, u64>,
@@ -85,7 +85,8 @@ pub(super) struct Publication<'a> {
 /// refused it until she acts again, and not before she has used it unless the waiter has waited at
 /// least as long as she did.
 fn reclaimable_for(dispatch: &DispatchState, state: &ReservationState, holder: uuid::Uuid, waited_since: u64) -> bool {
-    let served = state.receipts.get(&holder).map_or(0, |(_, revision)| *revision); // no receipt: nothing served
+    // her newest receipt revision; none (nothing served here) orders before any
+    let served = state.receipts.get(&holder).map(|(_, revision)| *revision);
     if dispatch.refused_at.get(&holder).is_some_and(|at| served <= *at) {
         return false;
     }
@@ -149,8 +150,7 @@ impl Reservations {
             state.retiring.remove(mind);
             state.refused.remove(mind);
             held_for_policy.insert(*mind, *tokens);
-            let served = state.receipts.get(mind).map_or(0, |(_, revision)| *revision); // no receipt: nothing served
-            dispatch.refused_at.insert(*mind, served);
+            dispatch.refused_at.insert(*mind, state.receipts.get(mind).map(|(_, revision)| *revision));
         }
         for mind in reclaimed.iter().chain(state.retiring.keys()) {
             held_for_policy.remove(mind);
@@ -194,8 +194,9 @@ impl Reservations {
         owed.sort_by_key(|(_, at)| *at);
         for (waiter, waited_since) in owed {
             let Some(need) = demands.iter().find(|d| d.mind == waiter).map(|d| d.need.get()) else { continue };
-            let granted = |grants: &BTreeMap<uuid::Uuid, u32>| grants.get(&waiter).copied().unwrap_or(0); // unwrap_or: not granted holds nothing
-            if granted(&grants) >= need || engine.is_none() {
+            // her grant plus the cells already being reclaimed for her covers her need
+            let covered = |grants: &BTreeMap<uuid::Uuid, u32>, pending: u32| grants.get(&waiter).map_or(pending, |held| held.saturating_add(pending)) >= need;
+            if covered(&grants, 0) || engine.is_none() {
                 continue;
             }
             // non-acting holders she may take (aging, a refused reclaim not retried before her next
@@ -211,13 +212,13 @@ impl Reservations {
             let claimed: u32 = grants.iter().filter(|(mind, _)| **mind != waiter).fold(0u32, |sum, (_, tokens)| sum.saturating_add(*tokens));
             let charged: u32 = state.retiring.values().fold(0u32, |sum, lease| sum.saturating_add(lease.tokens));
             let free = pool.saturating_sub(claimed.saturating_add(charged));
-            let reclaimable = candidates.iter().fold(0u32, |sum, (mind, _)| sum.saturating_add(held_for_policy.get(mind).copied().unwrap_or(0))); // unwrap_or: candidates are held_for_policy's keys
+            let reclaimable = candidates.iter().filter_map(|(mind, _)| held_for_policy.get(mind)).fold(0u32, |sum, tokens| sum.saturating_add(*tokens));
             if free.saturating_add(reclaimable) < need {
                 continue;
             }
             let mut pending = 0u32;
             for (holder, served) in candidates {
-                if granted(&grants).saturating_add(pending) >= need {
+                if covered(&grants, pending) {
                     break;
                 }
                 match served {
@@ -252,8 +253,7 @@ impl Reservations {
             .collect();
         for (mind, waited_since) in seated_now {
             dispatch.owed.remove(&mind);
-            let served = state.receipts.get(&mind).map_or(0, |(_, revision)| *revision); // no receipt: nothing served
-            dispatch.seated.insert(mind, (waited_since, served));
+            dispatch.seated.insert(mind, (waited_since, state.receipts.get(&mind).map(|(_, revision)| *revision)));
         }
         let acting = state.entries.len();
         dispatch.waits = dispatch
@@ -278,7 +278,7 @@ impl Reservations {
                 for holder in next.by_mind.keys().filter(|holder| *holder != waiter) {
                     // mid-act, she will have used her seat when the act completes
                     let acting = state.entries.contains_key(holder);
-                    let refused = dispatch.refused_at.get(holder).is_some_and(|at| state.receipts.get(holder).map_or(0, |(_, served)| *served) <= *at); // no receipt: nothing served
+                    let refused = dispatch.refused_at.get(holder).is_some_and(|at| state.receipts.get(holder).map(|(_, served)| *served) <= *at);
                     if refused || !(acting || reclaimable_for(dispatch, &state, *holder, *waited_since)) {
                         continue;
                     }
