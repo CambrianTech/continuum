@@ -30,11 +30,13 @@ if ($Check) {
 }
 
 # The first CLI is not installed yet, so project its canonical build-key inputs
-# into the transport shim rather than maintaining a second policy list.
-$artifactSource = [IO.File]::ReadAllText((Join-Path $root 'core/continuum-cli-lifecycle/src/prebuilt_artifact.rs'))
-$inputBlock = [regex]::Match($artifactSource, '(?s)pub const BUILD_INPUTS:.*?=\s*\[(.*?)\];')
-if (-not $inputBlock.Success) { throw 'Missing canonical prebuilt build inputs.' }
-$inputs = @([regex]::Matches($inputBlock.Groups[1].Value, '"([^"]+)"') | ForEach-Object { $_.Groups[1].Value })
+# into the transport shim rather than maintaining a second policy list. The list is
+# the one file the Rust owner reads (`prebuilt_artifact::BUILD_INPUTS` includes it),
+# one input per line.
+$inputsPath = Join-Path $root 'core/continuum-cli-lifecycle/build-inputs.txt'
+if (-not (Test-Path -LiteralPath $inputsPath)) { throw 'Missing canonical prebuilt build inputs.' }
+$inputs = @([IO.File]::ReadAllText($inputsPath).Replace("`r`n", "`n").Split("`n") | Where-Object { $_ -ne '' })
+if ($inputs.Count -eq 0) { throw 'Missing canonical prebuilt build inputs.' }
 $prebuiltPath = Join-Path $PSScriptRoot 'lib/windows-prebuilt.ps1'
 $prebuiltText = [IO.File]::ReadAllText($prebuiltPath).Replace("`r`n", "`n")
 $projection = '# BEGIN GENERATED PREBUILT INPUTS' + "`n" + '$script:CorePrebuiltInputs = @(' + (($inputs | ForEach-Object { "'$_'" }) -join ', ') + ')' + "`n" + '# END GENERATED PREBUILT INPUTS'
