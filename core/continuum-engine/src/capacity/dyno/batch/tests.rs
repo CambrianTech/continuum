@@ -173,6 +173,33 @@ fn candidate_schedulers_on_the_recorded_hour() {
     eprintln!("winner at an oldest waiter <= {bound:.0} s: {} ({:.1} acts/h)", best.0, best.1);
 }
 
+// what this catches (4.10 P5 slice 2's gate, #6063): the decode set going live without beating
+// today's engine on the recorded M5 hour. On the live M5 (2026-11-16 04:10Z) four generating slots
+// decoded together at 1.4-4.3 tok/s each against ~60 alone, and one 45k-token think ran 1.9 h before
+// it was dropped. The measured width (the fitted decode plane's argmin, `MeasuredConcurrency`) must
+// finish residents' acts sooner at the median and the p90, and leave no resident waiting longer for
+// first service, than every generating slot decoding every step (`Fork`), on the same arrivals.
+#[test]
+fn the_measured_decode_width_beats_every_slot_decoding_on_the_recorded_hour() {
+    let e = evidence();
+    let hour = &e.m5_hour.value;
+    let costs = Costs::of(&e);
+    let resident: Vec<usize> = (0..hour.tasks.len()).filter(|i| hour.tasks[*i].class == TaskClass::Resident).collect();
+    let run = |policy: &mut dyn BatchScheduler| {
+        let out = replay(hour, &costs, policy);
+        assert!(out.iter().all(|o| o.release_s.is_finite()), "{} left tasks unfinished", policy.name());
+        let acts: Vec<f64> = resident.iter().map(|i| out[*i].act_s()).collect();
+        let oldest = resident.iter().map(|i| out[*i].first_service_wait_s).fold(0.0, f64::max);
+        (median(acts.clone()), quantile(acts, 0.9), oldest)
+    };
+    let fork = run(&mut Fork::default());
+    let measured = run(&mut MeasuredConcurrency::new(&costs));
+    let shown = format!("fork (median, p90, oldest waiter) = {fork:.0?} s; measured width = {measured:.0?} s");
+    assert!(measured.0 < fork.0, "the median act is not shorter: {shown}");
+    assert!(measured.1 < fork.1, "the p90 act is not shorter: {shown}");
+    assert!(measured.2 <= fork.2, "a resident waits longer for first service: {shown}");
+}
+
 // what this catches: a fork fill that drifts from the source: a slot stops where its remaining
 // prompt reaches 4 + n_ubatch, then 4, then 1 (`server-context.cpp` :4166, `--train-dir`).
 #[test]
