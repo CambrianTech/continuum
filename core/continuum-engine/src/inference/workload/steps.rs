@@ -80,7 +80,7 @@ pub enum StepStreamEnd {
     /// The engine could not be reached, or answered without the stream.
     Unreachable(LlamaServerError),
     /// A record the core could not read: the capture cannot be trusted past it.
-    Unreadable(String),
+    Unreadable(serde_json::Error),
     /// The stream did not open with its clock origin.
     NoOrigin,
 }
@@ -162,7 +162,7 @@ pub async fn record_steps(client: &reqwest::Client, root: &str, engine: EngineIn
                 // the engine process boundary: its records arrive as JSON and are typed here, once
                 let record: Record = match serde_json::from_str(data) {
                     Ok(record) => record,
-                    Err(error) => return StepStreamEnd::Unreadable(format!("{error}: {data}")),
+                    Err(error) => return StepStreamEnd::Unreadable(error),
                 };
                 if let Err(end) = reader.read(record) {
                     return end;
