@@ -1606,7 +1606,19 @@ exist only at a boundary to a person or a foreign program (an external OpenAI dr
 | Tokens, engine to core | SSE `data:` JSON per chunk, parsed per chunk | not yet measured | token ids as binary frames, detokenized once where text is shown |
 | Control and telemetry | JSON `/props`, `/slots`, `POST /engine/host-pool` (this branch added `step_budget` and `gpu_time` there) | not yet measured | one typed binary snapshot the core reads (fixed layout, versioned); JSON kept only as the human/debug view of the same snapshot |
 
-**Order**, by measured cost: checkpoints as device pages first (memory and copies, and the pool's largest kind);
+**The checkpoint by id, proven** (fork 7b-series `tests/test-seq-park.cpp`, qwen35-0.8b hybrid, M5 Metal,
+2026-11-16). The fork's memory already has the by-id form: `llama_memory_seq_cp` shares attention KV cells by sequence
+id, and recurrent state is copy-on-write on the device (`llama_memory_recurrent::find_slot` moves a sharing sequence to
+an empty cell with `src` = the shared one; the step graph gathers it through `s_copy`). So a checkpoint is a PARKED
+SEQUENCE: park = `seq_cp(live, parked)`; restore = `seq_rm(live)` then `seq_cp(parked, live)`. Measured on a 300-token
+sequence: today's serialize 23,894,492 bytes in 1,783 us; parked 0 bytes moved, park 13 us, restore 40 us; the restored
+sequence's next-token logits equal a cold run's (argmax equal, max |diff| 0.0044 from batch shape). The costs move from
+host memory to the device: one recurrent state cell per parked checkpoint (the recurrent cache is sized by `n_seq_max`
+at load, so parked ids are provisioned up front and become the pool's device-side `checkpoint` kind), and attention
+cells a parked id still references stay allocated until it is released. The serializing path remains only to persist a
+page to disk, as its own bytes.
+
+**Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
 
