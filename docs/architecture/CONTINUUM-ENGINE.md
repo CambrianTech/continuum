@@ -1629,6 +1629,15 @@ provisioned at load (`n_seq_max` = slots + parked cells). Integration: each slot
 (a free list owned by the pool), evicting one is `seq_rm(parked, -1, -1)`, and the draft context's partial state and
 the speculative stash follow the same form once measured.
 
+*Live sizes, measured* (the M5's engine log `~/.continuum/logs/llama-server-58057.log`, 2026-11-16, Qwen3.6-35B-A3B,
+`--parallel 5 --ctx-checkpoints 32 --cache-ram 9953 --kv-unified -c 717385`): one checkpoint is 80.573 MiB at 9,005
+tokens and 141.330 MiB at 39,812 tokens, about 62 MiB fixed plus ~2 KiB per token. Five slots of 32 checkpoints can
+therefore hold on the order of 16 GiB of host copies, outside `--cache-ram`'s bound: the measured source of the
+swap and compression in 4.7.6's receipt. Parked, the fixed part is one recurrent cell on the device and no copy; the
+per-token part must be identified before the count is set (if it is the draft's or a sliding window's KV, parking
+shares those cells by id and it costs nothing; if it is per-token recurrent history, it is the cell's own size). The
+number of parked cells is then a budget the pool grants from measured value per byte, never a fixed 32 per slot.
+
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
