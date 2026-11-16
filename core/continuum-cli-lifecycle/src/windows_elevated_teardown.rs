@@ -167,24 +167,70 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(
 }
 
 fn consent_script(exe: &Path, plan_path: &Path, plan_sha: &str) -> String {
-    let quote = |s: String| s.replace('\'', "''");
+    // A PowerShell string is UTF-16 too. Construct its native units directly:
+    // Display/UTF-8 conversion would replace an unpaired surrogate in an OS path.
+    fn native_literal(path: &Path) -> String {
+        use std::os::windows::ffi::OsStrExt;
+        let units = path
+            .as_os_str()
+            .encode_wide()
+            .map(|unit| unit.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        format!("[string]::new([char[]]@({units}))")
+    }
+    let executable = native_literal(exe);
+    let plan = native_literal(plan_path);
     format!(
-        "$ErrorActionPreference='Stop'; try {{ $p = Start-Process -FilePath '{}' -ArgumentList \
-         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait \
-         -PassThru }} catch [System.ComponentModel.Win32Exception] {{ \
-         if ($_.Exception.NativeErrorCode -eq 1223) {{ @{{kind='refused'}} | ConvertTo-Json -Compress; exit 0 }}; throw }}; \
-         @{{kind='completed';exitCode=[int]$p.ExitCode}} | ConvertTo-Json -Compress",
-        quote(exe.display().to_string()),
-        quote(plan_path.display().to_string()),
+        r#"$ErrorActionPreference='Stop'; $exe=({executable}); $plan=({plan});          try {{ $p = Start-Process -FilePath $exe -ArgumentList          @('stop','--elevated','--plan',('"' + $plan + '"'),'--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait          -PassThru }} catch [System.ComponentModel.Win32Exception] {{          if ($_.Exception.NativeErrorCode -eq 1223) {{ @{{kind='refused'}} | ConvertTo-Json -Compress; exit 0 }}; throw }};          @{{kind='completed';exitCode=[int]$p.ExitCode}} | ConvertTo-Json -Compress"#
     )
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::elevated_teardown::ConsentOutcome;
     use crate::supervisor_install::{powershell, PowerShellError};
 
+    #[tokio::test]
+    async fn launch_paths_keep_native_units_and_quote_the_plan_argument() {
+        use std::os::windows::ffi::OsStringExt;
+        let mut units: Vec<u16> = r"C:\a folder\a'".encode_utf16().collect();
+        units.push(0xd800);
+        units.extend(".exe".encode_utf16());
+        let exe = PathBuf::from(std::ffi::OsString::from_wide(&units));
+        let plan = Path::new(r"C:\a folder\plan.json");
+        let expected = units
+            .iter()
+            .map(u16::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        let mock = format!(
+            r#"
+function Start-Process {{
+    param($FilePath, $ArgumentList, $Verb, $WindowStyle, [switch]$Wait, [switch]$PassThru)
+    if ((($FilePath.ToCharArray() | ForEach-Object {{ [int]$_ }}) -join ',') -cne '{expected}') {{ throw 'native path changed' }}
+    if ($ArgumentList[3] -cne '"C:\a folder\plan.json"') {{ throw 'plan argument was not quoted' }}
+    [pscustomobject]@{{ExitCode=0}}
+}}
+"#
+        );
+        // Use a string-valued WindowStyle like the real Start-Process contract.
+
+        let raw = powershell(
+            &format!(
+                "{mock}
+{}",
+                consent_script(&exe, plan, "digest")
+            ),
+            std::time::Duration::from_secs(30),
+        )
+        .await
+        .expect("native path argument replay succeeds");
+        assert!(matches!(
+            serde_json::from_str::<ConsentOutcome>(&raw).expect("typed outcome"),
+            ConsentOutcome::Completed { exit_code: 0 }
+        ));
+    }
     // Exercise the real Windows PowerShell exception/protocol boundary without
     // asking for consent or touching a resident process.
     #[tokio::test]
