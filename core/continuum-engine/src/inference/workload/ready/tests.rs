@@ -17,7 +17,7 @@ fn mind(n: u128) -> MindId {
     MindId(uuid::Uuid::from_u128(n))
 }
 
-fn seq(at: u64, engine: EngineIncarnation, id: u64, who: MindId, change: SequenceChange) -> Stamped<WorkloadEvent> {
+fn seq(at: u64, (engine, id): (EngineIncarnation, u64), who: MindId, change: SequenceChange) -> Stamped<WorkloadEvent> {
     Stamped { at: ms(at), event: WorkloadEvent::Sequence { engine, sequence: SequenceId(id), mind: who, change } }
 }
 
@@ -27,7 +27,7 @@ fn step(at: u64, engine: EngineIncarnation, took: u64, ran: &[u64]) -> Stamped<W
 }
 
 /// The `index`-th recorded interval, covering `span` milliseconds on the ring clock.
-fn interval(index: u64, span: std::ops::Range<u64>, events: Vec<Stamped<WorkloadEvent>>) -> CompleteInterval<WorkloadEvent> {
+fn recorded(index: u64, span: std::ops::Range<u64>, events: Vec<Stamped<WorkloadEvent>>) -> CompleteInterval<WorkloadEvent> {
     Recorded { index, from: ms(span.start), to: ms(span.end), events }.into()
 }
 
@@ -39,8 +39,8 @@ const ARRIVED: SequenceChange = SequenceChange::Arrived { resident: 0, fresh: 10
 fn an_act_that_spans_two_intervals_is_one_act() {
     let her = mind(1);
     let mut replay = Replay::new();
-    replay.feed(&interval(0, 0..100, vec![seq(10, A, 1, her, ARRIVED), seq(20, A, 1, her, SequenceChange::Ready)])).unwrap(); // test: this interval continues the last
-    replay.feed(&interval(1, 100..200, vec![step(150, A, 30, &[1]), seq(150, A, 1, her, SequenceChange::Completed { decoded: 1 })])).unwrap(); // test: this interval continues the last
+    replay.feed(&recorded(0, 0..100, vec![seq(10, (A, 1), her, ARRIVED), seq(20, (A, 1), her, SequenceChange::Ready)])).unwrap(); // test: this interval continues the last
+    replay.feed(&recorded(1, 100..200, vec![step(150, A, 30, &[1]), seq(150, (A, 1), her, SequenceChange::Completed { decoded: 1 })])).unwrap(); // test: this interval continues the last
     let report = replay.report();
     assert_eq!((report.minds[&her].acts, report.minds[&her].act_time), (1, Duration::from_millis(140)));
     assert_eq!(report.minds[&her].left_waiting, Duration::from_millis(100), "runnable from 20 until her step began at 120");
@@ -52,10 +52,10 @@ fn an_act_that_spans_two_intervals_is_one_act() {
 fn a_missing_interval_or_an_unknown_sequence_refuses() {
     let her = mind(1);
     let mut replay = Replay::new();
-    replay.feed(&interval(0, 0..100, vec![])).unwrap(); // test: this interval continues the last
-    assert_eq!(replay.feed(&interval(2, 100..200, vec![])), Err(ReplayError::Gap { expected: 1, got: 2 }));
-    assert_eq!(replay.feed(&interval(1, 150..200, vec![])), Err(ReplayError::Discontinuous { expected: ms(100), got: ms(150) }));
-    let unknown = Replay::new().feed(&interval(0, 0..100, vec![seq(10, A, 9, her, SequenceChange::Ready)]));
+    replay.feed(&recorded(0, 0..100, vec![])).unwrap(); // test: this interval continues the last
+    assert_eq!(replay.feed(&recorded(2, 100..200, vec![])), Err(ReplayError::Gap { expected: 1, got: 2 }));
+    assert_eq!(replay.feed(&recorded(1, 150..200, vec![])), Err(ReplayError::Discontinuous { expected: ms(100), got: ms(150) }));
+    let unknown = Replay::new().feed(&recorded(0, 0..100, vec![seq(10, (A, 9), her, SequenceChange::Ready)]));
     assert_eq!(unknown, Err(ReplayError::UnknownSequence { sequence: (A, SequenceId(9)) }));
 }
 
@@ -67,17 +67,17 @@ fn a_step_on_one_engine_never_passes_over_another_engines_mind() {
     let (on_a, on_b) = (mind(1), mind(2));
     let mut replay = Replay::new();
     replay
-        .feed(&interval(0, 0..100, vec![
-            seq(0, A, 1, on_a, ARRIVED),
-            seq(0, A, 1, on_a, SequenceChange::Ready),
-            seq(0, B, 1, on_b, ARRIVED),
-            seq(0, B, 1, on_b, SequenceChange::Ready),
+        .feed(&recorded(0, 0..100, vec![
+            seq(0, (A, 1), on_a, ARRIVED),
+            seq(0, (A, 1), on_a, SequenceChange::Ready),
+            seq(0, (B, 1), on_b, ARRIVED),
+            seq(0, (B, 1), on_b, SequenceChange::Ready),
             step(10, A, 10, &[1]),
             step(10, B, 10, &[1]),
             step(20, A, 10, &[1]),
-            seq(20, A, 1, on_a, SequenceChange::Completed { decoded: 2 }),
+            seq(20, (A, 1), on_a, SequenceChange::Completed { decoded: 2 }),
             step(20, B, 10, &[1]),
-            seq(20, B, 1, on_b, SequenceChange::Completed { decoded: 2 }),
+            seq(20, (B, 1), on_b, SequenceChange::Completed { decoded: 2 }),
         ]))
         .unwrap(); // test: this interval continues the last
     let report = replay.report();
@@ -91,7 +91,7 @@ fn a_step_on_one_engine_never_passes_over_another_engines_mind() {
 fn a_runnable_mind_on_a_stalled_engine_accrues_wait_with_no_steps() {
     let her = mind(1);
     let mut replay = Replay::new();
-    replay.feed(&interval(0, 0..60_000, vec![seq(0, A, 1, her, ARRIVED), seq(0, A, 1, her, SequenceChange::Ready)])).unwrap(); // test: this interval continues the last
+    replay.feed(&recorded(0, 0..60_000, vec![seq(0, (A, 1), her, ARRIVED), seq(0, (A, 1), her, SequenceChange::Ready)])).unwrap(); // test: this interval continues the last
     let report = replay.report();
     assert_eq!(report.minds[&her].left_waiting, Duration::from_secs(60));
     assert_eq!(report.minds[&her].longest_wait, Duration::from_secs(60));
@@ -104,12 +104,12 @@ fn blocked_time_is_not_scheduler_wait() {
     let her = mind(1);
     let mut replay = Replay::new();
     replay
-        .feed(&interval(0, 0..100, vec![
-            seq(0, A, 1, her, ARRIVED),
-            seq(0, A, 1, her, SequenceChange::Blocked { on: BlockedOn::PageIn }),
-            seq(50, A, 1, her, SequenceChange::Resumed),
+        .feed(&recorded(0, 0..100, vec![
+            seq(0, (A, 1), her, ARRIVED),
+            seq(0, (A, 1), her, SequenceChange::Blocked { on: BlockedOn::PageIn }),
+            seq(50, (A, 1), her, SequenceChange::Resumed),
             step(70, A, 20, &[1]),
-            seq(70, A, 1, her, SequenceChange::Completed { decoded: 1 }),
+            seq(70, (A, 1), her, SequenceChange::Completed { decoded: 1 }),
         ]))
         .unwrap(); // test: this interval continues the last
     assert_eq!(replay.report().minds[&her].left_waiting, Duration::ZERO);
