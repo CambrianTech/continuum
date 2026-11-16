@@ -23,6 +23,8 @@ use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+pub mod catalog;
+
 use parking_lot::Mutex;
 use uuid::Uuid;
 

@@ -315,6 +315,13 @@ impl LearningEngine {
         self.adapter_change(self.client.post(format!("{}/lora-adapters/fresh", self.root)).json(&body)).await
     }
 
+    /// `POST /lora-adapters/load` inside `residency`: the engine claims the residency, checks its rows
+    /// cover the adapter file `name` (under its train dir), and loads it. The loaded adapter.
+    pub async fn seat_load(&self, name: &str, residency: ResidencyId) -> Result<LoadedAdapter, LlamaServerError> {
+        let body = serde_json::json!({ "name": name, "residency": residency.to_string() });
+        self.adapter_change(self.client.post(format!("{}/lora-adapters/load", self.root)).json(&body)).await
+    }
+
     /// `POST /lora-adapters/unload`: the shadow leaves the engine (its optimizer released first).
     pub async fn unseat(&self, engine: &LedgerEngine, lora_id: i64) -> Result<LoadedAdapter, LlamaServerError> {
         // bound to the incarnation that loaded it: a relaunch reusing the id refuses, never unloads
@@ -326,8 +333,12 @@ impl LearningEngine {
         let resp = request.timeout(super::genome::LORA_LOAD_TIMEOUT).send().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
         let status = resp.status();
         let bytes = resp.bytes().await.map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
+        if status.as_u16() == 503 {
+            return Err(LlamaServerError::AdapterChange(AdapterChangeRefusal::Busy));
+        }
         if !status.is_success() {
-            return Err(LlamaServerError::Unreachable(format!("adapter change refused ({status}): {}", String::from_utf8_lossy(&bytes))));
+            let detail = String::from_utf8_lossy(&bytes).into_owned();
+            return Err(LlamaServerError::AdapterChange(AdapterChangeRefusal::Refused { status: status.as_u16(), detail }));
         }
         serde_json::from_slice::<LoadedAdapter>(&bytes) // engine HTTP wire: the adapter change reply
             .map_err(|e| LlamaServerError::Unreachable(format!("adapter change answered no id: {e}")))

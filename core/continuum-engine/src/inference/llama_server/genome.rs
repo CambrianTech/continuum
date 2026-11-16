@@ -1,20 +1,7 @@
 //! Genome responsibility of the llama-server process owner.
 use super::*;
 use std::collections::BTreeMap;
-
-/// A retirement is bound to the ledger that identified the adapter.
-#[derive(serde::Serialize)]
-#[serde(untagged)]
-pub(super) enum LoraChange<'a> {
-    Load { name: &'a str },
-    Unload(super::learn_residency::UnloadAdapter<'a>),
-}
-
-impl LoraChange<'_> {
-    fn route(&self) -> &'static str {
-        match self { Self::Load { .. } => "load", Self::Unload(_) => "unload" }
-    }
-}
+use super::genome_catalog::{Add, CatalogChange, CatalogEnd, CatalogRefusal, CatalogStep, Retire};
 /// Whether the serving engine accepts `--train-dir`, read off its own `--help` by the same
 /// once-per-binary probe that reads its KV cache types. An engine older than the flag REJECTS
 /// it and the lane does not start (2026-09-27: #4438 on canary would have put `--train-dir` on
@@ -126,16 +113,6 @@ pub(super) fn genome_paths_of(catalog: &[(i64, String)], genes: &[String]) -> Ve
 }
 
 
-/// One `/lora-adapters/{load,unload}` answer.
-pub(super) enum LoraPost {
-    Done,
-    /// The engine has no such route: it predates runtime adapter load.
-    NoRoute,
-    /// The adapter is active in a slot that is decoding: retry next tick.
-    Busy,
-}
-
-
 /// Reading a LoRA's tensors from disk onto the device: seconds for a large one, never the
 /// 5 s probe bound.
 pub(super) const LORA_LOAD_TIMEOUT: Duration = Duration::from_secs(120);
@@ -156,97 +133,99 @@ pub(super) fn stage_gene(gene: &std::path::Path, into: &std::path::Path) -> std:
 }
 
 
-/// What an in-place genome change came to (card 49b5e806, charter S1).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What an in-place genome change came to (card 49b5e806, charter S1; 4.10 P4a).
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GenomeInPlace {
     /// The running engine now serves the target's adapter set: no relaunch.
     Adopted,
-    /// This engine cannot load at runtime (no --train-dir, or it predates
-    /// `/lora-adapters/load`), or a gene has no stageable name: relaunch, as before.
+    /// This engine cannot load at runtime (no --train-dir, or no learning ledger): relaunch.
     Unsupported,
     /// A retiring adapter is active in a turn in flight: the change stopped there, with every
     /// step before it applied and recorded, and the rest waits a tick (a relaunch here would
     /// kill that turn).
     Busy,
+    /// The catalog's owner refused: the engine and every resident's KV stay, the lane is Degraded.
+    Refused(CatalogRefusal),
 }
 
 impl LlamaServerProcess {
-    /// ONE fetch of the root-level `/props` (beside `/health`) — the server's own
-    /// metadata channel: served window, slot count, modalities, and (fork
-    /// 3ca60da3c) measured weight residency. A connection error means nothing is
-    /// up (normal pre-spawn) → Unreachable.
-    /// The in-place genome change against an engine whose --train-dir is `dir`: retire what
-    /// the target dropped, then stage and load what it added, recording each accepted step.
+    /// The in-place genome change against an engine whose --train-dir is `dir`: decide what the
+    /// target adds and drops, stage the additions, and hand every mutation to the catalog's owner,
+    /// bound to the engine identity read before the catalog. Each applied step is recorded.
     pub(super) async fn converge_genome(
         &self,
         dir: &std::path::Path,
         target: &ServingTarget,
-        engine: &LedgerEngine,
+        operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
+        let Some(owner) = super::genome_catalog::owner() else {
+            return Ok(GenomeInPlace::Refused(CatalogRefusal::NoOwner));
+        };
+        let Some(process) = LlamaServerControl::served_incarnation(self) else {
+            return Ok(GenomeInPlace::Refused(CatalogRefusal::EngineReplaced));
+        };
+        let engine = LearningEngine::of(process);
+        // identity first: every step below is bound to this engine, read before its catalog
+        let ledger = match engine.learn_ledger().await? {
+            LedgerAnswer::Ledger(snapshot) => snapshot.engine,
+            LedgerAnswer::NoLedger => return Ok(GenomeInPlace::Unsupported),
+        };
         let Some(active) = self.served_adapters.lock().unwrap().clone() else { // JUSTIFIED: poison means a prior panic while recording the served set.
             return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
         };
         let desired = target.adapter_paths();
-        let added: Vec<&String> = desired.iter().filter(|p| !active.contains(p)).collect();
         let removed: Vec<&String> = active.iter().filter(|p| !desired.contains(p)).collect();
-        let mut staged = Vec::with_capacity(added.len());
-        for gene in &added {
-            staged.push((PathBuf::from(gene.as_str()), gene_stage_name(std::path::Path::new(gene.as_str()))));
-        }
-        // Every step the engine accepts is recorded at once, so an early return (a busy
-        // retire, an error) leaves the served set naming exactly what the engine holds;
-        // the next tick converges the rest (Codex on #4467: two retires, the second busy,
-        // left the first advertised although the engine had freed it).
-        let record = |gene: &str, held: bool| -> Result<(), LlamaServerError> {
-            let mut guard = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
-            let Some(served) = guard.as_mut() else {
-                return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
-            };
-            served.retain(|p| p != gene);
-            if held {
-                served.push(gene.to_string());
-                served.sort();
-            }
-            Ok(())
-        };
-        // Retire first, so a refused retire (a turn holds the gene) stops the change before
-        // any new gene joins.
-        if !removed.is_empty() {
-            let catalog = self.lora_catalog().await?;
-            for gene in &removed {
-                let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
-                let id = catalog.iter().find_map(|(id, path)| {
-                    let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
-                    (path == *gene || base == Some(stage.as_str())).then_some(*id)
-                });
-                let Some(id) = id else {
-                    record(gene, false)?; // not loaded: nothing to retire, and not served
-                    continue;
-                };
-                match self.lora_post(&LoraChange::Unload(super::learn_residency::UnloadAdapter { engine, id })).await? {
-                    LoraPost::Done => {
-                        record(gene, false)?;
-                        let _ = std::fs::remove_file(dir.join(&stage)); // best effort: the engine freed it; a leftover link is re-used by the next load of the same gene
-                    }
-                    LoraPost::Busy => return Ok(GenomeInPlace::Busy),
-                    LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
-                }
+        let catalog = if removed.is_empty() { Vec::new() } else { self.lora_catalog().await? };
+        let mut retire = Vec::with_capacity(removed.len());
+        for gene in removed {
+            let stage = gene_stage_name(std::path::Path::new(gene.as_str()));
+            let id = catalog.iter().find_map(|(id, path)| {
+                let base = std::path::Path::new(path).file_name().and_then(|n| n.to_str());
+                (path == gene || base == Some(stage.as_str())).then_some(*id)
+            });
+            match id {
+                Some(id) => retire.push(Retire { gene: gene.clone(), id }),
+                None => self.record_served(gene, false)?, // not loaded: nothing to retire, and not served
             }
         }
-        for (gene, name) in staged {
-            let into = dir.join(&name);
-            let gene_key = gene.to_string_lossy().into_owned();
-            tokio::task::spawn_blocking(move || stage_gene(&gene, &into))
+        let mut add = Vec::new();
+        for gene in desired.iter().filter(|p| !active.contains(p)) {
+            let name = gene_stage_name(std::path::Path::new(gene.as_str()));
+            let staged = dir.join(&name);
+            let (from, into) = (PathBuf::from(gene.as_str()), staged.clone());
+            tokio::task::spawn_blocking(move || stage_gene(&from, &into))
                 .await
                 .map_err(|e| LlamaServerError::Spawn(format!("staging a gene panicked: {e}")))?
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
-            match self.lora_post(&LoraChange::Load { name: &name }).await? {
-                LoraPost::Done => record(&gene_key, true)?,
-                LoraPost::Busy => return Ok(GenomeInPlace::Busy),
-                LoraPost::NoRoute => return Ok(GenomeInPlace::Unsupported),
+            add.push(Add { gene: gene.clone(), name, staged });
+        }
+        let outcome = owner.converge(CatalogChange { operation, engine, ledger, retire, add }).await;
+        for step in &outcome.applied {
+            match step {
+                CatalogStep::Retired(gene) => self.record_served(gene, false)?,
+                CatalogStep::Added(gene) => self.record_served(gene, true)?,
             }
         }
-        Ok(GenomeInPlace::Adopted)
+        Ok(match outcome.end {
+            CatalogEnd::Done => GenomeInPlace::Adopted,
+            CatalogEnd::Busy => GenomeInPlace::Busy,
+            CatalogEnd::Refused(why) => GenomeInPlace::Refused(why),
+        })
+    }
+
+    /// Record that the engine holds (or no longer holds) `gene`, so an early stop leaves the served
+    /// set naming exactly what the engine holds (Codex on #4467).
+    fn record_served(&self, gene: &str, held: bool) -> Result<(), LlamaServerError> {
+        let mut guard = self.served_adapters.lock().unwrap(); // JUSTIFIED: poison means a prior panic while recording the served set.
+        let Some(served) = guard.as_mut() else {
+            return Err(LlamaServerError::Unreachable("the engine's adapter set was never read: converge reads it first (active_adapters)".into()));
+        };
+        served.retain(|p| p != gene);
+        if held {
+            served.push(gene.to_string());
+            served.sort();
+        }
+        Ok(())
     }
 
     /// `GET /lora-adapters` as `(id, path)`: the engine's adapter catalog. Retired ids
@@ -276,40 +255,6 @@ impl LlamaServerProcess {
             })
             .collect()
     }
-
-    /// `POST /lora-adapters/{load,unload}`. 404 = an engine without the route (older than
-    /// fork #26); 503 = the adapter is active in a turn in flight (unload only).
-    pub(super) async fn lora_post(&self, change: &LoraChange<'_>) -> Result<LoraPost, LlamaServerError> {
-        let verb = change.route();
-        let url = format!("{}/lora-adapters/{verb}", self.root);
-        let resp = self
-            .client
-            .post(&url)
-            .json(change)
-            .timeout(LORA_LOAD_TIMEOUT)
-            .send()
-            .await
-            .map_err(|e| LlamaServerError::Unreachable(e.to_string()))?;
-        match resp.status().as_u16() {
-            200..=299 => {
-                if let LoraChange::Unload(request) = change {
-                    let receipt = resp.json::<super::learn_residency::LoadedAdapter>().await
-                        .map_err(|error| LlamaServerError::Unreachable(error.to_string()))?;
-                    if receipt.id != request.id {
-                        return Err(LlamaServerError::Unreachable("adapter retirement receipt names another id".into()));
-                    }
-                }
-                Ok(LoraPost::Done)
-            }
-            404 | 405 => Ok(LoraPost::NoRoute),
-            503 => Ok(LoraPost::Busy),
-            status => {
-                let text = resp.text().await.unwrap_or_default(); // unwrap_or_default: the status alone still names the failure
-                Err(LlamaServerError::Unreachable(format!("/lora-adapters/{verb} status {status}: {text}")))
-            }
-        }
-    }
-
 }
 
 impl LlamaServerProcess {

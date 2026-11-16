@@ -5,6 +5,7 @@
 #![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee, clippy::let_underscore_must_use)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub mod audio_constants;
+pub mod capture;
 pub mod config_env;
 pub mod population;
 pub mod home;

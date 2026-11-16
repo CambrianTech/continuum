@@ -82,20 +82,14 @@ impl LlamaServerControl for LlamaServerProcess {
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
+        operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         // an unasked binary is asked, never read as no; another binary's answer is not this one's
         let takes = self.engine_takes_train_dir().await?;
         let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        let process = self.served_incarnation().ok_or_else(||
-            LlamaServerError::Unreachable("genome change requires the served engine incarnation".into()))?;
-        let ledger = match LearningEngine::of(process).learn_ledger().await? {
-            LedgerAnswer::Ledger(ledger) => ledger,
-            LedgerAnswer::NoLedger => return Err(LlamaServerError::Unreachable(
-                "genome change requires the engine ledger".into())),
-        };
-        self.converge_genome(&dir, target, &ledger.engine).await
+        self.converge_genome(&dir, target, operation).await
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {

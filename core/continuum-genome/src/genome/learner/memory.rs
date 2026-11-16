@@ -144,7 +144,7 @@ pub async fn cover(
             )))
         }
         None => {
-            let leases = lease_rows(authority, consumer, &optimizer_rows).await?;
+            let leases = lease_rows(authority, crate::inference::serving_lifecycle::Admission::Free(&authority.serving), consumer, &optimizer_rows).await?;
             let subject = ResidencySubject::Loaded { lora_id: seat.shadow.id, path: seat.shadow.path.clone() };
             let claim = register(authority, &seat.engine, &seat.ledger, subject, optimizer_rows.clone(), leases).await?;
             let optimizer = claim.residency();
@@ -164,7 +164,7 @@ async fn replace_workspace(
     rows: Vec<ResidencyRow>,
     workspace: &mut Option<EngineWorkspace>,
 ) -> Result<ResidencyId, SeatRefusal> {
-    let leases = lease_rows(authority, &format!("{consumer}:workspace"), &rows).await?;
+    let leases = lease_rows(authority, crate::inference::serving_lifecycle::Admission::Free(&authority.serving), &format!("{consumer}:workspace"), &rows).await?;
     let claim = register(authority, &seat.engine, &seat.ledger, ResidencySubject::Workspace, rows.clone(), leases).await?;
     let residency = claim.residency();
     let mut replacement = EngineWorkspace { claim, rows, superseded: Vec::new() };
