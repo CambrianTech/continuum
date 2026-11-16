@@ -382,6 +382,38 @@ impl DeployActuator {
         cli.is_absolute().then_some(cli)
     }
 
+    /// Create a detached worktree at `tip_sha` inside `<root>/.continuum/worktrees/`.
+    /// Returns the new worktree path, or an error if git cannot create it. The caller
+    /// is responsible for cleanup (the consumer removes its own cwd on exit).
+    fn create_deploy_worktree(root: &Path, tip_sha: &str) -> Result<PathBuf, String> {
+        use std::io::Write;
+        let worktrees_dir = root.join("worktrees");
+        // Create the worktrees directory if it doesn't exist.
+        std::fs::create_dir_all(&worktrees_dir)
+            .map_err(|e| format!("cannot create worktrees directory: {e}"))?;
+        let wt_path = worktrees_dir.join(tip_sha);
+        // If a stale worktree from a previous failed deploy exists, remove it.
+        if wt_path.is_dir() {
+            std::fs::remove_dir_all(&wt_path)
+                .map_err(|e| format!("cannot remove stale worktree: {e}"))?;
+        }
+        // Create the detached worktree using git. We need to be inside the main checkout
+        // for `git worktree add` to work.
+        let repo_dir = root; // The continuum home IS the tracked checkout root.
+        let output = std::process::Command::new("git")
+            .current_dir(repo_dir)
+            .args(["worktree", "add", "-d", "--detach"])
+            .arg(&wt_path)
+            .arg(tip_sha)
+            .output()
+            .map_err(|e| format!("cannot run git worktree add: {e}"))?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            return Err(format!("git worktree add failed ({tip_sha}): {stderr}"));
+        }
+        Ok(wt_path)
+    }
+
     fn receipt_path(&self) -> PathBuf {
         self.state_dir.join(ACTUATION_FILE)
     }
