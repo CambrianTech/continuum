@@ -147,25 +147,6 @@ pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
     }
 }
 
-/// The DIRECTORY the supervisor was told to run the core out of — the parent of the
-/// `artifact` field in the `ContinuumCore` descriptor.
-///
-/// A directory and not the file, because a caller that cannot open the process cannot
-/// ask the OS which image it is executing (that is the whole reason it is escalating),
-/// and the descriptor's file name is routinely NOT that image: after a staging swap the
-/// descriptor names the new slot while the surviving core runs from the renamed
-/// predecessor beside it. The child proves the rest through its own handle.
-#[cfg(windows)]
-pub(super) async fn installed_core_dir() -> Result<String, String> {
-    let task = PreparedCoreService::query().await?;
-    let description: CoreServiceDescription = serde_json::from_str(&task.description)
-        .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
-    Path::new(&description.artifact)
-        .parent()
-        .map(|d| d.display().to_string())
-        .ok_or_else(|| format!("the installed artifact {} has no directory", description.artifact))
-}
-
 /// The core pid the pidfile CLAIMS. `None` means no pidfile, or one that names nothing
 /// parseable.
 pub(super) fn core_pid_for_teardown() -> Option<i32> {
@@ -203,17 +184,6 @@ pub(super) struct MayDrain {
     /// The core whose teardown privilege must be BORROWED after the drain. `None` =
     /// this caller can end every core itself.
     pub(super) borrow_authority_for: Option<i32>,
-}
-
-impl MayDrain {
-    /// The drain is authorised because a TERMINATE handle for the target is HELD OPEN
-    /// across it — capability, not intent (Astra, 2026-09-22: "operator_present is
-    /// intent, not capability"). Only the elevated child can build one of these, and
-    /// only while it is holding the handle it will terminate with.
-    #[cfg(windows)]
-    pub(super) fn proven_by_held_handle() -> Self {
-        Self { borrow_authority_for: None }
-    }
 }
 
 /// The preflight decision, pure over what the OS answered.

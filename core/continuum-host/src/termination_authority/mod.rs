@@ -7,6 +7,29 @@
 #[cfg_attr(not(any(unix, windows)), path = "other.rs")]
 mod os;
 
+#[cfg_attr(windows, path = "held_windows.rs")]
+#[cfg_attr(not(windows), path = "held_other.rs")]
+mod held;
+
+/// An individual process held across inspection and termination. Acquiring this
+/// capability never drains or terminates anything; callers own that policy.
+pub struct HeldProcess(held::Handle);
+
+impl HeldProcess {
+    pub fn take(pid: crate::process_id::ProcessId) -> std::io::Result<Self> {
+        held::Handle::take(pid).map(Self)
+    }
+
+    pub fn image(&self) -> std::io::Result<std::path::PathBuf> {
+        self.0.image()
+    }
+
+    /// Terminate through the same handle used by `image`, never by a second pid lookup.
+    pub fn terminate(self, exit_code: u32) -> std::io::Result<()> {
+        self.0.terminate(exit_code)
+    }
+}
+
 /// What the OS answered about terminating one pid.
 #[derive(Debug)]
 pub enum TerminationAuthority {

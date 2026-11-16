@@ -13,26 +13,8 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
             // refusal rather than an unwrap so the invariant fails loud if that changes.
             _ => return Err("stop --elevated: no bound plan".to_string()),
         };
-        #[cfg(windows)]
-        {
-            // The drain is supplied BY THE ROOT, which is where the socket and the
-            // `MayDrain` gate live — the module stays a leaf and the token stays where it
-            // can only be built by a preflight or by a held handle.
-            return elevated_teardown::teardown_elevated(Path::new(&plan), &sha, || async {
-                format!(
-                    "{:?}",
-                    request_graceful_stop(&MayDrain::proven_by_held_handle()).await
-                )
-            })
-            .await;
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (plan, sha);
-            return Err("stop --elevated is the Windows consent child; this platform's \
-                        teardown needs no borrowed privilege"
-                .to_string());
-        }
+        return stop_platform::run_child(Path::new(&plan), &sha)
+            .await.map_err(|error| error.to_string());
     }
     // The operator verb answers with its EXIT CODE. `stop` returning 0 has meant only
     // "the process is gone"; it now means "the process is gone AND every module's state
@@ -250,21 +232,9 @@ pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_prese
         // window, it does not abolish it. When this returns Ok the core is already down and
         // the request below finds nothing listening, which is the correct reading of that.
         if let Some(pid) = may_drain.borrow_authority_for {
-            #[cfg(windows)]
-            {
-                let install_dir = installed_core_dir().await?;
-                elevated_teardown::request_elevated_teardown(pid, &install_dir).await?;
-                // Gone is proven the same way every other teardown proves it: the bounded
-                // deadline, never a probe on the next line (Astra, 2026-09-22).
-                exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
-            }
-            #[cfg(not(windows))]
-            {
-                return Err(format!(
-                    "install: no teardown authority over pid {pid}, and this platform has no \
-                     consent boundary to borrow one through — the core runs as another user"
-                ));
-            }
+            stop_platform::borrow_authority(pid).await.map_err(|error| error.to_string())?;
+            // The child exit code is not proof that the target exited.
+            exited_within(pid, TEARDOWN_EXIT_DEADLINE).await?;
         }
         request_graceful_stop(&may_drain).await
     };

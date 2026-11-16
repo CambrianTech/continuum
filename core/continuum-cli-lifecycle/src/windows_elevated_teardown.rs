@@ -1,18 +1,17 @@
-//! The OS half of the teardown: taking a capability on Windows and spending it.
+//! Windows consent and teardown policy, using the host's held process capability.
 //!
 //! The DECISION — which process may be ended, in what order, and what a refusal means —
-//! lives in `continuum_cli_lifecycle::elevated_teardown`, where it is exercised on every
-//! machine in seconds rather than on the one platform that cannot link it. What stays
-//! here is the part that needs the OS with the problem: ONE handle opened for QUERY and
-//! TERMINATE, held across the drain, and the consent boundary that borrows the privilege
-//! the CLI does not hold.
+//! lives in `crate::elevated_teardown`, where it is exercised on every
+//! machine in seconds rather than on the one platform that cannot link it. The host owns
+//! the ONE handle opened for QUERY and TERMINATE across the drain. This module owns
+//! the consent boundary that borrows the privilege the CLI does not hold.
 //!
 //! Measured 2026-09-22 on the Windows node: `OpenProcess(25040, TERMINATE)` returned
 //! NULL with Win32 error 5. There is no permission to grant to the caller.
 
 use std::path::{Path, PathBuf};
 
-use continuum_cli_lifecycle::elevated_teardown::{
+use crate::elevated_teardown::{
     bind_plan_bytes, digest, elevation_outcome, teardown_sequence, HeldCapability, TeardownPlan,
 };
 
@@ -35,98 +34,10 @@ pub(crate) fn digest_file(path: &Path) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// The Windows halves. Everything above is pure and pinned; everything below needs
-// the OS that has the problem.
+// Adapt the host capability to the existing, platform-independent teardown sequence.
 // ---------------------------------------------------------------------------
 
-/// ONE handle, opened for both QUERY and TERMINATE, held open across everything.
-/// Closed exactly once, on drop.
-///
-/// A HANDLE NAMES A PROCESS; A PID NAMES A SLOT. This first opened a query handle, read
-/// the image, closed it, and re-opened for terminate — so the identity that was
-/// validated and the process that would be killed were two separate lookups of a
-/// recyclable number with nothing tying them together: a token alone does not bind a
-/// target. Validating on the SAME handle that does the terminating is what makes the
-/// check mean anything.
-///
-/// The point of holding it rather than re-opening later: between a capability CHECK and
-/// the terminate, the check can stop being true. Holding the handle across the drain
-/// means the authority is not re-asked for — it is already in hand.
-struct HeldTerminate {
-    pid: i32,
-    handle: windows_sys::Win32::Foundation::HANDLE,
-}
-
-impl Drop for HeldTerminate {
-    fn drop(&mut self) {
-        // SAFETY: `handle` came from a successful OpenProcess and is closed once, here.
-        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.handle) };
-    }
-}
-
-impl HeldTerminate {
-    /// Take the capability, BEFORE reading anything about the target. This is the call
-    /// that fails when the consented token does not hold the privilege either — and it
-    /// fails before anything has been drained. Opening a handle terminates nothing; what
-    /// it buys is that every check after it describes the process THIS handle names.
-    fn take(pid: i32) -> Result<Self, String> {
-        use windows_sys::Win32::System::Threading::{
-            OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE,
-        };
-        // SAFETY: ONE handle for exactly the consented pid, opened for the query the
-        // validation needs AND the terminate that follows it; ownership passes to the
-        // returned value, whose Drop closes it.
-        let handle = unsafe {
-            OpenProcess(
-                PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE,
-                0,
-                pid as u32,
-            )
-        };
-        if handle.is_null() {
-            return Err(format!(
-                "even elevated, OpenProcess(pid {pid}, TERMINATE) failed: {} — the privilege \
-                 this escalation exists to borrow is not held by the consented token either. \
-                 Nothing was drained",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(Self { pid, handle })
-    }
-
-    /// The image THIS HANDLE's process is running. Read through the handle, never by
-    /// pid: a second lookup by number could answer for a different process wearing the
-    /// same number, which is exactly why the handle is taken first.
-    fn image(&self) -> Result<String, String> {
-        use windows_sys::Win32::System::Threading::QueryFullProcessImageNameW;
-        let mut buf = [0u16; 32768];
-        let mut len = buf.len() as u32;
-        // SAFETY: `self.handle` is live and was opened with QUERY_LIMITED_INFORMATION;
-        // `buf` outlives the call and `len` carries its capacity in UTF-16 units.
-        let ok =
-            unsafe { QueryFullProcessImageNameW(self.handle, 0, buf.as_mut_ptr(), &mut len) };
-        if ok == 0 {
-            return Err(format!(
-                "QueryFullProcessImageName(pid {}) failed: {}",
-                self.pid,
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(String::from_utf16_lossy(&buf[..len as usize]))
-    }
-
-    /// Spend it.
-    fn terminate(self) -> Result<(), String> {
-        use windows_sys::Win32::System::Threading::TerminateProcess;
-        // SAFETY: `self.handle` is live and was opened for termination.
-        let ok = unsafe { TerminateProcess(self.handle, 1) };
-        let err = std::io::Error::last_os_error();
-        if ok == 0 {
-            return Err(format!("TerminateProcess(pid {}) failed: {err}", self.pid));
-        }
-        Ok(())
-    }
-}
+struct HeldTerminate(continuum_host::termination_authority::HeldProcess);
 
 /// The elevated child, which owns BOTH HALVES OF THE TEARDOWN for its one target.
 ///
@@ -158,14 +69,16 @@ impl HeldTerminate {
 /// have been asserted in a comment from here.
 impl HeldCapability for HeldTerminate {
     fn image(&self) -> Result<String, String> {
-        HeldTerminate::image(self)
+        self.0.image().map_err(|error| error.to_string())?
+            .into_os_string().into_string()
+            .map_err(|_| "the process image is not representable by the teardown plan".to_owned())
     }
     fn spend(self) -> Result<(), String> {
-        self.terminate()
+        self.0.terminate(1).map_err(|error| error.to_string())
     }
 }
 
-pub(crate) async fn teardown_elevated<F, Fut>(
+pub async fn teardown_elevated<F, Fut>(
     plan_path: &Path,
     plan_sha: &str,
     drain: F,
@@ -177,8 +90,12 @@ where
     let receipt = receipt_path(plan_path);
     let result = async {
         let plan = read_bound_plan(plan_path, plan_sha)?;
-        let (image, graceful) =
-            teardown_sequence(&plan, HeldTerminate::take, drain).await?;
+        let (image, graceful) = teardown_sequence(&plan, |pid| {
+            let pid = continuum_host::process_id::ProcessId::try_from(pid)
+                .map_err(|error| error.to_string())?;
+            continuum_host::termination_authority::HeldProcess::take(pid)
+                .map(HeldTerminate).map_err(|error| error.to_string())
+        }, drain).await?;
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
         let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
@@ -205,7 +122,7 @@ where
 /// the alternative reading ("the teardown failed") sends the next reader hunting for
 /// damage that does not exist. Every other outcome carries the child's receipt, or says
 /// plainly that there was none.
-pub(crate) async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
+pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), String> {
     let plan = TeardownPlan {
         pid,
         install_dir: install_dir.to_string(),
