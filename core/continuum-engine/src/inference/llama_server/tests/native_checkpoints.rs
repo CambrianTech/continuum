@@ -1,3 +1,4 @@
+#![cfg(test)]
 //! Placed checkpoints on a REAL engine (CONTINUUM-ENGINE 4.7.3; llama.cpp#121, Codex's gate): the
 //! fork's llama-server fills a slot's checkpoint store with blind step checkpoints, then her acts carry
 //! view spans. Her head, the oldest checkpoint and her restore point when a prompt diverges before her
@@ -129,7 +130,9 @@ async fn her_head_checkpoint_keeps_its_exact_position_through_a_full_store() {
         assert!(placed.len() <= 4, "placed checkpoints stay within the store: {placed:?}");
     }
     // diverge after her head, before her newest view end: the engine resumes from her head
-    let mut diverged: Vec<serde_json::Value> = conversation(9).into_iter().take(4).collect();
+    // her first act's messages with a different ask: past her head, before her newest view end
+    let mut diverged = conversation(1);
+    diverged.pop();
     diverged.push(serde_json::json!({"role": "user", "content": "Instead, list the tools in the shed."}));
     let cached = act(&client, &engine, &diverged, true).await;
     assert!(cached >= head, "resumed from at least her head ({head} tokens), cached {cached}");
