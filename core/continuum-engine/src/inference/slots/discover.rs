@@ -205,12 +205,7 @@ impl SlotDirectory {
         let minds = crate::inference::weight_residency::ContextGeometry::from_props(&body).and_then(|g| g.resident_minds);
         let pool = match existing_pool {
             Some(pool) => pool,
-            None => self.install_settled_pool(root, n_slots, |pool| {
-                if let Some(minds) = minds {
-                    let _ = pool.resident_minds.set(minds); // a fresh candidate no other caller sees: the first set
-                }
-                settle_adopted_page_store(pool, root)
-            }),
+            None => self.install_settled_pool(root, n_slots, minds, |pool| settle_adopted_page_store(pool, root)),
         };
         if pool.n_slots() != n_slots {
             return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
@@ -243,9 +238,10 @@ impl SlotDirectory {
         &self,
         root: &str,
         n_slots: u32,
+        minds: Option<crate::inference::weight_residency::ResidentMinds>,
         settle: impl FnOnce(&KvSlotPool) -> SettledPageStore,
     ) -> Arc<KvSlotPool> {
-        let candidate = Arc::new(KvSlotPool::new(root, n_slots));
+        let candidate = Arc::new(KvSlotPool::new(root, n_slots).with_resident_minds(minds));
         let settled = settle(&candidate);
         let pool = self.install_pool(root, || Arc::clone(&candidate));
         if Arc::ptr_eq(&pool, &candidate) {

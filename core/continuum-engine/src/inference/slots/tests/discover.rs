@@ -102,7 +102,7 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     let first_probe = tokio::task::spawn_blocking({
         let (dir, pages) = (Arc::clone(&dir), pages.path().to_path_buf());
         move || {
-            dir.install_settled_pool(root, 2, |pool| {
+            dir.install_settled_pool(root, 2, None, |pool| {
                 let _ = reading.send(());
                 let _ = resume.recv(); // test: held until the admission has looked
                 let (adoption, snapshot) =
@@ -125,7 +125,7 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     assert!(pool.plan_paging(slot, aris).restore, "her first turn after the restart restores, never a cold prefill");
 
     // A second settled install (a racing probe) loses: the published pool and its settlement stand.
-    let second = dir.install_settled_pool(root, 2, |_| SettledPageStore { adoption: Err(NotAdopted::NoLiveLaneRecord), snapshot: None });
+    let second = dir.install_settled_pool(root, 2, None, |_| SettledPageStore { adoption: Err(NotAdopted::NoLiveLaneRecord), snapshot: None });
     assert!(Arc::ptr_eq(&second, &pool), "one pool per root");
     Ok(())
 }
