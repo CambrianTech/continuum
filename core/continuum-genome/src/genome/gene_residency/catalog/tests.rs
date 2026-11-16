@@ -64,7 +64,9 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
                 }
             }),
         )
-        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(serving)) }));
+        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(serving)) }))
+        // a release is confirmed only by the admitted incarnation's own ledger
+        .route("/learn/grants", axum::routing::get(move || async move { axum::Json(ledger_of(serving)) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind"); // test: a fixture step that cannot fail here
     let port = listener.local_addr().expect("test: addr").port(); // test: a fixture step that cannot fail here
     (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await })) // test: a fixture step that cannot fail here
