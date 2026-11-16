@@ -1665,6 +1665,19 @@ sequence advances off a cell it shares with a parked id, the live sequence KEEPS
 parked state is copied once, on the device, into a parked-range cell (today `find_slot` moves the live sequence and
 strands the parked state in a live cell). Gate: parked memory per id equals one state row, then the 35B A/B.
 
+*Revised design, for review before it is built (2026-11-16):* each half of a checkpoint by the mechanism that fits it,
+and no allocator surgery. (a) The TARGET's recurrent state: a device snapshot. The fork's `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`
+already copies a sequence's state tensors into device-side copy tensors with ggml ops (`llama_io_write_device`; the
+host receives only a header) and copies only the current row, not the rollback planes; but its storage is keyed by
+sequence id (`llama_context::mem_storage[seq_id]`), so each snapshot replaces the last. Keyed instead by a SNAPSHOT id
+the pool issues, a checkpoint is a GPU blit into a pool-owned device buffer, named by handle (Joel's texture-id rule):
+one state row of device memory per checkpoint, no extra sequence ids, no rollback rows, and the target's `n_seq_max`
+stays the slot count. (b) The MTP DRAFT: on hybrid Qwen its context is a plain KV cache (`!mtp_on_hybrid_qwen` takes the
+non-hybrid branch in `llama-model.cpp`), so extra sequence ids cost only bitsets there; parked ids live in the DRAFT
+context only and share its cells by id (0 bytes; the growing per-token part). Gate: target device memory per
+checkpoint = one state row (~20 MB on the 0.8B, ~62 MB on the 35B), draft memory per parked id ~0, identical outputs
+and draft acceptance against copied checkpoints, then the 35B A/B.
+
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
