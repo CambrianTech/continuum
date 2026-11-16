@@ -1576,6 +1576,122 @@ under 1,500, and older results fold behind expand handles by design.
 the tweak); a "decoding cores" cap was a permit in front of the engine (4.1c) and is reverted
 (aa46cb886); and the 16:48Z deploy used `stop --engine`, which with F3 lost every mind's newest KV.
 
+### 4.10 Fast minds, concurrently: every optimization, its state, and the order (2026-11-15)
+
+Joel, 2026-11-15: "We need to take all optimizations of continuum-engine.md and get this fast. The entire
+project depends on fast minds working concurrently (yes I refer to how single core cpus did this in os,
+later multi core which we also have in cases)"; "It should quickly learn to settle at one lane ... or start
+there and go up". The model: an OS scheduler. Each mind is a process; her KV is its saved context; the
+engine is a core that runs whichever sequences the scheduler picks this step; a switch costs nothing while
+her KV stays resident and milliseconds when it pages (4.1b). A node with more GPU or more nodes is
+multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
+
+**Where the time goes today (the M5, Qwen3.6-35B-A3B, 2026-11-15):**
+
+| | Measured | This model on this chip (4.1b, receipts) | Gap |
+|---|---|---|---|
+| decode per stream | 2.0-5.6 tok/s, 4 sequences at 45-68k tokens | 57-59 alone, 80 with MTP | 10-40x |
+| aggregate decode | ~8-22 tok/s | 59-80 one at a time | 3-8x |
+| prefill | 65-196 tok/s on residents' prompts | 190-475 on this engine | 2-5x |
+| first act after a restart | 150-267 s, 0 of 12-68k cached | ~1 s restore, then the appended tail | 100x+ |
+| grant wait | BigMama: 0 of 98 asked turns served in an hour | 0 | total |
+| memory | 6.6 GB swap in use, engine 33 GB | no swap (unified memory: swap slows the GPU) | |
+
+**Every optimization in this document, its state:**
+
+| # | Optimization (section) | State, receipt | Next |
+|---|---|---|---|
+| O1 | Batch across minds, never queue them (2.4, 4.1c) | WRONG SHAPE: all sequences batch together at long context, where per-sequence KV reads do not amortize (4.1b SV-F5); the decode knee samples only the concurrency it runs (always 4) and one sample moved it 2 to 5 | P5 below |
+| O2 | One event-woken dispatcher; no permits (4.1c, SV-DISP) | PARTIAL: lane permits remain (`resource_admission/lanes.rs`), admission sized to all slots (`desired=5`) | folded into P5 |
+| O3 | A mind is never refused; grant at her act; expand first (4.8, P3) | MISSING: standing grants + FIFO; BigMama starved an hour; M5 acts failed `Reclaiming` | P3 (Codex page-out seam #6040 ready) |
+| O4 | KV pages GPU<->RAM<->disk by temperature (4.3, SV-MM) | WORKS for stop/start: 4 residents saved in 21.7 s, restores ~1 s | P4 |
+| O5 | A restart pages minds back warm (4.3 "a relaunch is a pause", CX-3) | BROKEN: the core restores pages over KV the slots still hold, then the first act reuses 0 (Aris 12,199 / 150 s, Aiko 68,065 / 267 s) though her prompt text is 94% identical | P4 |
+| O6 | Prefill only the appended tail; epoch view (5, CX-1) | WORKS: 85-90% reuse; Aiko's prompt identical for 135,154 of 144,402 chars across a restart | keep; measure fresh tokens per act |
+| O7 | The streaming pool: the cache gives memory back under pressure (2.3, 2.6, SV-POOL) | PARTIAL: the prompt cache shrinks and regrows, but the node still swaps 6.6 GB and embeddings are refused VRAM | P6 |
+| O8 | Live reconfigure, no relaunch (4.5 S2) | MISSING: `POST /reconfigure` 404; the running engine keeps its launch `--parallel 5` | after P5 shows the target geometry |
+| O9 | MTP only while a sequence decodes alone (4.1b) | PRESENT in the engine (`draft acceptance 1.0` on solo tasks); value depends on P5 running one at a time | measure under P5 |
+| O10 | Shared prefix held once, `seq_cp` (4.1, 4.7.3, S7) | NOT YET: minds share only ~6k chars of system prompt | after P5, P4 |
+| O11 | Prefill during her tool call (2.3 RDG row, SB-10) | PRESENT (`delib.prefill.during_tool`) | measure submit-to-first-token |
+| O12 | Page IO off the engine's main loop (SV-F3) | NOT YET: save/restore run on the server loop and stall every stream (4.1b: 4.6-5.6 tok/s during page IO) | with P4 |
+| O13 | Every wait is an event (rule 10) | PARTIAL: grants evaluate on a 5 s tick (event wake written, #6038 unmerged); a no-op shedder fires every ~6 s (4.9.9 G4) | merge the wake with P3; fix G4 |
+| O14 | Decisions are pluggable learned policies (Joel; plan line 14) | MISSING: ~12 private `*Policy` traits, none learns | P5 is the first user |
+
+**The pieces, in order of gain per change:**
+
+- **P5, the scheduler (O1, O2, O9, O14).** Two decisions, both measured, neither a count anyone picks:
+  - *Memory follows the acting minds (4.8.4).* No mind holds a standing share or a fixed slot of a fixed
+    `--parallel`. The mind acting now may take the whole pool if her need is the whole pool; minds not
+    acting page out (RAM in milliseconds, disk behind it) and page back at their own next act. What stays
+    resident between acts is cache, kept while its predicted reuse beats re-prefilling it (computed once,
+    phased out by usage and prediction).
+  - *Concurrency follows measured act time.* How many sequences decode in one engine step is one decision
+    behind the pluggable policy interface: observation = the ready sequences, their context lengths, the
+    measured per-step cost curve at those lengths; action = which sequences run this step; reward =
+    measured act latency and resident-perceived wait. Its starting point is the measured curve (the step
+    count it predicts minimizes act time at the contexts being served), never a constant; it keeps
+    re-testing both directions, and a learned policy replaces the curve's argmin only by beating it on the
+    replay. A memory-bound engine at long context and a compute-bound one at short context land on
+    different answers by measurement alone.
+  Mechanism: the fork's `update_slots` runs the chosen set; the rest wait with their KV wherever residency
+  put it (per-task priority, SV-S3); slots are sequence handles sized by the pool, not one per mind. The
+  core's lane permits are deleted.
+  *Recording production is a capture, never a script.* The dyno's batch fixture of 2026-11-06 was made by
+  three Python scripts over the engine log (`batches2.py`, `solo_chunks.py`, `extract_steps.py`): not
+  repeatable, Python load-bearing, and a parse of a log our fork should report typed (4.7.3). Instead the
+  fork reports each engine step typed (sequences in the batch, each one's depth, prompt and decode tokens,
+  accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
+  (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
+  `Evidence` reads. The simulator and production read one instrument (7.0). Owner: Fable (capture,
+  replay), Codex (fork report review).
+  The capture is the WORKLOAD, not only the chosen steps (Codex review, comment 6904421902): steps
+  alone hide the runnable work the live policy did not pick, so no other policy could be compared on
+  them. Every event carries the sequence and mind identity, the engine incarnation and a monotonic time:
+  arrival and readiness, blocked and resumed, completion and cancellation, page-out and page-in, and each
+  engine step with its chosen set. Replay rebuilds the ready set at every instant and each resident's wait
+  and progress, so an alternative policy is scored on the same arrivals, starvation included.
+  A capture records its own interval and its loss (dropped events, gaps); an incomplete interval is a
+  typed state that cannot enter the live-versus-replay gate. Capture is Noop by default, so "an hour" is
+  an interval that was actually recorded, never arbitrary history. The gate compares context-matched
+  solo and batched steps and keeps per-resident progress, preserved memory and output quality beside
+  aggregate speed. Simulator:
+  the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
+  before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
+- **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
+  `Queued 1 of 1`, 98 asked, 0 served) is its first recorded scenario. Owner: Fable (admission), Codex
+  (page-out, #6040).
+- **P4, a restart is warm (O5, O12).** Adoption keeps a slot's live KV as resident (no restore over it);
+  a restored page that reuses 0 is found by its token-level divergence and fixed; page IO leaves the main
+  loop. Simulator: the dyno restart replay with today's two restarts. Owner: Fable.
+- **P6, no swap (O7).** The engine's KV, host cache and checkpoints share one measured budget with the
+  OS's own pressure verdict, so the node never swaps; the no-op shedder (G4) goes. Owner: Codex (pressure
+  owner), Fable (shedder).
+- **Then O8 (reconfigure to the geometry P5 settles on), O10 (shared prefix), O11 measured.**
+
+- **P4a, genes change in place through their one owner (prerequisite of P4; Codex's Windows cutover
+  blocker, airc 00:29Z).** `llama_server/genome.rs::converge_genome` is a second, untyped path for adapter
+  catalog changes: it unloads by bare id with no engine identity (`lora_post("unload", {id})`, the fork
+  refuses: "engine incarnation required", the 03:27 adoption failure that relaunched over retained KV)
+  and loads with no residency (the fork requires `claim_weight_residency`). The typed owner already
+  exists: `learn_residency` (`plan_load`, `register_residency`, `unseat` bound to the loading
+  incarnation) under the genome's custody, and `GeneResidency` is the node's one owner of where loaded
+  genes live (a `DeviceTenant` of the lanes' pool, paging device and host). Catalog membership is the tier
+  above that paging, so it moves there: a load is plan, lease from the one authority into custody,
+  register the residency, load inside it; an unload is `unseat` with the engine identity captured BEFORE
+  the catalog read and carried unchanged, so a replaced engine (or a reused id) refuses instead of
+  unloading the wrong engine's adapter. The engine crate sits below the genome, so its reconcile asks
+  through a trait it declares (`GenomeCatalog`: converge to a target set, answering Adopted, Busy,
+  Refused{typed reason}) and the genome implements it; a refusal surfaces Degraded, never a relaunch
+  (Codex's prerequisite). `converge_genome`, `lora_post` and `LoraPost` are deleted. Gate: a native
+  replay of unload+load on an adopted engine preserves every resident's KV, and an engine replaced
+  between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
+  the Degraded rail).
+
+**Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
+live act time matches what the replay predicted for the chosen policy on the same recorded load (the
+simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
+warm; on BigMama, every asked turn served. Each piece lands with its simulator
+scenario red then green, then a live read against a restart-only control.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
