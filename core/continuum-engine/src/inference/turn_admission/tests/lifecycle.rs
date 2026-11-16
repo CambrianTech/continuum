@@ -100,8 +100,12 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         .route("/props", axum::routing::get(|| async { Json(json!({"total_slots": 2})) }))
         .route("/slots/{slot}", post(page))
         .with_state((dir, slots.clone(), hold.clone()));
+    // The endpoint directory outlives this server; a recycled TCP port is not
+    // the same fixture engine and must not inherit its retirement state.
+    let namespace = format!("/{}", Uuid::new_v4());
+    let app = Router::new().nest(&namespace, app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
