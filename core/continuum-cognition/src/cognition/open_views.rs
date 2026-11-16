@@ -79,7 +79,7 @@ pub enum ViewWork {
     Read(KeptRead),
     /// Edited from this checkout after `read`: her edit of it is open while the view is open where
     /// her hands stand, and her view keeps `read` whole through a turnover
-    /// ([`OpenViews::editing_reads`]).
+    /// ([`OpenViews::working_reads`]).
     Editing { read: KeptRead, edited: ActSeq },
 }
 
@@ -262,13 +262,21 @@ impl OpenViews {
         changed
     }
 
-    /// The reads her view keeps whole while she edits: for each file she is editing from where her
-    /// hands stand (`scope`) and still has open, its kept read, one per file whichever spellings
-    /// name it (a whole read before a region, then the newest).
-    pub fn editing_reads(&self, scope: Option<&str>) -> Vec<ActSeq> {
+    /// The reads her view keeps whole for the change she is making where her hands stand (`scope`):
+    /// each file she is editing, and each file she has read since the change opened (`since`, her
+    /// last commit there; `None` when she has committed nothing there), one kept read per file
+    /// whichever spellings name it (a whole read before a region, then the newest).
+    ///
+    /// Reads made to PREPARE an edit belong to the change too (Atlas on the M5, 2026-11-16
+    /// 04:49-06:46Z, card 29f5cd07): a change needing two files read each in turn, the read of one
+    /// collapsed the other, and he re-read smoke.rs nine acts running without reaching his edit.
+    /// Bounded by the views she holds open and by the change: a commit closes it.
+    pub fn working_reads(&self, scope: Option<&str>, since: Option<ActSeq>) -> Vec<ActSeq> {
         let mut kept: std::collections::BTreeMap<std::path::PathBuf, KeptRead> = std::collections::BTreeMap::new();
+        let in_change = |read: &KeptRead| since.is_none_or(|opened| read.seq > opened);
         let editing = self.views.iter().filter(|view| view.scope.as_deref() == scope).filter_map(|view| match (&view.subject, view.work) {
             (ViewSubject::File { path }, ViewWork::Editing { read, .. }) => Some((in_checkout(path, scope), read)),
+            (ViewSubject::File { path }, ViewWork::Read(read)) if in_change(&read) => Some((in_checkout(path, scope), read)),
             (ViewSubject::File { .. }, ViewWork::Seen | ViewWork::Read(_)) | (ViewSubject::Output { .. }, _) => None,
         });
         for (file, read) in editing {

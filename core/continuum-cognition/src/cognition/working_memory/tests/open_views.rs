@@ -260,6 +260,22 @@ fn edit(path: &str) -> Observation {
     }
 }
 
+/// A `code/git/commit` that landed, as the executor reports it: the act that closes her change.
+fn commit() -> Observation {
+    Observation {
+        call: ToolCall { id: "commit".into(), name: "code/git/commit".into(), input: serde_json::json!({ "message": "the change" }) },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: ToolResult { tool_use_id: "commit".into(), content: "ok: committed".into(), is_error: None, custody: ResultCustody::Whole { handle: "commit".into() } },
+            verb: ToolVerb::classify("code/git/commit"),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
 /// Her whole read of the 498-line file, then `newer` acts of other output after it, each `size`
 /// chars; with `edits`, an edit of the file she read (by its absolute path in her checkout, when
 /// she stands in one, as Aris's edits named it) and her note on what it did, between her plan and
@@ -288,8 +304,10 @@ fn working(wm: &WorkingMemory, edits: bool, newer: usize, size: usize) -> &'stat
     note
 }
 
-// what this catches: what her work in hand is, read off typed state. A read of a file opens no edit;
-// an applied edit of that file (her read by its checkout-relative path, her edit by its absolute
+// what this catches: what her work in hand is, read off typed state. A read made for the change she
+// is making is in hand before any edit (Atlas on the M5, 2026-11-16, card 29f5cd07: reads made to
+// prepare an edit collapsed each other and he re-read one file nine acts running), and her commit
+// closes the change; an applied edit of that file (her read by its checkout-relative path, her edit by its absolute
 // path in the checkout, as Aris's on the M5) puts its newest read and her first thought after the
 // edit's result in hand; the thought she had before the edit is not her note on it; and the edit
 // survives her checkpoint.
@@ -299,7 +317,10 @@ fn an_edit_of_a_file_she_has_open_puts_its_read_and_her_note_on_it_in_hand() {
     let wm = WorkingMemory::new(8);
     wm.set_scope(checkout());
     working(&wm, false, 0, 0);
-    assert_eq!(wm.in_hand(), crate::cognition::working_memory::in_hand::InHand::default(), "a read alone opens no edit");
+    let her_read = wm.actions.lock().records().next().map(|record| record.seq).expect("test: her read is recorded"); // test: recorded above
+    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([ActSeq(her_read)]), "a read made for her change is in hand before any edit");
+    wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
+    assert_eq!(wm.in_hand(), crate::cognition::working_memory::in_hand::InHand::default(), "her commit closes the change: its reads leave her hand");
 
     let wm = WorkingMemory::new(8);
     wm.set_scope(checkout());
@@ -352,7 +373,12 @@ fn a_turnover_with_an_open_edit_keeps_the_file_and_her_note_on_it_whole() {
     assert!(shown.contains(note), "her note on what her edit did is whole");
     assert!(!shown.contains("cargo check 1\n"), "a newer act than the file collapses: the rest keeps oldest-first");
 
+    // Atlas's case: the file read for the change, no edit yet, newer acts after it: still whole
     let wm = WorkingMemory::new(8);
     working(&wm, false, 6, 2_000);
-    assert!(!start(&wm).contains(file), "with no edit open the same start collapses the file");
+    assert!(start(&wm).contains(file), "a file read for the change she is making stays whole before her edit");
+
+    // once her commit closes the change, the same start collapses it like any older act
+    wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
+    assert!(!start(&wm).contains(file), "after her commit the file is an older act and collapses");
 }

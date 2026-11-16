@@ -33,10 +33,26 @@ pub(crate) struct InHand {
 }
 
 impl WorkingMemory {
-    /// Her work in hand now: empty with no edit open where her hands stand.
+    /// The reads of the change she is making where her hands stand ([`OpenViews::working_reads`]):
+    /// the change opened at her last commit there.
+    ///
+    /// [`OpenViews::working_reads`]: crate::cognition::open_views::OpenViews::working_reads
+    pub(crate) fn working_reads(&self) -> Vec<ActSeq> {
+        let scope = self.scope.lock().clone();
+        let since = self
+            .actions
+            .lock()
+            .records()
+            .filter(|record| record.scope == scope && record.verbs.contains(&ToolVerb::Commit))
+            .map(|record| ActSeq(record.seq))
+            .max();
+        self.open_views.lock().working_reads(scope.as_deref(), since)
+    }
+
+    /// Her work in hand now: empty with nothing read or edited for a change where her hands stand.
     pub(crate) fn in_hand(&self) -> InHand {
         let scope = self.scope.lock().clone();
-        let reads = self.open_views.lock().editing_reads(scope.as_deref());
+        let reads = self.working_reads();
         let Some(since) = reads.iter().min().copied() else {
             return InHand::default();
         };
