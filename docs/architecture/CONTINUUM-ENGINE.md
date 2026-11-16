@@ -1822,15 +1822,32 @@ makes a separate version of her or a separate model.
   nothing else changes. No shadow copy, no adoption swap, no trainer, no learning lane.
 - **Its cost is marginal memory, nothing else.** Learning on adds the backprop workspace (activations at
   serving-sized chunks) and the learning layers' optimizer state. Both are memory classes in the one standard
-  (4.11.8): charged to the one budget, paged by the one mover, spilled to flash when short, never a lease.
+  (4.11.8): charged to the one budget, paged by the one mover, spilled to flash when short, under the bounded admission of 4.11.8.
 - **Examples ride the one act path.** An example is an act with `mode: learn` (labels in, a gradient step on her
   learning layers out), scheduled by the same scheduler on the same sequences; a generating act outranks it at the
   next decode boundary, so she is never dark.
-- **Exact accounting instead of a frozen copy.** A layer counts its committed steps (a quantity on the same layer,
-  never a new identity); every act's terminal frame names `(layer, step)` for each layer it ran on, so a reply is
-  attributed to the exact weights that made it, and a bad step is undone by paging back the bytes saved at an
-  earlier step, instantly. This replaces the shadow/stable two-adapter rule of
-  ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md section 2.1 (to be revised there to match).
+- **A step becomes visible whole, at one fence** (Codex on #6092). Gradients accumulate in the optimizer's own
+  buffers; the layer's weights change only when a step commits, and the commit runs on the server loop between two
+  decode batches, the one point where no act is reading the layer. An act therefore sees step `s` or step `s+1`
+  for a whole decode batch, never a partial write. No second persona or shadow model is needed: the fence
+  serializes the one writer against the readers.
+- **Every act reports what it actually saw.** An act spanning several commits reports each observation
+  `(layer, step, first token, last token)`, not one label for its whole output; a reply is attributed to the exact
+  weights that produced each part of it.
+- **Her KV continues across a step, stamped.** KV and checkpoints computed under an earlier step are kept: she does
+  not re-read her own past each time a layer moves, as a person's memories are not re-encoded when they learn.
+  This is the intended learning semantics. Each sequence and checkpoint is stamped with the layer steps it was
+  computed under; an identical token prefix is reused only where the stamps allow it. An act that needs exact
+  state (an evaluation, an A/B of a layer) asks for `state: exact`, and KV stamped with any other step is
+  recomputed for it. A test proves that the same prefix under two steps gives different logits and that the stamp
+  catches it.
+- **An interrupted step is neither step.** A commit that fails or is cut off leaves the layer `uncertain` (the
+  optimizer's existing quarantine, `llama_opt_shadow_quarantined`): it is switched off for every act (scale 0) and
+  stays so until the layer registry restores its last durable step. It is never reported as the step before or
+  after.
+- **A durable step is weights plus optimizer.** Saving for resumed learning writes the layer's weights, its
+  optimizer state (moments) and its step metadata (step count, schedule position) as components, then publishes
+  their manifest last, atomically; a save with any component missing has no manifest and does not exist.
 
 **Ids** (UUIDv7, 16 bytes, exact equality):
 
@@ -1857,7 +1874,7 @@ makes a separate version of her or a separate model.
   an act arriving); `learn_duty` sets the share by her wakefulness: a trickle while awake, more while drowsy,
   `dream` while asleep.
 - **One memory budget:** optimizer state and activations are charged to the same host budget as KV and
-  checkpoints (fork #138) and spill through the same pager when short, slower, never refused for want of a lease.
+  checkpoints (fork #138) and spill through the same pager when short, under the bounded admission of 4.11.8 (a typed deferral, never an overrun or a drop, when nothing can legally move).
 - **Retained across restart** (the learning acceptance test): `layer_save` writes the layer's bytes at a step
   durably, and paging them back restores exactly that `(layer, step)`.
 - **Owners:** in the engine, the layer registry owns her layers and their steps, the memory owner (4.11.8) their
@@ -1916,16 +1933,24 @@ standard makes them one.
   carries it.
 - **One mover:** every tier change is a transfer through `memory_mover` (`server-frames.h`): within unified memory a
   new reference (nothing copied), otherwise one copy by the backend's own engine, completion as a frame.
-- **One budget, one eviction order:** the host budget (fork #138) charges every class; under pressure the coldest
-  mind's resources go down a tier first (by activity temperature), and within a mind her store's own order holds
-  (4.11.4, #140). Pins and the active act's resources never go. Nothing is refused for want of a lease: it spills.
+- **One grant authority, bounded admission.** `ResourceDaemon` (`continuum-kernel/src/resources`) stays the grant
+  authority: each class's bytes are held under a `ResourceLease`, host and device charged separately (a host-byte
+  ceiling says nothing about a discrete GPU's memory), and the engine's allocator reports settle the actual charge.
+  Under pressure the coldest mind's resources go down a tier first (by activity temperature), and within a mind her
+  store's own order holds (4.11.4, #140); pins and the active act's resources never go. When no legal move exists
+  (everything left is pinned, the active working set exceeds the grant, or a RAM or flash write fails), the request
+  gets a typed outcome (`deferred { all_pinned | exceeds_grant | tier_io_error }`), its bytes are preserved, and
+  nothing exceeds the budget or is dropped.
 - **One prefetch:** a mind's resources (her KV, checkpoints, layers) are streamed up ahead of her act together.
 - **Reported, not estimated:** the engine reports each class's live bytes from its own allocator in the descriptor
   (4.11.3); the core's ledger reads it.
 
-So learning on is one more class appearing in the same table, and a layer, a page and a checkpoint move, spill and
-come back the same way. Slice 1 of 4.11.7 includes the descriptor and the mover's frame types; each later slice
-moves its class onto them.
+**Who owns what.** A class's owner (the table above) owns its state's meaning: what a page, a checkpoint or a layer
+step is. The shared mover owns every transfer and its completion custody, and it is the existing completion owner,
+not a second one. The grant is `ResourceDaemon`'s. No class keeps an allocator of its own behind the common
+descriptor. So learning on is one more class appearing in the same table, under the same grant, and a layer, a
+page and a checkpoint move, spill, defer and come back the same way. Slice 1 of 4.11.7 includes the descriptor and
+the mover's frames; each later slice moves its class onto them.
 
 ## 5. A mind's context and the engine it runs on
 
