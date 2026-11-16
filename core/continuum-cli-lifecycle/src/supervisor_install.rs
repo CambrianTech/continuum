@@ -36,7 +36,6 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod maintenance;
-pub mod arms;
 
 pub const CORE_TASK: &str = "ContinuumCore";
 pub const DEPLOY_TASK: &str = "ContinuumDeploy";
@@ -557,51 +556,17 @@ pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
 // PowerShell seam `PreparedCoreService` already uses to read the task.
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, thiserror::Error)]
-pub enum PowerShellError {
-    #[error("SystemRoot is unset")]
-    MissingSystemRoot,
-    #[error("Task Scheduler operation timed out")]
-    TimedOut,
-    #[error("cannot invoke Task Scheduler: {0}")]
-    Spawn(#[source] std::io::Error),
-    #[error("Task Scheduler operation failed ({code:?}): {diagnostic}")]
-    Exit { code: Option<i32>, diagnostic: String },
-}
-
 #[cfg(windows)]
-pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, PowerShellError> {
-    use base64::Engine;
-    use std::os::windows::process::CommandExt;
-    let root = std::env::var_os("SystemRoot").ok_or(PowerShellError::MissingSystemRoot)?;
-    let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // -EncodedCommand is UTF-16LE base64 at this process boundary
-    let mut command = std::process::Command::new(shell);
-    command
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-        // Windows PowerShell 5.1 builds its own module path when this is unset. Inherited from
-        // a pwsh 7 caller it leads with 7's module folders, 5.1 cannot load 7's
-        // Microsoft.PowerShell.Utility, and Get-FileHash is "not recognized" (the 5090 install,
-        // 2026-09-28, card 1b040de5).
-        .env_remove("PSModulePath")
-        .stdin(std::process::Stdio::null())
-        .creation_flags(0x0800_0000);
-    let mut command = tokio::process::Command::from(command);
-    command.kill_on_drop(true);
-    let output = tokio::time::timeout(timeout, command.output())
-        .await
-        .map_err(|_| PowerShellError::TimedOut)?
-        .map_err(PowerShellError::Spawn)?;
-    if !output.status.success() {
-        return Err(PowerShellError::Exit {
-            code: output.status.code(),
-            diagnostic: plain_stderr(&String::from_utf8_lossy(&output.stderr)),
-        });
+pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
+    use continuum_host::powershell::{run, PowerShellError};
+    match run(script, timeout).await {
+        Ok(output) => Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
+        Err(PowerShellError::Exit { stderr, .. }) => Err(format!(
+            "Task Scheduler operation failed: {}", plain_stderr(&String::from_utf8_lossy(&stderr))
+        )),
+        Err(error) => Err(format!("Task Scheduler: {error}")),
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
 /// Run a foreground install operation, keeping build progress on stdout and
 /// returning PowerShell's stderr with a failure. A hidden child's inherited
 /// console handles do not reliably show its errors to the operator.
@@ -697,7 +662,7 @@ pub async fn task_report(name: &str) -> Result<TaskReport, String> {
          logonType=[string]$t.Principal.LogonType; runLevel=[string]$t.Principal.RunLevel; userSid=$sid; \
          triggers=[string[]]@($t.Triggers | ForEach-Object {{ $_.CimClass.CimClassName }}); actions=$a.Count; sddl=$sd}} | ConvertTo-Json -Compress"
     );
-    let json = powershell(&script, std::time::Duration::from_secs(30)).await.map_err(|error| error.to_string())?;
+    let json = powershell(&script, std::time::Duration::from_secs(30)).await?;
     serde_json::from_str(&json).map_err(|e| format!("cannot read the {name} task: {e} ({json})"))
 }
 
@@ -708,7 +673,6 @@ pub async fn caller_sid() -> Result<String, String> {
         std::time::Duration::from_secs(30),
     )
     .await
-    .map_err(|error| error.to_string())
 }
 
 /// The unelevated verb: read both tasks, judge drift, elevate once if needed,

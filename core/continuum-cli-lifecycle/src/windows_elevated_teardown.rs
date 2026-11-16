@@ -145,7 +145,7 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(
     let script = consent_script(&exe, &plan_path, &plan_sha);
     // Consent waits for a human, bounded by the supervisor's existing ten-minute budget.
     let elevated =
-        super::supervisor_install::powershell(&script, std::time::Duration::from_secs(600)).await;
+        continuum_host::powershell::run(&script, std::time::Duration::from_secs(600)).await;
     let receipt_text = match std::fs::read_to_string(&receipt) {
         Ok(text) => Ok(Some(crate::elevated_teardown::TeardownReceipt(text))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
@@ -153,7 +153,8 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(
     };
     let _ = std::fs::remove_file(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    let outcome: crate::elevated_teardown::ConsentOutcome = serde_json::from_str(&elevated?)?;
+    let outcome: crate::elevated_teardown::ConsentOutcome =
+        serde_json::from_slice(&elevated?.stdout)?;
     let receipt_text = receipt_text?;
     elevation_outcome(pid, outcome, receipt_text.as_ref())?;
     if let Some(text) = receipt_text {
@@ -189,7 +190,7 @@ fn consent_script(exe: &Path, plan_path: &Path, plan_sha: &str) -> String {
 mod tests {
     use super::*;
     use crate::elevated_teardown::ConsentOutcome;
-    use crate::supervisor_install::{powershell, PowerShellError};
+    use continuum_host::powershell::{run as powershell, PowerShellError};
 
     #[tokio::test]
     async fn launch_paths_keep_native_units_and_quote_the_plan_argument() {
@@ -227,7 +228,7 @@ function Start-Process {{
         .await
         .expect("native path argument replay succeeds");
         assert!(matches!(
-            serde_json::from_str::<ConsentOutcome>(&raw).expect("typed outcome"),
+            serde_json::from_slice::<ConsentOutcome>(&raw.stdout).expect("typed outcome"),
             ConsentOutcome::Completed { exit_code: 0 }
         ));
     }
@@ -255,7 +256,7 @@ function Start-Process {{
             )
             .await
             .expect("the typed launcher protocol succeeds");
-            let outcome: ConsentOutcome = serde_json::from_str(&raw).expect("typed launch outcome");
+            let outcome: ConsentOutcome = serde_json::from_slice(&raw.stdout).expect("typed launch outcome");
             match (expected, outcome) {
                 ("refused", ConsentOutcome::Refused) => {}
                 ("completed", ConsentOutcome::Completed { exit_code: 1223 }) => {}

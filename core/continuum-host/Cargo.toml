@@ -5,6 +5,7 @@ edition = "2021"
 description = "The host OS seam: one module per capability whose behaviour differs by OS (durable placement, positioned reads, local streams). Each module holds its contract and logic once; its unix.rs/windows.rs hold only the calls that differ. Depends on nothing in Continuum, so every crate may use it."
 
 [dependencies]
+base64 = { workspace = true }
 tokio = { workspace = true } # local_stream: the async local socket (a Unix domain socket, a Windows named pipe)
 thiserror = { workspace = true } # process_id: the typed reason an id names no single process
 cap-std = "4.0.3" # confine: a held directory handle, so every create/open/rename below a root is resolved against it, never re-walked from a path a concurrent writer can redirect

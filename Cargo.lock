@@ -3334,6 +3334,7 @@ dependencies = [
 name = "continuum-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cap-std",
  "landlock",
  "libc",

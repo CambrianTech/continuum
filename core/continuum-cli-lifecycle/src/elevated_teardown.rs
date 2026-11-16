@@ -70,7 +70,7 @@ pub enum ElevationError {
     #[error("install: the elevation consent was refused — pid {pid} is untouched and still serving. Nothing was drained, nothing was terminated")]
     Refused { pid: i32 },
     #[error(transparent)]
-    Launcher(#[from] crate::supervisor_install::PowerShellError),
+    Launcher(#[from] continuum_host::powershell::PowerShellError),
     #[error("invalid elevation outcome: {0}")]
     Outcome(#[from] serde_json::Error),
     #[error("cannot read the elevated child's receipt: {0}")]
