@@ -118,32 +118,61 @@ impl GracefulStop {
 /// strands a drained core still answering ping. Measured 2026-09-22 on Astra's
 /// node: `OpenProcess(25040, TERMINATE)` returned NULL with Win32 error 5, and the
 /// drain had already run.
-pub(super) fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), String> {
-    authority.map_err(|why| {
-        format!(
-            "refusing to DRAIN a core this caller cannot then tear down ({why}). \
+pub(super) fn may_begin_shutdown(authority: Result<(), TeardownRefused>) -> Result<(), DrainRefused> {
+    authority.map_err(DrainRefused)
+}
+
+/// Why this caller may not tear down a core: the host's own answer, typed (Codex on #6042: only a
+/// positive absence proves a pid gone).
+#[derive(Debug)]
+pub(super) enum TeardownRefused {
+    /// The pid is not one this host can address as a process.
+    Unaddressable { pid: i32, why: continuum_host::process_id::NotAProcess },
+    /// The process exists and this caller may not terminate it.
+    Refused { pid: i32, error: std::io::Error },
+    /// The OS answered neither authority nor absence.
+    Unknown { pid: i32, error: std::io::Error },
+}
+
+impl std::fmt::Display for TeardownRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unaddressable { pid, why } => write!(f, "no teardown authority over pid {pid}: {why}"),
+            Self::Refused { pid, error } => write!(f, "no authority to terminate pid {pid}: {error}"),
+            Self::Unknown { pid, error } => write!(f, "cannot tell whether pid {pid} may be terminated: {error}"),
+        }
+    }
+}
+
+/// The drain refused because the core it would leave could not then be torn down.
+#[derive(Debug)]
+pub(super) struct DrainRefused(pub(super) TeardownRefused);
+
+impl std::fmt::Display for DrainRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to DRAIN a core this caller cannot then tear down ({}). \
              The drain is not reversible: system/shutdown leaves the process alive \
              for the CLI to end, so draining without teardown authority leaves a \
              drained core still answering ping. No state was touched — run \
              `continuum install` at this machine, which may spend one consent to \
-             borrow the privilege this caller does not hold"
+             borrow the privilege this caller does not hold",
+            self.0
         )
-    })
+    }
 }
 
 /// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the OS answered
 /// (`continuum_host::termination_authority`): a pid positively gone is nothing to refuse; an answer
 /// that proves neither authority nor absence refuses (Codex on #6042: only ESRCH proves gone).
-pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
+pub(super) fn teardown_authority(pid: i32) -> Result<(), TeardownRefused> {
     use continuum_host::termination_authority::{may_terminate, TerminationAuthority};
-    let process = match continuum_host::process_id::ProcessId::try_from(pid) {
-        Ok(process) => process,
-        Err(why) => return Err(format!("no teardown authority over pid {pid}: {why}")),
-    };
+    let process = continuum_host::process_id::ProcessId::try_from(pid).map_err(|why| TeardownRefused::Unaddressable { pid, why })?;
     match may_terminate(process) {
         TerminationAuthority::Granted | TerminationAuthority::Absent => Ok(()),
-        TerminationAuthority::Refused(error) => Err(format!("no authority to terminate pid {pid}: {error}")),
-        TerminationAuthority::Unknown(error) => Err(format!("cannot tell whether pid {pid} may be terminated: {error}")),
+        TerminationAuthority::Refused(error) => Err(TeardownRefused::Refused { pid, error }),
+        TerminationAuthority::Unknown(error) => Err(TeardownRefused::Unknown { pid, error }),
     }
 }
 
@@ -194,8 +223,8 @@ pub(super) struct MayDrain {
 pub(super) fn preflight_teardown(
     pids: &[i32],
     operator_present: bool,
-    authority: impl Fn(i32) -> Result<(), String>,
-) -> Result<MayDrain, String> {
+    authority: impl Fn(i32) -> Result<(), TeardownRefused>,
+) -> Result<MayDrain, DrainRefused> {
     for pid in pids {
         let Err(why) = authority(*pid) else { continue };
         if operator_present {

@@ -25,11 +25,13 @@ fn the_desktop_receipt_never_promises_a_build_the_launch_path_is_not_making() {
 // a drain has a different machine in front of them than one who reads it before.
 #[test]
 fn a_drain_is_refused_when_the_teardown_after_it_would_be() {
-    use super::may_begin_shutdown;
+    use super::{may_begin_shutdown, TeardownRefused};
     assert!(may_begin_shutdown(Ok(())).is_ok(), "authority present: the stop proceeds");
-    let refused = may_begin_shutdown(Err("OpenProcess denied".to_string()))
-        .expect_err("no teardown authority must refuse the drain");
-    assert!(refused.contains("OpenProcess denied"), "the OS's reason is carried: {refused}");
+    let denied = TeardownRefused::Refused { pid: 25040, error: std::io::Error::from(std::io::ErrorKind::PermissionDenied) };
+    let refused = may_begin_shutdown(Err(denied))
+        .expect_err("no teardown authority must refuse the drain")
+        .to_string();
+    assert!(refused.contains("no authority to terminate pid 25040"), "the OS's reason is carried: {refused}");
     assert!(
         refused.contains("No state was touched"),
         "the refusal must say the drain did NOT run: {refused}"
@@ -63,9 +65,9 @@ fn a_pid_that_no_longer_exists_is_not_a_permission_refusal() {
 // deleting the preflight does not turn a test green, it stops compiling.
 #[test]
 fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
-    use super::preflight_teardown;
+    use super::{preflight_teardown, TeardownRefused};
     let refuse_25040 = |pid: i32| {
-        if pid == 25040 { Err("OpenProcess denied".to_string()) } else { Ok(()) }
+        if pid == 25040 { Err(TeardownRefused::Refused { pid, error: std::io::Error::from(std::io::ErrorKind::PermissionDenied) }) } else { Ok(()) }
     };
 
     // All endable: drain, nothing to borrow.
@@ -77,8 +79,9 @@ fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
     // would pass here and drain a core it cannot end.
     let refused = preflight_teardown(&[10, 25040], false, refuse_25040)
         .err()
-        .expect("a core this caller cannot end must refuse the drain");
-    assert!(refused.contains("OpenProcess denied"), "{refused}");
+        .expect("a core this caller cannot end must refuse the drain")
+        .to_string();
+    assert!(refused.contains("no authority to terminate pid 25040"), "{refused}");
     assert!(refused.contains("No state was touched"), "{refused}");
 
     // Same observation, operator present: carried forward to be borrowed AFTER the
@@ -88,7 +91,7 @@ fn the_drain_is_decided_over_every_core_this_stop_would_have_to_end() {
     assert_eq!(escalated.borrow_authority_for, Some(25040));
 
     // Nothing running at all is not a refusal — there is no core to be unable to end.
-    assert!(preflight_teardown(&[], false, |_| Err("x".to_string()))
+    assert!(preflight_teardown(&[], false, |pid| Err(TeardownRefused::Unknown { pid, error: std::io::Error::from(std::io::ErrorKind::Other) }))
         .expect("no cores, nothing to preflight")
         .borrow_authority_for
         .is_none());

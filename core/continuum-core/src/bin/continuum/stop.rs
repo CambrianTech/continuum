@@ -218,7 +218,7 @@ pub(super) async fn stop_with_policy(fate: impl Into<EngineFate>, operator_prese
     let graceful = if let Some(target) = target {
         commit_graceful_shutdown(target, require_durable).await?
     } else {
-        let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority)?;
+        let may_drain = preflight_teardown(&cores_to_tear_down(), operator_present, teardown_authority).map_err(|refused| refused.to_string())?;
         if require_durable && may_drain.borrow_authority_for.is_some() {
             return Err("maintenance requires owned durable shutdown authority; the legacy elevated stop cannot attest its save receipt".into());
         }
