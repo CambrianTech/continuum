@@ -1827,10 +1827,12 @@ makes a separate version of her or a separate model.
   learning layers out), scheduled by the same scheduler on the same sequences; a generating act outranks it at the
   next decode boundary, so she is never dark.
 - **A step becomes visible whole, at one fence** (Codex on #6092). Gradients accumulate in the optimizer's own
-  buffers; the layer's weights change only when a step commits, and the commit runs on the server loop between two
-  decode batches, the one point where no act is reading the layer. An act therefore sees step `s` or step `s+1`
-  for a whole decode batch, never a partial write. No second persona or shadow model is needed: the fence
-  serializes the one writer against the readers.
+  buffers; the layer's weights change only when a step commits. The fence is the device's, not the server loop's
+  position: the commit waits until every decode batch that read the layer has COMPLETED on the GPU, and no batch
+  that reads the layer is submitted until the commit's write has completed there, both observed through the
+  existing completion owner (the one that settles transfers and acts), never inferred from where the loop is. An
+  act therefore sees step `s` or step `s+1` for a whole decode batch, never a partial write. No second persona or
+  shadow model is needed: the fence serializes the one writer against the readers.
 - **Every act reports what it actually saw.** An act spanning several commits reports each observation
   `(layer, step, first token, last token)`, not one label for its whole output; a reply is attributed to the exact
   weights that produced each part of it.
@@ -1842,9 +1844,11 @@ makes a separate version of her or a separate model.
   recomputed for it. A test proves that the same prefix under two steps gives different logits and that the stamp
   catches it.
 - **An interrupted step is neither step.** A commit that fails or is cut off leaves the layer `uncertain` (the
-  optimizer's existing quarantine, `llama_opt_shadow_quarantined`): it is switched off for every act (scale 0) and
-  stays so until the layer registry restores its last durable step. It is never reported as the step before or
-  after.
+  optimizer's existing quarantine, `llama_opt_shadow_quarantined`). It is never reported as the step before or
+  after, and it is never silently switched off: setting it to scale 0 would change her genome without anyone
+  deciding to (Codex on #6092). An act of hers that would read it gets a typed `deferred { layer_uncertain }`
+  until the layer registry restores its last durable step, or until an explicit, authorized `genome_set` changes
+  her genome, recorded with its observations like any other genome change.
 - **A durable step is weights plus optimizer.** Saving for resumed learning writes the layer's weights, its
   optimizer state (moments) and its step metadata (step count, schedule position) as components, then publishes
   their manifest last, atomically; a save with any component missing has no manifest and does not exist.
