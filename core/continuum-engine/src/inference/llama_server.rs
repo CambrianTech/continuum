@@ -57,7 +57,9 @@ mod convergence_attempt;
 mod reconcile;
 mod shared_pool;
 pub use shared_pool::PoolLaunch;
-pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
+pub use reconcile::ensure_model_serving_if_current;
+#[cfg(test)]
+pub use reconcile::ensure_model_serving;
 
 mod smoke;
 use smoke::{
