@@ -568,6 +568,15 @@ pub enum PowerShellError {
     Exit { code: Option<i32>, diagnostic: String },
 }
 
+/// One conversion at the boundary for a caller whose own failure is still text (the CLI's install
+/// arms, until their typed errors land with the install_platform extraction): typed callers keep the
+/// typed cause, and those callers' `?` is unchanged.
+impl From<PowerShellError> for String {
+    fn from(error: PowerShellError) -> Self {
+        error.to_string()
+    }
+}
+
 #[cfg(windows)]
 pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, PowerShellError> {
     use base64::Engine;

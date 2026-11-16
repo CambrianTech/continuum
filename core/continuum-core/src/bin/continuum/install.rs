@@ -325,7 +325,7 @@ pub(super) async fn install_cli(check: bool) -> Result<supervisor_install::ArmRe
         "[Environment]::GetEnvironmentVariable('PATH','User')",
         Duration::from_secs(30),
     )
-    .await.map_err(|error| error.to_string())?;
+    .await?;
     let drift = install_cli::cli_drift(&slot_cli, &dir, &user_path)?;
     if drift.is_empty() {
         println!("✓ cli: converged — {} and uu on PATH are the slot's CLI ({})", dir.join("continuum.exe").display(), slot_cli.display());
@@ -360,7 +360,7 @@ pub(super) async fn install_cli(check: bool) -> Result<supervisor_install::ArmRe
                     "$d='{}'; $p=[Environment]::GetEnvironmentVariable('PATH','User'); if (-not $p) {{ $p='' }}; [Environment]::SetEnvironmentVariable('PATH', ($d + ';' + $p).TrimEnd(';'), 'User')",
                     dir.display().to_string().replace('\'', "''")
                 );
-                supervisor_install::powershell(&script, Duration::from_secs(30)).await.map_err(|error| error.to_string())?;
+                supervisor_install::powershell(&script, Duration::from_secs(30)).await?;
                 println!("  cli: added {} to the user PATH (new terminals see it)", dir.display());
             }
         }
@@ -368,7 +368,7 @@ pub(super) async fn install_cli(check: bool) -> Result<supervisor_install::ArmRe
     let after = install_cli::cli_drift(
         &slot_cli,
         &dir,
-        &supervisor_install::powershell("[Environment]::GetEnvironmentVariable('PATH','User')", Duration::from_secs(30)).await.map_err(|error| error.to_string())?,
+        &supervisor_install::powershell("[Environment]::GetEnvironmentVariable('PATH','User')", Duration::from_secs(30)).await?,
     )?;
     if !after.is_empty() {
         return Err(format!("install: the CLI still drifts after the refresh: {after:?}"));
