@@ -26,13 +26,19 @@ impl<E> CaptureSink<E> for Noop {
     fn record(&self, _event: E) {}
 }
 
-/// When an event happened: the time since its interval began, on one monotonic clock.
+/// When an event happened: the time since its ring began, on one monotonic clock shared by every
+/// interval the ring ever drains, so consecutive intervals tile time with no gap.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct At(Duration);
 
 impl At {
-    pub fn since_start(self) -> Duration {
+    pub fn since_origin(self) -> Duration {
         self.0
+    }
+
+    /// For a fixture or a replayed clock.
+    pub fn from_origin(elapsed: Duration) -> Self {
+        Self(elapsed)
     }
 }
 
@@ -51,10 +57,13 @@ pub enum Completeness {
     Lossy { dropped: NonZeroU64 },
 }
 
-/// Everything recorded between two drains.
+/// Everything recorded between two drains: the `index`-th interval of its ring, covering
+/// `from..to` on the ring's clock.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Interval<E> {
-    pub span: Duration,
+    pub index: u64,
+    pub from: At,
+    pub to: At,
     pub events: Vec<Stamped<E>>,
     pub completeness: Completeness,
 }
@@ -63,13 +72,29 @@ pub struct Interval<E> {
 /// or a gate comparing live against replay, accepts.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompleteInterval<E> {
-    span: Duration,
+    index: u64,
+    from: At,
+    to: At,
     events: Vec<Stamped<E>>,
 }
 
 impl<E> CompleteInterval<E> {
-    pub fn span(&self) -> Duration {
-        self.span
+    /// An interval recorded earlier and kept whole (a fixture on disk, a replayed clock): the
+    /// recording vouches it is complete, as the ring did when it drained it.
+    pub fn from_recording(index: u64, from: At, to: At, events: Vec<Stamped<E>>) -> Self {
+        Self { index, from, to, events }
+    }
+
+    pub fn index(&self) -> u64 {
+        self.index
+    }
+
+    pub fn from(&self) -> At {
+        self.from
+    }
+
+    pub fn to(&self) -> At {
+        self.to
     }
 
     pub fn events(&self) -> &[Stamped<E>] {
@@ -80,12 +105,13 @@ impl<E> CompleteInterval<E> {
 /// Why an interval cannot stand for the workload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Incomplete {
+    pub index: u64,
     pub dropped: NonZeroU64,
 }
 
 impl std::fmt::Display for Incomplete {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "the capture dropped {} events in this interval", self.dropped)
+        write!(f, "the capture dropped {} events in interval {}", self.dropped, self.index)
     }
 }
 
@@ -94,8 +120,8 @@ impl std::error::Error for Incomplete {}
 impl<E> Interval<E> {
     pub fn complete(self) -> Result<CompleteInterval<E>, Incomplete> {
         match self.completeness {
-            Completeness::Complete => Ok(CompleteInterval { span: self.span, events: self.events }),
-            Completeness::Lossy { dropped } => Err(Incomplete { dropped }),
+            Completeness::Complete => Ok(CompleteInterval { index: self.index, from: self.from, to: self.to, events: self.events }),
+            Completeness::Lossy { dropped } => Err(Incomplete { index: self.index, dropped }),
         }
     }
 }
@@ -104,12 +130,14 @@ impl<E> Interval<E> {
 /// passes it in; a full ring counts what it could not keep.
 #[derive(Debug)]
 pub struct Ring<E> {
+    origin: Instant,
     state: Mutex<RingState<E>>,
 }
 
 #[derive(Debug)]
 struct RingState<E> {
-    began: Instant,
+    index: u64,
+    from: At,
     events: VecDeque<Stamped<E>>,
     capacity: NonZeroUsize,
     dropped: u64,
@@ -117,33 +145,41 @@ struct RingState<E> {
 
 impl<E> Ring<E> {
     pub fn new(capacity: NonZeroUsize) -> Self {
-        Self { state: Mutex::new(RingState { began: Instant::now(), events: VecDeque::new(), capacity, dropped: 0 }) }
+        Self {
+            origin: Instant::now(),
+            state: Mutex::new(RingState { index: 0, from: At(Duration::ZERO), events: VecDeque::new(), capacity, dropped: 0 }),
+        }
     }
 
-    /// Everything since the last drain; the next interval begins now.
+    fn now(&self) -> At {
+        At(Instant::now().duration_since(self.origin))
+    }
+
+    /// Everything since the last drain; the next interval begins exactly where this one ends.
     pub fn drain(&self) -> Interval<E> {
         // a poisoned ring still holds valid records: a panic elsewhere never loses the capture
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        let now = Instant::now();
-        let span = now.duration_since(state.began);
-        state.began = now;
+        let to = self.now();
+        let from = std::mem::replace(&mut state.from, to);
+        let index = state.index;
+        state.index += 1;
         let events = state.events.drain(..).collect();
         let completeness = match NonZeroU64::new(std::mem::take(&mut state.dropped)) {
             None => Completeness::Complete,
             Some(dropped) => Completeness::Lossy { dropped },
         };
-        Interval { span, events, completeness }
+        Interval { index, from, to, events, completeness }
     }
 }
 
 impl<E: Send> CaptureSink<E> for Ring<E> {
     fn record(&self, event: E) {
+        let at = self.now();
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
         if state.events.len() >= state.capacity.get() {
             state.dropped += 1;
             return;
         }
-        let at = At(Instant::now().duration_since(state.began));
         state.events.push_back(Stamped { at, event });
     }
 }
@@ -181,7 +217,9 @@ mod tests {
         sink.record(3);
         let second = sink.drain().complete().unwrap();
         assert!(matches!(first.completeness, Completeness::Lossy { .. }));
+        assert_eq!((first.index, second.index()), (0, 1));
+        assert_eq!(second.from(), first.to, "the next interval begins exactly where the last ended");
         assert_eq!(second.events().len(), 1);
-        assert!(second.events()[0].at.since_start() <= second.span());
+        assert!(second.from() <= second.events()[0].at && second.events()[0].at <= second.to());
     }
 }
