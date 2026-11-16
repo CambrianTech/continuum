@@ -1643,6 +1643,16 @@ per-token growth therefore comes from the other parts a server checkpoint copies
 state, and `data_spec`); identifying which, and whether it is KV that parking shares by id, is the next measurement
 before the count is set.
 
+*Wired into the server* (fork `--parked-checkpoints N`, 2026-11-16): `n_seq_max` = slots + N; `copy_checkpoint` parks,
+`load_tgt` restores by `seq_cp` (every restore site unchanged), exhaustion refuses the checkpoint (never a copy),
+slot saves write a parked checkpoint's own bytes from its id; refused at load without `--kv-unified` or on a model
+whose partial state is not one recurrent cell. Receipt on the 0.8B (two engines, same requests, temperature 0):
+identical text, restores at prompt_n 514 / cache_n 3,009 in both, parked 2 -> 4 -> 6, refused 0. Cost, measured: RSS
+1.26 GB copied vs 1.55 GB parked at N = 16, because parked cells and one output row per sequence id are provisioned
+at load while copies grow with use; N therefore comes from the pool's budget and the measured value per byte. Next:
+the per-token part of live checkpoints (draft/spec), the output-row floor, then the live A/B on the 35B in a
+serving-down window (host memory, swap, act latency, identical outputs).
+
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
