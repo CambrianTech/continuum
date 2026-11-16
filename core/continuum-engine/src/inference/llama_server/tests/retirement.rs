@@ -314,7 +314,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
     let operation = gate.try_operation().expect("test: a fresh gate is free");
     assert_eq!(
-        ensure_model_serving_if_current(&control, &drifted, false, &admit, &operation).await,
+        ensure_model_serving_if_current(&control, &drifted, false, crate::inference::llama_server::Reconciling { current: &admit, operation: &operation }).await,
         EnsureOutcome::AlreadyServing
     );
     assert_eq!(

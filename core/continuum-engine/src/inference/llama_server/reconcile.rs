@@ -26,7 +26,7 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
 ) -> EnsureOutcome {
     let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
     let operation = gate.try_operation().expect("test: a fresh gate is free");
-    ensure_model_serving_if_current(ctrl, target, force_probe, &|| true, &operation).await
+    ensure_model_serving_if_current(ctrl, target, force_probe, Reconciling { current: &|| true, operation: &operation }).await
 }
 
 
@@ -34,12 +34,9 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
     force_probe: bool,
-    current: &ServingLifecycleCheck<'_>,
-    // the operation holding the serving lifecycle gate for this reconcile: an in-place gene change
-    // decides its memory inside it
-    operation: &crate::inference::serving_lifecycle::ServingOperation,
+    reconciling: Reconciling<'_>,
 ) -> EnsureOutcome {
-    let outcome = serve_or_adopt(ctrl, target, force_probe, current, operation).await;
+    let outcome = serve_or_adopt(ctrl, target, force_probe, reconciling).await;
     // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
     // one), records the lane's placement when its record lacks one (card 22aa3379).
     // Every adoption also follows the engine's log relay: a no-op for one already followed.
@@ -60,9 +57,9 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     // 500s, so without re-proving decode the owned-child trust would re-adopt the wedged
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
-    current: &ServingLifecycleCheck<'_>,
-    operation: &crate::inference::serving_lifecycle::ServingOperation,
+    reconciling: Reconciling<'_>,
 ) -> EnsureOutcome {
+    let Reconciling { current, operation } = reconciling;
     let mut convergence_pair = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,

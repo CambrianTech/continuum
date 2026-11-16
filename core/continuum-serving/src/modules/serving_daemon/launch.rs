@@ -334,8 +334,7 @@ impl ServingDaemonModule {
                 server.as_ref(),
                 &target,
                 force_probe.pending,
-                &admit,
-                &operation,
+                crate::inference::llama_server::Reconciling { current: &admit, operation: &operation },
             )
             .await;
             if matches!(outcome, EnsureOutcome::Superseded)

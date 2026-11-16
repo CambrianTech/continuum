@@ -130,6 +130,14 @@ pub struct ObservedGeometry {
 /// the operation may settle even if newer intent arrives; its result keeps its epoch.
 pub type ServingLifecycleCheck<'a> = dyn Fn() -> bool + Send + Sync + 'a;
 
+/// The reconcile an ensure runs inside: whether its intent is still current, and the serving
+/// operation holding the lifecycle gate (an in-place gene change decides its memory inside it).
+#[derive(Clone, Copy)]
+pub struct Reconciling<'a> {
+    pub current: &'a ServingLifecycleCheck<'a>,
+    pub operation: &'a crate::inference::serving_lifecycle::ServingOperation,
+}
+
 
 /// Evidence handle, not a capacity lease. Dropping it does not abandon the child.
 #[derive(Clone)]

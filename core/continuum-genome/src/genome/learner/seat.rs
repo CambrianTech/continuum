@@ -102,18 +102,21 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
     seated(engine, plan.engine, claim, loaded).await
 }
 
-/// Seat the adapter file `name` (a gene staged under the engine's train dir) for `consumer` in
-/// `engine`, every step bound to `bound`, the engine identity the caller read before deciding: an
-/// engine replaced since refuses instead of loading into the wrong one (4.10 P4a). Its memory is
+/// One gene to seat: the adapter file `name` (staged under the engine's train dir) for `consumer`,
+/// every step bound to `bound`, the engine identity the caller read before deciding, and its memory
 /// admitted inside `operation`, the serving operation the caller holds on the authority's gate.
-pub async fn seat_gene(
-    authority: &Authority,
-    operation: &crate::inference::serving_lifecycle::ServingOperation,
-    engine: LearningEngine,
-    bound: &LedgerEngine,
-    consumer: &str,
-    name: &str,
-) -> Result<Seat, SeatRefusal> {
+pub struct GeneLoad<'a> {
+    pub operation: &'a crate::inference::serving_lifecycle::ServingOperation,
+    pub engine: LearningEngine,
+    pub bound: &'a LedgerEngine,
+    pub consumer: &'a str,
+    pub name: &'a str,
+}
+
+/// Seat `load`: an engine replaced since its identity was read refuses instead of loading into the
+/// wrong one (4.10 P4a).
+pub async fn seat_gene(authority: &Authority, load: GeneLoad<'_>) -> Result<Seat, SeatRefusal> {
+    let GeneLoad { operation, engine, bound, consumer, name } = load;
     let plan = match engine.plan_load(name).await {
         Ok(LedgerAnswer::Ledger(plan)) => plan,
         Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),

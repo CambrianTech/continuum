@@ -149,7 +149,7 @@ pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     AdapterChangeRefusal, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
-    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
+    ObservedGeometry, OwnedServingTarget, Reconciling, ServingLifecycleCheck,
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};

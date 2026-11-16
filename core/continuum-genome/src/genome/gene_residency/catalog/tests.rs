@@ -18,7 +18,7 @@ fn ledger_of(engine: &str) -> serde_json::Value {
 }
 
 fn identity(engine: &str) -> LedgerEngine {
-    serde_json::from_value(serde_json::json!(engine)).expect("test: an engine identity")
+    LedgerEngine::fixture(engine)
 }
 
 /// Every call the fake engine received, by route.
@@ -49,7 +49,7 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
                 let seen = Arc::clone(&unload_seen);
                 async move {
                     seen.lock().unwrap_or_else(|p| p.into_inner()).push(("unload", body)); // test-owned lock
-                    let status = axum::http::StatusCode::from_u16(unload_status).expect("test: a status");
+                    let status = axum::http::StatusCode::from_u16(unload_status).expect("test: a status"); // test: a fixture step that cannot fail here
                     (status, axum::Json(serde_json::json!({"success": true, "id": 0, "path": "/genes/a.gguf"})))
                 }
             }),
@@ -65,9 +65,9 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
             }),
         )
         .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(serving)) }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let port = listener.local_addr().expect("test: addr").port();
-    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await }))
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind"); // test: a fixture step that cannot fail here
+    let port = listener.local_addr().expect("test: addr").port(); // test: a fixture step that cannot fail here
+    (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await })) // test: a fixture step that cannot fail here
 }
 
 fn change<'a>(operation: &'a ServingOperation, engine: LearningEngine, bound: &str) -> CatalogChange<'a> {
@@ -84,7 +84,7 @@ fn change<'a>(operation: &'a ServingOperation, engine: LearningEngine, bound: &s
 /// reconcile; and its resource daemon, to read what stays leased.
 fn held_authority() -> (Authority, ServingOperation, Arc<crate::resources::ResourceDaemon>) {
     let authority = Authority::isolated(10_000_000);
-    let operation = authority.serving.try_operation().expect("test: a fresh gate is free");
+    let operation = authority.serving.try_operation().expect("test: a fresh gate is free"); // test: a fixture step that cannot fail here
     let resources = Arc::clone(&authority.resources);
     (authority, operation, resources)
 }

@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::genome::learner::seat::{seat_gene, Authority, Seat, SeatRefusal};
+use crate::genome::learner::seat::{seat_gene, Authority, GeneLoad, Seat, SeatRefusal};
 use crate::inference::llama_server::genome_catalog::{
     CatalogChange, CatalogEnd, CatalogOutcome, CatalogRefusal, CatalogStep, GenomeCatalog,
 };
@@ -79,7 +79,8 @@ impl GenomeCatalog for GeneCatalog {
         }
         for gene in add {
             let consumer = format!("gene:{}", gene.gene);
-            match seat_gene(&self.authority, operation, engine.clone(), &ledger, &consumer, &gene.name).await {
+            let load = GeneLoad { operation, engine: engine.clone(), bound: &ledger, consumer: &consumer, name: &gene.name };
+            match seat_gene(&self.authority, load).await {
                 Ok(seat) => {
                     seats.insert((incarnation, gene.gene.clone()), seat);
                     applied.push(CatalogStep::Added(gene.gene));

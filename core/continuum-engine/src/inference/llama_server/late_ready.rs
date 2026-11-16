@@ -520,7 +520,7 @@ mod tests {
         target.placement = LanePlacement::Cpu;
         let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
         let operation = gate.try_operation().expect("test: a fresh gate is free");
-        let outcome = ensure_model_serving_if_current(&fresh, &target, false, &|| true, &operation).await;
+        let outcome = ensure_model_serving_if_current(&fresh, &target, false, crate::inference::llama_server::Reconciling { current: &|| true, operation: &operation }).await;
         assert!(matches!(outcome, EnsureOutcome::AlreadyServing), "a healthy engine is adopted, not replaced: {outcome:?}");
         assert!(!fresh.owns_child(), "the restarted core spawned nothing");
     }
