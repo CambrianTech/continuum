@@ -1618,14 +1618,23 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
 
 **The pieces, in order of gain per change:**
 
-- **P5, the scheduler (O1, O2, O9, O14).** Separate RESIDENCY (whose KV stays in a slot: every resident's,
-  memory permitting) from CONCURRENCY (how many sequences decode in one engine step). Concurrency is one
-  decision behind the pluggable policy interface: observation = the sequences ready and their context
-  lengths, the measured per-step cost curve; action = which sequences run this step; reward = measured act
-  latency (and resident-perceived wait). The baseline policy starts at one sequence and steps up only while
-  measured act time falls, re-testing both directions on a schedule; a bandit over the step count follows.
-  Mechanism: the fork's `update_slots` runs the chosen set and holds the rest with their KV in place
-  (per-task priority, SV-S3), so a switch costs nothing; the core's lane permits are deleted. Simulator:
+- **P5, the scheduler (O1, O2, O9, O14).** Two decisions, both measured, neither a count anyone picks:
+  - *Memory follows the acting minds (4.8.4).* No mind holds a standing share or a fixed slot of a fixed
+    `--parallel`. The mind acting now may take the whole pool if her need is the whole pool; minds not
+    acting page out (RAM in milliseconds, disk behind it) and page back at their own next act. What stays
+    resident between acts is cache, kept while its predicted reuse beats re-prefilling it (computed once,
+    phased out by usage and prediction).
+  - *Concurrency follows measured act time.* How many sequences decode in one engine step is one decision
+    behind the pluggable policy interface: observation = the ready sequences, their context lengths, the
+    measured per-step cost curve at those lengths; action = which sequences run this step; reward =
+    measured act latency and resident-perceived wait. Its starting point is the measured curve (the step
+    count it predicts minimizes act time at the contexts being served), never a constant; it keeps
+    re-testing both directions, and a learned policy replaces the curve's argmin only by beating it on the
+    replay. A memory-bound engine at long context and a compute-bound one at short context land on
+    different answers by measurement alone.
+  Mechanism: the fork's `update_slots` runs the chosen set; the rest wait with their KV wherever residency
+  put it (per-task priority, SV-S3); slots are sequence handles sized by the pool, not one per mind. The
+  core's lane permits are deleted. Simulator:
   the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
   before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
 - **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
@@ -1639,9 +1648,10 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   owner), Fable (shedder).
 - **Then O8 (reconfigure to the geometry P5 settles on), O10 (shared prefix), O11 measured.**
 
-**Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1),
-decode per running stream within 20% of the one-stream rate, 0 turns refused or starved, 0 swap, a
-restart's first act warm; on BigMama, every asked turn served. Each piece lands with its simulator
+**Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
+live act time matches what the replay predicted for the chosen policy on the same recorded load (the
+simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
+warm; on BigMama, every asked turn served. Each piece lands with its simulator
 scenario red then green, then a live read against a restart-only control.
 
 ## 5. A mind's context and the engine it runs on
