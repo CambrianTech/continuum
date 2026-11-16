@@ -1711,79 +1711,121 @@ section 4.1 already designs (`port`: "binary frames, no HTTP or JSON"):
   learn pins, and the host budget and the count evicted in two different orders. (Fixed by `checkpoint_store`,
   fork #140; the pattern below applies it to the whole seam.)
 
-#### 4.11.2 Ids: UUIDv7, native 16 bytes, one newtype per kind
+#### 4.11.2 Ids: UUIDv7, native 16 bytes, one newtype per kind; identity is exact equality
 
 | Id | Minted by | Form | Replaces |
 |---|---|---|---|
-| `EngineIncarnation` | the engine, once at start | UUIDv7 | random `u64` token, OS pid |
-| `TurnId` | the core, once per act | UUIDv7 | nothing (a turn had no identity) |
+| `EngineInstanceId` | the engine, once at start | UUIDv7 | random `u64` token |
+| `TurnId` | the core, once per act; a retry keeps it | UUIDv7 | nothing (a turn had no identity) |
 | `MindId` | the core: her persona's id; a fork's is UUIDv5 of (persona, room) (`PageKey::engine_id`) | UUID | 32-hex-digit string |
 
-- A learn pin IS its turn: `release(TurnId)`, `learn(TurnId)`. No separate pin id, and the turn id also names the
-  act for cancellation and attribution (the "turn token" Codex asked for).
-- v7 sorts by time, so a newer engine or turn compares greater: a stale frame is recognized by comparison, never
-  by a lookup.
-- On every wire and in every struct an id is its 16 bytes (`uint8_t[16]` in C, `Uuid` in Rust). Never hex, never
-  a string, never parsed. Rust: `Uuid::now_v7()` (workspace `uuid` gains the `v7` feature). C++: one minting
-  function in the contract header (48-bit Unix milliseconds + 74 random bits, RFC 9562).
+- **Identity is exact equality, never ordering** (Codex on #6092: clock rollback, different clocks and two ids in
+  the same millisecond make greater-than meaningless). A frame for another `EngineInstanceId` is refused, typed;
+  v7's time order is only for reading logs.
+- **Process evidence stays separate.** `engine_residency::EngineIncarnation` (pid, OS start time, port) remains the
+  proof a process died after a core restart; a UUID cannot prove death or release held work. The descriptor
+  carries both; the lifecycle owner's generation and custody checks are unchanged.
+- **A learn pin is its turn:** `release(TurnId)`, `learn(TurnId)`. A `TurnId` is never reused, so a release can
+  never free another live turn's pin.
+- On every wire and in every struct an id is its 16 bytes (`uint8_t[16]` in C, `Uuid` in Rust). Never hex, never a
+  string, never parsed. Rust: `Uuid::now_v7()` (workspace `uuid` gains `v7`). C++: one minting function in the
+  contract header (48-bit Unix milliseconds + 74 random bits, RFC 9562).
 
-#### 4.11.3 One definition, generated for both sides
+#### 4.11.3 One definition, validated at both edges
 
 - **The definition is one C header in the fork, `tools/server/server-continuum.h`** (section 4.1 already names it
-  as the C ABI shim). Every frame is a fixed-size, trivially copyable struct of fixed-width fields and ids; every
-  outcome is a fixed-width enum with named values.
-- **The Rust side is generated from it by bindgen**, the way `core/llama/build.rs` already binds `llama.h`, then
-  wrapped once in safe newtypes in the core's engine crate (`EngineIncarnation(Uuid)`, `TurnId(Uuid)`, the
-  enums as Rust enums with no catch-all). No hand-written mirror, no serde, no field read by name.
-- **Variable data is never in a frame.** A prompt's bytes, KV pages and checkpoints move as `buffer_ref` (domain,
-  pool, buffer, offset, length; fork `server-frames.h`); the frame names them.
-- **Transport:** the frame rings of `server-frames.h` (lock-free SPSC, atomic waits, backpressure as a `false`
-  push) over shared memory between the core and the engine process, and the same frames in process once serving
-  hosts libllama directly (line 3b of the plan in CLAUDE.md). HTTP JSON stays only as the OpenAI-compatible adapter for
-  foreign drivers (Hermes), never between our own processes.
-
-**The frames** (each request carries `EngineIncarnation`; a mismatch is answered by a typed `stale_engine`
-frame, never acted on):
+  as the C ABI shim): fixed-size, trivially copyable frames of fixed-width fields and 16-byte ids.
+- **The Rust side is generated from it by bindgen** (as `core/llama/build.rs` binds `llama.h`) and wrapped once in
+  safe newtypes. Bindgen lays out structs; it does not validate frames, so both edges validate:
+  - **Byte order** little-endian, stated; **every field's offset and size** asserted (`static_assert(offsetof)` in
+    C++, generated `const` assertions in Rust); **reserved bytes** must be zero.
+  - **Every frame begins with a header:** magic, schema version, frame kind, total size, and the schema's
+    identity (a hash of the header file, compiled into both sides). A mismatch at attach refuses the link.
+  - **Tags are raw integers on the wire**, converted with `TryFrom`; an unknown value is a typed refusal, never a
+    cast into a Rust enum and never a default.
+- **Variable data is never in a frame.** A prompt's bytes, KV pages and checkpoints move as `buffer_ref`
+  (section 4.11.4).
+- **The frames** (every stateful request carries the exact `EngineInstanceId`; its replies are terminal frames
+  per 4.11.4):
 
 | Request | Reply | Replaces today's |
 |---|---|---|
-| `describe` | `engine_descriptor { incarnation, geometry (pool tokens, per-sequence tokens, lanes, parked ids), host budget }` | `/props` JSON + `resident_minds` |
-| `turn_submit { turn, mind, learn_pin, prompt: buffer_ref, view spans, sampling }` | `turn_receipt { turn, mind_from, switch_us, generation, cached_tokens, pinned }` + token stream | `/completion` + `timings.mind` |
+| `attach { schema identity }` | `engine_descriptor { instance, process evidence, pool tokens, per-sequence tokens, lanes, parked ids, host budget }` | `/props` JSON + `resident_minds` |
+| `turn_submit { turn, mind, learn_pin, prompt: buffer_ref, view spans, sampling }` | token frames, then `turn_done { turn, mind_from, switch_us, generation, cached_tokens, pinned }` / `cancelled` / `refused` | `/completion` + `timings.mind` |
+| `cancel { turn }` | the turn's terminal frame | dropping an HTTP connection |
 | `prefetch { mind }` | `placed { mind, place: mind_place }` | `/minds/prefetch` |
-| `learn_submit { turn, reply rows: buffer_ref, ... }` | `learn_outcome { turn, learned_on, live_sequence_preserved, refusal, retry_after_us }` | `/learn` JSON |
+| `learn_submit { turn, reply rows: buffer_ref }` | `learn_outcome { turn, learned_on, live_sequence_preserved, refusal, retry_after_us }` | `/learn` JSON |
 | `pin_release { turn }` | `released { turn, outcome: pin_release }` | `/learn/release` |
-| `page_save` / `page_restore { mind, buffer_ref }` | typed completion | `/slots/:id?action=` |
+| `page_save` / `page_restore { mind, buffer_ref }` | typed terminal frame | `/slots/:id?action=` |
 
-The enums (`mind_from`, `mind_place`, `learned_on`, `learn_refusal`, `pin_release`) are the values frozen on
-fork #139 (2026-11-16), now defined once in the header.
+  The enums (`mind_from`, `mind_place`, `learned_on`, `learn_refusal`, `pin_release`) are the values frozen on
+  fork #139 (2026-11-16), defined once in the header.
+- **Transport:** frame rings over shared memory between the core and the engine process, and the same frames in
+  process once serving hosts libllama directly (line 3b of the plan in CLAUDE.md). The ring's shared layout is its
+  own explicit contract: a page-aligned header of plain 64-bit words (head, tail, capacity, closed) with stated
+  acquire/release ordering and an address-based wait (futex / `__ulock`), implemented natively on each side and
+  proven by a cross-language fixture. A C++ `frame_ring` object is not assumed portable to Rust. HTTP JSON stays
+  only as the OpenAI-compatible adapter for foreign drivers (Hermes).
 
-#### 4.11.4 One owner on each side
+#### 4.11.4 Custody, cancellation and idempotence
 
-- **Engine:** one module per concern (`server-module.h`: own thread, fixed job ring, snapshot readers copy
-  without a lock), each the only code that changes its state: the resident-minds table, each mind's
-  `checkpoint_store` (#140), learning. The frame dispatcher decodes nothing: it routes a fixed struct to its
-  owner.
-- **Core: one ServiceModule, `EngineLink`, the only code that talks to our engine.** It owns the rings, the
-  engine's descriptor and incarnation (published with the slot pool, never a side map), each turn's ticket,
-  prefetch, learn, release and paging. Callers ask it typed verbs (`link.turn(...)`, `link.prefetch(mind)`,
+A `buffer_ref` is `{ instance, pool, buffer, allocation generation, offset, length }`. The receiver checks the
+instance, the generation (a buffer freed and reallocated has a new one) and `offset + length` within the
+allocation without overflow. The sender owns the buffer until the receiver's terminal frame for that request; no
+buffer is freed while a frame names it.
+
+| Case | Behavior |
+|---|---|
+| attach (bootstrap) | the first frame names no instance: `attach { schema identity }` -> `engine_descriptor { instance, process evidence, geometry, host budget }`; every stateful verb after it carries the exact instance |
+| queue full | the push returns false: the caller gets a typed `backpressure` at once; nothing is dropped or silently retried |
+| turn stream | tokens stream as frames naming the `TurnId`; exactly one terminal frame (`done`, `cancelled`, `refused { reason }`); its buffers are released only after it |
+| duplicate `turn_submit` (same `TurnId`) | idempotent: the existing ticket is answered, the turn never runs twice |
+| retry after a lost terminal frame | resubmits the same `TurnId`; the engine answers the recorded outcome |
+| cancel | `cancel { turn }` is acknowledged with the turn's terminal frame; cancelling a finished turn answers its outcome; a cancel never frees another turn's resources |
+| lost cancel acknowledgement | the caller re-sends the same cancel (idempotent) |
+| peer death | detected by process evidence (`EngineIncarnation`), never by a missing frame alone; held work is released only once death is proven; the next attach yields a new instance |
+| stale descriptor after replacement | every stateful verb with the old instance is refused `stale_engine`; the link re-attaches |
+| `pin_release { turn }` | idempotent: the first frees it (`released` / `released_on_flash`), a repeat answers `not_pinned`; an unknown turn answers `not_pinned`, never a release of another |
+| prefetch | idempotent per mind; owned by the waiting turn (dropped with it) |
+
+#### 4.11.5 One owner on each side, consolidating what exists
+
+- **Engine:** the frame dispatcher runs on the server loop that already owns the llama context; owners that touch
+  the same context share that thread (no thread per concern). Each owner is the only code that changes its state:
+  the resident-minds table, each mind's `checkpoint_store` (#140), learning. The dispatcher validates a frame's
+  header and tags and routes the struct to its owner.
+- **Core: `EngineLink` is a ServiceModule that consolidates today's owners; it adds no registry.** What moves under
+  it, unchanged in role: endpoint admission and permits (`slots::directory()`, `EndpointAdmission`), turn
+  admission and unresolved completions (`turn_admission::admit_turn`, `turn_admission/unresolved_page`),
+  cancellation, buffer custody, the engine's descriptor (published with the slot pool), and process evidence
+  (`engine_residency`). Callers ask it typed verbs (`link.turn(...)`, `link.prefetch(mind)`,
   `link.release(turn)`); `stream.rs`, `minds.rs`, `slots/discover.rs` and the learn lane stop building requests.
   A source-hygiene ratchet fails any engine path or field name outside it.
 
-#### 4.11.5 Order (each slice deletes what it replaces)
+#### 4.11.6 Order: vertical replacements
 
-1. **Contract header + generated Rust types + UUIDv7 ids**, with a native test that a frame round-trips
-   byte-identically through both sides. Deletes: nothing yet.
-2. **`EngineLink` owns every existing call to our engine**, still over today's HTTP: centralization first, so
-   step 3 changes one module. Deletes: request building in `stream.rs`, `minds.rs`, `discover.rs`, the learn lane.
-3. **The minds verbs move onto frames** (`describe`, `prefetch`, `pin_release`, `turn_receipt`). Deletes:
-   `/minds/prefetch`, `/learn/release`, `resident_minds` and `timings.mind` JSON, the hex page, the `u64` token,
-   the pin counter.
-4. **Turns and learning move onto frames.** Deletes: our use of `/completion`, `/learn`, `/slots`.
-5. **The ratchet** (no engine path or field outside `EngineLink`; no string id on the seam).
+Each slice replaces one call path completely: schema, owner, producer, consumer, deletions and a load/fault
+replay, together. No new minds or learning behavior ships on a transitional JSON seam.
 
-**Open, for Codex:** whether #139 and #6087 merge before step 3 (JSON in place, deleted by step 3) or wait for
-it. Recommendation: wait. The verbs added on 11-16 are the first users of the contract, and merging them as JSON
-ships the shape this section deletes.
+1. **The contract alone:** the header, the generated Rust types, the validation at both edges, the shared ring
+   layout, and a cross-language fixture (frames and the ring round-trip byte-identically; a bad tag, size,
+   reserved byte or schema identity is refused). No behavior.
+2. **`EngineLink` consolidation over today's HTTP:** an internal refactor of existing owners under one module, no
+   new behavior.
+3. **attach / describe**, end to end. Deletes `/props` parsing and `resident_minds` JSON.
+4. **Minds: prefetch, the turn receipt, the switch.** Deletes `/minds/prefetch`, `timings.mind`, the hex page.
+5. **Learning and pin release.** Deletes `/learn`, `/learn/release`, the `u64` pin, Codex's JSON learning patch
+   (kept until then as evidence and tests).
+6. **Turn submit and streaming.** Deletes our use of `/completion` and `/slots`.
+7. **The ratchet.**
+
+#139, #6087 and Codex's JSON learning patch are held: kept as tested evidence for slices 4 and 5, not merged
+(Codex agreed, 2026-11-16).
+
+**Validation for every slice, before the resident deploy:** a stale descriptor after replacement; backpressure
+while decoding; a lost terminal or cancel acknowledgement; two turns at the same position with distinct pins;
+long-context side learning under a full memory grant. Native timing, charged and physical memory, and exact
+preserved state compared against the JSON path they replace.
 
 ## 5. A mind's context and the engine it runs on
 
