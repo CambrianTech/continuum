@@ -1834,6 +1834,20 @@ me, otherwise read by the audit agent and to be verified before it is fixed):**
 | 8 | Core: 7-9 full-context passes per act (clones, format + char counts, serde per message, `json!` clones), prompt capture with sync write+flush under a mutex on a tokio worker | est. 1-3 ms per act plus blocking I/O | To verify; borrowed wire bytes built once (4.7.11), capture on a writer task |
 | 9 | One condvar `notify_all` per partial result wakes every HTTP reader; per-token JSON tree building | O(streams) wakes per token; 5-20 us per token | To verify |
 
+**Ballpark first, precision on the few** (Joel, 2026-11-16: "your first goal is to get the size down that you need the
+more expensive sorting, filtering or calculation on. Get in the ballpark first ... avoid square roots"). Two measured
+outcomes the same day show where it pays. In sampling it does not: llama's top-k is already the ballpark cut (248k ->
+40) running near the one-pass floor, and an extra estimate step was slower (row 2). In vector search it pays heavily:
+`top_k_similar` (`continuum-engine/src/ai/embedding/vector_math.rs:134`) computes, for every query and every target, a
+dot product plus the target's norm, a `sqrt` and a divide, then FULLY sorts all passing items to keep k, over
+`Vec<Vec<f32>>`. An algorithm receipt (C++, single-threaded, 50,000 x 768 random Gaussian vectors, k = 10, best of 7,
+M5 Pro; random data is the cut's worst case): today's method 29.4 ms; unit vectors normalized once at insert, one
+contiguous matrix, `nth_element` 15.1 ms (2x, identical top-10); an INT8 coarse cut (integer dot over all, keep 80) then
+exact unit dot on those 80: **0.65 ms (45x), recall 10/10**, and 10/10 at every buffer up to 10,000 (4.2 ms); a 1-bit
+sign-code cut is too coarse here (2/10 at 80, 8/10 at 2,000, 10/10 only at 10,000). Owner: Codex (#5189, "revisioned
+vector corpus + BLAS + cascade"). The buffer is sized by MEASURED recall on the real embeddings (a validator sweeping
+the buffer against the exact answer), never by this synthetic run.
+
 **Reusable patterns pay everywhere.** The patterns of 4.7.7-4.7.12 (job-system modules, frame rings with atomic waits,
 memory_mover lanes sized from the node's own measured curve, device handles plus GPU fences, device snapshots) serve
 training and learning (Dreaming) as much as serving: a training step's batches, a gene's weights and a dream's state
