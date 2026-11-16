@@ -289,17 +289,18 @@ async fn new_gene_triggers_relaunch_on_same_model() {
 #[tokio::test]
 async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
+        let shown = format!("{shown}");
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
-            .with_in_place(outcome.clone());
+            .with_in_place(outcome);
         let got = ensure_model_serving(
             &ctrl,
             &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]),
             false,
         )
         .await;
-        assert_eq!(got, EnsureOutcome::AlreadyServing, "{outcome:?}");
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{outcome:?}: no relaunch");
+        assert_eq!(got, EnsureOutcome::AlreadyServing, "{shown}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{shown}: no relaunch");
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
@@ -317,12 +318,13 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
 async fn a_catalog_owner_refusal_keeps_the_engine_degraded() {
     use super::genome_catalog::CatalogRefusal;
     for why in [CatalogRefusal::NoOwner, CatalogRefusal::EngineReplaced, CatalogRefusal::AwaitingMemory("vram".into())] {
+        let shown = format!("{shown}");
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
-            .with_in_place(GenomeInPlace::Refused(why.clone()));
+            .with_in_place(GenomeInPlace::Refused(why));
         let got = ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf"]), false).await;
-        assert!(matches!(got, EnsureOutcome::Degraded { .. }), "{why:?}: {got:?}");
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{why:?}: no relaunch over retained KV");
+        assert!(matches!(got, EnsureOutcome::Degraded { .. }), "{shown}: {got:?}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{shown}: no relaunch over retained KV");
     }
 }
 
