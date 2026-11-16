@@ -594,10 +594,11 @@ pub trait MemoryReporter: Send + Sync {
     }
 
     /// The other half of shedding: the OS reads itself normal with `headroom` bytes it can give
-    /// without re-entering pressure (`HostDeficitReading::headroom`), so a reporter that gave
+    /// without re-entering pressure (`HostDeficitReading::headroom`), so a healthy reporter that gave
     /// memory back may take up to that much again. Returns the bytes it claimed (what it may now
     /// fill), which the monitor takes off the headroom before offering the rest to the next
-    /// reporter. Called every such poll; keep it cheap when there is nothing to take back.
+    /// reporter. Independent of `can_shed`: an empty cache may recover even when it cannot
+    /// currently release anything. Called every such poll; keep it cheap when there is nothing to take back.
     /// Default: nothing taken.
     fn take_again(&self, _headroom: std::num::NonZeroU64) -> u64 {
         0
