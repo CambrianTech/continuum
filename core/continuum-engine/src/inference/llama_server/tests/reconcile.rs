@@ -289,7 +289,7 @@ async fn new_gene_triggers_relaunch_on_same_model() {
 #[tokio::test]
 async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
-        let shown = format!("{shown}");
+        let shown = format!("{outcome:?}");
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
             .with_in_place(outcome);
@@ -318,7 +318,7 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
 async fn a_catalog_owner_refusal_keeps_the_engine_degraded() {
     use super::genome_catalog::CatalogRefusal;
     for why in [CatalogRefusal::NoOwner, CatalogRefusal::EngineReplaced, CatalogRefusal::AwaitingMemory("vram".into())] {
-        let shown = format!("{shown}");
+        let shown = format!("{why:?}");
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
             .with_in_place(GenomeInPlace::Refused(why));
