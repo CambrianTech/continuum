@@ -1751,10 +1751,9 @@ section 4.1 already designs (`port`: "binary frames, no HTTP or JSON"):
 | Request | Reply | Replaces today's |
 |---|---|---|
 | `attach { schema identity }` | `engine_descriptor { instance, process evidence, pool tokens, per-sequence tokens, lanes, parked ids, host budget }` | `/props` JSON + `resident_minds` |
-| `turn_submit { turn, mind, learn_pin, prompt: buffer_ref, view spans, sampling }` | token frames, then `turn_done { turn, mind_from, switch_us, generation, cached_tokens, pinned }` / `cancelled` / `refused` | `/completion` + `timings.mind` |
+| `act_submit { act (TurnId), mind, layers, mode, learn_pin, prompt: buffer_ref, view spans, sampling }` (modes in 4.11.6) | token frames, then `act_done { act, mind_from, switch_us, generation, cached_tokens, pinned, (layer, step)[] }` / `cancelled` / `refused` | `/completion` + `timings.mind` |
 | `cancel { turn }` | the turn's terminal frame | dropping an HTTP connection |
 | `prefetch { mind }` | `placed { mind, place: mind_place }` | `/minds/prefetch` |
-| `learn_submit { turn, reply rows: buffer_ref }` | `learn_outcome { turn, learned_on, live_sequence_preserved, refusal, retry_after_us }` | `/learn` JSON |
 | `pin_release { turn }` | `released { turn, outcome: pin_release }` | `/learn/release` |
 | `page_save` / `page_restore { mind, buffer_ref }` | typed terminal frame | `/slots/:id?action=` |
 
@@ -1779,7 +1778,7 @@ buffer is freed while a frame names it.
 | attach (bootstrap) | the first frame names no instance: `attach { schema identity }` -> `engine_descriptor { instance, process evidence, geometry, host budget }`; every stateful verb after it carries the exact instance |
 | queue full | the push returns false: the caller gets a typed `backpressure` at once; nothing is dropped or silently retried |
 | turn stream | tokens stream as frames naming the `TurnId`; exactly one terminal frame (`done`, `cancelled`, `refused { reason }`); its buffers are released only after it |
-| duplicate `turn_submit` (same `TurnId`) | idempotent: the existing ticket is answered, the turn never runs twice |
+| duplicate `act_submit` (same `TurnId`) | idempotent: the existing ticket is answered, the act never runs twice |
 | retry after a lost terminal frame | resubmits the same `TurnId`; the engine answers the recorded outcome |
 | cancel | `cancel { turn }` is acknowledged with the turn's terminal frame; cancelling a finished turn answers its outcome; a cancel never frees another turn's resources |
 | lost cancel acknowledgement | the caller re-sends the same cancel (idempotent) |
@@ -1802,61 +1801,68 @@ buffer is freed while a frame names it.
   `link.release(turn)`); `stream.rs`, `minds.rs`, `slots/discover.rs` and the learn lane stop building requests.
   A source-hygiene ratchet fails any engine path or field name outside it.
 
-#### 4.11.6 Learning rides the same contract
+#### 4.11.6 Her genome is her LoRA layers: trained in place, on the one path
 
-Joel, 2026-11-16: "Make sure it accommodates learning." Learning is part of the mind, in place on the loaded base,
-never a lane (ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md): the DREAM stage takes optimizer micro-steps on her
-**shadow** gene between decode steps under the governor's share, her **stable** genes keep serving, and the shadow
-is adopted by a pointer swap between two decode steps. The contract carries every part of that, with the same ids,
-validation, custody and owners as the rest of 4.11.
+Joel, 2026-11-16: "Make sure it accommodates learning." Then: "I and Lora layers genome. Training is remember in
+place. Lora layer(s) becomes trained with inference still capable. Not some separate path. Of course it's fast to
+switch on and off too. Like everything." And: "It's not a separate version of the persona. Same base model not a
+sep one."
+
+**The model.** She is one persona: the one loaded base model plus her genome, a set of LoRA layers. Learning never
+makes a separate version of her or a separate model. A layer is one resource:
+- **It serves and trains in the same tensors.** When it is trainable, optimizer steps update the very weights
+  her acts read, between decode steps, and she keeps acting on it the whole time. No shadow copy awaiting
+  adoption, no second model, no trainer, no learning lane.
+- **Learning is an act on the one path.** An act either generates (tokens out) or learns (labels in, a gradient
+  step on her trainable layers out). Both go through the same verb, the same scheduler, the same sequences and the
+  same layers; a turn outranks a learning act at the next decode boundary, so she is never dark.
+- **Every switch is fast.** A layer is on or off for an act by its scale in her set (nothing moves). A layer pages
+  between the GPU pool, RAM and flash through the same mover as a mind's KV (`buffer_ref`, `memory_mover`), in
+  milliseconds, and is streamed in ahead of the act that needs it, like her KV (4.11.3 `prefetch`).
+- **Exact accounting instead of a frozen copy.** A layer counts its committed steps (a quantity on the same layer,
+  never a new identity); every act's terminal frame names `(layer, step)` for each layer it ran on, so a reply is
+  attributed to the exact weights that made it, and a bad step is undone by switching the layer off (scale 0) or
+  paging back the bytes saved at an earlier step, instantly. This
+  replaces the shadow/stable two-adapter rule of ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md section 2.1 (to be
+  revised there to match).
 
 **Ids** (UUIDv7, 16 bytes, exact equality):
 
 | Id | Minted by | Names |
 |---|---|---|
-| `GeneId` | the core (the genome), when a gene is created | a gene across its whole life, on any node |
-| `GeneRevisionId` | the engine, at each adoption | one exact state of a gene's weights; a turn's receipt names the revisions it ran on, so a turn served mid-learning is never credited to a self that moved |
-| `LearnGrantId` | the core's governor | an authority to spend engine time on learning (today a string id) |
-| `ExampleId` | the core (the academy), per example | an example that is not a live turn (dreaming, coursework, a replayed history) |
+| `LayerId` | the core (the genome), when a layer is created | one LoRA layer of her genome, on any node |
+| `LearnGrantId` | the core's governor | an authority to spend engine time on learning acts |
+| `ExampleId` | the core (the academy) | an example that is not a live act (dreaming, coursework, a replayed history, a Hermes session) |
 
-**Frames:**
+**Frames** (the act frames of 4.11.3 gain a mode; no learning verb family):
 
 | Request | Reply | Replaces today's |
 |---|---|---|
-| `gene_attach { gene, revision, weights: buffer_ref }` / `gene_detach { gene }` | `gene_state { gene, stable revision, shadow revision, bytes }` | `/lora-adapters/load`, `/lora-adapters/unload` |
-| `shadow_open { gene }` | `gene_state` (a fresh shadow over her frozen stable stack) | `/lora-adapters/fresh` |
-| `turn_submit` (4.11.3) carries her gene set `{ gene, scale }[]` | `turn_done` names the `GeneRevisionId`s it ran on | `"lora":[{id,scale}]` |
-| `learn_submit { source: turn \| example, gene, grant, labels: buffer_ref }` | progress frames `learn_step { source, step, loss, ms }`, then one terminal `learn_outcome` (4.11.3) | `/learn` JSON and polling `/learn/events` |
-| `learn_measure { gene, rows }` | `learn_cost { workspace bytes, step us, spill bytes }` | `/learn/preflight` |
-| `learn_duty { grant, share, mode: trickle \| dream }` | `learn_duty_set` | `/learn/grants`, `/learn/residency*` (one authority frame) |
-| `gene_adopt { gene }` | `gene_state` with the new stable revision (swap between decode steps) or a typed refusal (gate not met) | the planned `/lora-adapters/{id}/promote` |
-| `gene_save { gene, revision, to: buffer_ref }` | terminal frame once the bytes are durable | `/lora-adapters/save` |
+| `act_submit { act (TurnId), mind, layers: { layer, scale, trainable }[], mode: generate \| learn, ... }`; for `learn`: `source: act \| example`, `labels: buffer_ref`, `grant` | `generate`: token frames; `learn`: `learn_step { act, step, loss, ms }` frames. Then one terminal frame naming `(layer, step)` for each layer it ran on (and, for `learn`, the steps it committed, `live_sequence_preserved`, typed refusal) | `/completion` + `"lora":[{id,scale}]`, `/learn`, polling `/learn/events` |
+| `layer_page { layer, step, to: gpu \| ram \| flash, bytes: buffer_ref }` | the layer's residency, in milliseconds | `/lora-adapters/load`, `/unload`, `/fresh`, `/save` |
+| `learn_duty { grant, share, mode: trickle \| dream }` | `learn_duty_set` | `/learn/grants`, `/learn/residency*` |
+| `learn_measure { layers, rows }` | `learn_cost { workspace bytes, step us, spill bytes }` (the engine's own allocator) | `/learn/preflight` |
 
-**What the contract guarantees for learning:**
-- **In place, never a lane:** no frame starts a trainer, a second model or a job. `learn_submit` from a live turn
-  learns on a side sequence (her live sequence is never touched; `learned_on`, `live_sequence_preserved`); from an
-  `ExampleId` it learns on the same loaded base from the academy's bytes (dreaming, coursework, a replayed
-  history, a Hermes driver's session).
-- **Never dark:** a turn always outranks a learning step; the engine yields at the next decode boundary, so a
-  directed turn waits at most one micro-step (the amygdala's interrupt is just a turn arriving). `learn_duty`
-  sets the share by her wakefulness: a trickle while she is awake, more while drowsy, `dream` while asleep.
+**What the contract guarantees:**
+- **In place, inference still capable:** a learning act and generating acts run on the same layers at once; a
+  generating act during learning sees the layer's current step and names it.
+- **Never dark:** a generating act outranks a learning act at the next decode boundary (the amygdala's interrupt is
+  an act arriving); `learn_duty` sets the share by her wakefulness: a trickle while awake, more while drowsy,
+  `dream` while asleep.
 - **One memory budget:** optimizer state and activations are charged to the same host budget as KV and
-  checkpoints (fork #138); when short they spill through the same pager as KV, slower, never refused for lack of
-  a lease; `learn_cost` is the engine's own allocator's measurement, never an estimate.
-- **Never serving moving weights:** steps write the shadow; turns read the stable; `gene_adopt` swaps them only
-  through the gate; every turn's receipt names the revisions it ran on.
-- **Retained across restart** (the learning acceptance test): `gene_save` writes the adopted revision's bytes
-  durably and `gene_attach` restores them by `GeneRevisionId`, so a reviewed correction survives a restart exactly.
-- **Owners:** in the engine, the gene registry owns adapters and their revisions, and the learn owner owns the
-  optimizer and its custody. In the core, `EngineLink` carries the learning verbs; the academy
-  (`continuum-academy`) is their caller through typed seams, never importing the mind's or the engine's internals.
-- **Deleted, not ported:** the fork's `/train`, `/train/cancel|measure|pause|resume` (the separate trainer lane
-  nothing calls), and every `/lora-adapters/*` and `/learn/*` JSON route above.
+  checkpoints (fork #138) and spill through the same pager when short, slower, never refused for want of a lease.
+- **Retained across restart** (the learning acceptance test): `layer_page { to: flash }` writes the layer's bytes
+  at a step durably, and paging them back restores exactly that `(layer, step)`.
+- **Owners:** in the engine, the layer registry owns her layers, their steps and residency, and the act
+  scheduler owns when a learning act runs. In the core, `EngineLink` carries `act_submit`, `layer_page` and
+  `learn_duty`; the academy (`continuum-academy`) is their caller through typed seams.
+- **Deleted, not ported:** `/train*` (the separate trainer nothing calls), every `/lora-adapters/*` and `/learn/*`
+  route, and the `learn_submit` / `shadow_open` verbs of this section's first draft.
 
-Slice 5 of 4.11.7 is the learning vertical: gene registry frames, `learn_submit` with progress, the duty
-frame, adopt and save, end to end, with the acceptance test as its gate (a reviewed correction applied on unseen
-tasks, retained after restart, against the same base without the gene) and the never-dark check (four residents
-keep turning, each directed turn delayed by at most one micro-step, while a dream runs).
+Slice 5 of 4.11.7 is the learning vertical: `act_submit` with `mode: learn`, the layer registry with revisions and
+paging, and `learn_duty`, end to end. Its gates: the learning acceptance test (a reviewed correction applied on
+unseen tasks, retained after restart, against the same base with the layer off) and the never-dark check (four
+residents keep acting, each generating act delayed by at most one learning step, while a dream runs).
 
 #### 4.11.7 Order: vertical replacements
 
@@ -1870,8 +1876,9 @@ replay, together. No new minds or learning behavior ships on a transitional JSON
    new behavior.
 3. **attach / describe**, end to end. Deletes `/props` parsing and `resident_minds` JSON.
 4. **Minds: prefetch, the turn receipt, the switch.** Deletes `/minds/prefetch`, `timings.mind`, the hex page.
-5. **Learning (4.11.6): genes, learn with progress, duty, adopt, save, pin release.** Deletes `/learn*`,
-   `/lora-adapters/*`, `/train*`, the `u64` pin, Codex's JSON learning patch (kept until then as evidence and tests).
+5. **Learning (4.11.6): `act_submit { mode: learn }`, the layer registry with revisions and paging, `learn_duty`,
+   pin release.** Deletes `/learn*`, `/lora-adapters/*`, `/train*`, the `u64` pin, Codex's JSON learning patch (kept
+   until then as evidence and tests).
 6. **Turn submit and streaming.** Deletes our use of `/completion` and `/slots`.
 7. **The ratchet.**
 
