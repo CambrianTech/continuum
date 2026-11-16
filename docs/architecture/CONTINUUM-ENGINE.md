@@ -1678,6 +1678,26 @@ String built around bytes, no token ids computed by the core.
   the first decode (template + tokenize of the whole context today; only new items after), act latency; a replay of
   captured acts through both seams must produce identical token ids and output bytes.
 
+#### 4.7.12 Streams of frames, bytes by reference, moved in parallel (2026-11-16)
+
+Joel: "Fast tokenless memory transfer and DMA must be encoded into a pattern or parent class, reused"; "Streaming not
+promises"; "Memory transfer is usually not a serial system though. Remember DMA and that we have 20 cores?" One
+pattern, fork `tools/server/server-frames.h`, validator `tests/test-server-frames.cpp`, to be mirrored in
+`continuum-base` for the core once proven:
+- `frame_ring<T>`: lock-free SPSC ring of trivially copyable frames (ids, references, counters), fixed capacity, full =
+  immediate backpressure, empty = atomic wait (the closed flag lives in the waited word). Fan-in from several
+  producers is one ring each plus a doorbell counter; no lock anywhere.
+- `buffer_ref`: bytes named (domain, pool, buffer, offset, length), never carried.
+- `memory_mover`: the one base for moving bytes. Lanes (CPU copy threads, GPU blit queues, disk readers) each complete
+  into their own ring; `pump()` starts what the engines have room for and returns, never waits; a move within one
+  physical domain is aliased (no copy); an unsupported pair is refused typed, never copied by the CPU behind the
+  caller's back. `parallel_copier` is the host backend: chunks across lanes, many transfers in flight, the last chunk
+  publishes completion.
+- *Measured (M5 Pro, 18 cores = 6P + 12E):* memcpy of 1 GiB: 61 GB/s on 1 thread, 116 on 8, 119 on 12, 109 on 18.
+  `parallel_copier`, 16 x 64 MiB: 1 lane 39.1 GB/s, 4 lanes 83.5, 8 lanes 98.0, 12 lanes 118.9. Lane count comes from
+  this curve's knee on each node at startup, never a constant. Next backends: the GPU blit lane (Metal blit encoder on
+  its own queue; CUDA async copy on the 5090) for checkpoints and pages, and the disk lane for paged KV.
+
 **No string, no serde on the hot paths: enforced, not advised.** In the engine's act path (the socket handler, the
 step loop, checkpoints, the pool) and the core's (`continuum-engine/src/ai/openai_adapter/`, `inference/`, the
 context codec), a `String`, `format!`, `serde_json` or `to_string` site is counted by source-hygiene and may only
