@@ -1667,6 +1667,25 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   owner), Fable (shedder).
 - **Then O8 (reconfigure to the geometry P5 settles on), O10 (shared prefix), O11 measured.**
 
+- **P4a, genes change in place through their one owner (prerequisite of P4; Codex's Windows cutover
+  blocker, airc 00:29Z).** `llama_server/genome.rs::converge_genome` is a second, untyped path for adapter
+  catalog changes: it unloads by bare id with no engine identity (`lora_post("unload", {id})`, the fork
+  refuses: "engine incarnation required", the 03:27 adoption failure that relaunched over retained KV)
+  and loads with no residency (the fork requires `claim_weight_residency`). The typed owner already
+  exists: `learn_residency` (`plan_load`, `register_residency`, `unseat` bound to the loading
+  incarnation) under the genome's custody, and `GeneResidency` is the node's one owner of where loaded
+  genes live (a `DeviceTenant` of the lanes' pool, paging device and host). Catalog membership is the tier
+  above that paging, so it moves there: a load is plan, lease from the one authority into custody,
+  register the residency, load inside it; an unload is `unseat` with the engine identity captured BEFORE
+  the catalog read and carried unchanged, so a replaced engine (or a reused id) refuses instead of
+  unloading the wrong engine's adapter. The engine crate sits below the genome, so its reconcile asks
+  through a trait it declares (`GenomeCatalog`: converge to a target set, answering Adopted, Busy,
+  Refused{typed reason}) and the genome implements it; a refusal surfaces Degraded, never a relaunch
+  (Codex's prerequisite). `converge_genome`, `lora_post` and `LoraPost` are deleted. Gate: a native
+  replay of unload+load on an adopted engine preserves every resident's KV, and an engine replaced
+  between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
+  the Degraded rail).
+
 **Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
 live act time matches what the replay predicted for the chosen policy on the same recorded load (the
 simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
