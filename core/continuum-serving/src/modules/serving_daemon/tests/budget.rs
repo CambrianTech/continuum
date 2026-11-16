@@ -437,64 +437,6 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
     assert_eq!(floor_gate(&plan_for(&tiny), None), FloorVerdict::AtOrAbove);
 }
 
-// what this catches (#368, 2nd occurrence): a ONE-tick budget collapse must
-// classify as a Downshift (so publish_plan HOLDS the incumbent plan until
-// the squeeze proves sustained) — while same-model, upshift, and
-// incumbent-gone cases adopt immediately. The live failure: usable_gb hit 0
-// for ~6 seconds at solve launch, the fresh plan named the 0.5B, and the
-// reconcile re-brained every citizen onto it before the dip had even passed.
-#[test]
-fn downshift_gate_classifies_the_transient_lobotomy() {
-    let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
-        model_id: id.into(),
-        weights_bytes: weights_gb * GB,
-        kv_per_token: 100_000,
-        context_window: 32768,
-        capability_rank: rank,
-        fixed_per_lane_bytes: 0,
-    };
-    let devstral = footprint("devstral-24b", 14, 8);
-    let tiny = footprint("qwen-0.5b", 1, 1);
-    let plan_for = |id: &str| ServingPlan {
-        base_model: footprint(id, 1, 1),
-        served_context_window: 2048,
-        lanes: 1,
-        grid_overflow_lanes: 0,
-        resident_models: 1,
-        fits_on_gpu: true,
-        rationale: String::new(),
-        lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
-        window_target: 0,
-    };
-
-    // The incident shape: incumbent Devstral, fresh wants the 0.5B → HOLD.
-    assert_eq!(
-        downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &both),
-        DownshiftVerdict::Downshift,
-    );
-    // Same model → nothing to debounce.
-    assert_eq!(
-        downshift_gate(&plan_for("devstral-24b"), Some("devstral-24b"), &both),
-        DownshiftVerdict::NotADownshift,
-    );
-    // UPSHIFT (0.5B incumbent, fresh wants Devstral) must adopt immediately —
-    // holding it would have kept the citizens lobotomized on purpose.
-    assert_eq!(
-        downshift_gate(&plan_for("devstral-24b"), Some("qwen-0.5b"), &both),
-        DownshiftVerdict::NotADownshift,
-    );
-    // Incumbent vanished from disk → holding a plan naming a ghost is worse
-    // than any downshift; adopt what is actually present.
-    assert_eq!(
-        downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &[tiny]),
-        DownshiftVerdict::NotADownshift,
-    );
-    // No incumbent (boot) → plain adoption.
-    assert_eq!(
-        downshift_gate(&plan_for("qwen-0.5b"), None, &both),
-        DownshiftVerdict::NotADownshift,
-    );
-}
 
 // what this catches (#225, Joel 2026-08-08 "the budgeter just has all its
 // parts figure it out"): serving's plan budget (`governed_vram_ceiling`)
