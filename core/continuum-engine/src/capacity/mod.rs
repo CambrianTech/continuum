@@ -64,6 +64,7 @@ pub mod system_profile;
 pub mod profile_fixtures;
 /// The ONE-ACT dyno: recorded 2026-11-04 inputs driving the real policy code (`dyno.rs`).
 #[cfg(any(test, feature = "test-fixtures"))]
+pub mod decode_width;
 pub mod dyno;
 pub mod trace_tail;
 pub mod vq_decode;

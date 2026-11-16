@@ -194,11 +194,15 @@ fn the_measured_decode_width_beats_every_slot_decoding_on_the_recorded_hour() {
         (median(acts), p90, oldest)
     };
     let fork = run(&mut Fork::default());
-    let measured = run(&mut MeasuredConcurrency::new(&costs));
-    let shown = format!("fork (median, p90, oldest waiter) = {fork:.0?} s; measured width = {measured:.0?} s");
-    assert!(measured.0 < fork.0, "the median act is not shorter: {shown}");
-    assert!(measured.1 < fork.1, "the p90 act is not shorter: {shown}");
-    assert!(measured.2 <= fork.2, "a resident waits longer for first service: {shown}");
+    // and what runs live: a published width (remaining work unknown), the engine choosing by wait
+    let mut published = PublishedWidth::new(&costs);
+    for (name, policy) in [("measured width", &mut MeasuredConcurrency::new(&costs) as &mut dyn BatchScheduler), ("published width", &mut published)] {
+        let measured = run(policy);
+        let shown = format!("fork (median, p90, oldest waiter) = {fork:.0?} s; {name} = {measured:.0?} s");
+        assert!(measured.0 < fork.0, "the median act is not shorter: {shown}");
+        assert!(measured.1 < fork.1, "the p90 act is not shorter: {shown}");
+        assert!(measured.2 <= fork.2, "a resident waits longer for first service: {shown}");
+    }
 }
 
 // what this catches: a fork fill that drifts from the source: a slot stops where its remaining
