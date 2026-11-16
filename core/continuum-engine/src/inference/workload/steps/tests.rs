@@ -24,6 +24,10 @@ async fn engine(frames: Vec<String>) -> (String, tokio::task::JoinHandle<std::io
     (root, tokio::spawn(async move { axum::serve(listener, app).await }))
 }
 
+fn source(root: &str) -> StepSource<'_> {
+    StepSource { root, engine: ENGINE, capacity: NonZeroUsize::new(64).expect("test: a literal above zero") } // test: literal
+}
+
 fn ring() -> Ring<WorkloadEvent> {
     Ring::new(NonZeroUsize::new(64).expect("test: a literal above zero")) // test: literal
 }
@@ -41,7 +45,7 @@ async fn a_step_stream_lands_as_typed_events_in_the_order_and_spacing_they_happe
     ];
     let (root, server) = engine(frames).await;
     let sink = ring();
-    let end = record_steps(&reqwest::Client::new(), &root, ENGINE, &sink).await;
+    let end = record_steps(&reqwest::Client::new(), source(&root), &sink).await;
     assert!(matches!(end, StepStreamEnd::Closed), "{end:?}");
     let interval = sink.drain();
     assert_eq!(interval.missing, Missing::default());
@@ -65,7 +69,7 @@ async fn engine_side_loss_and_a_sequence_gap_void_the_interval() {
     ];
     let (root, server) = engine(frames).await;
     let sink = ring();
-    record_steps(&reqwest::Client::new(), &root, ENGINE, &sink).await;
+    record_steps(&reqwest::Client::new(), source(&root), &sink).await;
     let interval = sink.drain();
     assert_eq!(interval.missing.dropped, 3 + 2, "three the engine named, two skipped sequence numbers");
     assert!(interval.complete().is_err());
@@ -76,7 +80,7 @@ async fn engine_side_loss_and_a_sequence_gap_void_the_interval() {
 #[tokio::test]
 async fn a_stream_without_its_origin_ends_unread() {
     let (root, server) = engine(vec![r#"{"kind":"began","seq":0,"at_us":10,"step":1,"chosen":[]}"#.to_string()]).await;
-    let end = record_steps(&reqwest::Client::new(), &root, ENGINE, &ring()).await;
+    let end = record_steps(&reqwest::Client::new(), source(&root), &ring()).await;
     assert!(matches!(end, StepStreamEnd::NoOrigin), "{end:?}");
     server.abort();
 }

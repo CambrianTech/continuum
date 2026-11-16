@@ -56,7 +56,7 @@ struct WireWork {
     depth: u32,
     prefilled: u32,
     decoded: u32,
-    accepted_draft: u32,
+    accepted_draft: Option<u32>,
 }
 
 /// One record of the fork's step stream (the engine process boundary).
@@ -139,10 +139,20 @@ impl Reader<'_> {
     }
 }
 
-/// Record `engine`'s step stream at `root` into `sink` until it ends.
-pub async fn record_steps(client: &reqwest::Client, root: &str, engine: EngineIncarnation, sink: &dyn CaptureSink<WorkloadEvent>) -> StepStreamEnd {
+/// One engine's step stream: where it serves, which incarnation it is, and the bound the engine's
+/// ring keeps for this subscriber (the core's memory to spend on records not yet read).
+#[derive(Debug, Clone, Copy)]
+pub struct StepSource<'a> {
+    pub root: &'a str,
+    pub engine: EngineIncarnation,
+    pub capacity: std::num::NonZeroUsize,
+}
+
+/// Record `source`'s step stream into `sink` until it ends.
+pub async fn record_steps(client: &reqwest::Client, source: StepSource<'_>, sink: &dyn CaptureSink<WorkloadEvent>) -> StepStreamEnd {
     use futures::StreamExt;
-    let response = match client.get(format!("{root}/engine/steps")).send().await {
+    let StepSource { root, engine, capacity } = source;
+    let response = match client.get(format!("{root}/engine/steps")).query(&[("capacity", capacity.get())]).send().await {
         Ok(response) if response.status().is_success() => response,
         Ok(response) => return StepStreamEnd::Unreachable(LlamaServerError::Unreachable(format!("/engine/steps status {}", response.status()))),
         Err(error) => return StepStreamEnd::Unreachable(LlamaServerError::Unreachable(error.to_string())),
