@@ -1348,6 +1348,72 @@ tiers and the rest) converge on it and are deleted; the gate goes to zero.
 
 Items 0-5 are plan rows CX-2, CX-3, CX-4, SV-CK, SV-LEDGER and SV-S7 (sections 8.2 and 8.3).
 
+#### 4.7.6 The engine's host memory is one streaming pool, never two heaps (2026-11-16, for review)
+
+Joel, 2026-11-16: "you need to focus on the graphics engine level design". A game engine never lets a resource
+class grow until the OS swaps: textures stream inside one pool of a fixed size, a request that would overflow it
+evicts the least valuable page first, the pool reports what it holds every frame, and exceeding the budget is a bug a
+validator catches, never a cost the frame pays. Section 2.3 already maps this (virtual texturing), and ONE-BUDGET
+slice 3b already designs the solver that values every holder. What was never built is the pool itself in the engine,
+so the running engine still has two independent heaps.
+
+**What happened** (the M5, 2026-11-16, canary 73d999387 then 33b21b8cf, engine pid 64859 up since 11-15):
+
+| When (Z) | Engine compressed | Swap used | Decode | A resident's act |
+|---|---|---|---|---|
+| 08:49 | 9.2 GB (RSS 33 GB) | 5.9 GB | 2.6 tok/s, expected 56 | Atlas: 1,508 s, 998 s of it decoding 2,593 tokens |
+| 12:56 | 12 GB | 8.7 of 9.2 GB | 1.7 tok/s | median 811 s, p90 1,362 s over the hour |
+
+The residents' own path was healthy at the same time (0 lane-starved, 0 dropped, prefix reuse 72-84%): the loss was
+the decode step waiting on decompression and swap. A stop and fresh engine at 13:00:18Z (`continuum stop --engine`,
+`continuum start`) freed it; the KV each mind held was the price (4.9 is the stop that keeps it).
+
+**Why: two holders, sized apart, each a pool that never evicts against the other.** The engine relaunched at 13:01Z
+runs `--cache-ram 9494` (the prompt cache, 9.5 GB of host RAM) and `--ctx-checkpoints 32 --parallel 5` (up to 160
+checkpoints at the ~95 MB each of 4.7.1, ~15 GB). Each is sized by its own derivation (`host_prompt_cache_mib`, the
+checkpoint count), neither knows the other, and nothing holds their sum: with the weights (20.7 GB), draft (3.15 GB),
+projector (0.90 GB), KV and graph, the engine may claim ~53 GB of a 64 GB machine that also runs the core and the
+user's own programs. The core also cannot see what it got: its launch probe says "applied limit and serialized-state
+telemetry are not exposed by current engine API" (`serving.prompt_cache.launch`, 13:01:01Z).
+
+**The design: one pool, one budget, eviction by value at the allocation, reported every request.**
+1. *One host pool in the fork.* Prompt-cache entries and checkpoints (and, when 4.1a's pager lands, RAM pages) are
+   residents of ONE host pool with ONE byte budget. There is no per-holder size and no count: `--cache-ram` and
+   `--ctx-checkpoints` as separate limits are deleted (slice 3b already lists their derivations for deletion).
+2. *An allocation never exceeds the budget.* Before a resident is admitted (a checkpoint taken, a cache entry
+   stored), the pool frees the lowest-valued residents until it fits; if it cannot fit even alone, it is not taken
+   and the miss is reported (typed, counted), never an overflow. This happens on the engine's thread at the
+   allocation, the way a texture streamer evicts before it uploads, never by a later sweep.
+3. *Value is the restore it buys.* A checkpoint's value is the prefill it saves (the tokens from its position to its
+   sequence's end, at the measured prefill rate) times the chance its sequence resumes from it; a placed checkpoint at
+   a mind's stable end (4.7.3) is worth her every next act, a blind step checkpoint behind it is worth almost nothing
+   once she has a later one. A cache entry's value is its measured restore hits. Until the core's solver supplies values
+   (slice 3b), the fork orders by these two measured terms itself, so the rule exists before the solver does.
+4. *The budget is the core's, and it moves live.* The authority's device tier grants serving's host pool its bytes
+   (the machine's measured memory less every other claim, the user's own programs included, ONE-BUDGET acceptance);
+   the core sets it over the engine's control seam and may raise or lower it at any time without a relaunch (S2's
+   `reconfigure`, 4.5). Lowering it evicts down to it before the call returns.
+5. *The pool says what it holds.* `/props` (and `/slots` per sequence) reports the budget as applied, the bytes in use
+   by class (cache, checkpoint, page), the count per class, and the evictions and refused admissions since start. The
+   core reads the applied budget back and refuses to treat an unreported limit as applied.
+6. *The invariant is checked, not hoped.* The engine's footprint stays at or under its fixed holders plus the pool's
+   budget, at every sample; swap that grows while the engine's footprint grows is a defect with a probe
+   (`serving.host_pool.over_budget`), never a cost. The simulator scenario (7.0) replays a day of the four residents'
+   captured requests against a budget a quarter of their unbounded need and asserts the footprint stays flat, nothing
+   is refused that fit, and decode stays at its measured par.
+
+**What this makes of the pieces already in flight.** Placed checkpoints (fork #121) stop making the worthless ones;
+the pool makes even a wrong placement unable to swap the machine. The safe stop (4.9, #6042) keeps a mind's KV across a
+restart; the pool removes the reason a restart was the only relief. Slice 3b's solver later supplies the values and
+the budget; the pool is the primitive it drives, the way a renderer drives a streaming pool it does not reimplement.
+
+**Order.** (1) The fork's pool with one budget, eviction by the two measured values, and its report (Fable), proven by a
+native test that fills a small budget with checkpoints and cache entries and asserts it never exceeds it and keeps the
+highest-valued. (2) The core sets the budget from the authority and verifies the applied figure, deleting
+`host_prompt_cache_mib`'s sizing and the checkpoint-count derivation (Fable, review Codex). (3) The day-long simulator
+scenario above as the gate, then the live read: an engine up 24 h on the M5 with its footprint flat, swap not growing,
+and decode at par.
+
 ### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
 
 Joel, 2026-11-11: "These refusals are supposed to be impossible"; "either expand for it or collapse
