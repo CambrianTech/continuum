@@ -1557,6 +1557,12 @@ engine): decode 299 steps, build 198 ms, gpu 2,692 ms, gap 276 ms, **GPU idle 15
 steps spent 69 ms building against 9 ms of GPU. The 35B live number comes from the same counters once this engine is
 deployed (with the pool, 4.7.6).
 
+**The target is 90% GPU busy while work is pending**, and three things stand between it and today, in measured order:
+(1) the engine is starved of work: minds wait at core-side lanes while engine slots are free (4.7.10), so the GPU
+decodes one or two streams instead of every mind's; (2) the CPU runs in series between steps (4.7.7: ~20% building
+inputs, ~14% sampling, ~8% checkpoint copies on the M5 sample), removed by the frame pipeline (4.7.8); (3) host memory
+pressure (swap, compression) stalls everything, removed by the pool (4.7.6).
+
 **Gates, each read from `/props.step_budget` and the core's per-act receipts, before and after every change:**
 
 | Problem | Number | Gate |
@@ -1566,7 +1572,7 @@ deployed (with the pool, 4.7.6).
 | Prefill stalling decode | `with_prefill.*` against `decode.*`; per-stream tok/s while a long prefill runs | prefill on its own queue (4.7.8) |
 | Host memory and swap | `/props.host_pool`, the node's swap in use | swap flat under load (4.7.6) |
 | Minds queued in front of the engine | the core's lane-wait per act ("lane-starved" in the health line) | zero lane wait while engine slots are free (4.7.10) |
-| The whole loop | `decode.gpu_idle_share`; decode tok/s per stream against the `llama-bench` ceiling | idle share toward the GPU's own inter-step time; tok/s toward the measured ceiling |
+| The whole loop | `decode.gpu_idle_share`; decode tok/s per stream against the `llama-bench` ceiling | **the GPU busy at least 90% of the time work is pending** (Joel, 2026-11-16: "It's insane that it's not 90% utilization"): `gpu_idle_share` at most 0.10 on every node, and aggregate tok/s rising with the minds served, never flat while minds wait |
 
 **The serving-down window** (one short window, Joel's rule: build or bench with serving down, never beside it):
 `llama-bench` for the per-stream ceiling at the residents' depths, then the backend-sampling A/B on the 35B with
