@@ -1804,6 +1804,21 @@ bound that aborts an act, drops its stream, refuses it or relaunches the engine 
 bound that remains fires only on the absence of progress for a measured interval, and what it does is typed and
 reported, never a silent kill. The audit of every such bound on the act path is recorded below as it lands.
 
+*The bounds that can end a mind's work, audited on canary 15664c6ad (2026-11-16; "verified" = read by me):*
+
+| # | Bound | What it does | Progress-aware? | Status / owner |
+|---|---|---|---|---|
+| 1 | Act deadline `until_act_stalls` (`tick_deadline.rs`), `ACT_EXTENSIONS = 2` | drops the step's generation (no retry, its prefill cancelled by the engine) | partly: extends only on a pinned local slot advancing, at most twice; remote lanes end at the first deadline | **verified; ceiling removed in #6084** (Fable). Remote lanes need the engine's per-generation progress (row 3) |
+| 2 | Serving health `HEALTH_FAILS_TO_RELAUNCH = 2` (`serving_daemon/health.rs`) | kills and relaunches the engine: every resident's act ends | indirectly; counts failures produced by the timers in rows 3-4 | Codex: relaunch only on the frozen-`/slots` rule (row 10's model), strikes only when the lane delivered nothing to anyone |
+| 3 | Stream idle `STREAM_IDLE_TIMEOUT_SECS = 90` (`sse_stream.rs`), "busy, not dead" only on local lanes, capped at 75 min | drops the stream, counts a relaunch strike, re-prefills | mostly (resets on deltas and prefill progress) | Codex: busy-not-dead for remote lanes from peer progress frames; no ceiling while frames arrive |
+| 4 | Remote `REMOTE_INFERENCE_DEADLINE` (`airc_remote/transport.rs`) | times out and cancels on the serving peer | idle part yes; the end-to-end airc deadline appears not (unverified) | Codex: idle-based deadline reset by progress frames |
+| 6 | Header wait (`lane_send.rs`), remote is a pure `timeout` | abandons as "hung prefill" | local yes (one quiet checkpoint), remote no | Codex |
+| 8 | `TURN_READINESS_PATIENCE` 240 s (`engine_generation.rs`) | refuses held turns during a slow relaunch | no | Codex: wait on the relaunch's own progress |
+| 11 | `TOOL_BATCH_CEILING` 30 min (`act_observe/apply.rs`) | a long tool batch becomes an error she perceives | no | Fable: bound by silence on the tool's output, not total time |
+
+Rows 5, 7, 9, 10, 12-15 are already progress-gated, off the generation path, or unused (`t_max_predict_ms` is never
+set; the engine itself has no wall-clock kill, but every client-side drop cancels the request in the engine).
+
 **The first audit, ranked (2026-11-16; canary 15664c6ad and fork `fable/host-pool`; "verified" = read and measured by
 me, otherwise read by the audit agent and to be verified before it is fixed):**
 
