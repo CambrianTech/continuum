@@ -1524,6 +1524,73 @@ stall, 9-12 tok/s per stream while a 134k-token prefill runs).
 encoders for sampling; the per-step arena; control as step commands (`POST /engine/host-pool` lands this way, so the
 core half needs no engine lock); sort keys for the cohort; then prefill on its own queue.
 
+#### 4.7.9 Proving it: every stall is a number the engine reports (2026-11-16)
+
+Joel, 2026-11-16: "Put it in the design document and make sure we measure and prove we aren't having these same
+problems." A one-off `sample` is not proof; a stall must be a counter that is always on, read the same way on every
+node, so a regression shows the step it happens and every change in 4.7.7-4.7.8 carries its own before/after.
+
+**What the source showed** (fork #121, read 2026-11-16):
+- `llama_decode` does not wait for the GPU. It submits (`ggml_backend_sched_graph_compute_async`,
+  src/llama-context.cpp) and starts the logits copy back (`ggml_backend_tensor_get_async`); the wait is
+  `llama_synchronize`, which the server calls right after decode for any batch with outputs
+  (tools/server/server-context.cpp, the `yield_to_queue` lambda) and which `llama_get_logits_ith` would otherwise do.
+  So the GPU's idle time per step is exactly: the CPU building and submitting the graph, plus everything between
+  the sync and the next submit (sampling, slot bookkeeping, checkpoints, the next batch).
+- GPU sampling exists in the fork (`--backend-sampling`, `llama_set_sampler`) and covers every sampler the core
+  requests (temperature, the penalties, top-k/p, min-p, dist, logit bias). Only a contiguous PREFIX of a chain runs on
+  the GPU (`llama_sampler_chain_backend_init`); grammar and DRY have no GPU path, and a disabled sampler becomes
+  `empty`, which does, so the default chain qualifies. It is off for the target model (on for drafts). A first A/B on
+  the 0.8B validator with the live engine sharing the GPU was noise (77/55 tok/s CPU vs 66/50 GPU, drifting with the
+  shared load): **not adopted**; it is measured in the serving-down window below, never switched on by inference.
+
+**The instrument** (fork `fable/host-pool` 6651dcb65, `tools/server/server-step-budget.h`, validator
+`tests/test-server-step-budget.cpp`). Three timestamps per step on the decode thread: decode called, decode returned
+(submitted), sync returned. `build` = CPU while the GPU waits; `gpu` = submitted to synced; `gap` = synced to the next
+submit while work is pending; prefill chunks without outputs are `unsynced` (neither idle nor busy is proven); an
+engine without work is not stalling. Decode-only steps and steps carrying prompt tokens are reported apart.
+Cumulative relaxed atomics, read lock-free in `/props.step_budget`; a reader differences two reads into a window, so
+the engine holds no window size or threshold. It replaces upstream's compile-time `DEBUG_TIMINGS` averages (deleted).
+
+**First receipt** (qwen35-0.8b on this build, M5, two concurrent streams of 300 tokens, the GPU shared with the live
+engine): decode 299 steps, build 198 ms, gpu 2,692 ms, gap 276 ms, **GPU idle 15.0%**; the two prefill-carrying
+steps spent 69 ms building against 9 ms of GPU. The 35B live number comes from the same counters once this engine is
+deployed (with the pool, 4.7.6).
+
+**Gates, each read from `/props.step_budget` and the core's per-act receipts, before and after every change:**
+
+| Problem | Number | Gate |
+|---|---|---|
+| CPU between steps (sampling, bookkeeping) | `decode.gap_us / steps` | falls with sampling encoders (4.7.8) and, if the window proves it, GPU sampling |
+| CPU building inputs while the GPU waits | `decode.build_us / steps` | falls with N+1 recorded during N (4.7.8 frame) |
+| Prefill stalling decode | `with_prefill.*` against `decode.*`; per-stream tok/s while a long prefill runs | prefill on its own queue (4.7.8) |
+| Host memory and swap | `/props.host_pool`, the node's swap in use | swap flat under load (4.7.6) |
+| Minds queued in front of the engine | the core's lane-wait per act ("lane-starved" in the health line) | zero lane wait while engine slots are free (4.7.10) |
+| The whole loop | `decode.gpu_idle_share`; decode tok/s per stream against the `llama-bench` ceiling | idle share toward the GPU's own inter-step time; tok/s toward the measured ceiling |
+
+**The serving-down window** (one short window, Joel's rule: build or bench with serving down, never beside it):
+`llama-bench` for the per-stream ceiling at the residents' depths, then the backend-sampling A/B on the 35B with
+nothing else on the GPU. Both results land here with build SHA and time.
+
+#### 4.7.10 No semaphore where nothing is scarce (2026-11-16, audit in progress)
+
+Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sense." The engine batches continuously
+across its slots and assigns them itself; a core-side permit that bounds the same thing only queues minds in front of
+an idle engine. The health line shows exactly that: residents "lane-starved" while the GPU has room. Non-test
+semaphore sites on the core's inference side (grep, 2026-11-16): `resource_admission/lanes.rs` (20),
+`kernel/runtime/per_key_gate.rs` (12), `kernel/resources/throughput_lease.rs` (10), `kernel/resources/governor.rs`
+(7), `slots/mind_gate.rs`, `prefill_throttle.rs`, `lane_demand.rs` (5 each), `turn_admission.rs`,
+`resource_admission/serving_lane_permit.rs` (3 each), `resource_admission/gate.rs`, `slots/kv_slot_pool.rs`,
+`slots/citizen_slots.rs`, `openai_adapter/{runtime,provider}.rs`.
+
+**The rule.** A gate exists only where something is scarce AND nothing downstream already bounds it: memory measured
+from the engine (admission against `/props` and the host pool), never a count the engine already enforces
+(`--parallel` slots, its own batching). Every surviving gate is a queue with a signal (a waiter wakes when the
+resource frees), never a permit held across a generation, never a sleep-and-retry. The audit traces one act's path
+from cognition to the engine request and lists every gate on it (file:line, what it bounds, where its count comes
+from, how long it is held, whether the engine already bounds it); the redundant ones are deleted, one per change, each
+with the lane-wait and tok/s before and after.
+
 ### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
 
 Joel, 2026-11-11: "These refusals are supposed to be impossible"; "either expand for it or collapse
