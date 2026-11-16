@@ -53,7 +53,7 @@ pub use mind_gate::her_acts_done;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub use mind_gate::{begin_act_for_test, ActForTest};
 pub(crate) mod grant_handoff;
-pub use grant_handoff::reclaim_grant;
+pub use grant_handoff::{reclaim_grant, NotReclaimable, ReclaimBusy, ReclaimError};
 mod learn_slot;
 pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;

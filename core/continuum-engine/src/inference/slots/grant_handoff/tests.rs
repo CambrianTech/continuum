@@ -6,6 +6,68 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Mutex;
 
+fn lease_at(root: &str, key: PageKey) -> GrantLease {
+    let mut lease = GrantHandoff::for_test(key.persona()).lease();
+    lease.engine = Some(crate::inference::engine_residency::EngineIncarnation {
+        pid: 7, started_s: 123,
+        port: reqwest::Url::parse(root).expect("fixture URL").port().expect("fixture port"),
+    });
+    lease
+}
+
+#[tokio::test]
+async fn dispatch_skips_an_active_holder_without_waiting_or_submitting_io() {
+    let (root, engine, pool, key, custody, server) = fixture(false).await;
+    drop(custody);
+    pool.mark_incarnation((7, 123));
+    let act = super::super::MindTurn::begin(key).await.expect("active resident");
+    let client = reqwest::Client::new();
+    // Poll once, without a timer: the busy answer must not depend on the act ending.
+    use futures::FutureExt;
+    let result = prepare(&client, &root, key.persona(), lease_at(&root, key))
+        .now_or_never().expect("active holder never queues reclamation");
+    assert!(matches!(result, Err(ReclaimError::Busy(ReclaimBusy::Mind))));
+    assert!(engine.actions.lock().expect("actions").is_empty());
+    assert_eq!(pool.holders.lock().get(&0), Some(&key));
+
+    // The next eligible holder can be reclaimed while the first remains active.
+    let (other_root, other_engine, other_pool, other_key, other_custody, other_server) = fixture(false).await;
+    drop(other_custody);
+    other_pool.mark_incarnation((7, 123));
+    let (mut custody, pool, slot, key) = prepare(&client, &other_root, other_key.persona(), lease_at(&other_root, other_key))
+        .await.expect("idle holder admitted");
+    custody.ticket = Some(GrantHandoff::for_test(other_key.persona()));
+    let proof = reclaim(&client, &other_root, pool, slot, key, custody).await.expect("idle holder reclaimed");
+    assert_eq!(proof.into_ticket().persona(), other_key.persona());
+    assert_eq!(*other_engine.actions.lock().expect("actions"), ["save", "erase"]);
+    assert!(engine.actions.lock().expect("actions").is_empty());
+    drop(act);
+    server.abort();
+    other_server.abort();
+}
+
+#[tokio::test]
+async fn dispatch_skips_a_busy_slot_and_preserves_the_engine_fence() {
+    let (root, engine, pool, key, custody, server) = fixture(false).await;
+    drop(custody);
+    pool.mark_incarnation((7, 123));
+    let occupied = pool.acquire_slot(0).await.expect("slot occupied");
+    let client = reqwest::Client::new();
+    let result = prepare(&client, &root, key.persona(), lease_at(&root, key)).await;
+    assert!(matches!(result, Err(ReclaimError::Busy(ReclaimBusy::Slot))));
+    assert!(super::super::MindTurn::try_begin(key).is_some(), "failed preparation released mind custody");
+    assert!(engine.actions.lock().expect("actions").is_empty());
+    drop(occupied);
+    let mut stale_lease = lease_at(&root, key);
+    stale_lease.engine = Some(crate::inference::engine_residency::EngineIncarnation {
+        pid: 6, started_s: 122, port: reqwest::Url::parse(&root).expect("fixture URL").port().expect("fixture port"),
+    });
+    let result = prepare(&client, &root, key.persona(), stale_lease).await;
+    assert!(matches!(result, Err(ReclaimError::NotReclaimable(NotReclaimable::ChangedEngine))));
+    assert!(engine.actions.lock().expect("actions").is_empty(), "replacement engine receives no page IO");
+    server.abort();
+}
+
 #[derive(Default)]
 pub(super) struct Engine {
     actions: Mutex<Vec<String>>,
@@ -50,7 +112,7 @@ pub(super) async fn fixture(reject_save: bool) -> (String, Arc<Engine>, Arc<KvSl
     let gate = Box::leak(Box::new(crate::runtime::admission_gate::AdmissionGate::new()));
     let custody = Custody {
         endpoint: directory().endpoint(&root).admit().await.expect("admit"),
-        _mind: super::super::MindTurn::reclaim(persona).await,
+        _mind: super::super::MindTurn::try_reclaim(persona).expect("idle fixture"),
         _permit: pool.acquire_slot(0).await.expect("permit"), _pin: pool.pin(&key),
         _page_io: super::super::admit_page_io(gate).expect("page IO"),
         ticket: Some(GrantHandoff::for_test(persona)), pending: false,
