@@ -1463,6 +1463,40 @@ the M5 with its process footprint flat, swap not growing, and decode at par.
 acts, against 1.7 before; five minutes after launch it already held 7.6 GB compressed as the minds re-prefilled cold.
 A restart buys hours, not the fix.
 
+#### 4.7.7 The decode thread only submits; bytes move by DMA (2026-11-16, for review)
+
+Joel, 2026-11-16: "We should target 100 or more tok/sec ... Every wait considered suspect. Like we are building
+unreal engine. Consider anything the cpu is doing and whether it can be avoided. Anything contesting"; "That you
+have contention means you're not coding correctly. DMA too." The M5 Pro has 18 CPU cores (6 performance, 12
+efficiency), a 20-core GPU and 64 GB of unified memory. Contention on it is a defect of the code, never of the
+machine.
+
+**Measured** (the live engine pid 97364, `sample` for 8 s at 13:2xZ, three slots processing): the decode thread
+(`server_context_impl::update_slots`) was busy 4,304 samples. About 55% was the GPU working (`ggml_metal_synchronize`
+inside `llama_decode`); the rest was CPU work in series while the GPU waited: building and splitting the graph and the
+attention mask (`set_input_kq_mask_impl`, `ggml_backend_sched_split_graph`, `ggml_gallocr_alloc_graph`) about 20%,
+sampling (`common_sampler_sample`: the penalties pass and a partial sort of the 150k-token vocabulary, per token, per
+sequence) about 14%, `create_checkpoint` serializing state about 8%, and `seq_rm`, batch setup and log formatting
+(`vfprintf` on the hot path). The ggml CPU thread pool spent 3,257 samples spin-polling (`--poll` defaults to 50) for
+work it almost never gets, burning the power budget the CPU and GPU share; its only real op was `get_rows`.
+**The GPU idles for roughly 40-45% of the decode loop.**
+
+**The rule, for every engine-side concern** (each one an `engine_module`, server-module.h, never a hand-built thread):
+1. *The decode thread only submits.* It hands the GPU step N; step N+1's inputs (batch, mask, graph) are built while
+   step N runs, the way a render thread records the next frame during the current one.
+2. *CPU work fans out and stays off the critical path.* Sampling runs per sequence on its own worker module, or as a
+   GPU top-k so only k candidates return; tokenizing, templating and JSON never run on the decode thread; logging is
+   off the hot path; the CPU pool sleeps instead of spinning (`--poll 0`, threads sized to the CPU work that remains).
+3. *Bytes move by DMA, never by CPU `memmove`.* On unified memory the KV already lives where both sides see it. A
+   checkpoint or a cache entry is a GPU blit into a pool-owned buffer, enqueued on the command stream and overlapped
+   with compute, committed to the host pool (4.7.6) when it completes; where nothing has to move, the pool holds a
+   reference-counted handle to the pages instead of a copy. The CPU decides what moves; it never moves it.
+
+**Gate.** The GPU-idle share of the decode loop, sampled the same way, falls from ~45% toward the time the GPU needs
+between steps, and decode tok/s per stream rises with it, measured before and after each item on the same node, one
+item per change. Each item lands with its own before/after numbers; the per-stream ceiling for this model on this chip
+is measured first with `llama-bench` at the residents' depths, so "at par" is a measured number, not an assumption.
+
 ### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
 
 Joel, 2026-11-11: "These refusals are supposed to be impossible"; "either expand for it or collapse
