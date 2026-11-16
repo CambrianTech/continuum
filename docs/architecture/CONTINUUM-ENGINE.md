@@ -1497,6 +1497,33 @@ between steps, and decode tok/s per stream rises with it, measured before and af
 item per change. Each item lands with its own before/after numbers; the per-stream ceiling for this model on this chip
 is measured first with `llama-bench` at the residents' depths, so "at par" is a measured number, not an assumption.
 
+#### 4.7.8 What a graphics engine already solved: bgfx, read in its source (2026-11-16)
+
+Joel, 2026-11-16: "Study unreal engine or bgfx ... I am serious about graphics engines. They're the same problems."
+bgfx (read-only clone at `~/.continuum/reference/bgfx`, 3aab320) solves the serving engine's problems in a renderer.
+What it does, where, and what each becomes here:
+
+| bgfx (file: symbol) | What it does | Here |
+|---|---|---|
+| `bgfx.cpp: Context::frame`, `swap`, `renderFrame`; `renderSemWait` / `apiSemPost` | Two `Frame`s in flight: the API thread records `m_submit` while the render thread executes `m_render`; `frame()` waits for the render thread to finish the previous frame, swaps the two, releases it. Recording N+1 always overlaps executing N | A decode step is a frame. While the GPU runs step N, workers build step N+1 (batch, mask, graph inputs, sampled tokens); the decode thread swaps and submits. The ~20% of the decode loop spent building inputs (4.7.7) moves off the GPU's critical path |
+| `bgfx_p.h: FreeHandle`, `m_freeIndexBuffer.queue`; `bgfx.cpp: freeAllHandles(frame)` | Destroying a resource queues its handle in the frame that submitted it; the real free runs after that frame has rendered. Nothing is freed while the GPU may read it | A step keeps a reference to every resident its commands touch (a checkpoint a restore reads, a buffer a blit writes) and drops them when the step retires (its GPU completion). `host_bytes`' immediate RAII release is correct while copies are on the CPU, and becomes a step-retired release when copies move to GPU blits (4.7.7 rule 3) |
+| `bgfx_p.h: m_encoder[]`; `bgfx.cpp: encoderApiWait` | Many threads record into the same frame through their own encoders; `frame()` waits for every encoder to end before the swap | Per-sequence workers (sampling, a stop check, a tool-call parse) record into step N+1 through their own encoder; the swap waits for them. No sequence's CPU work runs on the decode thread |
+| `bgfx_p.h: kSortKey*` (64-bit sort key: view, draw type, blend, program, depth) | One key per draw and one sort per frame, so the GPU changes state as rarely as possible | One key per sequence in a step (adapter set, then sequence, then position), one sort per step: sequences sharing an adapter set run together (the decode-set cohort of #120 becomes a sort key, never a scheduler branch) |
+| `bgfx_p.h: m_iboffset` / `m_vboffset` reset per frame; `createTransientIndexBuffer` | Transient vertex/index data comes from a per-frame bump allocator reset at the frame's end: no malloc or free per draw | Per-step scratch (token arrays, sampler candidates, JSON fragments, mask rows) from a per-step arena reset when the step retires: no allocator on the hot path |
+| `bgfx.cpp: rendererExecCommands(m_cmdPre / m_cmdPost)` | Resource creation and changes are commands queued into the frame and run in order on the render thread at the frame boundary, never locked against the frame in flight | The core's control (a host-pool grant, a decode width, an adapter attach) is a command queued into the next step and applied at the step boundary on the decode thread: no lock held against a running step, and the applied outcome is reported from the same place |
+| `bgfx_p.h: HandleAllocT` | Resources are 16-bit handles into fixed tables, never raw pointers | Residents are pool ids; slots, sequences and adapters are typed ids; nothing crosses a thread boundary as a raw pointer |
+
+Unreal, from its documented engine design rather than source here: the Render Dependency Graph (passes declare what
+they read and write; the graph orders them, inserts barriers and aliases transient memory), the RHI thread (command
+translation off the render thread), async compute queues, and the texture streaming pool (already 4.7.6). The step
+graph above is the RDG in miniature: a step declares its reads (KV, checkpoints, adapters) and writes (KV, new
+checkpoints), and that declaration is what lets prefill run on its own queue beside decode (the prefill-blocks-decode
+stall, 9-12 tok/s per stream while a 134k-token prefill runs).
+
+**Order** (each with its before/after on the M5, one per change): the per-step frame and its step-retired release;
+encoders for sampling; the per-step arena; control as step commands (`POST /engine/host-pool` lands this way, so the
+core half needs no engine lock); sort keys for the cohort; then prefill on its own queue.
+
 ### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
 
 Joel, 2026-11-11: "These refusals are supposed to be impossible"; "either expand for it or collapse
