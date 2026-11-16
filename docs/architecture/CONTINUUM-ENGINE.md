@@ -1641,8 +1641,19 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   fork reports each engine step typed (sequences in the batch, each one's depth, prompt and decode tokens,
   accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
   (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
-  `Evidence` reads. Recording any hour of any node becomes a query of that capture; the simulator and
-  production read one instrument (7.0). Owner: Fable (capture, replay), Codex (fork report review). Simulator:
+  `Evidence` reads. The simulator and production read one instrument (7.0). Owner: Fable (capture,
+  replay), Codex (fork report review).
+  The capture is the WORKLOAD, not only the chosen steps (Codex review, comment 6904421902): steps
+  alone hide the runnable work the live policy did not pick, so no other policy could be compared on
+  them. Every event carries the sequence and mind identity, the engine incarnation and a monotonic time:
+  arrival and readiness, blocked and resumed, completion and cancellation, page-out and page-in, and each
+  engine step with its chosen set. Replay rebuilds the ready set at every instant and each resident's wait
+  and progress, so an alternative policy is scored on the same arrivals, starvation included.
+  A capture records its own interval and its loss (dropped events, gaps); an incomplete interval is a
+  typed state that cannot enter the live-versus-replay gate. Capture is Noop by default, so "an hour" is
+  an interval that was actually recorded, never arbitrary history. The gate compares context-matched
+  solo and batched steps and keeps per-resident progress, preserved memory and output quality beside
+  aggregate speed. Simulator:
   the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
   before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
 - **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
