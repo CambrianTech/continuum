@@ -679,6 +679,45 @@ impl CommandExecutor {
         self.execute(command, params).await?.to_json_value()
     }
 
+    /// Execute a command using typed parameters; returns typed output without manual JSON
+    /// construction or parsing by the caller.
+    ///
+    /// The caller passes C::Params directly and receives Result<C::Output>. Internally this
+    /// method serializes params once (for interceptor visibility), dispatches through the
+    /// normal chain, then deserializes the CommandResult into C::Output. All serialization
+    /// overhead is confined to this method — call sites get clean typed signatures.
+    ///
+    /// Requirements: `C` must implement [`ActionCommand`] and its `Output` type must
+    /// implement `serde::de::DeserializeOwned`.
+    pub async fn call<C>(&self, params: C::Params) -> Result<C::Output, String>
+    where
+        C: ActionCommand,
+        C::Params: serde::Serialize,
+        C::Output: serde::de::DeserializeOwned,
+    {
+        // Serialize once for interceptor visibility and dispatch routing.
+        let json = serde_json::to_value(&params).map_err(|e| {
+            format!("failed to serialize params for command '{}': {e}", C::NAME)
+        })?;
+
+        // Dispatch through the full chain (interceptors → typed path / legacy module).
+        let result = self.execute(C::NAME, json).await.map_err(|e| {
+            if e.contains("no Rust module handles command") {
+                format!("command '{}' is not registered", C::NAME)
+            } else {
+                e
+            }
+        })?;
+
+        // Convert CommandResult → C::Output.
+        let value = result.to_json_value().map_err(|e| {
+            format!("failed to extract JSON result for command '{}': {e}", C::NAME)
+        })?;
+        serde_json::from_value(value).map_err(|e| {
+            format!("failed to deserialize output for command '{}': {e}", C::NAME)
+        })
+    }
+
     /// Execute a command ONLY via TypeScript (bypasses Rust registry).
     /// Use this when a Rust module needs to forward to a TypeScript-implemented
     /// command that shares the same prefix (avoids infinite recursion).
