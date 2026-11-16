@@ -587,12 +587,12 @@ impl ServingDaemonModule {
 
 mod policy;
 use policy::{
-    below_floor_refuses, downshift_gate, floor_gate, host_floor_of, incumbent_adoption_plan,
+    downshift_gate, floor_gate, host_floor_of,
     incumbent_for_plan, model_change_gate, DownshiftVerdict, ModelChangeGate,
     DOWNSHIFT_SUSTAINED_TICKS, MODEL_CHANGE_SUSTAINED_TICKS,
 };
 pub use policy::{
-    knee_model, FloorVerdict, COLD_BOOT_BELOW_FLOOR_GRACE,
+    knee_model, FloorVerdict,
 };
 mod health;
 use health::FrozenSlots;
