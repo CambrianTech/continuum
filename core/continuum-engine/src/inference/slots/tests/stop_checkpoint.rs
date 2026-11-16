@@ -37,7 +37,7 @@ async fn the_stop_checkpoint_condemns_held_acts_before_it_takes_the_writer() {
     assert!(
         matches!(
             outcome,
-            super::super::page_io::StopCheckpoint::Failed(CheckpointFailure::Engine(OwnedCheckpointRefusal::EndpointMismatch))
+            super::super::page_io::OwnedStopCheckpoint::Failed(CheckpointFailure::Engine(OwnedCheckpointRefusal::EndpointMismatch))
         ),
         "the writer was reached and the save refused by name: {outcome:?}"
     );

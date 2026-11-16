@@ -94,6 +94,8 @@ impl Runtime {
         let receipt = ShutdownReceipt {
             modules: futures::future::join_all(futs).await,
             total_ms: started.elapsed().as_millis() as u64,
+            // The settle's custody is the caller's (`ShutdownOperation::begin` runs the settle).
+            custody: Vec::new(),
         };
         info!("{}", receipt.summary());
         receipt

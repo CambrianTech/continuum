@@ -166,9 +166,97 @@ pub struct ShutdownReceipt {
     pub modules: Vec<ModuleStop>,
     #[ts(type = "number")]
     pub total_ms: u64,
+    // What each stop-settle participant left in custody, per process it covers.
+    pub custody: Vec<SettledCustody>,
+}
+
+/// What a stop-settle participant left in custody at ONE endpoint: the participant, the endpoint,
+/// the exact process incarnation its outcome was sealed against (absent when it could not be
+/// bound), and the state. Bound to that incarnation, so a receipt can never authorize ending
+/// another process (a reused pid, a replaced engine); only a bound `Saved` lets a stop end one.
+/// An unbound `Retained` still makes the stop not durable.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SettledCustody.ts"
+)]
+pub struct SettledCustody {
+    pub participant: String,
+    pub endpoint: String,
+    pub process: Option<SettledProcess>,
+    pub state: CustodyState,
+}
+
+/// What one stop participant reports holding at one endpoint. The kernel stamps the participant's
+/// own name on it (`SettleBeforeStop::name`), so no participant spells its identity twice.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeldCustody {
+    pub endpoint: String,
+    pub process: Option<SettledProcess>,
+    pub state: CustodyState,
+}
+
+impl HeldCustody {
+    /// As settled by the participant named `participant`.
+    pub fn settled_by(self, participant: &'static str) -> SettledCustody {
+        SettledCustody { participant: participant.to_owned(), endpoint: self.endpoint, process: self.process, state: self.state }
+    }
+}
+
+/// One process incarnation: its pid and OS start time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/SettledProcess.ts"
+)]
+pub struct SettledProcess {
+    #[ts(type = "number")]
+    pub pid: u32,
+    #[ts(type = "number")]
+    pub started_s: u64,
+}
+
+/// What a participant's process holds after the settle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS)]
+#[ts(
+    export,
+    export_to = "../../../protocol/typescript/system/CustodyState.ts"
+)]
+pub enum CustodyState {
+    /// Every resident it held was saved, each save confirmed (holding none is saved too).
+    Saved,
+    /// Not saved, or not proven saved (refused, failed, uncertain, no paging): the live process
+    /// may keep the only copy, and ending it would lose that copy.
+    Retained,
+}
+
+impl CustodyState {
+    /// Whether ending the process loses nothing the participant was responsible for.
+    pub fn ends_safely(self) -> bool {
+        matches!(self, Self::Saved)
+    }
+
+    /// Two participants' custody of one process: retained by either is retained.
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Saved, Self::Saved) => Self::Saved,
+            (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
+        }
+    }
 }
 
 impl ShutdownReceipt {
+    /// The custody the receipt records for exactly this process at this endpoint: every
+    /// participant's entry for it, combined. `None` means no participant spoke for it, which
+    /// authorizes nothing.
+    pub fn custody_of(&self, endpoint: &str, pid: u32, started_s: u64) -> Option<CustodyState> {
+        self.custody
+            .iter()
+            .filter(|c| c.endpoint == endpoint && c.process == Some(SettledProcess { pid, started_s }))
+            .map(|c| c.state)
+            .reduce(CustodyState::combine)
+    }
+
     /// Modules whose durable state did NOT reach disk intact. Empty is the only value
     /// that justifies reporting a clean stop.
     pub fn unsaved(&self) -> Vec<&ModuleStop> {
@@ -180,29 +268,45 @@ impl ShutdownReceipt {
 
     /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
-        self.unsaved().is_empty()
+        self.unsaved().is_empty() && self.retained().is_empty()
+    }
+
+    /// Processes whose custody a participant retained: state the stop did not prove saved and
+    /// that only the live process still holds (CONTINUUM-ENGINE 4.9, I1; Codex on #6042).
+    pub fn retained(&self) -> Vec<&SettledCustody> {
+        self.custody.iter().filter(|c| !c.state.ends_safely()).collect()
     }
 
     /// One line a human can act on, without reading the process's log after it exited.
     pub fn summary(&self) -> String {
         let unsaved = self.unsaved();
-        if unsaved.is_empty() {
+        let retained = self.retained();
+        if unsaved.is_empty() && retained.is_empty() {
             return format!(
                 "{} modules stopped, all state durable, {}ms",
                 self.modules.len(),
                 self.total_ms
             );
         }
-        let names: Vec<String> = unsaved
-            .iter()
-            .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
-            .collect();
-        format!(
-            "{} of {} modules did NOT save: {}",
-            unsaved.len(),
-            self.modules.len(),
-            names.join(", ")
-        )
+        let mut lines: Vec<String> = Vec::new();
+        if !unsaved.is_empty() {
+            let names: Vec<String> = unsaved
+                .iter()
+                .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
+                .collect();
+            lines.push(format!("{} of {} modules did NOT save: {}", unsaved.len(), self.modules.len(), names.join(", ")));
+        }
+        if !retained.is_empty() {
+            let held: Vec<String> = retained
+                .iter()
+                .map(|c| match c.process {
+                    Some(process) => format!("{} at {} (pid {})", c.participant, c.endpoint, process.pid),
+                    None => format!("{} at {} (process unidentified)", c.participant, c.endpoint),
+                })
+                .collect();
+            lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+        }
+        lines.join("; ")
     }
 }
 
@@ -242,44 +346,34 @@ impl ShutdownOperation {
     /// FIRST caller's settle applies, as only its broadcast runs.
     pub(super) fn begin(
         &self,
-        rt: Option<Arc<Runtime>>,
+        rt: &Arc<Runtime>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
         if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
-            match rt {
-                Some(rt) => {
-                    let tx = self.result.clone();
-                    // Detached ON PURPOSE: this is the task whose whole point is that no
-                    // connection owns it. A socket handler is cancelled when its client
-                    // goes away, and a shutdown cancelled after ingress closed leaves the
-                    // node refusing work with nothing saved.
-                    tokio::spawn(async move {
-                        // In THIS task, never a connection's: the settle closes the turn
-                        // door, and a door closed by a handler whose client went away
-                        // would leave every citizen refusing work with no stop behind it.
-                        if !settle.is_zero() {
-                            crate::runtime::extensions::settle_before_stop(settle).await;
-                        }
-                        let receipt = rt.shutdown().await;
-                        // send_replace, NEVER send: `send` returns Err and DROPS the value
-                        // when the last receiver has gone — and the receiver that goes
-                        // away is the disconnecting CLI, so `send` loses the terminal
-                        // receipt in precisely the case this design exists for. A later
-                        // subscriber would then wait forever on a `None` that never
-                        // changes.
-                        let _ = tx.send_replace(Some(receipt));
-                    });
-                }
-                None => {
-                    // No runtime: nothing to save AND nothing that could have saved.
-                    // Publishing an empty receipt says exactly that, rather than leaving
-                    // every observer waiting on a broadcast that will never run.
-                    let _ = self.result.send_replace(Some(ShutdownReceipt {
-                        modules: Vec::new(),
-                        total_ms: 0,
-                    }));
-                }
-            }
+            let rt = Arc::clone(rt);
+            let tx = self.result.clone();
+            // Detached ON PURPOSE: this is the task whose whole point is that no
+            // connection owns it. A socket handler is cancelled when its client
+            // goes away, and a shutdown cancelled after ingress closed leaves the
+            // node refusing work with nothing saved.
+            tokio::spawn(async move {
+                // In THIS task, never a connection's: the settle closes the turn
+                // door, and a door closed by a handler whose client went away
+                // would leave every citizen refusing work with no stop behind it.
+                // Every participant runs on every path, the signal's too: a zero cap gives the
+                // turns no time, but never skips a participant that ends on events (the page
+                // checkpoint), so a SIGTERM saves every resident as a stop does (Codex on #6042).
+                let custody = crate::runtime::extensions::settle_before_stop(settle).await;
+                let mut receipt = rt.shutdown().await;
+                receipt.custody = custody;
+                // send_replace, NEVER send: `send` returns Err and DROPS the value
+                // when the last receiver has gone — and the receiver that goes
+                // away is the disconnecting CLI, so `send` loses the terminal
+                // receipt in precisely the case this design exists for. A later
+                // subscriber would then wait forever on a `None` that never
+                // changes.
+                let _ = tx.send_replace(Some(receipt));
+            });
         }
         self.result.subscribe()
     }
@@ -302,8 +396,8 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
-pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
-    process_shutdown().begin(signal_runtime(), settle)
+pub fn begin_shutdown(rt: &Arc<Runtime>, settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(rt, settle)
 }
 
 /// Observe the retained terminal receipt without starting a shutdown.
@@ -344,11 +438,15 @@ pub async fn await_shutdown(
     }
 }
 
-/// The runtime the signal handlers stop, for callers that need the SAME one — the
-/// resident `system/shutdown` verb runs the identical broadcast, so it must not reach
-/// for a second registry. One runtime, one stop path, two triggers.
-pub fn signal_runtime() -> Option<Arc<Runtime>> {
-    SIGNAL_RUNTIME.get().cloned()
+/// Shutdown cannot begin before the process has installed its runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("runtime is not installed; shutdown cannot establish durable state")]
+pub struct ShutdownUnavailable;
+
+/// The same installed runtime for command and signal shutdown, required before
+/// either caller can start the retained operation. Absence creates no receipt.
+pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
+    SIGNAL_RUNTIME.get().cloned().ok_or(ShutdownUnavailable)
 }
 
 pub async fn run_signal_shutdown() {
@@ -358,9 +456,17 @@ pub async fn run_signal_shutdown() {
     // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
     // and a tighter cap here would cut off the save phase on any node slow enough to
     // need it.
-    // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
-    // console close), not ours to spend waiting on turns.
-    let rx = begin_shutdown(std::time::Duration::ZERO);
+    // No time for turns: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
+    // console close), not ours to spend waiting on them. The settle participants still run
+    // (`ShutdownOperation::begin`): the page checkpoint ends on its own events.
+    let rt = match signal_runtime() {
+        Ok(rt) => rt,
+        Err(reason) => {
+            eprintln!("[continuum-core] shutdown unavailable: {reason}");
+            return;
+        }
+    };
+    let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
             // A signal handler cannot return an exit code to anyone, so the receipt's only

@@ -194,7 +194,7 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
     }
     // Mind 3 was paged out at 300; minds 1 and 2 are resident at 150 and 250.
     let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
-    assert!(matches!(stopped, crate::inference::slots::page_io::StopCheckpoint::Saved), "test: the stop saves every resident: {stopped:?}");
+    assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves every resident: {stopped:?}");
     server_a.abort();
 
     // Core B: a new engine, an empty slot set, the same page directory.
@@ -242,7 +242,7 @@ async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
     drop(turn); // condemned by the stop: no completion
 
     let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
-    assert!(matches!(stopped, crate::inference::slots::page_io::StopCheckpoint::Saved), "test: the stop saves: {stopped:?}");
+    assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves: {stopped:?}");
     server_a.abort();
 
     // Engine B (another process, as after a fork-pin change; the page format names no build) and a

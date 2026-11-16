@@ -70,13 +70,13 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
         let mut wrong_process = process;
         wrong_process.started_s += 1;
         assert!(transition.checkpoint_adopted_before_replacement(
-            &client, &root, wrong_process, &|| true,
+            &client, &root, AdoptedCheckpoint { incarnation: wrong_process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
         ).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0, "wrong ledger identity sends no save");
         let saved = if behavior == 3 {
             {
                 let save = transition.checkpoint_adopted_before_replacement(
-                    &client, &root, process, &|| true,
+                    &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
                 );
                 tokio::pin!(save);
                 tokio::select! {
@@ -88,7 +88,7 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
             }
             false
         } else { transition.checkpoint_adopted_before_replacement(
-            &client, &root, process, &|| true,
+            &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
         ).await.is_ok() };
         assert_eq!(saved, behavior == 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -119,7 +119,7 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
         .ok_or("fixture process identity unavailable")?;
     let refused = transition
-        .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, process, &|| true)
+        .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true)
         .await;
     // Unprobed, it discovers first; nothing answers this root, so the miss is the refusal's source.
     assert!(
@@ -224,10 +224,110 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     let key = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
     pool.plan_paging(0, key);
     let mut transition = directory().endpoint(&root).transition().await;
-    transition.checkpoint_adopted_before_replacement(&client, &root, process, &|| true).await?;
+    transition.checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true).await?;
     assert_eq!(saves.load(Ordering::SeqCst), 1, "the resident was saved before the replacement");
     assert_eq!(props_calls.load(Ordering::SeqCst), 2, "a discovered pool is not probed again");
     drop(transition);
+    server.abort();
+    Ok(())
+}
+
+// what this catches (CONTINUUM-ENGINE 4.9, I1; Codex on #6041/#6042): a stop that reopened its
+// adopted endpoint after a refused save, as a replacement does. A typed refusal (the engine's
+// request-error envelope) left the engine untouched: a replacement hands it back to serving, a stop
+// stays suspended because the node is stopping. A malformed reply proves nothing about what the
+// engine did, so both stay closed (quarantined custody), and the stop reports the KV as held.
+#[tokio::test]
+async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), Box<dyn std::error::Error>> {
+    let typed = serde_json::json!({"error": {"code": 400, "type": "invalid_request_error", "message": "slot save refused"}});
+    let malformed = serde_json::json!({"error": "refused"});
+    for (reply, typed_refusal) in [(typed, true), (malformed, false)] {
+        for intent in [AdoptedCheckpointIntent::Replace, AdoptedCheckpointIntent::Stop] {
+            let reply = reply.clone();
+            let app = Router::new()
+                .route("/props", axum::routing::get(|| async { Json(serde_json::json!({"total_slots": 2})) }))
+                .route("/slots/{slot}", post(move || {
+                    let reply = reply.clone();
+                    async move { (StatusCode::BAD_REQUEST, Json(reply)) }
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+            let address = listener.local_addr()?;
+            let root = format!("http://{address}");
+            let server = tokio::spawn(async move { axum::serve(listener, app).await });
+            let client = reqwest::Client::new();
+            let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+                .ok_or("fixture process identity unavailable")?;
+            let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
+            let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
+            let pages = tempfile::tempdir()?;
+            // An empty page directory holds no ledger to carry: the pool is adopted fresh.
+            let adopted = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+            assert!(matches!(adopted, Ok(_) | Err(AdoptRefusal::NoLedger)), "fixture ledger: {adopted:?}");
+            pool.plan_paging(0, PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?);
+            let endpoint = directory().endpoint(&root);
+            let mut transition = endpoint.transition().await;
+            let refused = transition.checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent }, &|| true).await;
+            assert!(matches!(refused, Err(AdoptedCheckpointRefusal::Save { .. })), "{intent:?}: the save itself refused, nothing earlier: {refused:?}");
+            match (typed_refusal, intent) {
+                (true, AdoptedCheckpointIntent::Replace) => assert!(endpoint.is_ready(), "a typed refusal hands the untouched engine back to a replacement"),
+                (true, AdoptedCheckpointIntent::Stop) => assert!(!endpoint.is_ready(), "a stop stays suspended after a typed refusal"),
+                (false, _) => assert!(!endpoint.is_ready(), "{intent:?}: a malformed reply proves nothing, so custody stays closed"),
+            }
+            drop(transition);
+            server.abort();
+        }
+    }
+    Ok(())
+}
+
+// what this catches (CONTINUUM-ENGINE 4.9.5, I1; the M5 2026-11-15 16:48:43Z
+// `stop_checkpoint_skipped reason=Adopted`): a stop over an engine this core adopted saving none of
+// its residents. With the Stop intent the adopted checkpoint saves every resident a slot holds, and
+// the endpoint stays suspended afterwards: the node is stopping.
+#[tokio::test]
+async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() -> Result<(), Box<dyn std::error::Error>> {
+    // Each save the engine received: the slot and the page file it was asked to write.
+    let saves = Arc::new(parking_lot::Mutex::new(Vec::<(u32, String)>::new()));
+    let app = Router::new()
+        .route("/props", axum::routing::get(|| async { Json(serde_json::json!({"total_slots": 2})) }))
+        .route("/slots/{slot}", post({
+            let saves = saves.clone();
+            move |Path(slot): Path<u32>, Json(body): Json<serde_json::Value>| {
+                let filename = body["filename"].as_str().map(str::to_owned);
+                if let Some(file) = &filename {
+                    saves.lock().push((slot, file.clone()));
+                }
+                async move { Json(serde_json::json!({"id_slot": slot, "filename": filename, "n_saved": 10})) }
+            }
+        }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let root = format!("http://{address}");
+    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let client = reqwest::Client::new();
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+        .ok_or("fixture process identity unavailable")?;
+    let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
+    let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
+    let pages = tempfile::tempdir()?;
+    let adopted = adopt_engine_ledger(&pool, pages.path(), process.pid, process.started_s);
+    assert!(matches!(adopted, Ok(_) | Err(AdoptRefusal::NoLedger)), "fixture ledger: {adopted:?}");
+    let first = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
+    let second = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
+    pool.plan_paging(0, first);
+    pool.plan_paging(1, second);
+    let endpoint = directory().endpoint(&root);
+    let mut transition = endpoint.transition().await;
+    let saved = transition
+        .checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Stop }, &|| true)
+        .await;
+    assert!(saved.is_ok(), "every resident saved: {saved:?}");
+    let mut received = saves.lock().clone();
+    received.sort();
+    assert_eq!(received.iter().map(|(slot, _)| *slot).collect::<Vec<_>>(), vec![0, 1], "each resident's own slot was saved once: {received:?}");
+    assert_ne!(received[0].1, received[1].1, "each resident to her own page file: {received:?}");
+    drop(transition);
+    assert!(!endpoint.is_ready(), "the stopping node's endpoint stays suspended after the checkpoint's writer is gone");
     server.abort();
     Ok(())
 }
