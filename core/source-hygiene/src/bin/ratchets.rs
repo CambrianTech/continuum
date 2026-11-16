@@ -84,6 +84,7 @@ fn print_by_crate(rows: Vec<source_hygiene::ratchet::CrateMovement>) {
     if by_rule.is_empty() {
         return;
     }
+    print_every_crate(&by_rule);
     eprintln!("by crate (moved first, then largest)  base     head");
     for (rule, mut crates) in by_rule {
         crates.sort_by_key(|row| (row.before == Some(row.after), std::cmp::Reverse(row.after)));
@@ -93,6 +94,23 @@ fn print_by_crate(rows: Vec<source_hygiene::ratchet::CrateMovement>) {
             eprintln!("  {:<30} {before:>7} {:>8}", row.owner, row.after);
         }
     }
+}
+
+/// Every crate of every ratchet as `ratchet@crate base head`, folded in the CI log: the full
+/// per-crate baseline a floor-up sweep reads (the table above names only the largest). Printed
+/// only under GitHub Actions, where the group folds; a local run keeps its short receipt.
+fn print_every_crate(by_rule: &std::collections::BTreeMap<String, Vec<source_hygiene::ratchet::CrateMovement>>) {
+    if std::env::var_os("GITHUB_ACTIONS").is_none() {
+        return;
+    }
+    println!("::group::every crate of every ratchet (ratchet@crate base head)");
+    for (rule, crates) in by_rule {
+        for row in crates {
+            let before = row.before.map_or_else(|| "-".to_owned(), |b| b.to_string()); // map_or_else: a crate the base run did not record prints as absent
+            println!("{rule}{}{} {before} {}", source_hygiene::ratchet::BY_CRATE, row.owner, row.after);
+        }
+    }
+    println!("::endgroup::");
 }
 
 /// How many crates the receipt names per ratchet: the owners a sweep starts with, not a list.

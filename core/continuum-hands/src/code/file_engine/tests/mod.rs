@@ -171,6 +171,46 @@
         );
     }
 
+    // what this catches (Benchy on the M5, 2026-11-11: ~25 minutes moving one closing brace): a fix
+    // that is only valid whole. A test appended after `mod tests`'s closing brace needs that brace
+    // moved to the end: removing it alone and adding one alone are each unparseable, so each is
+    // refused; the two as one batch are checked once, on the result, and land.
+    // what this catches: the M5, 2026-11-11 (Benchy 16:01Z, Aiko 16:52Z): a search_replace whose
+    // replace equals its search answered ok and rewrote the same bytes, and was taken as a fix.
+    // An edit that changes nothing is not a success, writes nothing, and records no change.
+    #[test]
+    fn an_edit_that_changes_nothing_says_so_and_writes_nothing() {
+        let (dir, engine) = setup_engine();
+        let path = dir.path().join("src/same.rs");
+        fs::write(&path, "fn a() {}\n").unwrap();
+        let written_at = fs::metadata(&path).unwrap().modified().unwrap();
+        let same = EditMode::SearchReplace { search: "fn a() {}".into(), replace: "fn a() {}".into(), all: false };
+        let result = engine.edit("src/same.rs", &same, None).expect("a no-change edit is a result");
+        assert!(!result.success, "nothing changed, so it is not a success");
+        assert!(result.change_id.is_none() && result.bytes_written == 0, "no change recorded, nothing written");
+        assert!(result.error.as_deref().is_some_and(|e| e.starts_with("NO CHANGE")), "{:?}", result.error);
+        assert_eq!(fs::metadata(&path).unwrap().modified().unwrap(), written_at, "the file was not rewritten");
+    }
+
+    #[test]
+    fn a_fix_valid_only_whole_lands_as_one_batch() {
+        let (dir, engine) = setup_engine();
+        let before = "mod tests {\n    fn a() {}\n}\nfn b() {}\n";
+        fs::write(dir.path().join("src/moved.rs"), before).unwrap();
+        let remove = EditMode::LineRange { start_line: 3, end_line: 3, new_content: String::new() };
+        let close = EditMode::Append { content: "}\n".to_string() };
+        for half in [&remove, &close] {
+            let refused = engine.edit("src/moved.rs", half, None).expect("a refusal is a result");
+            assert!(!refused.success, "each half alone leaves the file unparseable, so it is refused");
+            assert_eq!(fs::read_to_string(dir.path().join("src/moved.rs")).unwrap(), before, "and changes nothing");
+        }
+        let batch = EditMode::Batch { edits: vec![remove, close] };
+        let landed = engine.edit("src/moved.rs", &batch, None).expect("the batch is applied");
+        assert!(landed.success, "the two together parse, so they land: {:?}", landed.error);
+        let after = fs::read_to_string(dir.path().join("src/moved.rs")).unwrap();
+        assert!(after.trim_end().ends_with('}') && after.contains("fn b() {}"), "the brace now closes after b: {after}");
+    }
+
     // what this catches: repair-forward-on-rubble. flask-4045 run 5 (M5, 2026-08-04): an
     // early edit dropped a guard clause into `super().__init__(`'s argument list; four acts
     // later she worked out the right idiom and applied a CORRECT content-anchored fix — on
@@ -559,6 +599,12 @@
         assert!(
             err.contains("THE FIX: use end_line=9 instead of 7"),
             "the refusal must compute and name the end line that works, got:\n{err}"
+        );
+        // what this catches (Aiko, the M5, 2026-11-11): a hint that parses can still delete code
+        // she meant to keep, so it shows every line the wider range removes, verbatim.
+        assert!(
+            err.contains("ALSO REMOVES") && err.contains("(finite number of solutions)") && err.contains("     9 |"),
+            "the hint must show the lines it also removes, got:\n{err}"
         );
         assert!(
             err.contains("stopped 2 line(s) short"),

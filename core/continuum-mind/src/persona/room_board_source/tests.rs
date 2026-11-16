@@ -219,7 +219,7 @@
         assert!(rendered[standing - 1].content.contains("filler card 39"), "the most recently changed stands newest: {}", rendered[standing - 1].content);
         let node = delivery.items.iter().find(|i| i.key == "nav:claimable").expect("the rest fold into one node"); // expect: 40 claimable cards fold
         assert_eq!(node.metadata["count"], 40 - standing);
-        assert!(node.content.contains(&format!("({})", 40 - standing)) && node.content.contains("work/list claimable=true"), "{}", node.content);
+        assert!(node.content.contains(&format!("({})", 40 - standing)) && node.content.contains("work/list group=claimable"), "{}", node.content);
         assert!(!delivery.truncated);
         let headline = delivery.items.iter().find(|i| i.key == "headline").expect("the headline"); // expect: she holds a card
         assert_eq!(headline.metadata["kind"], "board-headline");
@@ -247,8 +247,8 @@
         assert_eq!(titles.len(), 2, "only live cards are delivered as cards: {titles:?}");
         assert!(titles.iter().all(|t| !t.contains("closed") && !t.contains("merged")), "{titles:?}");
         let node = |key: &str| delivery.items.iter().find(|i| i.key == key).map(|i| i.content.clone());
-        assert_eq!(node("nav:closed").as_deref(), Some("▸ closed (5) → `work/list state=closed`"));
-        assert_eq!(node("nav:merged").as_deref(), Some("▸ merged (1) → `work/list state=merged`"));
+        assert_eq!(node("nav:closed").as_deref(), Some("▸ closed (5) → `work/list group=closed`"));
+        assert_eq!(node("nav:merged").as_deref(), Some("▸ merged (1) → `work/list group=merged`"));
     }
 
     #[tokio::test]
@@ -699,7 +699,7 @@
         );
         // A settled card is counted in its state's node, not rendered as a card (#5677).
         assert!(!all.contains("finished work"), "the closed card is not a card line: {all}");
-        assert!(all.contains("▸ closed (1) → `work/list state=closed`"), "the closed card is counted in its node: {all}");
+        assert!(all.contains("▸ closed (1) → `work/list group=closed`"), "the closed card is counted in its node: {all}");
     }
 
     // what this catches: the exam-bleed regression (glass-boxed live 2026-07-10,

@@ -3,7 +3,6 @@ use super::*;
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
-    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Claim.aliases();
     const NATIVE: bool = true; // core room workflow — claiming shared-board work as yourself
                                // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
                                // self-scoped cooperative act the shared board exists for. It was
@@ -49,7 +48,7 @@ impl ActionCommand for WorkClaim {
                         "claim refused: this box cannot grade the instance"
                     );
                     return Err(CommandError::Invalid(format!(
-                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card — work/list with claimable=true.",
+                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card, one the board lists as claimable.",
                         short8(card_id.as_uuid()),
                         reason.trim_end_matches('.')
                     )));
@@ -60,6 +59,22 @@ impl ActionCommand for WorkClaim {
                 // claim (ClaimReleased naming them, then hers). Refused, she gets the card now and
                 // her moves on it, and the rejection stays in her perception past the receipt.
                 let now_ms = EpochMs::now().millis();
+                // A REVIEW CARD IS NEVER CLAIMED BY THE MIND WHOSE WORK IT JUDGES (card 0174211f),
+                // unless her room declares `self: true`: compared as minds, never as raw ids.
+                let judged = crate::cognition::review_verdict::judged_submission(card, &board.cards)
+                    .filter(|judged| crate::cognition::review_verdict::same_mind(&self.registry, judged.publisher, airc.peer_id()));
+                if let Some(judged) = judged {
+                    let policy = match card_in_subscribed_rooms(&airc, card_id).await {
+                        Some((room, _)) => crate::persona::work_board::review::room_policy(&airc, &room).await,
+                        None => crate::persona::work_board::review::PolicyRead::Unavailable("the card's room is not one she stands in".into()),
+                    };
+                    let mine = crate::cognition::review_verdict::author_may_review(policy.declared(), &self.registry, judged, airc.peer_id())
+                        .map_err(work_preconditions::Unmet::AuthorCannotReview);
+                    if let Err(refusal) = work_preconditions::decide(mine, card, airc.peer_id(), now_ms) {
+                        crate::persona::claim_rejections::record(airc.peer_id().as_uuid(), &p.card_id, &refusal.to_string());
+                        return Err(super::refused(refusal));
+                    }
+                }
                 match work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
                     Ok(work_preconditions::ClaimRoute::Takeover { from }) => continuum_base::probe!(
                         class = "work.claim.taken_over",
@@ -75,7 +90,7 @@ impl ActionCommand for WorkClaim {
                 }
             }
         }
-        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS); // unwrap_or: an omitted ttl_ms is the declared default lease, the param's documented meaning
         let origin = p.origin.into();
         let mut claim_attempt = airc
             .claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
@@ -116,7 +131,7 @@ impl ActionCommand for WorkClaim {
                     .caller
                     .as_ref()
                     .map(|c| short8(c.peer_id.as_uuid()))
-                    .unwrap_or_else(|| "-".to_string());
+                    .unwrap_or_else(|| "-".to_string()); // unwrap_or_else: a log label for an anonymous caller, never a decision
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await

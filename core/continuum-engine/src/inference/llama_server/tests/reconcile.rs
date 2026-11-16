@@ -289,6 +289,7 @@ async fn new_gene_triggers_relaunch_on_same_model() {
 #[tokio::test]
 async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
+        let shown = format!("{outcome:?}");
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
             .with_in_place(outcome);
@@ -298,8 +299,8 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
             false,
         )
         .await;
-        assert_eq!(got, EnsureOutcome::AlreadyServing, "{outcome:?}");
-        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{outcome:?}: no relaunch");
+        assert_eq!(got, EnsureOutcome::AlreadyServing, "{shown}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{shown}: no relaunch");
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
@@ -309,6 +310,44 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     assert!(a.starts_with("gene-") && a.ends_with(".gguf"));
     assert_eq!(a, gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")), "the same gene stages under the same name");
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
+}
+
+// what this catches (4.10 P4a): the catalog's owner refusing (none installed, a replaced engine,
+// memory not granted) must keep the running engine and every resident's KV, never relaunch.
+#[tokio::test]
+async fn a_catalog_owner_refusal_keeps_the_engine_degraded() {
+    use super::genome_catalog::CatalogRefusal;
+    for why in [CatalogRefusal::NoOwner, CatalogRefusal::EngineReplaced, CatalogRefusal::AwaitingMemory("vram".into())] {
+        let shown = format!("{why:?}");
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_active_adapters(vec!["/genes/a.gguf".into()])
+            .with_in_place(GenomeInPlace::Refused(why));
+        let got = ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf"]), false).await;
+        assert!(matches!(got, EnsureOutcome::Degraded { .. }), "{shown}: {got:?}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{shown}: no relaunch over retained KV");
+    }
+}
+
+// A rejected mutation or a lost reply is not permission to destroy retained KV.
+// Replay both an adopted engine and an owned engine with a turn in flight.
+#[tokio::test]
+async fn failed_genome_mutation_preserves_the_running_engine() {
+    for owns in [false, true] {
+        for fault in ["engine incarnation is required", "residency not registered", "reply lost after mutation"] {
+            let mut ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+                .with_active_adapters(vec!["/genes/a.gguf".into()])
+                .slots_busy();
+            ctrl.owns = owns;
+            ctrl.in_place_error = Some(fault);
+            let desired = target_with_adapters("coder-14b", &["/genes/b.gguf"]);
+            for _ in 0..3 {
+                let got = ensure_model_serving(&ctrl, &desired, false).await;
+                assert!(matches!(got, EnsureOutcome::Degraded { ref reason } if reason.contains(fault)), "{got:?}");
+                assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "a mutation failure must not request replacement");
+                assert_eq!(ctrl.placements_recorded.load(Ordering::SeqCst), 0, "the requested genome was not adopted");
+            }
+        }
+    }
 }
 
 // what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading

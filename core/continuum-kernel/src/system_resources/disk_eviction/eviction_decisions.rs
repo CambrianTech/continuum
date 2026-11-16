@@ -34,9 +34,9 @@ pub(super) const OWNED: &[&str] = &[
         "tool-output",
         // Owner: `inference::slots::KvPageStorePool` (continuum-engine, registered in
         // pressure_broker_wiring). Value order: pages of model dirs no live slot pool serves,
-        // then pages the serving pool's ledger does not confirm, then the coldest confirmed
-        // pages of minds no slot holds, each forgotten through `note_page_lost` before its
-        // file goes. Never a resident's page, never `saved-ledger.json`, never a served page
+        // then pages the serving pool's ledger does not confirm, then (under the store's own
+        // budget or a critical volume only: `ColdPages`) the coldest confirmed pages of minds no
+        // slot holds, each forgotten through `note_page_lost` before its file goes. Never a resident's page, never `saved-ledger.json`, never a served page
         // while page IO is in flight. The save-side trim still bounds the one live dir.
         "kv-pages",
 ];

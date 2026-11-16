@@ -14,11 +14,16 @@ impl EngineGeneration {
         }
     }
     pub(crate) fn has_exited(&self) -> bool {
-        self.exited.load(Ordering::Acquire)
+        *self.exited.borrow()
+    }
+
+    /// The owned child's exit as an event: resolves once [`Self::observed_exit`] runs.
+    pub fn exit(&self) -> EngineExit {
+        EngineExit::of(self.exited.subscribe())
     }
 
     pub fn observed_exit(&self) {
-        self.exited.store(true, Ordering::Release);
+        self.exited.send_replace(true);
         if let Some(endpoint) = self.endpoint.upgrade() {
             let state = endpoint.state.lock();
             if state.generation().is_some_and(|g| g.id == self.id) {
@@ -322,13 +327,16 @@ impl EndpointTransition {
     /// Save an adopted engine without inventing ownership of its process. The
     /// persisted ledger and the caller's lane record must identify the same live
     /// incarnation. Retirement still requires a fresh identity check by its owner.
+    /// `intent` decides what a terminal refusal leaves: a replacement hands the untouched
+    /// endpoint back to serving, a stop keeps it suspended (CONTINUUM-ENGINE 4.9, I1).
     pub(crate) async fn checkpoint_adopted_before_replacement(
         &mut self,
         client: &reqwest::Client,
         root: &str,
-        incarnation: crate::inference::engine_residency::EngineIncarnation,
+        target: AdoptedCheckpoint,
         current: &(dyn Fn() -> bool + Send + Sync),
     ) -> Result<(), AdoptedCheckpointRefusal> {
+        let AdoptedCheckpoint { incarnation, intent } = target;
         use crate::inference::engine_residency::Liveness;
 
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
@@ -350,9 +358,10 @@ impl EndpointTransition {
             .await
             .map_err(|failure| match failure {
                 CheckpointFailure::Engine(refusal) => refusal,
-                CheckpointFailure::Save(detail) => AdoptedCheckpointRefusal::Save(detail),
+                CheckpointFailure::Admission(detail) => AdoptedCheckpointRefusal::Admission(detail),
+                CheckpointFailure::Save { slot, kind } => AdoptedCheckpointRefusal::Save { slot, kind },
             });
-        if result.is_err() && current() && verify().is_ok() {
+        if intent == AdoptedCheckpointIntent::Replace && result.is_err() && current() && verify().is_ok() {
             // A terminal refusal did not mutate the engine. Only reopen this
             // exact pool; CheckpointSave quarantines cancellation/uncertainty.
             let state = self.endpoint.state.lock();
@@ -454,25 +463,23 @@ impl EndpointTransition {
         &mut self,
         client: &reqwest::Client,
         root: &str,
-    ) -> Result<ResidentCheckpoint<'_>, String> {
+    ) -> Result<ResidentCheckpoint<'_>, CheckpointFailure<OwnedCheckpointRefusal>> {
+        use OwnedCheckpointRefusal as Refused;
         if !Arc::ptr_eq(&directory().endpoint(root), &self.endpoint) {
-            return Err("checkpoint URL does not identify the held endpoint".into());
+            return Err(CheckpointFailure::Engine(Refused::EndpointMismatch));
         }
         let (generation, pool) = {
             let state = self.endpoint.state.lock();
             if state.paging_uncertain {
-                return Err("checkpoint refused: paging completion remains uncertain".into());
+                return Err(CheckpointFailure::Engine(Refused::PagingUncertain));
             }
-            let generation = state
-                .generation()
-                .cloned()
-                .ok_or("checkpoint requires an owned generation")?;
+            let generation = state.generation().cloned().ok_or(CheckpointFailure::Engine(Refused::NotOwned))?;
             let owned = match state.owned_by(generation.id) {
                 Some(owned) if !generation.has_exited() => owned,
-                _ => return Err("checkpoint requires this live generation's verified pool".into()),
+                _ => return Err(CheckpointFailure::Engine(Refused::PoolUnverified)),
             };
             if owned.contract.page_dir.is_none() {
-                return Err("checkpoint requires a verified page directory".into());
+                return Err(CheckpointFailure::Engine(Refused::NoPageDir));
             }
             let pool = Arc::clone(&owned.pool);
             state.ready.send_replace(false);
@@ -480,11 +487,11 @@ impl EndpointTransition {
         };
         self.checkpoint_pool(client, root, &pool, &|| {
             if generation.has_exited() {
-                Err("checkpoint engine exited")
+                Err(Refused::EngineExited)
             } else {
                 Ok(())
             }
-        }).await.map_err(|failure| failure.to_string())?;
+        }).await?;
         Ok(ResidentCheckpoint {
             transition: self,
             generation,
@@ -495,63 +502,62 @@ impl EndpointTransition {
     /// One save path for a drained pool. The caller supplies its existing engine
     /// authority: an owned generation or a verified adopted process incarnation.
     /// Losing that authority cannot publish a successful save for its successor.
-    async fn checkpoint_pool<E>(
+    async fn checkpoint_pool<E: std::error::Error>(
         &mut self,
         client: &reqwest::Client,
         root: &str,
         pool: &Arc<KvSlotPool>,
         verify_engine: &(dyn Fn() -> Result<(), E> + Send + Sync),
     ) -> Result<(), CheckpointFailure<E>> {
-        use super::super::turn_admission::{kv_page_action, PageOutcome};
+        use super::super::turn_admission::{kv_page_action, PageAction, PageOutcome};
 
         let verify_engine = || verify_engine().map_err(CheckpointFailure::Engine);
         verify_engine()?;
         directory()
             .discover_page_admission(client, root)
             .await
-            .map_err(CheckpointFailure::Save)?;
-        let mut residents: Vec<_> = pool
-            .holders
-            .lock()
-            .iter()
-            .map(|(&slot, &key)| (slot, key))
-            .collect();
-        residents.sort_unstable_by_key(|(slot, _)| *slot);
-        for (slot, key) in residents {
-            verify_engine()?;
-            pool.note_page_lost(&key);
-            let mut save = CheckpointSave {
-                endpoint: self.endpoint.clone(),
-                pending: true,
-            };
-            match kv_page_action(client, root, slot, &key, "save").await {
-                PageOutcome::Completed => {
-                    verify_engine()?;
-                    save.pending = false;
-                    pool.note_saved(key);
-                }
-                PageOutcome::Rejected => {
-                    save.pending = false;
-                    return Err(CheckpointFailure::Save(format!("checkpoint save rejected for slot {slot}")));
-                }
-                PageOutcome::Unresolved(unresolved) => {
-                    // The engine kept working without a receipt. This checkpoint's error does not
-                    // prove the engine is retired (Codex's follow-up on #5772), and the writer
-                    // cannot be handed to the request, so the save stays PENDING: its drop below
-                    // quarantines the endpoint, and no turn is admitted until a verified
-                    // replacement. The request itself stays owned by the endpoint until its
-                    // receipt. The page stays lost (noted above): no half-written restore.
-                    unresolved.hold(());
-                    return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save unresolved for slot {slot}: the engine kept working without a receipt; endpoint quarantined"
-                    )));
-                }
-                PageOutcome::Uncertain => {
-                    return Err(CheckpointFailure::Save(format!(
-                        "checkpoint save completion uncertain for slot {slot}; endpoint quarantined"
-                    )));
+            .map_err(CheckpointFailure::Admission)?;
+        let residents = pool.stop_residents();
+        // Every resident's save is issued at once and joined on its own receipt: the saves are
+        // independent, so the core adds no serial wait of its own and the stop costs what the
+        // engine's schedule of them costs. The fork pinned today (cd2e16d87) runs page tasks one at
+        // a time on its task loop (tools/server/server-queue.cpp:138-153, the save itself at
+        // server-context.cpp:2809/2960), so there they queue in the engine, and an engine that
+        // overlaps them makes the stop its largest save with no change here.
+        let verify_engine = &verify_engine;
+        let saves = residents.into_iter().map(|(slot, key)| {
+            let endpoint = self.endpoint.clone();
+            async move {
+                verify_engine()?;
+                pool.note_page_lost(&key);
+                let save = CheckpointSave::begin(endpoint);
+                let failed = |kind: SaveFailure| -> Result<(), CheckpointFailure<E>> { Err(CheckpointFailure::Save { slot, kind }) };
+                match kv_page_action(client, root, slot, &key, PageAction::Save).await {
+                    PageOutcome::Completed => {
+                        // An engine gone after its receipt leaves the save unanswered: quarantined.
+                        verify_engine()?;
+                        save.confirmed(pool, key);
+                        Ok(())
+                    }
+                    PageOutcome::Rejected => {
+                        save.rejected();
+                        failed(SaveFailure::Rejected)
+                    }
+                    PageOutcome::Unresolved(unresolved) => {
+                        // The engine kept working without a receipt. This checkpoint's error does
+                        // not prove the engine is retired (Codex's follow-up on #5772), so the save
+                        // stays unanswered: its drop quarantines the endpoint, and no turn is
+                        // admitted until a verified replacement. The request stays owned by the
+                        // endpoint until its receipt; the page stays lost (no half-written restore).
+                        unresolved.hold(());
+                        failed(SaveFailure::Unresolved)
+                    }
+                    PageOutcome::Uncertain => failed(SaveFailure::Uncertain),
                 }
             }
+        });
+        for saved in futures::future::join_all(saves).await {
+            saved?;
         }
         verify_engine()
     }
@@ -567,7 +573,7 @@ impl EndpointTransition {
         }
         let generation = EngineGeneration {
             id: Uuid::new_v4(),
-            exited: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            exited: Arc::new(tokio::sync::watch::channel(false).0),
             endpoint: Arc::downgrade(&self.endpoint),
         };
         state.start(generation.clone());
@@ -778,28 +784,40 @@ impl SlotDirectory {
         }
     }
 
-    /// Install (or return the already-installed) pool for a probed server.
+    /// A fixture's pool for `root`, published with no page-store decision. Serving publishes a
+    /// pool only settled: discovery through [`Self::install_settled_pool`], a spawn through
+    /// [`EndpointTransition::ready`] (an admission once raced the ledger adoption: M5 2026-11-14).
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+        self.install_pool(root, || Arc::new(KvSlotPool::new(root, n_slots)))
+    }
+
+    /// Install `born` (or return the already-installed) pool for a probed server.
     /// First writer wins — the probe race resolves to ONE pool per root.
     /// The endpoint's permits are sized to the pool this returns while the state lock still
     /// holds it, so a stale discovery can never resize them after a newer generation installs.
-    pub fn ensure_pool(&self, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+    pub(super) fn install_pool(&self, root: &str, born: impl FnOnce() -> Arc<KvSlotPool>) -> Arc<KvSlotPool> {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
-        let pool = installed_pool(&mut state, root, n_slots);
+        let pool = installed_pool(&mut state, root, born);
         endpoint.concurrency.retarget(pool.n_slots() as usize);
         pool
     }
 }
 
-/// The pool serving `root`: the installed one, or a first writer's.
-fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_slots: u32) -> Arc<KvSlotPool> {
+/// The pool serving `root`: the installed one, or a first writer's (`born`).
+fn installed_pool(
+    state: &mut super::kv_slot_pool::EndpointState,
+    root: &str,
+    born: impl FnOnce() -> Arc<KvSlotPool>,
+) -> Arc<KvSlotPool> {
     let pool = match &mut state.engine {
         Engine::Owned { serving: Serving::Install(install), .. } => return Arc::clone(&install.pool),
         Engine::Owned { serving: Serving::Before(before), .. } => match before {
             Probed::Known(pool) => Some(Arc::clone(pool)),
             Probed::Absent(PropsAbsent) => None,
             not_asked @ Probed::NotAsked => {
-                let pool = Arc::new(KvSlotPool::new(root, n_slots));
+                let pool = born();
                 *not_asked = Probed::Known(Arc::clone(&pool));
                 Some(pool)
             }
@@ -807,7 +825,7 @@ fn installed_pool(state: &mut super::kv_slot_pool::EndpointState, root: &str, n_
         Engine::Adopted(pool) => return Arc::clone(pool),
         Engine::Unsupported => None,
         unprobed @ Engine::Unprobed => {
-            let pool = Arc::new(KvSlotPool::new(root, n_slots));
+            let pool = born();
             *unprobed = Engine::Adopted(Arc::clone(&pool));
             Some(pool)
         }
@@ -849,13 +867,30 @@ pub fn register_engine_for_fixture(root: &str, slots: u32, pid: u32, started_s: 
 /// this core did not spawn. If that engine is the live lane `(pid, started_s)` and left a
 /// ledger in `page_dir` stamped with that same process, its confirmed saves become
 /// restorable here (same process, same contract). Returns the keys loaded; `None` when
-/// the ledger is not this engine's.
+/// the ledger is not this engine's. Written at once: a pool the test already holds.
+#[cfg(test)]
 pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path, pid: u32, started_s: u64) -> Result<usize, AdoptRefusal> {
+    let (adopted, snapshot) = settle_engine_ledger(pool, page_dir, pid, started_s);
+    pool.persist_ledger(snapshot);
+    adopted
+}
+
+/// The adoption decided on a pool not yet published: its first ledger snapshot is returned
+/// for the publisher to write ([`KvSlotPool::settle_ledger`]).
+pub(super) fn settle_engine_ledger(
+    pool: &KvSlotPool,
+    page_dir: &std::path::Path,
+    pid: u32,
+    started_s: u64,
+) -> (Result<usize, AdoptRefusal>, Option<LedgerSnapshot>) {
     if started_s == 0 {
-        return Err(AdoptRefusal::NoStartTime);
+        return (Err(AdoptRefusal::NoStartTime), None);
     }
     match SavedLedger::of_running_engine(page_dir, (pid, started_s)) {
-        Ok(ledger) => Ok(pool.attach_ledger(ledger, true)),
+        Ok(ledger) => {
+            let (loaded, snapshot) = pool.settle_ledger(ledger, true);
+            (Ok(loaded), snapshot)
+        }
         Err(refusal) => {
             // Nothing of this process's to restore, but it IS this process (the caller verified
             // the live lane): start its ledger now, empty, so what it saves from here on is
@@ -866,8 +901,8 @@ pub(crate) fn adopt_engine_ledger(pool: &KvSlotPool, page_dir: &std::path::Path,
             // loads it, and a spawned engine's contract fingerprint never equals it.
             let ledger = SavedLedger::in_dir(page_dir, format!("incarnation:{pid}:{started_s}"));
             let _ = ledger.incarnation.set((pid, started_s));
-            pool.attach_ledger(ledger, false);
-            Err(refusal)
+            let (_, snapshot) = pool.settle_ledger(ledger, false);
+            (Err(refusal), snapshot)
         }
     }
 }
@@ -909,18 +944,20 @@ pub fn directory() -> &'static SlotDirectory {
     })
 }
 
-/// Why one drained pool's save stopped: its caller's own engine check refused (kept as the
-/// caller's type, so an adopted engine's `EngineGone` stays that variant), or the save failed.
-enum CheckpointFailure<E> {
-    Engine(E),
-    Save(String),
+/// The adopted engine a checkpoint saves and why: its live incarnation, verified against the
+/// ledger, and the lifecycle intent that decides what a refusal leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct AdoptedCheckpoint {
+    pub(crate) incarnation: crate::inference::engine_residency::EngineIncarnation,
+    pub(crate) intent: AdoptedCheckpointIntent,
 }
 
-impl<E: std::fmt::Display> std::fmt::Display for CheckpointFailure<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Engine(refusal) => refusal.fmt(f),
-            Self::Save(detail) => f.write_str(detail),
-        }
-    }
+/// Why an adopted engine is checkpointed: its lifecycle decides what a refusal leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AdoptedCheckpointIntent {
+    /// A replacement: a terminal refusal that did not touch the engine hands the endpoint back
+    /// to serving.
+    Replace,
+    /// A stop: the endpoint stays suspended after every outcome; the node is stopping.
+    Stop,
 }

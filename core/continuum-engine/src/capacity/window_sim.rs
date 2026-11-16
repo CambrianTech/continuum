@@ -191,9 +191,50 @@ pub fn m5_uneven_reading() -> WindowScenario {
     }
 }
 
+/// The M5 on 2026-11-14 (958ea3056, `-c 661410 --parallel 5`): a 661,504-token pool, 262,144 per
+/// sequence. Benchy's and Atlas's held turns measured 148,818 and 135,619 (`grid.mind.unservable`
+/// 05:28Z); Aiko and Aris at the 143,100 and 105,547 they were granted at 04:33Z. Every need fits the
+/// pool (533,084 of 661,504); the equal share of it is 132,300.
+pub fn m5_needs_past_the_equal_share() -> WindowScenario {
+    const AIKO: MindId = 1;
+    const ARIS: MindId = 2;
+    const ATLAS: MindId = 3;
+    const BENCHY: MindId = 4;
+    let e = |at_ms, mind, need, in_flight| DemandEvent { at_ms, mind, need, in_flight };
+    WindowScenario {
+        name: "m5-needs-past-the-equal-share",
+        pool_tokens: 661_504,
+        events: vec![
+            e(0, ARIS, tokens!(105_547), false),
+            e(1, AIKO, tokens!(143_100), true),
+            e(2, ATLAS, tokens!(135_619), false),
+            e(3, BENCHY, tokens!(148_818), true),
+        ],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // what this catches (the M5, 2026-11-14): BEFORE, the pool read as 5 equal lanes of 132,300
+    // and Benchy (148,818) and Atlas (135,619) were cut although every need fit the pool. AFTER,
+    // each is granted her own need, unequal, the four within the pool.
+    #[test]
+    fn unequal_needs_on_a_shared_pool_get_unequal_grants_and_the_equal_share_cuts_them() {
+        let scenario = m5_needs_past_the_equal_share();
+        let before = run(&scenario, &mut EqualSplit { slots: 5 });
+        assert!(before.unmet_when_fits > 0, "the equal share cuts a need the pool holds: {before:?}");
+        assert!(run(&scenario, &mut DemandFollowing).kept(), "demand-following grants every need");
+        let demands: Vec<Demand> = scenario
+            .events
+            .iter()
+            .map(|e| Demand { mind: e.mind, need: e.need, target: e.need, wish: e.need, in_flight: e.in_flight, settled: true, ceiling: 262_144 })
+            .collect();
+        let grants = DemandFollowing.grant(&demands, &BTreeMap::new(), scenario.pool_tokens);
+        assert_eq!(grants, BTreeMap::from([(1, 143_100), (2, 105_547), (3, 135_619), (4, 148_818)]), "each her own need");
+        assert!(grants.values().map(|&g| u64::from(g)).sum::<u64>() <= u64::from(scenario.pool_tokens));
+    }
 
     // what this catches: the equal split the engine runs today passing as adequate. On the M5's
     // own shape it grants Aiko 58,112 of the 70-76k she reads while Atlas idles at 12k of his

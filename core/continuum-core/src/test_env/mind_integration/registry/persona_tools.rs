@@ -92,8 +92,12 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
     // < 52 -> < 53, stated plainly (2026-11-06, the M5): tool/output joined, `Always`, the verb
     // every handle she is shown names; catalog-only, no act could call it while every folded
     // act, saved result and thought named it.
+    // < 53 -> < 56, stated plainly (2026-11-14, Joel: residents "are to be as capable as you are";
+    // "Persona can merge and review too"): code/github/pr-checks, code/github/pr-merge and
+    // code/git/merge joined, `OnDemand` (one help away, not in her prompt), native because the merge
+    // gate's refusals name pr-checks and git/merge as her next call. pr-diff stays catalog-only.
     assert!(
-        names.len() < 53,
+        names.len() < 56,
         "native set stayed bounded ({} tools); a full dump would re-mute personas",
         names.len()
     );

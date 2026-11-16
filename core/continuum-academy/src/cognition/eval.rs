@@ -40,6 +40,7 @@ mod default_eval_set;
 pub(crate) use default_eval_set::*;
 mod spawn_gene_eval_lane;
 pub use spawn_gene_eval_lane::*;
+mod private_teacher_exit;
 mod sweep_orphan_eval_roots;
 pub use sweep_orphan_eval_roots::*;
 mod eval_task_result;

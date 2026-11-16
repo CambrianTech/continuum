@@ -11,7 +11,8 @@
 //! - Every verb stays reachable. One she does not hold, she finds with `commands/help`; its
 //!   schema is in that result (the tail) and the verb rides the request's `tail_tools`, which
 //!   the engine's parser and grammar accept without rendering it in the head. It stays loaded
-//!   until the epoch ends.
+//!   until the epoch ends. A refusal loads the same way: the commands its typed next moves name
+//!   ride her next act ([`ToolHead::load`]), so a move a refusal tells her to make is callable.
 //! - The policy is the replay-tested one (`tool-working-set`, slice 1): an online logistic
 //!   blend of her recent and standing habits, the activity's, her call-to-call chain and the
 //!   relevance of her latest acts, deciding each verb by `p · miss > schema · (1 − p)`. It
@@ -127,12 +128,14 @@ impl ToolHead {
         for verb in verbs {
             state.uses.push(UseRecord { at_ms: at.millis(), verb: verb.clone(), room, text: text.to_owned(), epoch });
         }
-        for verb in found {
-            let held = state.held.as_ref().is_some_and(|held| held.contains(verb));
-            if !held && !state.loaded.contains(verb) {
-                state.loaded.push(verb.clone());
-            }
-        }
+        load_into(&mut state, found);
+    }
+
+    /// Load `verbs` (canonical names) into the tail for the rest of this epoch: callable on her
+    /// next act whatever her head holds. The finder's finds load this way ([`Self::note`]), and
+    /// so do the commands a refusal she received names as her next moves.
+    pub fn load(&self, verbs: &[String]) {
+        load_into(&mut self.state.lock(), verbs);
     }
 
     /// The head the next epoch would hold, were it to turn over now (her current epoch counted
@@ -248,6 +251,16 @@ impl ToolHead {
 
     pub fn restore(&self, state: ToolHeadState) {
         *self.state.lock() = state;
+    }
+}
+
+/// Load `verbs` into `state`'s tail: each one the head does not hold and the tail lacks.
+fn load_into(state: &mut ToolHeadState, verbs: &[String]) {
+    for verb in verbs {
+        let held = state.held.as_ref().is_some_and(|held| held.contains(verb));
+        if !held && !state.loaded.contains(verb) {
+            state.loaded.push(verb.clone());
+        }
     }
 }
 

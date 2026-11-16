@@ -35,6 +35,32 @@ pub enum LlamaServerError {
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
+    /// The engine did not apply a host prompt-cache limit (card 494c99f1): it has no host
+    /// cache, it predates the route, or it named its own refusal. Nothing was evicted.
+    #[error("prompt-cache limit refused: {0}")]
+    PromptCacheRefused(super::PromptCacheRefusal),
+
+    /// The engine refused an adapter change (`/lora-adapters/{fresh,load,unload}`), by its answer.
+    #[error("adapter change refused: {0}")]
+    AdapterChange(AdapterChangeRefusal),
+}
+
+/// Why the engine refused an adapter change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterChangeRefusal {
+    /// The adapter is active in a turn in flight (503): the change waits, nothing changed.
+    Busy,
+    /// Any other refusal, with the engine's status and its own words.
+    Refused { status: u16, detail: String },
+}
+
+impl std::fmt::Display for AdapterChangeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterChangeRefusal::Busy => write!(f, "the adapter is active in a turn in flight"),
+            AdapterChangeRefusal::Refused { status, detail } => write!(f, "status {status}: {detail}"),
+        }
+    }
 }
 
 
@@ -103,6 +129,14 @@ pub struct ObservedGeometry {
 /// Checked at the endpoint's drained lifecycle-admission boundary. Once admitted,
 /// the operation may settle even if newer intent arrives; its result keeps its epoch.
 pub type ServingLifecycleCheck<'a> = dyn Fn() -> bool + Send + Sync + 'a;
+
+/// The reconcile an ensure runs inside: whether its intent is still current, and the serving
+/// operation holding the lifecycle gate (an in-place gene change decides its memory inside it).
+#[derive(Clone, Copy)]
+pub struct Reconciling<'a> {
+    pub current: &'a ServingLifecycleCheck<'a>,
+    pub operation: &'a crate::inference::serving_lifecycle::ServingOperation,
+}
 
 
 /// Evidence handle, not a capacity lease. Dropping it does not abandon the child.
@@ -193,6 +227,7 @@ pub trait LlamaServerControl: Send + Sync {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+        _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         Ok(GenomeInPlace::Unsupported)
     }
@@ -331,6 +366,15 @@ pub trait LlamaServerControl: Send + Sync {
         Err(EngineRetirementError::Unsupported)
     }
 
+    /// The retired child's exit as an event, for a waiter that needs it rather than a status
+    /// read: it resolves when the reaper observes the exit, after the child's custody is released.
+    fn engine_exit(
+        &self,
+        _receipt: &EngineRetirementReceipt,
+    ) -> Result<crate::inference::slots::EngineExit, EngineRetirementError> {
+        Err(EngineRetirementError::Unsupported)
+    }
+
     /// The REAL per-slot context window the running server serves, read from
     /// `/props` (`default_generation_settings.n_ctx`). This is the AUTHORITATIVE
     /// model metadata: llama.cpp pads the launch per-slot window (`-c / --parallel`)
@@ -432,6 +476,13 @@ pub trait LlamaServerControl: Send + Sync {
     fn launched_prompt_cache_mib(&self) -> Option<u32> {
         None
     }
+
+    /// Move the running engine's host prompt-cache limit to `limit_mib` (fork route
+    /// `POST /prompt-cache/limit`, 9269444f6): the cache evicts its oldest states to fit and the
+    /// receipt says what it holds and what it freed. Serving's reclaim lowers it before its heavy
+    /// levers (tier-down, unload), card 494c99f1. A refusal is typed
+    /// ([`LlamaServerError::PromptCacheRefused`]); nothing was evicted then.
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError>;
 
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200

@@ -333,6 +333,19 @@ impl EphemeralServingLane {
             .map_err(|e| LlamaServerError::Spawn(e.to_string()))
     }
 
+    /// Request teardown and wait for the owned child's exit event: returns once the child
+    /// exited and its custody (page dir, resource lease) is released, never on a timer.
+    pub async fn finished(&mut self) -> Result<(), LlamaServerError> {
+        if self.finish().await? == EngineRetirementStatus::Exited {
+            return Ok(());
+        }
+        let generation = self.proc.last_started.lock().clone();
+        let Some(generation) = generation else {
+            return Ok(());
+        };
+        generation.exit().confirmed().await.map_err(|e| LlamaServerError::Spawn(e.to_string()))
+    }
+
     /// The OpenAI-compatible `/v1` base url a persona's inference adapter points
     /// at to route deliberation through THIS lane instead of the live one.
     pub fn v1_url(&self) -> String {

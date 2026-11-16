@@ -1,4 +1,4 @@
-//! What each element she perceives follows from (MIND-CONTEXT-AND-ENGINE-CONFIG.md, "causality is
+//! What each element she perceives follows from (CONTINUUM-ENGINE.md, "causality is
 //! in the type"). Every element is one occurrence in a causal chain: an act and its result, a
 //! message and its reply, a move and the position after it. The view keeps chains whole at their
 //! heads, folds a chain without breaking it, and renders an element only with its cause
@@ -19,6 +19,12 @@ impl ElementId {
 
     pub const fn as_u128(self) -> u128 {
         self.0
+    }
+
+    /// The id as an item's key ([`crate::source::Item::occurrence`]): one rendering, so an item
+    /// about nothing but its own occurrence carries no second identity beside it.
+    pub fn key(self) -> String {
+        format!("{:032x}", self.0)
     }
 
     /// The id named by a producer's stable identity, given as its parts (whose, which producer,
@@ -46,7 +52,7 @@ fn length_prefixed_digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8;
     hasher.finalize().into()
 }
 
-/// What an act asked for (MIND-CONTEXT invariant 4): its calls in order, each the verb and its
+/// What an act asked for (CONTINUUM-ENGINE section 5 invariant 4): its calls in order, each the verb and its
 /// arguments as the tool saw them (`ToolCall::canonical_input`). No argument is excluded here;
 /// an exclusion is named only by the tool's own schema. Two acts with equal fingerprints asked
 /// the same thing; whether the outcome was unchanged is the producer's evidence, never this.

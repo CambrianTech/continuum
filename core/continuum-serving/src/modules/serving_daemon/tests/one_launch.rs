@@ -179,7 +179,7 @@ async fn engine_pool_returns_with_a_planned_budget_set() {
         let (tx, rx) = std::sync::mpsc::channel();
         let sized = Arc::clone(&daemon);
         std::thread::spawn(move || {
-            let pool = sized.engine_pool(&fake_model("m"), 32_768, 2);
+            let pool = sized.engine_pool(&fake_model("m"), 32_768, 2, 0);
             let _ = tx.send(pool); // the receiver may have given up; the assertion below says so
         });
         let pool = rx.recv_timeout(std::time::Duration::from_secs(10));

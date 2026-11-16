@@ -445,6 +445,58 @@
         );
     }
 
+    /// what this catches (card e0b2b5b1, the M5 2026-11-07: `work/list` returned 241,460 chars,
+    /// ~80,884 tokens, as a summary and a handle): the tool returning every card while her view of
+    /// the same board is collapsed navigation. With no filter it returns the board's nav from the
+    /// owner her view uses (`board_nav`): her cards whole, each live group's most recent cards and
+    /// one fold for the rest, history only its fold. And (Cormac on #5843) every fold's call opens
+    /// EXACTLY its group: the cards `group_of` assigned it, no more, no fewer (a `claimable=false`
+    /// call behind "held by others" also returned her cards and every merged and closed card).
+    #[test]
+    pub(super) fn an_unfiltered_list_is_the_boards_nav_and_each_fold_opens_exactly_its_group() {
+        use crate::persona::board_nav::BoardGroup;
+        let card = |i: usize, claimable: bool| WorkListCard {
+            id: format!("{i:08}"),
+            title: format!("card {i}"),
+            state: "claimed".to_string(),
+            owner: None,
+            owner_id: None,
+            claimable,
+            lease: None,
+            priority: "p2".to_string(),
+            age_hours: 1,
+        };
+        // Her board on the M5's scale: 2 of hers, 600 claimable, 40 held by others, 174 merged,
+        // 840 closed.
+        let board = || {
+            let mut cards: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = (0..2).map(|i| (card(i, false), CardState::Claimed, None, i as u64)).collect();
+            cards.extend((2..602).map(|i| (card(i, true), CardState::Open, Some(BoardGroup::Claimable), i as u64)));
+            cards.extend((602..642).map(|i| (card(i, false), CardState::Claimed, Some(BoardGroup::HeldByOthers), i as u64)));
+            cards.extend((642..816).map(|i| (card(i, false), CardState::Merged, Some(BoardGroup::Merged), i as u64)));
+            cards.extend((816..1_656).map(|i| (card(i, false), CardState::Closed, Some(BoardGroup::Closed), i as u64)));
+            cards
+        };
+        let unfiltered = super::work_list::Selector::default();
+        let (cards, folded) = super::work_list::listed(unfiltered.select(board()), unfiltered.filters());
+        let standing = continuum_context::nav::standing;
+        assert_eq!(cards.len(), 2 + standing(600) + standing(40), "her cards and each live group's most recent: {}", cards.len());
+        assert!(cards.iter().any(|c| c.id == "00000601"), "the most recently changed claimable card stands");
+        assert!(cards[cards.len() - 2..].iter().all(|c| c.id == "00000000" || c.id == "00000001"), "her cards last, as her view orders her focus");
+        let folds: Vec<(BoardGroup, usize)> = folded.iter().map(|f| (f.group, f.count)).collect();
+        assert_eq!(folds, [(BoardGroup::Claimable, 600 - standing(600)), (BoardGroup::HeldByOthers, 40 - standing(40)), (BoardGroup::Merged, 174), (BoardGroup::Closed, 840)]);
+        for fold in &folded {
+            assert_eq!(fold.open, format!("work/list group={}", fold.group.name()), "a fold names its own group");
+            let opened = super::work_list::Selector { group: Some(fold.group), ..Default::default() };
+            let (shown, refolded) = super::work_list::listed(opened.select(board()), opened.filters());
+            let mut want: Vec<String> = board().into_iter().filter(|(_, _, group, _)| *group == Some(fold.group)).map(|(c, ..)| c.id).collect();
+            let mut got: Vec<String> = shown.into_iter().map(|c| c.id).collect();
+            want.sort();
+            got.sort();
+            assert_eq!(got, want, "{:?}: exactly its group, whole", fold.group);
+            assert!(refolded.is_empty(), "an opened fold is not folded again");
+        }
+    }
+
     /// what this catches: the self-explaining summary being serialized AFTER `cards`, where
     /// the receipt truncator severs it from every result a citizen actually reads.
     ///
@@ -476,6 +528,7 @@
             awaiting_reviewer: 2,
             unsubmitted_pull_requests: 1,
             note: Some("the board is NOT empty".to_string()),
+            folded: Vec::new(),
             cards,
         })
         .expect("WorkListResult serializes");
@@ -573,7 +626,7 @@
                     priority: None,
                 },
             )
-            .await
+            .await.map(|(made, _)| made)
             .expect("card created");
             ids.push(WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid")));
         }
@@ -606,22 +659,20 @@
         use crate::cognition::work_preconditions::{names, WorkVerb};
         use super::submission::{WorkReview, WorkSubmission, WorkSubmit};
         for verb in WorkVerb::ALL {
-            let (registered, aliases) = match verb {
-                WorkVerb::Claim => (<WorkClaim as ActionCommand>::NAME, <WorkClaim as ActionCommand>::ALIASES),
-                WorkVerb::Heartbeat => (<WorkHeartbeat as ActionCommand>::NAME, <WorkHeartbeat as ActionCommand>::ALIASES),
-                WorkVerb::Note => (<WorkNote as ActionCommand>::NAME, <WorkNote as ActionCommand>::ALIASES),
-                WorkVerb::Release => (<WorkRelease as ActionCommand>::NAME, <WorkRelease as ActionCommand>::ALIASES),
-                WorkVerb::Review => (<WorkReview as ActionCommand>::NAME, <WorkReview as ActionCommand>::ALIASES),
-                WorkVerb::State => (<WorkState as ActionCommand>::NAME, <WorkState as ActionCommand>::ALIASES),
-                WorkVerb::Submission => (<WorkSubmission as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::ALIASES),
-                WorkVerb::Submit => (<WorkSubmit as ActionCommand>::NAME, <WorkSubmit as ActionCommand>::ALIASES),
+            let registered = match verb {
+                WorkVerb::Claim => <WorkClaim as ActionCommand>::NAME,
+                WorkVerb::Heartbeat => <WorkHeartbeat as ActionCommand>::NAME,
+                WorkVerb::Note => <WorkNote as ActionCommand>::NAME,
+                WorkVerb::Release => <WorkRelease as ActionCommand>::NAME,
+                WorkVerb::Review => <WorkReview as ActionCommand>::NAME,
+                WorkVerb::State => <WorkState as ActionCommand>::NAME,
+                WorkVerb::Submission => <WorkSubmission as ActionCommand>::NAME,
+                WorkVerb::Submit => <WorkSubmit as ActionCommand>::NAME,
             };
             assert_eq!(verb.command(), registered, "{verb:?}");
-            // A move her text names is the name her tool list offers (6c): the verb's aliases are
-            // the command's, so `offered` renders what `wire_name` offers the command under.
-            assert_eq!(verb.aliases(), aliases, "{verb:?}");
-            let offered = crate::sdk_codegen::wire_name(registered, crate::sdk_codegen::primary_alias(aliases), crate::sdk_codegen::offer_style_for(None));
-            assert_eq!(verb.offered(), offered, "{verb:?}");
+            // A move her text names is the name her tool list offers (6c): the command's path,
+            // through the one `wire_name` (card d2b6dbce: `work/release` is `work_release`).
+            assert_eq!(verb.offered(), crate::sdk_codegen::wire_name(registered), "{verb:?}");
             for grant in verb.grants() {
                 let known = [<continuum_hands::commands::code::run::CodeRun as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::NAME];
                 assert!(known.iter().any(|command| names(grant, command)), "{verb:?} grants {grant}, which names no registered command");

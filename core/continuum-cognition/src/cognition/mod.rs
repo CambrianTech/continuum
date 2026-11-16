@@ -19,6 +19,7 @@ pub use continuum_rooms::card_facts;
 pub use continuum_rooms::card_holder;
 pub use continuum_rooms::work_preconditions;
 pub use continuum_rooms::review_queue;
+pub use continuum_rooms::review_verdict;
 pub use continuum_grounding::grounding_invalidation;
 pub use continuum_rooms::room_substrates;
 pub use continuum_prompt::framing_echo;

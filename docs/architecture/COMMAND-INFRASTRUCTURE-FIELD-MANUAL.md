@@ -2,7 +2,7 @@
 
 > **Premise** (Joel, 2026-05-30): *"We have the entire picture now. We have our grid, our chat protocols, bus, one built for the needs of continuum AND current and future systems. Let's make sure we have detailed designs for this command infrastructure into modules and properly built from the ground up by using our own generators."*
 
-This is the field manual for module authors. The architectural **why** lives in [MODULE-ARCHITECTURE.md](MODULE-ARCHITECTURE.md), the runtime contract lives in [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md), and the **which modules exist** survey lives in [MODULE-CATALOG.md](MODULE-CATALOG.md). This document is the operational **how**: substrate API, module template, concurrency doctrine, migration discipline, generator usage.
+This is the field manual for module authors. The architectural **why** lives in [MODULE-ARCHITECTURE.md](MODULE-ARCHITECTURE.md), the runtime contract lives in [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md), and the **which modules exist** survey lives in [MODULE-CATALOG.md](MODULE-CATALOG.md). This document is the operational **how**: substrate API, module template, concurrency doctrine, migration discipline, generator usage.
 
 If you're sitting down to author a new module right now, read this. If you want to understand the principle behind the architecture, read the three above.
 
@@ -458,7 +458,7 @@ When all seven hold, the module is *concurrency-clean, wire-clean, and ready for
 ## 8. See also
 
 - [MODULE-ARCHITECTURE.md](MODULE-ARCHITECTURE.md) — the architectural doctrine (every module is a package, addressed two ways, kernel has zero privileged operations)
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the RTOS-style runtime contract (concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle)
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the RTOS-style runtime contract (concurrency, scheduling, memory + device pressure, telemetry, artifact handles, lifecycle)
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) — every Continuum concern as a focused ServiceModule, with line-count estimates
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — the artifact-sharing economy on top of the substrate
 - Memory: `[[three-primitives-commands-events-persona]]`, `[[rethink-dont-port-commands-to-rust]]`, `[[headless-rust-must-work-soon]]`

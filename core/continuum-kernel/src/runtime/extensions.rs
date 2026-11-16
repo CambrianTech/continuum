@@ -28,11 +28,13 @@ pub fn resolve_command_name(command: &str) -> String {
 }
 
 /// Something that must finish before a stop saves (admitted turns, for one), given at most
-/// `cap`. It reports its own outcome; the kernel only waits for it.
+/// `cap`. It returns what it left in custody per process it covers (empty when it covers none),
+/// and the stop's receipt carries that to whoever may end those processes: a log line is not
+/// evidence (CONTINUUM-ENGINE 4.9, I1).
 pub trait SettleBeforeStop: Send + Sync + 'static {
     /// Its description, for logs. Identity is the participant's type.
     fn name(&self) -> &'static str;
-    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::HeldCustody>> + Send + 'static>>;
 }
 
 static SETTLERS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn SettleBeforeStop>)>> =
@@ -52,16 +54,41 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
 /// the ones before it left. The stop's caller waits for `cap` and the save after it, never for
 /// a cap per participant (the M5, 2026-10-27 22:20Z: the turns took the whole 300 s, the page
 /// checkpoint then ran past the CLI's 315 s wait, and the core was killed before it saved).
-pub async fn settle_before_stop(cap: Duration) {
+pub async fn settle_before_stop(cap: Duration) -> Vec<super::SettledCustody> {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
-    settle_within(&settlers, cap).await;
+    settle_within(&settlers, cap, &SETTLING).await
 }
 
-async fn settle_within(settlers: &[Arc<dyn SettleBeforeStop>], cap: Duration) {
+/// The participant settling right now, so a stop whose watchdog fires names the step that never
+/// completed instead of "still running" (card b5b9bef3: the page checkpoint held the M5's stop with
+/// nothing saying so).
+static SETTLING: parking_lot::RwLock<Option<&'static str>> = parking_lot::RwLock::new(None);
+
+/// The participant a stop is waiting on now; `None` before the settle and once it is done.
+pub fn settling() -> Option<&'static str> {
+    *SETTLING.read()
+}
+
+async fn settle_within(
+    settlers: &[Arc<dyn SettleBeforeStop>],
+    cap: Duration,
+    settling: &parking_lot::RwLock<Option<&'static str>>,
+) -> Vec<super::SettledCustody> {
     let deadline = tokio::time::Instant::now() + cap;
+    let mut custody = Vec::new();
     for settler in settlers {
-        settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
+        *settling.write() = Some(settler.name());
+        let name = settler.name();
+        custody.extend(
+            settler
+                .settle(deadline.saturating_duration_since(tokio::time::Instant::now()))
+                .await
+                .into_iter()
+                .map(|held| held.settled_by(name)),
+        );
     }
+    *settling.write() = None;
+    custody
 }
 
 #[cfg(test)]
@@ -78,10 +105,13 @@ mod tests {
         fn name(&self) -> &'static str {
             "spends"
         }
-        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             self.given.lock().push(cap);
             let takes = self.takes.min(cap);
-            Box::pin(async move { tokio::time::sleep(takes).await })
+            Box::pin(async move {
+                tokio::time::sleep(takes).await;
+                Vec::new()
+            })
         }
     }
 
@@ -96,12 +126,42 @@ mod tests {
             Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
         ];
         let started = tokio::time::Instant::now();
-        settle_within(&settlers, Duration::from_secs(300)).await;
+        settle_within(&settlers, Duration::from_secs(300), &parking_lot::RwLock::new(None)).await;
         assert!(started.elapsed() <= Duration::from_secs(301), "the whole stop fits its one cap");
         let given = given.lock().clone();
         assert_eq!(given[0], Duration::from_secs(300));
         assert!(given[1] <= Duration::from_secs(50), "the second gets what the first left: {:?}", given[1]);
         assert_eq!(given[2], Duration::ZERO, "nothing left for the third");
+    }
+
+    /// A participant that never finishes: the stall a stop's watchdog must name.
+    struct Wedged;
+
+    impl SettleBeforeStop for Wedged {
+        fn name(&self) -> &'static str {
+            "wedged"
+        }
+        fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    // what this catches (card b5b9bef3): a stop stalled in a participant reported only as "still
+    // running" (the M5's page checkpoint, 2026-11-14). While it settles, the slot names it; once
+    // the settle is over, nothing is named.
+    #[tokio::test]
+    async fn the_participant_a_stop_waits_on_is_named_until_the_settle_ends() {
+        let settling = Arc::new(parking_lot::RwLock::new(None));
+        let settlers: Vec<Arc<dyn SettleBeforeStop>> = vec![Arc::new(Wedged)];
+        let stalled = tokio::spawn({
+            let settling = Arc::clone(&settling);
+            async move { settle_within(&settlers, Duration::from_secs(300), &settling).await }
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(*settling.read(), Some("wedged"), "the stalled step is named");
+        stalled.abort();
+        settle_within(&[], Duration::from_secs(1), &settling).await;
+        assert_eq!(*settling.read(), None, "a finished settle names nothing");
     }
 }
 

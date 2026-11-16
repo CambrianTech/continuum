@@ -28,9 +28,15 @@ use crate::modules::code::CodeState;
 use crate::sdk_codegen::{CommandError, DynCommand};
 
 pub mod branch_pull_request;
+pub mod card_verdict;
 pub mod issue_create;
+pub mod merge_gate;
+pub mod pr_checks;
 pub mod pr_comment;
 pub mod pr_create;
+pub mod pr_diff;
+pub mod pr_head;
+pub mod pr_merge;
 pub mod pr_view;
 
 use issue_create::CodeGithubIssueCreate;
@@ -51,8 +57,11 @@ pub fn attributed(body: String, ctx: &crate::sdk_codegen::Ctx) -> String {
     }
 }
 
+use pr_checks::CodeGithubPrChecks;
 use pr_comment::CodeGithubPrComment;
 use pr_create::CodeGithubPrCreate;
+use pr_diff::CodeGithubPrDiff;
+use pr_merge::CodeGithubPrMerge;
 use pr_view::CodeGithubPrView;
 
 /// Reuse the git family's workspace-root resolution — a `gh` command operates on the
@@ -142,6 +151,15 @@ pub fn command_objects(state: Arc<CodeState>) -> Vec<Arc<dyn DynCommand>> {
         Arc::new(CodeGithubPrView {
             state: state.clone(),
         }),
+        Arc::new(CodeGithubPrChecks {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGithubPrDiff {
+            state: state.clone(),
+        }),
+        Arc::new(CodeGithubPrMerge {
+            state: state.clone(),
+        }),
         Arc::new(CodeGithubIssueCreate { state }),
     ]
 }
@@ -161,6 +179,9 @@ mod tests {
         assert_eq!(pr_comment::CodeGithubPrComment::NAME, "code/github/pr-comment");
         assert_eq!(issue_create::CodeGithubIssueCreate::NAME, "code/github/issue-create");
         assert_eq!(pr_view::CodeGithubPrView::NAME, "code/github/pr-view");
+        assert_eq!(pr_checks::CodeGithubPrChecks::NAME, "code/github/pr-checks");
+        assert_eq!(pr_diff::CodeGithubPrDiff::NAME, "code/github/pr-diff");
+        assert_eq!(pr_merge::CodeGithubPrMerge::NAME, "code/github/pr-merge");
         // pr-create and pr-comment are a capable citizen's working set, offered natively
         // (Joel, 2026-09-28); issue-create stays one call away (the 9/03 spam was issues)
         assert!(pr_create::CodeGithubPrCreate::NATIVE);

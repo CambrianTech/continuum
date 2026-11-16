@@ -27,7 +27,7 @@ types, derive macros).
 
 The substrate doctrine docs in `docs/architecture/`:
 
-- `CBAR-SUBSTRATE-ARCHITECTURE.md` — RTOS-style runtime contract every rust module inherits.
+- `CONTINUUM-ENGINE.md` — the engine design and plan; its section 3 is the RTOS-style runtime contract every rust module inherits.
 - `CONCURRENCY-STYLE-GUIDE.md` — canonical concurrent shape (own task + `tokio::time::interval` + `watch::Sender<Snapshot>` + atomic gate + 100ms timeout + quarantine).
 - `PERSONA-COGNITION-PIPELINE.md` — what a persona IS and the cognition cycle.
 - `RTOS-DEBUGGER-PROBES.md` — `probe!` / `time_sync!` / `time_probe!` macros as RTOS-style breakpoints.

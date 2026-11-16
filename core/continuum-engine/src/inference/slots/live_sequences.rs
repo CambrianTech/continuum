@@ -37,6 +37,15 @@ pub enum SequenceBasis {
     Cold,
 }
 
+/// A mind's sequence in a slot, as [`LiveSequences::held`] reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HeldSequence {
+    /// A completed generation or a verified restore; whether it is at least as new as her page.
+    Confirmed { at_least_her_page: bool },
+    /// A request was sent and no receipt confirmed what it left (a cut act).
+    Unconfirmed,
+}
+
 /// What a slot holds, as far as a receipt confirms it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Held {
@@ -106,6 +115,18 @@ impl LiveSequences {
         });
         let captured = held.chain(self.detached.remove(&key)).max();
         self.pages.insert(key, captured.flatten());
+    }
+
+    /// The slots holding a sequence of a mind, with whether a receipt confirmed it and, when it
+    /// did, how new it is: the record that outlives a cut act's dropped attribution.
+    pub(super) fn held(&self) -> impl Iterator<Item = (u32, PageKey, HeldSequence)> + '_ {
+        self.slots.iter().map(|(&slot, held)| match *held {
+            Held::Confirmed(key, generation) => {
+                let current = generation >= self.page(&key);
+                (slot, key, HeldSequence::Confirmed { at_least_her_page: current })
+            }
+            Held::Unconfirmed(key) => (slot, key, HeldSequence::Unconfirmed),
+        })
     }
 
     fn page(&self, key: &PageKey) -> Generation {

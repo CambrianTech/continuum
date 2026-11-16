@@ -15,7 +15,7 @@ of WHAT the daemons must do and WHAT'S NOT YET KNOWN about how.
 
 **Parents:**
 - [`AI-COMMAND-NAMESPACE.md`](AI-COMMAND-NAMESPACE.md) — the surface
-- [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md) — RTOS-style runtime, pressure policy
+- [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) — RTOS-style runtime, pressure policy
 - [`PERSONA-CONTEXT-PAGING.md`](PERSONA-CONTEXT-PAGING.md) — per-persona KV cache attribution
 - [`docs/planning/AI-LANE-OPEN-QUESTIONS.md`](../planning/AI-LANE-OPEN-QUESTIONS.md) — punch list of unknowns
 

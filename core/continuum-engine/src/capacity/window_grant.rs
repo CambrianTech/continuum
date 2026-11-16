@@ -23,7 +23,7 @@ pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
 pub use lease::is_grant_retiring;
 #[cfg(test)]
 pub(crate) use lease::dyno_seam;
-pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+pub use lease::{hold_for_act, ActHold, publish_at_the_act, DispatchState, DispatchWait, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails
@@ -159,6 +159,51 @@ pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
+/// How wide one seat on this node's engine is: the most ONE mind may be granted, as the grant owner
+/// reads it off the engine (one slot on fixed slots, the pool capped at the trained window on a shared
+/// one). Never the snapshot's equal share of the pool (`sequence_share`, a KV charge): an unreported
+/// seat is [`SeatWindow::Unreported`], an absence, never a number standing in for one.
+///
+/// The M5, 2026-11-14: a 661,504-token pool holding 262,144 per sequence was published as 5 x 132,300,
+/// and the grid named Benchy (148,818) and Atlas (135,619) unservable while their grants were 170,903
+/// and 160,368 (958ea3056). Then the share stood in until the first grants evaluation, and at boot the
+/// grid named three minds unservable against 110,387 = 551,936 / 5 (7f875ccfd, 07:52:26-27Z; the grant
+/// owner reported 262,144 at 07:52:28Z).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeatWindow {
+    /// The grant owner has not read the engine's per-sequence limit: no grants are installed, or the
+    /// last evaluation granted from nothing ([`NoGrants`]).
+    Unreported,
+    /// The most one sequence on this engine holds.
+    Reported(Tokens),
+}
+
+impl SeatWindow {
+    /// The seat a published grants value reports, if any.
+    pub fn of(grants: Option<&PoolGrants>) -> Self {
+        match grants.and_then(|g| Tokens::new(g.per_sequence_cap)) {
+            Some(cap) => Self::Reported(cap),
+            None => Self::Unreported,
+        }
+    }
+
+    /// The width as a wire number where 0 already means unknown (a capacity beacon, the health line).
+    pub fn wire_tokens(self) -> u32 {
+        match self {
+            Self::Reported(cap) => cap.get(),
+            Self::Unreported => 0,
+        }
+    }
+}
+
+/// This node's seat, as the grant owner last reported it. A `watch` borrow, no I/O.
+pub fn current_seat() -> SeatWindow {
+    match GRANTS.get() {
+        Some(rx) => SeatWindow::of(rx.borrow().as_ref()),
+        None => SeatWindow::Unreported,
+    }
+}
+
 /// Why one grants evaluation granted nobody: every way `grant_inputs` has nothing to grant from,
 /// typed (card 5e79e1c1; Codex: "type those truthfully").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,10 +262,13 @@ pub enum Waiting {
     NeedAbovePool { need: u32, pool: u32 },
     /// Her own grant is being reclaimed: she is regranted after its receipt.
     Reclaiming,
-    /// Queued for room behind others (1-based `position` of `of`): a holder must yield first.
-    Queued { position: usize, of: usize },
-    /// Seatable, not reclaiming, and in no queue: the fair publisher left her out, which it should
-    /// never do. Named, so a live read shows the defect instead of a reason it does not have.
+    /// Cells are being reclaimed for her from holders that are not acting: she is granted after the
+    /// engine's reclaim receipt (CONTINUUM-ENGINE 4.9 P3).
+    ForReclaim,
+    /// Every holder that could make room is mid-act (`acting` of them): her act begins when one ends.
+    BehindActs { acting: usize },
+    /// Seatable, owed nothing and not granted: the publisher left her out, which it should never
+    /// do. Named, so a live read shows the defect instead of a reason it does not have.
     Unplaced,
 }
 
@@ -253,15 +301,17 @@ pub enum Ungranted {
 }
 
 impl Ungranted {
-    /// Her turn comes once room opens: she is queued behind others, or the engine is relaunching.
+    /// Her turn comes once room opens: cells are being reclaimed for her, every holder is mid-act,
+    /// or the engine is relaunching.
     /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
-    /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
-    /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
-    /// (the M5, d0abbddd1, 2026-11-10: Aris parked to the 1,500 s tick deadline, five times, while
-    /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
-    /// Every other reason names a defect.
+    /// and wait its turn"). Her own seat being RECLAIMED is waited out too: the window is decided
+    /// before her act's custody guard is taken (`MindTurn` at admission), and warm-ahead never begins
+    /// on a retiring grant (`MindTurn::try_begin`), so a turn waiting here holds nothing the reclaim
+    /// takes. Ending her turn instead cost Aris three turns in fifteen minutes on the M5 under P3
+    /// (26512dc03, 2026-11-16 06:22-06:37Z; card d50e8e66, Joel: "Have we taken away persona freedom
+    /// and agency?"). Every other reason names a defect.
     pub fn awaits_room(&self) -> bool {
-        matches!(self, Self::Waiting(Waiting::Queued { .. }) | Self::Nobody(NoGrants::NotReady))
+        matches!(self, Self::Waiting(Waiting::ForReclaim | Waiting::Reclaiming | Waiting::BehindActs { .. }) | Self::Nobody(NoGrants::NotReady))
     }
 }
 
@@ -289,6 +339,21 @@ pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<Gran
     EVALUATIONS.get().cloned()
 }
 
+static DEMAND_MOVED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+/// A mind became ready without a grant, or an act ended and its cells came free: the grants
+/// publisher evaluates now, never at its next tick (RTOS rule 10; the M5 2026-11-15: every ready
+/// mind waited up to a 5 s tick for a grant the free cells already held). A notify with no
+/// waiter keeps one permit, so a move during an evaluation is never lost.
+pub fn demand_moved() {
+    DEMAND_MOVED.notify_one();
+}
+
+/// Resolves at the next [`demand_moved`] (or at once, for one made while nobody waited).
+pub async fn demand_moves() {
+    DEMAND_MOVED.notified().await;
+}
+
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
 /// is in flight now. A mind not measured yet has no `Demand`: there is no number to grant her
 /// (`Measure::Unmeasured`), and her first view measures her.
@@ -309,6 +374,54 @@ pub struct Demand<K> {
     pub settled: bool,
     /// The most she may be granted: what one sequence of the engine can hold.
     pub ceiling: u32,
+}
+
+impl Demand<uuid::Uuid> {
+    /// Her requirement as a demand on a pool whose one sequence holds `ceiling`, on a model trained
+    /// to `trained`, or why it is none. `in_flight`: a turn of hers runs now.
+    pub fn of(
+        r: &crate::inference::planning::window_allocator::LaneRequirement,
+        trained: Tokens,
+        ceiling: u32,
+        in_flight: bool,
+    ) -> Result<Self, Excluded> {
+        use crate::inference::planning::window_allocator::Measure;
+        // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not. A
+        // wish no held turn has measured is no floor, only the most she might need: clamped to what
+        // one sequence holds, so she is granted it and her first held turn measures her. Read as
+        // exact, a wish above the ceiling was never granted, never held, never measured: every act
+        // refused for good (BigMama, Sahar on 10523b95e: 'NeedAboveCeiling need127103 ceiling58112'
+        // while her fit was 28,928). A declared size stays a hard floor (an authored requirement),
+        // and the wish never enters `Observed`, so no ring reader can take it for a sample (Codex).
+        let observed = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained));
+        let need = match (r.measure, Tokens::new(ceiling)) {
+            (Measure::Wished { .. }, Some(ceiling)) => observed.value().min(ceiling),
+            _ => observed.within(ceiling),
+        };
+        let wish = r.wish.ok_or(Excluded::NoWish)?.min(trained);
+        // Her target is room to grow over what her turns hold (her held need with the sent
+        // headroom), and never less than what her view holds at full detail (her wish, measured
+        // from her items at their whole level, never from a render a grant collapsed). A grant is a
+        // ceiling, not an allocation: KV is paged on use, and the act's priced allocation decides how
+        // much of it an act holds (`continuum_context::allocation::priced`). Below her wish, her
+        // view collapses at every start, her next demand is measured from the collapse, and the
+        // grant sized from it falls again (Aris on the M5, 2026-11-13, 2b17c41df: 109,745 -> 43,807
+        // alone on a 247,040-token pool, six re-reads of one file, no edit). Growing past it stays
+        // a priced decision, never "fill because the pool has room" (the M5, 2026-11-07: targets of
+        // 150-557k from untrimmed demand grew grants to 197k, 71 acts vs 158; 7b7a696a).
+        let headroom = crate::inference::planning::serving_plan::SENT_HEADROOM;
+        let target = Tokens::new((f64::from(need.get()) * headroom) as u32).ok_or(Excluded::NoTarget)?.max(wish).min(trained);
+        Ok(Demand {
+            mind: r.persona,
+            need,
+            target,
+            wish,
+            in_flight,
+            // read off her receipts by the fair publisher, which owns them (`publish_at_the_act`)
+            settled: false,
+            ceiling,
+        })
+    }
 }
 
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
@@ -516,6 +629,20 @@ mod tests {
         assert_eq!(grants, BTreeMap::from([(1, 70_000), (2, 20_000), (3, 10_000)]));
         let too_big = DemandFollowing.grant(&[demand(1, 40_000, false, 32_768)], &BTreeMap::new(), pool);
         assert!(too_big.is_empty(), "a need above what one sequence holds now waits, never trimmed: {too_big:?}");
+    }
+
+    // what this catches (the M5, 2026-11-14: `grid.mind.unservable widest_window=132300` on 958ea3056,
+    // then `widest_window=110387` at boot on 7f875ccfd): a seat read as the pool's equal share, first
+    // always, then as a stand-in until the grant owner reported. The seat is the grant owner's
+    // per-sequence limit, and before it reports there is no seat, never the share.
+    #[test]
+    fn a_seat_is_what_one_sequence_holds_and_unreported_until_the_grant_owner_reads_it() {
+        let grants = |cap| PoolGrants { pool_tokens: 551_936, per_sequence_cap: cap, ..PoolGrants::default() };
+        assert_eq!(SeatWindow::of(Some(&grants(262_144))), SeatWindow::Reported(t(262_144)), "the engine's per-sequence limit");
+        assert_eq!(SeatWindow::of(Some(&grants(262_144))).wire_tokens(), 262_144);
+        assert_eq!(SeatWindow::of(None), SeatWindow::Unreported, "no grants evaluation yet: no seat, never 110,387");
+        assert_eq!(SeatWindow::of(Some(&grants(0))), SeatWindow::Unreported, "a zero limit is no report");
+        assert_eq!(SeatWindow::Unreported.wire_tokens(), 0, "the wire's own unknown");
     }
 
     // what this catches (the M5, 2026-11-03, 2bbfa56c9): a grant below need. The 2,048-token launch
@@ -771,6 +898,29 @@ mod tests {
         assert_eq!(Observed::AtLeast { at_least: t(4_096) }.within(ceiling), t(4_096), "a bound within the ceiling is untouched");
     }
 
+
+    // what this catches (Aris on the M5, 2026-11-13, 2b17c41df: alone on a 247,040-token pool,
+    // granted 43,807 = 1.25 x her collapsed-render wish of 35,046 while her priced need read at least
+    // 56-99k): a target below what her view holds at full detail, so her settled grant was released
+    // down to it and every start collapsed again. Her target is never below her wish, and on an idle
+    // pool her grant holds it; a need still waits in order when the pool is short.
+    #[test]
+    fn an_idle_pool_grants_her_whole_view_and_never_releases_below_it() {
+        use crate::inference::planning::window_allocator::LaneRequirement;
+        let (pool, trained) = (247_040, t(262_144));
+        let aris = uuid::Uuid::from_u128(0x8044b75b);
+        let full_detail = t(63_000);
+        let requirement = LaneRequirement::wished(aris, full_detail, crate::inference::planning::serving_plan::SENT_HEADROOM)
+            .held(Observed::Exact(t(38_075)));
+        let demand = Demand::of(&requirement, trained, pool, false).expect("test: a held requirement is a demand"); // expect: a wished and held requirement has a need, target and wish
+        assert_eq!(demand.wish, full_detail);
+        assert!(demand.target >= full_detail, "her target holds her whole view: {demand:?}");
+        let settled = Demand { settled: true, ..demand };
+        let grants = DemandFollowing.grant(&[settled], &BTreeMap::from([(aris, 109_745)]), pool);
+        assert!(grants[&aris] >= full_detail.get(), "a settled grant on an idle pool never falls below her whole view: {grants:?}");
+        let fresh = DemandFollowing.grant(&[settled], &BTreeMap::new(), pool);
+        assert!(fresh[&aris] >= full_detail.get(), "granted her whole view at once: {fresh:?}");
+    }
 
     // what this catches: a floored need crossing a JSON boundary (requirements to the serving
     // daemon) read back as a bare bound with its floor dropped, because untagged reads try variants

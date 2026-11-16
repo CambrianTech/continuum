@@ -78,6 +78,12 @@ pub enum HeldOnly {
     /// The rule counts every instance of a shape that is sometimes right, and no sanctioned form
     /// exists yet to write the right ones in: a touched file would have nothing to move to.
     NoSanctionedForm,
+    /// The sites are a backlog of thousands, swept crate by crate from the floor up (plan phase
+    /// 5). A touched file may keep its old sites, so a split or an unrelated fix is never held
+    /// hostage to a whole file's debt; it may not add one, which the held total already says:
+    /// only a touched file's sites can move, so the total rises exactly when the touched files
+    /// gain sites.
+    SweptByCrate,
 }
 
 /// Hold the ratchet `name` at its violations' count, and record where they live: one

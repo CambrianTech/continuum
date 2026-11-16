@@ -89,7 +89,7 @@ Those harnesses run agents (sentinels here) on a remote API that knows nothing o
 engine as her, so:
 
 1. **A forked sentinel costs no prefill.** It copies her warm KV sequence (`seq_cp` in the
-   engine, SERVING-ENGINE.md), so it starts already holding everything she has read. Elsewhere a fork
+   engine, CONTINUUM-ENGINE.md), so it starts already holding everything she has read. Elsewhere a fork
    re-sends the whole context.
 2. **A sentinel inherits her genome.** It runs with her active genes, or a gene she picks for the
    job, so a specialist is her, specialised, rather than a stranger with a brief.

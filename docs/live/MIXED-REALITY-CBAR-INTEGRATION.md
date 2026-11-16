@@ -123,7 +123,7 @@ The rework is NOT urgent — continuum works today. But when responsiveness and 
 
 ## See also
 
-- `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the full pattern description with code examples
+- `docs/architecture/CONTINUUM-ENGINE.md` — the full pattern description with code examples
 - `docs/CONVERSATIONAL-CADENCE-ARCHITECTURE.md` — Alex + LoD (same attention-weighted primitives)
 - `docs/IMMERSIVE-SOCIAL-ARCHITECTURE.md` — the 3D immersive world these sensors feed
 - [open-eyes](https://github.com/CambrianTech/open-eyes) — the Rust implementation

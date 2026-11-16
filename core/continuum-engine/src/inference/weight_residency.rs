@@ -186,7 +186,7 @@ impl ContextGeometry {
     }
 
     /// The most ONE sequence may hold, as the engine reports it: one slot under fixed slots, the
-    /// pool under a shared one. The one limit a mind's grant reads (SERVING-ENGINE section 8), never
+    /// pool under a shared one. The one limit a mind's grant reads (CONTINUUM-ENGINE.md, serving engine: admission (4.8)), never
     /// a launch-time division read off argv. `None` past the grants' token width.
     pub fn sequence_tokens(&self) -> Option<u32> {
         u32::try_from(self.max_tokens_per_sequence).ok()

@@ -83,7 +83,7 @@ fn command_result_to_value(command: &str, result: CommandResult) -> Result<Value
     match result {
         CommandResult::Json(v) => Ok(v),
         CommandResult::Handle(handle) => {
-            serde_json::to_value(&handle).map_err(|e| ClientError::Codec(e.to_string()))
+            serde_json::to_value(&handle).map_err(|e| ClientError::Codec(e.to_string())) // boundary: the client API's result is a JSON value, the same shape every transport returns
         }
         // Mirror `CommandResult::to_json_value`: a Binary result surfaces its
         // metadata JSON (the raw bytes travel out-of-band via a handle, not on
@@ -109,15 +109,17 @@ impl Transport for InProcessTransport {
         }
         let result = self
             .executor
-            .execute_with_caller(command, params, self.caller.clone())
+            .execute_classified(command, params, self.caller.clone())
             .await
-            .map_err(|reason| ClientError::Refused {
+            .map_err(|failure| ClientError::Refused {
                 command: command.to_string(),
-                reason,
-                // An executor `Err` is a gate or transport sentence with nothing typed
-                // behind it; an inner `{ success: false, … }` value is NOT an `Err` here —
-                // it flows through `command_result_to_value` as `Ok(value)`, outcome intact.
+                reason: failure.message,
+                // An inner `{ success: false, … }` value is NOT an `Err` here — it flows
+                // through `command_result_to_value` as `Ok(value)`, outcome intact.
                 outcome: None,
+                // A command's refusal with its next moves crosses typed, so the mind calling
+                // through this client admits what it names (the seam `CommandRefusal` was made for).
+                refusal: failure.refusal,
             })?;
         command_result_to_value(command, result)
     }

@@ -24,10 +24,12 @@ impl Drop for Interest {
     }
 }
 
-/// If the waiter vanishes before accepting the result, a verified restore still
-/// belongs to its activity: nothing was sent, so the admission's own drop keeps it
-/// (`Dispatch::Unsent`).
-struct Handoff(Option<TurnAdmission>);
+/// The page IO's result travels to its requester as a handoff (`runtime::stage::handoff`): if
+/// the requester vanishes first, a verified restore still belongs to its activity, so the
+/// admission is dropped with the delivery after the terminal receipt and ledger updates, and its
+/// own drop keeps the residency (nothing was sent: `Dispatch::Unsent`).
+const PAGE_IO_RESULT: crate::runtime::stage::TopicName =
+    crate::runtime::stage::TopicName("inference/kv_page.result");
 
 impl TurnAdmission {
     pub(super) async fn retain_paging<F, Fut>(
@@ -39,13 +41,14 @@ impl TurnAdmission {
         F: FnOnce(Self, Arc<AtomicBool>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Self, String>> + Send + 'static,
     {
+        use crate::runtime::stage::{handoff, Settled};
         let interested = Arc::new(AtomicBool::new(true));
         let mut interest = Interest {
             active: interested.clone(),
             root: root.to_owned(),
             waiting: true,
         };
-        let (send, receive) = tokio::sync::oneshot::channel();
+        let (delivers, result) = handoff(PAGE_IO_RESULT);
         crate::inference::slots::directory()
             .endpoint(root)
             .retain_paging(async move {
@@ -53,20 +56,17 @@ impl TurnAdmission {
                 if !interested.load(Ordering::Acquire) {
                     return;
                 }
-                let result = operation(self, interested)
-                    .await
-                    .map(|admission| Handoff(Some(admission)));
-                // Failed delivery drops Handoff here, after the terminal receipt and
-                // ledger updates, rather than cancelling the IO or releasing early.
-                let _ = send.send(result);
+                match operation(self, interested).await {
+                    Ok(admission) => delivers.hand_over(admission),
+                    Err(reason) => delivers.refuse(reason),
+                }
             });
-        let result = receive.await;
+        let settled = result.settled().await.settled;
         interest.waiting = false;
-        let mut handoff =
-            result.map_err(|_| "endpoint paging owner ended without a result".to_owned())??;
-        handoff
-            .0
-            .take()
-            .ok_or_else(|| "endpoint paging handoff already consumed".to_owned())
+        match settled {
+            Settled::Ready(admission) => Ok(admission),
+            Settled::Failed(reason) => Err(reason),
+            Settled::Abandoned => Err("endpoint paging owner ended without a result".to_owned()),
+        }
     }
 }

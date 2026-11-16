@@ -28,9 +28,9 @@ pub(super) async fn try_neural_embedder(
         null_std = std,
         "measured unrelated-cosine null for the embedding space"
     );
-    // The embed lane's standing floor is re-stated by each of its leases, in the pool its context
-    // resides in, at the largest context it has embedded (`inference::embed_lane_memory`): the probe
-    // and calibration passes above set it before any turn embeds.
+    // The probe above made the embed lane's resident claim (`inference::embed_lane_memory::
+    // EmbedResidency`): its weights plus one window context, reserved in the pool its context resides
+    // in until the embedder unloads, so serving's plan never takes the room each turn's recall uses.
     Some(Arc::new(CachingEmbeddingProvider::new(Arc::new(neural))) as Arc<dyn EmbeddingProvider>)
 }
 

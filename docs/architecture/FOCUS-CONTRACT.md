@@ -128,7 +128,7 @@ Required executable validators before all-node compliance is claimed:
 ## Documentation map
 
 - [Cognition pipeline](PERSONA-COGNITION-PIPELINE.md): assembly and source ownership.
-- [Context and engine](MIND-CONTEXT-AND-ENGINE-CONFIG.md): capacity, KV and placement.
+- [Context and engine](CONTINUUM-ENGINE.md): capacity, KV and placement.
 - [Concurrent mind](CONCURRENT-MIND-AND-GOVERNOR.md): activity scheduling and continuity.
 - Flow implementation plan, PR #5560 section 2d: migration order and measured
   non-compliance inventory. It implements this contract; its ratchet is enforcement.

@@ -40,7 +40,8 @@ use super::*;
 /// by the consumer beside the window and lanes it reads from the same snapshot. The first
 /// cut read a daemon cell the target derivation rewrote; that cell moved under a running
 /// engine (2026-09-20 07:52Z) and the board credited a grant no process held.
-pub(super) fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+pub(super) fn serving_footprint_fn(catalog: &Arc<ModelCatalog>) -> FootprintFn {
+    let catalog = Arc::clone(catalog);
     Arc::new(
         move |id: &str, served_window: u32, lanes: u32, grant_mib: u32| {
             catalog
@@ -54,7 +55,7 @@ pub(super) fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
                         grant_mib,
                     )
                 })
-                .unwrap_or(0)
+                .unwrap_or(0) // unwrap_or: a model the catalog does not know, or one with no local weights, holds nothing to attribute
         },
     )
 }
@@ -68,7 +69,40 @@ pub fn attribute_serving(peak_resident_bytes: u64, lanes: u32, granted_cache_mib
     peak_resident_bytes.saturating_add((granted_cache_mib as u64).saturating_mul(1024 * 1024))
 }
 
+/// The serving engine's host prompt cache, driven through this daemon's control: the first holder
+/// to give host RAM back under the host's memory deficit (card 0f631c46). The launch grant it
+/// lowers from and takes back to is the one on the serving snapshot (the spawn fact, or
+/// `--cache-ram` read off an adopted engine's argv).
+struct EnginePromptCache(Arc<dyn LlamaServerControl>);
+
+#[async_trait::async_trait]
+impl crate::modules::serving_prompt_cache::PromptCacheControl for EnginePromptCache {
+    fn engine(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
+        self.0.served_incarnation()
+    }
+
+    async fn set_limit(
+        &self,
+        limit_mib: std::num::NonZeroU64,
+    ) -> Result<crate::inference::llama_server::PromptCacheLimit, crate::inference::llama_server::LlamaServerError> {
+        self.0.set_prompt_cache_limit(limit_mib).await
+    }
+}
+
 impl ServingDaemonModule {
+    /// Register the engine's host prompt cache with the memory monitor (`live_pool::
+    /// give_host_memory_back_first` registers it after the minds' pool): the first holder asked for
+    /// the host's deficit, and taken back when the OS reads normal (card 0f631c46). Steps run on
+    /// `runtime`.
+    pub(super) fn register_prompt_cache(&self, monitor: &crate::system_resources::MemoryPressureMonitor, runtime: tokio::runtime::Handle) {
+        crate::modules::serving_prompt_cache::PromptCacheShedder::register(
+            Arc::new(EnginePromptCache(self.server.clone())),
+            self.subscribe_serving(),
+            monitor,
+            runtime,
+        );
+    }
+
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
     /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
@@ -179,7 +213,7 @@ impl ServingDaemonModule {
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
             self.intent.clone(),
-            serving_footprint_fn(self.catalog.clone()),
+            serving_footprint_fn(&self.catalog),
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own

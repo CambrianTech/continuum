@@ -1,5 +1,5 @@
 //! Her act's tail, judged and rendered by the view before it is sent, and joining her view once it
-//! is served (MIND-CONTEXT, "Revision, 2026-11-11: her act's tail is a source"). The tail (her call,
+//! is served (CONTINUUM-ENGINE section 5, "Revision, 2026-11-11: her act's tail is a source"). The tail (her call,
 //! its result, the ask, the act's framing and working context) is a [`Source`] for its rendering,
 //! keys, element identity and repeat judgement, but never a start source: its claims are the act's
 //! own in the one allocation (REQUIRED, NEWEST, LAST_MOVE), so a start grants it nothing, and a

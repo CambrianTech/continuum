@@ -27,11 +27,18 @@
 //!   replacement engine with a smaller grant is refused typed, never POSTed under the old lease
 //!   ([`reserve_attempt`]).
 //!
+//! - an ACT holds the grant it is rendered against from render to its end ([`hold_for_act`]): a
+//!   held mind is never handed off and her grant never moves under the act, so a rendered request
+//!   is never invalidated by a replan; a change applies at her next act (the M5, d6c0dd892,
+//!   2026-11-14 09:37-09:39Z: Atlas's grant grew 88,509 -> 89,513 and was then handed off to a
+//!   waiter while her rendered acts waited for a lane, and Benchy's went to None the same way; each
+//!   failed at dispatch with "her grant changed since this request was rendered").
+//!
 //! The lease is identified by its grant REVISION ([`super::GrantRevision`]), its engine incarnation
 //! and its owner, never its size: a grant shrunk and regrown to the same size is a new revision.
 
 mod fair;
-pub use fair::{publish_fair_grants, FairGrantState};
+pub use fair::{publish_at_the_act, DispatchState, DispatchWait};
 /// The dyno's handle on one test-owned grant owner (`capacity::dyno::service`); test-only (`#![cfg(test)]`).
 pub(crate) mod dyno_seam;
 
@@ -58,6 +65,8 @@ enum Custody {
     Live,
     /// The caller let go before the engine's terminal receipt: held until a fence.
     Unresolved,
+    /// An act rendered against this grant and not yet ended ([`ActHold`]): nothing is at the engine.
+    Rendered,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -82,14 +91,17 @@ pub struct TerminalReceipt {
 pub struct GrantHandoff {
     persona: uuid::Uuid,
     lease: GrantLease,
-    receipt: u64,
+    /// Her newest service receipt on this engine when the handoff began; `None` when this owner has
+    /// seen her serve nothing here (after an adoption her KV may still be resident: the engine's save
+    /// and erase are the proof either way, never this absence).
+    receipt: Option<u64>,
 }
 
 impl GrantHandoff {
     #[cfg(test)]
     pub(crate) fn for_test(persona: uuid::Uuid) -> Self {
         Self { persona, lease: GrantLease { tokens: 60, revision: super::GrantRevision::test(1),
-            engine: None, owner: super::GrantOwner::this_process() }, receipt: 1 }
+            engine: None, owner: super::GrantOwner::this_process() }, receipt: Some(1) }
     }
     pub fn persona(&self) -> uuid::Uuid { self.persona }
     pub fn lease(&self) -> GrantLease { self.lease }
@@ -115,8 +127,9 @@ struct ReservationState {
     retiring: BTreeMap<uuid::Uuid, GrantLease>,
     reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
     refused: BTreeMap<uuid::Uuid, GrantLease>,
-    /// A queued waiter is owed the holder's next completed turn. This blocks reserve at the
-    /// receipt boundary, rather than hoping the publisher catches an idle interval.
+    /// Every holder mid-act whose seat an owed mind needs (CONTINUUM-ENGINE 4.9 P3): once her act
+    /// completes she may not take her seat again before the next evaluation reclaims it. This blocks
+    /// reserve at the receipt boundary, rather than hoping the publisher catches an idle interval.
     yield_after: BTreeMap<uuid::Uuid, (GrantLease, u64)>,
 }
 
@@ -124,6 +137,19 @@ struct ReservationState {
 /// completion without observing the reservation it released (or vice versa).
 pub(super) struct Reservations {
     held: std::sync::Mutex<ReservationState>,
+}
+
+impl ReservationState {
+    /// The armed lease she owes a waiter: a turn of hers on it completed since it was armed.
+    fn owed_yield(&self, persona: uuid::Uuid) -> Option<GrantLease> {
+        let (armed, baseline) = self.yield_after.get(&persona)?;
+        self.receipts.get(&persona).filter(|(engine, revision)| *engine == armed.engine && revision > baseline).map(|_| *armed)
+    }
+
+    /// She holds an act on `engine` ([`ActHold`]): her grant there is fixed until it ends.
+    fn acting(&self, persona: uuid::Uuid, engine: Option<EngineIncarnation>) -> bool {
+        self.entries.get(&persona).is_some_and(|entries| entries.iter().any(|e| e.custody == Custody::Rendered && e.engine == engine))
+    }
 }
 
 impl Reservations {
@@ -154,10 +180,8 @@ impl Reservations {
         if held.retiring.get(&persona).is_some_and(|retired| retired.engine == leased.engine) {
             return Err(ReserveRefused::Retiring { leased });
         }
-        if held.yield_after.get(&persona).is_some_and(|(armed, baseline)| {
-            armed.same_identity(&leased) && held.receipts.get(&persona)
-                .is_some_and(|(engine, revision)| *engine == leased.engine && revision > baseline)
-        }) {
+        // A yield owed since her act began applies at her NEXT act: her own act holds its grant.
+        if !held.acting(persona, leased.engine) && held.owed_yield(persona).is_some_and(|armed| armed.same_identity(&leased)) {
             return Err(ReserveRefused::Retiring { leased });
         }
         if needed >= leased.tokens {
@@ -167,6 +191,20 @@ impl Reservations {
         let id = held.next_id;
         held.entries.entry(persona).or_default().push(Entry { id, tokens: leased.tokens, engine: leased.engine, custody: Custody::Live });
         Ok(GrantReservation { owner: self, persona, id })
+    }
+
+    /// Hold her published grant for one act (compare-and-hold under the publication lock): `None`
+    /// when she has none, or it is being handed off or owed to a waiter (her act waits for a grant).
+    fn hold_act(&'static self, persona: uuid::Uuid, current: impl FnOnce() -> Option<GrantLease>) -> Option<ActHold> {
+        let mut held = self.lock();
+        let lease = current()?;
+        if held.retiring.get(&persona).is_some_and(|retired| retired.engine == lease.engine) || held.owed_yield(persona).is_some() {
+            return None;
+        }
+        held.next_id += 1;
+        let id = held.next_id;
+        held.entries.entry(persona).or_default().push(Entry { id, tokens: lease.tokens, engine: lease.engine, custody: Custody::Rendered });
+        Some(ActHold { owner: self, persona, id, lease })
     }
 
     /// Run a regrant with every reservation held: the publisher computes and publishes under this
@@ -225,7 +263,7 @@ impl Reservations {
             return Err(HandoffRefused::AlreadyPending);
         }
         held.retiring.insert(persona, leased);
-        Ok(GrantHandoff { persona, lease: leased, receipt })
+        Ok(GrantHandoff { persona, lease: leased, receipt: Some(receipt) })
     }
 
     /// Release only this request. An unsent attempt is not completed service. A receipt from
@@ -244,6 +282,9 @@ impl Reservations {
             let revision = held.next_receipt;
             held.receipts.insert(persona, (entry.engine, revision));
         }
+        drop(held);
+        // Her act ended: its cells may serve a ready mind now.
+        super::demand_moved();
     }
 
     /// The caller let go of reservation `id` with no terminal receipt: it stays held, unresolved.
@@ -276,6 +317,37 @@ impl GrantReservation {
         self.owner.release(self.persona, self.id, false);
         std::mem::forget(self);
     }
+}
+
+/// One act's hold on the grant it is rendered against, from render until the act ends (dropped).
+/// A regrant keeps her grant fixed while it is held (a fixed claim, the same revision), and a
+/// handoff never begins under it, so her rendered request is dispatched against the grant it was
+/// priced on. Only a fence (the engine gone) ends it early; the dispatch then refuses typed.
+#[must_use = "an act hold released at once protects nothing"]
+pub struct ActHold {
+    owner: &'static Reservations,
+    persona: uuid::Uuid,
+    id: u64,
+    lease: GrantLease,
+}
+
+impl ActHold {
+    /// The grant this act is rendered against.
+    pub fn lease(&self) -> GrantLease {
+        self.lease
+    }
+}
+
+impl Drop for ActHold {
+    /// The act ended: nothing was at the engine under the hold itself, so it simply ends.
+    fn drop(&mut self) {
+        self.owner.release(self.persona, self.id, false);
+    }
+}
+
+/// Hold `persona`'s published grant for the act she is about to render ([`ActHold`]).
+pub fn hold_for_act(persona: uuid::Uuid) -> Option<ActHold> {
+    RESERVATIONS.hold_act(persona, || super::current_lease(persona))
 }
 
 /// Settle a request's reservation at the end of its stream: released on the engine's terminal
@@ -341,9 +413,7 @@ fn record_reclaimed(&self, proof: crate::inference::slots::grant_handoff::Reclai
 /// Whether her grant is being reclaimed now (a handoff in flight): she is regranted after its receipt.
 pub fn is_grant_retiring(persona: uuid::Uuid) -> bool {
     let state = RESERVATIONS.lock();
-    state.retiring.contains_key(&persona) || state.yield_after.get(&persona).is_some_and(|(lease, baseline)| {
-        state.receipts.get(&persona).is_some_and(|(engine, revision)| *engine == lease.engine && revision > baseline)
-    })
+    state.retiring.contains_key(&persona) || state.owed_yield(persona).is_some()
 }
 
 /// A refused transfer returns authority, never free capacity. The publisher must restore

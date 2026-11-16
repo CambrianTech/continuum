@@ -12,6 +12,7 @@ use super::*;
 /// Split from the process impl so the branch logic is unit-tested against a
 /// fake. `Unreachable` from the probe means "nothing up" → serve; any other
 /// probe error degrades rather than blindly relaunching over a sick server.
+#[cfg(test)]
 pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
@@ -23,7 +24,9 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
 ) -> EnsureOutcome {
-    ensure_model_serving_if_current(ctrl, target, force_probe, &|| true).await
+    let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
+    let operation = gate.try_operation().expect("test: a fresh gate is free");
+    ensure_model_serving_if_current(ctrl, target, force_probe, Reconciling { current: &|| true, operation: &operation }).await
 }
 
 
@@ -31,9 +34,9 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
     force_probe: bool,
-    current: &ServingLifecycleCheck<'_>,
+    reconciling: Reconciling<'_>,
 ) -> EnsureOutcome {
-    let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
+    let outcome = serve_or_adopt(ctrl, target, force_probe, reconciling).await;
     // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
     // one), records the lane's placement when its record lacks one (card 22aa3379).
     // Every adoption also follows the engine's log relay: a no-op for one already followed.
@@ -54,8 +57,9 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     // 500s, so without re-proving decode the owned-child trust would re-adopt the wedged
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
-    current: &ServingLifecycleCheck<'_>,
+    reconciling: Reconciling<'_>,
 ) -> EnsureOutcome {
+    let Reconciling { current, operation } = reconciling;
     let mut convergence_pair = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,
@@ -84,8 +88,10 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 // A KNOWN set that differs: the engine takes the change in place (fork #26:
                 // /lora-adapters/load and /unload) instead of a relaunch that kills every
                 // turn in flight and re-prefills every slot (charter S1, card 49b5e806).
-                // Only an engine that cannot falls through to the relaunch.
-                match ctrl.adopt_genome_in_place(target).await {
+                // Only an explicit Unsupported answer falls through to relaunch. A failed
+                // mutation may already have changed the set; it is not authority to replace
+                // the engine and discard the residents' retained state.
+                match ctrl.adopt_genome_in_place(target, operation).await {
                     Ok(GenomeInPlace::Adopted) => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.adopted_in_place",
                             model = target.model_id(),
@@ -104,6 +110,19 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                         );
                         true
                     }
+                    Ok(GenomeInPlace::Refused(why)) => {
+                        // The catalog's owner refused (no owner, a replaced engine, memory not
+                        // granted, the engine's own refusal): the running engine and every
+                        // resident's KV stay; never a relaunch over them (4.10 P4a).
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_refused",
+                            model = target.model_id(),
+                            reason = %why,
+                            "the gene catalog's owner refused the change: retaining the running engine"
+                        );
+                        return EnsureOutcome::Degraded {
+                            reason: format!("in-place genome change refused: {why}"),
+                        };
+                    }
                     Ok(GenomeInPlace::Unsupported) => {
                         // The costliest fall-through this function has (every turn in flight
                         // killed, every slot re-prefilled), so it is named like its siblings:
@@ -120,9 +139,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
                             model = target.model_id(),
                             error = %e,
-                            "the in-place gene change failed: relaunching onto the target set"
+                            "the in-place gene change failed: retaining the running engine"
                         );
-                        false
+                        return EnsureOutcome::Degraded {
+                            reason: format!("in-place genome change failed: {e}"),
+                        };
                     }
                 }
             }

@@ -14,21 +14,27 @@
 //! before returning, so the caller knows the VRAM is free (e.g. before a
 //! `models/remove`).
 //!
+//! ## The wait ends on an outcome, never a stopwatch
+//!
+//! The daemon's reconcile is the producer: the wait ends when its snapshot shows
+//! the lane left the model ([`LaneRelease::Freed`]), when a later `serving/load`
+//! takes the pin back ([`LaneRelease::Superseded`]), or when the daemon's channels
+//! close ([`LaneRelease::DaemonGone`]). A caller that gives up first (the command
+//! frame's own deadline) abandons only its wait: the pin is the daemon's intent
+//! and stays applied (CONTINUUM-ENGINE.md RTOS rule 10).
+//!
 //! ## Fail loud
 //!
 //! Unknown model id ⇒ [`CommandError::NotFound`] (a typo'd pin that silently does
-//! nothing is a lie). If the lane was serving the model and does not free within
-//! the convergence window ⇒ [`CommandError::Internal`] naming that the pin is
-//! applied but the daemon did not converge (check `serving/status`) — the pin
-//! stays applied (rolling it back would be a worse, hidden failure).
+//! nothing is a lie). A superseded pin or a gone daemon ⇒ [`CommandError::Internal`]
+//! naming which.
 //!
 //! ## Gating
 //!
 //! `Privileged` — it changes what occupies GPU memory on this node.
 
-use crate::modules::serving_daemon::ServingIntent;
+use crate::modules::serving_daemon::{ServingIntent, ServingIntentSnapshot};
 use std::sync::Arc;
-use std::time::Duration;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -39,12 +45,33 @@ use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::sdk_codegen::CommandError;
 
-/// How long to wait for a served lane to actually free after pinning the model
-/// off. The daemon recomputes + reconciles on its tick (5s); a relaunch to the
-/// next candidate or a teardown to empty completes within a few ticks. Generous so
-/// a healthy daemon always confirms; a timeout means the daemon is unhealthy, not
-/// that the window was too tight.
-const CONVERGE_TIMEOUT: Duration = Duration::from_secs(20);
+/// How the wait for a pinned-off model's lane ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LaneRelease {
+    /// The published snapshot no longer serves the model: its VRAM is free.
+    Freed,
+    /// The model is no longer suppressed (a later `serving/load`): the lane may stay.
+    Superseded,
+    /// The daemon's snapshot or intent channel closed: no producer is left.
+    DaemonGone,
+}
+
+/// Wait for the daemon to publish the model's release, or for the outcome that means it never will.
+async fn lane_release(
+    serving: &watch::Receiver<ServingSnapshot>,
+    mut intent: watch::Receiver<ServingIntentSnapshot>,
+    model: &str,
+) -> LaneRelease {
+    let mut serving = serving.clone();
+    tokio::select! {
+        freed = serving.wait_for(|s| s.active_model.as_deref() != Some(model)) => {
+            if freed.is_ok() { LaneRelease::Freed } else { LaneRelease::DaemonGone }
+        }
+        restored = intent.wait_for(|s| !s.suppressed.contains(model)) => {
+            if restored.is_ok() { LaneRelease::Superseded } else { LaneRelease::DaemonGone }
+        }
+    }
+}
 
 /// Which model's VRAM lane to free.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -98,7 +125,7 @@ crate::action_command! {
         // 1. The model must exist in the live universe — never pin a typo.
         if this.catalog.snapshot().get(&p.model_id).is_none() {
             return Err(CommandError::NotFound(format!(
-                "unknown model id '{}' — call models/list to see the live universe",
+                "unknown model id '{}': it is not in the live model catalog",
                 p.model_id
             )));
         }
@@ -111,21 +138,23 @@ crate::action_command! {
         // 3. Pin it OFF. Idempotent — re-unloading an already-pinned model is fine.
         this.intent.set_suppressed(&p.model_id, true, true).map_err(|error| CommandError::Denied(error.to_string()))?;
 
-        // 4. If it held the lane, wait for the daemon's next reconcile to actually
-        //    free it before we claim success.
+        // 4. If it held the lane, wait for the daemon's reconcile to actually free it
+        //    before we claim success.
         if was_serving {
-            let mut rx = this.serving.clone();
-            let freed = tokio::time::timeout(
-                CONVERGE_TIMEOUT,
-                rx.wait_for(|s| s.active_model.as_deref() != Some(p.model_id.as_str())),
-            )
-            .await;
-            if freed.is_err() {
-                return Err(CommandError::Internal(format!(
-                    "model '{}' pinned off, but the serving lane did not free within {}s — the serving daemon may be unhealthy; the pin remains applied (check serving/status)",
-                    p.model_id,
-                    CONVERGE_TIMEOUT.as_secs()
-                )));
+            match lane_release(&this.serving, this.intent.subscribe(), &p.model_id).await {
+                LaneRelease::Freed => {}
+                LaneRelease::Superseded => {
+                    return Err(CommandError::Internal(format!(
+                        "model '{}' was pinned off, then loaded again before its lane freed",
+                        p.model_id
+                    )))
+                }
+                LaneRelease::DaemonGone => {
+                    return Err(CommandError::Internal(format!(
+                        "model '{}' pinned off, but the serving daemon stopped publishing before the lane freed; the pin remains applied",
+                        p.model_id
+                    )))
+                }
             }
         }
 
@@ -160,6 +189,9 @@ crate::action_command! {
 mod tests {
     use super::*;
 
+    use futures::FutureExt;
+    use std::collections::HashSet;
+
     // what this catches: the wire name mirrors the file path — the routing
     // contract that lets the typed registry dispatch `serving/unload` to this
     // command.
@@ -167,5 +199,49 @@ mod tests {
     fn name_mirrors_path() {
         use crate::sdk_codegen::ActionCommand;
         assert_eq!(ServingUnload::NAME, "serving/unload");
+    }
+
+    fn serving(model: Option<&str>) -> ServingSnapshot {
+        ServingSnapshot { active_model: model.map(str::to_string), ..ServingSnapshot::empty() }
+    }
+
+    fn suppressing(models: &[&str]) -> ServingIntentSnapshot {
+        ServingIntentSnapshot {
+            revision: 1,
+            pinned: None,
+            suppressed: Arc::new(models.iter().map(|m| m.to_string()).collect::<HashSet<_>>()),
+        }
+    }
+
+    // what this catches: a stopwatch deciding the unload. The wait stays open while the
+    // daemon still serves the model, and the reconcile's publication of its release is
+    // what completes it.
+    #[tokio::test]
+    async fn the_daemons_release_publication_completes_the_wait() {
+        let (serving_tx, serving_rx) = watch::channel(serving(Some("m")));
+        let (_intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
+        assert!((&mut wait).now_or_never().is_none(), "still served: no outcome yet");
+        serving_tx.send_replace(serving(Some("next")));
+        assert_eq!(wait.await, LaneRelease::Freed);
+    }
+
+    // what this catches: a pin taken back or a daemon gone read as a freed lane, or
+    // waited on forever. Each is its own typed outcome.
+    #[tokio::test]
+    async fn a_reload_and_a_gone_daemon_are_typed_outcomes() {
+        let (_serving_tx, serving_rx) = watch::channel(serving(Some("m")));
+        let (intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
+        assert!((&mut wait).now_or_never().is_none());
+        intent_tx.send_replace(suppressing(&[]));
+        assert_eq!(wait.await, LaneRelease::Superseded);
+
+        let (serving_tx, serving_rx) = watch::channel(serving(Some("m")));
+        let (_intent_tx, intent_rx) = watch::channel(suppressing(&["m"]));
+        let mut wait = Box::pin(lane_release(&serving_rx, intent_rx, "m"));
+        assert!((&mut wait).now_or_never().is_none());
+        drop(serving_tx);
+        assert_eq!(wait.await, LaneRelease::DaemonGone);
     }
 }

@@ -590,3 +590,62 @@ async fn queue_progress_follows_budget_holders_waiting_for_physical_slots() {
     drop(first);
     drop(second);
 }
+
+// what this catches (timer audit row H3, 2026-11-14): a released lane woke its parked callers
+// from the permit's Drop BODY, which runs before its fields (the permits) drop. A caller woken
+// on another worker tried, found nothing free, and parked with no further wake coming; a fixed
+// 1 s re-check hid it. The waker here records what a woken caller would find at the instant of
+// the wake: the budget permit must already be back.
+#[tokio::test]
+async fn a_release_wakes_parked_callers_only_after_its_budget_permit_is_back() {
+    struct FreeAtWake {
+        gate: &'static LaneAdmission,
+        seen: parking_lot::Mutex<Vec<usize>>,
+    }
+    impl std::task::Wake for FreeAtWake {
+        fn wake(self: std::sync::Arc<Self>) {
+            self.wake_by_ref();
+        }
+        fn wake_by_ref(self: &std::sync::Arc<Self>) {
+            self.seen.lock().push(self.gate.nondirected_lanes().available_permits());
+        }
+    }
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2); // non-directed budget = 1
+    let held = gate.acquire_serving_lane(None, LanePriority::Work, None).await;
+    assert_eq!(gate.nondirected_lanes().available_permits(), 0);
+    let at_wake = std::sync::Arc::new(FreeAtWake { gate, seen: parking_lot::Mutex::new(Vec::new()) });
+    let waker = std::task::Waker::from(std::sync::Arc::clone(&at_wake));
+    let parked = gate.released.notified();
+    tokio::pin!(parked);
+    assert!(std::future::Future::poll(parked.as_mut(), &mut std::task::Context::from_waker(&waker)).is_pending());
+    drop(held);
+    assert_eq!(*at_wake.seen.lock(), vec![1], "the first wake of a release finds its budget permit already free");
+}
+
+// what this catches (timer audit row H3): parked callers re-checked on a fixed 1 s arm, so an
+// admission could move forward on a timer instead of the release. On a paused clock any timer
+// advances virtual time; a held-work caller and then an ambient caller must each be granted at
+// the very instant the lane they wait on is released.
+#[tokio::test(start_paused = true)]
+async fn a_release_grants_the_parked_caller_at_the_same_instant() {
+    use std::time::Duration;
+    let gate: &'static LaneAdmission = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(2); // non-directed budget = 1
+    let held = gate.acquire_serving_lane(None, LanePriority::Ambient, None).await;
+    let work = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Work, None).await });
+    let ambient = tokio::spawn(async move { gate.acquire_serving_lane(None, LanePriority::Ambient, None).await });
+    tokio::task::yield_now().await;
+    assert_eq!(gate.work_waiting(), 1, "the work caller is parked");
+    assert!(!ambient.is_finished(), "the ambient caller stands aside for held work");
+    let released_at = tokio::time::Instant::now();
+    drop(held);
+    // The bound only turns a missed wake into a failure instead of a hang.
+    let work = tokio::time::timeout(Duration::from_secs(60), work).await.expect("test: the release wakes work").expect("test: join");
+    assert_eq!(released_at.elapsed(), Duration::ZERO, "work is granted by the release itself, never a timer");
+    let released_at = tokio::time::Instant::now();
+    drop(work);
+    let ambient = tokio::time::timeout(Duration::from_secs(60), ambient).await.expect("test: the release wakes ambient").expect("test: join");
+    assert_eq!(released_at.elapsed(), Duration::ZERO, "ambient is granted by the release itself, never a timer");
+    drop(ambient);
+}

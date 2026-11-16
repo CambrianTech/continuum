@@ -80,6 +80,24 @@ pub(super) struct LoadedLedger {
     pub(super) residents: Vec<(u32, PageKey)>,
 }
 
+/// Why a page dir's ledger restored nothing: each is a different thing to fix, and a restart
+/// that leaves every mind cold names which (never a silent cold start).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LedgerUnread {
+    /// No ledger beside the pages: nothing was ever confirmed here, or the last stop's
+    /// checkpoint never wrote one.
+    Missing,
+    /// The file is there and could not be read, for this reason.
+    Unreadable(std::io::ErrorKind),
+    /// The file is not a ledger this core can parse.
+    Malformed,
+    /// Written before the page-format identity, with no identity files to date it against.
+    LegacyUndated,
+    /// Written under another page format (model, adapters, draft, KV cache type or flash
+    /// attention changed): its pages hold KV this engine would compute differently.
+    OtherPageFormat,
+}
+
 impl SavedLedger {
     pub(crate) fn in_dir(page_dir: &std::path::Path, fingerprint: String) -> Self {
         Self {
@@ -120,7 +138,7 @@ impl SavedLedger {
         Ok(ledger)
     }
 
-    /// Atomic replace (write a sibling, then `replace_file`) into a dir that must already
+    /// Atomic replace (`durable::write_replace`: staged, synced, renamed) into a dir that must already
     /// exist: the lane creates its page dir; the ledger never creates one. Writes are
     /// serialized and a snapshot older than the one on disk is dropped, so the file is
     /// always the newest set even when writers race.
@@ -138,9 +156,7 @@ impl SavedLedger {
             mind_residents: snapshot.residents,
         };
         let bytes = serde_json::to_vec(&file)?; // file on disk: the page dir's confirmed-save ledger, read back by `load`
-        let tmp = self.path.with_extension("json.tmp");
-        std::fs::write(&tmp, bytes)?;
-        continuum_host::durable::replace(&tmp, &self.path)?;
+        continuum_host::durable::write_replace(&self.path, &bytes)?;
         *written = snapshot.generation;
         Ok(())
     }
@@ -149,33 +165,33 @@ impl SavedLedger {
     /// ledger's pages newer than every identity file), with their page file still present.
     /// Anything else is no eligibility, never a guess: a missing file, another format's
     /// ledger, a malformed one. Residents come back only for the same engine process.
-    pub(super) fn load(&self) -> LoadedLedger {
-        let Some(dir) = self.path.parent() else {
-            return LoadedLedger::default();
-        };
-        let unread = |why: &str| {
+    pub(super) fn load(&self) -> Result<LoadedLedger, LedgerUnread> {
+        let unread = |why: LedgerUnread| -> Result<LoadedLedger, LedgerUnread> {
             continuum_base::probe!(
                 class = "inference.kv_page.ledger_unread",
                 path = %self.path.display(),
-                why = why,
-                "no confirmed-save ledger restored: the pages in this dir re-prefill once"
+                why = ?why,
+                "no confirmed-save ledger restored: every page in this dir re-prefills once"
             );
-            LoadedLedger::default()
+            Err(why)
+        };
+        let Some(dir) = self.path.parent() else {
+            return unread(LedgerUnread::Missing);
         };
         let bytes = match std::fs::read(&self.path) {
             Ok(bytes) => bytes,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadedLedger::default(),
-            Err(_) => return unread("unreadable"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return unread(LedgerUnread::Missing),
+            Err(e) => return unread(LedgerUnread::Unreadable(e.kind())),
         };
         let Ok(file) = serde_json::from_slice::<SavedLedgerFile>(&bytes) else {
-            return unread("malformed");
+            return unread(LedgerUnread::Malformed);
         };
         let legacy = file.format < LEDGER_FORMAT && self.format == LEDGER_FORMAT;
         if legacy && self.identity_floor.is_none() {
-            return unread("written before the page-format identity, and no identity files to date it against");
+            return unread(LedgerUnread::LegacyUndated);
         }
         if !legacy && (file.format != self.format || file.fingerprint != self.fingerprint) {
-            return unread("written under another page format");
+            return unread(LedgerUnread::OtherPageFormat);
         }
         let listed = file.minds.len() + file.activities.len();
         let minds: Vec<MindKey> = file.minds.iter().copied().filter_map(MindKey::new).collect();
@@ -229,7 +245,7 @@ impl SavedLedger {
         } else {
             Vec::new()
         };
-        LoadedLedger { keys: fold.keys, residents }
+        Ok(LoadedLedger { keys: fold.keys, residents })
     }
 }
 

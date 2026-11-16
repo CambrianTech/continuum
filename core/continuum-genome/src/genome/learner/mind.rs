@@ -203,7 +203,7 @@ impl MindLearner {
         }
         if self.loaded {
             if let Err(why) = self.seat.unload().await {
-                return Err((self, why));
+                return Err((self, format!("unload refused: {why}")));
             }
             self.loaded = false;
         }

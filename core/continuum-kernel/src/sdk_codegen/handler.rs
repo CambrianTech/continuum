@@ -99,6 +99,40 @@ impl std::fmt::Display for CommandError {
 
 impl std::error::Error for CommandError {}
 
+/// A command's failure as it leaves dispatch: the sentence every caller reads, and, when the
+/// handler refused with its next moves ([`CommandError::Refused`]), that refusal as it crosses a
+/// seam ([`continuum_airc_protocol::CommandRefusal`]), so the mind she acts through admits every
+/// command it names into her next act's tools instead of reading it back out of the sentence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandFailure {
+    pub message: String,
+    pub refusal: Option<Box<continuum_airc_protocol::CommandRefusal>>,
+}
+
+impl CommandFailure {
+    /// The failure of `name`'s handler: its rendered error, and its typed refusal when it has one.
+    fn of(name: &str, error: &CommandError) -> Self {
+        let refusal = match error {
+            CommandError::Refused(refusal) => Some(Box::new(refusal.to_wire())),
+            _ => None,
+        };
+        Self { message: format!("{name}: {error}"), refusal }
+    }
+}
+
+/// A failure with nothing typed behind it (a decode, a gate, a panic): its sentence alone.
+impl From<String> for CommandFailure {
+    fn from(message: String) -> Self {
+        Self { message, refusal: None }
+    }
+}
+
+impl From<CommandFailure> for String {
+    fn from(failure: CommandFailure) -> Self {
+        failure.message
+    }
+}
+
 impl From<ArgumentsRefusal> for CommandError {
     fn from(refusal: ArgumentsRefusal) -> Self {
         CommandError::Arguments(refusal)
@@ -231,18 +265,19 @@ where
     <H::Spec as CommandSpec>::Params: DeserializeOwned,
     <H::Spec as CommandSpec>::Result: Serialize,
 {
-    dispatch_with_caller(handler, params, None).await
+    dispatch_with_caller(handler, params, None).await.map_err(String::from)
 }
 
 /// Like [`dispatch`], but threads the authenticated `caller` into [`Ctx`] so the
 /// handler can gate/scope by identity and propagate it through composition. The
 /// executor passes the caller it already gated on (persona / cross-grid airc
-/// sender); local in-process / IPC dispatches pass `None` (owner).
+/// sender); local in-process / IPC dispatches pass `None` (owner). A refusal keeps its typed
+/// next moves beside its sentence ([`CommandFailure`]).
 pub async fn dispatch_with_caller<H>(
     handler: &H,
     params: serde_json::Value,
     caller: Option<crate::routing::CallerIdentity>,
-) -> Result<CommandResult, String>
+) -> Result<CommandResult, CommandFailure>
 where
     H: CommandHandler,
     <H::Spec as CommandSpec>::Params: DeserializeOwned,
@@ -260,7 +295,7 @@ where
         }
         None => decode(&params),
     };
-    let req = decoded.map_err(|e| format!("{name}: {}", CommandError::Arguments(e)))?;
+    let req = decoded.map_err(|e| CommandFailure::of(name, &CommandError::Arguments(e)))?;
     let ctx = Ctx {
         handle: req.handle,
         session_id: req.session_id,
@@ -273,7 +308,7 @@ where
     let outcome = handler
         .execute(&ctx, req.params)
         .await
-        .map_err(|e| format!("{name}: {e}"))?;
+        .map_err(|e| CommandFailure::of(name, &e))?;
 
     match <H::Spec as CommandSpec>::WIRE {
         WireShape::Enveloped => {
@@ -282,17 +317,17 @@ where
                 resp = resp.with_handle_ref(handle);
             }
             resp.into_command_result()
-                .map_err(|e| format!("{name}: [internal] {e}"))
+                .map_err(|e| CommandFailure::from(format!("{name}: [internal] {e}")))
         }
         WireShape::Bare | WireShape::Provided => {
             if outcome.handle.is_some() {
-                return Err(format!(
+                return Err(CommandFailure::from(format!(
                     "{name}: [internal] handler minted a handle but the command's wire \
                      shape is Bare/Provided (no envelope to carry it) — declare it \
                      Enveloped or stop minting"
-                ));
+                )));
             }
-            CommandResult::json(&outcome.output).map_err(|e| format!("{name}: [internal] {e}"))
+            CommandResult::json(&outcome.output).map_err(|e| CommandFailure::from(format!("{name}: [internal] {e}")))
         }
     }
 }

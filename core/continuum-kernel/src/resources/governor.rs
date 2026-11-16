@@ -189,6 +189,12 @@ impl ResourceGovernor {
         self.ledger.budget_for_replacing(consumer_id, kind)
     }
 
+    /// The room beside every other consumer's claim — see
+    /// [`ResourceLeaseLedger::room_beside_others`](super::ledger::ResourceLeaseLedger::room_beside_others).
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.room_beside_others(consumer_id, kind)
+    }
+
     // ---- the tick ----------------------------------------------------------
 
     /// The per-tick decision. For each kind, compute how many bytes must come

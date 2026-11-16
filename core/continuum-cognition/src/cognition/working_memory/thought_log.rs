@@ -14,33 +14,134 @@ use super::residency::{RecordId, Resident};
 
 /// One thought.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "ThoughtWire", into = "ThoughtWire")]
 pub struct ThoughtRecord {
     /// Its place in her memory's one entry sequence (`WmEntry::occurrence`), checkpointed with it:
     /// what orders it among her settlements and names it in her view across a restart.
     pub occurrence: u64,
-    /// The whole thought while resident; `None` once a shed moved it to its handle.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
+    /// Where the thought itself is: in RAM, or shed to its saved whole.
+    pub body: ThoughtBody,
     /// Its summary level (`continuum_context::levels`), built once when it was recorded and kept
     /// after a shed: what her view gives it when it cannot keep it whole.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
-    /// The saved whole (`spill`): where a shed moves the body and her view reloads it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub handle: Option<String>,
-    /// The whole's length once its body left RAM: what her view prices it at without reading it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub stored_chars: Option<usize>,
     /// When she thought it (ms since the Unix epoch): the one clock a shed orders by.
     pub at_ms: u64,
+}
+
+/// Where a thought is. A thought with neither its text nor a saved whole cannot be represented:
+/// before this a record of three `Option`s could hold one, and her view rendered it as an empty
+/// message.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ThoughtBody {
+    /// Her whole thought in RAM; `saved` names its saved whole once the memory owner wrote it.
+    Resident { text: String, saved: Option<String> },
+    /// Shed from RAM to its saved whole, `chars` long: what her view prices it at without reading it.
+    Shed { handle: String, chars: std::num::NonZeroUsize },
 }
 
 impl ThoughtRecord {
     /// A thought as she produced it: resident whole, its summary level built now.
     pub fn new(occurrence: u64, text: String, at_ms: u64) -> Self {
         let summary = continuum_context::levels::summarize(&text, continuum_context::levels::Shape::Output);
-        Self { occurrence, text: Some(text), summary, handle: None, stored_chars: None, at_ms }
+        Self { occurrence, body: ThoughtBody::Resident { text, saved: None }, summary, at_ms }
     }
+
+    /// The whole thought while it is in RAM.
+    pub fn text(&self) -> Option<&str> {
+        match &self.body {
+            ThoughtBody::Resident { text, .. } => Some(text),
+            ThoughtBody::Shed { .. } => None,
+        }
+    }
+
+    /// Where its whole is saved: named once the memory owner wrote it, always once shed.
+    pub fn saved_handle(&self) -> Option<&str> {
+        match &self.body {
+            ThoughtBody::Resident { saved, .. } => saved.as_deref(),
+            ThoughtBody::Shed { handle, .. } => Some(handle),
+        }
+    }
+
+    /// Its saved whole was written under `handle`. A shed thought already names its own.
+    pub(super) fn saved_as(&mut self, handle: String) {
+        if let ThoughtBody::Resident { saved, .. } = &mut self.body {
+            *saved = Some(handle);
+        }
+    }
+}
+
+/// A thought as her checkpoint writes it: the shape every build reads and writes, so a checkpoint
+/// decodes across a deploy and a revert alike.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ThoughtWire {
+    occurrence: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stored_chars: Option<usize>,
+    at_ms: u64,
+}
+
+/// A checkpointed thought that names neither its text nor a saved whole with its length: nothing
+/// of it can be shown or reloaded.
+#[derive(Debug)]
+pub struct UnreadableThought {
+    pub occurrence: u64,
+}
+
+impl std::fmt::Display for UnreadableThought {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "thought {} names neither its text nor a saved whole with its length", self.occurrence)
+    }
+}
+
+impl TryFrom<ThoughtWire> for ThoughtRecord {
+    type Error = UnreadableThought;
+
+    fn try_from(wire: ThoughtWire) -> Result<Self, Self::Error> {
+        let ThoughtWire { occurrence, text, summary, handle, stored_chars, at_ms } = wire;
+        let body = match (text, handle, stored_chars.and_then(std::num::NonZeroUsize::new)) {
+            (Some(text), saved, _) => ThoughtBody::Resident { text, saved },
+            (None, Some(handle), Some(chars)) => ThoughtBody::Shed { handle, chars },
+            (None, _, _) => return Err(UnreadableThought { occurrence }),
+        };
+        Ok(Self { occurrence, body, summary, at_ms })
+    }
+}
+
+impl From<ThoughtRecord> for ThoughtWire {
+    fn from(record: ThoughtRecord) -> Self {
+        let ThoughtRecord { occurrence, body, summary, at_ms } = record;
+        let (text, handle, stored_chars) = match body {
+            ThoughtBody::Resident { text, saved } => (Some(text), saved, None),
+            ThoughtBody::Shed { handle, chars } => (None, Some(handle), Some(chars.get())),
+        };
+        Self { occurrence, text, summary, handle, stored_chars, at_ms }
+    }
+}
+
+/// Her checkpointed thoughts: each that decodes, an unreadable one dropped with a probe naming it
+/// (nothing of it could be shown), never failing the checkpoint it rides in.
+pub(super) fn readable<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<ThoughtRecord>, D::Error> {
+    let wires = <Vec<ThoughtWire> as serde::Deserialize>::deserialize(deserializer)?;
+    Ok(wires
+        .into_iter()
+        .filter_map(|wire| match ThoughtRecord::try_from(wire) {
+            Ok(record) => Some(record),
+            Err(unreadable) => {
+                continuum_base::probe!(
+                    class = "persona.checkpoint.thought_unreadable",
+                    occurrence = unreadable.occurrence,
+                    "a checkpointed thought names neither its text nor a saved whole; it is dropped"
+                );
+                None
+            }
+        })
+        .collect())
 }
 
 impl Resident for ThoughtRecord {
@@ -49,11 +150,11 @@ impl Resident for ThoughtRecord {
     }
 
     fn body(&self) -> Option<&str> {
-        self.text.as_deref()
+        self.text()
     }
 
     fn handle(&self) -> Option<&str> {
-        self.handle.as_deref()
+        self.saved_handle()
     }
 
     fn received_ms(&self) -> Option<u64> {
@@ -61,12 +162,17 @@ impl Resident for ThoughtRecord {
     }
 
     fn resident_bytes(&self) -> u64 {
-        [&self.text, &self.summary].into_iter().map(|text| text.as_ref().map_or(0, |text| text.len() as u64)).sum()
+        [self.text(), self.summary.as_deref()].into_iter().flatten().map(|text| text.len() as u64).sum()
     }
 
+    /// Only a saved, non-empty thought sheds: its whole must be reloadable at the length it had.
     fn shed_body(&mut self) {
-        self.stored_chars = self.text.as_ref().map(|text| text.chars().count());
-        self.text = None;
+        let ThoughtBody::Resident { text, saved: Some(handle) } = &self.body else {
+            return;
+        };
+        if let Some(chars) = std::num::NonZeroUsize::new(text.chars().count()) {
+            self.body = ThoughtBody::Shed { handle: handle.clone(), chars };
+        }
     }
 }
 
@@ -77,8 +183,9 @@ pub(super) struct ThoughtLog {
 }
 
 impl ThoughtLog {
-    /// A log from records in any order. Nothing here bounds it: her RAM is the one memory owner's
-    /// to shed (`residency`), and what she sees of it is her view's.
+    /// A log from records in any order. Its bound is her view's measured fold edge
+    /// ([`Self::drain_through`]); what of each body stays in RAM is the one memory owner's to shed
+    /// (`residency`).
     pub fn from_records(mut records: Vec<ThoughtRecord>) -> Self {
         records.sort_by_key(|record| record.occurrence);
         records.dedup_by_key(|record| record.occurrence);
@@ -87,6 +194,25 @@ impl ThoughtLog {
 
     pub fn push(&mut self, record: ThoughtRecord) {
         self.records.push(record);
+    }
+
+    /// Drain every thought up to her view's fold edge (`edge`, the key `key_of` gives the newest
+    /// thought a start folded) whose whole is saved: it renders only inside her fold block, and its
+    /// saved whole reopens it. A thought whose body is in RAM alone, and her work in hand (`kept`),
+    /// stay. Returns the keys that left, for her view to forget. Nothing when the edge is not here.
+    pub fn drain_through(&mut self, key_of: impl Fn(u64) -> String, edge: &str, kept: &std::collections::HashSet<super::ThoughtOccurrence>) -> std::collections::HashSet<String> {
+        let mut released = std::collections::HashSet::new();
+        let Some(edge) = self.records.iter().find(|record| key_of(record.occurrence) == edge).map(|record| record.occurrence) else {
+            return released;
+        };
+        self.records.retain(|record| {
+            let leaves = record.occurrence <= edge && record.saved_handle().is_some() && !kept.contains(&super::ThoughtOccurrence(record.occurrence));
+            if leaves {
+                released.insert(key_of(record.occurrence));
+            }
+            !leaves
+        });
+        released
     }
 
     /// Every thought, oldest first.
@@ -107,17 +233,20 @@ impl ThoughtLog {
     /// Her resident thoughts with no saved whole yet, other than her newest: what the memory owner
     /// saves before it can shed one (the newest is never shed, so it is never saved for that).
     pub fn unsaved(&self) -> Vec<(u64, String)> {
-        let newest = self.records.iter().rev().find(|record| record.text.is_some()).map(|record| record.occurrence);
+        let newest = self.records.iter().rev().find(|record| record.text().is_some()).map(|record| record.occurrence);
         self.records
             .iter()
-            .filter(|record| record.handle.is_none() && Some(record.occurrence) != newest)
-            .filter_map(|record| record.text.clone().map(|text| (record.occurrence, text)))
+            .filter(|record| Some(record.occurrence) != newest)
+            .filter_map(|record| match &record.body {
+                ThoughtBody::Resident { text, saved: None } => Some((record.occurrence, text.clone())),
+                ThoughtBody::Resident { saved: Some(_), .. } | ThoughtBody::Shed { .. } => None,
+            })
             .collect()
     }
 
     /// Every handle a thought names: kept live while her log does.
     pub fn handles(&self) -> impl Iterator<Item = &str> {
-        self.records.iter().filter_map(|record| record.handle.as_deref())
+        self.records.iter().filter_map(ThoughtRecord::saved_handle)
     }
 
     pub fn clear(&mut self) {

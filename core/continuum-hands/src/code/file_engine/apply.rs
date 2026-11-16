@@ -110,7 +110,7 @@ pub(super) fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, 
                     .map(|(at, _)| content[..at].matches('\n').count() + 1)
                     .collect();
                 if sites.len() > 1 {
-                    let shown: Vec<String> = sites.iter().take(5).map(|l| l.to_string()).collect();
+                    let shown: Vec<String> = sites.iter().map(|l| l.to_string()).collect();
                     return Err(FileEngineError::EditFailed(format!(
                         "SEARCH TEXT matches {} locations verbatim (starting at lines {}). \
                          Applying to the first would be a guess — Sahar's stack hunk landed in \
@@ -183,6 +183,8 @@ pub(super) fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, 
             result.push_str(new_content);
             Ok(result)
         }
+        // Each edit applies to the result of the one before; the caller checks the final result once.
+        EditMode::Batch { edits } => edits.iter().try_fold(content.to_string(), |text, edit| apply_edit(&text, edit)),
     }
 }
 
@@ -191,9 +193,10 @@ pub(super) fn apply_edit(content: &str, edit_mode: &EditMode) -> Result<String, 
 /// Extracts removed lines from the diff and added lines from the original,
 /// reconstructing the previous content. This handles the common case where
 /// the undo target was the most recent change.
-pub(super) fn apply_reverse_simple(current: &str, reverse_diff: &FileDiff) -> Option<String> {
+pub(super) fn apply_reverse_simple(current: &str, reverse_diff: &FileDiff) -> String {
     if reverse_diff.hunks.is_empty() {
-        return None;
+        // No hunks: the change altered nothing, so the file as it stands IS its undo.
+        return current.to_string();
     }
 
     // Simple approach: use the unified diff lines.
@@ -240,7 +243,7 @@ pub(super) fn apply_reverse_simple(current: &str, reverse_diff: &FileDiff) -> Op
         result.push('\n');
     }
 
-    Some(result)
+    result
 }
 
 /// Extract added content from a diff (lines starting with '+').

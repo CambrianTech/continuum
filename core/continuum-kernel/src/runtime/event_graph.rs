@@ -7,7 +7,7 @@
 //! 2026-09-25 alone: a decode knee measured but never read by the allocator's lane path,
 //! a checkpoint primitive with one caller, a teacher batch the curriculum bypassed).
 //!
-//! Design: `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` § The Declared Dataflow
+//! Design: `docs/architecture/CONTINUUM-ENGINE.md` § The Declared Dataflow
 //! Graph. Pure: the runtime collects each module's edges at boot and reports the result
 //! as the `runtime.event_graph` probe.
 

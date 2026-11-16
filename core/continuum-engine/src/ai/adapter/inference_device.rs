@@ -369,6 +369,17 @@ pub enum GenerationAdmissionOwner {
     Adapter,
 }
 
+/// Where a request's prompt stays after it is served: what makes prefilling a prompt AHEAD of the
+/// request that needs it worth anything (prefill during the tool, card 377d4afa).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PromptCache {
+    /// Nothing is kept for the next request.
+    NotKept,
+    /// The prompt stays in its page's pinned slot (llama.cpp's prompt cache): a later request
+    /// that begins with it prefills only what follows.
+    PinnedSlot,
+}
+
 /// The universal AI provider adapter trait
 ///
 /// All AI providers implement this trait. The AIProviderModule calls
@@ -454,6 +465,12 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     /// Default: no-op — cloud adapters and adapters without slot paging have
     /// nothing to warm.
     fn warm_ahead(&self, _page: crate::inference::slots::PageKey) {}
+
+    /// Whether a request's prompt stays where the next request that begins with it is served
+    /// ([`PromptCache`]). Default `NotKept`: a cloud or in-process adapter keeps no prompt for it.
+    fn prompt_cache(&self) -> PromptCache {
+        PromptCache::NotKept
+    }
 
     /// The LIVE served context window (tokens) of the lane THIS adapter serves on,
     /// or `None` when the adapter's own binding window is already authoritative.

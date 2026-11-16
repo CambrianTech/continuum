@@ -16,6 +16,10 @@ impl LlamaServerControl for LlamaServerProcess {
         LlamaServerProcess::launched_prompt_cache_mib(self)
     }
 
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError> {
+        super::prompt_cache_limit::post_prompt_cache_limit(&self.client, &self.root, limit_mib).await
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         if !crate::inference::slots::directory()
             .endpoint(&self.root)
@@ -78,13 +82,14 @@ impl LlamaServerControl for LlamaServerProcess {
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
+        operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         // an unasked binary is asked, never read as no; another binary's answer is not this one's
         let takes = self.engine_takes_train_dir().await?;
         let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        self.converge_genome(&dir, target).await
+        self.converge_genome(&dir, target, operation).await
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -421,6 +426,16 @@ impl LlamaServerControl for LlamaServerProcess {
         })
     }
 
+    fn engine_exit(
+        &self,
+        receipt: &EngineRetirementReceipt,
+    ) -> Result<crate::inference::slots::EngineExit, EngineRetirementError> {
+        if !receipt.identity.owner.ptr_eq(&Arc::downgrade(&self.child)) {
+            return Err(EngineRetirementError::NotOwned);
+        }
+        Ok(receipt.identity.generation.exit())
+    }
+
     async fn idle(&self) -> Result<(), LlamaServerError> {
         self.idle_if_current(&|| true).await
     }
@@ -536,7 +551,7 @@ impl LlamaServerControl for LlamaServerProcess {
         let checkpoint = transition
             .checkpoint_residents(&self.client, &self.root)
             .await
-            .map_err(LlamaServerError::Spawn)?;
+            .map_err(|failure| LlamaServerError::Spawn(failure.to_string()))?;
         self.validate_owned_launch(&session.original).await?;
         if !current() {
             return Err(LlamaServerError::Superseded);

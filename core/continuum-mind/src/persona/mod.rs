@@ -88,6 +88,7 @@ pub mod dormancy;
 pub mod resting_seat;
 pub mod roster_hold;
 pub mod role_template;
+pub mod board_nav;
 pub mod room_board_source;
 pub mod room_doctrine_source;
 pub mod identity_card_cache;

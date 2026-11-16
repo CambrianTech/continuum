@@ -60,6 +60,7 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+            scratch_released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
@@ -71,10 +72,23 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
-        let loaded = if load { ledger.load() } else { LoadedLedger::default() };
+        let (count, snapshot) = self.settle_ledger(ledger, load);
+        self.persist_ledger(snapshot);
+        count
+    }
+
+    /// [`Self::attach_ledger`] without its first write: the snapshot is returned for whoever
+    /// publishes this pool to write, so a pool settled and then not published (it lost the
+    /// install race) never writes over the published pool's ledger.
+    pub(super) fn settle_ledger(&self, ledger: SavedLedger, load: bool) -> (usize, Option<LedgerSnapshot>) {
+        // A ledger that restores nothing has already named why (`LedgerUnread`, probed by `load`).
+        let loaded = match load.then(|| ledger.load()) {
+            Some(Ok(loaded)) => loaded,
+            Some(Err(_)) | None => LoadedLedger::default(),
+        };
         let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
-            return 0;
+            return (0, None);
         }
         let snapshot = {
             let mut saved = self.saved.lock();
@@ -89,8 +103,7 @@ impl KvSlotPool {
             }
             self.ledger_snapshot(&saved, &holders)
         };
-        self.persist_ledger(snapshot);
-        count
+        (count, snapshot)
     }
 
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
@@ -293,13 +306,28 @@ impl KvSlotPool {
         Some(self.operation_permit(slot, permit))
     }
 
-    /// A scratch release wakes only its physical semaphore, never citizen admission:
+    /// The wait for a busy slot's next release, or `None` when it is free now (the caller tries
+    /// again at once). Registered before the check, so a release between them is never missed;
+    /// the caller lets go of everything first (an admission's dropped pin announces a release,
+    /// and a wait registered before that drop was woken by its own announcement). It takes no
+    /// permit: queued in the slot's semaphore a waiter was HANDED the permit only to drop it, and
+    /// two such waiters (her learning step and a dream consolidation) passed it between them while
+    /// each one's retry found it taken: 35,000 lane grants a second on the M5, 2026-11-13 (card 6742aad1).
+    pub(crate) fn busy_until_release(&self, slot: u32) -> Result<Option<SlotRelease>, String> {
+        let operation = self.operations.get(slot as usize).ok_or("unknown physical KV slot")?;
+        let mut release = Box::pin(Arc::clone(self.release_signal(slot)).notified_owned());
+        release.as_mut().enable();
+        Ok((operation.available_permits() == 0).then_some(release))
+    }
+
+    /// A scratch release wakes only scratch's waiters, never citizen admission:
     /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn release_signal(&self, slot: u32) -> &Arc<tokio::sync::Notify> {
+        if Some(slot) == self.scratch { &self.scratch_released } else { &self.released }
+    }
+
     fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
-        SlotPermit {
-            _permit: permit,
-            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
-        }
+        SlotPermit { _permit: permit, released: Arc::clone(self.release_signal(slot)) }
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
@@ -320,6 +348,40 @@ impl KvSlotPool {
         let page_saved = self.saved.lock().contains(&key);
         let basis = self.sequences.lock().judge(slot, key, prev, page_saved);
         SlotPaging::judged(slot, prev.filter(|p| *p != key), basis)
+    }
+
+    /// Whom a stop saves: every attributed resident, and every slot still holding a sequence of a
+    /// mind no slot is attributed to. The stop condemns acts in flight, and a cut act drops her
+    /// attribution (`TurnAdmission`'s drop), so without this the stop saved only the minds that
+    /// were idle: the M5 2026-11-14 07:48:28Z, one save of four residents, and three cold first
+    /// acts after the deploy (`cold_turn cause="no_page"`). A confirmed sequence is saved when
+    /// it is at least as new as her page; an unconfirmed one (her cut act's tokens) only when
+    /// she has no page, since a cut prompt may have truncated below what her page holds.
+    pub(crate) fn stop_residents(&self) -> Vec<(u32, PageKey)> {
+        let attributed: std::collections::HashMap<u32, PageKey> = self.holders.lock().clone();
+        let paged: std::collections::HashSet<PageKey> = self.saved.lock().clone();
+        // One save per page: a mind attributed nowhere whose sequences sit in several slots is
+        // saved from her confirmed one before an unconfirmed one.
+        let mut cut: std::collections::HashMap<PageKey, (u32, HeldSequence)> = std::collections::HashMap::new();
+        for (slot, key, held) in self.sequences.lock().held() {
+            let worth_saving = match held {
+                HeldSequence::Confirmed { at_least_her_page } => at_least_her_page || !paged.contains(&key),
+                HeldSequence::Unconfirmed => !paged.contains(&key),
+            };
+            if !worth_saving || attributed.contains_key(&slot) || attributed.values().any(|k| *k == key) {
+                continue;
+            }
+            let confirmed = |h: &HeldSequence| matches!(h, HeldSequence::Confirmed { .. });
+            match cut.get(&key) {
+                Some((_, kept)) if confirmed(kept) || !confirmed(&held) => {}
+                _ => {
+                    cut.insert(key, (slot, held));
+                }
+            }
+        }
+        let mut residents: Vec<(u32, PageKey)> = attributed.into_iter().chain(cut.into_iter().map(|(key, (slot, _))| (slot, key))).collect();
+        residents.sort_unstable_by_key(|(slot, _)| *slot);
+        residents
     }
 
     /// `key`'s generation completed in `slot`: the slot holds her newest sequence.
@@ -769,26 +831,12 @@ impl ResidentCheckpoint<'_> {
     }
 }
 
-// A backend request can outlive its cancelled Rust future. Quarantine while the
-// writer is still held, matching TurnAdmission's existing read-lease rule.
-pub(super) struct CheckpointSave {
-    pub(super) endpoint: Arc<EndpointSlots>,
-    pub(super) pending: bool,
-}
-
-impl Drop for CheckpointSave {
-    fn drop(&mut self) {
-        if self.pending {
-            self.endpoint.quarantine_paging();
-        }
-    }
-}
-
 /// Travels with the actual owned Child, including after retirement. The exit bit
-/// belongs to this generation even when the endpoint already has a newer child.
+/// belongs to this generation even when the endpoint already has a newer child, and is a
+/// `watch` so a waiter subscribes to the exit ([`EngineGeneration::exit`]) instead of polling it.
 #[derive(Clone)]
 pub struct EngineGeneration {
     pub(super) id: Uuid,
-    pub(super) exited: Arc<std::sync::atomic::AtomicBool>,
+    pub(super) exited: Arc<tokio::sync::watch::Sender<bool>>,
     pub(super) endpoint: std::sync::Weak<EndpointSlots>,
 }
