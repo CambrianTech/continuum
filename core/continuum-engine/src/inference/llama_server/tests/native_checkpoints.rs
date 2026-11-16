@@ -32,13 +32,14 @@ fn free_port() -> u16 {
     listener.local_addr().expect("test: its address").port() // test: a bound socket has an address
 }
 
-/// Start the engine with a small checkpoint store and step, returning once it says it is listening
-/// (its own readiness line, never a timer).
-async fn start() -> Engine {
+/// Start the engine with a checkpoint store of `store` entries and a small step, returning once it says
+/// it is listening (its own readiness line, never a timer).
+async fn start(store: usize) -> Engine {
     let port = free_port();
+    let store = store.to_string();
     let mut child = tokio::process::Command::new(required("CONTINUUM_NATIVE_ENGINE_BIN"))
         .args(["-m", &required("CONTINUUM_NATIVE_CHECKPOINT_MODEL"), "--host", "127.0.0.1", "--port", &port.to_string()])
-        .args(["-np", "1", "-c", "4096", "--jinja", "--ctx-checkpoints", "4", "--checkpoint-min-step", "16"])
+        .args(["-np", "1", "-c", "4096", "--jinja", "--ctx-checkpoints", &store, "--checkpoint-min-step", "16"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -108,32 +109,106 @@ async fn positions(client: &reqwest::Client, engine: &Engine) -> Vec<u64> {
         .collect()
 }
 
-// what this catches (Codex on #121): a full store migrating to placed checkpoints where the generic
-// count eviction took the true head before the placed pruning ran, and a head kept only by name (the
-// next survivor relabelled). The head's exact position must survive acts with spans, and a prompt
-// diverging after it must resume from exactly there.
-#[tokio::test]
-#[ignore = "native: needs CONTINUUM_NATIVE_ENGINE_BIN and a checkpointing CONTINUUM_NATIVE_CHECKPOINT_MODEL"]
-async fn her_head_checkpoint_keeps_its_exact_position_through_a_full_store() {
-    let engine = start().await;
+/// The engine's own tokens for `messages` under its chat template (`/apply-template`, then `/tokenize`),
+/// so a test knows exactly where two prompts diverge instead of guessing from message counts.
+async fn prompt_tokens(client: &reqwest::Client, engine: &Engine, messages: &[serde_json::Value]) -> Vec<u64> {
+    let templated: serde_json::Value = client
+        .post(format!("{}/apply-template", engine.root))
+        .json(&serde_json::json!({"messages": messages}))
+        .send()
+        .await
+        .expect("test: /apply-template answers") // test: a live engine
+        .json()
+        .await
+        .expect("test: /apply-template is JSON"); // test: the engine's own reply shape
+    let tokenized: serde_json::Value = client
+        .post(format!("{}/tokenize", engine.root))
+        .json(&serde_json::json!({"content": templated["prompt"], "add_special": true, "parse_special": true}))
+        .send()
+        .await
+        .expect("test: /tokenize answers") // test: a live engine
+        .json()
+        .await
+        .expect("test: /tokenize is JSON"); // test: the engine's own reply shape
+    tokenized["tokens"]
+        .as_array()
+        .expect("test: /tokenize names its tokens") // test: the engine's own reply shape
+        .iter()
+        .map(|t| t.as_u64().expect("test: a token id")) // test: ids are integers
+        .collect()
+}
+
+/// How many leading tokens `a` and `b` share.
+fn shared_prefix(a: &[u64], b: &[u64]) -> u64 {
+    a.iter().zip(b).take_while(|(x, y)| x == y).count() as u64
+}
+
+/// Fill a store of `store` entries blind, then act with spans: her head keeps its exact position through
+/// every act and the store never grows past its size. Then a prompt that diverges just past her head
+/// resumes from exactly the largest checkpoint held at or before the divergence (her head), never from
+/// a position the store does not hold and never from nothing.
+async fn head_survives_and_resumes_exactly(store: usize) {
+    let engine = start(store).await;
     let client = reqwest::Client::new();
     for acts in 1..=6 {
         act(&client, &engine, &conversation(acts), false).await;
     }
     let blind = positions(&client, &engine).await;
-    assert_eq!(blind.len(), 4, "the blind store is full: {blind:?}");
+    assert_eq!(blind.len(), store, "the blind store is full: {blind:?}");
     let head = blind[0];
+    let mut held = blind;
     for acts in 7..=9 {
         act(&client, &engine, &conversation(acts), true).await;
-        let placed = positions(&client, &engine).await;
-        assert_eq!(placed.first(), Some(&head), "her head kept its exact position after act {acts}: {placed:?}");
-        assert!(placed.len() <= 4, "placed checkpoints stay within the store: {placed:?}");
+        held = positions(&client, &engine).await;
+        assert_eq!(held.first(), Some(&head), "store {store}: her head kept its exact position after act {acts}: {held:?}");
+        assert!(held.len() <= store, "store {store}: placed checkpoints stay within the store: {held:?}");
     }
-    // diverge after her head, before her newest view end: the engine resumes from her head
-    // her first act's messages with a different ask: past her head, before her newest view end
-    let mut diverged = conversation(1);
-    diverged.pop();
-    diverged.push(serde_json::json!({"role": "user", "content": "Instead, list the tools in the shed."}));
+    // The slot holds her ninth act's prompt. Diverge at the first act boundary at or past her head: an
+    // earlier act's messages with a different ask, chosen by the engine's own tokens.
+    let held_prompt = prompt_tokens(&client, &engine, &conversation(9)).await;
+    let diverged_at = |acts: usize| {
+        let mut messages = conversation(acts);
+        messages.pop();
+        messages.push(serde_json::json!({"role": "user", "content": "Instead, list the tools in the shed."}));
+        messages
+    };
+    let mut chosen = None;
+    for acts in 1..=9 {
+        let messages = diverged_at(acts);
+        let divergence = shared_prefix(&held_prompt, &prompt_tokens(&client, &engine, &messages).await);
+        if divergence >= head {
+            chosen = Some((messages, divergence));
+            break;
+        }
+    }
+    let (diverged, divergence) = chosen.expect("test: some act boundary lies past her head"); // test: nine acts outgrow the head
+    let expected = held.iter().copied().filter(|&at| at <= divergence).max().expect("test: her head is at or before the divergence"); // test: chosen so
     let cached = act(&client, &engine, &diverged, true).await;
-    assert!(cached >= head, "resumed from at least her head ({head} tokens), cached {cached}");
+    // A restored checkpoint resumes at its pos_max, one before its token count, so the last token is
+    // re-evaluated and the step is never empty (fork server-context.cpp: `pos_next = min(pos_next,
+    // max(pos_min + 1, pos_max))`, upstream's TAG_PROMPT_LOGITS). Measured on #121 e6cd328ce with
+    // gemma-3-270m: held 194 -> cached 193, held 210 -> cached 209.
+    assert_eq!(
+        cached,
+        expected - 1,
+        "store {store}: diverging at token {divergence} resumes from exactly the largest held checkpoint at or before it ({expected}); head {head}, held {held:?}"
+    );
+}
+
+// what this catches (Codex on #121): a full store migrating to placed checkpoints where the generic
+// count eviction took the true head before the placed pruning ran, and a head kept only by name (the
+// next survivor relabelled). The head's exact position must survive acts with spans, and a prompt
+// diverging after it must resume from exactly a checkpoint the store holds.
+#[tokio::test]
+#[ignore = "native: needs CONTINUUM_NATIVE_ENGINE_BIN and a checkpointing CONTINUUM_NATIVE_CHECKPOINT_MODEL"]
+async fn her_head_checkpoint_keeps_its_exact_position_through_a_full_store() {
+    head_survives_and_resumes_exactly(4).await;
+}
+
+// what this catches (Codex on #121): at low capacity (a store of 2) the placed pruning and the count
+// eviction both press on the head; it must still be the one kept, at its exact position.
+#[tokio::test]
+#[ignore = "native: needs CONTINUUM_NATIVE_ENGINE_BIN and a checkpointing CONTINUUM_NATIVE_CHECKPOINT_MODEL"]
+async fn her_head_checkpoint_survives_a_low_capacity_store() {
+    head_survives_and_resumes_exactly(2).await;
 }
