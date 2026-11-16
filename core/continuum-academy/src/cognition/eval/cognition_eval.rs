@@ -145,15 +145,15 @@ impl CognitionEval {
         // personas' "own" projects — the exam↔live contamination the room degraded under.
         // The mind side was already isolated (fork_detached + NoopSink + volatile-tier
         // exclusion); the WORLD side wasn't. Repo-nav exams still need the repo, so the
-        // default is a per-run CoW clone (APFS clonefile / reflink; plain copy where the
-        // FS lacks CoW), removed on every return path via Drop. An explicit
+        // default is a per-run shared clone of the checkout (`citizen_layer::shared_clone`),
+        // removed on every return path via Drop. An explicit
         // workspace_root pin still wins (SWE-bench checkouts own their state).
         let ephemeral_root = if p.workspace_root.is_none() && needs_tools {
             let tag = p
                 .run_id
                 .clone()
                 .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            match provision_ephemeral_eval_root(&tag) {
+            match provision_ephemeral_eval_root(&tag).await {
                 Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
                     // Fail LOUD and refuse to contaminate — no silent fallback to cwd.

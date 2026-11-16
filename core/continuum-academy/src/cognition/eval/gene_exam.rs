@@ -84,7 +84,7 @@ impl ExamHost for MindExamHost {
         let (without, with) = two_genomes(&her_genome, &exam.gene);
 
         let tag = format!("gene-exam-{}", Uuid::new_v4());
-        let root = provision_ephemeral_eval_root(&tag).map_err(|e| not_now(format!("exam workspace: {e}")))?;
+        let root = provision_ephemeral_eval_root(&tag).await.map_err(|e| not_now(format!("exam workspace: {e}")))?;
         let root_str = root.display().to_string();
         let mut world = EvalWorld::new(Some(EphemeralEvalRoot::new(root)));
         let persona = exam.persona;

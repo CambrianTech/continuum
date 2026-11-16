@@ -191,7 +191,7 @@ pub(super) async fn build_base_eval_lane_inner(base_id: &str) -> Result<EvalLane
         .and_then(|r| r.model(base_id).cloned())
         .ok_or_else(|| {
             CommandError::NotFound(format!(
-                "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. Call ai/inference/models for loadable ids."
+                "base_model_id '{base_id}' is not in the model registry — cannot stand up a measurement lane for it. List the loadable models and pick one of their ids."
             ))
         })?;
     // External-provider rows (ds4 sidecar, cloud models) are served by someone else's
@@ -560,7 +560,7 @@ pub(super) async fn build_external_eval_lane_inner(
     // fallback when the provider doesn't report one.
     let served_ctx = external_served_context_window(&base_url, &base.id)
         .await
-        .unwrap_or(base.context_window);
+        .unwrap_or(base.context_window); // unwrap_or: a provider that reports no window is budgeted at its catalog row
     Ok(EvalLaneInner {
         measured_gene: None,
         _lane: None,
@@ -582,12 +582,10 @@ pub(super) async fn build_external_eval_lane_inner(
     })
 }
 
-/// #312 — the exam's disposable world: a CoW clone of the shared checkout under the
-/// system temp dir, one per run. clonefile on APFS / reflink on btrfs-XFS (instant,
-/// block-sharing), plain recursive copy where the FS lacks CoW — the same platform
-/// split as citizen-layer provisioning (`ensure_citizen_layer_from_base`). `cfg!`
-/// (not `#[cfg]`) so both arms type-check on every platform.
-pub(super) fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String> {
+/// #312 — the exam's disposable world: a shared clone of the checkout under the system temp dir, one per
+/// run, made by the one owner of working copies (`citizen_layer::shared_clone`, the same as a citizen's
+/// layer): the tracked tree only, objects shared with the base, git doing the work on every OS.
+pub(super) async fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::PathBuf, String> {
     let base = std::env::current_dir().map_err(|e| format!("cwd: {e}"))?;
     let root = std::env::temp_dir().join("continuum-eval").join(tag);
     let parent = root
@@ -600,30 +598,12 @@ pub(super) fn provision_ephemeral_eval_root(tag: &str) -> Result<std::path::Path
         return Ok(root); // resume of the same run reuses its world
     }
     std::fs::create_dir_all(&parent).map_err(|e| format!("mkdir {}: {e}", parent.display()))?;
-    let mut clone = std::process::Command::new("cp");
-    if cfg!(target_os = "macos") {
-        clone.arg("-cR");
-    } else {
-        clone.args(["--reflink=auto", "-R"]);
-    }
-    let out = clone
-        .arg(&base)
-        .arg(&root)
-        .output()
-        .map_err(|e| format!("cp spawn: {e}"))?;
-    if !out.status.success() {
-        let _ = std::fs::remove_dir_all(&root); // never leave a half-clone
-        return Err(format!(
-            "CoW clone {} -> {} failed: {}",
-            base.display(),
-            root.display(),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
+    let vendor = crate::code::citizen_layer::shared_clone(&base, &root).await?;
     continuum_base::probe!(
         class = "eval.workspace.provisioned",
         root = root.display().to_string().as_str(),
-        "exam world provisioned — CoW clone of the shared checkout, removed when the run ends"
+        vendor = vendor.as_str(),
+        "exam world provisioned — a shared clone of the checkout, removed when the run ends"
     );
     write_eval_run_marker(&root, tag);
     Ok(root)
