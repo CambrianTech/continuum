@@ -15,9 +15,13 @@ use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
 use super::{LearningEngine, LedgerEngine};
+use crate::inference::serving_lifecycle::ServingOperation;
 
-/// One change the engine asks of the owner, every step bound to `ledger`.
-pub struct CatalogChange {
+/// One change the engine asks of the owner, every step bound to `ledger`, decided inside the serving
+/// operation that holds the lifecycle gate for this reconcile (a load leases under it, never by
+/// taking the gate a second time).
+pub struct CatalogChange<'a> {
+    pub operation: &'a ServingOperation,
     pub engine: LearningEngine,
     /// The engine's identity as read before its catalog.
     pub ledger: LedgerEngine,
@@ -91,7 +95,7 @@ pub struct CatalogOutcome {
 /// The one owner of gene catalog changes.
 #[async_trait::async_trait]
 pub trait GenomeCatalog: Send + Sync {
-    async fn converge(&self, change: CatalogChange) -> CatalogOutcome;
+    async fn converge(&self, change: CatalogChange<'_>) -> CatalogOutcome;
 }
 
 static OWNER: OnceLock<Arc<dyn GenomeCatalog>> = OnceLock::new();

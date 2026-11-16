@@ -156,6 +156,7 @@ impl LlamaServerProcess {
         &self,
         dir: &std::path::Path,
         target: &ServingTarget,
+        operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         let Some(owner) = super::genome_catalog::owner() else {
             return Ok(GenomeInPlace::Refused(CatalogRefusal::NoOwner));
@@ -198,7 +199,7 @@ impl LlamaServerProcess {
                 .map_err(|e| LlamaServerError::AdapterNotFound(format!("{name}: {e}")))?;
             add.push(Add { gene: gene.clone(), name, staged });
         }
-        let outcome = owner.converge(CatalogChange { engine, ledger, retire, add }).await;
+        let outcome = owner.converge(CatalogChange { operation, engine, ledger, retire, add }).await;
         for step in &outcome.applied {
             match step {
                 CatalogStep::Retired(gene) => self.record_served(gene, false)?,

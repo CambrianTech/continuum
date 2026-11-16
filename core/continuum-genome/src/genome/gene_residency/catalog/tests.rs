@@ -3,6 +3,7 @@
 use super::*;
 use crate::inference::llama_server::genome_catalog::{Add, Retire};
 use crate::inference::llama_server::{LearningEngine, LedgerEngine};
+use crate::inference::serving_lifecycle::ServingOperation;
 use std::sync::Mutex;
 
 const ENGINE: &str = "9f2c1e0a7b3d4c5e6f708192a3b4c5d6";
@@ -62,19 +63,34 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
                     axum::Json(ledger_of(serving))
                 }
             }),
-        );
+        )
+        .route("/learn/residency/release", axum::routing::post(move || async move { axum::Json(ledger_of(serving)) }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let port = listener.local_addr().expect("test: addr").port();
     (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await }))
 }
 
-fn change(engine: LearningEngine, bound: &str) -> CatalogChange {
+fn change<'a>(operation: &'a ServingOperation, engine: LearningEngine, bound: &str) -> CatalogChange<'a> {
     CatalogChange {
+        operation,
         engine,
         ledger: identity(bound),
         retire: vec![Retire { gene: "/genes/a.gguf".into(), id: 0 }],
         add: vec![Add { gene: "/genes/b.gguf".into(), name: "gene-b.gguf".into(), staged: "/train/gene-b.gguf".into() }],
     }
+}
+
+/// An authority whose serving gate the test holds, as the serving daemon holds it through a
+/// reconcile; and its resource daemon, to read what stays leased.
+fn held_authority() -> (Authority, ServingOperation, Arc<crate::resources::ResourceDaemon>) {
+    let authority = Authority::isolated(10_000_000);
+    let operation = authority.serving.try_operation().expect("test: a fresh gate is free");
+    let resources = Arc::clone(&authority.resources);
+    (authority, operation, resources)
+}
+
+fn leased(resources: &crate::resources::ResourceDaemon) -> u64 {
+    10_000_000 - resources.available_for("an observer", crate::resources::ResourceKind::Vram)
 }
 
 fn calls(seen: &Seen) -> Vec<(&'static str, serde_json::Value)> {
@@ -87,9 +103,12 @@ fn calls(seen: &Seen) -> Vec<(&'static str, serde_json::Value)> {
 // the load is measured, leased at exactly its bytes, registered, and made inside that residency.
 #[tokio::test]
 async fn an_adopted_engines_gene_change_unloads_bound_and_loads_inside_a_leased_residency() {
-    let catalog = GeneCatalog::new(Authority::isolated(10_000_000));
+    // the reconcile holds the real lifecycle gate the whole time (Codex on #6053: a load that took
+    // the gate again was refused as Operation during every actual reconcile)
+    let (authority, operation, resources) = held_authority();
+    let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(ENGINE, 200).await;
-    let outcome = catalog.converge(change(engine, ENGINE)).await;
+    let outcome = catalog.converge(change(&operation, engine, ENGINE)).await;
     assert_eq!(outcome, CatalogOutcome {
         applied: vec![CatalogStep::Retired("/genes/a.gguf".into()), CatalogStep::Added("/genes/b.gguf".into())],
         end: CatalogEnd::Done,
@@ -102,6 +121,7 @@ async fn an_adopted_engines_gene_change_unloads_bound_and_loads_inside_a_leased_
     assert_eq!(calls[2].1["leases"][0]["bytes"], WEIGHTS, "leased at exactly the measured bytes");
     assert_eq!(calls[2].1["subject"]["load"]["name"], "gene-b.gguf");
     assert_eq!((calls[3].0, &calls[3].1["residency"]), ("load", &calls[2].1["id"]), "loaded inside that residency");
+    assert_eq!(leased(&resources), WEIGHTS, "leased under the held gate, nothing bypassed");
     server.abort();
 }
 
@@ -109,14 +129,15 @@ async fn an_adopted_engines_gene_change_unloads_bound_and_loads_inside_a_leased_
 // is refused before any memory is leased, and nothing is loaded into the replacement.
 #[tokio::test]
 async fn a_replaced_engine_refuses_the_load_before_anything_is_leased() {
-    let authority = Authority::isolated(10_000_000);
+    let (authority, operation, resources) = held_authority();
     let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(REPLACEMENT, 200).await;
-    let mut asked = change(engine, ENGINE);
+    let mut asked = change(&operation, engine, ENGINE);
     asked.retire.clear();
     let outcome = catalog.converge(asked).await;
     assert_eq!(outcome, CatalogOutcome { applied: vec![], end: CatalogEnd::Refused(CatalogRefusal::EngineReplaced) });
     assert!(calls(&seen).iter().all(|(route, body)| *route == "load" && body["dry_run"] == true), "only measured: no residency, no load");
+    assert_eq!(leased(&resources), 0);
     server.abort();
 }
 
@@ -124,10 +145,46 @@ async fn a_replaced_engine_refuses_the_load_before_anything_is_leased() {
 // change there, as a wait the engine records, with no gene loaded ahead of it.
 #[tokio::test]
 async fn a_busy_retire_stops_the_change_before_any_gene_joins() {
-    let catalog = GeneCatalog::new(Authority::isolated(10_000_000));
+    let (authority, operation, _resources) = held_authority();
+    let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(ENGINE, 503).await;
-    let outcome = catalog.converge(change(engine, ENGINE)).await;
+    let outcome = catalog.converge(change(&operation, engine, ENGINE)).await;
     assert_eq!(outcome, CatalogOutcome { applied: vec![], end: CatalogEnd::Busy });
     assert!(calls(&seen).iter().all(|(route, _)| *route == "unload"), "nothing loaded ahead of the busy retire");
     server.abort();
+}
+
+// what this catches (Codex on #6053): seats keyed by gene path alone. Loading the same gene on a
+// second engine replaced the first engine's seat, orphaning a claim whose settlement could unload a
+// still-serving adapter. Each engine's copy is its own seat and lease; retiring it from one leaves
+// the other held.
+#[tokio::test]
+async fn the_same_gene_on_two_engines_is_two_seats_and_retiring_one_keeps_the_other() {
+    const SECOND: &str = "11111111111111111111111111111111";
+    let (authority, operation, resources) = held_authority();
+    let catalog = GeneCatalog::new(authority);
+    let (first, _seen_first, first_server) = engine(ENGINE, 200).await;
+    let (second, _seen_second, second_server) = engine(SECOND, 200).await;
+    let (first_process, second_process) = (first.process(), second.process());
+    let load = |engine: LearningEngine, bound: &str| {
+        let mut asked = change(&operation, engine, bound);
+        asked.retire.clear();
+        asked
+    };
+    assert_eq!(catalog.converge(load(first.clone(), ENGINE)).await.end, CatalogEnd::Done);
+    assert_eq!(catalog.converge(load(second.clone(), SECOND)).await.end, CatalogEnd::Done);
+    assert_eq!(leased(&resources), 2 * WEIGHTS, "each engine's copy is leased");
+    let retire = CatalogChange {
+        operation: &operation,
+        engine: first,
+        ledger: identity(ENGINE),
+        retire: vec![Retire { gene: "/genes/b.gguf".into(), id: 5 }],
+        add: vec![],
+    };
+    assert_eq!(catalog.converge(retire).await.end, CatalogEnd::Done);
+    assert!(!catalog.holds(first_process, "/genes/b.gguf").await);
+    assert!(catalog.holds(second_process, "/genes/b.gguf").await, "the other engine's seat stays");
+    assert_eq!(leased(&resources), WEIGHTS, "and its lease stays held");
+    first_server.abort();
+    second_server.abort();
 }

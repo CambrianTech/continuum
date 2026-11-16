@@ -335,6 +335,7 @@ impl ServingDaemonModule {
                 &target,
                 force_probe.pending,
                 &admit,
+                &operation,
             )
             .await;
             if matches!(outcome, EnsureOutcome::Superseded)

@@ -12,6 +12,7 @@ use super::*;
 /// Split from the process impl so the branch logic is unit-tested against a
 /// fake. `Unreachable` from the probe means "nothing up" → serve; any other
 /// probe error degrades rather than blindly relaunching over a sick server.
+#[cfg(test)]
 pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     ctrl: &C,
     target: &ServingTarget,
@@ -23,7 +24,9 @@ pub async fn ensure_model_serving<C: LlamaServerControl + ?Sized>(
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
 ) -> EnsureOutcome {
-    ensure_model_serving_if_current(ctrl, target, force_probe, &|| true).await
+    let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
+    let operation = gate.try_operation().expect("test: a fresh gate is free");
+    ensure_model_serving_if_current(ctrl, target, force_probe, &|| true, &operation).await
 }
 
 
@@ -32,8 +35,11 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     target: &ServingTarget,
     force_probe: bool,
     current: &ServingLifecycleCheck<'_>,
+    // the operation holding the serving lifecycle gate for this reconcile: an in-place gene change
+    // decides its memory inside it
+    operation: &crate::inference::serving_lifecycle::ServingOperation,
 ) -> EnsureOutcome {
-    let outcome = serve_or_adopt(ctrl, target, force_probe, current).await;
+    let outcome = serve_or_adopt(ctrl, target, force_probe, current, operation).await;
     // Every adoption, whichever rail took it (an owned child, a decode-proven orphan, a busy
     // one), records the lane's placement when its record lacks one (card 22aa3379).
     // Every adoption also follows the engine's log relay: a no-op for one already followed.
@@ -55,6 +61,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     // lane forever. `false` is the steady state (no per-tick decode load).
     force_probe: bool,
     current: &ServingLifecycleCheck<'_>,
+    operation: &crate::inference::serving_lifecycle::ServingOperation,
 ) -> EnsureOutcome {
     let mut convergence_pair = None;
     let active = match ctrl.active_model().await {
@@ -87,7 +94,7 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 // Only an explicit Unsupported answer falls through to relaunch. A failed
                 // mutation may already have changed the set; it is not authority to replace
                 // the engine and discard the residents' retained state.
-                match ctrl.adopt_genome_in_place(target).await {
+                match ctrl.adopt_genome_in_place(target, operation).await {
                     Ok(GenomeInPlace::Adopted) => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.adopted_in_place",
                             model = target.model_id(),

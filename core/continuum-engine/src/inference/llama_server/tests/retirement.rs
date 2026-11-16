@@ -311,8 +311,10 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         admissions.fetch_add(1, Ordering::SeqCst);
         true
     };
+    let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
+    let operation = gate.try_operation().expect("test: a fresh gate is free");
     assert_eq!(
-        ensure_model_serving_if_current(&control, &drifted, false, &admit).await,
+        ensure_model_serving_if_current(&control, &drifted, false, &admit, &operation).await,
         EnsureOutcome::AlreadyServing
     );
     assert_eq!(

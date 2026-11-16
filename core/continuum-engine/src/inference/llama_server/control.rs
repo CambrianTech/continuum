@@ -219,6 +219,7 @@ pub trait LlamaServerControl: Send + Sync {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+        _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         Ok(GenomeInPlace::Unsupported)
     }

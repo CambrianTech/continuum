@@ -1,7 +1,7 @@
 //! Training leases share the resource authority used by live serving: an engine concern
 //! (the lease and the serving gate it reads under), so the genome's trainers and the forge
 //! both admit through it here.
-use crate::inference::serving_lifecycle::{GateRefusal, LifecycleGate};
+use crate::inference::serving_lifecycle::{Admission, GateRefusal};
 use crate::resources::{
     LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind,
 };
@@ -40,11 +40,15 @@ impl std::fmt::Display for TrainingWait {
 /// mind's serving resources (her act gate, a lane, a slot) tries here, and on a [`TrainingWait`]
 /// lets them all go and ends its pass; its next pass asks again (#5925). Same authority, same
 /// gate, no capacity made up.
-pub fn try_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, serving: &LifecycleGate, consumer: &str, kind: ResourceKind, bytes: u64) -> Result<Result<LeaseGuard, TrainingWait>, String> {
+pub fn try_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, admission: Admission<'_>, consumer: &str, kind: ResourceKind, bytes: u64) -> Result<Result<LeaseGuard, TrainingWait>, String> {
     if bytes == 0 {
         return Err("training memory requirement must be measured before admission".into());
     }
-    let hold = match serving.hold_for_admission() {
+    let decided = match admission {
+        Admission::Free(gate) => gate.hold_for_admission().map(Some),
+        Admission::Within(gate, operation) => gate.admit_within(operation).map(|()| None),
+    };
+    let hold = match decided {
         Ok(hold) => hold,
         Err(refusal) => return Ok(Err(TrainingWait::Serving(refusal))),
     };

@@ -40,8 +40,10 @@ async fn without_a_catalog_owner_a_gene_change_refuses_and_touches_nothing() {
     let process = LlamaServerProcess::with_root(root);
     *process.served_adapters.lock().unwrap() = Some(vec!["/genes/a.gguf".into()]); // JUSTIFIED: test-owned lock, never poisoned
     let dir = tempfile::tempdir().expect("test: tempdir");
+    let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
+    let operation = gate.try_operation().expect("test: a fresh gate is free");
     let got = process
-        .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]))
+        .converge_genome(dir.path(), &target_with_adapters("coder-14b", &["/genes/c.gguf"]), &operation)
         .await
         .expect("test: no engine error");
     assert_eq!(got, GenomeInPlace::Refused(super::genome_catalog::CatalogRefusal::NoOwner));
