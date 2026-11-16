@@ -147,7 +147,7 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(
     let elevated =
         super::supervisor_install::powershell(&script, std::time::Duration::from_secs(600)).await;
     let receipt_text = match std::fs::read_to_string(&receipt) {
-        Ok(text) => Ok(Some(text)),
+        Ok(text) => Ok(Some(crate::elevated_teardown::TeardownReceipt(text))),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(ElevationError::Receipt(error)),
     };
@@ -155,9 +155,9 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(
     let _ = std::fs::remove_file(&receipt);
     let outcome: crate::elevated_teardown::ConsentOutcome = serde_json::from_str(&elevated?)?;
     let receipt_text = receipt_text?;
-    elevation_outcome(pid, outcome, receipt_text.as_deref())?;
+    elevation_outcome(pid, outcome, receipt_text.as_ref())?;
     if let Some(text) = receipt_text {
-        println!("{}", text.trim());
+        println!("{text}");
     }
     // THE PROCESS BEING GONE IS THE PROOF, not the child's exit code — the whole defect
     // this module exists for was a kill path that trusted its own return. The caller

@@ -78,8 +78,18 @@ pub enum ElevationError {
     #[error("elevated child exited with {exit_code}; receipt: {receipt:?}")]
     Child {
         exit_code: i32,
-        receipt: Option<String>,
+        receipt: Option<TeardownReceipt>,
     },
+}
+
+/// The child's persisted diagnostic receipt, distinct from launcher output.
+#[derive(Debug, Clone)]
+pub struct TeardownReceipt(pub(crate) String);
+
+impl std::fmt::Display for TeardownReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0.trim())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -312,14 +322,14 @@ pub enum ConsentOutcome {
 pub fn elevation_outcome(
     pid: i32,
     consent: ConsentOutcome,
-    receipt: Option<&str>,
+    receipt: Option<&TeardownReceipt>,
 ) -> Result<(), ElevationError> {
     match consent {
         ConsentOutcome::Refused => Err(ElevationError::Refused { pid }),
         ConsentOutcome::Completed { exit_code: 0 } => Ok(()),
         ConsentOutcome::Completed { exit_code } => Err(ElevationError::Child {
             exit_code,
-            receipt: receipt.map(str::to_owned),
+            receipt: receipt.cloned(),
         }),
     }
 }
@@ -700,7 +710,7 @@ mod tests {
                 elevation_outcome(
                     25040,
                     ConsentOutcome::Completed { exit_code: 1223 },
-                    Some("child ran")
+                    Some(&TeardownReceipt("child ran".into()))
                 ),
                 Err(ElevationError::Child {
                     exit_code: 1223,
