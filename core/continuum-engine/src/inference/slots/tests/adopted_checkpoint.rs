@@ -1,4 +1,5 @@
 use super::*;
+use crate::inference::llama_server::fixture_engine::FixtureEngine;
 use axum::{extract::Path, http::StatusCode, routing::post, Json, Router};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -35,14 +36,12 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
                 }
             }
         }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-        let address = listener.local_addr()?;
-        let root = format!("http://{address}");
-        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let engine = FixtureEngine::serve(app).await?;
+        let root = engine.root.clone();
         let pool = directory().ensure_pool(&root, 3);
         let endpoint = directory().endpoint(&root);
         let process = crate::inference::engine_residency::EngineIncarnation::of(
-            std::process::id(), address.port(),
+            std::process::id(), engine.address.port(),
         ).ok_or("fixture process identity unavailable")?;
         let pages = tempfile::tempdir()?;
         assert_eq!(
@@ -85,7 +84,6 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
         pool.take_resident(0);
         assert_eq!(pool.plan_paging(0, key).restore, behavior == 0);
         drop(transition);
-        server.abort();
     }
     Ok(())
 }
@@ -182,12 +180,10 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
             }
         }
     }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let root = format!("http://{address}");
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let engine = FixtureEngine::serve(app).await?;
+    let root = engine.root.clone();
     let client = reqwest::Client::new();
-    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), engine.address.port())
         .ok_or("fixture process identity unavailable")?;
     assert!(matches!(directory().get(&root), Probed::NotAsked), "adopted and never probed");
 
@@ -218,7 +214,6 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     assert_eq!(saves.load(Ordering::SeqCst), 1, "the resident was saved before the replacement");
     assert_eq!(props_calls.load(Ordering::SeqCst), 2, "a discovered pool is not probed again");
     drop(transition);
-    server.abort();
     Ok(())
 }
 
@@ -240,12 +235,10 @@ async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), B
                     let reply = reply.clone();
                     async move { (StatusCode::BAD_REQUEST, Json(reply)) }
                 }));
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-            let address = listener.local_addr()?;
-            let root = format!("http://{address}");
-            let server = tokio::spawn(async move { axum::serve(listener, app).await });
+            let engine = FixtureEngine::serve(app).await?;
+            let root = engine.root.clone();
             let client = reqwest::Client::new();
-            let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+            let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), engine.address.port())
                 .ok_or("fixture process identity unavailable")?;
             let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
             let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
@@ -264,7 +257,6 @@ async fn a_refused_save_reopens_a_replacement_but_never_a_stop() -> Result<(), B
                 (false, _) => assert!(!endpoint.is_ready(), "{intent:?}: a malformed reply proves nothing, so custody stays closed"),
             }
             drop(transition);
-            server.abort();
         }
     }
     Ok(())
@@ -290,12 +282,10 @@ async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() 
                 async move { Json(serde_json::json!({"id_slot": slot, "filename": filename, "n_saved": 10})) }
             }
         }));
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let address = listener.local_addr()?;
-    let root = format!("http://{address}");
-    let server = tokio::spawn(async move { axum::serve(listener, app).await });
+    let engine = FixtureEngine::serve(app).await?;
+    let root = engine.root.clone();
     let client = reqwest::Client::new();
-    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), address.port())
+    let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), engine.address.port())
         .ok_or("fixture process identity unavailable")?;
     let _discovered = directory().adopted_checkpoint_pool(&client, &root, process).await;
     let Probed::Known(pool) = directory().get(&root) else { panic!("discovery installed no pool at {root}") };
@@ -318,6 +308,5 @@ async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() 
     assert_ne!(received[0].1, received[1].1, "each resident to her own page file: {received:?}");
     drop(transition);
     assert!(!endpoint.is_ready(), "the stopping node's endpoint stays suspended after the checkpoint's writer is gone");
-    server.abort();
     Ok(())
 }

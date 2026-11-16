@@ -176,3 +176,6 @@ mod tests;
 
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod test_fixtures;
+
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod fixture_engine;
