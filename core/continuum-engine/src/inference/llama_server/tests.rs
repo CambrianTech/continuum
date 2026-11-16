@@ -181,7 +181,7 @@ impl LlamaServerControl for FakeControl {
         if let Some(reason) = self.in_place_error {
             return Err(LlamaServerError::Unreachable(reason.into()));
         }
-        Ok(self.in_place)
+        Ok(self.in_place.clone())
     }
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);

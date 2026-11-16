@@ -46,6 +46,8 @@ pub enum SeatRefusal {
     /// The engine did not load the shadow inside its residency. Released when the engine confirmed
     /// it, otherwise left in custody as an orphan the owner settles.
     Unloaded(String),
+    /// The engine measuring the load is not the one the caller bound the change to.
+    EngineReplaced,
 }
 
 impl std::fmt::Display for SeatRefusal {
@@ -57,6 +59,7 @@ impl std::fmt::Display for SeatRefusal {
             SeatRefusal::AwaitingMemory(wait) => write!(f, "waiting for memory, holding nothing: {wait}"),
             SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
             SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
+            SeatRefusal::EngineReplaced => write!(f, "the engine was replaced after the change was bound to it"),
         }
     }
 }
@@ -94,8 +97,33 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
     let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
     let leases = lease_rows(authority, consumer, &rows).await?;
     let claim = register(authority, &engine, &plan.engine, ResidencySubject::Fresh(shadow.clone()), rows, leases).await?;
-    match engine.seat_fresh(&shadow, claim.residency()).await {
-        Ok(loaded) => Ok(Seat { engine, ledger: plan.engine, claim, shadow: loaded }),
+    let loaded = engine.seat_fresh(&shadow, claim.residency()).await;
+    seated(engine, plan.engine, claim, loaded).await
+}
+
+/// Seat the adapter file `name` (a gene staged under the engine's train dir) for `consumer` in
+/// `engine`, every step bound to `bound`, the engine identity the caller read before deciding: an
+/// engine replaced since refuses instead of loading into the wrong one (4.10 P4a).
+pub async fn seat_gene(authority: &Authority, engine: LearningEngine, bound: &LedgerEngine, consumer: &str, name: &str) -> Result<Seat, SeatRefusal> {
+    let plan = match engine.plan_load(name).await {
+        Ok(LedgerAnswer::Ledger(plan)) => plan,
+        Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
+        Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
+    };
+    if &plan.engine != bound {
+        return Err(SeatRefusal::EngineReplaced);
+    }
+    let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
+    let leases = lease_rows(authority, consumer, &rows).await?;
+    let claim = register(authority, &engine, &plan.engine, ResidencySubject::Load { name: name.to_owned() }, rows, leases).await?;
+    let loaded = engine.seat_load(name, claim.residency()).await;
+    seated(engine, plan.engine, claim, loaded).await
+}
+
+/// The seat an adapter change inside `claim`'s residency came to.
+async fn seated(engine: LearningEngine, ledger: LedgerEngine, claim: Claim, loaded: Result<LoadedAdapter, crate::inference::llama_server::LlamaServerError>) -> Result<Seat, SeatRefusal> {
+    match loaded {
+        Ok(loaded) => Ok(Seat { engine, ledger, claim, shadow: loaded }),
         // a lost reply is not proof that nothing loaded: settle unloads whatever the ledger shows bound
         Err(error) => match claim.release().await {
             Ok(()) => Err(SeatRefusal::Unloaded(error.to_string())),
@@ -165,8 +193,8 @@ pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[Re
 impl Seat {
     /// Unload the shadow (the engine releases its optimizer first). Its residency stays until
     /// released.
-    pub async fn unload(&self) -> Result<(), String> {
-        self.engine.unseat(&self.ledger, self.shadow.id).await.map(|_| ()).map_err(|error| format!("unload refused: {error}"))
+    pub async fn unload(&self) -> Result<(), crate::inference::llama_server::LlamaServerError> {
+        self.engine.unseat(&self.ledger, self.shadow.id).await.map(|_| ())
     }
 
     /// Release the weight residency of an unloaded shadow; its leases leave custody when the engine

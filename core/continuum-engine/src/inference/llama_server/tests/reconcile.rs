@@ -291,7 +291,7 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
-            .with_in_place(outcome);
+            .with_in_place(outcome.clone());
         let got = ensure_model_serving(
             &ctrl,
             &target_with_adapters("coder-14b", &["/genes/a.gguf", "/genes/b.gguf"]),
@@ -309,6 +309,21 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     assert!(a.starts_with("gene-") && a.ends_with(".gguf"));
     assert_eq!(a, gene_stage_name(std::path::Path::new("/genome/kimi/adapter.gguf")), "the same gene stages under the same name");
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
+}
+
+// what this catches (4.10 P4a): the catalog's owner refusing (none installed, a replaced engine,
+// memory not granted) must keep the running engine and every resident's KV, never relaunch.
+#[tokio::test]
+async fn a_catalog_owner_refusal_keeps_the_engine_degraded() {
+    use super::genome_catalog::CatalogRefusal;
+    for why in [CatalogRefusal::NoOwner, CatalogRefusal::EngineReplaced, CatalogRefusal::AwaitingMemory("vram".into())] {
+        let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
+            .with_active_adapters(vec!["/genes/a.gguf".into()])
+            .with_in_place(GenomeInPlace::Refused(why.clone()));
+        let got = ensure_model_serving(&ctrl, &target_with_adapters("coder-14b", &["/genes/b.gguf"]), false).await;
+        assert!(matches!(got, EnsureOutcome::Degraded { .. }), "{why:?}: {got:?}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{why:?}: no relaunch over retained KV");
+    }
 }
 
 // A rejected mutation or a lost reply is not permission to destroy retained KV.

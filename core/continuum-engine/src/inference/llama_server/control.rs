@@ -39,6 +39,28 @@ pub enum LlamaServerError {
     /// cache, it predates the route, or it named its own refusal. Nothing was evicted.
     #[error("prompt-cache limit refused: {0}")]
     PromptCacheRefused(super::PromptCacheRefusal),
+
+    /// The engine refused an adapter change (`/lora-adapters/{fresh,load,unload}`), by its answer.
+    #[error("adapter change refused: {0}")]
+    AdapterChange(AdapterChangeRefusal),
+}
+
+/// Why the engine refused an adapter change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterChangeRefusal {
+    /// The adapter is active in a turn in flight (503): the change waits, nothing changed.
+    Busy,
+    /// Any other refusal, with the engine's status and its own words.
+    Refused { status: u16, detail: String },
+}
+
+impl std::fmt::Display for AdapterChangeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterChangeRefusal::Busy => write!(f, "the adapter is active in a turn in flight"),
+            AdapterChangeRefusal::Refused { status, detail } => write!(f, "status {status}: {detail}"),
+        }
+    }
 }
 
 

@@ -106,6 +106,19 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                         );
                         true
                     }
+                    Ok(GenomeInPlace::Refused(why)) => {
+                        // The catalog's owner refused (no owner, a replaced engine, memory not
+                        // granted, the engine's own refusal): the running engine and every
+                        // resident's KV stay; never a relaunch over them (4.10 P4a).
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_refused",
+                            model = target.model_id(),
+                            reason = %why,
+                            "the gene catalog's owner refused the change: retaining the running engine"
+                        );
+                        return EnsureOutcome::Degraded {
+                            reason: format!("in-place genome change refused: {why}"),
+                        };
+                    }
                     Ok(GenomeInPlace::Unsupported) => {
                         // The costliest fall-through this function has (every turn in flight
                         // killed, every slot re-prefilled), so it is named like its siblings:

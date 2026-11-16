@@ -79,6 +79,7 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+pub mod genome_catalog;
 mod learn_ledger;
 pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
@@ -145,7 +146,7 @@ mod prompt_cache_limit;
 pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
-    LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
+    AdapterChangeRefusal, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
     ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
 };
 mod prepared_launch;
