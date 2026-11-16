@@ -1618,6 +1618,17 @@ at load, so parked ids are provisioned up front and become the pool's device-sid
 cells a parked id still references stay allocated until it is released. The serializing path remains only to persist a
 page to disk, as its own bytes.
 
+*The server's form* (fork, same test): the server's checkpoints hold only the partial state (`PARTIAL_ONLY`: recurrent
+/ SWA) and trim attention by position, so a checkpoint parks ONLY the recurrent cell: `seq_cp(live, parked, 0, 0)`
+(an empty attention range copies no KV cells); restore is `seq_cp(parked, live, 0, 0)` then `seq_rm(live, N, -1)`,
+the server's own order. Measured: today's partial serialize 20,201,932 bytes in 1,190 us per checkpoint on the 0.8B;
+parked 0 bytes, no attention cells held (`seq_pos_max(parked) = -1`), park 3 us, restore 29 us, logits equal a cold
+run. Honest cost: on unified memory a parked cell occupies the same bytes as the copy, in device memory; what goes is
+the copy, the duplicate host buffer and the compressor churning on it. The count of parked cells is the pool's budget,
+provisioned at load (`n_seq_max` = slots + parked cells). Integration: each slot's checkpoint list names parked ids
+(a free list owned by the pool), evicting one is `seq_rm(parked, -1, -1)`, and the draft context's partial state and
+the speculative stash follow the same form once measured.
+
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
