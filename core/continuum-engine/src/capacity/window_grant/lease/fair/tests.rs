@@ -346,3 +346,72 @@ fn a_reclaimed_holder_waits_behind_minds_owed_longer() {
         assert_eq!(bench.grants(), BTreeMap::from([(next, 60)]));
     }
 }
+
+// what this catches (the M5, 2026-11-16 21:59-22:12Z, build 2695c5fd1; Codex owns the fix): Aiko and Atlas owed a
+// window for the whole log (Aiko's one turn open ~7,183 s) while a big holder (8044b75b, 170,828 of a 301,056 pool,
+// `armed`) re-entered its next act within 5 s of its act's end (22:00:53 live0 armed -> 22:00:58 live1) and a small
+// holder (2f50b223) was re-granted its ~85k within 2-5 s of every act end (22:03:56 .. 22:12:27), ahead of both.
+// Shape, scaled to a pool of 100: the big holder's seat must reach the oldest owed mind at its act's end, even when
+// the big holder asks again at once and the small holder keeps cycling.
+#[test]
+fn a_big_holder_acting_back_to_back_yields_its_seat_to_the_oldest_owed_mind() {
+    let mut bench = Bench::new();
+    let (big, small, oldest) = (mind(1), mind(2), mind(3));
+    let demands = [demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 60, 100)];
+    // the two holders seat first; the oldest mind cannot fit beside them (free 15 < her 60)
+    bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
+    assert_eq!(bench.grants(), BTreeMap::from([(big, 57), (small, 28)]));
+    let big_lease = bench.lease(big);
+    let big_act = bench.owner.reserve_against(big, big_lease, 50, || Some(big_lease)).expect("test: the big holder mid-act"); // test: its grant
+    bench.publish(&demands, 100);
+    assert_eq!(bench.dispatch.waiting(oldest), Some(DispatchWait::BehindActs { acting: 1 }));
+    assert!(bench.owner.lock().yield_after.contains_key(&big), "the blocking big holder is armed");
+
+    // the small holder cycles meanwhile: its acts must not keep the oldest mind waiting once the big seat frees
+    bench.serve(small);
+    let _ = bench.publish(&demands, 100);
+
+    // the big holder's act ends and it asks again at once, before any evaluation (the M5's 5 s re-entry)
+    settle(big_act, Some(&TerminalReceipt { finish: "stop".into() }));
+    let again = bench.lease(big);
+    assert!(matches!(bench.owner.reserve_against(big, again, 50, || Some(again)), Err(ReserveRefused::Retiring { .. })),
+        "an armed holder whose act ended cannot re-enter while an older mind is owed its seat");
+
+    // the next evaluation reclaims what the oldest mind needs; once the receipts arrive she is seated
+    let tickets = bench.publish(&demands, 100);
+    let reclaimed: BTreeSet<_> = tickets.iter().map(GrantHandoff::persona).collect();
+    assert!(reclaimed.contains(&big), "the big seat goes to the oldest owed mind, not back to its holder: {reclaimed:?}");
+    for ticket in tickets {
+        bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+    }
+    bench.publish(&demands, 100);
+    assert_eq!(bench.grants().get(&oldest), Some(&60), "the oldest owed mind is seated: {:?}", bench.grants());
+}
+
+// what this catches (the same M5 log): a younger mind that fits being re-granted freed cells again and again while
+// the oldest owed mind, who needs those cells plus a busy holder's, waits behind the busy holder forever. Freed
+// cells an older owed mind will need are held for her, never backfilled past her.
+#[test]
+fn freed_cells_an_older_mind_needs_are_never_backfilled_past_her() {
+    let mut bench = Bench::new();
+    let (big, small, oldest) = (mind(1), mind(2), mind(3));
+    bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
+    let big_lease = bench.lease(big);
+    let _big_act = bench.owner.reserve_against(big, big_lease, 50, || Some(big_lease)).expect("test: the big holder mid-act"); // test: its grant
+    let demands = [demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 60, 100)];
+    bench.publish(&demands, 100); // the oldest mind is owed from here
+    for round in 0..5 {
+        bench.serve(small);
+        let tickets = bench.publish(&demands, 100);
+        for ticket in tickets {
+            bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+        }
+        bench.publish(&demands, 100);
+        let held: u32 = bench.grants().values().sum();
+        assert!(
+            bench.grants().get(&small).is_none() || bench.dispatch.waiting(oldest).is_none(),
+            "round {round}: the small holder was re-seated ahead of the older owed mind: {:?} (held {held})",
+            bench.grants()
+        );
+    }
+}
