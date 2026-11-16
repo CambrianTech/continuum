@@ -1647,6 +1647,12 @@ before the count is set.
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
 
+**No promises, no futures** (Joel, 2026-11-16: "Promises and other idiocy. I wish you never saw JavaScript"). Work
+off the decode thread is a job system: a job writes its result into storage its owner already owns, completion is a
+monotonic ticket counter waited on with an atomic wait, cancellation is the job called once as cancelled, and queues
+are fixed rings sized by their owner (fork `server-module.h`, ae8b41925's successor). A per-job heap-allocated shared
+state with a mutex and a blocking `get()` is the JavaScript reflex this rule forbids, in C++ and in Rust alike.
+
 **Ratchet** (Joel: "I wish I'd prohibited serde in some areas"): `serde_json` sites on the act path
 (`continuum-engine/src/ai/openai_adapter/`, `continuum-engine/src/inference/request_body.rs`, `stream`/`lane_send`,
 `continuum-context`) are counted by source-hygiene and may only fall; a new one fails the build. A crate that is
