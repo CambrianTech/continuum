@@ -146,8 +146,8 @@ crate::action_command! {
                     "is in the catalog but not downloaded"
                 };
                 return Err(CommandError::Denied(format!(
-                    "model '{}' {} — download it first, then pin it",
-                    p.model_id, why, p.model_id
+                    "model '{}' ({}) — download it first, then pin it",
+                    p.model_id, why
                 )));
             }
         };
