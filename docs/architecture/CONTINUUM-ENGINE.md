@@ -1786,6 +1786,21 @@ time per mind.
 Each finding lands as a cited row (file:line, cost per what, how it scales, the by-reference / batched / off-thread /
 incremental form) and is fixed one change at a time against the step budget, `gpu_time` and per-act receipts.
 
+**The first audit, ranked (2026-11-16; canary 15664c6ad and fork `fable/host-pool`; "verified" = read and measured by
+me, otherwise read by the audit agent and to be verified before it is fixed):**
+
+| # | Clog | Cost, scaling | Status |
+|---|---|---|---|
+| 1 | Penalties sampler: an `unordered_map::find` per vocabulary entry (248,320) though at most `penalty_last_n` can match; the core always sends `repeat_penalty` | 294-379 us per token, O(vocab) | **Fixed** (fork e3824bba8): walk the history, in place while candidates are id-ordered; 0.7-1.2 us, bit-identical |
+| 2 | `set_logits` builds a vocabulary-sized candidate array (~3 MB) every token, then top-k etc. run over it on the CPU | est. 0.3-0.6 ms per token, O(vocab) | Next: GPU sampling (row 3) returns only k candidates |
+| 3 | GPU sampling is force-disabled whenever a grammar or a reasoning budget exists, and every act carries a reasoning budget | keeps rows 2 and top-k on the CPU every token | **Verified compatible in principle**: the reasoning-budget sampler is a passthrough except while forcing, when it alone decides the token; a lazy grammar is a passthrough until triggered. Design needed for sampler-state consistency when the CPU overrides (forced token, triggered grammar), then a quiet-GPU A/B |
+| 4 | Each streamed chunk re-parses the whole generated text (`update_chat_msg` -> `common_chat_parse`) | O(n_gen) per token, O(n_gen^2) per act; on the HTTP thread, so off the decode loop but contending its queue lock | To verify; incremental parse from the last committed offset |
+| 5 | Exact prompt quote: a separate request templates and tokenizes the whole prompt, then the real request does it again | est. 30-150 ms per act, O(context) x2 | To verify; the seam of 4.7.11 removes it |
+| 6 | Page save writes KV synchronously on the engine's main loop between steps | est. 100 ms-1 s per page switch, stalls every co-resident stream | To verify; device snapshot (4.7.11) then a writer thread |
+| 7 | Speculative verify reruns the full CPU sampler per draft position; the ngram draft copies the whole context per step | O(n_draft x vocab), O(context) per step | To verify; rows 1-3 remove most of it; a persistent span for the draft |
+| 8 | Core: 7-9 full-context passes per act (clones, format + char counts, serde per message, `json!` clones), prompt capture with sync write+flush under a mutex on a tokio worker | est. 1-3 ms per act plus blocking I/O | To verify; borrowed wire bytes built once (4.7.11), capture on a writer task |
+| 9 | One condvar `notify_all` per partial result wakes every HTTP reader; per-token JSON tree building | O(streams) wakes per token; 5-20 us per token | To verify |
+
 **Reusable patterns pay everywhere.** The patterns of 4.7.7-4.7.12 (job-system modules, frame rings with atomic waits,
 memory_mover lanes sized from the node's own measured curve, device handles plus GPU fences, device snapshots) serve
 training and learning (Dreaming) as much as serving: a training step's batches, a gene's weights and a dream's state
