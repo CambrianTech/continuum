@@ -1589,6 +1589,32 @@ pressure (swap, compression) stalls everything, removed by the pool (4.7.6).
 `llama-bench` for the per-stream ceiling at the residents' depths, then the backend-sampling A/B on the 35B with
 nothing else on the GPU. Both results land here with build SHA and time.
 
+#### 4.7.11 By reference, never encoded (2026-11-16)
+
+Joel, 2026-11-16: "Pass raw memory by reference or if caching save as its binary never encode decode ever. It's
+useless slop unless you're uploading or something like that. Pass textures by id don't rasterize." Inside the engine
+and between the core and the engine, a value moves as the bytes it already is: a handle or id to memory that stays
+where it is, or its own binary when it must be kept (a cache file is the bytes, never a re-encoding). Text and JSON
+exist only at a boundary to a person or a foreign program (an external OpenAI driver, a debug page).
+
+**Where an act encodes and decodes today** (canary 15664c6ad, read 2026-11-16):
+
+| Hop | Today | Cost measured | By reference |
+|---|---|---|---|
+| A KV checkpoint | `llama_state_seq_get_data` serializes KV out of device memory into a host blob, restored by parsing it back | host profile: `create_checkpoint` ~8% of the decode thread's samples (a host observation, 4.7.7) plus the host memory of every copy (4.7.6: ~10 GB compressed in the 13:01-13:56 receipt) | a page kept or copied on the device (`seq_cp`, a blit into a pool buffer), named by id; serialization only to persist a page to disk, as its own bytes |
+| The prompt, core to engine | OpenAI JSON messages of the whole context (`request_body.rs`, 47 serde_json sites); the engine parses, renders the chat template and re-tokenizes everything to find the prefix it already holds as tokens | qwen35-0.8b tokenizer on this M5, CPU: a 521,065-char 40-message context templates in 10-20 ms and tokenizes to 126,373 tokens in 80 ms per call over HTTP JSON (fork 659abf7e1) | the context codec already knows the appended items (`continuum-context`): send the appended token ids for the mind's epoch, binary, against the slot's known prefix; in process (line 3b), a span by reference |
+| Tokens, engine to core | SSE `data:` JSON per chunk, parsed per chunk | not yet measured | token ids as binary frames, detokenized once where text is shown |
+| Control and telemetry | JSON `/props`, `/slots`, `POST /engine/host-pool` (this branch added `step_budget` and `gpu_time` there) | not yet measured | one typed binary snapshot the core reads (fixed layout, versioned); JSON kept only as the human/debug view of the same snapshot |
+
+**Order**, by measured cost: checkpoints as device pages first (memory and copies, and the pool's largest kind);
+then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
+before/after (host memory, act latency, the step budget).
+
+**Ratchet** (Joel: "I wish I'd prohibited serde in some areas"): `serde_json` sites on the act path
+(`continuum-engine/src/ai/openai_adapter/`, `continuum-engine/src/inference/request_body.rs`, `stream`/`lane_send`,
+`continuum-context`) are counted by source-hygiene and may only fall; a new one fails the build. A crate that is
+clean of it gets a compile-time ban (no `serde_json` dependency) so the reflex cannot return.
+
 #### 4.7.10 No semaphore where nothing is scarce (2026-11-16)
 
 Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sense." The engine batches continuously
