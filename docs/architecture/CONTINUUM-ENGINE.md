@@ -1692,6 +1692,99 @@ simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap
 warm; on BigMama, every asked turn served. Each piece lands with its simulator
 scenario red then green, then a live read against a restart-only control.
 
+### 4.11 The engine's contract: one typed definition, one owner on each side (2026-11-16, design for review)
+
+Joel, 2026-11-16: "The problem is decentralized management and poor api schema." "You design like a random
+clusterfuck whereas I always go for structs and api. You want to be strict, use uuidv7, not some bastardized
+string form, the actual form, rich structs and APIs, centralized management and servicemodules etc."
+
+#### 4.11.1 What went wrong (receipts, 2026-11-16)
+
+Resident minds (fork #139, core #6087) were built one endpoint at a time, JSON over HTTP, beside the binary port
+section 4.1 already designs (`port`: "binary frames, no HTTP or JSON"):
+- **No definition:** the fork reads 74 request fields by name (`json_value(body, "page", ...)`); the core reads 52
+  engine reply fields by name (`.get("x")`, `pointer("/...")`). Every review round with Codex was one side guessing
+  the other's field: a pid, then an incarnation; a pin's position, then its id; `success` plus free text, then
+  frozen enums.
+- **Ids in costume:** a mind as 32 hex digits, the engine's incarnation as a random `u64`, a learn pin as a counter.
+- **No owner:** 13 sites in 5 files each decided part of a mind's checkpoints; the close-checkpoint eviction erased
+  learn pins, and the host budget and the count evicted in two different orders. (Fixed by `checkpoint_store`,
+  fork #140; the pattern below applies it to the whole seam.)
+
+#### 4.11.2 Ids: UUIDv7, native 16 bytes, one newtype per kind
+
+| Id | Minted by | Form | Replaces |
+|---|---|---|---|
+| `EngineIncarnation` | the engine, once at start | UUIDv7 | random `u64` token, OS pid |
+| `TurnId` | the core, once per act | UUIDv7 | nothing (a turn had no identity) |
+| `MindId` | the core: her persona's id; a fork's is UUIDv5 of (persona, room) (`PageKey::engine_id`) | UUID | 32-hex-digit string |
+
+- A learn pin IS its turn: `release(TurnId)`, `learn(TurnId)`. No separate pin id, and the turn id also names the
+  act for cancellation and attribution (the "turn token" Codex asked for).
+- v7 sorts by time, so a newer engine or turn compares greater: a stale frame is recognized by comparison, never
+  by a lookup.
+- On every wire and in every struct an id is its 16 bytes (`uint8_t[16]` in C, `Uuid` in Rust). Never hex, never
+  a string, never parsed. Rust: `Uuid::now_v7()` (workspace `uuid` gains the `v7` feature). C++: one minting
+  function in the contract header (48-bit Unix milliseconds + 74 random bits, RFC 9562).
+
+#### 4.11.3 One definition, generated for both sides
+
+- **The definition is one C header in the fork, `tools/server/server-continuum.h`** (section 4.1 already names it
+  as the C ABI shim). Every frame is a fixed-size, trivially copyable struct of fixed-width fields and ids; every
+  outcome is a fixed-width enum with named values.
+- **The Rust side is generated from it by bindgen**, the way `core/llama/build.rs` already binds `llama.h`, then
+  wrapped once in safe newtypes in the core's engine crate (`EngineIncarnation(Uuid)`, `TurnId(Uuid)`, the
+  enums as Rust enums with no catch-all). No hand-written mirror, no serde, no field read by name.
+- **Variable data is never in a frame.** A prompt's bytes, KV pages and checkpoints move as `buffer_ref` (domain,
+  pool, buffer, offset, length; fork `server-frames.h`); the frame names them.
+- **Transport:** the frame rings of `server-frames.h` (lock-free SPSC, atomic waits, backpressure as a `false`
+  push) over shared memory between the core and the engine process, and the same frames in process once serving
+  hosts libllama directly (line 3b of the plan in CLAUDE.md). HTTP JSON stays only as the OpenAI-compatible adapter for
+  foreign drivers (Hermes), never between our own processes.
+
+**The frames** (each request carries `EngineIncarnation`; a mismatch is answered by a typed `stale_engine`
+frame, never acted on):
+
+| Request | Reply | Replaces today's |
+|---|---|---|
+| `describe` | `engine_descriptor { incarnation, geometry (pool tokens, per-sequence tokens, lanes, parked ids), host budget }` | `/props` JSON + `resident_minds` |
+| `turn_submit { turn, mind, learn_pin, prompt: buffer_ref, view spans, sampling }` | `turn_receipt { turn, mind_from, switch_us, generation, cached_tokens, pinned }` + token stream | `/completion` + `timings.mind` |
+| `prefetch { mind }` | `placed { mind, place: mind_place }` | `/minds/prefetch` |
+| `learn_submit { turn, reply rows: buffer_ref, ... }` | `learn_outcome { turn, learned_on, live_sequence_preserved, refusal, retry_after_us }` | `/learn` JSON |
+| `pin_release { turn }` | `released { turn, outcome: pin_release }` | `/learn/release` |
+| `page_save` / `page_restore { mind, buffer_ref }` | typed completion | `/slots/:id?action=` |
+
+The enums (`mind_from`, `mind_place`, `learned_on`, `learn_refusal`, `pin_release`) are the values frozen on
+fork #139 (2026-11-16), now defined once in the header.
+
+#### 4.11.4 One owner on each side
+
+- **Engine:** one module per concern (`server-module.h`: own thread, fixed job ring, snapshot readers copy
+  without a lock), each the only code that changes its state: the resident-minds table, each mind's
+  `checkpoint_store` (#140), learning. The frame dispatcher decodes nothing: it routes a fixed struct to its
+  owner.
+- **Core: one ServiceModule, `EngineLink`, the only code that talks to our engine.** It owns the rings, the
+  engine's descriptor and incarnation (published with the slot pool, never a side map), each turn's ticket,
+  prefetch, learn, release and paging. Callers ask it typed verbs (`link.turn(...)`, `link.prefetch(mind)`,
+  `link.release(turn)`); `stream.rs`, `minds.rs`, `slots/discover.rs` and the learn lane stop building requests.
+  A source-hygiene ratchet fails any engine path or field name outside it.
+
+#### 4.11.5 Order (each slice deletes what it replaces)
+
+1. **Contract header + generated Rust types + UUIDv7 ids**, with a native test that a frame round-trips
+   byte-identically through both sides. Deletes: nothing yet.
+2. **`EngineLink` owns every existing call to our engine**, still over today's HTTP: centralization first, so
+   step 3 changes one module. Deletes: request building in `stream.rs`, `minds.rs`, `discover.rs`, the learn lane.
+3. **The minds verbs move onto frames** (`describe`, `prefetch`, `pin_release`, `turn_receipt`). Deletes:
+   `/minds/prefetch`, `/learn/release`, `resident_minds` and `timings.mind` JSON, the hex page, the `u64` token,
+   the pin counter.
+4. **Turns and learning move onto frames.** Deletes: our use of `/completion`, `/learn`, `/slots`.
+5. **The ratchet** (no engine path or field outside `EngineLink`; no string id on the seam).
+
+**Open, for Codex:** whether #139 and #6087 merge before step 3 (JSON in place, deleted by step 3) or wait for
+it. Recommendation: wait. The verbs added on 11-16 are the first users of the contract, and merging them as JSON
+ships the shape this section deletes.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
