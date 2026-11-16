@@ -1898,3 +1898,27 @@ waiter its queue position (5b). (c) A sync fsync (5h) runs on a runtime worker w
 5. A relaunch wait holds no endpoint read guard (or listens for condemnation), so a drain never waits on it.
 6. Revisit 2's lanes - 1 reserve with measured directed demand, never a fixed reserve that halves a 2-slot engine.
 
+
+#### 4.7.14 Sampling the minds of one step in parallel (plan, 2026-11-16)
+
+**Today.** After a decode, the server samples each generating sequence one after another on the main
+thread (`server-context.cpp`, the per-slot `common_sampler_sample` and, under MTP, the
+`common_sampler_sample_and_accept_n` pass). With fork #122 a sampled token costs ~85 us (was ~120 us;
+penalties ~1 us, was ~367 us). At four to five residents with one to two accepted tokens each, that is
+an estimated 0.4-1 ms per step against a ~12 ms step at 80 tok/s: 3-8% of the step, serial, while the
+GPU waits for the next submit. This is an estimate from the per-token receipts, not a live measurement.
+
+**Shape.** The step splits into three stages, as a graphics frame does:
+1. gather (main thread): each generating slot's logits row index; one `llama_synchronize` first, so every
+   row is readable and no lane calls into the context to wait;
+2. sample (lanes): each slot's sampler is its own state, so slots sample in parallel on the
+   efficiency-core lanes (`parallel_for` over the gathered slots; the frames/lanes pattern of 4.7.12),
+   writing each result into the slot's own output cell: no shared state, no lock;
+3. emit (main thread, slot order): detokenize, stop checks, stream the partial, exactly as today.
+Output is identical by construction: each slot's sampler sees the same logits and RNG in the same order.
+
+**Order (measured, not assumed).** (a) Deploy #122; read `/props.step_budget` `inter_step_us` and
+`gpu_time` on the live M5 at four residents. (b) If the host gap between GPU steps is larger than the
+sampling share above, build stage 2 with a validator: same tokens as the serial path over every slot
+count 1-8, and step host time before/after. (c) If it is not, the gap is elsewhere (4.7.13's audit rows,
+the result-queue wakes of row 15) and this waits. Owner: Fable (stage 2), Codex reviews the server loop.
