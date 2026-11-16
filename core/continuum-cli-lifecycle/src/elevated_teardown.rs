@@ -28,6 +28,53 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+/// A plan must bind to consent before the process capability can be acquired.
+#[derive(Debug, thiserror::Error)]
+pub enum TeardownPlanError {
+    #[error("cannot read {path}: {source}")]
+    Read {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the teardown plan at {path} differs from the consented digest — refusing to terminate anything")]
+    DigestMismatch { path: std::path::PathBuf },
+    #[error("the plan is not a TeardownPlan: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("pid {pid} is running {image} outside installation {directory} — the pid was recycled; refusing to terminate it")]
+    OutsideInstallation {
+        pid: i32,
+        image: String,
+        directory: String,
+    },
+    #[error("pid {pid} is running {image}, which is not a core image — refusing to terminate it")]
+    NotCore { pid: i32, image: String },
+    #[error(transparent)]
+    InvalidPid(#[from] continuum_host::process_id::NotAProcess),
+    #[error("cannot take the process capability: {0}")]
+    Take(#[source] std::io::Error),
+    #[error("cannot inspect the held process: {0}")]
+    Image(#[source] std::io::Error),
+    #[error("the process image is not representable by the teardown plan")]
+    ImageEncoding,
+    #[error("cannot terminate the held process: {0}")]
+    Terminate(#[source] std::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ElevationError {
+    #[error("cannot encode the teardown plan: {0}")]
+    Encode(#[source] serde_json::Error),
+    #[error("cannot write the teardown plan: {0}")]
+    Write(#[source] std::io::Error),
+    #[error("cannot locate this executable: {0}")]
+    OwnPath(#[source] std::io::Error),
+    #[error("install: the elevation consent was refused — pid {pid} is untouched and still serving. Nothing was drained, nothing was terminated")]
+    Refused { pid: i32 },
+    #[error("install: the elevated teardown did not complete: {diagnostic}\n  receipt: {receipt}")]
+    Child { diagnostic: String, receipt: String },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TeardownPlan {
@@ -116,17 +163,14 @@ pub fn bind_plan_bytes(
     bytes: &[u8],
     plan_sha: &str,
     shown_as: &Path,
-) -> Result<TeardownPlan, String> {
+) -> Result<TeardownPlan, TeardownPlanError> {
     let actual = digest(bytes);
     if !actual.eq_ignore_ascii_case(plan_sha) {
-        return Err(format!(
-            "the teardown plan at {} is not the one the consent was given for \
-             (sha {} on argv, {actual} on disk) — refusing to terminate anything",
-            shown_as.display(),
-            plan_sha.get(..12).unwrap_or(plan_sha) // unwrap_or: a short digest is still a digest; showing all of it beats hiding it
-        ));
+        return Err(TeardownPlanError::DigestMismatch {
+            path: shown_as.to_path_buf(),
+        });
     }
-    serde_json::from_slice(bytes).map_err(|e| format!("the plan is not a TeardownPlan: {e}"))
+    serde_json::from_slice(bytes).map_err(TeardownPlanError::Decode)
 }
 
 /// Is the process this handle names one of OUR cores?
@@ -153,7 +197,10 @@ pub fn bind_plan_bytes(
 /// Paths compare the way Windows means them — case-insensitively, and `/` spelled `\`
 /// is the same separator — because the scheduler and `QueryFullProcessImageName`
 /// disagree about spelling far more often than they disagree about the file.
-pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(), String> {
+pub fn target_is_our_core(
+    plan: &TeardownPlan,
+    observed_image: &str,
+) -> Result<(), TeardownPlanError> {
     let norm = |s: &str| s.replace('/', "\\").trim_matches('"').to_ascii_lowercase();
     let root = norm(&plan.install_dir);
     let root = root.trim_end_matches('\\').to_string();
@@ -177,20 +224,18 @@ pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(
         .as_deref()
         .is_some_and(|slot| image_dir == Some(slot));
     if image_dir != Some(root.as_str()) && !in_other_slot {
-        return Err(format!(
-            "pid {} is running {observed_image}, which is not under the installation \
-             directory {} the consent named — the pid was recycled; refusing to terminate it",
-            plan.pid, plan.install_dir
-        ));
+        return Err(TeardownPlanError::OutsideInstallation {
+            pid: plan.pid,
+            image: observed_image.to_owned(),
+            directory: plan.install_dir.clone(),
+        });
     }
     let name = image.rsplit('\\').next().unwrap_or(&image); // unwrap_or: rsplit always yields once, so this is the no-separator case — the whole string IS the name
     if !CORE_IMAGE_NAMES.contains(&name) {
-        return Err(format!(
-            "pid {} is running {observed_image}, which is in the installation directory but \
-             is not a core image ({}) — refusing to terminate it",
-            plan.pid,
-            CORE_IMAGE_NAMES.join(", ")
-        ));
+        return Err(TeardownPlanError::NotCore {
+            pid: plan.pid,
+            image: observed_image.to_owned(),
+        });
     }
     Ok(())
 }
@@ -210,9 +255,9 @@ const CORE_IMAGE_NAMES: &[&str] = &[
 pub trait HeldCapability: Sized {
     /// The image the HELD process is running. Read through the capability, never by a
     /// second lookup on the pid.
-    fn image(&self) -> Result<String, String>;
+    fn image(&self) -> Result<String, TeardownPlanError>;
     /// Spend it. Consumes self: a capability is used once.
-    fn spend(self) -> Result<(), String>;
+    fn spend(self) -> Result<(), TeardownPlanError>;
 }
 
 /// The teardown sequence, generic over the capability so the order is testable without
@@ -225,10 +270,10 @@ pub async fn teardown_sequence<C, T, F, Fut>(
     plan: &TeardownPlan,
     take: T,
     drain: F,
-) -> Result<(String, String), String>
+) -> Result<(String, String), TeardownPlanError>
 where
     C: HeldCapability,
-    T: FnOnce(i32) -> Result<C, String>,
+    T: FnOnce(i32) -> Result<C, TeardownPlanError>,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = String>,
 {
@@ -249,24 +294,20 @@ pub fn elevation_outcome(
     pid: i32,
     consent: Result<String, String>,
     receipt_text: &str,
-) -> Result<(), String> {
+) -> Result<(), ElevationError> {
     let Err(why) = consent else { return Ok(()) };
     if why.contains("canceled by the user") {
-        return Err(format!(
-            "install: the elevation consent was refused — pid {pid} is untouched and still \
-             serving. Nothing was drained, nothing was terminated"
-        ));
+        return Err(ElevationError::Refused { pid });
     }
-    Err(format!(
-        "install: the elevated teardown did not complete: {why}\n  receipt: {}",
-        if receipt_text.trim().is_empty() {
-            "(none — the child never ran, or ran and could not write one)"
+    Err(ElevationError::Child {
+        diagnostic: why,
+        receipt: if receipt_text.trim().is_empty() {
+            "(none — the child never ran, or ran and could not write one)".to_owned()
         } else {
-            receipt_text.trim()
-        }
-    ))
+            receipt_text.trim().to_owned()
+        },
+    })
 }
-
 /// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
 /// the process actually WENT is proven by the caller on the same bounded deadline the
 /// ordinary teardown uses — an immediate liveness probe after a terminate sees a process
@@ -302,10 +343,21 @@ mod tests {
         assert!(unknown.contains("unknown option"), "{unknown}");
 
         // what this catches: a plain stop taking the engine down. The engine stays unless asked.
-        assert!(!parse(&[]).expect("a plain stop").engine, "a plain stop keeps the engine");
+        assert!(
+            !parse(&[]).expect("a plain stop").engine,
+            "a plain stop keeps the engine"
+        );
         let all = parse(&["--engine"]).expect("an operator's stop that ends the engine too");
         assert!(all.engine && !all.elevated);
-        assert!(parse(&["--engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
+        assert!(parse(&[
+            "--engine",
+            "--elevated",
+            "--plan",
+            "p.json",
+            "--plan-sha",
+            "abc"
+        ])
+        .is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");
@@ -332,7 +384,9 @@ mod tests {
         let refused = bind_plan_bytes(&swapped_bytes, &sha, Path::new("plan.json"))
             .expect_err("a rewritten plan must not bind to the approved digest");
         assert!(
-            refused.contains("refusing to terminate anything"),
+            refused
+                .to_string()
+                .contains("refusing to terminate anything"),
             "the refusal must say nothing was killed: {refused}"
         );
     }
@@ -364,7 +418,7 @@ mod tests {
             ),
         ] {
             assert!(
-                refusal.to_lowercase().contains("refusing"),
+                refusal.to_string().to_lowercase().contains("refusing"),
                 "the {what} check must REFUSE, so nothing has been drained when it fires: {refusal}"
             );
         }
@@ -382,18 +436,21 @@ mod tests {
         let refused = target_is_our_core(&p, elsewhere)
             .expect_err("a process outside the installation must be refused");
         assert!(
-            refused.contains("recycled"),
+            refused.to_string().contains("recycled"),
             "the reason must name reuse: {refused}"
         );
         assert!(
-            refused.contains(elsewhere),
+            refused.to_string().contains(elsewhere),
             "the refusal names what is there: {refused}"
         );
 
         let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
         let sibling = target_is_our_core(&p, neighbour)
             .expect_err("our own engine is not our core; terminating it would take the lane");
-        assert!(sibling.contains("not a core image"), "{sibling}");
+        assert!(
+            sibling.to_string().contains("not a core image"),
+            "{sibling}"
+        );
 
         // A path that merely STARTS with the directory's characters is not inside it.
         let lookalike = "C:\\Users\\a\\.continuum\\bin-evil\\core.exe";
@@ -452,11 +509,11 @@ mod tests {
     }
 
     impl HeldCapability for Recorder {
-        fn image(&self) -> Result<String, String> {
+        fn image(&self) -> Result<String, TeardownPlanError> {
             self.log.borrow_mut().push("image");
             Ok(self.image.clone())
         }
-        fn spend(self) -> Result<(), String> {
+        fn spend(self) -> Result<(), TeardownPlanError> {
             self.log.borrow_mut().push("spend");
             Ok(())
         }
@@ -510,7 +567,11 @@ mod tests {
         let l = log.clone();
         let refused = teardown_sequence::<Recorder, _, _, _>(
             &p,
-            |_pid| Err("OpenProcess denied".to_string()),
+            |_pid| {
+                Err(TeardownPlanError::Take(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )))
+            },
             || {
                 l.borrow_mut().push("drain");
                 async { String::new() }
@@ -518,7 +579,9 @@ mod tests {
         )
         .await
         .expect_err("no capability must abort before anything is drained");
-        assert!(refused.contains("OpenProcess denied"), "{refused}");
+        assert!(
+            matches!(refused, TeardownPlanError::Take(ref e) if e.kind() == std::io::ErrorKind::PermissionDenied)
+        );
         assert!(log.borrow().is_empty(), "NOTHING ran: {:?}", log.borrow());
 
         // A RECYCLED pid: the capability was taken, but what it names is not our core.
@@ -542,7 +605,7 @@ mod tests {
         )
         .await
         .expect_err("a recycled pid must abort before anything is drained");
-        assert!(wrong.contains("recycled"), "{wrong}");
+        assert!(wrong.to_string().contains("recycled"), "{wrong}");
         assert_eq!(
             log.borrow().as_slice(),
             &["take", "image"],
@@ -613,20 +676,27 @@ mod tests {
             "",
         )
         .expect_err("a declined consent must not read as success");
-        assert!(refused.contains("untouched and still serving"), "{refused}");
         assert!(
-            refused.contains("Nothing was drained, nothing was terminated"),
+            refused.to_string().contains("untouched and still serving"),
+            "{refused}"
+        );
+        assert!(
+            refused
+                .to_string()
+                .contains("Nothing was drained, nothing was terminated"),
             "the refusal must say what did NOT happen, in those words: {refused}"
         );
 
         let silent = elevation_outcome(25040, Err("exit code 1".to_string()), "   ")
             .expect_err("a failed elevation is an error");
         assert!(
-            silent.contains("the child never ran, or ran and could not write one"),
+            silent
+                .to_string()
+                .contains("the child never ran, or ran and could not write one"),
             "an absent receipt is reported as absent, never as nothing-happened: {silent}"
         );
         assert!(
-            !silent.contains("untouched"),
+            !silent.to_string().contains("untouched"),
             "only a DECLINED consent may claim the target is untouched: {silent}"
         );
 
@@ -637,7 +707,9 @@ mod tests {
         )
         .expect_err("still an error");
         assert!(
-            with_receipt.contains("elevated teardown failed: X"),
+            with_receipt
+                .to_string()
+                .contains("elevated teardown failed: X"),
             "{with_receipt}"
         );
     }

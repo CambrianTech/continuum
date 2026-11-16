@@ -2806,6 +2806,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
  "windows-sys 0.60.2",
