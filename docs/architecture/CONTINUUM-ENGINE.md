@@ -1595,7 +1595,14 @@ Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sens
 across its slots and assigns them itself; a core-side permit that bounds the same thing only queues minds in front of
 an idle engine. The health line shows exactly that: residents "lane-starved" while the GPU has room.
 
-**One act's path, traced** (read-only audit 2026-11-16 of canary 8e38ada8d; the central claim re-read by hand:
+> **Retracted 2026-11-16 (Codex):** the trace below was read from a checkout 509 commits behind canary (8e38ada8d,
+> not 15664c6ad). Current canary already hands the caller's lane off while a mind waits at its gate and at the
+> adapter permit (`turn_admission.rs` ~362-385, ~409-418; the faculty runs `admission.run(generate_admitted)`), so
+> rows 4-5's "waits holding a lane" and finding (a) are wrong for current code. The per-slot permit (8) also orders
+> physical save/restore against generation on the same page, so it cannot go before the engine takes that page
+> exclusion. The table is being re-traced on 15664c6ad; Codex's cuts start from the re-trace, not from this one.
+
+**One act's path, traced** (read-only audit 2026-11-16 of the STALE checkout 8e38ada8d; the central claim re-read by hand:
 `continuum-cognition/src/cognition/llm_deliberation_faculty/request.rs:214-262` binds `_admission` across
 `generate_stream_checked`). Cognition takes its permits, then the adapter takes its own, then the request goes out:
 
