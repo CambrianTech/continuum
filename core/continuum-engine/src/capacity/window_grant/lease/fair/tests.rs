@@ -346,3 +346,101 @@ fn a_reclaimed_holder_waits_behind_minds_owed_longer() {
         assert_eq!(bench.grants(), BTreeMap::from([(next, 60)]));
     }
 }
+
+// what this catches (the M5, 2026-11-16 21:59-22:12Z, build 2695c5fd1; Codex owns the fix): Aiko and Atlas owed a
+// window for the whole log (Aiko's one turn open ~7,183 s) while a big holder (8044b75b, 170,828 of a 301,056 pool,
+// `armed`) re-entered its next act within 5 s of its act's end (22:00:53 live0 armed -> 22:00:58 live1) and a small
+// holder (2f50b223) was re-granted its ~85k within 2-5 s of every act end (22:03:56 .. 22:12:27), ahead of both.
+// Shape, scaled to a pool of 100: the big holder's seat must reach the oldest owed mind at its act's end, even when
+// the big holder asks again at once and the small holder keeps cycling.
+#[test]
+fn a_big_holder_acting_back_to_back_yields_its_seat_to_the_oldest_owed_mind() {
+    let mut bench = Bench::new();
+    let (big, small, oldest) = (mind(1), mind(2), mind(3));
+    // the oldest mind needs BOTH holders' cells (90 of 100), so no evaluation can seat her while either acts
+    let demands = [demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 90, 100)];
+    bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
+    assert_eq!(bench.grants(), BTreeMap::from([(big, 57), (small, 28)]));
+    let (big_lease, small_lease) = (bench.lease(big), bench.lease(small));
+    let big_act = bench.owner.reserve_against(big, big_lease, 50, || Some(big_lease)).expect("test: the big holder mid-act"); // test: its grant
+    let small_act = bench.owner.reserve_against(small, small_lease, 20, || Some(small_lease)).expect("test: the small holder mid-act"); // test: its grant
+    bench.publish(&demands, 100);
+    assert_eq!(bench.dispatch.waiting(oldest), Some(DispatchWait::BehindActs { acting: 2 }));
+    assert!(bench.owner.lock().yield_after.contains_key(&big), "the blocking big holder is armed");
+
+    // the big holder's act ends while the small one still acts: an evaluation runs BETWEEN the terminal receipt and
+    // the big holder's next reservation, and cannot reclaim enough for her yet (Codex: on 2695c5fd1 every publish
+    // cleared yield_after and re-armed from the current receipt, erasing the yield the big holder had earned)
+    settle(big_act, Some(&TerminalReceipt { finish: "stop".into() }));
+    let partial = bench.publish(&demands, 100);
+    assert_ne!(bench.grants().get(&oldest), Some(&90), "she cannot be seated while the small holder acts");
+    for ticket in partial {
+        bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+    }
+
+    // the big holder asks again at once (the M5's 5 s re-entry): its earned yield survived that evaluation
+    let again = bench.current.as_ref().and_then(|c| c.lease_for(big));
+    if let Some(again) = again {
+        assert!(matches!(bench.owner.reserve_against(big, again, 50, || Some(again)), Err(ReserveRefused::Retiring { .. })),
+            "an armed holder whose act ended cannot re-enter while an older mind is owed its seat, across evaluations");
+    }
+
+    // the small holder's act ends; the oldest owed mind is seated once the receipts arrive
+    settle(small_act, Some(&TerminalReceipt { finish: "stop".into() }));
+    for _ in 0..3 {
+        let tickets = bench.publish(&demands, 100);
+        for ticket in tickets {
+            bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+        }
+    }
+    assert_eq!(bench.grants().get(&oldest), Some(&90), "the oldest owed mind is seated: {:?}", bench.grants());
+}
+
+// what this catches (the same M5 log): a younger mind that fits being re-granted freed cells again and again while
+// the oldest owed mind, who needs those cells plus a busy holder's, waits behind the busy holder forever. Freed
+// cells an older owed mind will need are held for her, never backfilled past her.
+#[test]
+fn a_completed_holder_cannot_restart_while_an_older_mind_needs_her_cells() {
+    let mut bench = Bench::new();
+    let (big, small, oldest) = (mind(1), mind(2), mind(3));
+    bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
+    let big_lease = bench.lease(big);
+    let _big_act = bench.owner.reserve_against(big, big_lease, 50, || Some(big_lease)).expect("test: the big holder mid-act"); // test: its grant
+    let demands = [demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 60, 100)];
+    bench.publish(&demands, 100); // the oldest mind is owed from here
+    bench.serve(small);
+    for round in 0..5 {
+        let tickets = bench.publish(&demands, 100);
+        for ticket in tickets {
+            bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+        }
+        bench.publish(&demands, 100);
+        if let Some(lease) = bench.current.as_ref().and_then(|c| c.lease_for(small)) {
+            assert!(matches!(bench.owner.reserve_against(small, lease, 20, || Some(lease)), Err(ReserveRefused::Retiring { .. })),
+                "round {round}: a cached seat cannot admit another act ahead of the older waiter");
+            assert!(bench.owner.hold_act(small, || Some(lease)).is_none(), "the act boundary also respects the earned yield");
+        }
+    }
+}
+
+// Resizing issues a new grant revision but does not pay the holder's debt to an older waiter.
+#[test]
+fn resizing_a_continuously_held_seat_preserves_its_earned_yield() {
+    for resized in [50, 65] {
+        let mut bench = Bench::new();
+        let (big, small, oldest) = (mind(1), mind(2), mind(3));
+        bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
+        let (big_lease, small_lease) = (bench.lease(big), bench.lease(small));
+        let big_act = bench.owner.reserve_against(big, big_lease, 40, || Some(big_lease)).expect("test: big acting"); // test: published grant
+        let _small_act = bench.owner.reserve_against(small, small_lease, 20, || Some(small_lease)).expect("test: small acting"); // test: published grant
+        bench.publish(&[demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 90, 100)], 100);
+        settle(big_act, Some(&TerminalReceipt { finish: "stop".into() }));
+        bench.publish(&[demand(big, resized, 100), demand(small, 28, 100), demand(oldest, 90, 100)], 100);
+        let next = bench.lease(big);
+        assert_eq!(next.tokens, resized);
+        assert!(!next.same_identity(&big_lease), "resize stamps a new revision");
+        assert!(matches!(bench.owner.reserve_against(big, next, 40, || Some(next)), Err(ReserveRefused::Retiring { .. })),
+            "resizing to {resized} must not erase the completed act's yield");
+        assert!(bench.owner.hold_act(big, || Some(next)).is_none());
+    }
+}

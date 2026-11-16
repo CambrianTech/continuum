@@ -276,7 +276,7 @@ impl Reservations {
         // An owed mind is owed each seat she may take when its holder's act ends: every such holder
         // is armed, so her next reserve after a completed act is refused at the receipt boundary and
         // the next evaluation reclaims the seat (a busy holder never chains acts past a waiter).
-        state.yield_after.clear();
+        let previous_yields = std::mem::take(&mut state.yield_after);
         if engine.is_some() {
             for (waiter, waited_since) in &dispatch.owed {
                 for holder in next.by_mind.keys().filter(|holder| *holder != waiter) {
@@ -287,7 +287,14 @@ impl Reservations {
                         continue;
                     }
                     if let Some(lease) = next.lease_for(*holder) {
-                        let baseline = state.receipts.get(holder).map_or(0, |(_, revision)| *revision); // no receipt: no completed act yet
+                        // Publication does not pay an earned yield. Keep its original receipt
+                        // boundary while this owner holds the seat on this engine, including a
+                        // resize (which stamps a new revision). A handoff removes the seat and
+                        // its arm; a departed waiter or fenced engine cannot carry this debt on.
+                        let baseline = match previous_yields.get(holder) {
+                            Some((armed, baseline)) if armed.engine == lease.engine && armed.owner == lease.owner => *baseline,
+                            _ => state.receipts.get(holder).map_or(0, |(_, revision)| *revision), // no receipt: no completed act yet
+                        };
                         state.yield_after.insert(*holder, (lease, baseline));
                     }
                 }
