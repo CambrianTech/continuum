@@ -556,11 +556,23 @@ pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
 // PowerShell seam `PreparedCoreService` already uses to read the task.
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, thiserror::Error)]
+pub enum PowerShellError {
+    #[error("SystemRoot is unset")]
+    MissingSystemRoot,
+    #[error("Task Scheduler operation timed out")]
+    TimedOut,
+    #[error("cannot invoke Task Scheduler: {0}")]
+    Spawn(#[source] std::io::Error),
+    #[error("Task Scheduler operation failed ({code:?}): {diagnostic}")]
+    Exit { code: Option<i32>, diagnostic: String },
+}
+
 #[cfg(windows)]
-pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
+pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, PowerShellError> {
     use base64::Engine;
     use std::os::windows::process::CommandExt;
-    let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
+    let root = std::env::var_os("SystemRoot").ok_or(PowerShellError::MissingSystemRoot)?;
     let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
     let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // -EncodedCommand is UTF-16LE base64 at this process boundary
@@ -578,13 +590,13 @@ pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<St
     command.kill_on_drop(true);
     let output = tokio::time::timeout(timeout, command.output())
         .await
-        .map_err(|_| "Task Scheduler operation timed out".to_string())?
-        .map_err(|e| format!("cannot invoke Task Scheduler: {e}"))?;
+        .map_err(|_| PowerShellError::TimedOut)?
+        .map_err(PowerShellError::Spawn)?;
     if !output.status.success() {
-        return Err(format!(
-            "Task Scheduler operation failed: {}",
-            plain_stderr(&String::from_utf8_lossy(&output.stderr))
-        ));
+        return Err(PowerShellError::Exit {
+            code: output.status.code(),
+            diagnostic: plain_stderr(&String::from_utf8_lossy(&output.stderr)),
+        });
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
@@ -684,7 +696,7 @@ pub async fn task_report(name: &str) -> Result<TaskReport, String> {
          logonType=[string]$t.Principal.LogonType; runLevel=[string]$t.Principal.RunLevel; userSid=$sid; \
          triggers=[string[]]@($t.Triggers | ForEach-Object {{ $_.CimClass.CimClassName }}); actions=$a.Count; sddl=$sd}} | ConvertTo-Json -Compress"
     );
-    let json = powershell(&script, std::time::Duration::from_secs(30)).await?;
+    let json = powershell(&script, std::time::Duration::from_secs(30)).await.map_err(|error| error.to_string())?;
     serde_json::from_str(&json).map_err(|e| format!("cannot read the {name} task: {e} ({json})"))
 }
 
@@ -695,6 +707,7 @@ pub async fn caller_sid() -> Result<String, String> {
         std::time::Duration::from_secs(30),
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 /// The unelevated verb: read both tasks, judge drift, elevate once if needed,

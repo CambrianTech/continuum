@@ -147,29 +147,91 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<()
     let plan_sha = digest(&bytes);
     std::fs::write(&plan_path, &bytes).map_err(ElevationError::Write)?;
     let exe = std::env::current_exe().map_err(ElevationError::OwnPath)?;
-    let quote = |s: String| s.replace('\'', "''");
-    let script = format!(
-        "$ErrorActionPreference='Stop'; $p = Start-Process -FilePath '{}' -ArgumentList \
-         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait \
-         -PassThru; exit $p.ExitCode",
-        quote(exe.display().to_string()),
-        quote(plan_path.display().to_string()),
-    );
-    // The consent prompt waits for a human; ten minutes is the wall past which nobody
-    // is there. Same budget the supervisor's one consent gets.
+    let script = consent_script(&exe, &plan_path, &plan_sha);
+    // Consent waits for a human, bounded by the supervisor's existing ten-minute budget.
     let elevated =
         super::supervisor_install::powershell(&script, std::time::Duration::from_secs(600)).await;
-    // unwrap_or_default: an absent receipt is reported below as "none", never as success.
-    let receipt_text = std::fs::read_to_string(&receipt).unwrap_or_default(); // unwrap_or_default: an absent receipt is reported below as "none", never as success
+    let receipt_text = match std::fs::read_to_string(&receipt) {
+        Ok(text) => Ok(Some(text)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(ElevationError::Receipt(error)),
+    };
     let _ = std::fs::remove_file(&plan_path);
     let _ = std::fs::remove_file(&receipt);
-    elevation_outcome(pid, elevated, &receipt_text)?;
-    if !receipt_text.is_empty() {
-        println!("{}", receipt_text.trim());
+    let outcome: crate::elevated_teardown::ConsentOutcome = serde_json::from_str(&elevated?)?;
+    let receipt_text = receipt_text?;
+    elevation_outcome(pid, outcome, receipt_text.clone())?;
+    if let Some(text) = receipt_text {
+        println!("{}", text.trim());
     }
     // THE PROCESS BEING GONE IS THE PROOF, not the child's exit code — the whole defect
     // this module exists for was a kill path that trusted its own return. The caller
     // proves it on the bounded deadline; an immediate probe here would see a process
     // that is exiting perfectly normally and call it a survivor.
     Ok(())
+}
+
+fn consent_script(exe: &Path, plan_path: &Path, plan_sha: &str) -> String {
+    let quote = |s: String| s.replace('\'', "''");
+    format!(
+        "$ErrorActionPreference='Stop'; try {{ $p = Start-Process -FilePath '{}' -ArgumentList \
+         @('stop','--elevated','--plan','{}','--plan-sha','{plan_sha}') -Verb RunAs -WindowStyle Hidden -Wait \
+         -PassThru }} catch [System.ComponentModel.Win32Exception] {{ \
+         if ($_.Exception.NativeErrorCode -eq 1223) {{ @{{kind='refused'}} | ConvertTo-Json -Compress; exit 0 }}; throw }}; \
+         @{{kind='completed';exitCode=[int]$p.ExitCode}} | ConvertTo-Json -Compress",
+        quote(exe.display().to_string()),
+        quote(plan_path.display().to_string()),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::elevated_teardown::ConsentOutcome;
+    use crate::supervisor_install::{powershell, PowerShellError};
+
+    // Exercise the real Windows PowerShell exception/protocol boundary without
+    // asking for consent or touching a resident process.
+    #[tokio::test]
+    async fn native_consent_codes_do_not_confuse_refusal_and_child_failure() {
+        let script = consent_script(Path::new("unused.exe"), Path::new("unused.json"), "digest");
+        for (mock, expected) in [
+            (
+                "function Start-Process { throw [ComponentModel.Win32Exception]::new(1223, 'operator declined') }",
+                "refused",
+            ),
+            (
+                "function Start-Process { [pscustomobject]@{ExitCode=1223} }",
+                "completed",
+            ),
+        ] {
+            let raw = powershell(
+                &format!(
+                    "{mock}
+{script}"
+                ),
+                std::time::Duration::from_secs(30),
+            )
+            .await
+            .expect("the typed launcher protocol succeeds");
+            let outcome: ConsentOutcome = serde_json::from_str(&raw).expect("typed launch outcome");
+            match (expected, outcome) {
+                ("refused", ConsentOutcome::Refused) => {}
+                ("completed", ConsentOutcome::Completed { exit_code: 1223 }) => {}
+                other => panic!("wrong consent outcome: {other:?}"),
+            }
+        }
+        let denied = powershell(
+            &format!(
+                "function Start-Process {{ throw [ComponentModel.Win32Exception]::new(5) }}
+{script}"
+            ),
+            std::time::Duration::from_secs(30),
+        )
+        .await;
+        assert!(
+            matches!(denied, Err(PowerShellError::Exit { .. })),
+            "access denied is a launch failure, never an untouched/refused claim"
+        );
+    }
 }

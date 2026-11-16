@@ -71,8 +71,17 @@ pub enum ElevationError {
     OwnPath(#[source] std::io::Error),
     #[error("install: the elevation consent was refused — pid {pid} is untouched and still serving. Nothing was drained, nothing was terminated")]
     Refused { pid: i32 },
-    #[error("install: the elevated teardown did not complete: {diagnostic}\n  receipt: {receipt}")]
-    Child { diagnostic: String, receipt: String },
+    #[error(transparent)]
+    Launcher(#[from] crate::supervisor_install::PowerShellError),
+    #[error("invalid elevation outcome: {0}")]
+    Outcome(#[from] serde_json::Error),
+    #[error("cannot read the elevated child's receipt: {0}")]
+    Receipt(#[source] std::io::Error),
+    #[error("elevated child exited with {exit_code}; receipt: {receipt:?}")]
+    Child {
+        exit_code: i32,
+        receipt: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -290,23 +299,29 @@ where
     Ok((image, graceful))
 }
 
+/// The launcher reports this protocol, never localized exception prose.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConsentOutcome {
+    Refused,
+    Completed {
+        #[serde(rename = "exitCode")]
+        exit_code: i32,
+    },
+}
+
 pub fn elevation_outcome(
     pid: i32,
-    consent: Result<String, String>,
-    receipt_text: &str,
+    consent: ConsentOutcome,
+    receipt: Option<String>,
 ) -> Result<(), ElevationError> {
-    let Err(why) = consent else { return Ok(()) };
-    if why.contains("canceled by the user") {
-        return Err(ElevationError::Refused { pid });
+    match consent {
+        ConsentOutcome::Refused => Err(ElevationError::Refused { pid }),
+        ConsentOutcome::Completed { exit_code: 0 } => Ok(()),
+        ConsentOutcome::Completed { exit_code } => {
+            Err(ElevationError::Child { exit_code, receipt })
+        }
     }
-    Err(ElevationError::Child {
-        diagnostic: why,
-        receipt: if receipt_text.trim().is_empty() {
-            "(none — the child never ran, or ran and could not write one)".to_owned()
-        } else {
-            receipt_text.trim().to_owned()
-        },
-    })
 }
 /// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
 /// the process actually WENT is proven by the caller on the same bounded deadline the
@@ -665,52 +680,32 @@ mod tests {
     // must never be reported as if nothing happened.
     #[test]
     fn a_refused_consent_says_nothing_was_touched_and_a_silent_failure_does_not() {
-        use super::elevation_outcome;
-
-        elevation_outcome(25040, Ok("ok".to_string()), "terminated pid 25040")
-            .expect("a completed elevation is not an error");
-
-        let refused = elevation_outcome(
-            25040,
-            Err("Start-Process: The operation was canceled by the user.".to_string()),
-            "",
-        )
-        .expect_err("a declined consent must not read as success");
+        elevation_outcome(25040, ConsentOutcome::Completed { exit_code: 0 }, None)
+            .expect("completed child");
+        assert!(matches!(
+            elevation_outcome(25040, ConsentOutcome::Refused, None),
+            Err(ElevationError::Refused { pid: 25040 })
+        ));
+        assert!(matches!(
+            elevation_outcome(25040, ConsentOutcome::Completed { exit_code: 1 }, None),
+            Err(ElevationError::Child {
+                exit_code: 1,
+                receipt: None
+            })
+        ));
         assert!(
-            refused.to_string().contains("untouched and still serving"),
-            "{refused}"
-        );
-        assert!(
-            refused
-                .to_string()
-                .contains("Nothing was drained, nothing was terminated"),
-            "the refusal must say what did NOT happen, in those words: {refused}"
-        );
-
-        let silent = elevation_outcome(25040, Err("exit code 1".to_string()), "   ")
-            .expect_err("a failed elevation is an error");
-        assert!(
-            silent
-                .to_string()
-                .contains("the child never ran, or ran and could not write one"),
-            "an absent receipt is reported as absent, never as nothing-happened: {silent}"
-        );
-        assert!(
-            !silent.to_string().contains("untouched"),
-            "only a DECLINED consent may claim the target is untouched: {silent}"
-        );
-
-        let with_receipt = elevation_outcome(
-            25040,
-            Err("exit code 1".to_string()),
-            "elevated teardown failed: X",
-        )
-        .expect_err("still an error");
-        assert!(
-            with_receipt
-                .to_string()
-                .contains("elevated teardown failed: X"),
-            "{with_receipt}"
+            matches!(
+                elevation_outcome(
+                    25040,
+                    ConsentOutcome::Completed { exit_code: 1223 },
+                    Some("child ran".into())
+                ),
+                Err(ElevationError::Child {
+                    exit_code: 1223,
+                    receipt: Some(_)
+                })
+            ),
+            "a child exit code must never impersonate declined consent"
         );
     }
 

@@ -25,7 +25,7 @@ function Read-TaskSnapshot([string]$name) {
 
 pub(super) async fn read_tasks() -> Result<Vec<TaskSnapshot>, String> {
     let script=format!("{READ}\n@((Read-TaskSnapshot 'ContinuumCore'),(Read-TaskSnapshot 'ContinuumDeploy')) | ConvertTo-Json -Depth 4 -Compress");
-    let raw = super::super::super::super::powershell(&script, PROBE).await?;
+    let raw = super::super::super::super::powershell(&script, PROBE).await.map_err(|error| error.to_string())?;
     serde_json::from_str(&raw).map_err(|e| format!("scheduler maintenance snapshot: {e}"))
 }
 
@@ -186,7 +186,7 @@ pub(super) async fn pin_verified_bootstrap(root: &Path, cooperative: bool) -> Re
         "$protocol -notin @('3','4')"
     };
     script.push_str(&format!("\nAssert-CoreSupervisorBootstrap -Path '{executable}' -UserSid '{sid}'\n$protocol = (& '{executable}' installed-service --protocol | Out-String).Trim()\nif ($LASTEXITCODE -ne 0 -or {accepted}) {{ throw 'Maintenance requires a verified supported supervisor protocol; finish the supported installer transition before disabling tasks.' }}\n'cooperating'"));
-    if super::super::super::super::powershell(&script, PROBE).await? != "cooperating" {
+    if super::super::super::super::powershell(&script, PROBE).await.map_err(|error| error.to_string())? != "cooperating" {
         return Err("protected supervisor capability was not established".into());
     }
     // Recheck actual registrations after the capability probe. The caller's
