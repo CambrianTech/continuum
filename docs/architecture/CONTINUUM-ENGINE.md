@@ -1529,12 +1529,26 @@ A CPU, and the graphics pipeline's residency (section 2.3):
    withdrawn at once; a seat with KV leaves through a `GrantHandoff` ticket and its cells are charged
    until the engine's reclaim receipt (#6040; a `Busy` answer moves to the next holder). Cells a
    reclaim frees go to the mind it was made for.
-5. *Wait only behind acts.* When every holder is acting and she still does not fit, she waits, woken
-   by an act's end (I5); a need no sequence can hold is its own typed outcome.
-6. *Deleted:* `FairGrantState` (waiters, `idle`, `changed`, `diagnosis`'s queue view), the head-of-line
-   branch, the one-ticket-per-evaluation rule, `yield_after` arming, `Waiting::Queued`, and the
-   per-mind standing demand. Kept: receipts, `retiring`/`reclaimed`/`refused` custody, `GrantHandoff`.
-7. *Gate:* `memory_follows_the_mind_that_is_acting` green; the generated interleavings (`service`
+5. *A seat is held for one act (aging).* A seat granted to a ready mind is protected until she has
+   used it (a service receipt after it was granted), unless the mind now asking has waited at least as
+   long as she did for it. Why this does not contradict "memory follows the mind that is acting": the
+   holder of an unused seat is the mind that was ready first and is about to act; taking it for a newer
+   waiter makes memory follow arrival instead, and each withdrawal restarts the loser's wait, so seats
+   flip between waiters with nobody acting (the dyno, seed 1: three publications, a seat withdrawn and
+   re-granted each time, no act between). Holding it for exactly one act bounds every wait by the acts
+   ahead of her (goal 9) and still moves memory to her the moment that act ends. A reclaim the engine
+   refused (`Busy`) is not retried before that holder's next act.
+6. *Wait only behind acts.* When every holder is acting or holds a protected seat and she still does
+   not fit, she waits. Each holder she waits behind is armed at her act's end (`yield_after`): her
+   next act is refused at the receipt boundary, so the next evaluation, woken by that end (I5),
+   reclaims the seat; a busy holder never chains acts past a waiter. A need no sequence can hold is
+   its own typed outcome.
+7. *Deleted:* `FairGrantState` (waiters, `idle`, `changed`, `diagnosis`'s queue view), the head-of-line
+   branch, the one-ticket-per-evaluation rule, `Waiting::Queued`, and the per-mind standing demand.
+   `yield_after` stays, armed per owed mind for each holder she waits behind (6), never as a queue. Kept: receipts, `retiring`/`reclaimed`/`refused` custody, `GrantHandoff`.
+8. *Gate:* `memory_follows_the_mind_that_is_acting` green; the dyno's opportunity spec states the
+   aging rule (5) itself (`NoOpportunity::SeatsProtected`), so the oracle is the design and not a copy
+   of the implementation; the generated interleavings (`service`
    `generated`) clean with the custody violations unchanged and `TicketWithoutCompletion` replaced by
    "a ticket names a holder with no request in custody"; on BigMama every asked turn served.
 
