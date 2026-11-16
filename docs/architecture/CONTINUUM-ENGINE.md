@@ -1786,6 +1786,24 @@ time per mind.
 Each finding lands as a cited row (file:line, cost per what, how it scales, the by-reference / batched / off-thread /
 incremental form) and is fixed one change at a time against the step budget, `gpu_time` and per-act receipts.
 
+**Prepare the next mind ahead, concurrently** (Joel, 2026-11-16: "you're preparing for the next mind, other work
+that's needed for that context switch, ahead of time, concurrently ... there's 16 cores of cpu. It's not just memory
+but most of the throughput is related to this"). While mind A decodes, the scheduler's prediction of who runs next (its
+activity temperature, goal 9) starts B's switch on spare cores and the copy lanes, as a CPU prefetches or a game
+streamer loads the next cell: B's device snapshot is paged in, B's new items' bytes are delivered and templated and
+tokenized once in the engine (4.7.11), and B's appended tail is prefilled on its own queue (4.7.8). When B is
+scheduled the switch is the restore (0.4-0.8 ms measured on the 0.8B), not a cold start. A wrong prediction costs
+spare-core work, never the running mind's frame. Gate: switch time measured per switch, and decode tok/s of the
+running mind unchanged while the next one is prepared.
+
+**No timer kills a mind** (Joel: "so often it's some dumb mistake and abort because of JavaScript web dev styled
+promise or timeout architecture rather than streaming that sabotaged the mind"). Liveness comes from the stream: a
+mind's act is alive while tokens arrive or the engine reports progress on it, however long it thinks. A wall-clock
+bound that aborts an act, drops its stream, refuses it or relaunches the engine while progress continues is a defect
+(the record has one: five generations killed at the act deadline on the M5 on 2026-09-20, 1.2-1.5 million ms in). A
+bound that remains fires only on the absence of progress for a measured interval, and what it does is typed and
+reported, never a silent kill. The audit of every such bound on the act path is recorded below as it lands.
+
 **The first audit, ranked (2026-11-16; canary 15664c6ad and fork `fable/host-pool`; "verified" = read and measured by
 me, otherwise read by the audit agent and to be verified before it is fixed):**
 
