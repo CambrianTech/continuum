@@ -494,7 +494,7 @@ impl DeployActuator {
                 return ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: *attempt, elapsed_ms: *elapsed_ms, bound_ms: *bound_ms });
             }
             Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms }) => {
-                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms });
+                return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt: *attempt, elapsed_ms: *elapsed_ms });
             }
         };
         // Property 2: the deploy owns its build tree — create a detached worktree at
