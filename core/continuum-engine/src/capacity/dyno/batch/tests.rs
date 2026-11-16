@@ -137,6 +137,8 @@ fn candidate_schedulers_on_the_recorded_hour() {
         (String::new(), Box::new(ShortestRemaining::default())),
         (String::new(), Box::new(WholeTail::default())),
         (format!(" (knee {knee})"), Box::new(KneeAdmitted::new(knee))),
+        // 4.10 P5: how many generating sequences decode per step, from the fitted decode plane
+        (String::new(), Box::new(MeasuredConcurrency::new(&costs))),
     ];
     for chunk in [512, 1024, 2048] {
         policies.push((format!(" @{chunk}"), Box::new(BoundedGap { chunk, shortest_first: false })));
