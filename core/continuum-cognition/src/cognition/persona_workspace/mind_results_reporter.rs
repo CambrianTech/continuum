@@ -293,6 +293,9 @@ pub struct MindResultsReporter {
     pressure: watch::Receiver<PressureSnapshot>,
     /// Saved copies proven at shed time; `budget()` reads only this.
     proven: Mutex<ProvenCopies>,
+    /// The resident bytes at which a shed last moved nothing (CONTINUUM-ENGINE 4.9.9 G4): until new
+    /// results change them it has nothing to give, says so before it is asked, and is not asked.
+    exhausted: Mutex<Option<u64>>,
 }
 
 impl MindResultsReporter {
@@ -304,6 +307,7 @@ impl MindResultsReporter {
             registry,
             pressure,
             proven: Mutex::new(ProvenCopies::default()),
+            exhausted: Mutex::new(None),
         }
     }
 }
@@ -339,8 +343,11 @@ impl MemoryReporter for MindResultsReporter {
         PRIORITY
     }
 
+    /// Whether a shed could move anything: not while the resident bodies are exactly those a shed
+    /// last found nothing to move in.
     fn can_shed(&self) -> bool {
-        true
+        let resident = resident_bytes(&self.registry.resident_working_memories());
+        *self.exhausted.lock() != Some(resident)
     }
 
     fn shed_load(&self, level: PressureLevel) {
@@ -352,12 +359,25 @@ impl MemoryReporter for MindResultsReporter {
             return;
         }
         shed_to(&minds, before.saturating_sub(over), &self.proven);
+        let after = resident_bytes(&minds);
+        if after == before {
+            *self.exhausted.lock() = Some(before);
+            continuum_base::probe!(
+                class = "wm.results.nothing_to_give",
+                level = %level,
+                deficit_share = %over,
+                resident = %before,
+                "no resident result can move yet (each mind's newest, unsaved or unproven): not asked again until new results arrive"
+            );
+            return;
+        }
+        *self.exhausted.lock() = None;
         continuum_base::probe!(
             class = "wm.results.shed",
             level = %level,
             deficit_share = %over,
             before = %before,
-            after = %resident_bytes(&minds),
+            after = %after,
             "the memory owner moved the oldest resident results to their handles"
         );
     }
