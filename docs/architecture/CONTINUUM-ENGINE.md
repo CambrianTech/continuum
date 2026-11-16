@@ -1633,52 +1633,42 @@ Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sens
 across its slots and assigns them itself; a core-side permit that bounds the same thing only queues minds in front of
 an idle engine. The health line shows exactly that: residents "lane-starved" while the GPU has room.
 
-> **Retracted 2026-11-16 (Codex):** the trace below was read from a checkout 509 commits behind canary (8e38ada8d,
-> not 15664c6ad). Current canary already hands the caller's lane off while a mind waits at its gate and at the
-> adapter permit (`turn_admission.rs` ~362-385, ~409-418; the faculty runs `admission.run(generate_admitted)`), so
-> rows 4-5's "waits holding a lane" and finding (a) are wrong for current code. The per-slot permit (8) also orders
-> physical save/restore against generation on the same page, so it cannot go before the engine takes that page
-> exclusion. The table is being re-traced on 15664c6ad; Codex's cuts start from the re-trace, not from this one.
+**One act's path, traced on current canary** (15664c6ad, read-only worktree, 2026-11-16; an earlier trace from a
+checkout 509 commits behind was retracted after Codex's review; the central claim below re-read by hand at
+`turn_admission.rs:543`). Paths under `core/continuum-engine/src/` unless marked `cognition/`. The prefill-fit permit
+and the ambient turn permit no longer exist (#5582).
 
-**One act's path, traced** (read-only audit 2026-11-16 of the STALE checkout 8e38ada8d; the central claim re-read by hand:
-`continuum-cognition/src/cognition/llm_deliberation_faculty/request.rs:214-262` binds `_admission` across
-`generate_stream_checked`). Cognition takes its permits, then the adapter takes its own, then the request goes out:
+| # | Gate (file:line) | Bounds | Held while waiting | Verdict |
+|---|---|---|---|---|
+| 1 | measured hold, `cognition/.../admission.rs:57` -> `inference/measured_hold.rs:239` | background work in a hold | nothing | real |
+| 2 | lane: non-directed budget (Notify loops, `lanes.rs:462-525`) then the physical FIFO semaphore (`lanes.rs:240`) | engine `--parallel`; non-directed = lanes - 1 | nothing | priority policy is real; the COUNT duplicates 5c and the engine |
+| 5a | one act per mind, `turn_admission.rs:376-391`, `slots/mind_gate.rs:72` | a mind's page | nothing (lane dropped at :385, only if the first poll is Pending) | real |
+| 5b | lane re-taken, `turn_admission.rs:398` | as 2 | the mind gate and its custody read | churn: rejoins at the BACK of the queue |
+| 5c | decode permit, `turn_admission.rs:409-421`, `slots/endpoint_concurrency.rs:142` | the engine's slot count | the mind (lane dropped :413), then back to 5b | **duplicate of 2 and the engine** (same number, two sources) |
+| 5d | endpoint readiness + RwLock read, `turn_admission.rs:428`, `engine_generation.rs:110,154` | engine transitions | lane, decode permit, mind | real (drain before a transition) |
+| 5e | slot lease, `turn_admission.rs:483-520`, `kv_slot_pool.rs:184` | citizen slots | mind only (`drop(admission)` :516) | real |
+| 5g | per-slot permit, `turn_admission.rs:543` `pool.acquire_slot(slot).await` | 1 per slot | **lane, decode permit, endpoint read, pin, mind** | real (the core's record of which page a slot holds; the evicted page saved before overwrite), but must wait holding only the pin |
+| 5h | paging ledger, `kv_slot_pool.rs:346` -> `saved_ledger.rs:145` | — | everything | **sync `sync_all` of file and directory on an async worker** |
+| 5i | KV save/restore, `turn_admission.rs:598-649`, `paging_lifetime.rs:35` | the page | everything | real; `sleep(bound)` checkpoints with `/slots` probes |
+| 6 | LoRA catalog, `stream.rs:365` | catalog miss | everything | HTTP on the act path |
+| 7, 8 | residency guard, `stream.rs:491`, `lane_send.rs:230-261` (twice) + `/input_tokens` quote | model identity | everything | real once; **three guards collapse to one** |
+| 9 | POST, `lane_send.rs:329` | the request | everything | a `/slots` probe beside every POST |
+| 10 | 503 / refused, `lane_send.rs:401-451` | a relaunch | **everything, including the endpoint read guard** | watch with a 120 s deadline; holding the read guard can stall the relaunch drain that needs the write guard (to be checked against relaunch ordering) |
 
-| # | Gate (file:line) | Bounds | Count from | Held for | Verdict |
-|---|---|---|---|---|---|
-| 0 | ambient turn, `continuum-mind/.../turn_cycle.rs:184` | ambient turns | lanes - 1 | the whole multi-call turn | policy; overlaps 2a |
-| 1 | measured hold, `admission.rs:47` -> `measured_hold.rs:275` | background work in a hold | policy | admission only | real |
-| 2a | non-directed lane, `admission.rs:121` -> `lanes.rs:428` | non-directed calls | lanes - 1 | whole generation; ambient callers poll a Notify every 1 s (`lanes.rs:552`) | a directed-turn reserve, not capacity: on a 2-slot engine one non-directed mind at a time |
-| 2b | physical lane, `lanes.rs:469` | every call | engine `--parallel` | whole generation | **duplicate of the engine's slots** |
-| 3 | prefill fit, `admission.rs:180` -> `prefill_throttle.rs:190` | concurrent prefills | measured free VRAM | whole call, **decode included** | real, but must release when prefill ends |
-| 4 | one act per mind, `turn_admission.rs:280` -> `mind_gate.rs:51` | a mind's page | 1 | whole generation | real (one KV page per mind) |
-| 5 | adapter, `turn_admission.rs:286` | concurrent POSTs | snapshot lanes | whole generation | **duplicate of 2b** |
-| 6 | engine readiness, `engine_generation.rs:105,149` | engine transitions | — | a write-preferring RwLock read guard for the whole generation | real (drain before a transition) |
-| 7 | citizen KV slot lease, `kv_slot_pool.rs:152-230` | KV attribution | `/props` slots | whole generation | engine assigns slots; protects paging attribution only |
-| 8 | per-slot permit, `kv_slot_pool.rs:257-268` | one request per slot | 1 | whole generation | **duplicate of the engine** (its own comment, `turn_admission.rs:492`) |
-| 9 | KV save/restore, `turn_admission.rs:419-466` | KV state | measured p90 switch | admission only | real |
-| 10 | serving identity, `stream.rs:458` -> `serving_guard.rs:279` | right model resident | `DEFAULT_SERVING_WAIT` | everything above still held | real; partly 6 |
-| 12 | 503/refused retry, `lane_send.rs:255-284` | relaunch | 1 s x n sleep | everything above still held | **sleep-and-retry: forbidden** |
+**What it proves.** (a) The lane and the decode permit are held across every wait from 5d to 10 (readiness, the
+per-slot permit, paging, the LoRA probe, three residency guards, the POST, a relaunch wait) and across an unresolved
+page's custody (`turn_admission.rs:162-166`): none of those needs a lane, and every one blocks a mind that could decode.
+(b) Two gates count the engine's slots (2's physical semaphore and 5c), and dropping/re-taking between them costs the
+waiter its queue position (5b). (c) A sync fsync (5h) runs on a runtime worker while all of it is held.
+(`config.env` is not read per act on current canary; `current_serving()` is a watch clone.)
 
-**What it proves.** (a) Permits 2 and 3 are taken in cognition and held through every later wait (4-12): a mind
-queued behind its own previous act (4), a slot lease (7), paging (9), the serving wait (10) and retry sleeps (12) all
-hold a lane another mind could be decoding on. `mind_gate.rs`'s comment says that wait "holds nothing"; the code holds
-the lane. (b) Three gates count the same engine slots (2b, 5, 8). (c) The prefill fit (3) is held through decode.
-(d) Per request, on the async path: a sync read of `config.env` (`request.rs:192`), and the paging ledger's sync
-`fs::write` + fsync + possible `thread::sleep` (`saved_ledger.rs:140`, `durable/mod.rs:35`).
+**The plan** (Codex takes the inference cuts, one measured change each: lane wait per act, engine slots busy, tok/s):
+1. Take the lane and decode permit LAST: readiness, the per-slot permit, paging and the residency check run holding
+   only the pin, the slot permit and the endpoint guard; the lane is held only while the engine generates.
+2. One count of engine slots: 5c goes, 2 keeps the priority policy (directed reserve, work before ambient) with the
+   count read from the engine.
+3. One residency guard instead of three; the `/slots` probe beside every POST and the LoRA probe leave the act path.
+4. The paging ledger's durable write moves to its owner task (off the async worker, never under held permits).
+5. A relaunch wait holds no endpoint read guard (or listens for condemnation), so a drain never waits on it.
+6. Revisit 2's lanes - 1 reserve with measured directed demand, never a fixed reserve that halves a 2-slot engine.
 
-**The plan, one change each, each with lane wait per act, engine slots busy and tok/s before and after:**
-1. Order the real gates so nothing scarce is held while waiting: the per-mind gate (4), engine readiness (6), the slot
-   and paging (7, 9) and serving identity (10) are all passed BEFORE a lane is taken; the lane is taken last and held
-   only while the engine is generating.
-2. Delete the duplicate slot counts: 5 and 8 go; 2b becomes the one count of engine slots, read from the engine.
-3. Release the prefill fit (3) when the engine reports the prompt processed, not at the end of the generation.
-4. Replace the retry sleep (12) and the 1 s ambient poll (2a) with the engine-ready signal (a waiter wakes when the
-   engine is up / a lane frees), never a timer.
-5. Move the per-request config read and the paging ledger's durable write off the request path (read once and
-   watched; the ledger written by its owner task, not inline).
-6. Revisit 2a's reserve with the measurements in hand: a directed-turn reserve is a policy, sized from measured
-   directed demand, never a fixed "lanes - 1" that halves a 2-slot engine.
-
-Owner: the serving/inference area is Codex's (THE PLAN, phase 1 owners); Fable proposes, Codex reviews and takes or
-assigns each cut.
