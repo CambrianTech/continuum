@@ -1759,6 +1759,38 @@ state with a mutex and a blocking `get()` is the JavaScript reflex this rule for
 `continuum-context`) are counted by source-hygiene and may only fall; a new one fails the build. A crate that is
 clean of it gets a compile-time ban (no `serde_json` dependency) so the reflex cannot return.
 
+#### 4.7.13 Concurrent minds are processes; switching is a context switch (2026-11-16)
+
+Joel, 2026-11-16: "Strive to 80tok/s and search for clogs in unnecessary serial work and also any strings for no
+reason, copies and especially any needless conversions, even math per. Anything that iterates on large data really ...
+Especially the appearance of concurrent minds, where we're not thrashing and it acts more like cpu context switching,
+in cases literally that. You have to look at it as if we are lead engineer at rockstar games."
+
+**The model.** A mind is a process; its KV and recurrent state are its address space; a device snapshot (4.7.11) or a
+page is its saved context; the engine's slots are cores; the scheduler (goal 9) time-slices minds by measured activity
+the way an OS does, so a hot mind keeps its state resident and a cooling one is switched out, never thrashed. The
+switch cost is what makes this real, and it is now measured: restoring a mind's recurrent state from a device snapshot
+takes 0.4-0.8 ms on the 0.8B (one 20 MB row) against a cold re-prefill of its whole context (654 s for 134k tokens on
+the M5, 4.7.6). Every speed item below serves two numbers: decode tok/s per stream (target 80 on the M5 Pro) and switch
+time per mind.
+
+**The audit, run on every hot path (and repeated whenever it changes):**
+1. *Per token, not GPU:* any loop over the vocabulary (sampling, probabilities, bias, penalties), any string built or
+   formatted, any allocation, lock or log line, anything O(context) per step.
+2. *Per act over the whole context:* re-templating, re-tokenizing, copying the token list, prefix matching over every
+   token, JSON of the whole request or response, serializing state.
+3. *Conversions:* tokens to text to tokens, bytes to strings to bytes, JSON for internal values, element-wise math that
+   could be skipped, batched or done once.
+4. *Serial work that could overlap:* CPU between GPU steps (4.7.8 frames), core work that waits on what it does not need.
+5. *Copies:* anything moved that could be named (4.7.11-4.7.12).
+Each finding lands as a cited row (file:line, cost per what, how it scales, the by-reference / batched / off-thread /
+incremental form) and is fixed one change at a time against the step budget, `gpu_time` and per-act receipts.
+
+**Reusable patterns pay everywhere.** The patterns of 4.7.7-4.7.12 (job-system modules, frame rings with atomic waits,
+memory_mover lanes sized from the node's own measured curve, device handles plus GPU fences, device snapshots) serve
+training and learning (Dreaming) as much as serving: a training step's batches, a gene's weights and a dream's state
+move by the same lanes and the same handles, so the next consumer inherits them instead of rebuilding them.
+
 #### 4.7.10 No semaphore where nothing is scarce (2026-11-16)
 
 Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sense." The engine batches continuously
