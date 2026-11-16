@@ -12,8 +12,6 @@
 //! Records flow through [`continuum_base::capture::CaptureSink`]: `Noop` unless someone is
 //! recording, and a replay or gate takes only a `CompleteInterval`.
 
-use std::time::Duration;
-
 use continuum_kernel::runtime::stage::MindId;
 
 use super::engine_residency::EngineIncarnation;
@@ -27,9 +25,16 @@ pub struct SequenceId(pub u64);
 pub enum WorkloadEvent {
     /// Something happened to one mind's sequence.
     Sequence { engine: EngineIncarnation, sequence: SequenceId, mind: MindId, change: SequenceChange },
-    /// The engine ran one step.
-    Step { engine: EngineIncarnation, step: EngineStep },
+    /// The engine began one step on the sequences it chose, recorded when the step began, so the
+    /// ready set it chose from is the one at that moment.
+    StepBegan { engine: EngineIncarnation, step: StepId, chosen: Vec<SequenceId> },
+    /// That step ended: what each chosen sequence did.
+    StepEnded { engine: EngineIncarnation, step: StepId, work: Vec<StepWork> },
 }
+
+/// One engine step, by the engine's own count: meaningful only with its incarnation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StepId(pub u64);
 
 /// A moment in a sequence's life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,13 +65,6 @@ pub enum BlockedOn {
     Memory,
     /// Her context paging back in.
     PageIn,
-}
-
-/// One engine step: which sequences ran and what each did, and how long it took.
-#[derive(Debug, Clone, PartialEq)]
-pub struct EngineStep {
-    pub took: Duration,
-    pub ran: Vec<StepWork>,
 }
 
 /// One sequence's share of a step.
