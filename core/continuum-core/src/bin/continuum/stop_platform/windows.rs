@@ -19,6 +19,6 @@ pub(crate) async fn borrow_authority(pid: i32) -> Result<(), StopPlatformError> 
     // the target image belongs to this installation, even during a slot swap.
     let directory = Path::new(&description.artifact).parent()
         .ok_or_else(|| StopPlatformError(format!("the installed artifact {} has no directory", description.artifact)))?;
-    windows_elevated_teardown::request_elevated_teardown(pid, &directory.display().to_string())
+    windows_elevated_teardown::request_elevated_teardown(pid, directory)
         .await.map_err(|error| StopPlatformError(error.to_string()))
 }

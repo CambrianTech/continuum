@@ -77,13 +77,8 @@ struct HeldTerminate(continuum_host::termination_authority::HeldProcess);
 /// nothing about the order; a Windows-only sequence could only ever
 /// have been asserted in a comment from here.
 impl HeldCapability for HeldTerminate {
-    fn image(&self) -> Result<String, TeardownPlanError> {
-        self.0
-            .image()
-            .map_err(TeardownPlanError::Image)?
-            .into_os_string()
-            .into_string()
-            .map_err(|_| TeardownPlanError::ImageEncoding)
+    fn image(&self) -> Result<PathBuf, TeardownPlanError> {
+        self.0.image().map_err(TeardownPlanError::Image)
     }
     fn spend(self) -> Result<(), TeardownPlanError> {
         self.0.terminate(1).map_err(TeardownPlanError::Terminate)
@@ -110,10 +105,10 @@ where
         }, drain).await?;
         // The digest is RECORDED, not compared: nobody could have known it in advance
         // (see `target_is_our_core`), but the receipt should say exactly what was ended.
-        let sha = digest_file(Path::new(&image)).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
+        let sha = digest_file(&image).unwrap_or_else(|e| format!("unreadable ({e})")); // unwrap_or_else: the digest is RECORDED, never compared — an unreadable image must not block a teardown that is otherwise proven
         Ok::<String, TeardownPlanError>(format!(
-            "elevated teardown: drained ({graceful}) and terminated pid {} running {image} (sha256 {sha})",
-            plan.pid
+            "elevated teardown: drained ({graceful}) and terminated pid {} running {} (sha256 {sha})",
+            plan.pid, image.display()
         ))
     }
     .await;
@@ -134,10 +129,10 @@ where
 /// the alternative reading ("the teardown failed") sends the next reader hunting for
 /// damage that does not exist. Every other outcome carries the child's receipt, or says
 /// plainly that there was none.
-pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<(), ElevationError> {
+pub async fn request_elevated_teardown(pid: i32, install_dir: &Path) -> Result<(), ElevationError> {
     let plan = TeardownPlan {
         pid,
-        install_dir: install_dir.to_string(),
+        install_dir: install_dir.to_path_buf(),
     };
     let plan_path =
         std::env::temp_dir().join(format!("continuum-teardown-{}.json", std::process::id()));
@@ -160,7 +155,7 @@ pub async fn request_elevated_teardown(pid: i32, install_dir: &str) -> Result<()
     let _ = std::fs::remove_file(&receipt);
     let outcome: crate::elevated_teardown::ConsentOutcome = serde_json::from_str(&elevated?)?;
     let receipt_text = receipt_text?;
-    elevation_outcome(pid, outcome, receipt_text.clone())?;
+    elevation_outcome(pid, outcome, receipt_text.as_deref())?;
     if let Some(text) = receipt_text {
         println!("{}", text.trim());
     }

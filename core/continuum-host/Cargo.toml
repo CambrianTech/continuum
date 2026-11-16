@@ -16,7 +16,7 @@ libc = { workspace = true } # host_memory: host_statistics64 + sysctlbyname on m
 landlock = { workspace = true } # sandbox: the Linux adapter confines a child to its allow-list
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Threading"] } # process_class: IDLE_PRIORITY_CLASS
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Threading"] } # process_class: IDLE_PRIORITY_CLASS
 
 [features]
 # Fault injection for tests in this crate and its dependents; never in a release.

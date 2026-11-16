@@ -2,7 +2,7 @@
 //!
 //! Ending a core this caller has no handle on is two problems: deciding WHICH process
 //! may be ended and in WHAT ORDER, and actually ending it. The second needs Windows.
-//! The first is arithmetic over strings, and it is where every defect has been — a
+//! The first is policy over native paths, and it is where every defect has been — a
 //! recycled pid, a plan swapped in `%TEMP%`, a drain that ran before the capability was
 //! held. Those live here so they can be exercised on any machine, in seconds.
 //!
@@ -24,7 +24,7 @@
 //! would be a second thing to know about on the node whose operator does not know it
 //! exists.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -44,19 +44,17 @@ pub enum TeardownPlanError {
     #[error("pid {pid} is running {image} outside installation {directory} — the pid was recycled; refusing to terminate it")]
     OutsideInstallation {
         pid: i32,
-        image: String,
-        directory: String,
+        image: PathBuf,
+        directory: PathBuf,
     },
     #[error("pid {pid} is running {image}, which is not a core image — refusing to terminate it")]
-    NotCore { pid: i32, image: String },
+    NotCore { pid: i32, image: PathBuf },
     #[error(transparent)]
     InvalidPid(#[from] continuum_host::process_id::NotAProcess),
     #[error("cannot take the process capability: {0}")]
     Take(#[source] std::io::Error),
     #[error("cannot inspect the held process: {0}")]
     Image(#[source] std::io::Error),
-    #[error("the process image is not representable by the teardown plan")]
-    ImageEncoding,
     #[error("cannot terminate the held process: {0}")]
     Terminate(#[source] std::io::Error),
 }
@@ -91,7 +89,7 @@ pub struct TeardownPlan {
     /// The directory the installed core lives in, from the `ContinuumCore` descriptor.
     /// A DIRECTORY and not a file, because the unelevated half cannot see which image
     /// the process is actually executing — see `target_is_our_core`.
-    pub install_dir: String,
+    pub install_dir: PathBuf,
 }
 
 /// `stop`'s options.
@@ -208,39 +206,41 @@ pub fn bind_plan_bytes(
 /// disagree about spelling far more often than they disagree about the file.
 pub fn target_is_our_core(
     plan: &TeardownPlan,
-    observed_image: &str,
+    observed_image: &Path,
 ) -> Result<(), TeardownPlanError> {
-    let norm = |s: &str| s.replace('/', "\\").trim_matches('"').to_ascii_lowercase();
-    let root = norm(&plan.install_dir);
-    let root = root.trim_end_matches('\\').to_string();
-    let image = norm(observed_image);
-    let image_dir = image.rsplit_once('\\').map(|(dir, _)| dir);
-    // Registration selects the next slot before the previous core exits. Bind
-    // consent to this installation's two known service slots, never arbitrary
-    // siblings or descendants. The elevated caller still observes and terminates
-    // through the same held process handle.
-    let other_slot = root.rsplit_once('\\').and_then(|(bin, slot)| {
-        if bin.rsplit('\\').next() != Some("bin") {
+    use continuum_host::path_spelling::equal;
+    let root = &plan.install_dir;
+    let image_dir = observed_image.parent();
+    let other_slot = root.parent().and_then(|bin| {
+        if !bin
+            .file_name()
+            .is_some_and(|name| equal(Path::new(name), Path::new("bin")))
+        {
             return None;
         }
-        match slot {
-            "service-a" => Some(format!("{bin}\\service-b")),
-            "service-b" => Some(format!("{bin}\\service-a")),
-            _ => None,
+        let slot = root.file_name()?;
+        if equal(Path::new(slot), Path::new("service-a")) {
+            Some(bin.join("service-b"))
+        } else if equal(Path::new(slot), Path::new("service-b")) {
+            Some(bin.join("service-a"))
+        } else {
+            None
         }
     });
-    let in_other_slot = other_slot
-        .as_deref()
-        .is_some_and(|slot| image_dir == Some(slot));
-    if image_dir != Some(root.as_str()) && !in_other_slot {
+    if !image_dir.is_some_and(|dir| {
+        equal(dir, root) || other_slot.as_ref().is_some_and(|slot| equal(dir, slot))
+    }) {
         return Err(TeardownPlanError::OutsideInstallation {
             pid: plan.pid,
             image: observed_image.to_owned(),
-            directory: plan.install_dir.clone(),
+            directory: root.clone(),
         });
     }
-    let name = image.rsplit('\\').next().unwrap_or(&image); // unwrap_or: rsplit always yields once, so this is the no-separator case — the whole string IS the name
-    if !CORE_IMAGE_NAMES.contains(&name) {
+    if !observed_image.file_name().is_some_and(|name| {
+        CORE_IMAGE_NAMES
+            .iter()
+            .any(|allowed| equal(Path::new(name), Path::new(allowed)))
+    }) {
         return Err(TeardownPlanError::NotCore {
             pid: plan.pid,
             image: observed_image.to_owned(),
@@ -248,7 +248,6 @@ pub fn target_is_our_core(
     }
     Ok(())
 }
-
 /// The file names a continuum core can legitimately be executing from. `.prev.exe` is
 /// here deliberately: a core that outlived its own deploy is running from the parking
 /// space, and that is the single most likely state at the moment this rail is used.
@@ -264,7 +263,7 @@ const CORE_IMAGE_NAMES: &[&str] = &[
 pub trait HeldCapability: Sized {
     /// The image the HELD process is running. Read through the capability, never by a
     /// second lookup on the pid.
-    fn image(&self) -> Result<String, TeardownPlanError>;
+    fn image(&self) -> Result<PathBuf, TeardownPlanError>;
     /// Spend it. Consumes self: a capability is used once.
     fn spend(self) -> Result<(), TeardownPlanError>;
 }
@@ -279,7 +278,7 @@ pub async fn teardown_sequence<C, T, F, Fut>(
     plan: &TeardownPlan,
     take: T,
     drain: F,
-) -> Result<(String, String), TeardownPlanError>
+) -> Result<(PathBuf, String), TeardownPlanError>
 where
     C: HeldCapability,
     T: FnOnce(i32) -> Result<C, TeardownPlanError>,
@@ -313,14 +312,15 @@ pub enum ConsentOutcome {
 pub fn elevation_outcome(
     pid: i32,
     consent: ConsentOutcome,
-    receipt: Option<String>,
+    receipt: Option<&str>,
 ) -> Result<(), ElevationError> {
     match consent {
         ConsentOutcome::Refused => Err(ElevationError::Refused { pid }),
         ConsentOutcome::Completed { exit_code: 0 } => Ok(()),
-        ConsentOutcome::Completed { exit_code } => {
-            Err(ElevationError::Child { exit_code, receipt })
-        }
+        ConsentOutcome::Completed { exit_code } => Err(ElevationError::Child {
+            exit_code,
+            receipt: receipt.map(str::to_owned),
+        }),
     }
 }
 /// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
@@ -330,11 +330,14 @@ pub fn elevation_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn check_target(plan: &TeardownPlan, image: &str) -> Result<(), TeardownPlanError> {
+        target_is_our_core(plan, Path::new(image))
+    }
 
     fn plan() -> TeardownPlan {
         TeardownPlan {
             pid: 25040,
-            install_dir: "C:\\Users\\a\\.continuum\\bin".to_string(),
+            install_dir: PathBuf::from("C:/Users/a/.continuum/bin"),
         }
     }
 
@@ -424,12 +427,11 @@ mod tests {
             ),
             (
                 "outside the installation",
-                target_is_our_core(&p, "C:\\Windows\\System32\\notepad.exe").unwrap_err(),
+                check_target(&p, "C:/Windows/System32/notepad.exe").unwrap_err(),
             ),
             (
                 "inside but not a core",
-                target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\llama-server.exe")
-                    .unwrap_err(),
+                check_target(&p, "C:/Users/a/.continuum/bin/llama-server.exe").unwrap_err(),
             ),
         ] {
             assert!(
@@ -447,8 +449,8 @@ mod tests {
     #[test]
     fn a_recycled_pid_is_refused_rather_than_terminated() {
         let p = plan();
-        let elsewhere = "C:\\Windows\\System32\\notepad.exe";
-        let refused = target_is_our_core(&p, elsewhere)
+        let elsewhere = "C:/Windows/System32/notepad.exe";
+        let refused = check_target(&p, elsewhere)
             .expect_err("a process outside the installation must be refused");
         assert!(
             refused.to_string().contains("recycled"),
@@ -459,8 +461,8 @@ mod tests {
             "the refusal names what is there: {refused}"
         );
 
-        let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
-        let sibling = target_is_our_core(&p, neighbour)
+        let neighbour = "C:/Users/a/.continuum/bin/llama-server.exe";
+        let sibling = check_target(&p, neighbour)
             .expect_err("our own engine is not our core; terminating it would take the lane");
         assert!(
             sibling.to_string().contains("not a core image"),
@@ -468,9 +470,9 @@ mod tests {
         );
 
         // A path that merely STARTS with the directory's characters is not inside it.
-        let lookalike = "C:\\Users\\a\\.continuum\\bin-evil\\core.exe";
+        let lookalike = "C:/Users/a/.continuum/bin-evil/core.exe";
         assert!(
-            target_is_our_core(&p, lookalike).is_err(),
+            check_target(&p, lookalike).is_err(),
             "a sibling directory sharing a prefix is not the installation directory"
         );
     }
@@ -483,9 +485,9 @@ mod tests {
     #[test]
     fn a_core_running_from_the_renamed_predecessor_is_still_our_core() {
         let p = plan();
-        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.prev.exe")
+        check_target(&p, "C:/Users/a/.continuum/bin/core.prev.exe")
             .expect("a core that outlived its own deploy runs from the parking space");
-        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
+        check_target(&p, "C:/Users/a/.continuum/bin/core.exe")
             .expect("and the ordinary case still passes");
     }
 
@@ -495,23 +497,23 @@ mod tests {
     fn registered_and_running_service_slots_can_differ() {
         for (registered, running) in [("service-a", "service-b"), ("service-b", "service-a")] {
             let mut p = plan();
-            p.install_dir = format!("C:\\Users\\a\\.continuum\\bin\\{registered}");
-            let bin = "C:\\Users\\a\\.continuum\\bin";
-            target_is_our_core(&p, &format!("{bin}\\{running}\\continuum-core-server.exe"))
+            p.install_dir = PathBuf::from(format!("C:/Users/a/.continuum/bin/{registered}"));
+            let bin = "C:/Users/a/.continuum/bin";
+            check_target(&p, &format!("{bin}/{running}/continuum-core-server.exe"))
                 .expect("previous slot in the same installation");
             for rejected in [
                 "continuum-core-server.exe".to_string(),
-                format!("{bin}\\service-c\\continuum-core-server.exe"),
-                format!("{bin}\\{running}\\nested\\continuum-core-server.exe"),
-                format!("{bin}\\{running}\\llama-server.exe"),
-                format!("C:\\Users\\other\\.continuum\\bin\\{running}\\continuum-core-server.exe"),
+                format!("{bin}/service-c/continuum-core-server.exe"),
+                format!("{bin}/{running}/nested/continuum-core-server.exe"),
+                format!("{bin}/{running}/llama-server.exe"),
+                format!("C:/Users/other/.continuum/bin/{running}/continuum-core-server.exe"),
             ] {
-                assert!(target_is_our_core(&p, &rejected).is_err(), "{rejected}");
+                assert!(check_target(&p, &rejected).is_err(), "{rejected}");
             }
         }
         let mut p = plan();
-        p.install_dir = "C:\\unrelated\\service-a".to_string();
-        assert!(target_is_our_core(&p, "C:\\unrelated\\service-b\\core.exe").is_err());
+        p.install_dir = PathBuf::from("C:/unrelated/service-a");
+        assert!(check_target(&p, "C:/unrelated/service-b/core.exe").is_err());
     }
 
     // A capability whose every act is RECORDED, so the sequence can be asserted rather
@@ -520,11 +522,11 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
-        image: String,
+        image: PathBuf,
     }
 
     impl HeldCapability for Recorder {
-        fn image(&self) -> Result<String, TeardownPlanError> {
+        fn image(&self) -> Result<PathBuf, TeardownPlanError> {
             self.log.borrow_mut().push("image");
             Ok(self.image.clone())
         }
@@ -549,7 +551,7 @@ mod tests {
         let taken = l.clone();
         // Built BEFORE the closure: the sequence borrows the plan, so the closure must
         // not also reach into it.
-        let ours = format!("{}\\core.exe", p.install_dir);
+        let ours = p.install_dir.join("core.exe");
         let (image, graceful) = teardown_sequence(
             &p,
             move |_pid| {
@@ -610,7 +612,7 @@ mod tests {
                 taken.borrow_mut().push("take");
                 Ok(Recorder {
                     log: taken.clone(),
-                    image: "C:\\Windows\\System32\\notepad.exe".to_string(),
+                    image: PathBuf::from("C:/Windows/System32/notepad.exe"),
                 })
             },
             || {
@@ -641,7 +643,7 @@ mod tests {
         let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let l = log.clone();
         let taken = l.clone();
-        let ours = format!("{}\\core.exe", p.install_dir);
+        let ours = p.install_dir.join("core.exe");
         let (image, graceful) = teardown_sequence(
             &p,
             move |_pid| {
@@ -698,7 +700,7 @@ mod tests {
                 elevation_outcome(
                     25040,
                     ConsentOutcome::Completed { exit_code: 1223 },
-                    Some("child ran".into())
+                    Some("child ran")
                 ),
                 Err(ElevationError::Child {
                     exit_code: 1223,
@@ -714,9 +716,9 @@ mod tests {
     // spelling; treating `C:/x/Core.exe` and `c:\x\core.exe` as different targets would
     // refuse every legitimate teardown on some machines and none of the dangerous ones.
     #[test]
-    fn windows_path_spelling_is_not_a_different_target() {
+    fn a_native_path_identifies_the_core() {
         let p = plan();
-        target_is_our_core(&p, "c:/Users/a/.continuum/BIN/CONTINUUM-CORE-SERVER.EXE")
+        check_target(&p, "C:/Users/a/.continuum/bin/continuum-core-server.exe")
             .expect("case and separator spelling name the same place on Windows");
     }
 }
