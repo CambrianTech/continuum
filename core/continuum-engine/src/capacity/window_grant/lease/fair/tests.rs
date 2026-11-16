@@ -274,9 +274,8 @@ fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
     bench.tick(&[a, b]);
     let lease = bench.lease(a);
     let finished = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: first request"); // test: her grant
-    let mut unresolved = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an overlapping second request"); // test: her grant
+    let unresolved = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an overlapping second request"); // test: her grant
     settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
-    unresolved.mark_dispatched();
     drop(unresolved);
     assert!(bench.tick(&[a, b]).is_empty());
     assert_eq!(bench.grants().get(&a), Some(&60));
