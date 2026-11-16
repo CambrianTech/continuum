@@ -9,6 +9,7 @@ pub mod browser_install;
 pub mod confine;
 pub mod core_handoff;
 pub mod core_ipc;
+pub mod default_browser;
 pub mod durable;
 pub mod file_identity;
 pub mod host_memory;

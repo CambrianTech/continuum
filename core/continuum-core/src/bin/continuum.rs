@@ -391,13 +391,9 @@ async fn run() -> Result<(), CliError> {
                 std::process::exit(1);
             }
             println!("🖥  {url}");
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("open").arg(&url).status();
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let _ = std::process::Command::new("xdg-open").arg(&url).status();
+            // The URL is printed above, so a browser that cannot be opened still leaves the way in.
+            if let Err(error) = continuum_host::default_browser::open(&url) {
+                eprintln!("✗ {error}");
             }
             Ok(())
         }
