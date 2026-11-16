@@ -406,9 +406,12 @@ fn a_completed_holder_cannot_restart_while_an_older_mind_needs_her_cells() {
     bench.publish(&[demand(big, 57, 100), demand(small, 28, 100)], 100);
     let big_lease = bench.lease(big);
     let _big_act = bench.owner.reserve_against(big, big_lease, 50, || Some(big_lease)).expect("test: the big holder mid-act"); // test: its grant
+    let small_lease = bench.lease(small);
+    let small_act = bench.owner.reserve_against(small, small_lease, 20, || Some(small_lease)).expect("test: small mid-act"); // test: its grant
     let demands = [demand(big, 57, 100), demand(small, 28, 100), demand(oldest, 60, 100)];
     bench.publish(&demands, 100); // the oldest mind is owed from here
-    bench.serve(small);
+    assert!(bench.owner.lock().yield_after.contains_key(&small));
+    settle(small_act, Some(&TerminalReceipt { finish: "stop".into() }));
     for round in 0..5 {
         let tickets = bench.publish(&demands, 100);
         for ticket in tickets {
