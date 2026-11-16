@@ -1652,8 +1652,10 @@ have control over both llama cpp and rust ... Blocks of memory either straight u
 reference, why would you even go into something intermediate? Boundaries can use bytes and streaming just fine ...
 Any serde in these important paths is suspect. Any string." So nothing on the act path is re-represented: no JSON, no
 String built around bytes, no token ids computed by the core.
-- *Transport.* Length-prefixed binary frames over the engine's Unix socket (present beside each engine); a frame is a
-  fixed header plus a byte block, streamed in both directions; in process (line 3b) the same blocks pass by reference.
+- *Transport.* Bytes never cross the socket. Item bytes and piece bytes live in a shared-memory segment both
+  processes map (a ring of byte blocks, written by one side, read by the other); the engine's Unix socket carries only
+  small fixed frames that NAME them with a `buffer_ref` (segment, offset, length; fork `server-frames.h`) and the
+  doorbell that wakes the reader. In process (line 3b) the segment is simply memory and the refs are pointers.
   Each connection negotiates its maximum frame length and protocol version first; an unknown kind or version is a
   typed refusal; a partial frame at EOF is a typed failure of that request only (Codex's review).
 - *An item crosses once, as its own bytes.* A new context item is its raw UTF-8 block plus a typed header (item key
