@@ -34,7 +34,8 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
             axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
                 let seen = Arc::clone(&load_seen);
                 async move {
-                    seen.lock().unwrap_or_else(|p| p.into_inner()).push(("load", body.clone())); // test-owned lock
+                    let received = body.clone();
+                    seen.lock().unwrap_or_else(|p| p.into_inner()).push(("load", received)); // test-owned lock
                     if body["dry_run"] == true {
                         return axum::Json(serde_json::json!({"engine": serving, "reserved": false,
                             "weights": [{"device": "CUDA0", "buffer_type": "CUDA0", "bytes": WEIGHTS, "host": false}]}));
@@ -72,7 +73,8 @@ async fn engine(serving: &'static str, unload_status: u16) -> (LearningEngine, S
     (LearningEngine::serving_here(port).expect("test: this process's start time is readable"), seen, tokio::spawn(async move { axum::serve(listener, app).await })) // test: a fixture step that cannot fail here
 }
 
-fn change<'a>(operation: &'a ServingOperation, engine: LearningEngine, bound: &str) -> CatalogChange<'a> {
+fn change<'a>(operation: &'a ServingOperation, engine: &LearningEngine, bound: &str) -> CatalogChange<'a> {
+    let engine = engine.to_owned();
     CatalogChange {
         operation,
         engine,
@@ -110,7 +112,7 @@ async fn an_adopted_engines_gene_change_unloads_bound_and_loads_inside_a_leased_
     let (authority, operation, resources) = held_authority();
     let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(ENGINE, 200).await;
-    let outcome = catalog.converge(change(&operation, engine, ENGINE)).await;
+    let outcome = catalog.converge(change(&operation, &engine, ENGINE)).await;
     assert_eq!(outcome, CatalogOutcome {
         applied: vec![CatalogStep::Retired("/genes/a.gguf".into()), CatalogStep::Added("/genes/b.gguf".into())],
         end: CatalogEnd::Done,
@@ -134,7 +136,7 @@ async fn a_replaced_engine_refuses_the_load_before_anything_is_leased() {
     let (authority, operation, resources) = held_authority();
     let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(REPLACEMENT, 200).await;
-    let mut asked = change(&operation, engine, ENGINE);
+    let mut asked = change(&operation, &engine, ENGINE);
     asked.retire.clear();
     let outcome = catalog.converge(asked).await;
     assert_eq!(outcome, CatalogOutcome { applied: vec![], end: CatalogEnd::Refused(CatalogRefusal::EngineReplaced) });
@@ -150,7 +152,7 @@ async fn a_busy_retire_stops_the_change_before_any_gene_joins() {
     let (authority, operation, _resources) = held_authority();
     let catalog = GeneCatalog::new(authority);
     let (engine, seen, server) = engine(ENGINE, 503).await;
-    let outcome = catalog.converge(change(&operation, engine, ENGINE)).await;
+    let outcome = catalog.converge(change(&operation, &engine, ENGINE)).await;
     assert_eq!(outcome, CatalogOutcome { applied: vec![], end: CatalogEnd::Busy });
     assert!(calls(&seen).iter().all(|(route, _)| *route == "unload"), "nothing loaded ahead of the busy retire");
     server.abort();
@@ -168,13 +170,13 @@ async fn the_same_gene_on_two_engines_is_two_seats_and_retiring_one_keeps_the_ot
     let (first, _seen_first, first_server) = engine(ENGINE, 200).await;
     let (second, _seen_second, second_server) = engine(SECOND, 200).await;
     let (first_process, second_process) = (first.process(), second.process());
-    let load = |engine: LearningEngine, bound: &str| {
+    let load = |engine: &LearningEngine, bound: &str| {
         let mut asked = change(&operation, engine, bound);
         asked.retire.clear();
         asked
     };
-    assert_eq!(catalog.converge(load(first.clone(), ENGINE)).await.end, CatalogEnd::Done);
-    assert_eq!(catalog.converge(load(second.clone(), SECOND)).await.end, CatalogEnd::Done);
+    assert_eq!(catalog.converge(load(&first, ENGINE)).await.end, CatalogEnd::Done);
+    assert_eq!(catalog.converge(load(&second, SECOND)).await.end, CatalogEnd::Done);
     assert_eq!(leased(&resources), 2 * WEIGHTS, "each engine's copy is leased");
     let retire = CatalogChange {
         operation: &operation,

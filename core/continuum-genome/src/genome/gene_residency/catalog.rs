@@ -82,8 +82,9 @@ impl GenomeCatalog for GeneCatalog {
             let load = GeneLoad { operation, engine: engine.clone(), bound: &ledger, consumer: &consumer, name: &gene.name };
             match seat_gene(&self.authority, load).await {
                 Ok(seat) => {
-                    seats.insert((incarnation, gene.gene.clone()), seat);
-                    applied.push(CatalogStep::Added(gene.gene));
+                    let key = (incarnation, gene.gene);
+                    applied.push(CatalogStep::Added(key.1.to_owned()));
+                    seats.insert(key, seat);
                 }
                 Err(SeatRefusal::EngineReplaced) => return ended(applied, CatalogEnd::Refused(CatalogRefusal::EngineReplaced)),
                 Err(SeatRefusal::AwaitingMemory(wait)) => return ended(applied, CatalogEnd::Refused(CatalogRefusal::AwaitingMemory(wait.to_string()))),
