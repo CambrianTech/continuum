@@ -184,11 +184,19 @@ where
         match decide() {
             MindWindow::Decided(decided) => return Ok(decided),
             MindWindow::Ungranted => {
-                if !measured {
+                let first = !measured;
+                if first {
                     measure();
                     measured = true;
                 }
-                let evaluation = evaluation_after(std::time::Instant::now())?.await?;
+                // After her measure: only an evaluation that began later has read her demand.
+                let asked = std::time::Instant::now();
+                if first {
+                    // Her demand is recorded: evaluate it now, once. A later pass waits for the
+                    // next event (an act's end, a pool step), never re-triggers an evaluation.
+                    super::window_grant::demand_moved();
+                }
+                let evaluation = evaluation_after(asked)?.await?;
                 match evaluation.ungranted(persona) {
                     Some(why) if !why.awaits_room() => return Err(WindowRefused::Ungranted(why)),
                     Some(why) => continuum_base::probe!(

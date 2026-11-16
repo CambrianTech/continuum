@@ -282,6 +282,9 @@ impl Reservations {
             let revision = held.next_receipt;
             held.receipts.insert(persona, (entry.engine, revision));
         }
+        drop(held);
+        // Her act ended: its cells may serve a ready mind now.
+        super::demand_moved();
     }
 
     /// The caller let go of reservation `id` with no terminal receipt: it stays held, unresolved.
