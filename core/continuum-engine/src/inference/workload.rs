@@ -80,4 +80,5 @@ pub struct StepWork {
 }
 
 mod ready;
+pub mod steps;
 pub use ready::{MindProgress, Replay, ReplayError, Replayed, SequenceKey, StepView};
