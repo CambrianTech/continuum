@@ -195,6 +195,9 @@ pub enum StateRoute {
     ThroughClaim,
     /// Her own live review returns to in_progress for a revision, under the same claim.
     ResumeReview,
+    /// She published the newest submission on a reviewed card nobody else holds: the card reopens
+    /// to in_progress (airc reopens settled work by its state, never a claim), then she claims it.
+    ReviseOwnSubmission,
     /// Another's claim stands on the card (`from`). Anyone may take any card at any time (Joel,
     /// 2026-10-06), and the takeover is on the record: her claim releases theirs, naming whom it was
     /// taken from (airc's `ClaimReleased { taken_over_from }`), then the column moves.
@@ -341,6 +344,7 @@ pub fn state(card: &WorkCard, actor: PeerId, requested: CardState, now_ms: u64) 
     match requested {
         CardState::Open if holds => Err(Unmet::OpenByHolder),
         CardState::InProgress if resumes_held_review(card, actor, now_ms) => Ok(StateRoute::ResumeReview),
+        CardState::InProgress if revises_own_submission(card, actor, now_ms) => Ok(StateRoute::ReviseOwnSubmission),
         CardState::Claimed | CardState::InProgress => claim(card, actor, now_ms).map(|_| StateRoute::ThroughClaim),
         CardState::Open | CardState::Blocked | CardState::Review | CardState::Merged | CardState::Closed => {
             Ok(match holder_on_record(card, now_ms).filter(|holder| *holder != actor) {
@@ -358,6 +362,16 @@ pub fn resumes_held_review(card: &WorkCard, actor: PeerId, now_ms: u64) -> bool 
     card.state == CardState::Review
         && card.owner == Some(actor)
         && crate::card_holder::hold_of(card, now_ms) == crate::card_holder::Hold::Held
+}
+
+/// The author of a reviewed card's newest submission, returning to revise it while nobody else
+/// holds it. Without this a verdict that asked for changes locked its author out of her own work:
+/// claiming refuses Review and the state verb asked for a live hold (Aiko on the M5, 2026-11-16:
+/// d2856ec5 in Review with no owner after its verdict; her intact worktree unreachable).
+pub fn revises_own_submission(card: &WorkCard, actor: PeerId, now_ms: u64) -> bool {
+    card.state == CardState::Review
+        && card.submissions.first().is_some_and(|newest| newest.publisher == actor)
+        && crate::card_holder::hold_of(card, now_ms) != crate::card_holder::Hold::Held
 }
 
 /// Whether `verb` can execute on `card` for `actor` with some argument: the question the surface
@@ -633,6 +647,27 @@ mod tests {
         assert_eq!(state(&in_review, other(), S::InProgress, NOW), Err(Unmet::Settled(S::Review)));
         let refusal = Refusal::at(Unmet::HeldBy(other()), &theirs, her(), NOW);
         assert_eq!(refusal.next, vec![WorkVerb::Claim, WorkVerb::Note, WorkVerb::State], "on another's card she can take it over, write its ledger, or move it");
+    }
+
+    // what this catches: Aiko on the M5, 2026-11-16, locked out of her own card. d2856ec5 sat in
+    // Review with no owner after a verdict asked for changes; claiming refused Review and the state
+    // verb wanted a live hold, so her intact worktree was unreachable and she began to redo the work
+    // in her home clone. The author of the newest submission reopens it; nobody else does, and a
+    // live hold on it is still that holder's.
+    #[test]
+    fn the_author_of_a_reviewed_submission_reopens_it_to_revise_and_a_stranger_does_not() {
+        let mut reviewed = fixture_card(S::Review, Some(her()), None, "x");
+        reviewed.submissions = vec![fixture_submission(&reviewed)];
+        let mut unowned = reviewed.clone();
+        (unowned.owner, unowned.claim_id, unowned.claim_expires_at_ms) = (None, None, None);
+        assert_eq!(state(&unowned, her(), S::InProgress, NOW), Ok(StateRoute::ReviseOwnSubmission));
+        assert_eq!(state(&unowned, other(), S::InProgress, NOW), Err(Unmet::Settled(S::Review)), "not hers to revise");
+        assert_eq!(claim(&unowned, her(), NOW), Err(Unmet::Settled(S::Review)), "reopening is the state verb's, never a claim");
+        let mut lapsed = reviewed.clone();
+        lapsed.claim_expires_at_ms = Some(NOW - 1);
+        assert_eq!(state(&lapsed, her(), S::InProgress, NOW), Ok(StateRoute::ReviseOwnSubmission), "her lapsed hold does not lock her out");
+        assert_eq!(state(&reviewed, her(), S::InProgress, NOW), Ok(StateRoute::ResumeReview), "her live hold resumes under its claim");
+        assert!(available(&unowned, her(), NOW).contains(&WorkVerb::State), "her surface offers the way back");
     }
 
     // what this catches (Cormac on #5782): work/state executing for a non-holder on another's card
