@@ -1686,6 +1686,28 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
   the Degraded rail).
 
+- **The checkpoint store is a claim in the one memory budget (measured on the M5, 2026-11-16 05:00Z).**
+  Decode had fallen from ~80 tok/s solo to 1-4 tok/s per stream (even a 1.2k-token slot) because the
+  host was thrashing: 60 of 64 GB used, 36 GB wired, a 14 GB compressor holding ~37 GB, swap 11.5 of
+  12 GB, 5.4 billion pageins; on unified memory the compressor's traffic is the GPU's bandwidth. The
+  engine's footprint was 26 GB beside the 20 GB mapped model: 11 GB KV and 15 GB of host allocations,
+  of which the 6.7 GB prompt cache (`--cache-ram`) is budgeted (`host_fit::pool_fit` subtracts it) and
+  the context checkpoints are not: `--ctx-checkpoints 32` per slot (a constant, `CTX_CHECKPOINTS`) at
+  ~110 MB each on this hybrid model (saved sidecars: 3-5 checkpoints in 347-601 MB) is up to ~17.6 GB
+  across 5 slots, grown over hours, never priced.
+  - *Measured, not guessed:* the fork reports each slot's checkpoints (`/slots` `checkpoints: {count,
+    bytes}`, llama.cpp#121); the core's footprint owner keeps the measured bytes per checkpoint for the
+    model beside `kv_per_token` (persisted with the footprint, so the next launch is priced by it;
+    a model never measured has no checkpoint price, a state, and launches no checkpoints until one is).
+  - *One allocation:* the host fit subtracts the checkpoint store's claim (sequences x checkpoints per
+    slot x bytes per checkpoint) beside the prompt cache, so the KV pool is sized into the room left.
+  - *The count follows memory, never a constant:* checkpoints per slot are the coverage the spacing
+    needs (`checkpoint_min_step`), lowered by the host deficit like any cache (Batch priority, before
+    the minds' KV); the fork applies a new count live (it evicts its oldest checkpoints), so the
+    engine stays up.
+  - *Gate:* on the M5 with four residents, swap and compressor flat over an hour, and a lone stream's
+    decode back to the solo rate (~60-80 tok/s) at the same depths.
+
 **Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
 live act time matches what the replay predicted for the chosen policy on the same recorded load (the
 simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
