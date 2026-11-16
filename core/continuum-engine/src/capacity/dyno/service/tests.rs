@@ -276,7 +276,9 @@ mod generated {
     #[test]
     fn seeded_schedules_keep_every_invariant_on_one_engine() {
         if let Some((seed, steps, found)) = shortest_failure(0..300, false) {
-            panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}");
+            let mut world = World::new(100, 100, &[("A", 60), ("B", 40), ("C", 30)]);
+            run(&mut world, &steps);
+            panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}\n{}", world.log.join("\n"));
         }
     }
 
