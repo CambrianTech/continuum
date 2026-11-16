@@ -149,12 +149,40 @@ fn a_fresh_seat_waits_for_its_act_unless_an_older_waiter_needs_it() {
     let tickets = bench.tick(&[a, b]);
     assert_eq!(tickets.iter().map(GrantHandoff::persona).collect::<Vec<_>>(), vec![a], "used and not acting: reclaimed");
 
-    // waiting since the same evaluation, an unused seat with no KV here is withdrawn at once
+    // waiting since the same evaluation, even an unused seat leaves through the engine's save and
+    // erase: no local receipt is no proof her KV is absent (an adopted engine, Codex on #6060)
     let mut tied = Bench::new();
     let (c, d) = (mind(3), mind(4));
     tied.tick(&[c, d]);
-    assert!(tied.tick(&[c, d]).is_empty(), "no KV to reclaim: no handoff");
-    assert_eq!(tied.grants().get(&d), Some(&60), "the equally old waiter takes the unused seat");
+    let ticket = tied.tick(&[c, d]).pop().expect("test: the unused seat's handoff"); // test: d waited as long as c
+    assert_eq!(ticket.persona(), c);
+    tied.owner.lock().reclaimed.insert(c, ticket.lease());
+    tied.tick(&[c, d]);
+    assert_eq!(tied.grants().get(&d), Some(&60), "the equally old waiter takes the seat once it is reclaimed");
+}
+
+// what this catches (Codex on #6060): reclaim accounting kept for one evaluation only. Cells being
+// reclaimed for a mind count toward her need at every later evaluation until they arrive, so a
+// partial arrival never reclaims extra donors; when she leaves, they are no one's and go to the pool.
+#[test]
+fn cells_being_reclaimed_count_for_their_mind_until_they_arrive_or_she_leaves() {
+    let mut bench = Bench::new();
+    let (a, b, c, d) = (mind(1), mind(2), mind(3), mind(4));
+    let need = |m: uuid::Uuid, n: u32| demand(m, n, 100);
+    bench.publish(&[need(a, 40), need(b, 40)], 100);
+    bench.serve(a);
+    bench.serve(b);
+    let tickets = bench.publish(&[need(a, 40), need(b, 40), need(c, 80)], 100);
+    let mut donors: Vec<_> = tickets.iter().map(GrantHandoff::persona).collect();
+    donors.sort();
+    assert_eq!(donors, vec![a, b], "both donors in one evaluation: 20 free + 40 + 40 covers her 80");
+    let first = tickets.iter().find(|t| t.persona() == a).expect("test: a's handoff"); // test: a is a donor
+    bench.owner.lock().reclaimed.insert(a, first.lease());
+    let later = bench.publish(&[need(a, 40), need(b, 40), need(c, 80), need(d, 30)], 100);
+    assert!(later.is_empty(), "b's cells are still on their way to c: nothing more is reclaimed ({later:?})");
+    assert_eq!(bench.dispatch.reclaiming.get(&b), Some(&c), "b's seat stays counted for c");
+    bench.publish(&[need(a, 40), need(b, 40), need(d, 30)], 100);
+    assert!(bench.dispatch.reclaiming.is_empty(), "c left: what is still being reclaimed is no one's");
 }
 
 // what this catches: a refused handoff returns authority, never free capacity, and is not retried

@@ -47,6 +47,10 @@ pub struct DispatchState {
     /// Each mind's receipt revision when her grant last changed: she is settled (her grant may shrink
     /// toward her share) once a receipt past it says she served on it.
     changed: BTreeMap<uuid::Uuid, u64>,
+    /// Each seat being reclaimed (its holder retiring) and the ready mind it is reclaimed for, kept
+    /// across evaluations until the engine's receipt: a later evaluation counts those cells toward
+    /// her need before it reclaims more, and cells reclaimed for a mind who left go to the pool.
+    reclaiming: BTreeMap<uuid::Uuid, uuid::Uuid>,
     waits: BTreeMap<uuid::Uuid, DispatchWait>,
     diagnosis: Option<diagnosis::DispatchDiagnosis>,
 }
@@ -130,6 +134,8 @@ impl Reservations {
         dispatch.seated.retain(|mind, _| live.contains(mind));
         dispatch.refused_at.retain(|mind, _| live.contains(mind));
         dispatch.changed.retain(|mind, _| live.contains(mind));
+        // a reclaim stays counted for its beneficiary while its seat is still retiring and she is still ready
+        dispatch.reclaiming.retain(|holder, beneficiary| state.retiring.contains_key(holder) && live.contains(beneficiary));
         // Reclaimed capacity is consumed only here, under the publish/reserve transaction.
         let reclaimed: BTreeSet<_> = state
             .reclaimed
@@ -188,7 +194,6 @@ impl Reservations {
         };
         let mut grants = compute(&state, &held_for_policy);
         let mut tickets = Vec::new();
-        let mut reclaiming_for = BTreeSet::new();
         let mut unseated = Vec::new();
         let mut owed: Vec<(uuid::Uuid, u64)> = dispatch.owed.iter().map(|(mind, at)| (*mind, *at)).collect();
         owed.sort_by_key(|(_, at)| *at);
@@ -196,7 +201,14 @@ impl Reservations {
             let Some(need) = demands.iter().find(|d| d.mind == waiter).map(|d| d.need.get()) else { continue };
             // her grant plus the cells already being reclaimed for her covers her need
             let covered = |grants: &BTreeMap<uuid::Uuid, u32>, pending: u32| grants.get(&waiter).map_or(pending, |held| held.saturating_add(pending)) >= need;
-            if covered(&grants, 0) || engine.is_none() {
+            // cells an earlier evaluation began reclaiming for her, still retiring
+            let mut pending = dispatch
+                .reclaiming
+                .iter()
+                .filter(|(_, beneficiary)| **beneficiary == waiter)
+                .filter_map(|(holder, _)| state.retiring.get(holder))
+                .fold(0u32, |sum, lease| sum.saturating_add(lease.tokens));
+            if covered(&grants, pending) || engine.is_none() {
                 continue;
             }
             // non-acting holders she may take (aging, a refused reclaim not retried before her next
@@ -213,30 +225,22 @@ impl Reservations {
             let charged: u32 = state.retiring.values().fold(0u32, |sum, lease| sum.saturating_add(lease.tokens));
             let free = pool.saturating_sub(claimed.saturating_add(charged));
             let reclaimable = candidates.iter().filter_map(|(mind, _)| held_for_policy.get(mind)).fold(0u32, |sum, tokens| sum.saturating_add(*tokens));
-            if free.saturating_add(reclaimable) < need {
+            if free.saturating_add(pending).saturating_add(reclaimable) < need {
                 continue;
             }
-            let mut pending = 0u32;
-            for (holder, served) in candidates {
+            for (holder, receipt) in candidates {
                 if covered(&grants, pending) {
                     break;
                 }
-                match served {
-                    // never served on this engine: no KV here to reclaim, withdrawn without a handoff
-                    None => {
-                        held_for_policy.remove(&holder);
-                        unseated.push(holder);
-                    }
-                    Some(receipt) => {
-                        let Some(lease) = current.as_ref().and_then(|c| c.lease_for(holder)) else { continue };
-                        state.retiring.insert(holder, lease);
-                        held_for_policy.remove(&holder);
-                        pending = pending.saturating_add(lease.tokens);
-                        tickets.push(GrantHandoff { persona: holder, lease, receipt });
-                        reclaiming_for.insert(waiter);
-                        unseated.push(holder);
-                    }
-                }
+                // every seat leaves through the engine's save and erase, even one this owner never saw
+                // serve: after an adoption her KV may be resident with no receipt here (Codex on #6060)
+                let Some(lease) = current.as_ref().and_then(|c| c.lease_for(holder)) else { continue };
+                state.retiring.insert(holder, lease);
+                held_for_policy.remove(&holder);
+                pending = pending.saturating_add(lease.tokens);
+                tickets.push(GrantHandoff { persona: holder, lease, receipt });
+                dispatch.reclaiming.insert(holder, waiter);
+                unseated.push(holder);
                 grants = compute(&state, &held_for_policy);
             }
         }
@@ -259,7 +263,7 @@ impl Reservations {
         dispatch.waits = dispatch
             .owed
             .keys()
-            .map(|mind| (*mind, if reclaiming_for.contains(mind) || !state.retiring.is_empty() { DispatchWait::Reclaiming } else { DispatchWait::BehindActs { acting } }))
+            .map(|mind| (*mind, if dispatch.reclaiming.values().any(|beneficiary| beneficiary == mind) || !state.retiring.is_empty() { DispatchWait::Reclaiming } else { DispatchWait::BehindActs { acting } }))
             .collect();
         for d in demands {
             if grants.get(&d.mind) != held.get(&d.mind) {

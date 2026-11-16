@@ -167,7 +167,7 @@ mod interleavings {
         run(&mut world, &[Step::Quote(0)]);
         assert_eq!(world.phase(0), Phase::Quoted, "her act holds the grant it is rendered against");
         let applied = world.apply(Step::Publish);
-        assert!(applied.tickets.is_empty(), "no handoff under a rendered act\n{}", world.log.join("\n"));
+        assert!(!applied.tickets.contains(&0), "no handoff under a rendered act\n{}", world.log.join("\n"));
         assert_eq!(world.published(0), 40, "her grant does not move under the act");
         let applied = world.apply(Step::Reserve(0));
         assert_eq!(applied.refused, None, "dispatched against the grant she was priced on");

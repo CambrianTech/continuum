@@ -91,14 +91,17 @@ pub struct TerminalReceipt {
 pub struct GrantHandoff {
     persona: uuid::Uuid,
     lease: GrantLease,
-    receipt: u64,
+    /// Her newest service receipt on this engine when the handoff began; `None` when this owner has
+    /// seen her serve nothing here (after an adoption her KV may still be resident: the engine's save
+    /// and erase are the proof either way, never this absence).
+    receipt: Option<u64>,
 }
 
 impl GrantHandoff {
     #[cfg(test)]
     pub(crate) fn for_test(persona: uuid::Uuid) -> Self {
         Self { persona, lease: GrantLease { tokens: 60, revision: super::GrantRevision::test(1),
-            engine: None, owner: super::GrantOwner::this_process() }, receipt: 1 }
+            engine: None, owner: super::GrantOwner::this_process() }, receipt: Some(1) }
     }
     pub fn persona(&self) -> uuid::Uuid { self.persona }
     pub fn lease(&self) -> GrantLease { self.lease }
@@ -260,7 +263,7 @@ impl Reservations {
             return Err(HandoffRefused::AlreadyPending);
         }
         held.retiring.insert(persona, leased);
-        Ok(GrantHandoff { persona, lease: leased, receipt })
+        Ok(GrantHandoff { persona, lease: leased, receipt: Some(receipt) })
     }
 
     /// Release only this request. An unsent attempt is not completed service. A receipt from
