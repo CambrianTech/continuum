@@ -1686,6 +1686,25 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
   the Degraded rail).
 
+- **P5 slice 2, the decode set (the fork runs the chosen set; the core chooses its width).** Measured
+  on the M5 at 04:10Z on 2026-11-16: four generating slots decoded in every step at 1.4-4.3 tok/s each
+  (~9 tok/s together) against ~60 for one alone; one mind's 29,059-token think ran at 4 tok/s, hours
+  instead of minutes. The mechanism splits what each side knows:
+  - *The core decides the WIDTH* (how many generating slots decode per step) from its policy behind the
+    pluggable decision (baseline: the argmin of the measured cost curve at the depths being served,
+    `MeasuredConcurrency` on the dyno, #6061), and publishes it to the engine with `POST /engine/decode-set
+    {"width": n}` whenever it changes; `{"width": null}` (and an engine never told) is every generating
+    slot, today's behaviour. No width is written down anywhere.
+  - *The fork decides WHICH slots* each step: the generating slots that have waited longest since they
+    last decoded (aging: none starves), the slot whose request is mid-tool-call or nearly done first
+    when tied. A generating slot outside the set stays GENERATING with its KV in place and its sampler
+    state untouched; it simply adds no token to this batch. Prompt slots are untouched (the fork's
+    fill and its time-fair interleave are unchanged).
+  - *Proof before live:* the dyno replay shows the measured width beats `Fork` on the recorded hour
+    (median and p90 act, oldest waiter, longest decode gap), then the slice 1 capture of a live hour
+    replays to the live act times (7.0). Thinking stays uncapped (Joel, 2026-11-09): only the
+    interleaving changes.
+
 **Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
 live act time matches what the replay predicted for the chosen policy on the same recorded load (the
 simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
