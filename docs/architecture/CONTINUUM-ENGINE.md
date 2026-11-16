@@ -1705,7 +1705,16 @@ pattern, fork `tools/server/server-frames.h`, validator `tests/test-server-frame
   publishes completion.
 - *Measured (M5 Pro, 18 cores = 6P + 12E):* memcpy of 1 GiB: 61 GB/s on 1 thread, 116 on 8, 119 on 12, 109 on 18.
   `parallel_copier`, 16 x 64 MiB: 1 lane 39.1 GB/s, 4 lanes 83.5, 8 lanes 98.0, 12 lanes 118.9. Lane count comes from
-  this curve's knee on each node at startup, never a constant. Next backends: the GPU blit lane (Metal blit encoder on
+  this curve's knee on each node at startup, never a constant; the FIRST guess is the node's efficiency-core count
+(Joel; on the M5 Pro the knee is exactly its 12 E-cores), leaving the performance cores to the decode thread.
+- *Across a boundary: a handle and a GPU fence, never bytes* (Joel, 2026-11-16: "instead of copying across a domain I'd
+  use a framebuffer/renderbuffer ... pass the texture id and have the GPU itself coordinate ... I'd NEVER pass bytes for
+  video frames, across unity, av foundation, cpp"). Device memory crosses a process or API boundary as a handle the
+  other side maps (Apple: IOSurface / MTLBuffer handle; CUDA: IPC memory handle; Linux: dma-buf fd), and ordering is a
+  GPU-side fence (MTLSharedEvent, CUDA IPC event): the producer's queue signals, the consumer's queue waits, the CPU
+  neither waits nor touches the bytes. `buffer_ref` gains the device-handle kind; a GPU lane's completion is that fence
+  value, not a CPU doorbell. KV pages, parked state and checkpoints therefore never come down to host memory to cross
+  between the engine, the core or another node's process on the same machine. Next backends: the GPU blit lane (Metal blit encoder on
   its own queue; CUDA async copy on the 5090) for checkpoints and pages, and the disk lane for paged KV.
 
 **No string, no serde on the hot paths: enforced, not advised.** In the engine's act path (the socket handler, the
