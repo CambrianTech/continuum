@@ -317,8 +317,8 @@ fn an_edit_of_a_file_she_has_open_puts_its_read_and_her_note_on_it_in_hand() {
     let wm = WorkingMemory::new(8);
     wm.set_scope(checkout());
     working(&wm, false, 0, 0);
-    let (acts, _) = wm.action_renderings();
-    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([ActSeq(acts[0].seq)]), "a read made for her change is in hand before any edit");
+    let read = wm.actions.lock().records().next().map(|record| record.seq).expect("test: her read is recorded"); // test: recorded above
+    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([ActSeq(read)]), "a read made for her change is in hand before any edit");
     wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
     assert_eq!(wm.in_hand(), crate::cognition::working_memory::in_hand::InHand::default(), "her commit closes the change: its reads leave her hand");
 
