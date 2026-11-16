@@ -1514,6 +1514,30 @@ A CPU, and the graphics pipeline's residency (section 2.3):
    the receipt before it commits; when the KV participant is not durable it leaves the engine up, says why,
    and reaps it only on an explicit operator instruction to discard the residents' newest KV.
 
+**P3 in detail: dispatch at the act** (the rule `fair_publish` becomes; reclaim and receipts are #6040's):
+1. *Who holds what.* A mind with a request in custody (`ActHold`, a reservation, an unresolved
+   request) is ACTING: her grant is fixed and never reclaimed. Every other grant is a seat without an
+   act: its KV, if any, is cache (I4), and the seat itself is not a claim on anyone's future.
+2. *Who asks.* A demand is a mind READY to act (her act measured) or acting. A mind between acts asks
+   nothing, so no standing grant is published for her; her KV stays resident as cache until reclaimed.
+3. *Order among the ready: age, never a queue.* Each ready mind carries the publication she became
+   owed at; the oldest owed is served first, so no mind starves (goal 9), and there is no position,
+   no head-of-line hold and no "idle for two evaluations".
+4. *Free cells first, then every non-acting holder at once.* A ready mind takes free cells. Short,
+   the owner reclaims NON-acting holders coolest first (oldest last service receipt), as many as her
+   need takes, in ONE evaluation: a seat whose holder never served on this engine holds no KV and is
+   withdrawn at once; a seat with KV leaves through a `GrantHandoff` ticket and its cells are charged
+   until the engine's reclaim receipt (#6040; a `Busy` answer moves to the next holder). Cells a
+   reclaim frees go to the mind it was made for.
+5. *Wait only behind acts.* When every holder is acting and she still does not fit, she waits, woken
+   by an act's end (I5); a need no sequence can hold is its own typed outcome.
+6. *Deleted:* `FairGrantState` (waiters, `idle`, `changed`, `diagnosis`'s queue view), the head-of-line
+   branch, the one-ticket-per-evaluation rule, `yield_after` arming, `Waiting::Queued`, and the
+   per-mind standing demand. Kept: receipts, `retiring`/`reclaimed`/`refused` custody, `GrantHandoff`.
+7. *Gate:* `memory_follows_the_mind_that_is_acting` green; the generated interleavings (`service`
+   `generated`) clean with the custody violations unchanged and `TicketWithoutCompletion` replaced by
+   "a ticket names a holder with no request in custody"; on BigMama every asked turn served.
+
 #### 4.9.5 Simulator first (section 7.0)
 
 | Scenario | Proves | State |
