@@ -1642,6 +1642,31 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
   (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
   `Evidence` reads. The simulator and production read one instrument (7.0). Owner: Fable (capture,
+  *The fork's step publication (slice 1; Codex on the pinned fork b5534b5).* The fork already owns one
+  incarnation-bound typed stream, `GET /learn/events` (`server-context.cpp` ~6670): the ticketed
+  terminal results of learning mutations, delivered to its ONE subscriber and then gone. Step capture
+  never rides it: that contract is lossless, low-rate and single-consumer, and a second subscriber would
+  steal completions. Instead the same owner (the HTTP route layer, the incarnation identity, the SSE
+  generator and its keepalive) publishes a second, separate stream, `GET /engine/steps`:
+  - *Producer:* `update_slots` writes one typed record per step into a bounded ring owned by the server
+    context: `StepBegan { step, began_us, chosen: [task] }` when the batch is formed and `StepEnded {
+    step, ended_us, work: [{task, depth, prefilled, decoded, accepted_draft}] }` after `post_decode`,
+    plus `SequenceChange` records at the points the slot state machine already has (arrival, ready,
+    blocked on memory or page-in, completed, cancelled, paged out or in), all on the engine's monotonic
+    clock. The ring's bound is set by the core at subscription (its memory to spend), never a constant
+    in the fork; writing never blocks the loop: a full ring counts the record dropped.
+  - *Publication:* the stream opens with `{ engine, capture, origin_us }` (incarnation identity, a
+    capture id minted per subscription, the clock origin) and then sends each record in order with a
+    running sequence number; a dropped run is sent as `{ missed: n }` at its position, so the core's
+    `Ring` maps it to `Missing::dropped` and that interval cannot gate. One subscriber per capture; a
+    reconnect is a new capture (the replay refuses to stitch two, 4.10 P5).
+  - *Core side:* a capture task subscribes per engine incarnation, converts the fork's monotonic time to
+    the core ring's `Instant` once from `origin_us`, and records into the `continuum-base::capture` ring
+    the dyno replays. Noop when no one is recording: the fork publishes nothing without a subscriber.
+  - *Gate for slice 1:* a fork test that a step record's `chosen` equals the batch's sequences and a
+    full ring reports `missed`; a core test that `missed` voids completeness; then one recorded hour on
+    the M5 replayed with the live act times reproduced (7.0). Slice 2 (the per-step decode set) starts
+    only after that recording exists.
   replay), Codex (fork report review).
   The capture is the WORKLOAD, not only the chosen steps (Codex review, comment 6904421902): steps
   alone hide the runnable work the live policy did not pick, so no other policy could be compared on
