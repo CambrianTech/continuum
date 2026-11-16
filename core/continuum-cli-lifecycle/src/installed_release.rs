@@ -428,13 +428,21 @@ fn validate_receipt_inner(
 
 /// Integrity is authoritative: Safer NORMALUSER may still report TokenIsElevated.
 /// Unknown integrity and a still-privileged marked child are refusals, not fallbacks.
-pub fn needs_medium_relaunch(rid: Result<u32, String>, marker: bool) -> Result<bool, String> {
+#[derive(Debug, thiserror::Error)]
+pub enum IntegrityError {
+    #[error("cannot read service token integrity: {0}")]
+    Query(#[from] std::io::Error),
+    #[error("service token remains above Medium after relaunch (RID {rid:#x})")]
+    StillPrivileged { rid: u32 },
+}
+
+pub fn needs_medium_relaunch(rid: std::io::Result<u32>, marker: bool) -> Result<bool, IntegrityError> {
     let rid = rid?;
     if rid <= 0x2000 {
         return Ok(false);
     }
     if marker {
-        return Err("service token remains above Medium after relaunch".into());
+        return Err(IntegrityError::StillPrivileged { rid });
     }
     Ok(true)
 }
@@ -445,11 +453,11 @@ mod tests {
     // Regression: forged relaunch marker or failed token query must never authorize selection.
     #[test]
     fn token_selection_fails_closed() {
-        assert_eq!(needs_medium_relaunch(Ok(0x2000), true), Ok(false));
-        assert_eq!(needs_medium_relaunch(Ok(0x3000), false), Ok(true));
-        assert!(needs_medium_relaunch(Ok(0x3000), true).is_err());
-        assert!(needs_medium_relaunch(Err("unreadable".into()), false).is_err());
-        assert_eq!(needs_medium_relaunch(Ok(0x2100), false), Ok(true));
+        assert!(matches!(needs_medium_relaunch(Ok(0x2000), true), Ok(false)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x3000), false), Ok(true)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x3000), true), Err(IntegrityError::StillPrivileged { rid: 0x3000 })));
+        assert!(matches!(needs_medium_relaunch(Err(std::io::Error::from_raw_os_error(5)), false), Err(IntegrityError::Query(error)) if error.raw_os_error() == Some(5)));
+        assert!(matches!(needs_medium_relaunch(Ok(0x2100), false), Ok(true)));
     }
     // Regression: active selection cannot trust unowned, corrupted or incomplete runtime closure.
     #[test]

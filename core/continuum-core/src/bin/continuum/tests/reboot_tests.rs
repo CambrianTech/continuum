@@ -517,7 +517,7 @@ fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
     assert!(super::require_prebuilt_runtime_medium(Ok(0x2000), true).is_ok());
     assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), false).unwrap_err().contains("normal-user terminal"));
     assert!(super::require_prebuilt_runtime_medium(Ok(0x3000), true).is_err());
-    assert!(super::require_prebuilt_runtime_medium(Err("token unavailable".into()), false).is_err());
+    assert!(super::require_prebuilt_runtime_medium(Err(std::io::Error::from_raw_os_error(5)), false).is_err());
     let candidate = super::PrebuiltCore::from_report(
         std::path::PathBuf::from("verified release/core.exe"),
         "abc123f".into(),

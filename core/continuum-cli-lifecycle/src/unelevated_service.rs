@@ -58,7 +58,7 @@ mod os {
     }
 
     /// The integrity RID of a token (0x2000 Medium, 0x3000 High).
-    pub(super) fn integrity_rid(token: HANDLE) -> Result<u32, String> {
+    pub(super) fn integrity_rid(token: HANDLE) -> std::io::Result<u32> {
         use windows_sys::Win32::Security::{GetSidSubAuthority, GetSidSubAuthorityCount};
         let mut buf = vec![0u8; 256];
         let mut len = 0u32;
@@ -72,7 +72,7 @@ mod os {
             )
         } == 0
         {
-            return Err(last_error("GetTokenInformation(TokenIntegrityLevel)"));
+            return Err(std::io::Error::last_os_error());
         }
         let label = unsafe { &*(buf.as_ptr() as *const TOKEN_MANDATORY_LABEL) };
         let count = unsafe { *GetSidSubAuthorityCount(label.Label.Sid) } as u32;
@@ -84,10 +84,10 @@ mod os {
     }
 
     /// Read actual integrity; the shared lifecycle policy decides whether relaunch is required.
-    pub fn token_integrity() -> Result<u32, String> {
+    pub fn token_integrity() -> std::io::Result<u32> {
         let mut token: HANDLE = std::ptr::null_mut();
         if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
-            return Err(last_error("OpenProcessToken"));
+            return Err(std::io::Error::last_os_error());
         }
         let token = Owned(token);
         integrity_rid(token.0)
@@ -288,9 +288,9 @@ mod tests {
             os::normal_user_token().expect("a NORMALUSER token can be computed from any session");
         let rid = os::integrity_rid(token.0).expect("integrity readable");
         assert_eq!(rid, 0x2000, "Medium Mandatory Level");
-        assert_eq!(
+        assert!(matches!(
             crate::installed_release::needs_medium_relaunch(Ok(rid), true),
             Ok(false)
-        );
+        ));
     }
 }

@@ -8,7 +8,7 @@ pub(super) async fn require_service_medium() -> Result<Option<i32>, String> {
     if !continuum_cli_lifecycle::installed_release::needs_medium_relaunch(
         unelevated_service::token_integrity(),
         std::env::var_os(unelevated_service::UNELEVATED_MARKER).is_some(),
-    )? { return Ok(None); }
+    ).map_err(|error| error.to_string())? { return Ok(None); }
     let code = tokio::task::spawn_blocking(unelevated_service::relaunch_unelevated)
         .await.map_err(|e| format!("service privilege drop failed: {e}"))??;
     Ok(Some(code))
@@ -18,8 +18,8 @@ pub(super) async fn require_service_medium() -> Result<Option<i32>, String> {
 /// A prebuilt reboot already owns the install lease: refuse here instead of
 /// recursively relaunching the CLI and deadlocking on that same lease.
 #[cfg(any(windows, test))]
-pub(super) fn require_prebuilt_runtime_medium(integrity: Result<u32, String>, marker: bool) -> Result<(), String> {
-    if continuum_cli_lifecycle::installed_release::needs_medium_relaunch(integrity, marker)? {
+pub(super) fn require_prebuilt_runtime_medium(integrity: std::io::Result<u32>, marker: bool) -> Result<(), String> {
+    if continuum_cli_lifecycle::installed_release::needs_medium_relaunch(integrity, marker).map_err(|error| error.to_string())? {
         return Err("explicit prebuilt reboot must run from a normal-user terminal; no shutdown or media launch was performed".into());
     }
     Ok(())
