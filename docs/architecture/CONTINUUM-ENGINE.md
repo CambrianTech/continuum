@@ -1653,6 +1653,18 @@ at load while copies grow with use; N therefore comes from the pool's budget and
 the per-token part of live checkpoints (draft/spec), the output-row floor, then the live A/B on the 35B in a
 serving-down window (host memory, swap, act latency, identical outputs).
 
+*The draft, and the cost it exposed* (fork, 2026-11-16). The per-token part is the MTP draft context: a plain KV cache
+ignores `PARTIAL_ONLY` (only the iswa and dsv4 caches read it), so a copied checkpoint serializes the draft's whole
+sequence. Parked ids now hold it by id too; with `--spec-type draft-mtp` the copied and parked engines produce
+identical text and the draft accepts the same 31 of 47 after a restore. But `/props.memory_breakdown` shows the target
+context at 363 MB copied vs 1,656 MB parked with N = 16: ~81 MB per parked id, because the recurrent memory gives every
+cell `1 + n_rs_seq` rows for speculative rollback (`llama-memory-recurrent.cpp`, `n_rows = mem_size * (1 + n_rs_seq)`),
+and parked cells never decode. **Not deployable until fixed in the memory:** (1) partition the cells: rollback rows only
+for the live slots' range, parked cells in their own range with one row; (2) reverse the copy-on-write: when a live
+sequence advances off a cell it shares with a parked id, the live sequence KEEPS its cell (and its rollback rows) and the
+parked state is copied once, on the device, into a parked-range cell (today `find_slot` moves the live sequence and
+strands the parked state in a live cell). Gate: parked memory per id equals one state row, then the 35B A/B.
+
 **Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
