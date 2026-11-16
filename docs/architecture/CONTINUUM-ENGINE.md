@@ -1647,6 +1647,33 @@ before the count is set.
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
 
+**The binary seam, core to engine** (proposed 2026-11-16, for Codex's review before either side is built). It
+replaces OpenAI JSON on the act path; the OpenAI HTTP surface stays only for external drivers (line 16).
+- *Transport.* The engine's Unix socket (already present beside each engine, e.g. `~/.continuum/logs/llama-server-58057.sock`),
+  length-prefixed frames, little-endian, fixed headers. In process (line 3b) the same frames become spans by reference.
+- *Tokens are the unit, prepared once.* The context codec (`continuum-context`) already keys every item and only
+  appends within an epoch; the core renders each item through the model's chat template once and tokenizes it once
+  (one `tokenize` frame per NEW item), caching the ids under the item's key. The engine never re-templates or
+  re-tokenizes a context. The vocabulary's pieces are fetched once per engine instance (`vocab` frame: every piece's
+  bytes by id), so the core detokenizes by table lookup, never by a round trip.
+- *Act request* (`kind = act`): `magic u32, version u16, kind u16, slot i32, page u128 (the mind's typed page id),
+  epoch u64, prefix_n u32, prefix_hash u64 (xxh64 of the prefix ids the core believes the slot holds), sampling
+  {temp f32, top_k i32, top_p f32, min_p f32, repeat_penalty f32, repeat_last_n i32, frequency_penalty f32,
+  presence_penalty f32, seed u32, n_predict i32, think_budget i32}, n_append u32, n_stop u32`, then `i32[n_append]`
+  appended ids, then each stop sequence as `u32 len, i32[len]`. The engine checks `prefix_n`/`prefix_hash` against its
+  own token list for the slot: a match decodes only the appended tail; a mismatch is a typed refusal
+  (`prefix_mismatch {engine_n u32, engine_hash u64}`) and the core resends from the longest prefix it can prove, never
+  the whole context by default.
+- *Response frames:* `tokens {slot i32, n u32, i32[n]}` as they are sampled; `done {slot, stop u8 (eos, stop_seq,
+  length, cancelled), prompt_n u32, cached_n u32, prompt_us u64, predicted_n u32, predicted_us u64}`; `refusal {slot,
+  code u16, payload}` with typed codes (prefix_mismatch, slot_busy, context_full, engine_stopping). Tool calls and
+  reasoning are parsed by the core from ids it already holds, not re-parsed from text by the engine.
+- *Control and telemetry* use the same framing (`host_pool` grant and report, `step_budget`, `gpu_time`): fixed
+  structs, versioned; JSON `/props` remains the human view of the same values.
+- *Gate.* Per act: bytes on the wire (whole-context JSON today vs appended ids), engine CPU before the first decode
+  (template + tokenize today, measured 10-20 ms + 80 ms at 126k tokens on the 0.8B's tokenizer), and act latency;
+  the validator replays captured acts through both seams and requires identical token ids and outputs.
+
 **No promises, no futures** (Joel, 2026-11-16: "Promises and other idiocy. I wish you never saw JavaScript"). Work
 off the decode thread is a job system: a job writes its result into storage its owner already owns, completion is a
 monotonic ticket counter waited on with an atomic wait, cancellation is the job called once as cancelled, and queues
