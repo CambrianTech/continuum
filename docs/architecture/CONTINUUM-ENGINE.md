@@ -1434,6 +1434,31 @@ both independent sizers (`host_prompt_cache_mib`'s figure and the checkpoint-cou
 scenario above as the accounting gate; then native replay for decode at par, and the live read: an engine up 24 h on
 the M5 with its process footprint flat, swap not growing, and decode at par.
 
+**Wire contract (fork half, for Codex's core half; same control seam as `POST /engine/decode-set`, #120).**
+- *Identity.* An engine instance is `{pid, started_s}` (the core's `EngineIncarnation`). Every request names the
+  instance it means and the grant generation it carries; a request for another instance is refused, never applied.
+- *Launch.* `--host-pool-bytes N` is the startup fact: the instance's generation-0 grant, set by the core from the
+  authority at launch. There is no other size: `--cache-ram` and `--ctx-checkpoints` as limits are gone. An engine
+  launched without it refuses to start (typed), never picks a default.
+- *Set.* `POST /engine/host-pool` with `{"instance": {"pid", "started_s"}, "generation": g, "budget_bytes": B}`.
+  `B = 0` is legal: every unpinned resident is evicted and pinned bytes drain as they release. Generations rise
+  strictly: `g` below the applied generation is refused `stale_generation`; `g` equal to it with the same `B` is an
+  idempotent repeat that returns the current state without acting; `g` equal with a different `B` is refused
+  `generation_conflict`.
+- *Outcome (the reply, and `/props.host_pool` at any time).* `{"instance", "generation", "outcome", "target_bytes",
+  "ceiling_bytes", "committed_bytes", "reserved_bytes", "pinned_bytes", "by_kind", "since_start"}` where:
+  - `outcome` is `applied` (committed + reserved <= target; ceiling = target), `pending` (pinned or in-flight reserved
+    bytes exceed the target; ceiling = the bytes still held above it, falling as custody ends; the same generation
+    reports `applied` once reached), or `refused` with `{"kind": "wrong_instance" | "stale_generation" |
+    "generation_conflict"}` and the state left exactly as it was;
+  - `pinned_bytes` is a subset of `committed_bytes`, never added to it;
+  - `by_kind` has `cache`, `checkpoint` and `page`, each `{committed, reserved, pinned, count}`;
+  - `since_start` counts `evicted` per kind and `refused` per cause (`oversized`, `pinned_pressure`).
+- *Per sequence.* `/slots` gives each slot's checkpoints with their bytes and whether each is pinned, beside the
+  positions #121 reports.
+- *The core's reading.* The core applies a grant only when the reply (or a later `/props`) names the same instance
+  and generation; anything else is not applied. A restart is a new instance, so its generation 0 is the launch grant.
+
 **Receipt since the stopgap restart.** The fresh engine (pid 97364, 13:01Z) decoded at 17.4 and 39.1 tok/s on its first
 acts, against 1.7 before; five minutes after launch it already held 7.6 GB compressed as the minds re-prefilled cold.
 A restart buys hours, not the fix.
