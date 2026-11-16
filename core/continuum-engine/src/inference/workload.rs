@@ -80,3 +80,6 @@ pub struct StepWork {
     /// Of the decoded tokens, those a draft proposed and the model accepted.
     pub accepted_draft: u32,
 }
+
+mod ready;
+pub use ready::{replay, MindProgress, Replayed, SequenceKey, StepView};
