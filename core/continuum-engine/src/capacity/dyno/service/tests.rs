@@ -120,7 +120,7 @@ mod interleavings {
     // waited since the first publication behind A's unresolved custody; the engine is replaced,
     // the fence frees the pool, and the next publication's feasible opportunity is B's (the oldest
     // waiter, and the pool now holds her need). The owner's fair state resets on a new incarnation
-    // (`FairGrantState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
+    // (`DispatchState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
     // order and A is granted first.
     #[test]
     #[ignore = "ONE-ACT 4: an engine replacement keeps the oldest waiter's place (fair state resets on a new incarnation)"]
@@ -162,17 +162,63 @@ mod interleavings {
         let mut world = World::new(100, 100, &[("A", 40), ("C", 40), ("B", 60)]);
         run(&mut world, &[Step::Publish]);
         assert_eq!((world.published(0), world.published(1), world.published(2)), (40, 40, 0), "B waits");
-        run(&mut world, &turn(0));
-        run(&mut world, &[Step::Terminal(0), Step::Quote(0)]);
-        assert_eq!(world.phase(0), Phase::Quoted, "her next act holds the grant it is rendered against");
+        // her act is rendered before her seat's first use: a mind owed a seat stops her NEXT act after
+        // a completed one (P3's yield at the receipt boundary), never the one already rendered
+        run(&mut world, &[Step::Quote(0)]);
+        assert_eq!(world.phase(0), Phase::Quoted, "her act holds the grant it is rendered against");
         let applied = world.apply(Step::Publish);
-        assert!(applied.tickets.is_empty(), "no handoff under a rendered act\n{}", world.log.join("\n"));
+        assert!(!applied.tickets.contains(&0), "no handoff under a rendered act\n{}", world.log.join("\n"));
         assert_eq!(world.published(0), 40, "her grant does not move under the act");
         let applied = world.apply(Step::Reserve(0));
         assert_eq!(applied.refused, None, "dispatched against the grant she was priced on");
         assert_eq!(world.phase(0), Phase::Reserved);
         run(&mut world, &[Step::Send(0), Step::Terminal(0), Step::Publish]);
         assert_eq!(world.observe().rendered.get(&world.mind(0)), None, "the act's hold ended with it");
+        assert_clean(&world);
+    }
+}
+
+/// Section 4.8.4 (CONTINUUM-ENGINE.md): from a mind's side every act is simultaneous, made so by
+/// fast context switches. A mind that is ready is granted at the next publication, never queued
+/// behind another mind's act or behind memory a mind that is not acting holds.
+mod simultaneous {
+    use super::*;
+
+    // what this catches (the M5, build ba52dd603, 2026-11-15 15:20-15:45Z): Atlas held 148,002 of a
+    // 587,707 pool under a long act and her need grew past it; Aiko, Aris and Benchy queued 24
+    // minutes at positions 2-4 of 4 with 439,705 tokens free. Every ready mind whose need the free
+    // cells hold is granted at the very next publication.
+    #[test]
+    fn a_mind_growing_under_her_own_act_never_queues_the_others() {
+        let mut world = World::new(587_707, 262_144, &[("Atlas", 148_002), ("Aris", 110_000), ("Benchy", 110_000), ("Aiko", 110_000)]);
+        run(&mut world, &[Step::Publish, Step::Quote(0)]);
+        world.set_need(0, 200_000);
+        for i in 1..4 {
+            world.set_need(i, 110_000);
+        }
+        run(&mut world, &[Step::Publish]);
+        for i in 1..4 {
+            assert!(world.published(i) >= 110_000, "{} granted at once, not queued behind Atlas's act\n{}", world.name(i), world.log.join("\n"));
+        }
+        assert_eq!(world.published(0), 148_002, "her act keeps the grant it was rendered against");
+        assert_clean(&world);
+    }
+
+    // what this catches (section 4.8.4: "a grant is not a standing share; it is held for the act
+    // that uses it"): A was granted and is not acting (nothing quoted, nothing in custody, no KV
+    // here); B is ready and needs those cells. B is served at the next publication, not after A's
+    // seat has sat idle across two evaluations; A is granted again when she is ready.
+    #[test]
+    fn memory_follows_the_mind_that_is_acting() {
+        let mut world = World::new(100, 100, &[("A", 60), ("B", 60)]);
+        run(&mut world, &[Step::Publish]);
+        assert_eq!(world.published(0), 60, "A is granted");
+        // A's seat leaves through the engine's save and erase (no local receipt is no proof her KV is
+        // absent), and B is granted at the publication after the receipt
+        let applied = world.apply(Step::Publish);
+        assert_eq!(applied.tickets, vec![0], "A's unused seat is handed off for B\n{}", world.log.join("\n"));
+        run(&mut world, &[Step::Reclaimed(0), Step::Publish]);
+        assert_eq!(world.published(1), 60, "B, ready, takes the cells A is not using\n{}", world.log.join("\n"));
         assert_clean(&world);
     }
 }
@@ -234,7 +280,9 @@ mod generated {
     #[test]
     fn seeded_schedules_keep_every_invariant_on_one_engine() {
         if let Some((seed, steps, found)) = shortest_failure(0..300, false) {
-            panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}");
+            let mut world = World::new(100, 100, &[("A", 60), ("B", 40), ("C", 30)]);
+            run(&mut world, &steps);
+            panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}\n{}", world.log.join("\n"));
         }
     }
 

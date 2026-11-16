@@ -3,397 +3,346 @@
 use super::*;
 use crate::inference::planning::window_allocator::test_tokens as t;
 
-#[test]
-fn a_refused_holder_can_grow_into_free_capacity_without_a_terminal_receipt() {
-    let owner = Reservations::new();
-    let a = uuid::Uuid::from_u128(1);
-    let b = uuid::Uuid::from_u128(2);
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    for floor in [40, 60] {
-        let demands = [(a, floor), (b, 40)].map(|(mind, n)| Demand {
-            mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100,
-        });
-        let before = current.clone();
-        let (_, tickets) = owner.fair_publish(&mut fair, &demands, 100, 100, engine(),
-            || before, |next| current = Some(next));
-        assert!(tickets.is_empty(), "unused cells need no physical reclamation");
-        assert_eq!(current.as_ref().expect("published").by_mind,
-            BTreeMap::from([(a, floor), (b, 40)]),
-            "an unsent capacity refusal must not require completed service to grow");
-    }
+fn engine() -> Option<EngineIncarnation> {
+    Some(EngineIncarnation { pid: 7, started_s: 123, port: 8085 })
 }
 
-#[test]
-fn a_large_waiter_accumulates_reclaimed_capacity_across_two_holders() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
-    let demands = [(a, 20), (b, 60), (c, 90)].map(|(mind, n)| Demand {
-        mind, need: t(n), target: t(n), wish: t(n), in_flight: false, settled: true, ceiling: 100,
-    });
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>| {
-        let before = current.clone();
-        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
-    };
-    publish(&mut fair, &mut current);
-    for mind in [a, b] {
-        let lease = current.as_ref().expect("published").lease_for(mind).expect("holder");
-        let request = owner.reserve_against(mind, lease, 10, || Some(lease)).expect("request");
+fn mind(n: u128) -> uuid::Uuid {
+    uuid::Uuid::from_u128(n)
+}
+
+/// A ready mind needing `need` tokens, of at most `ceiling` per sequence.
+fn demand(mind: uuid::Uuid, need: u32, ceiling: u32) -> Demand<uuid::Uuid> {
+    Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight: false, settled: true, ceiling }
+}
+
+/// One dispatch owner and the publication it last made, on one engine.
+struct Bench {
+    owner: &'static Reservations,
+    dispatch: DispatchState,
+    current: Option<PoolGrants>,
+    on: Option<EngineIncarnation>,
+}
+
+impl Bench {
+    fn new() -> Self {
+        Self { owner: Box::leak(Box::new(Reservations::new())), dispatch: DispatchState::default(), current: None, on: engine() }
+    }
+
+    /// One evaluation over `demands` on a pool of `pool` tokens, `pool` per sequence too.
+    fn publish(&mut self, demands: &[Demand<uuid::Uuid>], pool: u32) -> Vec<GrantHandoff> {
+        self.publish_in(demands, pool, pool)
+    }
+
+    /// One evaluation over `demands` on a pool of `pool` tokens, at most `ceiling` per sequence.
+    fn publish_in(&mut self, demands: &[Demand<uuid::Uuid>], pool: u32, ceiling: u32) -> Vec<GrantHandoff> {
+        let before = self.current.clone();
+        let owner = self.owner;
+        let mut published = None;
+        let tickets = owner
+            .dispatch_publish(&mut self.dispatch, Publication { demands, pool, ceiling, engine: self.on }, || before, |next| {
+                assert!(owner.held.try_lock().is_err(), "publication and dispatch reservation share one transaction");
+                published = Some(next);
+            })
+            .1;
+        self.current = published;
+        tickets
+    }
+
+    /// Every mind needing 60 of a 100 pool.
+    fn tick(&mut self, minds: &[uuid::Uuid]) -> Vec<GrantHandoff> {
+        let demands: Vec<_> = minds.iter().map(|m| demand(*m, 60, 100)).collect();
+        self.publish(&demands, 100)
+    }
+
+    fn grants(&self) -> BTreeMap<uuid::Uuid, u32> {
+        self.current.as_ref().expect("test: published").by_mind.clone() // test: a publication ran
+    }
+
+    fn lease(&self, mind: uuid::Uuid) -> GrantLease {
+        self.current.as_ref().and_then(|c| c.lease_for(mind)).expect("test: she holds a grant") // test: granted above
+    }
+
+    /// One completed act of `mind` on her published grant.
+    fn serve(&self, mind: uuid::Uuid) {
+        let lease = self.lease(mind);
+        let request = self.owner.reserve_against(mind, lease, 10, || Some(lease)).expect("test: reserved"); // test: her own grant
         settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
     }
-    let first = publish(&mut fair, &mut current).pop().expect("first reclaim");
-    assert_eq!(first.persona(), a);
-    owner.lock().reclaimed.insert(a, first.lease());
-    let second = publish(&mut fair, &mut current).pop().expect("second reclaim");
-    assert_eq!(second.persona(), b);
-    assert!(!current.as_ref().expect("published").by_mind.contains_key(&a),
-        "do not spend the first reclaimed cells while the oldest waiter needs both holders");
-    owner.lock().reclaimed.insert(b, second.lease());
-    assert!(publish(&mut fair, &mut current).is_empty());
-    assert_eq!(current.as_ref().expect("published").by_mind, BTreeMap::from([(c, 90)]));
 }
 
+// what this catches: an unsent capacity refusal must not require completed service before a mind
+// grows into free cells; free cells need no physical reclamation.
 #[test]
-fn refusal_restores_the_charged_holder_without_giving_capacity_to_the_waiter() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    tick(owner, &mut fair, &[a, b], &mut current);
-    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
-    let served = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
-    settle(served, Some(&TerminalReceipt { finish: "stop".into() }));
-    let ticket = tick(owner, &mut fair, &[a, b], &mut current).pop().expect("handoff");
-    owner.lock().refused.insert(a, ticket.lease());
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    assert_eq!(current.as_ref().expect("restored").by_mind, BTreeMap::from([(a, 60)]));
-    assert!(owner.lock().retiring.is_empty());
-    let restored = current.as_ref().expect("published").lease_for(a).expect("holder");
-    owner.reserve_against(a, restored, 50, || Some(restored)).expect("refusal is not permanent retirement").release_unsent();
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty(), "no immediate retry without a new completion");
+fn a_mind_grows_into_free_cells_without_a_terminal_receipt() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    for floor in [40, 60] {
+        assert!(bench.publish(&[demand(a, floor, 100), demand(b, 40, 100)], 100).is_empty());
+        assert_eq!(bench.grants(), BTreeMap::from([(a, floor), (b, 40)]));
+    }
 }
 
-// what this catches (the M5, d6c0dd892, 2026-11-14 09:37:41Z): Atlas rendered her act against an
-// 88,509 grant; her need grew and the next publication grew her grant to 89,513 (a new revision),
-// so her dispatch was refused "her grant changed since this request was rendered (88509 ->
-// Some(89513))" and re-rendered. An act holds its grant: the growth waits for her next act, the
-// request dispatches on the lease it was priced on, and the grant grows once the act ends.
+// what this catches (4.9 P3; BigMama, 98 asked and 0 served): one seat turned per evaluation, so a
+// large waiter needing two holders waited two evaluations plus two receipts each time. Every holder
+// she needs that is not acting is reclaimed in ONE evaluation, and she is granted once both are.
+#[test]
+fn every_needed_holder_not_acting_is_reclaimed_in_one_evaluation() {
+    let mut bench = Bench::new();
+    let (a, b, c) = (mind(1), mind(2), mind(3));
+    let demands = [demand(a, 20, 100), demand(b, 60, 100), demand(c, 90, 100)];
+    bench.publish(&demands, 100);
+    bench.serve(a);
+    bench.serve(b);
+    let tickets = bench.publish(&demands, 100);
+    let reclaimed: BTreeSet<_> = tickets.iter().map(GrantHandoff::persona).collect();
+    assert_eq!(reclaimed, BTreeSet::from([a, b]), "both seats leave in the same evaluation");
+    assert_eq!(bench.dispatch.waiting(c), Some(DispatchWait::Reclaiming));
+    for ticket in tickets {
+        bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease());
+    }
+    assert!(bench.publish(&demands, 100).is_empty());
+    assert_eq!(bench.grants(), BTreeMap::from([(c, 90)]));
+}
+
+// what this catches (4.9 I3): a holder mid-act losing her seat. Her act holds it; the waiter waits
+// behind it, named as such, and the holder is armed to yield when the act completes.
+#[test]
+fn an_acting_holder_is_never_reclaimed_and_the_waiter_waits_behind_her_act() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    bench.tick(&[a]);
+    let lease = bench.lease(a);
+    let _act = bench.owner.hold_act(a, || Some(lease)).expect("test: her act holds her grant"); // test: granted above
+    assert!(bench.tick(&[a, b]).is_empty(), "no ticket for a mind mid-act");
+    assert_eq!(bench.grants(), BTreeMap::from([(a, 60)]));
+    assert_eq!(bench.dispatch.waiting(b), Some(DispatchWait::BehindActs { acting: 1 }));
+    assert!(bench.owner.lock().yield_after.contains_key(&a), "armed: her seat is reclaimed when her act ends");
+}
+
+// what this catches: one holder armed (the one that served most), so a second busy holder chained
+// acts past a waiter. Every holder whose seat the waiter may take is armed.
+#[test]
+fn every_blocking_holder_is_armed_not_one() {
+    let mut bench = Bench::new();
+    let (a, b, c) = (mind(1), mind(2), mind(3));
+    let demands = |minds: &[uuid::Uuid]| minds.iter().map(|m| demand(*m, 50, 100)).collect::<Vec<_>>();
+    bench.publish(&demands(&[a, b]), 100);
+    let (lease_a, lease_b) = (bench.lease(a), bench.lease(b));
+    let _a = bench.owner.reserve_against(a, lease_a, 40, || Some(lease_a)).expect("test: a mid-act"); // test: her grant
+    let _b = bench.owner.reserve_against(b, lease_b, 40, || Some(lease_b)).expect("test: b mid-act"); // test: her grant
+    bench.publish(&demands(&[a, b, c]), 100);
+    let armed: BTreeSet<_> = bench.owner.lock().yield_after.keys().copied().collect();
+    assert_eq!(armed, BTreeSet::from([a, b]));
+}
+
+// what this catches: a fresh seat thrashing. A seat its holder has not yet acted on is reclaimed
+// only for a mind that has waited at least as long; once she has acted on it, it is anyone's.
+#[test]
+fn a_fresh_seat_waits_for_its_act_unless_an_older_waiter_needs_it() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    bench.tick(&[a]);
+    assert!(bench.tick(&[a, b]).is_empty(), "a younger waiter does not take a seat its holder has not used");
+    assert_eq!(bench.grants(), BTreeMap::from([(a, 60)]));
+    bench.serve(a);
+    let tickets = bench.tick(&[a, b]);
+    assert_eq!(tickets.iter().map(GrantHandoff::persona).collect::<Vec<_>>(), vec![a], "used and not acting: reclaimed");
+
+    // waiting since the same evaluation, even an unused seat leaves through the engine's save and
+    // erase: no local receipt is no proof her KV is absent (an adopted engine, Codex on #6060)
+    let mut tied = Bench::new();
+    let (c, d) = (mind(3), mind(4));
+    tied.tick(&[c, d]);
+    let ticket = tied.tick(&[c, d]).pop().expect("test: the unused seat's handoff"); // test: d waited as long as c
+    assert_eq!(ticket.persona(), c);
+    tied.owner.lock().reclaimed.insert(c, ticket.lease());
+    tied.tick(&[c, d]);
+    assert_eq!(tied.grants().get(&d), Some(&60), "the equally old waiter takes the seat once it is reclaimed");
+}
+
+// what this catches (Codex on #6060): reclaim accounting kept for one evaluation only. Cells being
+// reclaimed for a mind count toward her need at every later evaluation until they arrive, so a
+// partial arrival never reclaims extra donors; when she leaves, they are no one's and go to the pool.
+#[test]
+fn cells_being_reclaimed_count_for_their_mind_until_they_arrive_or_she_leaves() {
+    let mut bench = Bench::new();
+    let (a, b, c, d) = (mind(1), mind(2), mind(3), mind(4));
+    let need = |m: uuid::Uuid, n: u32| demand(m, n, 100);
+    bench.publish(&[need(a, 40), need(b, 40)], 100);
+    bench.serve(a);
+    bench.serve(b);
+    let tickets = bench.publish(&[need(a, 40), need(b, 40), need(c, 80)], 100);
+    let mut donors: Vec<_> = tickets.iter().map(GrantHandoff::persona).collect();
+    donors.sort();
+    assert_eq!(donors, vec![a, b], "both donors in one evaluation: 20 free + 40 + 40 covers her 80");
+    let first = tickets.iter().find(|t| t.persona() == a).expect("test: a's handoff"); // test: a is a donor
+    bench.owner.lock().reclaimed.insert(a, first.lease());
+    let later = bench.publish(&[need(a, 40), need(b, 40), need(c, 80), need(d, 30)], 100);
+    assert!(later.is_empty(), "b's cells are still on their way to c: nothing more is reclaimed ({later:?})");
+    assert_eq!(bench.dispatch.reclaiming.get(&b), Some(&c), "b's seat stays counted for c");
+    bench.publish(&[need(a, 40), need(b, 40), need(d, 30)], 100);
+    assert!(!bench.dispatch.reclaiming.values().any(|beneficiary| *beneficiary == c), "c left: nothing is reclaimed for her ({:?})", bench.dispatch.reclaiming);
+}
+
+// what this catches: a refused handoff returns authority, never free capacity, and is not retried
+// at every evaluation; the holder is asked again only after her next act.
+#[test]
+fn refusal_restores_the_holder_and_is_not_retried_before_her_next_act() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    bench.tick(&[a, b]);
+    bench.serve(a);
+    let ticket = bench.tick(&[a, b]).pop().expect("test: a handoff"); // test: a served and is not acting
+    bench.owner.lock().refused.insert(a, ticket.lease());
+    assert!(bench.tick(&[a, b]).is_empty());
+    assert_eq!(bench.grants(), BTreeMap::from([(a, 60)]));
+    assert!(bench.owner.lock().retiring.is_empty());
+    let restored = bench.lease(a);
+    bench.owner.reserve_against(a, restored, 50, || Some(restored)).expect("test: refusal is not retirement").release_unsent(); // test: her restored grant
+    assert!(bench.tick(&[a, b]).is_empty(), "no retry without a new completed act");
+    bench.serve(a);
+    assert_eq!(bench.tick(&[a, b]).len(), 1, "after her next act she is asked again");
+}
+
+// what this catches (the M5, d6c0dd892, 2026-11-14 09:37:41Z): an act holds its grant: her growth
+// waits for her next act, the request dispatches on the lease it was priced on.
 #[test]
 fn a_need_that_grows_under_a_rendered_act_moves_her_grant_at_the_next_act() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let a = uuid::Uuid::from_u128(1);
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    let mut publish = |need: u32, current: &mut Option<PoolGrants>| {
-        let demands = [Demand { mind: a, need: t(need), target: t(need), wish: t(need), in_flight: false, settled: true, ceiling: 200 }];
-        let before = current.clone();
-        owner.fair_publish(&mut fair, &demands, 200, 200, engine(), || before, |next| *current = Some(next)).1
-    };
-    publish(88, &mut current);
-    let rendered = current.as_ref().expect("published").lease_for(a).expect("granted");
-    let act = owner.hold_act(a, || Some(rendered)).expect("her act holds her grant");
-    assert!(publish(90, &mut current).is_empty());
-    assert_eq!(current.as_ref().expect("published").lease_for(a), Some(rendered), "the same grant, the same revision, under the act");
-    let request = owner.reserve_against(a, rendered, 80, || current.as_ref().and_then(|c| c.lease_for(a)))
-        .expect("dispatched on the lease she was priced on");
+    let mut bench = Bench::new();
+    let a = mind(1);
+    bench.publish(&[demand(a, 88, 200)], 200);
+    let rendered = bench.lease(a);
+    let act = bench.owner.hold_act(a, || Some(rendered)).expect("test: her act holds her grant"); // test: granted above
+    assert!(bench.publish(&[demand(a, 90, 200)], 200).is_empty());
+    assert_eq!(bench.lease(a), rendered, "the same grant, the same revision, under the act");
+    let current = bench.current.clone();
+    let request = bench.owner.reserve_against(a, rendered, 80, || current.as_ref().and_then(|c| c.lease_for(a))).expect("test: dispatched on her lease"); // test: unchanged above
     settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
     drop(act);
-    publish(90, &mut current);
-    assert_eq!(current.as_ref().expect("published").grant_for(a), Some(90), "her grant grows at her next act");
+    bench.publish(&[demand(a, 90, 200)], 200);
+    assert_eq!(bench.grants().get(&a), Some(&90), "her grant grows at her next act");
 }
 
-fn engine() -> Option<EngineIncarnation> {
-    Some(EngineIncarnation {
-        pid: 7,
-        started_s: 123,
-        port: 8085,
-    })
+// what this catches (the M5, 2026-11-15 15:20-15:45Z): a holder pinned by her own act while her need
+// grew kept every other mind out of free cells for 24 minutes. Her act blocks only her own growth.
+#[test]
+fn a_mind_pinned_by_her_own_act_never_blocks_others_from_free_cells() {
+    let mut bench = Bench::new();
+    let (a, b, c) = (mind(1), mind(2), mind(3));
+    bench.publish_in(&[demand(a, 150, 300)], 600, 300);
+    let rendered = bench.lease(a);
+    let _act = bench.owner.hold_act(a, || Some(rendered)).expect("test: her act holds her grant"); // test: granted above
+    bench.publish_in(&[demand(a, 250, 300), demand(b, 100, 300), demand(c, 100, 300)], 600, 300);
+    let grants = bench.grants();
+    assert_eq!(grants.get(&a), Some(&150), "her act keeps her grant");
+    assert_eq!((grants.get(&b), grants.get(&c)), (Some(&100), Some(&100)), "free cells seat the others: {grants:?}");
 }
 
 #[tokio::test]
 async fn http_reclamation_proof_publishes_the_waiter_without_freeing_early() {
     use crate::inference::slots::grant_handoff::{fixture_for_publication, reclaim_for_publication};
     let (root, pool, key, server) = fixture_for_publication().await;
-    let on = Some(EngineIncarnation { pid: 7, started_s: 123,
-        port: reqwest::Url::parse(&root).expect("fixture URL").port().expect("fixture port") });
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let a = key.persona();
-    let b = uuid::Uuid::new_v4();
-    let demands = [a, b].map(|mind| Demand {
-        mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100,
-    });
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>| {
-        let before = current.clone();
-        owner.fair_publish(fair, &demands, 100, 100, on, || before, |next| *current = Some(next)).1
-    };
-    assert!(publish(&mut fair, &mut current).is_empty());
-    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
-    let turn = owner.reserve_against(a, lease, 50, || Some(lease)).expect("reserved");
-    settle(turn, Some(&TerminalReceipt { finish: "stop".into() }));
-    let ticket = publish(&mut fair, &mut current).pop().expect("handoff");
-    assert_eq!(owner.lock().retiring[&a].tokens, 60);
-    assert!(!current.as_ref().expect("published").by_mind.contains_key(&b));
+    let port = reqwest::Url::parse(&root).expect("test: fixture URL").port().expect("test: fixture port"); // test: the fixture's own URL
+    let mut bench = Bench::new();
+    bench.on = Some(EngineIncarnation { pid: 7, started_s: 123, port });
+    let (a, b) = (key.persona(), uuid::Uuid::new_v4());
+    assert!(bench.tick(&[a, b]).is_empty());
+    let lease = bench.lease(a);
+    bench.serve(a);
+    let ticket = bench.tick(&[a, b]).pop().expect("test: a handoff"); // test: a served and is not acting
+    assert_eq!(bench.owner.lock().retiring[&a].tokens, 60);
+    assert!(!bench.grants().contains_key(&b));
     let proof = tokio::time::timeout(std::time::Duration::from_secs(5), reclaim_for_publication(&root, ticket))
-        .await.expect("reclaim completes").expect("verified HTTP proof");
-    owner.record_reclaimed(proof).expect("retained proof");
-    assert_eq!(owner.lock().retiring[&a].tokens, 60, "proof alone has not published replacement authority");
+        .await
+        .expect("test: reclaim completes") // test: event-exempt: the fixture server, its proof watched first
+        .expect("test: verified HTTP proof"); // test: the fixture answers
+    bench.owner.record_reclaimed(proof).expect("test: retained proof"); // test: the ticket's own proof
+    assert_eq!(bench.owner.lock().retiring[&a].tokens, 60, "proof alone has not published replacement authority");
     assert!(pool.confirms(&key), "resident save remains available after erase");
-    assert!(publish(&mut fair, &mut current).is_empty());
-    let next = current.as_ref().expect("published");
-    assert_eq!(next.by_mind, BTreeMap::from([(b, 60)]));
-    assert!(owner.reserve_against(a, lease, 50, || next.lease_for(a)).is_err());
-    let lease_b = next.lease_for(b).expect("waiter granted");
-    owner.reserve_against(b, lease_b, 50, || Some(lease_b)).expect("waiter may dispatch").release_unsent();
+    assert!(bench.tick(&[a, b]).is_empty());
+    assert_eq!(bench.grants(), BTreeMap::from([(b, 60)]));
+    let next = bench.current.clone();
+    assert!(bench.owner.reserve_against(a, lease, 50, || next.as_ref().and_then(|n| n.lease_for(a))).is_err());
+    let lease_b = bench.lease(b);
+    bench.owner.reserve_against(b, lease_b, 50, || Some(lease_b)).expect("test: the waiter may dispatch").release_unsent(); // test: her new grant
     server.abort();
-}
-
-fn tick(
-    owner: &Reservations,
-    fair: &mut FairGrantState,
-    minds: &[uuid::Uuid],
-    current: &mut Option<PoolGrants>,
-) -> Vec<GrantHandoff> {
-    let demands: Vec<_> = minds
-        .iter()
-        .map(|mind| Demand {
-            // The service loop can still report the old holder active after engine completion.
-            mind: *mind,
-            need: t(60),
-            target: t(60),
-            wish: t(60),
-            in_flight: *mind == minds[0],
-            settled: true,
-            ceiling: 100,
-        })
-        .collect();
-    let before = current.clone();
-    owner
-        .fair_publish(
-            fair,
-            &demands,
-            100,
-            100,
-            engine(),
-            || before,
-            |next| {
-                assert!(
-                    owner.held.try_lock().is_err(),
-                    "publication and dispatch reservation share one transaction"
-                );
-                *current = Some(next);
-            },
-        )
-        .1
 }
 
 #[test]
 fn waiter_publication_requires_terminal_then_physical_receipt() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    let lease = current
-        .as_ref()
-        .expect("published")
-        .lease_for(a)
-        .expect("first holder");
-    let reservation = owner
-        .reserve_against(a, lease, 50, || Some(lease))
-        .expect("reserved");
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    assert_eq!(
-        current.as_ref().expect("published").by_mind.get(&a),
-        Some(&60)
-    );
-    settle(
-        reservation,
-        Some(&TerminalReceipt {
-            finish: "stop".into(),
-        }),
-    );
-    let mut tickets = tick(owner, &mut fair, &[a, b], &mut current);
-    assert_eq!(tickets.len(), 1);
-    let ticket = tickets.pop().expect("retirement");
-    assert_eq!(ticket.persona(), a);
-    assert!(
-        current.as_ref().expect("published").by_mind.is_empty(),
-        "neither resident may spend capacity awaiting erase"
-    );
-    assert!(
-        owner.reserve_against(a, lease, 50, || Some(lease)).is_err(),
-        "even a stale publication cannot reacquire"
-    );
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    assert_eq!(owner.lock().retiring[&a].tokens, 60);
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    assert!(bench.tick(&[a, b]).is_empty());
+    let lease = bench.lease(a);
+    let reservation = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: reserved"); // test: her grant
+    assert!(bench.tick(&[a, b]).is_empty(), "mid-act: no ticket");
+    assert_eq!(bench.grants().get(&a), Some(&60));
+    settle(reservation, Some(&TerminalReceipt { finish: "stop".into() }));
+    let tickets = bench.tick(&[a, b]);
+    assert_eq!(tickets.iter().map(GrantHandoff::persona).collect::<Vec<_>>(), vec![a]);
+    assert!(bench.grants().is_empty(), "neither resident may spend capacity awaiting erase");
+    assert!(bench.owner.reserve_against(a, lease, 50, || Some(lease)).is_err(), "even a stale publication cannot reacquire");
+    assert!(bench.tick(&[a, b]).is_empty());
+    assert_eq!(bench.owner.lock().retiring[&a].tokens, 60);
     // Model ONLY the physical receipt here; real HTTP save/erase ordering is covered by
     // slots::grant_handoff tests. No public API can fabricate this sealed proof.
-    owner.lock().reclaimed.insert(a, ticket.lease());
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    let published = current.as_ref().expect("published");
-    assert_eq!(published.by_mind.get(&b), Some(&60));
-    assert_eq!(published.by_mind.get(&a), None);
-    assert!(owner.lock().retiring.is_empty());
-    assert!(owner
-        .reserve_against(a, lease, 50, || published.lease_for(a))
-        .is_err());
+    bench.owner.lock().reclaimed.insert(a, tickets[0].lease());
+    assert!(bench.tick(&[a, b]).is_empty());
+    assert_eq!(bench.grants(), BTreeMap::from([(b, 60)]));
+    assert!(bench.owner.lock().retiring.is_empty());
+    let published = bench.current.clone();
+    assert!(bench.owner.reserve_against(a, lease, 50, || published.as_ref().and_then(|p| p.lease_for(a))).is_err());
 }
 
 #[test]
 fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    tick(owner, &mut fair, &[a, b], &mut current);
-    let lease = current
-        .as_ref()
-        .expect("published")
-        .lease_for(a)
-        .expect("holder");
-    let finished = owner
-        .reserve_against(a, lease, 50, || Some(lease))
-        .expect("first request");
-    let unresolved = owner
-        .reserve_against(a, lease, 50, || Some(lease))
-        .expect("overlapping second request");
-    settle(
-        finished,
-        Some(&TerminalReceipt {
-            finish: "stop".into(),
-        }),
-    );
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    bench.tick(&[a, b]);
+    let lease = bench.lease(a);
+    let finished = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: first request"); // test: her grant
+    let unresolved = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an overlapping second request"); // test: her grant
+    settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
     drop(unresolved);
-    assert!(tick(owner, &mut fair, &[a, b], &mut current).is_empty());
-    assert_eq!(
-        current.as_ref().expect("published").by_mind.get(&a),
-        Some(&60)
-    );
-    assert_eq!(current.as_ref().expect("published").by_mind.get(&b), None);
-    assert!(owner.lock().retiring.is_empty());
+    assert!(bench.tick(&[a, b]).is_empty());
+    assert_eq!(bench.grants().get(&a), Some(&60));
+    assert_eq!(bench.grants().get(&b), None);
+    assert!(bench.owner.lock().retiring.is_empty());
 }
 
 #[test]
-fn completion_bars_reacquisition_before_the_next_publisher_tick() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    tick(owner, &mut fair, &[a, b], &mut current);
-    let lease = current.as_ref().expect("published").lease_for(a).expect("holder");
-    let unsent = owner.reserve_against(a, lease, 50, || Some(lease)).expect("first attempt");
+fn completion_bars_reacquisition_before_the_next_evaluation() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    bench.tick(&[a, b]);
+    let lease = bench.lease(a);
+    let unsent = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: first attempt"); // test: her grant
     unsent.release_unsent();
-    let served = owner.reserve_against(a, lease, 50, || Some(lease)).expect("unsent did not spend turn");
+    let served = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an unsent attempt spends no turn"); // test: her grant
     settle(served, Some(&TerminalReceipt { finish: "stop".into() }));
-    assert!(matches!(owner.reserve_against(a, lease, 50, || Some(lease)), Err(ReserveRefused::Retiring { .. })),
-        "no publisher tick has run, but the terminal boundary already bars reacquisition");
-    assert_eq!(current.as_ref().expect("published").by_mind.get(&a), Some(&60), "capacity remains charged");
-    // A departed waiter disarms the obligation at publication without physical reclamation.
-    assert!(tick(owner, &mut fair, &[a], &mut current).is_empty());
-    let refreshed = current.as_ref().expect("published").lease_for(a).expect("holder");
-    owner.reserve_against(a, refreshed, 50, || Some(refreshed)).expect("no remaining waiter").release_unsent();
+    assert!(matches!(bench.owner.reserve_against(a, lease, 50, || Some(lease)), Err(ReserveRefused::Retiring { .. })),
+        "no evaluation has run, but the terminal boundary already bars reacquisition while a mind is owed her seat");
+    assert_eq!(bench.grants().get(&a), Some(&60), "capacity remains charged");
+    // A departed waiter disarms the obligation at the next evaluation without physical reclamation.
+    assert!(bench.tick(&[a]).is_empty());
+    let refreshed = bench.lease(a);
+    bench.owner.reserve_against(a, refreshed, 50, || Some(refreshed)).expect("test: no remaining waiter").release_unsent(); // test: her grant
 }
 
+// what this catches: a reclaimed holder jumping ahead of minds that waited longer. Each seat goes to
+// the oldest owed mind, and the holder that gave it up waits from then.
 #[test]
-fn a_reclaimed_holder_queues_behind_existing_waiters() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b, c) = (
-        uuid::Uuid::from_u128(1),
-        uuid::Uuid::from_u128(2),
-        uuid::Uuid::from_u128(3),
-    );
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    tick(owner, &mut fair, &[a, b, c], &mut current);
+fn a_reclaimed_holder_waits_behind_minds_owed_longer() {
+    let mut bench = Bench::new();
+    let (a, b, c) = (mind(1), mind(2), mind(3));
+    bench.tick(&[a, b, c]);
     for (holder, next) in [(a, b), (b, c), (c, a)] {
-        let lease = current
-            .as_ref()
-            .expect("published")
-            .lease_for(holder)
-            .expect("holder admitted");
-        let request = owner
-            .reserve_against(holder, lease, 50, || Some(lease))
-            .expect("reserved");
-        settle(
-            request,
-            Some(&TerminalReceipt {
-                finish: "stop".into(),
-            }),
-        );
-        let mut tickets = tick(owner, &mut fair, &[a, b, c], &mut current);
-        assert_eq!(tickets.len(), 1);
-        let ticket = tickets.pop().expect("retirement");
-        assert_eq!(ticket.persona(), holder);
-        owner.lock().reclaimed.insert(holder, ticket.lease());
-        assert!(tick(owner, &mut fair, &[a, b, c], &mut current).is_empty());
-        assert_eq!(
-            current.as_ref().expect("published").by_mind,
-            BTreeMap::from([(next, 60)])
-        );
+        bench.serve(holder);
+        let tickets = bench.tick(&[a, b, c]);
+        assert_eq!(tickets.iter().map(GrantHandoff::persona).collect::<Vec<_>>(), vec![holder]);
+        bench.owner.lock().reclaimed.insert(holder, tickets[0].lease());
+        assert!(bench.tick(&[a, b, c]).is_empty());
+        assert_eq!(bench.grants(), BTreeMap::from([(next, 60)]));
     }
-}
-
-// what this catches (the M5, 2026-11-10: Aiko and Benchy queued for ten minutes behind two holders):
-// a seat that never turns because its holder is idle. A holder granted but idle across two
-// evaluations, who never served on this engine, holds no KV to reclaim: her seat goes to the waiter
-// with no physical handoff. One evaluation of idleness is not enough (she may be building her prompt).
-#[test]
-fn an_unused_seat_yields_to_a_waiter_after_two_idle_evaluations() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
-        let demands: Vec<_> = minds.iter().map(|mind| Demand {
-            mind: *mind, need: t(60), target: t(60), wish: t(60), in_flight: false, settled: true, ceiling: 100,
-        }).collect();
-        let before = current.clone();
-        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
-    };
-    assert!(publish(&mut fair, &mut current, &[a]).is_empty());
-    let holds = |current: &Option<PoolGrants>| current.as_ref().expect("published").by_mind.clone();
-    assert_eq!(holds(&current), BTreeMap::from([(a, 60)]), "she holds the seat");
-    assert!(publish(&mut fair, &mut current, &[a, b]).is_empty());
-    assert_eq!(holds(&current), BTreeMap::from([(a, 60)]), "idle once: her seat stands");
-    let tickets = publish(&mut fair, &mut current, &[a, b]);
-    assert!(tickets.is_empty(), "no KV of hers on this engine: nothing to reclaim");
-    assert_eq!(holds(&current).get(&b), Some(&60), "idle twice: the waiter is seated");
-    assert!(!holds(&current).contains_key(&a), "her unused seat went to the waiter");
-}
-
-// what this catches: the yield armed by id order, pinning one holder (the lowest id) whether or not
-// she was the one using her seat. The holder that served most since her grant is armed.
-#[test]
-fn the_holder_that_served_most_is_armed_to_yield() {
-    let owner = Box::leak(Box::new(Reservations::new()));
-    let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
-    let mut fair = FairGrantState::default();
-    let mut current = None;
-    let publish = |fair: &mut FairGrantState, current: &mut Option<PoolGrants>, minds: &[uuid::Uuid]| {
-        let demands: Vec<_> = minds.iter().map(|mind| Demand {
-            mind: *mind, need: t(50), target: t(50), wish: t(50), in_flight: false, settled: true, ceiling: 100,
-        }).collect();
-        let before = current.clone();
-        owner.fair_publish(fair, &demands, 100, 100, engine(), || before, |next| *current = Some(next)).1
-    };
-    publish(&mut fair, &mut current, &[a, b]);
-    // b serves twice, a once, both mid-act at the evaluation that sees c waiting.
-    for (holder, times) in [(a, 1), (b, 2)] {
-        let lease = current.as_ref().expect("published").lease_for(holder).expect("holder admitted");
-        for _ in 0..times {
-            let request = owner.reserve_against(holder, lease, 40, || Some(lease)).expect("reserved");
-            settle(request, Some(&TerminalReceipt { finish: "stop".into() }));
-        }
-    }
-    let lease_a = current.as_ref().expect("published").lease_for(a).expect("a");
-    let lease_b = current.as_ref().expect("published").lease_for(b).expect("b");
-    let _in_flight_a = owner.reserve_against(a, lease_a, 40, || Some(lease_a)).expect("a mid-act");
-    let _in_flight_b = owner.reserve_against(b, lease_b, 40, || Some(lease_b)).expect("b mid-act");
-    publish(&mut fair, &mut current, &[a, b, c]);
-    let armed: Vec<_> = owner.lock().yield_after.keys().copied().collect();
-    assert_eq!(armed, vec![b], "the holder that served most yields next, not the lowest id");
 }

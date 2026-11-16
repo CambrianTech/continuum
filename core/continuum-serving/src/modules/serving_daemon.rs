@@ -368,7 +368,7 @@ pub struct ServingDaemonModule {
     grants_tx: watch::Sender<Option<crate::capacity::window_grant::PoolGrants>>,
     /// Every grants evaluation, changed or not (`publish_grants`).
     evaluations_tx: watch::Sender<Option<crate::capacity::window_grant::GrantEvaluation>>,
-    fair_grants: Arc<parking_lot::Mutex<crate::capacity::window_grant::FairGrantState>>,
+    fair_grants: Arc<parking_lot::Mutex<crate::capacity::window_grant::DispatchState>>,
     /// The pool the running engine reports (`served_geometry`, its `context_geometry`), as
     /// the launch's ready path last read it; `0` = not read. The grants' one source for the pool.
     served_pool: Arc<std::sync::atomic::AtomicU32>,
@@ -569,7 +569,7 @@ impl ServingDaemonModule {
             live_pool: watch::channel(live_pool::LivePool::default()).0,
             grants_tx: watch::channel(None).0,
             evaluations_tx: watch::channel(None).0,
-            fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::FairGrantState::default())),
+            fair_grants: Arc::new(parking_lot::Mutex::new(crate::capacity::window_grant::DispatchState::default())),
             served_pool: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             served_sequence: Arc::new(std::sync::atomic::AtomicU32::new(0)),
             model_change_streak: Arc::new(std::sync::atomic::AtomicU32::new(0)),
