@@ -5,7 +5,7 @@
 //! 2026-11-03: "System accommodates it doesn't do stupid division"). Published on every tick
 //! that moves a grant; the re-home reconciler binds each mind to hers.
 use super::*;
-use crate::capacity::window_grant::{Demand, Excluded, GrantEvaluation, NoGrants, PoolGrants, Waiting};
+use crate::capacity::window_grant::{Demand, DispatchWait, Excluded, GrantEvaluation, NoGrants, PoolGrants, Waiting};
 
 /// What one evaluation grants from: the demands, the pool and one sequence's cap, each
 /// requirement that entered no demand, and the least the grants hold (`live_pool::need_floor`).
@@ -42,7 +42,7 @@ impl ServingDaemonModule {
                 // One fair-state lock across the publish and the read of its queue, so the queue
                 // positions are the ones this publish left.
                 let mut fair = self.fair_grants.lock();
-                let published = crate::capacity::window_grant::publish_fair_grants(
+                let published = crate::capacity::window_grant::publish_at_the_act(
                     &mut fair, &demands, pool, cap, engine,
                     || self.grants_tx.borrow().clone(), |next| publish(Some(next)),
                 );
@@ -50,7 +50,7 @@ impl ServingDaemonModule {
                 let waiting = demands
                     .iter()
                     .filter(|d| granted.and_then(|g| g.grant_for(d.mind)).is_none())
-                    .map(|d| (d.mind, waiting_reason(d, pool, fair.queued(d.mind))))
+                    .map(|d| (d.mind, waiting_reason(d, pool, fair.waiting(d.mind))))
                     .collect();
                 (published, None, excluded, waiting)
             }
@@ -148,14 +148,15 @@ impl ServingDaemonModule {
 }
 
 /// Why a demand the publisher received holds no grant after it. A need no sequence or pool can hold
-/// is named before the queue.
-fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, queued: Option<(usize, usize)>) -> Waiting {
+/// is named before what she waits on.
+fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, waits: Option<DispatchWait>) -> Waiting {
     let need = d.need.get();
-    match queued {
+    match waits {
         _ if need > d.ceiling => Waiting::NeedAboveCeiling { need, ceiling: d.ceiling },
         _ if need > pool => Waiting::NeedAbovePool { need, pool },
-        Some((position, of)) => Waiting::Queued { position, of },
-        None if crate::capacity::window_grant::is_grant_retiring(d.mind) => Waiting::Reclaiming,
+        _ if crate::capacity::window_grant::is_grant_retiring(d.mind) => Waiting::Reclaiming,
+        Some(DispatchWait::Reclaiming) => Waiting::ForReclaim,
+        Some(DispatchWait::BehindActs { acting }) => Waiting::BehindActs { acting },
         None => Waiting::Unplaced,
     }
 }

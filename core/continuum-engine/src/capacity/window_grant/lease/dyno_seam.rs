@@ -8,7 +8,7 @@
 use super::*;
 use crate::capacity::window_grant::PoolGrants;
 use crate::inference::slots::grant_handoff::{ReclaimedGrant, RefusedGrant};
-use super::fair::FairGrantState;
+use super::fair::DispatchState;
 
 /// One grant owner of the dyno's own.
 pub(crate) struct OwnerUnderTest {
@@ -36,18 +36,18 @@ impl OwnerUnderTest {
         Self { owner: Box::leak(Box::new(Reservations::new())) }
     }
 
-    /// One daemon publication (`publish_fair_grants` on this owner): the grants it publishes and
+    /// One daemon publication (`publish_at_the_act` on this owner): the grants it publishes and
     /// the handoff tickets it issues.
     pub(crate) fn publish(
         &self,
-        fair: &mut FairGrantState,
+        fair: &mut DispatchState,
         demands: &[Demand<uuid::Uuid>],
         pool: u32,
         ceiling: u32,
         engine: Option<EngineIncarnation>,
         current: Option<PoolGrants>,
     ) -> (PoolGrants, Vec<GrantHandoff>) {
-        self.owner.fair_publish(fair, demands, pool, ceiling, engine, || current, |next| next)
+        self.owner.dispatch_publish(fair, super::fair::Publication { demands, pool, ceiling, engine }, || current, |next| next)
     }
 
     /// One dispatch attempt's reservation (`reserve_attempt` on this owner) against `current`, her

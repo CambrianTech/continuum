@@ -38,7 +38,7 @@
 //! and its owner, never its size: a grant shrunk and regrown to the same size is a new revision.
 
 mod fair;
-pub use fair::{publish_fair_grants, FairGrantState};
+pub use fair::{publish_at_the_act, DispatchState, DispatchWait};
 /// The dyno's handle on one test-owned grant owner (`capacity::dyno::service`); test-only (`#![cfg(test)]`).
 pub(crate) mod dyno_seam;
 
@@ -124,8 +124,9 @@ struct ReservationState {
     retiring: BTreeMap<uuid::Uuid, GrantLease>,
     reclaimed: BTreeMap<uuid::Uuid, GrantLease>,
     refused: BTreeMap<uuid::Uuid, GrantLease>,
-    /// A queued waiter is owed the holder's next completed turn. This blocks reserve at the
-    /// receipt boundary, rather than hoping the publisher catches an idle interval.
+    /// Every holder mid-act whose seat an owed mind needs (CONTINUUM-ENGINE 4.9 P3): once her act
+    /// completes she may not take her seat again before the next evaluation reclaims it. This blocks
+    /// reserve at the receipt boundary, rather than hoping the publisher catches an idle interval.
     yield_after: BTreeMap<uuid::Uuid, (GrantLease, u64)>,
 }
 

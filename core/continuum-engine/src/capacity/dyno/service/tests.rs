@@ -191,7 +191,7 @@ mod interleavings {
     // waited since the first publication behind A's unresolved custody; the engine is replaced,
     // the fence frees the pool, and the next publication's feasible opportunity is B's (the oldest
     // waiter, and the pool now holds her need). The owner's fair state resets on a new incarnation
-    // (`FairGrantState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
+    // (`DispatchState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
     // order and A is granted first.
     #[test]
     #[ignore = "ONE-ACT 4: an engine replacement keeps the oldest waiter's place (fair state resets on a new incarnation)"]
@@ -279,7 +279,6 @@ mod simultaneous {
     // here); B is ready and needs those cells. B is served at the next publication, not after A's
     // seat has sat idle across two evaluations; A is granted again when she is ready.
     #[test]
-    #[ignore = "SV-ADM 4.8.4: a grant held by a mind that is not acting yields at once to a mind that is ready"]
     fn memory_follows_the_mind_that_is_acting() {
         let mut world = World::new(100, 100, &[("A", 60), ("B", 60)]);
         run(&mut world, &[Step::Publish]);

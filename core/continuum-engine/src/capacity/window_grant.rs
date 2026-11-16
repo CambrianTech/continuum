@@ -23,7 +23,7 @@ pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
 pub use lease::is_grant_retiring;
 #[cfg(test)]
 pub(crate) use lease::dyno_seam;
-pub use lease::{hold_for_act, ActHold, publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+pub use lease::{hold_for_act, ActHold, publish_at_the_act, DispatchState, DispatchWait, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails
@@ -262,10 +262,13 @@ pub enum Waiting {
     NeedAbovePool { need: u32, pool: u32 },
     /// Her own grant is being reclaimed: she is regranted after its receipt.
     Reclaiming,
-    /// Queued for room behind others (1-based `position` of `of`): a holder must yield first.
-    Queued { position: usize, of: usize },
-    /// Seatable, not reclaiming, and in no queue: the fair publisher left her out, which it should
-    /// never do. Named, so a live read shows the defect instead of a reason it does not have.
+    /// Cells are being reclaimed for her from holders that are not acting: she is granted after the
+    /// engine's reclaim receipt (CONTINUUM-ENGINE 4.9 P3).
+    ForReclaim,
+    /// Every holder that could make room is mid-act (`acting` of them): her act begins when one ends.
+    BehindActs { acting: usize },
+    /// Seatable, owed nothing and not granted: the publisher left her out, which it should never
+    /// do. Named, so a live read shows the defect instead of a reason it does not have.
     Unplaced,
 }
 
@@ -298,7 +301,8 @@ pub enum Ungranted {
 }
 
 impl Ungranted {
-    /// Her turn comes once room opens: she is queued behind others, or the engine is relaunching.
+    /// Her turn comes once room opens: cells are being reclaimed for her, every holder is mid-act,
+    /// or the engine is relaunching.
     /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
     /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
     /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
@@ -306,7 +310,7 @@ impl Ungranted {
     /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
     /// Every other reason names a defect.
     pub fn awaits_room(&self) -> bool {
-        matches!(self, Self::Waiting(Waiting::Queued { .. }) | Self::Nobody(NoGrants::NotReady))
+        matches!(self, Self::Waiting(Waiting::ForReclaim | Waiting::BehindActs { .. }) | Self::Nobody(NoGrants::NotReady))
     }
 }
 
@@ -412,7 +416,7 @@ impl Demand<uuid::Uuid> {
             target,
             wish,
             in_flight,
-            // read off her receipts by the fair publisher, which owns them (`publish_fair_grants`)
+            // read off her receipts by the fair publisher, which owns them (`publish_at_the_act`)
             settled: false,
             ceiling,
         })

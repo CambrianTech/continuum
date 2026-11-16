@@ -153,10 +153,10 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
         wish: crate::inference::planning::window_allocator::test_tokens(148_838),
         in_flight: false, settled: true, ceiling: 200_000,
     });
-    let mut fair = crate::capacity::window_grant::FairGrantState::default();
+    let mut fair = crate::capacity::window_grant::DispatchState::default();
     for _ in 0..4 {
         let current = publisher.borrow().clone();
-        let (_, handoffs) = crate::capacity::window_grant::publish_fair_grants(
+        let (_, handoffs) = crate::capacity::window_grant::publish_at_the_act(
             &mut fair, &demands, 200_000, 200_000, Some(engine), || current,
             |next| { publisher.send_replace(Some(next)); },
         );
