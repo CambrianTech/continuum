@@ -1695,16 +1695,17 @@ multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
   the context checkpoints are not: `--ctx-checkpoints 32` per slot (a constant, `CTX_CHECKPOINTS`) at
   ~110 MB each on this hybrid model (saved sidecars: 3-5 checkpoints in 347-601 MB) is up to ~17.6 GB
   across 5 slots, grown over hours, never priced.
-  - *Measured, not guessed:* the fork reports each slot's checkpoints (`/slots` `checkpoints: {count,
-    bytes}`, llama.cpp#121); the core's footprint owner keeps the measured bytes per checkpoint for the
-    model beside `kv_per_token` (persisted with the footprint, so the next launch is priced by it;
-    a model never measured has no checkpoint price, a state, and launches no checkpoints until one is).
-  - *One allocation:* the host fit subtracts the checkpoint store's claim (sequences x checkpoints per
-    slot x bytes per checkpoint) beside the prompt cache, so the KV pool is sized into the room left.
-  - *The count follows memory, never a constant:* checkpoints per slot are the coverage the spacing
-    needs (`checkpoint_min_step`), lowered by the host deficit like any cache (Batch priority, before
-    the minds' KV); the fork applies a new count live (it evicts its oldest checkpoints), so the
-    engine stays up.
+  - *A byte budget the engine keeps, not a count the core polices:* the core grants the checkpoint
+    store a host byte budget in the one allocation, beside the prompt cache (`--cache-ram`), and the
+    fork keeps every slot's checkpoints within it (a new checkpoint past the budget evicts the oldest
+    across slots, as its prompt cache does), so the host fit subtracts a number the core decided,
+    never an unmeasured one. `CTX_CHECKPOINTS` stays the coverage the spacing needs
+    (`checkpoint_min_step`), an upper bound on count, never the memory decision.
+  - *Its size is a cache's:* Batch priority with the prompt cache, derived the same way (the minds'
+    measured reuse, what the host affords after the minds' KV); lowered live by the host deficit
+    before the minds' KV (a fork verb sets it; the engine stays up).
+  - *Observed:* `/slots` reports each slot's checkpoints (count, bytes; llama.cpp#121), so the live
+    read shows the budget held and what one checkpoint costs on each model.
   - *Gate:* on the M5 with four residents, swap and compressor flat over an hour, and a lone stream's
     decode back to the solo rate (~60-80 tok/s) at the same depths.
 
