@@ -181,7 +181,7 @@ impl ServingDaemonModule {
                             target: "continuum_core::modules::serving_daemon",
                             class = "serving.decode_width.told",
                             model = %model,
-                            width = width.map_or(0, std::num::NonZeroUsize::get), // map_or: 0 on the receipt = every generating slot
+                            width = ?width, // None: every generating slot decodes
                             generating = depths.len(),
                             refused = ?told.err(),
                             "the engine was told how many generating sequences decode per step"
