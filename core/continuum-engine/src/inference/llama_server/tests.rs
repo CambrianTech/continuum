@@ -270,6 +270,7 @@ mod readiness;
 mod configuration;
 mod reconcile;
 mod pages;
+mod native_checkpoints;
 
 use super::configuration::{DEFAULT_HOST, DEFAULT_PORT, chosen_port};
 
