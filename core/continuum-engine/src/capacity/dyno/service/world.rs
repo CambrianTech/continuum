@@ -15,7 +15,7 @@ use std::collections::BTreeMap;
 
 use super::opportunity::{Boundary, MindAt, Mind, NoOpportunity, Opportunity};
 use crate::capacity::window_grant::dyno_seam::{Observation, OwnerUnderTest};
-use crate::capacity::window_grant::{settle, ActHold, Demand, FairGrantState, GrantHandoff, GrantLease, GrantReservation, PoolGrants, ReserveRefused, TerminalReceipt};
+use crate::capacity::window_grant::{settle, ActHold, Demand, DispatchState, GrantHandoff, GrantLease, GrantReservation, PoolGrants, ReserveRefused, TerminalReceipt};
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::planning::window_allocator::test_tokens;
 
@@ -67,8 +67,6 @@ pub(crate) enum Violation {
     UnresolvedReleased { mind: Mind },
     /// A ticket for a mind that still owns a request.
     TicketWithCustody { mind: Mind, phase: Phase, unresolved: u32 },
-    /// A ticket for a holder with no completed turn since her grant on this engine.
-    TicketWithoutCompletion { mind: Mind },
     /// A publication grants a mind the owner is retiring.
     GrantedWhileRetiring { mind: Mind },
     /// A reserve accepted a lease that is not her published one.
@@ -94,9 +92,6 @@ struct MindState {
     published: u32,
     completed_since_grant: bool,
     owed_since: Option<u64>,
-    /// She held a seat across the last publication with nothing in custody: an unused seat, which
-    /// yields to a waiter whether or not she completed a turn since her grant (`fair_publish`).
-    idle_at_last_publish: bool,
 }
 
 impl MindState {
@@ -122,7 +117,7 @@ pub(crate) struct Applied {
 
 pub(crate) struct World {
     owner: OwnerUnderTest,
-    fair: FairGrantState,
+    fair: DispatchState,
     current: Option<PoolGrants>,
     pool: u32,
     ceiling: u32,
@@ -146,11 +141,11 @@ impl World {
         let states = order.iter().zip(minds).map(|(id, (name, need))| {
             (*id, MindState {
                 name: name.to_string(), need: *need, phase: Phase::Idle, quoted: None, hold: None, reservation: None, reserved_on: None,
-                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None, idle_at_last_publish: false,
+                unresolved: 0, resident: 0, published: 0, completed_since_grant: false, owed_since: None,
             })
         }).collect();
         Self {
-            owner: OwnerUnderTest::new(), fair: FairGrantState::default(), current: None, pool, ceiling,
+            owner: OwnerUnderTest::new(), fair: DispatchState::default(), current: None, pool, ceiling,
             engine: EngineIncarnation { pid: 7, started_s: 1_762_300_000, port: 8_085 },
             order, minds: states, tickets: BTreeMap::new(), publications: 0, steps: 0,
             completions: BTreeMap::new(), first_served: BTreeMap::new(), violations: Vec::new(), log: Vec::new(),
@@ -161,7 +156,13 @@ impl World {
         self.order[index % self.order.len()]
     }
 
-    pub(crate) fn name(&self, index: usize) -> &str {
+    /// Her measured need moves (her context grew under an act, or a new act measured smaller).
+    pub(crate) fn set_need(&mut self, index: usize, need: u32) {
+        let id = self.mind(index);
+        self.minds.get_mut(&id).expect("test: an indexed mind").need = need; // test: index within the world
+    }
+
+        pub(crate) fn name(&self, index: usize) -> &str {
         &self.minds[&self.mind(index)].name
     }
 
@@ -228,7 +229,7 @@ impl World {
                 // quote, a reservation and a handoff ticket made against it stay with their holders: a
                 // late reserve or receipt for them is exactly what must be refused or ignored.
                 for s in self.minds.values_mut() {
-                    (s.resident, s.unresolved, s.published, s.completed_since_grant, s.idle_at_last_publish) = (0, 0, 0, false, false);
+                    (s.resident, s.unresolved, s.published, s.completed_since_grant) = (0, 0, 0, false);
                     s.hold = None;
                 }
                 Applied::default()
@@ -354,9 +355,6 @@ impl World {
             if s.owns_request() {
                 self.violations.push((self.steps, Step::Publish, Violation::TicketWithCustody { mind, phase: s.phase, unresolved: s.unresolved }));
             }
-            if !s.completed_since_grant && !(s.idle_at_last_publish && !s.owns_request()) {
-                self.violations.push((self.steps, Step::Publish, Violation::TicketWithoutCompletion { mind }));
-            }
             applied.tickets.push(self.order.iter().position(|m| *m == mind).expect("test: a ticket names a mind"));
             self.tickets.insert(mind, ticket);
         }
@@ -370,7 +368,6 @@ impl World {
                 self.first_served.entry(mind).or_insert(publication);
                 applied.newly_served.push(index);
             }
-            s.idle_at_last_publish = s.published > 0 && granted > 0 && !s.owns_request();
             s.published = granted;
             let eligible = s.need <= self.ceiling.min(self.pool);
             // A mind whose publication is retiring still holds her cells: she is owed service
@@ -385,7 +382,7 @@ impl World {
                 self.violations.push((self.steps, Step::Publish, Violation::MissedOpportunity { publication, opportunity: o }));
             }
             // A reclaim is taken when the waiter is served at this publication: by a ticket to the
-            // holder, or by an unused seat withdrawn without a handoff (an idle holder that never
+            // holder, or by a never-served seat withdrawn without a handoff (a holder that never
             // served holds no KV here; `fair_publish`'s unused-seat rule).
             Ok(o @ Opportunity::Reclaim { waiter, .. })
                 if applied.tickets.is_empty() && !retiring && next.grant_for(waiter).unwrap_or(0) < self.minds[&waiter].need => { // unwrap_or: not granted

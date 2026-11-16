@@ -20,7 +20,7 @@
 //! | # | Failure | Real code | Test |
 //! |---|---|---|---|
 //! | 1 | launch sized from a reading with the old engine still wired | `serving_daemon::launch::launch_pool` | `continuum-serving` `serving_daemon/tests/dyno.rs` |
-//! | 2 | one censored bound takes the pool | `window_grant::publish_fair_grants` + reservations + handoff receipts, on [`service`]'s virtual clock | `dyno/tests.rs` `grants` |
+//! | 2 | one censored bound takes the pool | `window_grant::publish_at_the_act` + reservations + handoff receipts, on [`service`]'s virtual clock | `dyno/tests.rs` `grants` |
 //! | 3 | a turn completes and restarts between grant ticks | as 2 | `dyno/tests.rs` `grants` |
 //! | §4 | feasible service opportunities; late/stale receipts, cancellation per phase, same-URL replacement, all-pinned waits, revocation during quote, seeded schedules | as 2 | `dyno/service/tests.rs` |
 //! | §4b/5d | the engine's batch scheduler as a pluggable decision on the M5's recorded hour (2026-11-06) | the fork's `update_slots`, reproduced from source, calibrated | `dyno/batch/tests.rs` |

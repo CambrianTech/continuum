@@ -80,8 +80,8 @@ pub(crate) enum NoOpportunity {
     AwaitingPhysicalReceipt { holders: Vec<Mind> },
     /// Every holder that could be reclaimed owns a request (all pinned).
     CustodyOutstanding { waiter: Mind, holders: Vec<Mind> },
-    /// No holder has completed a turn since her grant.
-    NoCompletedHolder { waiter: Mind },
+    /// No other mind holds a grant to reclaim.
+    NoHolder { waiter: Mind },
     /// A demand no sequence or pool can hold: an explicit placement shortfall, never a promise.
     Infeasible { mind: Mind, need: u32, limit: u32 },
 }
@@ -128,13 +128,15 @@ impl Boundary {
         }
         let holders: BTreeMap<Mind, MindAt> =
             self.minds.iter().filter(|(mind, m)| *mind != waiter && m.published > 0).map(|(mind, m)| (*mind, *m)).collect();
-        if let Some((holder, _)) = holders.iter().find(|(_, m)| m.completed_since_grant && !m.custody) {
+        // any holder not mid-act is reclaimable (CONTINUUM-ENGINE 4.9 P3): completing a turn since her
+        // grant is no longer required, a seat she is not acting on is not hers to keep
+        if let Some((holder, _)) = holders.iter().find(|(_, m)| !m.custody) {
             return Ok(Opportunity::Reclaim { waiter, holder: *holder });
         }
         let pinned: Vec<Mind> = holders.iter().filter(|(_, m)| m.custody).map(|(mind, _)| *mind).collect();
         match pinned.len() == holders.len() && !pinned.is_empty() {
             true => Err(NoOpportunity::CustodyOutstanding { waiter, holders: pinned }),
-            false => Err(NoOpportunity::NoCompletedHolder { waiter }),
+            false => Err(NoOpportunity::NoHolder { waiter }),
         }
     }
 }
@@ -147,17 +149,18 @@ mod tests {
         MindAt { need, published, charged: published, resident: published, custody: false, completed_since_grant: false, owed_since: None, retiring: false }
     }
 
-    // what this catches: reading a released turn as released residency (section 4). A holder's
-    // completion is an opportunity only to reclaim; free cells are what can be granted; a pinned
-    // holder, a handoff in flight and an infeasible need are named, not counted.
+    // what this catches: reading a released turn as released residency (section 4). A holder not
+    // acting is an opportunity only to reclaim (4.9 P3: completion since her grant is not required);
+    // free cells are what can be granted; a pinned holder, a handoff in flight and an infeasible need
+    // are named, not counted.
     #[test]
-    fn a_completion_is_a_reclaim_opportunity_and_only_free_cells_are_a_grant() {
+    fn a_holder_not_acting_is_a_reclaim_opportunity_and_only_free_cells_are_a_grant() {
         let (a, b, c) = (uuid::Uuid::from_u128(1), uuid::Uuid::from_u128(2), uuid::Uuid::from_u128(3));
         let waiter = MindAt { owed_since: Some(1), ..at(40, 0) };
         let mut boundary = Boundary { pool: 100, ceiling: 100, minds: vec![(a, at(90, 90)), (b, waiter)] };
-        assert_eq!(boundary.opportunity(), Err(NoOpportunity::NoCompletedHolder { waiter: b }));
-        boundary.minds[0].1.completed_since_grant = true;
         assert_eq!(boundary.opportunity(), Ok(Opportunity::Reclaim { waiter: b, holder: a }));
+        assert_eq!(Boundary { pool: 100, ceiling: 100, minds: vec![(b, MindAt { owed_since: Some(1), ..at(140, 0) })] }.opportunity(),
+            Err(NoOpportunity::Infeasible { mind: b, need: 140, limit: 100 }));
         boundary.minds[0].1.custody = true;
         assert_eq!(boundary.opportunity(), Err(NoOpportunity::CustodyOutstanding { waiter: b, holders: vec![a] }));
         boundary.minds[0].1.retiring = true;

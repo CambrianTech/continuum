@@ -197,7 +197,7 @@ where
                         reason = %why,
                         "her turn waits for a later grants evaluation"
                     ),
-                    // Her grant is listed but she is ungranted: it is yielding to a waiter (yield_after).
+                    // Her grant is listed but she is ungranted: it is being reclaimed for a ready mind.
                     // The handoff needs her turn to end, so the turn ends; never waited inside it.
                     None => match decide() {
                         MindWindow::Decided(decided) => return Ok(decided),
@@ -308,15 +308,15 @@ mod tests {
     }
 
     // what this catches (Codex on #5890; the M5 on 26960c09d, 186 failed turns an hour): a demand
-    // queued for room refused as a failed turn, or reported as one that never arrived. She waits with
+    // waiting for room refused as a failed turn, or reported as one that never arrived. She waits with
     // her demand standing, measured once, and runs when a later evaluation grants her.
     #[tokio::test]
-    async fn a_queued_mind_waits_her_turn_measured_once_then_runs() {
+    async fn a_waiting_mind_waits_her_turn_measured_once_then_runs() {
         use super::super::window_grant::{Ungranted, Waiting};
         let her = uuid::Uuid::from_u128(4);
-        let queued_at = move |position| {
+        let queued_at = move |acting| {
             let mut queued = evaluation(std::time::Instant::now() + std::time::Duration::from_millis(1), grants(&[]), None).expect("evaluation");
-            queued.waiting.insert(her, Waiting::Queued { position, of: 3 });
+            queued.waiting.insert(her, Waiting::BehindActs { acting });
             queued
         };
         let (sender, installed) = tokio::sync::watch::channel(Some(queued_at(2)));
@@ -352,7 +352,8 @@ mod tests {
         publisher.await.expect("publisher");
         assert_eq!(decided, Ok(Decided::Granted(t(14_860))), "she waited her turn and ran");
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
-        assert!(Ungranted::Waiting(Waiting::Queued { position: 2, of: 3 }).awaits_room());
+        assert!(Ungranted::Waiting(Waiting::BehindActs { acting: 2 }).awaits_room());
+        assert!(Ungranted::Waiting(Waiting::ForReclaim).awaits_room(), "cells reclaimed for her: she waits for the receipt");
         assert!(!Ungranted::Waiting(Waiting::NeedAbovePool { need: 9, pool: 8 }).awaits_room(), "a need above the pool is a defect, named");
         assert!(!Ungranted::Waiting(Waiting::Reclaiming).awaits_room(), "a reclaim needs her turn to end: never waited inside it");
         let absent = evaluation(std::time::Instant::now(), grants(&[]), None).expect("evaluation");
