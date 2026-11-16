@@ -1647,32 +1647,40 @@ before the count is set.
 then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
 before/after (host memory, act latency, the step budget).
 
-**The binary seam, core to engine** (proposed 2026-11-16, for Codex's review before either side is built). It
-replaces OpenAI JSON on the act path; the OpenAI HTTP surface stays only for external drivers (line 16).
-- *Transport.* The engine's Unix socket (already present beside each engine, e.g. `~/.continuum/logs/llama-server-58057.sock`),
-  length-prefixed frames, little-endian, fixed headers. In process (line 3b) the same frames become spans by reference.
-- *Tokens are the unit, prepared once.* The context codec (`continuum-context`) already keys every item and only
-  appends within an epoch; the core renders each item through the model's chat template once and tokenizes it once
-  (one `tokenize` frame per NEW item), caching the ids under the item's key. The engine never re-templates or
-  re-tokenizes a context. The vocabulary's pieces are fetched once per engine instance (`vocab` frame: every piece's
-  bytes by id), so the core detokenizes by table lookup, never by a round trip.
-- *Act request* (`kind = act`): `magic u32, version u16, kind u16, slot i32, page u128 (the mind's typed page id),
-  epoch u64, prefix_n u32, prefix_hash u64 (xxh64 of the prefix ids the core believes the slot holds), sampling
-  {temp f32, top_k i32, top_p f32, min_p f32, repeat_penalty f32, repeat_last_n i32, frequency_penalty f32,
-  presence_penalty f32, seed u32, n_predict i32, think_budget i32}, n_append u32, n_stop u32`, then `i32[n_append]`
-  appended ids, then each stop sequence as `u32 len, i32[len]`. The engine checks `prefix_n`/`prefix_hash` against its
-  own token list for the slot: a match decodes only the appended tail; a mismatch is a typed refusal
-  (`prefix_mismatch {engine_n u32, engine_hash u64}`) and the core resends from the longest prefix it can prove, never
-  the whole context by default.
-- *Response frames:* `tokens {slot i32, n u32, i32[n]}` as they are sampled; `done {slot, stop u8 (eos, stop_seq,
-  length, cancelled), prompt_n u32, cached_n u32, prompt_us u64, predicted_n u32, predicted_us u64}`; `refusal {slot,
-  code u16, payload}` with typed codes (prefix_mismatch, slot_busy, context_full, engine_stopping). Tool calls and
-  reasoning are parsed by the core from ids it already holds, not re-parsed from text by the engine.
-- *Control and telemetry* use the same framing (`host_pool` grant and report, `step_budget`, `gpu_time`): fixed
-  structs, versioned; JSON `/props` remains the human view of the same values.
-- *Gate.* Per act: bytes on the wire (whole-context JSON today vs appended ids), engine CPU before the first decode
-  (template + tokenize today, measured 10-20 ms + 80 ms at 126k tokens on the 0.8B's tokenizer), and act latency;
-  the validator replays captured acts through both seams and requires identical token ids and outputs.
+**The binary seam, core to engine** (revised 2026-11-16 after Joel and Codex). Joel: "This is bytes of memory. We
+have control over both llama cpp and rust ... Blocks of memory either straight up copied or passed entirely by
+reference, why would you even go into something intermediate? Boundaries can use bytes and streaming just fine ...
+Any serde in these important paths is suspect. Any string." So nothing on the act path is re-represented: no JSON, no
+String built around bytes, no token ids computed by the core.
+- *Transport.* Length-prefixed binary frames over the engine's Unix socket (present beside each engine); a frame is a
+  fixed header plus a byte block, streamed in both directions; in process (line 3b) the same blocks pass by reference.
+  Each connection negotiates its maximum frame length and protocol version first; an unknown kind or version is a
+  typed refusal; a partial frame at EOF is a typed failure of that request only (Codex's review).
+- *An item crosses once, as its own bytes.* A new context item is its raw UTF-8 block plus a typed header (item key
+  u128, role enum u8, tool/reasoning flags, length). The ENGINE is the one owner of model, tokenizer and template
+  version (Codex: per-item token concatenation is not equivalent to tokenizing the rendered conversation): it renders
+  and tokenizes the new bytes once, on arrival, and keeps the result against the item key. The model's input layer
+  consuming token ids is the one inherent conversion, done once where the vocabulary lives, like a texture upload;
+  the core never tokenizes.
+- *An act names, it does not resend.* `act {request id u64, engine incarnation, model/adapter/template epochs, slot,
+  page u128, the item keys of the prefix the core believes the slot holds, the keys of new items (their bytes sent
+  once), a fixed sampling struct}`. The engine checks the prefix by item keys against what its slot holds; a mismatch
+  is a typed refusal naming the longest prefix it does hold (by key), never a blind reuse of a hash.
+- *Out.* `piece` frames stream the sampled tokens' bytes (the core appends them as-is; the bytes are the text), each
+  with its typed metadata (token id, logprob when asked, reasoning/tool channel); `done {request id, stop enum,
+  timings, usage}` and `refusal {request id, code}` are fixed structs. Cancellation is a frame; custody of a cancelled
+  request ends with its terminal frame.
+- *Everything else is memory blocks:* KV, parked checkpoints, pages and pool state move by reference or by a straight
+  copy through `memory_mover` (4.7.12), never re-encoded.
+- *Gate.* Per act: bytes on the wire (the whole context as JSON today, only new items' bytes after), engine CPU before
+  the first decode (template + tokenize of the whole context today; only new items after), act latency; a replay of
+  captured acts through both seams must produce identical token ids and output bytes.
+
+**No string, no serde on the hot paths: enforced, not advised.** In the engine's act path (the socket handler, the
+step loop, checkpoints, the pool) and the core's (`continuum-engine/src/ai/openai_adapter/`, `inference/`, the
+context codec), a `String`, `format!`, `serde_json` or `to_string` site is counted by source-hygiene and may only
+fall; a new one fails the build. A path that reaches zero gets a compile-time ban (the dependency removed from the
+crate). Text exists only where a person reads it or an external program speaks it.
 
 **No promises, no futures** (Joel, 2026-11-16: "Promises and other idiocy. I wish you never saw JavaScript"). Work
 off the decode thread is a job system: a job writes its result into storage its owner already owns, completion is a
