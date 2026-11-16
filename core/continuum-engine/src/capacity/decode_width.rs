@@ -75,7 +75,8 @@ impl DecodePlane {
     /// Mean finishing time of sequences with `left` tokens to go at `depths` (in finishing order,
     /// shortest first) when at most `width` decode per step: each step every active sequence advances
     /// one token at the plane's step time for that many sequences and their summed depth; a finished
-    /// one hands its place to the next.
+    /// one hands its place to the next. `left` is never empty: every caller asks about the sequences
+    /// generating now (`width` returns before asking when none are).
     pub fn mean_finish(&self, left: &[f64], depths: &[u64], width: NonZeroUsize) -> f64 {
         let mut left = left.to_vec();
         let (mut now, mut finished) = (0.0, 0.0);
@@ -94,7 +95,7 @@ impl DecodePlane {
             }
             finished += now;
         }
-        finished / left.len().max(1) as f64
+        finished / left.len() as f64
     }
 }
 
