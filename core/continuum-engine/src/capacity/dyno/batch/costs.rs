@@ -14,12 +14,7 @@
 use super::{Evidence, Rates};
 use crate::capacity::dyno::knee::{derive_knee, Knee, NoiseBand, ServiceCurve};
 
-use crate::capacity::decode_width::{least_squares, DecodePlane};
-
-/// The median of |predicted - observed| / observed; NaN with no observation (a fit receipt, printed).
-pub(crate) fn median_relative_residual(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
-    crate::capacity::decode_width::median_relative_residual(pairs).unwrap_or(f64::NAN) // unwrap_or: no observation prints as NaN, never budgets
-}
+use crate::capacity::decode_width::{least_squares, median_relative_residual, DecodePlane};
 
 /// The fitted costs and their residuals.
 #[derive(Debug, Clone)]
@@ -29,8 +24,9 @@ pub(crate) struct Costs {
     pub prefill: [f64; 4],
     /// Seconds per decode step: `[d0, d1, d2]` in `d0 + d1 n + d2 (D / 1000)`.
     pub decode: [f64; 3],
-    pub prefill_residual: f64,
-    pub decode_residual: f64,
+    /// `None` with no observation to measure the fit against.
+    pub prefill_residual: Option<f64>,
+    pub decode_residual: Option<f64>,
     /// The recorded per-batch rates by sequences (for the knee of candidate (d)).
     rates: Rates,
 }
