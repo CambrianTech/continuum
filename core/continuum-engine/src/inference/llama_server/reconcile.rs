@@ -84,7 +84,9 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                 // A KNOWN set that differs: the engine takes the change in place (fork #26:
                 // /lora-adapters/load and /unload) instead of a relaunch that kills every
                 // turn in flight and re-prefills every slot (charter S1, card 49b5e806).
-                // Only an engine that cannot falls through to the relaunch.
+                // Only an explicit Unsupported answer falls through to relaunch. A failed
+                // mutation may already have changed the set; it is not authority to replace
+                // the engine and discard the residents' retained state.
                 match ctrl.adopt_genome_in_place(target).await {
                     Ok(GenomeInPlace::Adopted) => {
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.adopted_in_place",
@@ -120,9 +122,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
                         continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.genome.in_place_failed",
                             model = target.model_id(),
                             error = %e,
-                            "the in-place gene change failed: relaunching onto the target set"
+                            "the in-place gene change failed: retaining the running engine"
                         );
-                        false
+                        return EnsureOutcome::Degraded {
+                            reason: format!("in-place genome change failed: {e}"),
+                        };
                     }
                 }
             }
