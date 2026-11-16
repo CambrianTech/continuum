@@ -304,13 +304,14 @@ impl Ungranted {
     /// Her turn comes once room opens: cells are being reclaimed for her, every holder is mid-act,
     /// or the engine is relaunching.
     /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
-    /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
-    /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
-    /// (the M5, d0abbddd1, 2026-11-10: Aris parked to the 1,500 s tick deadline, five times, while
-    /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
-    /// Every other reason names a defect.
+    /// and wait its turn"). Her own seat being RECLAIMED is waited out too: the window is decided
+    /// before her act's custody guard is taken (`MindTurn` at admission), and warm-ahead never begins
+    /// on a retiring grant (`MindTurn::try_begin`), so a turn waiting here holds nothing the reclaim
+    /// takes. Ending her turn instead cost Aris three turns in fifteen minutes on the M5 under P3
+    /// (26512dc03, 2026-11-16 06:22-06:37Z; card d50e8e66, Joel: "Have we taken away persona freedom
+    /// and agency?"). Every other reason names a defect.
     pub fn awaits_room(&self) -> bool {
-        matches!(self, Self::Waiting(Waiting::ForReclaim | Waiting::BehindActs { .. }) | Self::Nobody(NoGrants::NotReady))
+        matches!(self, Self::Waiting(Waiting::ForReclaim | Waiting::Reclaiming | Waiting::BehindActs { .. }) | Self::Nobody(NoGrants::NotReady))
     }
 }
 

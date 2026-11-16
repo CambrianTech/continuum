@@ -52,13 +52,35 @@ pub fn mind_window(persona: uuid::Uuid, adapter: &dyn AIProviderAdapter, bound: 
     }
 }
 
-/// Her granted window, HELD for the act about to render against it ([`super::window_grant::ActHold`]):
-/// no replan moves it and no handoff takes it until the act ends. Refused as the reclaiming wait
-/// [`decide_window`] names when a publication between her decision and the hold took it or owes it to
-/// a waiter: her act waits for a grant, never renders against one being handed off.
-pub fn hold_granted(persona: uuid::Uuid) -> Result<super::window_grant::ActHold, WindowRefused> {
-    super::window_grant::hold_for_act(persona)
-        .ok_or(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming)))
+/// Decide her window and, when it is a grant, hold it for the act about to render against it
+/// ([`super::window_grant::ActHold`]). A grant taken between the decision and the hold is waited for (the next grants
+/// evaluation, then she decides again), never a failed turn (card d50e8e66).
+pub async fn decide_and_hold<D, M, E, F>(persona: uuid::Uuid, decide: D, mut measure: M, evaluation_after: E) -> Result<(Decided, Option<super::window_grant::ActHold>), WindowRefused>
+where
+    D: Fn() -> MindWindow,
+    M: FnMut(),
+    E: Fn(std::time::Instant) -> Result<F, GrantsUnavailable>,
+    F: std::future::Future<Output = Result<super::window_grant::GrantEvaluation, WindowRefused>>,
+{
+    loop {
+        let decided = decide_window(persona, &decide, &mut measure, &evaluation_after).await?;
+        if !matches!(decided, Decided::Granted(_)) {
+            return Ok((decided, None));
+        }
+        let asked = std::time::Instant::now();
+        match super::window_grant::hold_for_act(persona) {
+            Some(hold) => return Ok((decided, Some(hold))),
+            None => {
+                continuum_base::probe!(
+                    class = "delib.window.waiting",
+                    persona = %persona,
+                    reason = "her grant moved between her decision and her act",
+                    "her turn waits for a later grants evaluation"
+                );
+                evaluation_after(asked)?.await?;
+            }
+        }
+    }
 }
 
 /// No grants watch is installed in this process, so a mind on the shared pool can never be granted
@@ -206,11 +228,14 @@ where
                         "her turn waits for a later grants evaluation"
                     ),
                     // Her grant is listed but she is ungranted: it is being reclaimed for a ready mind.
-                    // The handoff needs her turn to end, so the turn ends; never waited inside it.
-                    None => match decide() {
-                        MindWindow::Decided(decided) => return Ok(decided),
-                        MindWindow::Ungranted => return Err(WindowRefused::Ungranted(super::window_grant::Ungranted::Waiting(super::window_grant::Waiting::Reclaiming))),
-                    },
+                    // She holds nothing the reclaim takes (`Ungranted::awaits_room`), so she waits for
+                    // the evaluation after it, within her turn.
+                    None => continuum_base::probe!(
+                        class = "delib.window.waiting",
+                        persona = %persona,
+                        reason = "her seat is being reclaimed",
+                        "her turn waits for a later grants evaluation"
+                    ),
                 }
             }
         }
@@ -315,6 +340,46 @@ mod tests {
         assert_eq!(refused, Err(WindowRefused::Ungranted(Ungranted::Nobody(NoGrants::ModelUnresolved))), "the newer evaluation's reason, not the stale one's");
     }
 
+    // what this catches (card d50e8e66; the M5 under P3, 26512dc03, 2026-11-16: Aris's turn ended three
+    // times in fifteen minutes): her own seat being reclaimed (listed, but she is ungranted while it
+    // retires) ended her turn with `Reclaiming`. She waits for the evaluation after the reclaim, within
+    // her turn, measured once, and runs when it grants her.
+    #[tokio::test]
+    async fn a_mind_whose_seat_is_reclaimed_waits_within_her_turn_then_runs() {
+        let her = uuid::Uuid::from_u128(5);
+        let listed = |at| evaluation(at, grants(&[(her, 30_000)]), None).expect("evaluation");
+        let (sender, installed) = tokio::sync::watch::channel(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1))));
+        let measured = Cell::new(0);
+        let reseated = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let publisher = {
+            let reseated = reseated.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                sender.send(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1)))).expect("the waiter holds a receiver");
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                reseated.store(true, std::sync::atomic::Ordering::SeqCst);
+                sender.send(Some(listed(std::time::Instant::now() + std::time::Duration::from_millis(1)))).expect("the waiter holds a receiver");
+            })
+        };
+        let decided = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            decide_window(
+                her,
+                || match reseated.load(std::sync::atomic::Ordering::SeqCst) {
+                    false => MindWindow::Ungranted,
+                    true => MindWindow::Decided(Decided::Granted(t(30_000))),
+                },
+                || measured.set(measured.get() + 1),
+                |at| Ok(next_evaluation(installed.clone(), at)),
+            ),
+        )
+        .await
+        .expect("seated again within the publisher's beats, never a refused turn");
+        publisher.await.expect("publisher");
+        assert_eq!(decided, Ok(Decided::Granted(t(30_000))), "she waited while her seat was reclaimed and ran");
+        assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
+    }
+
     // what this catches (Codex on #5890; the M5 on 26960c09d, 186 failed turns an hour): a demand
     // waiting for room refused as a failed turn, or reported as one that never arrived. She waits with
     // her demand standing, measured once, and runs when a later evaluation grants her.
@@ -363,7 +428,7 @@ mod tests {
         assert!(Ungranted::Waiting(Waiting::BehindActs { acting: 2 }).awaits_room());
         assert!(Ungranted::Waiting(Waiting::ForReclaim).awaits_room(), "cells reclaimed for her: she waits for the receipt");
         assert!(!Ungranted::Waiting(Waiting::NeedAbovePool { need: 9, pool: 8 }).awaits_room(), "a need above the pool is a defect, named");
-        assert!(!Ungranted::Waiting(Waiting::Reclaiming).awaits_room(), "a reclaim needs her turn to end: never waited inside it");
+        assert!(Ungranted::Waiting(Waiting::Reclaiming).awaits_room(), "her seat being reclaimed: she waits within her turn (card d50e8e66)");
         let absent = evaluation(std::time::Instant::now(), grants(&[]), None).expect("evaluation");
         assert_eq!(absent.ungranted(her), Some(Ungranted::NotADemand), "no demand of hers reached it");
     }
