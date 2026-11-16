@@ -66,8 +66,7 @@ impl WorkingMemory {
     /// keeps it whole (`working_memory::in_hand`), so it and every act after it stay resident.
     fn release_edge(&self, edge: u64) -> u64 {
         let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
-        let scope = self.scope.lock().clone();
-        let in_hand = self.open_views.lock().editing_reads(scope.as_deref()).into_iter().min();
+        let in_hand = self.working_reads().into_iter().min();
         in_flight.into_iter().chain(in_hand.map(|ActSeq(seq)| seq)).fold(edge, |edge, seq| edge.min(seq.saturating_sub(1)))
     }
 
