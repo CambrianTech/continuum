@@ -79,12 +79,6 @@ pub struct CompleteInterval<E> {
 }
 
 impl<E> CompleteInterval<E> {
-    /// An interval recorded earlier and kept whole (a fixture on disk, a replayed clock): the
-    /// recording vouches it is complete, as the ring did when it drained it.
-    pub fn from_recording(index: u64, from: At, to: At, events: Vec<Stamped<E>>) -> Self {
-        Self { index, from, to, events }
-    }
-
     pub fn index(&self) -> u64 {
         self.index
     }
@@ -99,6 +93,22 @@ impl<E> CompleteInterval<E> {
 
     pub fn events(&self) -> &[Stamped<E>] {
         &self.events
+    }
+}
+
+/// An interval recorded earlier and kept whole (a fixture on disk, a replayed clock): the recording
+/// vouches it is complete, as the ring did when it drained it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Recorded<E> {
+    pub index: u64,
+    pub from: At,
+    pub to: At,
+    pub events: Vec<Stamped<E>>,
+}
+
+impl<E> From<Recorded<E>> for CompleteInterval<E> {
+    fn from(recorded: Recorded<E>) -> Self {
+        Self { index: recorded.index, from: recorded.from, to: recorded.to, events: recorded.events }
     }
 }
 
@@ -158,7 +168,7 @@ impl<E> Ring<E> {
     /// Everything since the last drain; the next interval begins exactly where this one ends.
     pub fn drain(&self) -> Interval<E> {
         // a poisoned ring still holds valid records: a panic elsewhere never loses the capture
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); // poison holds valid records: a panic elsewhere never loses the capture
         let to = self.now();
         let from = std::mem::replace(&mut state.from, to);
         let index = state.index;
@@ -175,7 +185,7 @@ impl<E> Ring<E> {
 impl<E: Send> CaptureSink<E> for Ring<E> {
     fn record(&self, event: E) {
         let at = self.now();
-        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner); // poison holds valid records: a panic elsewhere never loses the capture
         if state.events.len() >= state.capacity.get() {
             state.dropped += 1;
             return;
