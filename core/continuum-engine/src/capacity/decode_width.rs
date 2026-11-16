@@ -16,6 +16,13 @@
 
 use std::num::NonZeroUsize;
 
+pub mod live;
+
+/// The summed-depth resolution measured steps are grouped at before the plane is fitted: one group
+/// per (decoders, band). A grouping of evidence, never a decision: the plane is continuous in depth.
+/// The dyno fits the recorded hour at the same resolution, so its plane and the live one agree.
+pub const FIT_DEPTH_BAND: u64 = 50_000;
+
 /// Seconds per decode step: `base + per_decoder n + per_kdepth (D / 1000)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DecodePlane {

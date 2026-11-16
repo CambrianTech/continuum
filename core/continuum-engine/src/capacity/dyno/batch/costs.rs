@@ -14,7 +14,7 @@
 use super::{Evidence, Rates};
 use crate::capacity::dyno::knee::{derive_knee, Knee, NoiseBand, ServiceCurve};
 
-use crate::capacity::decode_width::{least_squares, DecodePlane};
+use crate::capacity::decode_width::{least_squares, DecodePlane, FIT_DEPTH_BAND};
 
 /// The median of |predicted - observed| / observed; NaN with no observation (a fit receipt, printed).
 pub(crate) fn median_relative_residual(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
@@ -53,14 +53,14 @@ impl Costs {
         // straddles an unprinted stall would drag a mean fit (the per-window tail is long).
         let mut groups: std::collections::BTreeMap<(u32, u64), Vec<f64>> = std::collections::BTreeMap::new();
         for w in windows {
-            groups.entry((w.2, w.3 / 50_000)).or_default().push(step(w));
+            groups.entry((w.2, w.3 / FIT_DEPTH_BAND)).or_default().push(step(w));
         }
         let rows: Vec<(Vec<f64>, f64, f64)> = groups.values().filter(|v| v.len() >= 10).map(|v| {
             let mut v = v.clone();
             v.sort_by(f64::total_cmp);
             (v.len(), v[v.len() / 2])
         }).zip(groups.iter().filter(|(_, v)| v.len() >= 10).map(|(k, _)| *k))
-            .map(|((n, median), (decoders, bucket))| (vec![1.0, f64::from(decoders), (bucket * 50 + 25) as f64], median, n as f64))
+            .map(|((n, median), (decoders, bucket))| (vec![1.0, f64::from(decoders), (bucket * FIT_DEPTH_BAND + FIT_DEPTH_BAND / 2) as f64 / 1000.0], median, n as f64))
             .collect();
         let d = least_squares(&rows).expect("evidence: the decode groups determine a plane");
         let decode = [d[0], d[1], d[2]];

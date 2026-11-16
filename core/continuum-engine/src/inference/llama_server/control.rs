@@ -1,5 +1,16 @@
 //! Control responsibility of the llama-server process owner.
 use super::*;
+/// Why the engine did not take a decode width (`POST /engine/decode-set`, llama.cpp#120).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DecodeSetRefused {
+    /// This control has no engine endpoint to tell (a fake or remote control).
+    NoEndpoint,
+    /// The engine did not answer.
+    Unreachable(String),
+    /// The engine answered with a refusal (404 on an engine without the route).
+    Status(u16),
+}
+
 /// Typed serving-control failures. The only string is a display-only leaf
 /// detail — never parsed back into control flow ([[protocols-prevent-pain]]).
 #[derive(Debug, thiserror::Error)]
@@ -544,6 +555,12 @@ pub trait LlamaServerControl: Send + Sync {
     /// The `/slots` body itself, for a reader that needs more than one derived number (the
     /// prefill knee's server-total rate, card e370a673). Default `None` = no endpoint to
     /// read, so a fake or remote control publishes nothing.
+    /// Tell the engine how many generating sequences decode per step (`None`: every generating
+    /// slot). The default has no endpoint: a fake or remote control decodes as the engine chooses.
+    async fn post_decode_set(&self, _width: Option<std::num::NonZeroUsize>) -> Result<(), DecodeSetRefused> {
+        Err(DecodeSetRefused::NoEndpoint)
+    }
+
     async fn slots_body(&self) -> Option<serde_json::Value> {
         None
     }

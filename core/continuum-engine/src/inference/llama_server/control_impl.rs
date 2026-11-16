@@ -313,6 +313,23 @@ impl LlamaServerControl for LlamaServerProcess {
         slots_activity_fingerprint_of(&body)
     }
 
+    async fn post_decode_set(&self, width: Option<std::num::NonZeroUsize>) -> Result<(), DecodeSetRefused> {
+        // the engine process boundary: its control routes take JSON
+        let body = serde_json::json!({ "width": width.map(std::num::NonZeroUsize::get) });
+        let response = self
+            .client
+            .post(format!("{}/engine/decode-set", self.root))
+            .timeout(PROBE_TIMEOUT)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|error| DecodeSetRefused::Unreachable(error.to_string()))?;
+        match response.status() {
+            status if status.is_success() => Ok(()),
+            status => Err(DecodeSetRefused::Status(status.as_u16())),
+        }
+    }
+
     async fn slots_body(&self) -> Option<serde_json::Value> {
         // Same bounded control-plane read as the fingerprint; any failure → None.
         let url = format!("{}/slots", self.root);

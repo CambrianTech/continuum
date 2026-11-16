@@ -88,6 +88,12 @@ pub fn slot_counts_of(slots: &serde_json::Value) -> Option<Vec<SlotCount>> {
     )
 }
 
+/// The context depth of every slot decoding now (processing with no prompt left): the depths the
+/// decode width is chosen at. A slot's `n_prompt_tokens` grows with what it decodes, so it is its depth.
+pub fn generating_depths(counts: &[SlotCount]) -> Vec<u64> {
+    counts.iter().filter(|s| s.processing && !s.prefilling()).map(|s| s.prompt).collect()
+}
+
 /// PURE: the CLEAN per-stream decode rate between two reads, with how many streams were in
 /// flight (card df58b8b8, Cormac on #4489). A generation's own timings count its stalls behind
 /// neighbours' prefill as decode time, and its in-flight count is read at its end, so a
@@ -296,6 +302,13 @@ pub fn observe_slots(slots: &serde_json::Value, now_ms: u64, served_lanes: usize
         if was == *e {
             if let Some((streams, tps)) = clean_decode(&before, &counts, now_ms.saturating_sub(at)) {
                 crate::inference::serving_rates::observe_decode(&e.model, streams, tps, now_ms);
+                // the same clean interval is one measured step shape for the live decode width
+                // (4.10 P5 slice 2): each stream gained a token per step, so a step took 1 / tps
+                crate::capacity::decode_width::live::observe(&e.model, crate::capacity::decode_width::DecodeStep {
+                    decoders: streams as usize,
+                    summed_depth: generating_depths(&counts).iter().sum(),
+                    seconds_per_token: 1.0 / tps,
+                });
             }
         }
     }
