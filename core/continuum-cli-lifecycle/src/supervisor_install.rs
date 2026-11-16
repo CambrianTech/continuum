@@ -692,7 +692,7 @@ pub async fn install_supervisor(
         ));
     }
     let sid = caller_sid().await?;
-    let cli = match crate::installed_release::envelope(&core.description)? {
+    let cli = match crate::installed_release::envelope(&core.description).map_err(|error| error.to_string())? {
         Some(envelope) => {
             let home=PathBuf::from(std::env::var_os("USERPROFILE").ok_or("USERPROFILE is unset")?).join(".continuum");
             let program_files=PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);

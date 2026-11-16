@@ -38,7 +38,7 @@ pub(super) async fn installed_service(args: Vec<String>) -> Result<i32, String> 
             return Err("installed-service requires core|deploy <active-receipt>".into());
         }
         if let Some(code) = require_service_medium().await? { return Ok(code); }
-        let home = PathBuf::from(home_dir()?).join(".continuum");
+        let home = continuum_core::paths::continuum_home()?;
         let sid = supervisor_install::caller_sid().await?;
         let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
         let executable = std::env::current_exe().map_err(|e|e.to_string())?;
@@ -71,7 +71,7 @@ pub(super) async fn installed_service(args: Vec<String>) -> Result<i32, String> 
         drop(startup); // Maintenance must drain this already-created child.
         let status = tree.wait().await.map_err(|e|e.to_string())?;
         drop(selected);
-        Ok(status.code().unwrap_or(1)) // No normal exit code means the supervised child failed.
+        status.code().ok_or_else(|| "service-host child ended without an exit code".to_owned()) // No normal exit code means the supervised child failed.
     }
 }
 
@@ -174,163 +174,14 @@ pub(super) async fn service_host(args: Vec<String>) -> Result<i32, String> {
             child.wait().await
         }
             .map_err(|e| format!("service-host cannot wait for core: {e}"))?;
-        Ok(status.code().unwrap_or(1))
+        status.code().ok_or_else(|| "service-host child ended without an exit code".to_owned())
     }
 }
 
 #[cfg(any(windows, test))]
 pub(super) use continuum_cli_lifecycle::installed_release::Release as CoreServiceDescription;
 
-#[cfg(any(windows, test))]
-#[derive(Debug, serde::Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct CoreServiceTask {
-    pub(super) description: String,
-    pub(super) command: String,
-    pub(super) arguments: String,
-    pub(super) enabled: bool,
-    pub(super) state: String,
-    #[serde(default)]
-    pub(super) working_directory: String,
-    #[serde(skip)]
-    pub(super) installed: Option<continuum_cli_lifecycle::installed_release::Envelope>,
-}
-
-/// A path the ContinuumCore descriptor or the installer's receipt names, absolute and resolved,
-/// or why not. THE one resolver for both sides of [`CoreServiceTask::validate`]'s comparison:
-/// a receipt holds an ordinary `C:\...` path while a resolved one carries Windows' verbatim
-/// `\\?\` prefix, so a receipt compared raw refused every unattended deploy on the 5090
-/// (ce84f63ac, 2026-10-12 19:31Z; Codex traced it).
-#[cfg(any(windows, test))]
-pub(super) fn resolve_service_path(path: impl AsRef<Path>) -> Result<PathBuf, String> {
-    let path = path.as_ref();
-    if !path.is_absolute() {
-        return Err(format!("ContinuumCore path must be absolute: {}", path.display()));
-    }
-    std::fs::canonicalize(path).map_err(|e| format!("ContinuumCore path {} cannot be resolved: {e}", path.display()))
-}
-
-#[cfg(any(windows, test))]
-impl CoreServiceTask {
-    pub(super) fn validate_description_sha(&self, expected: &str) -> Result<(), String> {
-        use sha2::{Digest, Sha256};
-        let actual = format!("{:x}", Sha256::digest(self.description.as_bytes()));
-        if actual != expected {
-            return Err(
-                "installed release changed during installer-to-reboot transfer; refusing teardown"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-
-    /// What a restart needs from the registered release that staging does not write: a
-    /// parseable descriptor whose engine is an installed file and whose log directory
-    /// exists. The reboot checks this BEFORE it stops the running core, and `validate`
-    /// re-checks it after staging. Measured on the 5090 2026-10-06: the descriptor named an
-    /// engine slot that had been moved aside, `validate` first looked after the stop, and the
-    /// node sat with no core until a hand restored the slot. A deploy that cannot start the
-    /// next core must refuse while the old one still serves.
-    pub(super) fn runtime_paths_resolve(&self) -> Result<CoreServiceDescription, String> {
-        let description: CoreServiceDescription =
-            serde_json::from_str(&self.description).map_err(|e| {
-                format!("ContinuumCore has no valid installer artifact descriptor: {e}")
-            })?;
-        if !resolve_service_path(&description.log_directory)?.is_dir() {
-            return Err("ContinuumCore logDirectory is not a directory".to_string());
-        }
-        if !resolve_service_path(&description.engine)?.is_file() {
-            return Err("ContinuumCore engine is not an installed file".to_string());
-        }
-        Ok(description)
-    }
-
-    pub(super) fn validate(&self, candidate: &PrebuiltCore, socket: &str, shell: &Path) -> Result<(), String> {
-        let description = self.runtime_paths_resolve()?;
-        if self.installed.is_some() { description.installer_root()?; }
-        let resolve = resolve_service_path;
-        // Each refusal names its condition and both values: one message for four conditions
-        // left the 5090's deploy log unable to say which held (card f5fd64ad).
-        if !self.enabled {
-            return Err("ContinuumCore's scheduled task is disabled; rerun the installer".to_string());
-        }
-        let selected = resolve(&description.artifact)?;
-        if selected != candidate.path {
-            return Err(format!(
-                "ContinuumCore selects artifact {} but the requested core is {}; rerun the installer",
-                selected.display(),
-                candidate.path.display()
-            ));
-        }
-        if description.socket != socket {
-            return Err(format!(
-                "ContinuumCore selects socket {} but the requested socket is {socket}; rerun the installer",
-                description.socket
-            ));
-        }
-        if self.installed.is_none() {
-            let command = resolve(&self.command)?;
-            let shell = shell.canonicalize().map_err(|e| e.to_string())?;
-            if command != shell {
-                return Err(format!(
-                    "ContinuumCore's task runs {} but this host's shell is {}; rerun the installer",
-                    command.display(),
-                    shell.display()
-                ));
-            }
-        }
-        // Paired host/launcher files live in the same installed slot, never in
-        // the mutable build cache or a different release's directory.
-        for path in [&description.cli, &description.launcher] {
-            let path = resolve(path)?;
-            if !path.is_file() || path.parent() != candidate.path.parent() {
-                return Err(
-                    "ContinuumCore host/launcher must be files beside the selected artifact"
-                        .to_string(),
-                );
-            }
-        }
-        if Path::new(&description.cli).file_name() != Some(std::ffi::OsStr::new("continuum.exe"))
-            || Path::new(&description.launcher).file_name()
-                != Some(std::ffi::OsStr::new("run-service-hidden.ps1"))
-        {
-            return Err("ContinuumCore requires the installed CLI and hidden launcher".to_string());
-        }
-        for value in [
-            &description.artifact,
-            &description.socket,
-            &description.launcher,
-            &description.cli,
-            &description.engine,
-            &description.log_directory,
-        ] {
-            if value.contains(['"', '\r', '\n']) || value.ends_with('\\') {
-                return Err(
-                    "ContinuumCore descriptor cannot be quoted as a task argument".to_string(),
-                );
-            }
-        }
-        let mut expected = format!(
-            "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File \"{}\" -ExecutablePath \"{}\" -CorePath \"{}\" -SocketPath \"{}\" -EnginePath \"{}\" -LogDirectory \"{}\"",
-            description.launcher, description.cli, description.artifact,
-            description.socket, description.engine, description.log_directory,
-        );
-        if let Some(root) = &description.eye_root {
-            if !Path::new(root).is_absolute() || root.contains(['"', '\r', '\n']) || root.ends_with('\\') {
-                return Err("ContinuumCore eyeRoot must be an absolute, quotable asset directory".into());
-            }
-            expected.push_str(&format!(" -EyeRoot \"{root}\""));
-        }
-        if let Some(envelope) = &self.installed {
-            if resolve(&self.command)? != resolve(&envelope.bootstrap)? || self.arguments != envelope.arguments("core") {
-                return Err("ContinuumCore stable bootstrap action differs".into());
-            }
-        } else if self.arguments != expected {
-            return Err("ContinuumCore action differs from its artifact descriptor; rerun the installer before reboot".to_string());
-        }
-        Ok(())
-    }
-}
+pub(super) use continuum_cli_lifecycle::registered_core_task::{CoreServiceTask, resolve_service_path};
 
 pub(super) struct PreparedCoreService {
     #[cfg(windows)]
@@ -357,7 +208,7 @@ impl PreparedCoreService {
 
     #[cfg(windows)]
     pub(super) async fn installer_root() -> Result<PathBuf, String> {
-        Self::query().await?.runtime_paths_resolve()?.installer_root()
+        Self::query().await?.runtime_paths_resolve().map_err(|error| error.to_string())?.installer_root().map_err(|error| error.to_string())
     }
     #[cfg(windows)]
     pub(super) async fn browser_release(repo: &Path, check: bool) -> Result<String, String> {
@@ -384,7 +235,7 @@ impl PreparedCoreService {
     #[cfg(windows)]
     pub(super) async fn engine_drift(repo: &Path) -> Result<String, String> {
         let task = Self::query().await?;
-        let description = task.runtime_paths_resolve()?;
+        let description = task.runtime_paths_resolve().map_err(|error| error.to_string())?;
         // The engine the core RUNS: the slot `current` names (card d5584dfc), else, before any
         // slot is recorded, the one the release registered.
         let directory = match continuum_core::inference::engine_slots::active_engine_dir()? {
@@ -491,7 +342,7 @@ impl PreparedCoreService {
             // need not match it. Reboot's explicit candidate still MUST match HEAD.
             let sha = binary_build_sha(&path).await?;
             let candidate = PrebuiltCore::from_report(path, sha, None)?;
-            task.validate(&candidate, socket, &Self::shell()?)?;
+            task.validate(&candidate.path, socket, &Self::shell()?).map_err(|error| error.to_string())?;
             Ok(Some((Self { task, engine_selection: None }, candidate)))
         }
     }
@@ -536,7 +387,7 @@ impl PreparedCoreService {
             // closure, and atomically select the validated inactive release.
             let repo = tracked_repo_dir()?;
             let source = built.path.parent().ok_or("prebuilt artifact has no directory")?;
-            let existing = Self::query().await?.runtime_paths_resolve()?;
+            let existing = Self::query().await?.runtime_paths_resolve().map_err(|error| error.to_string())?;
             let receipt = BuildReceipt::create().map_err(PublishedCoreError::OperationalBlocked)?;
             let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
             let engine_stage = if source.join("engine/engine-install.json").is_file() {
@@ -551,7 +402,7 @@ impl PreparedCoreService {
             if let Err(reason) = Self::run_installer_script(&script) {
                 return Err(receipt.classify_deployment_failure(reason));
             }
-            let staged_path=resolve_service_path(receipt.artifact().map_err(PublishedCoreError::OperationalBlocked)?)?;
+            let staged_path=resolve_service_path(receipt.artifact().map_err(PublishedCoreError::OperationalBlocked)?).map_err(|error| error.to_string())?;
             let sha=binary_build_sha(&staged_path).await?;
             if !sha_matches(&sha,&built.build_sha) { return Err("staged core revision differs from validated prebuilt".into()); }
             PrebuiltCore::from_report(staged_path,sha,None).map_err(Into::into)
@@ -585,7 +436,7 @@ impl PreparedCoreService {
         #[cfg(windows)]
         {
             let task = Self::query().await?;
-            task.validate(candidate, socket, &Self::shell()?)?;
+            task.validate(&candidate.path, socket, &Self::shell()?).map_err(|error| error.to_string())?;
             Ok(Self { task, engine_selection: None })
         }
     }
@@ -612,33 +463,11 @@ impl PreparedCoreService {
 
     #[cfg(windows)]
     pub(super) async fn query_optional() -> Result<Option<CoreServiceTask>, String> {
-        let json = Self::powershell(
-            "$ErrorActionPreference='Stop'; [Console]::OutputEncoding=[Text.UTF8Encoding]::new($false); $t=Get-ScheduledTask | Where-Object { $_.TaskName -eq 'ContinuumCore' -and $_.TaskPath -eq '\\' }; if ($null -eq $t) { 'null'; exit 0 }; if (@($t.Actions).Count -ne 1) { throw 'Expected one core action' }; [pscustomobject]@{description=$t.Description; command=$t.Actions[0].Execute; arguments=$t.Actions[0].Arguments; workingDirectory=$t.Actions[0].WorkingDirectory; enabled=[bool]$t.Settings.Enabled; state=[string]$t.State} | ConvertTo-Json -Compress",
-        ).await?;
-        let mut task: Option<CoreServiceTask> = serde_json::from_str(&json).map_err(|e| format!("cannot read ContinuumCore task: {e}"))?;
-        if let Some(task) = &mut task {
-            if let Some(envelope) = continuum_cli_lifecycle::installed_release::envelope(&task.description)? {
-                let home = PathBuf::from(home_dir()?).join(".continuum");
-                let sid = supervisor_install::caller_sid().await?;
-                let program_files = PathBuf::from(std::env::var_os("ProgramFiles").ok_or("ProgramFiles is unset")?);
-                envelope.validate(&home, &program_files, &sid)?;
-                if task.command.to_lowercase() != envelope.bootstrap.to_lowercase() || task.arguments != envelope.arguments("core") || Path::new(&task.working_directory) != Path::new(&envelope.bootstrap).parent().ok_or("bootstrap has no directory")? {
-                    return Err("ContinuumCore stable task action differs from its envelope".into());
-                }
-                let text = continuum_cli_lifecycle::installed_release::read_receipt(Path::new(&envelope.active_release))?;
-                let payload = continuum_core::paths::payload_root(&home)?;
-                let _resolved = continuum_cli_lifecycle::installed_release::resolve_receipt(&text,&home,&payload,&sid)?;
-                // Preserve PowerShell's descriptor field ordering for the existing SHA handoff.
-                // This serializes the SAME validated bytes, never a second racy file read.
-                use base64::Engine;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(text.as_bytes()); // Active receipt bytes cross the PowerShell process boundary without argument quoting ambiguity.
-                task.description = Self::powershell(&format!("$r=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{encoded}')) | ConvertFrom-Json; $r.release | ConvertTo-Json -Compress")).await?;
-                task.installed = Some(envelope);
-            }
-        }
-        Ok(task)
+        let home = continuum_core::paths::continuum_home()?;
+        continuum_cli_lifecycle::registered_core_task::query_optional(
+            &home, continuum_core::paths::payload_root,
+        ).await
     }
-
     pub(super) async fn launch(self, wait_for_death: &[i32]) -> Result<u64, String> {
         #[cfg(not(any(windows, target_os = "macos")))]
         {
@@ -722,13 +551,13 @@ impl PreparedCoreService {
                     }
                     // The caller still holds the install lease. Restoration validates
                     // the prior payload and refuses a changed active selection.
-                    let repo = self.task.runtime_paths_resolve()?.installer_root()?;
+                    let repo = self.task.runtime_paths_resolve().map_err(|error| error.to_string())?.installer_root().map_err(|error| error.to_string())?;
                     let root = repo.to_string_lossy().replace('\'', "''");
                     let expected = self.task.description.replace('\'', "''");
                     Self::run_installer_script(&format!("$ErrorActionPreference='Stop'; . '{root}/tools/scripts/lib/install-common.ps1'; . '{root}/tools/scripts/lib/windows-service.ps1'; Restore-CoreActiveRelease -ExpectedDescription '{expected}' | Out-Null"))
                         .map_err(|e|format!("{failed}; previous release recovery refused: {e}"))?;
                     let restored = Self { task:Self::query().await?, engine_selection: None };
-                    let release = restored.task.runtime_paths_resolve()?;
+                    let release = restored.task.runtime_paths_resolve().map_err(|error| error.to_string())?;
                     restored.launch_windows_once(wait_for_death).await
                         .map_err(|e|format!("{failed}; previous release also failed: {e}"))?;
                     let sha = restored_build_identity(Path::new(&release.artifact)).await
