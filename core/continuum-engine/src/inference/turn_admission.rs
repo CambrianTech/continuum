@@ -97,9 +97,9 @@ pub struct TurnAdmission {
     page_in: PageIn,
     saved_evictee: bool,
     paging_in_flight: bool,
-    /// Released after the pin so the next permit holder can lease the free slot.
-    /// `None` only for [`admit_transient`], which holds its slot's operation permit
-    /// instead of a lane (it serves no page, so it takes no lane from one).
+    /// Held through generation, but released when paging returns unresolved.
+    /// Also absent for [`admit_transient`], whose slot operation permit protects
+    /// its work without taking a resident's decode lane.
     _permit: Option<DecodePermit>,
     /// A lease is provisional until the adapter observes successful generation.
     /// Cancellation during paging or generation must not save foreign KV later.
@@ -163,6 +163,10 @@ impl TurnAdmission {
                 self.paging_in_flight = false;
                 // The mind is not the slot: her next act may proceed on another slot or cold.
                 drop(self._mind.take());
+                // Paging custody is not a generation: retain the physical slot and
+                // endpoint until its receipt, but let another slot use decode capacity.
+                drop(self._lane.take());
+                drop(self._permit.take());
                 unresolved.hold(self);
                 Err("KV page switch unresolved: the engine kept working without a receipt; its slot is held \
                     until the engine answers, the page is held not resident, the engine is not replaced on this alone".into())

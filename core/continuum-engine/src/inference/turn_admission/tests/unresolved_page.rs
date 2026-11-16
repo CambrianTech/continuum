@@ -121,7 +121,7 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
     assert!(turn.is_err(), "an unresolved switch admits no generation");
     assert_eq!(engine.landed.load(Ordering::SeqCst), 0, "the engine has not answered yet");
-    assert_eq!(sem.available_permits(), 1, "the held custody keeps its lane");
+    assert_eq!(sem.available_permits(), 2, "physical custody holds no decode permit");
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
 
     // Same-slot reuse waits for the receipt, and gets the slot once the engine has answered.
@@ -176,7 +176,7 @@ async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
     // The restore is IN the engine, held: wait on the engine's own event, never a virtual
     // timeout, which can pass before the request's bytes arrive.
     engine_event(&engine.entered, "the restore never reached the engine").await;
-    assert_eq!(sem.available_permits(), 1, "unresolved, not uncertain: the held custody keeps its lane");
+    assert_eq!(sem.available_permits(), 2, "unresolved custody retains the slot, not decode capacity");
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
     let mut reuse = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
     assert!(tokio::time::timeout(ABSENT_FOR, &mut reuse).await.is_err(), "no turn takes a held slot");
@@ -224,4 +224,47 @@ async fn a_checkpoint_left_unresolved_quarantines_the_endpoint() {
     assert!(!endpoint.is_ready(), "no turn is admitted until a verified replacement");
     engine.release.notify_one();
     engine.server.abort();
+}
+// An unresolved restore owns one physical slot, not the decode capacity of the
+// endpoint. Another resident must use a different slot before the late receipt.
+#[tokio::test]
+async fn an_unresolved_page_releases_decode_capacity_but_keeps_physical_custody() -> Result<(), Box<dyn std::error::Error>> {
+    use crate::inference::resource_admission::{with_serving_lane, LaneAdmission, LanePriority};
+    let engine = delayed_engine().await;
+    watch_for_test(&engine.root, always_busy);
+    let directory = crate::inference::slots::directory();
+    let pool = directory.ensure_pool(&engine.root, 3);
+    let held = PageKey::mind(Uuid::new_v4()).ok_or("test: non-nil mind")?;
+    let ready = PageKey::mind(Uuid::new_v4()).ok_or("test: non-nil mind")?;
+    pool.note_saved(held);
+    let sem = Arc::new(Semaphore::new(1));
+    let gate = Box::leak(Box::new(LaneAdmission::new()));
+    gate.set_served_lane_count(1);
+    let lane = gate.acquire_serving_lane(None, LanePriority::Directed, None).await;
+    let client = reqwest::Client::new();
+    let turn = with_serving_lane(lane, admit_turn(&sem, crate::inference::slots::SlotClass::Turn,
+        Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn())).await;
+    assert!(turn.is_err(), "unresolved paging admits no generation");
+    let started = std::time::Instant::now();
+    let next = async {
+        let lane = gate.acquire_serving_lane(None, LanePriority::Directed, None).await;
+        with_serving_lane(lane, admit_turn(&sem, crate::inference::slots::SlotClass::Turn,
+            Some(ready), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn())).await
+    };
+    let mut admitted = tokio::time::timeout(ABSENT_FOR, next).await??;
+    assert_eq!(admitted.slot(), Some(1), "the other resident uses the other physical slot");
+    assert_eq!(engine.landed.load(Ordering::SeqCst), 0, "progress did not need the held restore's receipt");
+    assert!(pool.try_acquire_slot(0).is_none(), "the unresolved slot remains excluded");
+    eprintln!("unresolved replay: other_slot_admission_us={} pending_receipts=1 protected_slots=1", started.elapsed().as_micros());
+    admitted.generation_completed();
+    drop(admitted);
+    let endpoint = directory.endpoint(&engine.root);
+    let mut replacing = Box::pin(endpoint.transition());
+    assert!(futures::poll!(&mut replacing).is_pending(), "replacement still waits on physical custody");
+    engine.release.notify_one();
+    drop(tokio::time::timeout(ARRIVES_WITHIN, replacing).await?);
+    assert_eq!(engine.landed.load(Ordering::SeqCst), 1);
+    assert_eq!(sem.available_permits(), 1);
+    engine.server.abort();
+    Ok(())
 }
