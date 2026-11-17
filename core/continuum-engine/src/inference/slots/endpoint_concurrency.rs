@@ -44,7 +44,7 @@ struct Circulation {
 /// (`delib.window.waiting` BehindActs { acting: 3 }); one stream on the same engine is ~80 tok/s. So a mind
 /// takes the engine whole for her turn and the next waits for it, the way a GPU renders one view at a time.
 pub(super) fn active_decodes(slots: u32) -> usize {
-    (slots as usize).min(1)
+    usize::from(slots > 0) // one generation when the endpoint serves any slot, none when it serves none
 }
 
 pub struct EndpointConcurrency {
