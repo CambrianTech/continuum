@@ -710,10 +710,12 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     broken.request_hands_adoption("operator");
     let repaired = repairing.prompt_view_within(&ws, 200_000);
     assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
-    let kept = serde_json::to_value(broken.snapshot()).expect("a checkpoint encodes");
-    assert_eq!(kept["superseded_hands"][0]["prior"]["Corrupt"], serde_json::json!({"generation": "not a number"}), "the record it replaced is kept, never erased: {kept:?}");
-    assert_eq!(kept["superseded_hands"][0]["by"], "operator");
-    assert!(kept["superseded_hands"][0]["generation"].as_u64().is_some_and(|generation| generation >= 1), "with the generation that replaced it");
+    let kept = broken.snapshot().superseded_hands;
+    let [replaced] = kept.as_slice() else {
+        panic!("one adoption replaced one head: {kept:?}"); // JUSTIFIED: test fixture
+    };
+    assert_eq!(replaced.prior, crate::cognition::hands_custody::SupersededPrior::Corrupt(serde_json::json!({"generation": "not a number"})), "the record it replaced is kept, never erased");
+    assert_eq!((replaced.by.as_str(), replaced.generation >= 1), ("operator", true), "with who asked and the generation that replaced it");
 
     let mut legacy = saved;
     legacy.as_object_mut().expect("a checkpoint is an object").remove("context_hands"); // JUSTIFIED: test fixture

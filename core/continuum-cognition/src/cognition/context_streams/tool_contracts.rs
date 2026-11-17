@@ -36,9 +36,10 @@ impl Source<ContextMessage> for ToolContracts<'_> {
             .iter()
             .map(|change| {
                 // A contract change comes from her surface, outside her: an external origin.
+                // Collapsed, a notice is still itself: its pointer is the notice.
                 let message = ContextMessage::user(change.text());
-                Item::whole(tool_contract_element(self.persona, change), Cause::Root(Origin::External), change.key(), message.clone())
-                    .with_pointer(message)
+                let pointer = message.clone();
+                Item::whole(tool_contract_element(self.persona, change), Cause::Root(Origin::External), change.key(), message).with_pointer(pointer)
             })
             .collect()
     }

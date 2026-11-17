@@ -9,7 +9,29 @@
 
 use uuid::Uuid;
 
-use crate::sdk_codegen::CommandError;
+use crate::sdk_codegen::{Category, CommandError, NextMoves, NoMove, Refusal, RefusalCause};
+
+/// Why a persona's head cannot be adopted on this node.
+#[derive(Debug, thiserror::Error)]
+pub enum AdoptRefusal {
+    #[error("no persona here answers to {reference}: {why}")]
+    Unresolved { reference: String, why: String },
+    #[error("persona {persona} has no mind assembled on this node")]
+    NotHere { persona: Uuid },
+    #[error("persona {persona} has no hands whose head could be adopted")]
+    NoHands { persona: Uuid },
+}
+
+impl RefusalCause for AdoptRefusal {
+    fn category(&self) -> Category {
+        Category::NotFound
+    }
+}
+
+/// A refusal she can read: nothing of hers moves an adoption for a persona that is not here.
+fn refused(cause: AdoptRefusal) -> CommandError {
+    Refusal::new(cause, NextMoves::None(NoMove::NothingMoreExists)).into()
+}
 
 /// Whose head to adopt from the live tool surface.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -41,14 +63,10 @@ crate::action_command! {
         let registry = crate::cognition::persona_workspace::global();
         let persona_id = registry
             .resolve_persona(&params.persona)
-            .map_err(|why| CommandError::Invalid(format!("{why} Or call persona/instances/list.")))?
+            .map_err(|why| refused(AdoptRefusal::Unresolved { reference: params.persona.as_str().to_string(), why }))?
             .as_uuid();
-        let cycle = registry
-            .get(&persona_id)
-            .ok_or_else(|| CommandError::Invalid(format!("persona {persona_id} has no mind assembled on this node")))?;
-        let body = cycle
-            .acting()
-            .ok_or_else(|| CommandError::Invalid(format!("persona {persona_id} has no hands to adopt")))?;
+        let cycle = registry.get(&persona_id).ok_or_else(|| refused(AdoptRefusal::NotHere { persona: persona_id }))?;
+        let body = cycle.acting().ok_or_else(|| refused(AdoptRefusal::NoHands { persona: persona_id }))?;
         let by = ctx.caller.as_ref().map_or_else(|| "the substrate".to_string(), |caller| format!("{caller:?}")); // map_or_else: no caller identity is the substrate's own local code
         body.working_memory.request_hands_adoption(&by);
         Ok(PersonaHandsAdoptResult { persona_id })
