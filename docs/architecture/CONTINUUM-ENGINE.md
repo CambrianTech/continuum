@@ -2123,29 +2123,42 @@ allocation, and no second authoritative ledger: `MemoryOwner` in the core holds 
 cold mind goes to, what to prefetch) and reads the engine's reported physical state; `Residency` is a read-only
 projection of that one authority, never a mutable copy.
 
-**4.12.1 The engine's owners: every field of `server_context_impl` has exactly one (2026-11-17, for review).** The
-include-file split of llama.cpp#143 is mechanical staging (every piece still shares every field); this table is the
-architecture it stages for. Each owner is a class holding only its fields, behind typed verbs; `server_context_impl`
-holds the owners and wires them, and owns no state of its own. Two custodies are singular (Codex): the memory
-allocator and a turn's completion/cancellation.
+**4.12.1 The engine's classes: interfaces, adapters, one class per file (2026-11-17, for review).** Joel: "break up
+into files by class and adapters ... adapters and interfaces. Like a good engineer." The include-file split of
+llama.cpp#143 is mechanical staging only. The engine becomes classes under `tools/server/engine/`: every owner is an
+**interface** (an abstract class: what it promises), its implementation is an **adapter** behind it (how, for one
+backend), and whatever varies is another adapter, never an `if` in logic. One class per `.h`/`.cpp` pair. The
+composing `engine` (today `server_context_impl`) holds interfaces and wires them; it owns no state. Two custodies stay
+singular (Codex): memory allocation (`memory_pool`) and a turn's completion and cancellation (`slot_registry`).
 
-| Owner | Owns (fields today) | Typed verbs | The one custody it holds |
+| Interface (file) | Promises (typed verbs) | Adapters (files) | Owns today's fields |
 |---|---|---|---|
-| `engine_runtime` | `llama_init`, `model_tgt`, `ctx_tgt`, `model_dft`, `ctx_dft`, `spec_init`, `spec`, `vocab`, `mctx`, `chat_params`, `params_base`, `n_ctx`, `n_swa`, `add_bos_token`, `ctx_*_seq_rm_type`, `model_name`/`model_aliases`/`model_tags`, `sleeping` | `load`, `sleep`, `wake`, reads | the loaded weights and contexts (immutable while serving) |
-| `kv_pool` | the pool's sequence ids and parked ids (`park_free`), `page_io`, `pending_restores`, `page_io_bytes`, `prompt_cache`, checkpoint `host_budget` | `place(frame)` (wraps `llama_decode`, returns placed/no_room per piece), `move(seq, tier)`, `copy`, `remove`, `restore(page)`, host-byte `charge`/`release` | **the allocator**: every KV and host-cache mutation, decode placement included, goes through it |
-| `resident_minds` | `minds`, `mind_clock` | `prefetch`, `switch_in`, `preempt`, `coldest_legal` | which mind lives where (policy; moves are `kv_pool`'s) |
-| `checkpoint_store` (#140) | each slot's checkpoint list | `keep`, `make_room`, `release`, `cut_back_to` | none (its bytes are charged through `kv_pool`) |
-| `slot_registry` | `slots`, `n_busy_slots`, `t_last_busy_us`, `slot_prompt_similarity` | `admit(task)`, `launch`, `release`, `cancel`, `on_token` (today `process_token`) | **a turn's completion and cancellation**: only it ends a slot's task |
-| `frame_batcher` | `batch`, `n_batch_gen`, `n_empty_consecutive`, `t_decode_start`, `t_prompt_start`, `n_prompt_queued`, `t_decode_owed_us`, frame records (#142) | `compose`, `run` (asks `kv_pool.place`; on no_room asks `resident_minds` to make room, else defers through `slot_registry`) | the device timeline (4.13) |
-| `learning` | `trainer`, `learning`, `learning_residencies`, `learning_workspace_residency`, `learn_ledger`, `residency_mirror`, `learn_chunk_us`, `learn_lr`, `ledger_published*` | `begin`, `step`, `release_pin`, duty | a learning step's fence (borrows a slot from `slot_registry` and cells from `kv_pool`) |
-| `responder` | `queue_results` | `send_partial`, `send_final`, `send_error` | none (pure output; `slot_registry` decides when) |
-| `task_dispatch` | `queue_tasks` | `dispatch(task)` (today `process_single_task`) | none (routes each task to its owner) |
-| `observer` | `metrics`, `n_tokens_generated`, `lora_report*`, `trace`, `slots_debug`, `slots_n_diff`, `t_last_load_progress_ms` | reads, snapshot | none (decides nothing) |
+| `memory_pool` (`memory_pool.h`) | `place(piece) -> placed / no_room / invalid`, `move(seq, tier)`, `copy`, `remove`, `restore(page)`, host `charge`/`release` | `memory_pool_llama` (llama_context KV and recurrent state, target and draft contexts) | parked ids, `pending_restores`, `page_io_bytes`, checkpoint `host_budget`, `prompt_cache` |
+| `tier_store` (`tier_store.h`) | `write(seq_bytes) -> handle`, `read(handle)`, `release`, landed/failed | `tier_store_ram`, `tier_store_flash` (page file + page-IO worker, mmap read) | `page_io` |
+| `mind_table` (`mind_table.h`) | `where(mind)`, `coldest_legal()`, `prefetch(mind)`, `preempt(slot)` | `mind_table_resident` (#139 policy; moves through `memory_pool`) | `minds`, `mind_clock` |
+| `checkpoint_store<C>` (`checkpoint_store.h`, #140) | `keep`, `make_room`, `cut_back_to`, `release`, `take` | (template; bytes charged through `memory_pool`) | each slot's checkpoints |
+| `slot` (`slot.h`) | one sequence's turn: prompt, sampler, RNG, speculative state, state machine incl. `preempted`/`blocked` | — | today's `server_slot` |
+| `slot_registry` (`slot_registry.h`) | `admit(task)`, `launch`, `on_token`, `complete`, `cancel`, `preempt`, `resume` | `slot_registry_local` | `slots`, `n_busy_slots`, `t_last_busy_us`, `slot_prompt_similarity` |
+| `frame` (`frame.h`, today `server-batch.h`) | `add`, `remove_slot(id, from)`, `render`, `view` | — | `batch` |
+| `frame_batcher` (`frame_batcher.h`) | `compose()`, `run() -> frame_outcome` (4.11.10 admission: place, make room, defer) | `frame_batcher_llama` | `n_batch_gen`, `n_empty_consecutive`, decode timing, `t_decode_owed_us`, frame records (#142) |
+| `speculator` (`speculator.h`) | `draft(slot)`, `verify(slot, outputs) -> committed`, `rebuild(slot) -> ok / blocked` (typed, never throws to abort all) | `speculator_mtp`, `speculator_draft_model`, `speculator_ngram` (each wraps a `common_speculative` kind) | `spec`, `spec_init`, `ctx_dft_seq_rm_type` |
+| `learner` (`learner.h`) | `begin`, `step`, `release_pin`, duty share (4.11.6) | `learner_lora_opt` (ggml-opt, LoRA layers in place) | `learning`, `learning_residencies`, `learn_ledger`, `residency_mirror`, `learn_chunk_us`, `learn_lr` (`trainer`/`/train` deleted when callers move) |
+| `responder` (`responder.h`) | `partial`, `final`, `error`, `embedding`, `rerank` | `responder_http` (OpenAI-compatible JSON, external drivers), `responder_frames` (contract frames, 4.11) | `queue_results` |
+| `task_source` (`task_source.h`) | `next() -> task`, `post` | `task_source_http` (routes -> `server_queue`), `task_source_frames` (contract) | `queue_tasks` |
+| `route_group` (`route_group.h`) | `install(router)` | one class per family: `routes_status`, `routes_generation`, `routes_tokens`, `routes_lora`, `routes_learn`, `routes_control` (HTTP adapter side only) | — |
+| `engine_runtime` (`engine_runtime.h`) | `load`, `sleep`, `wake`, model and context reads | `engine_runtime_llama` | model/context/vocab/chat/params fields |
+| `observer` (`observer.h`) | snapshot of counters and frame records | — | `metrics`, `n_tokens_generated`, `lora_report*`, debug env |
 
-Order of extraction (each a separate reviewed change, pure moves plus the verb boundary): `observer` and `responder`
-(no custody), then `kv_pool` (the allocator, so every later owner calls it), then `resident_minds` and
-`checkpoint_store`, then `slot_registry`, then `frame_batcher` (where 4.11.10's admission lands), then `learning`,
-then `task_dispatch`, deleting the include fragments as each owner absorbs them.
+The two transports are the outlier pair that prove the seams (the CLAUDE.md method): `responder_http` +
+`task_source_http` serve external drivers (Hermes, any OpenAI client, plan line 16); `responder_frames` +
+`task_source_frames` serve our own core over the contract. If both fit the same `responder`/`task_source` interfaces
+without forcing, the seams are right.
+
+Order (each one reviewed change: interface + adapter + tests + the include fragment it absorbs deleted): `observer`,
+`responder` (+ `responder_http`), `task_source`, `engine_runtime`, `memory_pool` and `tier_store` (the allocator
+first, so every later class calls it), `mind_table`, `slot` + `slot_registry`, `frame` + `frame_batcher` (4.11.10
+lands here), `speculator`, `learner`, `route_group` classes; then `responder_frames`/`task_source_frames` with
+contract slice 2.
 
 **Rules every module obeys** (a module that cannot meet one is redesigned, not excepted):
 1. **One owner per state.** Only the owner mutates it; others read its published snapshot (a watch channel in Rust,
