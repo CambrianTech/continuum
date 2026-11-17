@@ -857,19 +857,21 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
     let binding = faculty.binding.load_full();
+    // Owned copies: build_request_within takes its parts by value, and `first` is still read whole by
+    // view_served below, so they cannot be moved out of it.
     let (messages, tools, system) = (first.messages.clone(), first.tools.specs.clone(), first.system.clone());
-    let captured = faculty.build_request_within(&binding, first.completion_reserve, messages, tools, system, None, Some(ws.room_id), TurnKind::Pass);
+    // Shared, not copied: the exact capture is asked twice (over the wrong custody, then adopted).
+    let captured = Arc::new(faculty.build_request_within(&binding, first.completion_reserve, messages, tools, system, None, Some(ws.room_id), TurnKind::Pass));
     faculty.view_served(&first);
     let custody = wm.snapshot().context_hands;
-    let ask_over = |request: crate::ai::types::TextGenerationRequest, expected_custody_sha256: String| {
+    let ask_over = |request: Arc<crate::ai::types::TextGenerationRequest>, expected_custody_sha256: String| {
         let binding = CaptureBinding { cursor: "the capture".to_string(), request_sha256: "its digest".to_string(), expected_custody_sha256 };
-        wm.request_capture_adoption("operator", CapturedHead { binding, request: Arc::new(request) });
+        wm.request_capture_adoption("operator", CapturedHead { binding, request });
     };
-    let ask = |request: crate::ai::types::TextGenerationRequest| ask_over(request, wm.custody_receipt().expect("her custody digests").sha256); // JUSTIFIED: test fixture
+    let ask = |request: Arc<crate::ai::types::TextGenerationRequest>| ask_over(request, wm.custody_receipt().expect("her custody digests").sha256); // JUSTIFIED: test fixture
 
     // The act matches the capture exactly, but the adoption names a custody she does not hold.
-    let exact = captured.clone();
-    ask_over(exact, "a custody she does not hold".to_string());
+    ask_over(Arc::clone(&captured), "a custody she does not hold".to_string());
     let moved = faculty.prompt_view_within(&ws, 200_000);
     assert!(moved.protocol_error.as_deref().is_some_and(|error| error.contains("adoption from a captured request was refused") && error.contains("her custody is")), "{:?}", moved.protocol_error);
     assert_eq!(wm.snapshot().context_hands, custody, "her custody is as it was");
@@ -879,17 +881,19 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     assert!(after_restart.protocol_error.as_deref().is_some_and(|error| error.contains("her custody is")), "a restart keeps the refusal: {:?}", after_restart.protocol_error);
     assert_eq!(restarted_memory.snapshot().context_hands, custody, "and her held head");
 
-    let mut longer = captured.clone();
+    // Each mismatch is its own owned copy of the capture, changed in one place: mutation isolation.
+    let mut longer = (*captured).clone();
+    // An owned copy of her first message, appended to the same list so the frontier differs.
     let repeated = longer.messages[0].clone();
     longer.messages.push(repeated);
-    let mut system = captured.clone();
+    let mut system = (*captured).clone();
     system.system_prompt = system.system_prompt.map(|text| format!("{text} "));
-    let mut tools = captured.clone();
+    let mut tools = (*captured).clone();
     tools.tools = tools.tools.map(|specs| specs.iter().take(specs.len().saturating_sub(1)).cloned().collect::<Vec<_>>().into());
-    let mut model = captured.clone();
+    let mut model = (*captured).clone();
     model.model = Some("another-model".to_string());
     for (differs, says) in [(longer, "accepted frontier"), (system, "system prompt differs"), (tools, "tool schemas"), (model, "is served as")] {
-        ask(differs);
+        ask(Arc::new(differs));
         let refused = faculty.prompt_view_within(&ws, 200_000);
         let error = refused.protocol_error.clone().unwrap_or_default(); // unwrap_or_default: an act with no refusal reads as empty, failing the assert below
         assert!(error.contains("adoption from a captured request was refused") && error.contains(says), "{says}: {error:?}");
