@@ -260,8 +260,8 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
             "integer" | "number" => numeric_example(spec, ty == "integer"),
             // A list the contract requires to hold something (`minItems` >= 1) shows one item of its own type: `[]`
             // would be refused at the parse (work/note's `known`, card 60a8875d).
-            "array" => match spec.get("minItems").and_then(Value::as_u64) {
-                Some(min) if min >= 1 => json!([spec.get("items").map_or(Value::Null, |items| param_shape(items, root).1)]),
+            "array" => match <ArraySpec as serde::Deserialize>::deserialize(spec) {
+                Ok(ArraySpec { min_items: Some(min), items: Some(items) }) if min >= 1 => json!([param_shape(&items, root).1]),
                 _ => json!([]),
             },
             // A nested object carries its own required fields: `{"envelope":{}}` refused as
@@ -369,6 +369,15 @@ fn required_object_example(spec: &Value, root: &Value) -> serde_json::Map<String
         }
     }
     result
+}
+
+/// An array schema as far as its example reads it: how many items it requires, and their schema.
+#[derive(serde::Deserialize)]
+struct ArraySpec {
+    #[serde(rename = "minItems", default)]
+    min_items: Option<u64>,
+    #[serde(default)]
+    items: Option<Value>,
 }
 
 fn numeric_example(spec: &Value, integer: bool) -> Value {
