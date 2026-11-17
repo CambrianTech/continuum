@@ -817,4 +817,122 @@ mod tests {
         assert!(matches!(act.on_deploy_wanted(&req_c, false, NOW + 7_000), ActuateOutcome::Spawned { attempt: 1, .. }));
         assert_eq!(spawner.plans.lock().len(), 3, "dead-owner claim does not block");
     }
+    // what this catches: TREE OWNERSHIP — a deploy must own the tree it builds so no
+    // operator, tracker or second consumer can move HEAD under it. The actuator creates a
+    // detached worktree at the tip SHA and uses that as the cwd for spawning.
+    #[test]
+    fn property_2_deploy_own_its_build_tree_via_detached_worktree() {
+        let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
+        use std::process::Command;
+
+        // Set up a real git working tree under the temp dir so create_deploy_worktree
+        // does not fall back (no .git → returns root).
+        let work = dir.path().join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        Command::new("git")
+            .current_dir(&work)
+            .args(["init"])
+            .output()
+            .expect("git init must succeed in this env");
+
+        // Make an initial commit so we have a valid SHA.
+        std::fs::write(work.join("README.md"), "initial").unwrap();
+        Command::new("git")
+            .current_dir(&work)
+            .args(["add", "."])
+            .output()
+            .expect("git add must succeed in this env");
+        Command::new("git")
+            .current_dir(&work)
+            .args([
+                "-c", "user.email=test@continuum",
+                "-c", "user.name=Continuum Test",
+                "commit",
+                "--allow-empty", "-m", "initial",
+            ])
+            .output()
+            .expect("git commit must succeed in this env");
+
+        // Read the initial commit SHA.
+        let output = Command::new("git")
+            .current_dir(&work)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("git rev-parse must succeed");
+        let tip_sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
+
+        // Build actuator using the work dir as root (where .git lives).
+        let user_home = dir.path().join("home");
+        let spawner = std::sync::Arc::new(RecordingSpawner::new(Some(99)));
+        struct Shared(std::sync::Arc<RecordingSpawner>);
+        impl DeploySpawner for Shared {
+            fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String>
+            where
+                Self: Sized,
+            {
+                self.0.spawn(plan)
+            }
+        }
+        let act = DeployActuator::with_spawner(
+            user_home.clone(),
+            work.clone(), // root with .git
+            None,
+            Box::new(Shared(spawner.clone())),
+        );
+
+        let req = DeployRequest::new(&tip_sha, NOW);
+        assert!(matches!(
+            act.on_deploy_wanted(&req, false, NOW),
+            ActuateOutcome::Spawned { .. }
+        ));
+
+        // The RecordingSpawner captured the plan — verify cwd is a worktree path,
+        // NOT the original checkout root. That proves Property 2: the deploy owns
+        // its own isolated tree.
+        let plans = spawner.plans.lock();
+        assert_eq!(plans.len(), 1, "exactly one spawn planned");
+        let cwd = &plans[0].cwd;
+        assert!(
+            cwd.starts_with(work.join("worktrees")), // work is where .git lives; worktrees are under it
+            "spawn cwd {:?} should be inside a detached worktree, not the original checkout {:?}",
+            cwd,
+            work,
+        );
+
+        // A second request for a DIFFERENT tip should also create its own worktree.
+        // Make another commit with a different SHA so it's a distinct tip.
+        std::fs::write(work.join("second.md"), "second").unwrap();
+        Command::new("git")
+            .current_dir(&work)
+            .args(["add", "."])
+            .output()
+            .expect("git add must succeed in this env");
+        let output = Command::new("git")
+            .current_dir(&work)
+            .args([
+                "-c", "user.email=test@continuum",
+                "-c", "user.name=Continuum Test",
+                "commit",
+                "--allow-empty", "-m", "second",
+            ])
+            .output()
+            .expect("git commit must succeed in this env");
+        let tip_sha2 = String::from_utf8(output.stdout).unwrap().trim().to_string(); // unwrap: valid UTF-8
+
+        let req2 = DeployRequest::new(&tip_sha2, NOW + 10_000);
+        assert!(matches!(
+            act.on_deploy_wanted(&req2, false, NOW + 10_000),
+            ActuateOutcome::Spawned { attempt: 2, .. }
+        ));
+
+        let plans = spawner.plans.lock();
+        assert_eq!(plans.len(), 2, "second tip gets its own spawn and worktree");
+        // The two worktrees must be DIFFERENT paths — each deploy owns its own tree.
+        let cwd1 = &plans[0].cwd;
+        let cwd2 = &plans[1].cwd;
+        assert_ne!(
+            cwd1, cwd2,
+            "two tips for the same request should get two different worktree paths"
+        );
+    }
 }
