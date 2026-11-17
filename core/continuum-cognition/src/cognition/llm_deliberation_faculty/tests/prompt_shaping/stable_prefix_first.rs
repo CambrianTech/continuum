@@ -282,3 +282,60 @@ fn a_served_prompt_is_the_whole_head_of_her_next_act() {
         previous = Some(now);
     }
 }
+
+// what this catches: her own call recomputed every act (the M5, 2026-11-17, Aris, capture 8044b75b,
+// build 4f82b0fb4). Her engine holds [prompt N][her call N]; request N+1 put the room messages that
+// arrived during her act BETWEEN them, so her KV stopped matching at her own call and the hybrid's
+// recurrent state rewound to a checkpoint (`reuse_split` gap 2,048 on every act). Her call follows
+// the prompt she was served, then what arrived, then her result.
+#[test]
+fn her_call_follows_the_prompt_she_was_served_before_what_arrived_meanwhile() {
+    use crate::cognition::working_memory::WorkingMemory;
+
+    let wm = Arc::new(WorkingMemory::new(8));
+    let adapter: Arc<dyn AIProviderAdapter> = Arc::new(HeuristicInferenceAdapter::new());
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aris", "You are Aris.", adapter)
+        .with_context_window(65_536)
+        .with_working_memory(Arc::clone(&wm));
+    let room = crate::identity::ActivityRoom::from_uuid(Uuid::new_v4()).expect("test: a room id");
+    let ws = |minute: u64, arrived: Vec<Arc<crate::cognition::conversation::IncomingMessage>>| {
+        let turns = vec![BurstTurn::attributed(false, "Operator", "start with f1.rs", Some(1_700_000_120_000))];
+        let mut ws = Workspace::new(Burst::from_turns(room, turns));
+        ws.now_ms = Some(1_700_000_180_000 + 60_000 * minute);
+        ws.room_updates = Arc::new(arrived);
+        ws
+    };
+    let arrival = |seq: u64| {
+        Arc::new(crate::cognition::conversation::IncomingMessage {
+            work: None,
+            media: Vec::new(),
+            event_id: Uuid::new_v4(),
+            lamport: seq,
+            peer_id: Uuid::new_v4(),
+            room_id: room.as_uuid(),
+            text: format!("a colleague's note during act {seq}"),
+        })
+    };
+    let mut previous: Option<DeliberationPromptView> = None;
+    for seq in 1..=3u64 {
+        let workspace = ws(seq, if seq > 1 { vec![arrival(seq)] } else { Vec::new() });
+        acted(&wm, workspace.activity_room_id, seq);
+        let now = faculty.prompt_view(&workspace);
+        assert!(now.capacity_error.is_none() && now.budget_fault.is_none(), "{:?} {:?}", now.capacity_error, now.budget_fault);
+        if let Some(before) = &previous {
+            let (sent, next) = (wire_of(&before.messages), wire_of(&now.messages));
+            let shared = sent.iter().zip(&next).take_while(|(a, b)| a == b).count();
+            assert_eq!(shared, sent.len(), "act {seq}: the served prompt is not the next one's head");
+            let generated = &now.messages[sent.len()];
+            assert_eq!(generated.role, "assistant", "act {seq}: what follows her served prompt is her call, as her engine holds it:\n{:#?}", bodies(&now)[sent.len()..].to_vec());
+            assert!(
+                matches!(&generated.content, crate::ai::types::MessageContent::Parts(parts) if parts.iter().any(|part| matches!(part, crate::ai::types::ContentPart::ToolUse { id, .. } if *id == format!("call-{seq}")))),
+                "act {seq}: it is her call {seq}: {generated:?}"
+            );
+            let note = at(&now, "[Room message received during this turn");
+            assert!(note > sent.len(), "act {seq}: what arrived follows her call");
+        }
+        faculty.view_served(&now);
+        previous = Some(now);
+    }
+}

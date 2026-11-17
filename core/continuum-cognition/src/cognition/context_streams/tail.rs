@@ -216,6 +216,18 @@ impl Tail {
         self.attachments = attachments;
     }
 
+    /// Her newest call alone: what her engine generated right after the prompt she was served, so
+    /// it is already in her engine's KV and joins her view before anything that arrived meanwhile.
+    pub(crate) fn call(&self) -> Self {
+        let entries = self
+            .entries
+            .iter()
+            .filter(|entry| entry.part == Part::Call)
+            .map(|entry| Entry { part: entry.part, item: entry.item.clone() })
+            .collect();
+        Self { entries, ..Self::default() }
+    }
+
     /// Which part of the prompt the item showing `element` is.
     pub(crate) fn part(&self, element: continuum_context::cause::ElementId) -> Option<Part> {
         self.entries.iter().find(|entry| entry.item.id() == element).map(|entry| entry.part)

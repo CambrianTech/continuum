@@ -269,6 +269,18 @@ impl LlmDeliberationFaculty {
         }
         let started = held.is_none();
         if let Some(view) = held.as_mut() {
+            // Her newest call is already in her engine's KV, right after the prompt she was
+            // served: it joins her view first, so what arrived during her act follows it and her
+            // next prompt extends what her engine holds instead of rewinding to recompute her own
+            // tokens (the M5, 2026-11-17: a 2,048-token checkpoint gap on every act).
+            let actions = memory.map(|memory| crate::cognition::context_streams::actions::Actions { memory, persona: self.persona_id });
+            let none = crate::cognition::context_streams::tail::Tail::default();
+            let history: &dyn Source<ContextMessage> = match &actions {
+                Some(actions) => actions,
+                None => &none,
+            };
+            let call = view.judge_tail(&streams.tail.call(), history, |_| continuum_context::level::Level::Full);
+            view.append_tail(call);
             let advance = view.advance(&sources);
             continuum_base::probe!(
                 class = "delib.view.advance",
