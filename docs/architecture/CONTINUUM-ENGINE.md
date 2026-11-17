@@ -2303,6 +2303,22 @@ blocks (their actual lengths, not `kv_size`). The first measurement sizes this o
 bytes per token of KV per attention layer, the recurrent row size, and so the RAM cost per persona and the copy time
 per switch at the measured bandwidth.
 
+**Codex's review of 32b28f5d9 (layout not yet accepted), folded in:**
+- *Cell metadata is not memcpy-safe.* `llama_kv_cells` owns a `std::set`, vectors and position maps, and the
+  recurrent `mem_cell` embeds a `std::set` of sequence ids. So her metadata is never copied as bytes and never rebuilt
+  on a switch: each persona OWNS her host metadata objects, and binding her to a stream exchanges them with the
+  stream's by reference (`std::swap(v_cells[s], persona.cells)`: an O(1) exchange of container internals, no element
+  copied, no container rebuilt), the same for her recurrent cells.
+- *Descriptors are prebuilt* when the persona is created (per layer: tensor, byte offset, row stride, her used rows),
+  never computed by a per-switch layer walk.
+- *Storage is stride-preserving at her actual length*: her RAM copy keeps the stream's row stride for the rows she
+  uses, so a copy in or out is contiguous up to her length, never `kv_size`.
+- *Custody*: her recurrent rollback state, her draft context's streams and her sampler state move with her under the
+  same completion owner.
+- *Early-layer decode needs a fence per consumer* (each layer's copy completes before that layer's attention reads it),
+  not one handoff fence for the whole persona.
+- *Prototype only, isolated*: no serving experiment until the layout is accepted.
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
