@@ -202,7 +202,9 @@ impl ResourcePool for FilesystemTierPool {
                     );
                 }
                 Removal::Removed => {
-                    self.index.lock().forget(path);
+                    // Reconciled, never assumed gone: a file recreated at this path (and already recorded by
+                    // the watch) keeps its accounting.
+                    self.index.lock().observe(path);
                     freed = freed.saturating_add(*size);
                     continuum_base::probe!(
                         class = "pool.evicted",
