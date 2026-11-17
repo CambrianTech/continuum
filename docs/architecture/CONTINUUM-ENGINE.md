@@ -2384,6 +2384,39 @@ every offset is checked for overflow, alignment and overlap before use; a direct
 matching layout id, with checksums and publish completion owned once (never a rehash per switch); the flash I/O
 pipeline stays off decode; and the prior generation is kept until the new one is durably published.
 
+**Her token history is the engine's: a request is only what is new (2026-11-17).** Joel: "Never process something
+twice. If you've built the logits before it's failure if it's done ever again." Moving her blocks without a
+recompute is half of it; the other half is that what the next request asks for must BE what her blocks hold, plus
+new tokens. Measured on the M5 the same day (Aris, capture 8044b75b, build 4f82b0fb4), it is not, in two ways:
+- *Order.* Her act N's call joins her view only when act N+1 is built, after what arrived meanwhile (12 room
+  messages, board items, thoughts), so request N+1 is `[prompt N][arrivals][her call N][result N]` while her engine
+  holds `[prompt N][her generated N]`.
+- *Reasoning.* Each generation carries reasoning (95 to 726 chars in her last three acts) that her history never sends
+  back, so even in the right order the rendered call is not the token sequence she generated.
+Either way her KV stops matching at her own call: the hybrid's recurrent state cannot truncate, so it rewinds to a
+checkpoint (`reuse_split` gap 2,048 on every act) and she recomputes her own tokens. Per act that is about 2.6k tokens
+of 7k to 10k prefilled; the rest is genuinely new data.
+
+The structure, one whole, with no special case per template or per path:
+1. **The engine owns her token sequence**, as it owns her blocks: her prompt tokens AND her generated tokens verbatim
+   (reasoning, tool-call bytes, the end-of-turn glue her template puts after an assistant turn). Held, frozen and
+   bound with her blocks as one unit (the token array is part of her persona, beside her cells).
+2. **A request carries only what is new since her last serve**: the messages her view appended after the last served
+   one, in engine order (her call first: it is already in her blocks). The engine renders only that delta with her
+   template (render(held + new) minus render(held), checked to be a prefix, else a typed miss) and appends the tokens.
+   Nothing she already holds is re-sent, re-rendered, re-tokenized or recomputed. An external driver's full-history
+   request takes the same path: its history is matched against her held messages, never against re-rendered tokens.
+3. **One cold path, named as one**: an epoch start (a new view, a revoked head) sends her whole view once; it is a
+   classified cold start (`#5188`), never a fallback for a missed continuation. A continuation that does not match
+   what she holds is a loud miss with its reason, never a silent re-prefill.
+4. **The validator** (seconds, no live residents): replay a persona's captured acts through the continuation and
+   assert `prefilled == new tokens` and `recomputed == 0` on every act, across freezes and binds. It gates the merge.
+
+Slices: (a) cognition: her call joins her view at generation, in engine order (the order half, measurable on today's
+engine as the gap disappearing for non-reasoning acts); (b) fork: the continuation on the persona seam (`llama_persona`
+holds her tokens; the server's request names her and carries the delta); (c) core: the request builder sends the delta
+her view already knows (`View::sent` marks the boundary); (d) the validator above, landed with (b).
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
