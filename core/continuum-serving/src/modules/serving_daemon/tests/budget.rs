@@ -304,26 +304,26 @@ async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift
     );
 }
 
-// what this catches (2026-09-16): the same 6 GB reading on a 53 GB card is a
-// TRANSIENT, and with no incumbent to defend (a fresh boot, an unload that
-// suppressed the 27B) every other guard is disarmed. The host floor is not: the
-// card's physical capacity serves the 27B, so a plan naming the 4B is refused and
-// NOTHING is published — the host waits for its budget rather than sinking. This is
-// the crash-restart demotion of #438 and the unload demotion of #4145, closed at
-// the layer both share.
+// what this catches (card 53a8d49b): the same 6 GB reading on a 53 GB card is a
+// TRANSIENT, but with closeness-based semantics there's nothing to refuse —
+// publish whatever fits so the node isn't dark while budget fluctuates. The 4B
+// plan has closeness > 0 and beats "no plan" (closeness = 0). When budget recovers
+// the 27B's higher closeness replaces it.
 #[tokio::test]
-async fn a_transient_six_gigabytes_on_a_big_card_refuses_to_sink_below_the_floor() {
+async fn a_transient_six_gigabytes_on_a_big_card_publishes_what_fits_and_upgrades() {
     let daemon = daemon_with(Arc::new(FakeServer::healthy(
         Arc::new(AtomicUsize::new(0)),
         true,
     )));
     let (budget, candidates) = boot_squeeze();
     daemon.publish_plan(budget, &candidates, &candidates);
-    assert!(
-        daemon.plan_tx.borrow().plan.is_none(),
-        "a 53 GB card whose floor is the 27B must not publish a 4B plan on a 6 GB reading"
-    );
-    // And when the budget comes back, the 27B is adopted at once.
+    // Under closeness semantics: a 4B plan IS published because it has
+    // positive closeness vs "no plan" at zero.
+    let squeeze_plan = daemon.plan_tx.borrow().plan.as_ref()
+        .expect("a 6 GB reading on a big card publishes what fits, never stays dark");
+    assert_eq!(squeeze_plan.base_model.model_id, "coder-4b",
+        "the smallest fitting model serves when budget is tight");
+    // And when the budget comes back, the 27B replaces it (higher closeness).
     let recovered = HostBudget {
         usable_bytes: 40 * GB,
         perf_cores: budget.perf_cores,
