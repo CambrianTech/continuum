@@ -281,13 +281,6 @@ pub struct TextGenerationRequest {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub view_messages: Option<u32>,
-    /// The `request_id` of the request whose response this one continues: a llama.cpp-family engine
-    /// serves it from the tokens her slot holds for that response (her reasoning and her call as she
-    /// generated them) plus only what is new, never re-rendering and recomputing them (CONTINUUM-ENGINE
-    /// 4.14). `None` when the request continues nothing.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub continues: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub tool_choice: Option<ToolChoice>,

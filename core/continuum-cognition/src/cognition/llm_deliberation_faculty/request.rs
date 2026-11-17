@@ -145,9 +145,6 @@ impl LlmDeliberationFaculty {
             .request_id
             .get_or_insert_with(|| Uuid::new_v4().to_string())
             .clone();
-        // Her engine holds her last served response: this request continues it, so her generated
-        // tokens stand for it and only what follows is new (CONTINUUM-ENGINE 4.14).
-        request.continues = self.served_request.lock().clone();
         // How much of this prompt her previous request already held (card 5b09111e).
         crate::cognition::prompt_prefix::observe(self.persona_id, &request);
         // Stage the request for the reuse split (card 9e4d61e8); settled below on its result.
@@ -285,8 +282,6 @@ impl LlmDeliberationFaculty {
         );
         let receipt = match &gen_result {
             Ok(response) => {
-                // Her engine now holds this response: her next request continues it.
-                *self.served_request.lock() = Some(request_id.clone());
                 crate::ai::provenance::GenerationReceipt::from_response(request_id, response)
             }
             Err(error) => {
@@ -394,7 +389,6 @@ impl LlmDeliberationFaculty {
             tools,
             tail_tools: None,
             view_messages: None,
-            continues: None,
             tool_choice: None,
             response_format: None,
             // Page in the persona's current genome (wait-free read). Empty → None,

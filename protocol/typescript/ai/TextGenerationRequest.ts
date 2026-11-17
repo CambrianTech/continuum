@@ -39,14 +39,7 @@ tailTools?: Array<NativeToolSpec>,
  * so a page-in resumes at the end of her view rather than at the shared head (card
  * 3512f496). `None` when the prompt has no view.
  */
-viewMessages?: number, 
-/**
- * The `request_id` of the request whose response this one continues: a llama.cpp-family engine
- * serves it from the tokens her slot holds for that response (her reasoning and her call as she
- * generated them) plus only what is new, never re-rendering and recomputing them (CONTINUUM-ENGINE
- * 4.14). `None` when the request continues nothing.
- */
-continues?: string, toolChoice?: ToolChoice, 
+viewMessages?: number, toolChoice?: ToolChoice, 
 /**
  * Force the model to output a specific format (e.g. JSON object).
  * OpenAI-compatible: serializes as `{"type": "json_object"}` etc. The

@@ -238,10 +238,6 @@ pub struct LlmDeliberationFaculty {
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
-    /// The id of the request whose response her engine holds as her newest: her next request
-    /// continues it (`continues`), so her generated tokens are kept, never re-rendered and
-    /// recomputed (CONTINUUM-ENGINE 4.14). Set when a response is served, never by a refused attempt.
-    served_request: parking_lot::Mutex<Option<String>>,
 }
 
 impl LlmDeliberationFaculty {
@@ -276,7 +272,6 @@ impl LlmDeliberationFaculty {
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,
-            served_request: parking_lot::Mutex::new(None),
         }
     }
 
