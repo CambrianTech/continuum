@@ -189,7 +189,7 @@ pub struct ServingDaemonModule {
     plan_none_said_ms: Arc<AtomicU64>,
     /// Consecutive failed decode heartbeats — the hysteresis counter that keeps a
     /// merely-BUSY lane from being reaped. Reset to 0 on any passing probe or when the
-    /// lane isn't believed-ready. Relaunch only once it reaches [`HEALTH_FAILS_TO_RELAUNCH`].
+    /// lane isn't believed-ready. Relaunch only once it reaches [`health::HEALTH_FAILS_TO_RELAUNCH`].
     health_fails: Arc<AtomicU8>,
     /// At most one heartbeat decode-probe in flight (a probe can take up to
     /// `DECODE_SMOKE_TIMEOUT` under load, longer than one [`TICK`]); a tick that finds one
