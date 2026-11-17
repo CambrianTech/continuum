@@ -302,13 +302,13 @@ pub struct MenuLine {
 }
 
 impl MenuLine {
-    /// Its levels for a budget: the expansion, and the collapse when its text is smaller. The ladder's
-    /// SHAPE is this line's own (decided from its text), never the act's calibration: a shape that
-    /// follows a live density loses a level when the density moves, and a held level that no longer
-    /// exists renders the other one, rewriting her system prompt mid-epoch (Benchy on the M5,
-    /// 2026-11-17 22:12Z: density 1 -> 0.899 charged plasticity's 20 and 19 estimated tokens both
-    /// 18, the collapse vanished, and 17,316 tokens of his KV re-prefilled). Only the costs are
-    /// charged; the collapse prices strictly below the expansion and never below its own text.
+    /// Its levels for a budget: the expansion, and the collapse when its text is smaller. Whether a
+    /// collapse is offered is decided from the text; its cost is charged at this act's density, kept
+    /// below the expansion's where the integers allow and never below its own text's. At a low enough
+    /// density the two still charge the same integer and the ladder has one rung: the framing then
+    /// renders the category as her head holds it (`FramingOffer::expanded`), so her prompt does not
+    /// change mid-epoch (Benchy on the M5, 2026-11-17 22:12Z: density 1 -> 0.899 dropped plasticity's
+    /// collapse, the menu expanded, and 17,316 tokens of his KV re-prefilled).
     pub fn levels(&self, charge: &dyn Fn(usize) -> u32) -> continuum_context::ladder::Rungs {
         use continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN;
         let estimate = |text: &str| text.len().div_ceil(GUARD_CHARS_PER_TOKEN);
