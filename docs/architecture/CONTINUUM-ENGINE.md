@@ -2260,6 +2260,65 @@ not asserted.
 6. **The gate on the M5:** one mind decoding at a time at ~80 tok/s single-stream, streamed; switches in milliseconds;
    four residents served in turn; learning and embedding within their share without slowing the decoding mind.
 
+### 4.14 Personas stream like Nanite: native blocks, descriptor binding, no walks (2026-11-17, design for review)
+
+Builds on 4.9 (the model: a mind is a process, a switch is a context switch) and 4.1b (the numbers: one stream at
+~80 tok/s with the MTP draft; batching minds collapses it). This section is the MECHANISM, replacing #139's (held:
+its switch walks KV cells with `seq_cp`/`seq_rm` and serializes state with `llama_state_seq_get/set_data`).
+
+Joel, 2026-11-17: "It's like we are coding a sophisticated graphics pipeline. Like granite or nanite. And we have to
+keep it all together per persona... make solid structures and avoid expensive operations while coming up with
+efficient work to do streaming the needs of the next persona in like nanite does for geometry and textures." "Do it
+all raw." "Tokenization and serialization is cancer."
+
+**The pipeline.** One persona DECODES. The NEXT is streamed into execution-ready native blocks while she decodes. A
+fenced handoff makes NEXT active; only then is the PREVIOUS retired, asynchronously, to RAM (or flash). Every other
+persona lives in RAM (or flash) within the host budget: residency in fast memory is the exception. Admission reserves
+active + next + retiring before any overlap; an outgoing buffer is never reused before its copy completes; when the
+overlap cannot fit, a typed deferral, never a hidden stall. Transfer overlap is not parallel decoding.
+
+**A persona is one solid structure, and llama.cpp already has its KV layout.** Each attention layer's K (and V) is one
+tensor `[n_embd_gqa, kv_size, n_stream]` (`llama-kv-cache.cpp:232`); with unified KV off, `n_stream == n_seq_max`
+and stream `s` is ONE CONTIGUOUS BYTE RANGE per layer, read by attention through a view at offset `s`
+(`get_k`/`get_v`, `sinfo.s0`). So a persona's KV is, per attention layer, two contiguous slices (K, V) plus her
+stream's cell metadata (`v_cells[s]`, positions and sequence bits: a flat array). The hybrid model's recurrent state is
+per-layer row tensors (`r_l`, `s_l`, `llama-memory-recurrent.h:125`), one row per sequence: a row per layer. Her genome
+(LoRA layers) and checkpoints travel with her. The persona's block table names all of these as (tensor, byte offset,
+byte length) per tier.
+
+**Operations, and their cost (no walks anywhere):**
+- *Resident switch* (NEXT already in a stream): rebind the decode lane's stream index and her adapter set: a
+  descriptor bind, no copy, no prefill.
+- *Stream in* (RAM -> a free stream): per attention layer two raw copies (K slice, V slice), per recurrent layer one
+  row copy, the cell-metadata array as one copy; issued in layer order so her first decode can start as early layers
+  land while the rest stream behind compute; fenced by the existing completion owner.
+- *Retire* (a stream -> RAM): the same raw copies outward, asynchronous, after the handoff fence; the stream is free
+  only when they complete.
+- Never: `llama_state_seq_*` (cell walk + metadata serialization), `seq_cp`/`seq_rm` as the switch, repack,
+  re-tokenize, re-prefill.
+
+**Memory, stated as a budget not a guess.** Fast memory holds the weights plus three streams (active, next, retiring),
+each `kv_size` tokens of KV for the model's attention layers plus its recurrent rows; RAM holds every other persona's
+blocks (their actual lengths, not `kv_size`). The first measurement sizes this on the M5 (the 35B hybrid, q4_0 KV):
+bytes per token of KV per attention layer, the recurrent row size, and so the RAM cost per persona and the copy time
+per switch at the measured bandwidth.
+
+**Open questions (answered by measurement or prototype before code):**
+1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
+   engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
+2. A stream's `kv_size` is fixed: a persona longer than it needs a larger stream class, or her context capped by the
+   allocation (measured against her real lengths, 4.9.1 F1: 50-93k).
+3. Whether ggml's attention view over one stream (the `sinfo.s0` offset) is already what the kernels read with no
+   per-cell indirection on Metal and CUDA (it appears so from `get_k`); confirm in the kernels.
+4. The adapter (genome) binding per stream: today's per-request LoRA set on the context; it must switch with the
+   stream bind, not reload.
+5. The MTP draft context: its own KV streams, moved with hers.
+
+**Evidence before implementation (Codex's condition):** a prototype that swaps a persona between a stream and RAM by
+raw slice copies on the M5, measuring copy time per switch against bandwidth, the first-token latency of the arriving
+persona with layer-ordered streaming, and byte-identical restore (her next-token logits equal before and after a
+round trip); then the scaling read at 4, 8 and 16 personas.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
