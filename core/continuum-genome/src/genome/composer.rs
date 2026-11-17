@@ -217,12 +217,22 @@ fn route(candidate: &Candidate<'_>, need: Option<&Need<'_>>, was_on: bool) -> Ro
     Route::Distance { similarity, floor, leave, weight, inside }
 }
 
+/// What her genome is for the next turn: genes composed (possibly none: she has none, or none fit),
+/// or UNKNOWN with the reason. Unknown is never the same as no genes: the caller keeps the genome
+/// she holds or waits, never runs her on the base model in its place (the M5, 2026-11-17).
+#[derive(Debug)]
+pub enum Composition {
+    Genes(Phenotype),
+    Unknown('static str),
+}
+
 /// Her phenotype for the next turn, composed from `perception` (what her mind is on: the turn's
-/// focused line). `None` when her genome cannot be read (no serving base, an unreadable trial
-/// file): the caller then keeps the genome she has, and the reason is on the probe stream.
-pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
-    let base = crate::inference::llama_server::current_serving().active_model?;
-    let store = crate::genome::gene_trial::GeneTrials::default_store()?;
+/// focused line).
+pub async fn compose(persona: Uuid, perception: &str) -> Composition {
+    // No genome store on this node: she has no genes, which is an answer, not an unknown.
+    let Some(store) = crate::genome::gene_trial::GeneTrials::default_store() else {
+        return Composition::Genes(Phenotype::default());
+    };
     let trials = match store.load() {
         Ok(trials) => trials,
         Err(error) => {
@@ -230,10 +240,18 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
                 class = "genome.trial.unreadable",
                 persona = %persona,
                 error = error.as_str(),
-                "the gene trial file did not read: this turn keeps the genome she has"
+                "the gene trial file did not read: her genome is unknown this turn"
             );
-            return None;
+            return Composition::Unknown("the gene trial file did not read");
         }
+    };
+    // No served base known: unknown for a mind that holds genes (they run only on their base),
+    // and simply none for a mind that holds none (a cloud-served or gene-less persona never waits).
+    let Some(base) = crate::inference::llama_server::current_serving().active_model else {
+        let holds_genes = trials.iter().any(|t| {
+            t.persona_id == persona && matches!(t.state, crate::genome::gene_trial::TrialState::Trial | crate::genome::gene_trial::TrialState::Promoted)
+        });
+        return if holds_genes { Composition::Unknown("the served base model is not known yet") } else { Composition::Genes(Phenotype::default()) };
     };
     let residency = crate::genome::gene_residency::GeneResidency::global();
     let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -243,7 +261,7 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
         all.into_iter().filter(|(_, standing)| standing.may_run()).map(|(gene, _)| gene).collect();
     if genes.is_empty() {
         residency.record_turn(persona, &Phenotype::default(), now_ms);
-        return Some(Phenotype::default());
+        return Composition::Genes(Phenotype::default());
     }
     let signatures = match crate::genome::signature::signature_store_path().and_then(|p| SignatureStore::load_at(&p)) {
         Ok(store) => store,
@@ -283,7 +301,7 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
     probe_selection(persona, &selection, pending);
     residency.record_turn(persona, &selection.phenotype, now_ms);
     residency.schedule_reconcile();
-    Some(selection.phenotype)
+    Composition::Genes(selection.phenotype)
 }
 
 /// `genome.select`: every gene considered, its similarity, floor, leave edge, depth and the

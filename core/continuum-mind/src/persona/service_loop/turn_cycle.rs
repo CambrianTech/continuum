@@ -59,9 +59,11 @@ pub(super) async fn run_turn_cycle(
             // (GENE-REUSE-FORK-MINT §3d): every gene whose region the turn's focused line is
             // inside, weighted by depth (`genome::composer`). They stay on her cycle until
             // the next turn selects, so nothing between turns flips her slot's adapters (each
-            // flip clears her KV). Unreadable: the genome she has. The receipt names the
+            // flip clears her KV). Unknown: the genome she holds, or her turn waits. The receipt names the
             // genes that ran (GenerationReceipt::genes).
-            crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &workspace_burst.rendered).await;
+            if !crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &workspace_burst.rendered).await.may_act() {
+                return CycleVerdict::Skip; // her genome is unknown: her turn waits, never the base model
+            }
             // Run the mind over the metadata-rich burst built above
             // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the
             // WHERE). Recall (the persona's own memories) is injected by the

@@ -332,8 +332,10 @@ pub(crate) async fn ask_the_act_question(
                     // HER GENES FOLLOW HER MIND, never her card (GENE-REUSE-FORK-MINT §3d):
                     // the genes whose regions this turn's focused line is inside, weighted by
                     // depth (`genome::composer`), and every receipt names the genes that ran
-                    // (`GenerationReceipt::genes`). Unreadable: the genome she has.
-                    crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &burst.rendered).await;
+                    // (`GenerationReceipt::genes`). Unknown: the genome she holds, or her act waits.
+                    if !crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &burst.rendered).await.may_act() {
+                        return WorkQuestionOutcome::default(); // her genome is unknown: her act waits, never the base model
+                    }
                     // Her credit follows the card she holds through the turn (card 12ddd78f).
                     let mut credit_capture = crate::persona::training_producer::ClaimFollowingCapture::new(
                         selected_credit.as_ref(),
