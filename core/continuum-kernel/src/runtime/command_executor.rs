@@ -709,16 +709,6 @@ impl CommandExecutor {
     /// construction or parsing by the caller.
     ///
     /// The caller passes C::Params directly and receives Result<C::Output>. Internally this
-    /// method serializes params once (for interceptor visibility), dispatches through the
-    /// normal chain, then deserializes the CommandResult into C::Output. All serialization
-    /// overhead is confined to this method — call sites get clean typed signatures.
-    ///
-    /// Requirements: `C` must implement [`ActionCommand`] and its `Output` type must
-    /// implement `serde::de::DeserializeOwned`.
-    /// Execute a command using typed parameters; returns typed output without manual JSON
-    /// construction or parsing by the caller.
-    ///
-    /// The caller passes C::Params directly and receives Result<C::Output>. Internally this
     /// method routes through the registry, downcasts to the concrete ActionCommand via Any,
     /// and runs it with params BY VALUE — zero serde in the call path itself.
     pub async fn call<C>(&self, params: C::Params) -> Result<C::Output, CallError>
@@ -734,16 +724,16 @@ impl CommandExecutor {
             }
         }
 
-        // Admit check (mirroring execute's typed path)
-        if !self.registry.admit(command_name) {
-            return Err(CallError::Unavailable);
-        }
+        // Admit check — mirrors execute_inner's typed path: async, keyed on object_owner()
+        self.registry
+            .admit(self.registry.object_owner(command_name))
+            .await
+            .map_err(|_| CallError::Unavailable)?;
 
-        // Route to the concrete command object
-        let obj = match self.registry.route_object(command_name) {
-            Ok(obj) => obj,
-            Err(_) => return Err(CallError::NotRegistered(command_name.to_string())),
-        };
+        // Route to the concrete command object (Option — None means not found)
+        let obj = self.registry.route_object(command_name).ok_or_else(|| {
+            CallError::NotRegistered(command_name.to_string())
+        })?;
 
         // Downcast to C via Any (the registered DynCommand IS the command struct)
         let any_obj = obj.as_any();
