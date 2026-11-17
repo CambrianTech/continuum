@@ -741,9 +741,10 @@ impl CommandExecutor {
             .ok_or_else(|| CallError::NotRegistered(command_name.to_string()))?;
 
         // Execute with panic guard (mirroring execute_inner's safety net)
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            tokio::runtime::Handle::current().block_on(typed_cmd.run(&Ctx::default(), params))
-        }));
+        let future = typed_cmd.run(&Ctx::default(), params);
+        let result = std::panic::AssertUnwindSafe(future)
+            .catch_unwind()
+            .await;
 
         match result {
             Ok(Ok(output)) => Ok(output),
