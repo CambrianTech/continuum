@@ -2482,6 +2482,43 @@ fast memory after her turn unless the scheduler predicts she is next.
 CPU-only (RAM <-> flash). The same unit and the same verbs on every node; a node's tiers decide only where the bytes
 sit. Flash holds a native generation (4.14 above), demoted on stop and bound on start: never dropped, never re-prefilled.
 
+**The object design: modules and classes (one class per file; what varies is an adapter behind a trait).** One
+crate, `continuum-persona-engine` (the Serving module of the placement map, MODULE-ARCHITECTURE §9.2), over the
+fork's C seam (safe wrappers in `core/llama`):
+
+```
+persona/
+  unit.rs          PersonaUnit        owns the five parts below; moves only whole; refuses a partial move (typed)
+  blocks.rs        ExecutionBlocks    KV + recurrent rows + cell index (wraps llama_persona)
+  tokens.rs        TokenHistory       reserved ids + receipts (wraps llama_persona_tokens)
+  genome.rs        GenomeState        composed gene set + its generation; the adapters her decode binds
+  learning.rs      LearningCustody    in-flight passes, optimizer moments, checkpoints, pending examples
+  decode_state.rs  DecodeState        draft streams, sampler, recurrent rollback
+residency/
+  tier.rs          trait Tier         reserve / copy_in / copy_out / fence; one contract for every tier
+  device.rs        DeviceTier         VRAM (discrete)            } adapters: only the calls that differ
+  host.rs          HostTier           pinned RAM                 }
+  unified.rs       UnifiedTier        one pool (the M5): bind or intra-pool copy
+  flash.rs         FlashTier          native generations on disk (header + extents)
+  profile.rs       ResidencyProfile   which tiers a node has (discrete / unified / cpu), from measurement
+pipeline/
+  roles.rs         Roles              active / next / retiring: each a slot holding one PersonaUnit
+  stager.rs        Stager             streams NEXT in, layer order, behind compute, per-layer fences
+  retirer.rs       Retirer            streams RETIRING out after the handoff fence
+  handoff.rs       Handoff            the millisecond bind: blocks + genome generation + decode state
+  fence.rs         TransferFence      completion of a transfer; readiness never exposed before it
+schedule/
+  next.rs          trait NextPolicy   who is next (pluggable, learnable: an OpenCV-style algorithm)
+act/
+  handle.rs        ActHandle          engine-owned operation; observers only observe
+  outcome.rs       ActOutcome         completed / interrupted / refused, recorded by request seq
+engine.rs          PersonaEngine      the one owner: admit, act, stage, retire, shutdown (API above)
+```
+Rules: no part of a persona is held anywhere else (a cycle's gene set, a learner's pass, a slot's KV are views of
+the unit, never copies); tiers and policies are traits with one adapter per case, never `cfg` in the pipeline; each
+class has its own test file of its contract (move-whole, refuse-partial, fence-before-ready, retire-after-handoff,
+replay-returns-recorded-outcome).
+
 **The persona engine: our loop on libllama, replacing `llamacpp_scheduler` (2026-11-17; direction agreed by
 Codex 20:57Z, API before integration, no serving switch yet).** llama-server's prompt loop assumes a task holds its
 whole prompt (47 sites: prefix match, checkpoints, batching, context checks), so an append-only persona cannot live
