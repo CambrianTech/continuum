@@ -336,3 +336,17 @@
         assert_eq!(parse_tasklist_image_name(""), None);
     }
 
+
+    // what this catches: the process name read by spawning `ps` (the serving daemon's tick did, every
+    // tick, measured on the M5 2026-11-17), or a kernel read that names the wrong process. Our own pid
+    // names our own binary; a pid that cannot exist names nothing (callers then refuse to kill).
+    #[cfg(unix)]
+    #[test]
+    fn a_process_is_named_by_the_kernel_without_a_spawn() {
+        let exe = std::env::current_exe().expect("test: the test binary has a path");
+        let ours = exe.file_name().and_then(|name| name.to_str()).expect("test: a utf-8 binary name");
+        let named = command_name(std::process::id()).expect("test: our own pid is named");
+        // /proc/<pid>/comm truncates to 15 bytes; proc_pidpath gives the whole path's basename.
+        assert!(ours.starts_with(named.as_str()), "{named:?} names {ours:?}");
+        assert_eq!(command_name(i32::MAX as u32), None);
+    }

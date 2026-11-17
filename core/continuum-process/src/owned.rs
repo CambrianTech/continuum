@@ -687,26 +687,30 @@ pub fn recheck(survivors: &[ProcessIdentity]) -> Vec<ProcessIdentity> {
     still_present(survivors)
 }
 
-/// The command name (basename) of `pid` via `ps -p <pid> -o comm=`. `None` if the
-/// pid is gone or `ps` is unavailable — callers treat `None` as "unverifiable" and
-/// refuse to kill.
-#[cfg(not(windows))]
+/// The command name (basename) of `pid`, read from the kernel: one syscall, never a spawned `ps`
+/// (the serving daemon's tick spawned `ps` to read one name, measured on the M5 2026-11-17).
+/// `None` if the pid is gone — callers treat `None` as "unverifiable" and refuse to kill.
+#[cfg(target_os = "macos")]
 pub fn command_name(pid: u32) -> Option<String> {
-    let out = std::process::Command::new("ps")
-        .args(["-p", &pid.to_string(), "-o", "comm="])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&out.stdout);
-    let line = text.trim();
-    if line.is_empty() {
-        return None;
-    }
-    // `comm` can be a full path on Linux — take the basename so the
-    // "llama-server" match is on the binary name, not its install dir.
-    Some(line.rsplit('/').next().unwrap_or(line).to_string())
+    let mut path = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: proc_pidpath writes at most `path.len()` bytes into the buffer it is given.
+    let n = unsafe { libc::proc_pidpath(pid as libc::c_int, path.as_mut_ptr().cast(), path.len() as u32) };
+    let written = usize::try_from(n).ok().filter(|n| *n > 0)?;
+    basename(&String::from_utf8_lossy(&path[..written]))
+}
+
+/// The command name of `pid` from `/proc/<pid>/comm`: the same field `ps -o comm=` reads.
+#[cfg(all(unix, not(target_os = "macos")))]
+pub fn command_name(pid: u32) -> Option<String> {
+    basename(&std::fs::read_to_string(format!("/proc/{pid}/comm")).ok()?)
+}
+
+/// A process name's basename, so the "llama-server" match is on the binary name, not its install dir.
+#[cfg(unix)]
+fn basename(name: &str) -> Option<String> {
+    let name = name.trim();
+    let base = name.rsplit('/').next().filter(|base| !base.is_empty())?;
+    Some(base.to_string())
 }
 
 /// Windows has no `ps`. Without this arm `command_name` returned `None` for EVERY
