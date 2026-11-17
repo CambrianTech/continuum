@@ -30,6 +30,7 @@
 //! ends at the Rust registry. TS is an explicit-API destination, not
 //! a silent dependency.
 
+use futures::FutureExt;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -741,7 +742,8 @@ impl CommandExecutor {
             .ok_or_else(|| CallError::NotRegistered(command_name.to_string()))?;
 
         // Execute with panic guard (mirroring execute_inner's safety net)
-        let future = typed_cmd.run(&Ctx::default(), params);
+        let ctx = Ctx::default();
+        let future = typed_cmd.run(&ctx, params);
         let result = std::panic::AssertUnwindSafe(future)
             .catch_unwind()
             .await;

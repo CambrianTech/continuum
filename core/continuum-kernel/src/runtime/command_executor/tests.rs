@@ -621,6 +621,20 @@
 
     crate::register_stateless_command!(CallEchoCmd);
 
+    /// A command struct NOT passed to register_stateless_command! — used for the unregistered test.
+    #[derive(Debug, Clone, Default)]
+    pub struct CallGhostCmd;
+
+    #[async_trait::async_trait]
+    impl ActionCommand for CallGhostCmd {
+        const NAME: &'static str = "call/ghost_test";
+        type Params = CallTestParams;
+        type Output = CallTestOutput;
+        async fn run(&self, _ctx: &Ctx, params: Self::Params) -> Result<Self::Output, CommandError> {
+            Ok(CallTestOutput { echoed: params.value })
+        }
+    }
+
     /// A minimal ServiceModule that exposes our test command via commands().
     struct CallEchoModule;
 
@@ -697,12 +711,12 @@
         let executor = CommandExecutor::new(registry);
 
         let result: Result<CallTestOutput, CallError> = executor
-            .call::<CallEchoCmd>(CallTestParams { value: "x".into() })
+            .call::<CallGhostCmd>(CallTestParams { value: "x".into() })
             .await;
 
         match result {
             Err(CallError::NotRegistered(name)) => {
-                assert_eq!(name, "call/test_echo", "error must name the missing command");
+                assert_eq!(name, "call/ghost_test", "error must name the missing command");
             }
             other => panic!(
                 "expected NotRegistered variant, got: {:?}",
