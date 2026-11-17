@@ -1956,6 +1956,42 @@ descriptor. So learning on is one more class appearing in the same table, under 
 page and a checkpoint move, spill, defer and come back the same way. Slice 1 of 4.11.7 includes the descriptor and
 the mover's frames; each later slice moves its class onto them.
 
+#### 4.11.9 Every mind resident; admission by live cells; the scheduler only picks who decodes
+
+Joel, 2026-11-17, on the M5 read: "So it needs rewrite? Very unreliable logic. It just gives up and breaks."
+
+**What the M5 showed (build 5a754ad98, engine 14844, 2026-11-17 00:06-00:21Z).** The starvation fix (#6093) works:
+seats rotated strictly oldest-owed with no re-entry, three times. But only ONE mind was ever seated. Each grant was
+158-207k tokens (her whole untrimmed view x `SENT_HEADROOM` 1.25, `window_grant.rs:398-410`), the pool is 300,850,
+and the engine runs 5 lanes, so four residents decoded strictly one after another and never batched. Her real
+sequence per act (engine `n_past`) was 50-93k; all four together are about the pool. The code's own premise, "a grant
+is a ceiling, not an allocation: KV is paged on use", is contradicted by admission, which sums grants against the
+pool. Everything built to cope with that (the owed queue, `BehindActs` waits, reclaim handoffs and receipts, armed
+yields, seat publications) exists only because a ceiling is treated as an allocation, and it fails by waiting: Aiko
+held one turn ~3 h on 2026-11-16.
+
+**The replacement:**
+1. **Every resident mind is resident, always.** She is a sequence of the engine's unified pool (fork #139): decoding
+   on a lane, or parked beside the lanes, or paged to RAM or flash. There is no seat and no wait for one.
+2. **One memory owner admits by live cells** (4.11.8). Her charge is the cells her sequence actually holds, as the
+   engine's allocator reports them, never her view's ceiling. When live use exceeds the grant from `ResourceDaemon`,
+   the coldest mind's resources go down a tier (by activity temperature), and are streamed back ahead of her next act
+   (`prefetch`). When no legal move exists, the act gets a typed deferral (4.11.8), never an unbounded wait.
+3. **Her grant survives only as her view's ceiling:** how much she renders whole (the Aris collapse spiral of
+   2026-11-13 is why it is sized to her wish). It never decides whether she runs.
+4. **The scheduler decides only who decodes next** (goal 9): activity temperature as priority, aging so no mind is
+   starved, and every ready mind batched into the same decode step, so throughput is the engine's aggregate rate, not
+   one stream's.
+
+**Deleted:** the owed queue, `DispatchWait::BehindActs`, reclaim handoffs and their receipts, `yield_after` arming,
+seat publications and grant revisions as admission (`lease/fair.rs` and the reservation paths that serve it).
+
+**Owners:** residency and the memory owner (Fable: #139, 4.11.8, contract slices 3-4); the scheduler (Codex, goal 9).
+
+**Gate (on the M5, the four residents, the 35B):** all four resident at once with no `delib.window.waiting`; batched
+decode (more than one sequence per decode step) observed; aggregate decode tok/s against the 80 tok/s target; switch
+receipts in milliseconds; no mind's act waiting more than one decode step behind a resident with memory free.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
