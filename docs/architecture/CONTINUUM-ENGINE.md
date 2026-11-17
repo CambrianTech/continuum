@@ -2006,6 +2006,42 @@ logs replay without a starved mind. Then on the M5 (the four residents, the 35B)
 concurrency cost curve; aggregate decode tok/s against the 80 tok/s target; switch receipts in milliseconds; the
 physical charge never above the `ResourceDaemon` grant.
 
+### 4.11.10 The engine half of admission: reserve before decode, park instead of the KV-full ladder (2026-11-17, design for review)
+
+**The failure it replaces (BigMama, 2026-11-16, retained probes 07:13-07:16 and 23:21-23:59).** With `--kv-unified
+--parallel N` every slot is told it may hold the whole context while all of them share one pool. Minds that each fit
+grow into the pool together; when the next decode does not fit, `decode()` halves the batch and retries
+(`server-context.cpp` "failed to find free space in the KV cache, retrying with smaller batch size") down to 2 and 1
+tokens; MTP verification tokens then straddle sub-batches and `post_decode` throws "speculative batch index 2 is not
+inside the current sub-batch [0, 2)" (the open upstream TODO ggml-org/llama.cpp#24840); the slot is released with an
+error, and the core's streak counted it as engine death and relaunched the lane, every mind with it. Three handlers,
+each producing the next failure. The same shape is reported in other forks (halo-box/strix-llama.cpp#239, closed as
+overcommit with the wrong error; unslothai/llama.cpp#184, open, which parks a slot to host RAM instead of the ladder:
+prior art for this section).
+
+**The design.**
+1. **Reserve, then decode.** Before a frame decodes, the batcher computes the cells each sequence in it will occupy
+   (its new tokens, its draft's verification tokens, the draft model's own cells) and reserves them in the pool. A
+   frame never asks `llama_decode` for cells the pool does not have; the KV-full ladder (halve and retry) is deleted.
+2. **Make room by moving the coldest, never by failing a slot.** When the reservation does not fit, the mover parks
+   the coldest resident sequence that is not in this frame and not pinned (activity temperature, 4.11.9): its cells
+   go to RAM (the #139 park, `llama_state_seq_get_data_ext`), its task stays alive, and it is restored ahead of its
+   next decode (`prefetch`). Each move is a typed `placed` event with its cost.
+3. **When nothing can legally move, defer, typed.** If every other resident is in the frame or pinned, the sequence
+   whose reservation does not fit leaves this frame with a typed `deferred(no_room, wakes_on = release)` and the
+   others decode; it rejoins on the release event. No slot is failed, no request gets a 500, nothing is relaunched.
+4. **A request that can never fit is refused at admission**, before any decode, typed (`exceeds_pool`), never
+   discovered mid-generation.
+5. **Speculation within a frame is whole.** Because a frame is reserved before it decodes, it is never split, so a
+   slot's verification tokens never straddle sub-batches and the #24840 throw has no path (it stays as an assertion,
+   not a handled case).
+
+**Gates.** Simulator and replay first: the BigMama overcommit (two or more minds growing into one unified pool with
+MTP) runs with no slot error, no 500, every mind progressing, a park and restore per pressure event; a fixture where
+every other resident is pinned yields the typed deferral and progress after release. Then live on the M5 and BigMama:
+zero "failed to find free space" and zero "not inside the current sub-batch" lines, parks and restores counted in the
+frame records (4.13).
+
 ### 4.12 The serving modules: one intentional architecture, no patchwork (2026-11-17)
 
 Joel, 2026-11-17: "Need reliable service modules. No more patches. Ideal architecture. We have zero need for shit
