@@ -210,7 +210,7 @@ impl SlotDirectory {
         if pool.n_slots() != n_slots {
             return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
         }
-        if pool.resident_minds() != minds {
+        if !pool.declare_resident_minds(minds) {
             return Err(Miss::MindsMismatch); // the installed pool's paging authority belongs to another engine
         }
         if !self.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {

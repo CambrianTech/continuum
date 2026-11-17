@@ -129,3 +129,25 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     assert!(Arc::ptr_eq(&second, &pool), "one pool per root");
     Ok(())
 }
+
+// what this catches: the M5 2026-11-17 04:20Z outage (regression for core 37a354cf2, #6087). An owned spawn
+// publishes its pool at readiness from its launch contract, which carries no minds declaration; discovery then
+// compared that pool's "no minds" to the engine's declared minds and refused EVERY generation (minds_mismatch,
+// ~10 re-probes a second) for the engine's whole life. The pool's minds are a set-once record of the engine's
+// own declaration: a pool with no record takes the first; only a recorded, different declaration mismatches.
+#[test]
+fn a_pool_records_the_engines_declared_minds_once() {
+    use crate::inference::weight_residency::ResidentMinds;
+    let minds = Some(ResidentMinds { lanes: 5, parked_ids: 5, incarnation: 4_077_290_934_432_821_903 });
+    let other = Some(ResidentMinds { lanes: 5, parked_ids: 5, incarnation: 7 });
+
+    let owned = KvSlotPool::new("owned", 5); // as an owned spawn publishes it: no declaration yet
+    assert_eq!(owned.resident_minds(), None, "undeclared reads as no minds, never as a recorded none");
+    assert!(owned.declare_resident_minds(minds), "the first discovery records the engine's declaration");
+    assert_eq!(owned.resident_minds(), minds);
+    assert!(owned.declare_resident_minds(minds), "the same engine's declaration agrees");
+    assert!(!owned.declare_resident_minds(other), "another engine's declaration is the mismatch");
+
+    let discovered = KvSlotPool::new("discovered", 5).with_resident_minds(None); // installed by a /props with no minds
+    assert!(!discovered.declare_resident_minds(minds), "a recorded 'no minds' is a declaration, not a blank");
+}
