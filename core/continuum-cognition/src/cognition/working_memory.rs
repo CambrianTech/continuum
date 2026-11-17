@@ -101,6 +101,8 @@ pub(crate) struct ViewCustody {
     /// Who asked that her head be adopted from the live surface (`persona/hands/adopt`), until her
     /// next act honours it.
     pub(crate) adoption: Option<String>,
+    /// The heads her explicit adoptions replaced, kept as they were (never erased), checkpointed.
+    pub(crate) superseded: Vec<crate::cognition::hands_custody::SupersededHands>,
 }
 
 
@@ -266,6 +268,9 @@ pub struct WorkingMemory {
     /// restart it renders the same bytes, and the engine's saved page for them still matches,
     /// where a view rebuilt from scratch cost every resident one cold turn per deploy.
     view: Mutex<ViewCustody>,
+    /// Her faculty's built tool surface, shared at every rebuild: the contract identities it computed
+    /// once are what dispatch checks a call against (`act_observe::contract_gate`).
+    live_surface: Mutex<Option<Arc<crate::cognition::tool_surface::ToolSurface>>>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -443,6 +448,9 @@ pub struct VolatileSnapshot {
         deserialize_with = "crate::cognition::hands_custody::deserialize"
     )]
     pub(crate) context_hands: crate::cognition::hands_custody::HandsCustody,
+    /// The heads her explicit adoptions replaced ([`ViewCustody`]'s `superseded`), kept as they were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) superseded_hands: Vec<crate::cognition::hands_custody::SupersededHands>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.

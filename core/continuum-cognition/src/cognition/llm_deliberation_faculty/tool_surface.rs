@@ -10,13 +10,13 @@ impl LlmDeliberationFaculty {
         self.prompt_feedback.store(None); // New schema bytes invalidate prior prompt observations.
         *self.tools_epoch.get_mut() = None; // a new surface is selected afresh, never rebuilt from the old one's names
         if self.tools.is_empty() {
-            self.surface = ToolSurface::default();
+            self.surface = Arc::new(ToolSurface::default());
             return;
         }
-        self.surface = ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec, |name| {
+        self.surface = Arc::new(ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec, |name| {
             // map_or: a verdict verb is the turn's own protocol, no command: its first revision
             crate::sdk_codegen::command_descriptor(name).map_or(continuum_base::tool_contract::ContractRevision::FIRST, |command| command.contract_revision)
-        });
+        }));
         self.share_vocabulary();
     }
 
@@ -25,6 +25,8 @@ impl LlmDeliberationFaculty {
         let Some(memory) = self.working_memory.as_deref() else {
             return;
         };
+        // The same surface, shared: dispatch compares the contract identities it computed once.
+        memory.set_live_surface(Arc::clone(&self.surface));
         match self.surface.vocabulary() {
             Ok(vocab) => memory.tool_head().set_vocabulary(vocab),
             Err(error) => continuum_base::probe!(

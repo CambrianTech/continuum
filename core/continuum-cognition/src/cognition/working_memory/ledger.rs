@@ -87,6 +87,7 @@ impl WorkingMemory {
             actions: Mutex::new(Default::default()),
             thoughts: Mutex::new(Default::default()),
             view: Mutex::new(ViewCustody::default()),
+            live_surface: Mutex::new(None),
             receipt_children: Mutex::new(BTreeMap::new()),
             active_from_seq: AtomicU64::new(0),
             open_views: Mutex::new(Default::default()),

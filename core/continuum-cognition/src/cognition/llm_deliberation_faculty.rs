@@ -184,7 +184,9 @@ pub struct LlmDeliberationFaculty {
     /// Her native tool surfaces (the whole registry, her hands, her core hands), built
     /// once per tool assignment in canonical order; which one a turn sends is
     /// the retained tools in [`Self::prompt_view`], selected from the shared allocation.
-    surface: ToolSurface,
+    /// Her built surfaces, shared with her working memory so dispatch reads the contract identities
+    /// computed here once (`act_observe::contract_gate`), never re-derived per call.
+    surface: Arc<ToolSurface>,
     /// Where this faculty records its chain-of-thought after a verdict, so the
     /// persona can resume its train of thought next turn (the
     /// [`WorkingMemory`](crate::cognition::working_memory::WorkingMemory)
@@ -238,6 +240,8 @@ pub struct LlmDeliberationFaculty {
     /// Why her acts wait for her head to be adopted (a corrupt record, kept as it was, or a view with
     /// no head beside it), her view kept (`prompt/hands.rs`).
     hands_refused: parking_lot::Mutex<Option<crate::cognition::hands_custody::HandsRefusal>>,
+    /// An adoption asked for, until her next frozen head records what it replaced (`prompt/hands.rs`).
+    adopting: parking_lot::Mutex<Option<crate::cognition::hands_custody::PendingAdoption>>,
     /// Each standing block's last version per room (`prompt/messages.rs`): a block this
     /// cycle did not gather keeps its place in her view instead of leaving it.
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
@@ -267,7 +271,7 @@ impl LlmDeliberationFaculty {
             prompt_feedback: ArcSwapOption::empty(),
             temperature: DEFAULT_TEMPERATURE,
             tools: Vec::new(),
-            surface: ToolSurface::default(),
+            surface: Arc::new(ToolSurface::default()),
             working_memory: None,
             prompt_capture: None,
             read_receipt: None,
@@ -277,6 +281,7 @@ impl LlmDeliberationFaculty {
             context_view: parking_lot::Mutex::new(None),
             tools_epoch: parking_lot::Mutex::new(None),
             hands_refused: parking_lot::Mutex::new(None),
+            adopting: parking_lot::Mutex::new(None),
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,

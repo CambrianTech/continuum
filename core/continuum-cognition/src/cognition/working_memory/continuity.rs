@@ -201,9 +201,9 @@ impl WorkingMemory {
             (actions.records().cloned().collect::<Vec<action_log::ActionRecord>>(), recent_results)
         };
         // Her view and its hands under their ONE lock, taken before the literal (see above).
-        let (context_view, context_hands) = {
+        let (context_view, context_hands, superseded_hands) = {
             let custody = self.view.lock();
-            (custody.view.clone(), custody.hands.clone())
+            (custody.view.clone(), custody.hands.clone(), custody.superseded.clone())
         };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
@@ -230,6 +230,7 @@ impl WorkingMemory {
             thoughts: self.thoughts(),
             context_view,
             context_hands,
+            superseded_hands,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
             act_times: self.act_times.lock().clone(),
@@ -282,9 +283,25 @@ impl WorkingMemory {
         self.view.lock().adoption = Some(by.to_string());
     }
 
+    /// Keep the head an adoption replaced, as it was, with her checkpoint.
+    pub(crate) fn record_superseded(&self, superseded: crate::cognition::hands_custody::SupersededHands) {
+        self.view.lock().superseded.push(superseded);
+    }
+
     /// A requested adoption, taken once by the act that honours it.
     pub(crate) fn take_hands_adoption(&self) -> Option<String> {
         self.view.lock().adoption.take()
+    }
+
+    /// Her faculty's built surface, shared at every rebuild (`LlmDeliberationFaculty::share_vocabulary`).
+    pub(crate) fn set_live_surface(&self, surface: Arc<crate::cognition::tool_surface::ToolSurface>) {
+        *self.live_surface.lock() = Some(surface);
+    }
+
+    /// `canonical`'s contract as her current surface offers it, by the identity computed once at its
+    /// build: a lookup, never a re-derivation. `None` before her faculty has shared a surface.
+    pub(crate) fn live_contract(&self, canonical: &str) -> Option<crate::cognition::hands_custody::LiveContract> {
+        self.live_surface.lock().as_ref().map(|surface| surface.live_contract(canonical))
     }
 
     /// The contract she knows for `canonical`, when her held head holds that verb: what a call to it
@@ -365,6 +382,7 @@ impl WorkingMemory {
             let mut custody = self.view.lock();
             custody.view = snap.context_view;
             custody.hands = snap.context_hands;
+            custody.superseded = snap.superseded_hands;
             custody.changes.clear();
         }
         *self.act_times.lock() = snap.act_times;

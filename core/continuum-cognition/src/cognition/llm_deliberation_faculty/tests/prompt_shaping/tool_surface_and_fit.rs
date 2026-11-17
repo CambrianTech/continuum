@@ -702,10 +702,18 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     corrupt["context_hands"] = serde_json::json!({"generation": "not a number"});
     let broken = Arc::new(WorkingMemory::new(8));
     broken.restore(serde_json::from_value(corrupt).expect("the checkpoint still decodes"));
-    let refused = asha_with_hands().with_working_memory(Arc::clone(&broken)).prompt_view_within(&ws, 200_000);
+    let repairing = asha_with_hands().with_working_memory(Arc::clone(&broken));
+    let refused = repairing.prompt_view_within(&ws, 200_000);
     assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
     let rewritten = serde_json::to_value(broken.snapshot()).expect("a checkpoint encodes");
-    assert_eq!(rewritten["context_hands"], serde_json::json!({"generation": "not a number"}), "its bytes are written back as they were");
+    assert_eq!(rewritten["context_hands"], serde_json::json!({"generation": "not a number"}), "it is written back as it was");
+    broken.request_hands_adoption("operator");
+    let repaired = repairing.prompt_view_within(&ws, 200_000);
+    assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
+    let kept = serde_json::to_value(broken.snapshot()).expect("a checkpoint encodes");
+    assert_eq!(kept["superseded_hands"][0]["prior"]["Corrupt"], serde_json::json!({"generation": "not a number"}), "the record it replaced is kept, never erased: {kept:?}");
+    assert_eq!(kept["superseded_hands"][0]["by"], "operator");
+    assert!(kept["superseded_hands"][0]["generation"].as_u64().is_some_and(|generation| generation >= 1), "with the generation that replaced it");
 
     let mut legacy = saved;
     legacy.as_object_mut().expect("a checkpoint is an object").remove("context_hands"); // JUSTIFIED: test fixture

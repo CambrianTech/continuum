@@ -1,16 +1,17 @@
 //! A call on a held verb whose contract is not the one she was shown is refused before it runs (card
 //! 9cf06ade): never executed under a contract she was not shown, whether its schema changed or only
 //! its meaning did. The check is made at dispatch, per call: the contract she knows for the verb
-//! (what a served prompt told her, else what her head froze) against the contract its current owner
-//! declares now (`hands_custody::live_at_dispatch`), so a change that lands while her generation is
-//! in flight is caught too. Both of her dispatch routes in `apply_act` (a long command dispatched to
+//! (what a served prompt told her, else what her head froze) against the contract her current surface
+//! offers, by the identity its build computed once (`WorkingMemory::live_contract`, a lookup and an
+//! id compare, never a per-call re-derivation), so a surface replaced while her generation is in
+//! flight is caught too. Both of her dispatch routes in `apply_act` (a long command dispatched to
 //! the background, and the foreground batch) take the batch only after this gate, so neither
 //! bypasses it. A verb her head does not hold (one loaded into her tail, or called by name) runs
 //! under its current contract, which its own decoder and authorization enforce as for every call.
 
 use super::observation::{extract_paths, ActStatus, Observation, ToolOutput, ToolVerb};
 use crate::ai::types::{CallBatch, Disposed, ToolCall, ToolResult};
-use crate::cognition::hands_custody::{live_at_dispatch, ContractChange};
+use crate::cognition::hands_custody::ContractChange;
 use crate::cognition::working_memory::WorkingMemory;
 
 /// A committed call held back, and the contract change she was not shown that holds it.
@@ -28,7 +29,7 @@ pub(super) fn held_back(batch: &CallBatch, memory: &WorkingMemory) -> Vec<HeldCa
             Disposed::Committed(committed) => {
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&committed.call().name).to_string();
                 let known = memory.held_contract(&canonical)?.known();
-                let now = live_at_dispatch(&canonical)?;
+                let now = memory.live_contract(&canonical)?;
                 (now.id() != known).then(|| HeldCall { call: committed.call().clone(), change: ContractChange { name: canonical, known, now } })
             }
             _ => None,

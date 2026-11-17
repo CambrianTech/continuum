@@ -17,15 +17,19 @@ impl LlmDeliberationFaculty {
             return;
         };
         if let Some(by) = memory.take_hands_adoption() {
+            // What it replaces is kept as it was (a refused head's record, else her held head), and
+            // her old head keeps its generation until the new one freezes after it.
             let lifted = self.hands_refused.lock().take();
-            *self.tools_epoch.lock() = None;
+            let reason = lifted.as_ref().map_or_else(|| "an explicit request".to_string(), HandsRefusal::reason); // map_or_else: nothing was refused
+            let prior = lifted.as_ref().map_or_else(|| self.tools_epoch.lock().clone().map_or(HandsCustody::Unrecorded, HandsCustody::Held), HandsRefusal::custody); // map_or_else: a head that was not refused is replaced as held; map_or: none held is none
             continuum_base::probe!(
-                class = "tools.custody.adopted",
+                class = "tools.custody.adoption_requested",
                 persona = %self.persona_name,
                 by = %by,
-                lifted = %lifted.as_ref().map_or_else(String::new, crate::cognition::hands_custody::HandsRefusal::reason), // map_or_else: nothing was refused
-                "her head is adopted from the live surface as a new epoch, at an explicit request"
+                reason = %reason,
+                "her head is adopted from the live surface at her next frozen epoch, at an explicit request; what it replaces is kept"
             );
+            *self.adopting.lock() = Some(crate::cognition::hands_custody::PendingAdoption { prior, reason, by });
         }
         let mut view = self.context_view.lock();
         if view.is_some() || self.tools_epoch.lock().is_some() || self.hands_refused.lock().is_some() {
@@ -68,13 +72,38 @@ impl LlmDeliberationFaculty {
         self.hands_refused.lock().as_ref().map(HandsRefusal::reason)
     }
 
+    /// Her held head as this act offers it: none while an adoption waits to freeze a new one.
+    pub(in super::super) fn held_hands(&self) -> Option<crate::cognition::hands_custody::HeldHands> {
+        if self.adopting.lock().is_some() {
+            return None;
+        }
+        self.tools_epoch.lock().clone()
+    }
+
+    /// A newly frozen head at `generation` completes a waiting adoption: what it replaced is kept.
+    pub(in super::super) fn complete_adoption(&self, generation: u64) {
+        let Some(pending) = self.adopting.lock().take() else {
+            return;
+        };
+        continuum_base::probe!(
+            class = "tools.custody.adopted",
+            persona = %self.persona_name,
+            by = %pending.by,
+            generation = generation,
+            "her head was adopted from the live surface as a new epoch; the head it replaced is kept"
+        );
+        if let Some(memory) = self.working_memory.as_deref() {
+            memory.record_superseded(pending.superseded(generation));
+        }
+    }
+
     /// Her held verbs whose live contract she has not been told, into her memory for this act's
     /// notices (`context_streams::tool_contracts`), before her view advances.
     pub(in super::super) fn observe_contracts(&self) {
         let Some(memory) = self.working_memory.as_deref() else {
             return;
         };
-        let changes = self.tools_epoch.lock().as_ref().map_or_else(Vec::new, |held| held.changes(|name| self.surface.live_contract(name))); // map_or_else: no held head holds no contract to change
+        let changes = self.held_hands().map_or_else(Vec::new, |held| held.changes(|name| self.surface.live_contract(name))); // map_or_else: no held head holds no contract to change
         if !changes.is_empty() {
             continuum_base::probe!(
                 class = "tools.contract.changed",

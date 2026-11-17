@@ -130,7 +130,7 @@ impl LlmDeliberationFaculty {
     /// moves add ride the tail until her head's next epoch), else this act's selection. Demand
     /// never depends on a grant.
     pub(in super::super) fn tools_offer(&self, ws: &Workspace, charge: &dyn Fn(usize) -> u32) -> ToolsOffer {
-        let held = self.tools_epoch.lock().clone();
+        let held = self.held_hands();
         let moves = ws.held.move_commands();
         let fresh = self.select_tool_surface(ws);
         let changed = held.as_ref().is_some_and(|held| held.moves != moves);
@@ -289,7 +289,9 @@ impl LlmDeliberationFaculty {
                 (sent, menu, hands)
             }
         };
+        let generation = hands.generation;
         *self.tools_epoch.lock() = Some(hands);
+        self.complete_adoption(generation);
         self.keep_custody();
         (sent, menu)
     }

@@ -148,32 +148,6 @@ impl ContractChange {
     }
 }
 
-/// `canonical`'s contract as its current owner declares it now, recomputed at dispatch (Codex's
-/// review: bind a call to the contract she was shown and recheck the owner before any effect), by
-/// the same projection and identity a surface's build uses. `None` for a verb that is the turn's own
-/// protocol (a verdict verb), which no command owns; a held verb no command owns now is removed.
-pub(crate) fn live_at_dispatch(canonical: &str) -> Option<LiveContract> {
-    let Some(descriptor) = crate::sdk_codegen::command_descriptor(canonical) else {
-        let verdict = crate::cognition::persona_tools::verdict_tool_specs().iter().any(|spec| spec.name == canonical);
-        return (!verdict).then_some(LiveContract::Removed);
-    };
-    Some(match crate::cognition::persona_tools::descriptor_to_tool_spec(descriptor) {
-        Ok(spec) => {
-            let spec = crate::ai::tool_dialect::to_wire_spec(spec);
-            LiveContract::Offered { id: super::tool_surface::contract_id(descriptor.contract_revision, &spec), spec }
-        }
-        Err(exclusion) => {
-            continuum_base::probe!(
-                class = "tool.call.contract_excluded",
-                verb = %canonical,
-                reason = %exclusion.reason,
-                "a held verb's command can no longer be offered as a tool: it is removed for her, and a call to it is refused"
-            );
-            LiveContract::Removed
-        }
-    })
-}
-
 impl HeldHands {
     /// The contract she knows for `canonical`, when her head holds that verb.
     pub(crate) fn held(&self, canonical: &str) -> Option<VerbContract> {
@@ -218,7 +192,7 @@ pub(crate) enum HandsCustody {
     Held(HeldHands),
     /// Recorded but undecodable: kept whole (`raw`, its JSON as read) and written back as it was,
     /// never read as absent; her act is refused until it is repaired (Codex's review of 9cf06ade).
-    Corrupt { raw: String, error: String },
+    Corrupt { raw: serde_json::Value, error: String },
 }
 
 impl HandsCustody {
@@ -227,12 +201,53 @@ impl HandsCustody {
     }
 }
 
+/// A head her explicit adoption replaced (`persona/hands/adopt`): kept as it was, never erased, with
+/// who asked, why, and the epoch of her head that replaced it (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SupersededHands {
+    /// The custody it replaced, as it was read.
+    pub(crate) prior: SupersededPrior,
+    pub(crate) reason: String,
+    pub(crate) by: String,
+    /// The generation of her head that replaced it.
+    pub(crate) generation: u64,
+}
+
+/// The custody an adoption replaced, kept as it was read.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SupersededPrior {
+    Unrecorded,
+    Held(HeldHands),
+    /// A record that did not decode, its JSON whole.
+    Corrupt(serde_json::Value),
+}
+
+/// An adoption asked for and not yet frozen: what it replaces, and who asked why.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingAdoption {
+    pub(crate) prior: HandsCustody,
+    pub(crate) reason: String,
+    pub(crate) by: String,
+}
+
+impl PendingAdoption {
+    /// The record it leaves once her new head is frozen at `generation`.
+    pub(crate) fn superseded(self, generation: u64) -> SupersededHands {
+        let prior = match self.prior {
+            HandsCustody::Unrecorded => SupersededPrior::Unrecorded,
+            HandsCustody::Held(hands) => SupersededPrior::Held(hands),
+            HandsCustody::Corrupt { raw, .. } => SupersededPrior::Corrupt(raw),
+        };
+        SupersededHands { prior, reason: self.reason, by: self.by, generation }
+    }
+}
+
 /// Why her acts are refused until her head is adopted (`persona/hands/adopt`), her view kept: never
 /// a silent substitute of the live tools for the ones her engine holds (Codex's review of 9cf06ade).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HandsRefusal {
     /// Her head's record does not decode: kept whole, written back as it was.
-    Corrupt { raw: String, error: String },
+    Corrupt { raw: serde_json::Value, error: String },
     /// Her view was checkpointed with no head beside it, and no captured request of hers shows it.
     Unrecorded,
 }
@@ -241,7 +256,7 @@ impl HandsRefusal {
     /// What she and her operator read.
     pub(crate) fn reason(&self) -> String {
         let why = match self {
-            HandsRefusal::Corrupt { raw, error } => format!("her head's checkpointed custody does not decode ({error}); its {} bytes are kept as they were", raw.len()),
+            HandsRefusal::Corrupt { error, .. } => format!("her head's checkpointed custody does not decode ({error}); it is kept as it was"),
             HandsRefusal::Unrecorded => "her view was checkpointed with no head beside it and no captured request of hers shows that view".to_string(),
         };
         format!("{why}: her acts wait until her head is adopted (persona/hands/adopt), and her view is kept")
@@ -262,10 +277,7 @@ pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer
     match custody {
         HandsCustody::Unrecorded => serializer.serialize_none(),
         HandsCustody::Held(hands) => hands.serialize(serializer),
-        HandsCustody::Corrupt { raw, .. } => {
-            let kept: serde_json::Value = serde_json::from_str(raw).map_err(serde::ser::Error::custom)?; // boundary: the corrupt record as it was read, written back unchanged
-            kept.serialize(serializer)
-        }
+        HandsCustody::Corrupt { raw, .. } => raw.serialize(serializer),
     }
 }
 
@@ -280,14 +292,12 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
     Ok(match <HeldHands as serde::Deserialize>::deserialize(&recorded) {
         Ok(hands) => HandsCustody::Held(hands),
         Err(error) => {
-            let raw = recorded.to_string();
             continuum_base::probe!(
                 class = "tools.custody.corrupt",
                 error = %error,
-                bytes = raw.len(),
                 "her head's recorded custody does not decode: it is kept whole and her act is refused until it is repaired"
             );
-            HandsCustody::Corrupt { raw, error: error.to_string() }
+            HandsCustody::Corrupt { raw: recorded, error: error.to_string() }
         }
     })
 }
@@ -388,7 +398,7 @@ mod tests {
         let HandsCustody::Corrupt { raw, .. } = &corrupt.hands else {
             panic!("an undecodable record is corrupt, never absent"); // JUSTIFIED: test fixture
         };
-        assert_eq!(raw, r#"{"generation":"x"}"#, "its bytes are kept");
+        assert_eq!(raw, &serde_json::json!({"generation": "x"}), "it is kept whole");
         assert_eq!(serde_json::to_string(&corrupt).expect("encodes"), r#"{"hands":{"generation":"x"}}"#, "and written back as they were");
     }
 }
