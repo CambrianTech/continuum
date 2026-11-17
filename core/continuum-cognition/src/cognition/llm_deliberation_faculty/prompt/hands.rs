@@ -66,7 +66,7 @@ impl LlmDeliberationFaculty {
     /// candidate head, never her custody's, and no act runs until the next adoption is asked.
     pub(in super::super) fn hands_refusal(&self) -> Option<String> {
         let head = self.hands_refused.lock().as_ref().map(HandsRefusal::reason);
-        let capture = self.capture_refused.lock().as_ref().map(|mismatch| {
+        let capture = self.working_memory.as_deref().and_then(WorkingMemory::capture_refusal).map(|mismatch| {
             format!("her adoption from a captured request was refused ({mismatch}): her acts wait until an adoption of her head is asked again, and her view and held head are kept")
         });
         match (head, capture) {

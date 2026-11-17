@@ -201,9 +201,9 @@ impl WorkingMemory {
             (actions.records().cloned().collect::<Vec<action_log::ActionRecord>>(), recent_results)
         };
         // Her view and its hands under their ONE lock, taken before the literal (see above).
-        let (context_view, context_hands, superseded_hands) = {
+        let (context_view, context_hands, superseded_hands, capture_refused) = {
             let custody = self.view.lock();
-            (custody.view.clone(), custody.hands.clone(), custody.superseded.clone())
+            (custody.view.clone(), custody.hands.clone(), custody.superseded.clone(), custody.capture_refused.clone())
         };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
@@ -231,6 +231,7 @@ impl WorkingMemory {
             context_view,
             context_hands,
             superseded_hands,
+            capture_refused,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
             act_times: self.act_times.lock().clone(),
@@ -289,6 +290,18 @@ impl WorkingMemory {
     /// matches exactly (`persona/hands/adopt_capture`, `capture_adoption`).
     pub(crate) fn request_capture_adoption(&self, by: &str, head: crate::cognition::capture_adoption::CapturedHead) {
         self.view.lock().adoption = Some(crate::cognition::capture_adoption::AdoptionRequest::Capture { by: by.to_string(), head });
+    }
+
+    /// Her refused adoption from a captured request, until an adoption is asked again.
+    pub(crate) fn capture_refusal(&self) -> Option<crate::cognition::capture_adoption::CaptureMismatch> {
+        self.view.lock().capture_refused.clone()
+    }
+
+    /// Record a refused adoption from a captured request, or clear one when an adoption is asked:
+    /// kept with her custody, so her checkpoint carries it across a restart.
+    pub(crate) fn set_capture_refusal(&self, refused: Option<crate::cognition::capture_adoption::CaptureMismatch>) {
+        self.view.lock().capture_refused = refused;
+        self.touch();
     }
 
     /// Her custody now, as an operator reads it before asking an adoption over it.
@@ -412,6 +425,7 @@ impl WorkingMemory {
             custody.view = snap.context_view;
             custody.hands = snap.context_hands;
             custody.superseded = snap.superseded_hands;
+            custody.capture_refused = snap.capture_refused;
             custody.changes.clear();
         }
         *self.act_times.lock() = snap.act_times;

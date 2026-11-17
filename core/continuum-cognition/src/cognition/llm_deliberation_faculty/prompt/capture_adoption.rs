@@ -15,7 +15,9 @@ impl LlmDeliberationFaculty {
     /// capture adoption first requires her accepted frontier to be the captured messages.
     pub(super) fn begin_adoption(&self, request: AdoptionRequest) {
         let lifted = self.hands_refused.lock().take();
-        *self.capture_refused.lock() = None;
+        if let Some(memory) = self.working_memory.as_deref() {
+            memory.set_capture_refusal(None);
+        }
         let reason = lifted.as_ref().map_or_else(|| "an explicit request".to_string(), HandsRefusal::reason); // map_or_else: nothing was refused
         let prior = lifted.as_ref().map_or_else(|| self.tools_epoch.lock().clone().map_or(HandsCustody::Unrecorded, HandsCustody::Held), HandsRefusal::custody); // map_or_else: a head that was not refused is replaced as held; map_or: none held is none
         let by = request.by().to_string();
@@ -109,8 +111,9 @@ impl LlmDeliberationFaculty {
             "an adoption from a captured request does not match what she sends: refused, her refusal and view kept"
         );
         *self.hands_refused.lock() = lifted;
-        let kept = mismatch.clone();
-        *self.capture_refused.lock() = Some(kept);
+        if let Some(memory) = self.working_memory.as_deref() {
+            memory.set_capture_refusal(Some(mismatch.clone()));
+        }
         self.keep_custody();
     }
 }

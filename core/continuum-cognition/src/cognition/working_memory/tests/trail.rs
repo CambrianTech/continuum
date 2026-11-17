@@ -270,6 +270,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         context_view: None,
         context_hands: Default::default(),
         superseded_hands: Vec::new(),
+        capture_refused: None,
         receipt_children: Default::default(),
         open_views: Vec::new(),
         act_times: Default::default(),

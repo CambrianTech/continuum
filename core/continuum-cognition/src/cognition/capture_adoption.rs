@@ -57,7 +57,7 @@ impl AdoptionRequest {
 }
 
 /// Where a capture adoption does not match; her refusal and her view are kept.
-#[derive(Clone, Debug, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize)]
 pub(crate) enum CaptureMismatch {
     #[error("her custody is {actual}, not the {expected} the adoption was asked over")]
     CustodyMoved { expected: String, actual: String },

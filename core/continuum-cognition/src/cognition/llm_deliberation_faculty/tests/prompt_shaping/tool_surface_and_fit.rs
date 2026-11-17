@@ -871,6 +871,11 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     let moved = faculty.prompt_view_within(&ws, 200_000);
     assert!(moved.protocol_error.as_deref().is_some_and(|error| error.contains("adoption from a captured request was refused") && error.contains("her custody is")), "{:?}", moved.protocol_error);
     assert_eq!(wm.snapshot().context_hands, custody, "her custody is as it was");
+    // The refusal is her operator's decision: a restart keeps it, it never clears it.
+    let (restarted_memory, restarted) = after_a_restart(&wm, None);
+    let after_restart = restarted.prompt_view_within(&ws, 200_000);
+    assert!(after_restart.protocol_error.as_deref().is_some_and(|error| error.contains("her custody is")), "a restart keeps the refusal: {:?}", after_restart.protocol_error);
+    assert_eq!(restarted_memory.snapshot().context_hands, custody, "and her held head");
 
     let mut longer = captured.clone();
     longer.messages.push(longer.messages[0].clone());
