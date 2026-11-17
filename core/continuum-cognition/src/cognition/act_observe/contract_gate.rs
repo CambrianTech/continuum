@@ -103,7 +103,7 @@ mod tests {
         let memory = holding_an_older("work/note");
         let call = |id: &str, name: &str| ToolCall { id: id.into(), name: name.into(), input: serde_json::json!({}) };
         let origin = crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished);
-        let batch = CallBatch::classify([call("a", "work_note"), call("b", "code_read")], origin);
+        let batch = CallBatch::classify([call("a", "work/note"), call("b", "code_read")], origin);
         let held = held_back(&batch, &memory);
         assert_eq!(held.iter().map(|held| held.call.id.as_str()).collect::<Vec<_>>(), ["a"], "only the held verb whose contract moved");
         let observed = refused(&held[0].call, &held[0].change);

@@ -556,7 +556,7 @@ async fn a_call_on_a_contract_she_was_not_shown_reaches_no_executor() {
     let exec = Arc::new(ScriptedExecutor::new(["the executor answered"]));
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body_with_wm(exec, admission(), memory));
     let calls = [
-        ToolCall { id: "held".into(), name: "work_note".into(), input: serde_json::json!({}) },
+        ToolCall { id: "held".into(), name: "work/note".into(), input: serde_json::json!({}) },
         ToolCall { id: "runs".into(), name: "code_read".into(), input: serde_json::json!({ "file_path": "notes.md" }) },
     ];
     let origin = crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished);

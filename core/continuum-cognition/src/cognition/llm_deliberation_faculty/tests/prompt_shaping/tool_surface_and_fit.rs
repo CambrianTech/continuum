@@ -763,7 +763,9 @@ fn a_head_is_adopted_from_the_capture_it_matches_and_refused_from_one_that_diffe
     assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
     // The request her engine was served: what her capture records.
     let binding = before.binding.load_full();
-    let (messages, tools, system) = (first.messages.clone(), first.tools.specs.clone(), first.system.clone());
+    let messages = first.messages.clone();
+    let tools = first.tools.specs.clone();
+    let system = first.system.clone();
     let captured = before.build_request_within(&binding, first.completion_reserve, messages, tools, system, None, Some(ws.room_id), TurnKind::Pass);
     before.view_served(&first);
 
