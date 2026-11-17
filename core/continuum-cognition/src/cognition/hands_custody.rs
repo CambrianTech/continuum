@@ -295,7 +295,10 @@ impl HandsRefusal {
     /// unrecorded head is refused again, a held head is simply kept.
     pub(crate) fn of(custody: &HandsCustody) -> Option<HandsRefusal> {
         match custody {
-            HandsCustody::Corrupt(corrupt) => Some(HandsRefusal::Corrupt(corrupt.clone())),
+            HandsCustody::Corrupt(corrupt) => {
+                let kept = corrupt.clone();
+                Some(HandsRefusal::Corrupt(kept))
+            }
             HandsCustody::Unrecorded => Some(HandsRefusal::Unrecorded),
             HandsCustody::Held(_) => None,
         }
@@ -313,7 +316,10 @@ impl HandsRefusal {
     /// What a checkpoint keeps for it: a corrupt record as it was, else nothing recorded.
     pub(crate) fn custody(&self) -> HandsCustody {
         match self {
-            HandsRefusal::Corrupt(corrupt) => HandsCustody::Corrupt(corrupt.clone()),
+            HandsRefusal::Corrupt(corrupt) => {
+                let kept = corrupt.clone();
+                HandsCustody::Corrupt(kept)
+            }
             HandsRefusal::Unrecorded => HandsCustody::Unrecorded,
         }
     }
@@ -326,13 +332,19 @@ enum Written {
     Corrupt(CorruptHands),
 }
 
+/// [`Written`] by reference: the same shape on the wire, written without copying the record.
+#[derive(serde::Serialize)]
+enum WrittenRef<'a> {
+    Corrupt(&'a CorruptHands),
+}
+
 /// The checkpoint field: a held head as recorded, a corrupt one with its preserved original.
 pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer: S) -> Result<S::Ok, S::Error> {
     use serde::Serialize;
     match custody {
         HandsCustody::Unrecorded => serializer.serialize_none(),
         HandsCustody::Held(hands) => hands.serialize(serializer),
-        HandsCustody::Corrupt(corrupt) => Written::Corrupt(corrupt.clone()).serialize(serializer),
+        HandsCustody::Corrupt(corrupt) => WrittenRef::Corrupt(corrupt).serialize(serializer),
     }
 }
 

@@ -69,7 +69,8 @@ impl LlmDeliberationFaculty {
         };
         let committed = act_matches(act, &head.request).and_then(|()| {
             let memory = self.working_memory.as_deref().ok_or(CaptureMismatch::NoMemory)?;
-            let held = HandsCustody::Held(candidate.clone());
+            let kept = candidate.clone();
+            let held = HandsCustody::Held(kept);
             memory.adopt_custody_if(&head.binding.expected_custody_sha256, held)
         });
         Some(match committed {
@@ -108,7 +109,8 @@ impl LlmDeliberationFaculty {
             "an adoption from a captured request does not match what she sends: refused, her refusal and view kept"
         );
         *self.hands_refused.lock() = lifted;
-        *self.capture_refused.lock() = Some(mismatch.clone());
+        let kept = mismatch.clone();
+        *self.capture_refused.lock() = Some(kept);
         self.keep_custody();
     }
 }
