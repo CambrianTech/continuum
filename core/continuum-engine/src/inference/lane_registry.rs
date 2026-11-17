@@ -262,7 +262,7 @@ pub fn remove(pid: u32) {
         return;
     };
     let _writes = writes();
-    let _ = std::fs::remove_file(record_path(&dir, pid));
+    remove_locked(&dir, pid);
     sync_live_locked(&dir, &pidfile, &LIVE_LANE); // in the same lock: no read can interleave with the removal
 }
 
@@ -521,6 +521,11 @@ fn clear_live_records_in(dir: &Path) {
 /// Remove `<pid>.lane` under `dir` if present. Idempotent.
 pub(crate) fn remove_in(dir: &Path, pid: u32) {
     let _writes = writes();
+    remove_locked(dir, pid);
+}
+
+/// Remove a lane's record. Idempotent. The caller holds [`writes`].
+fn remove_locked(dir: &Path, pid: u32) {
     let _ = std::fs::remove_file(record_path(dir, pid));
 }
 
