@@ -648,3 +648,63 @@ fn an_exit_watch_whose_waiter_never_runs_stops_being_trusted() {
     child.wait().expect("test: reap it");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
 }
+
+// what this catches (Codex on #6099 b4c75bc57): a persistent exit-watch failure spinning. A waiter that ends
+// Unobservable must leave the engine published but untrusted and NEVER re-arm it: repeated syncs make one arm
+// attempt in all, not a thread per sync.
+#[cfg(unix)]
+#[tokio::test]
+async fn an_unobservable_exit_watch_is_armed_once_and_never_trusted() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct FailingWatcher(std::sync::Arc<AtomicUsize>);
+    impl EngineExitWatcher for FailingWatcher {
+        fn arm(
+            &self,
+            pid: u32,
+            _is_expected: &dyn Fn() -> bool,
+        ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(Box::pin(std::future::ready(continuum_host::process_exit::ExitObserved::Unobservable(
+                continuum_host::process_exit::Unobservable::WatcherLost { pid },
+            ))))
+        }
+    }
+
+    let dir = temp_dir("live-watch-unobservable");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
+    }
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let pidfile = dir.join("lane.pid");
+    let program = dir.join("llama-server");
+    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
+    let mut child = std::process::Command::new(&program)
+        .args(["-c", "while :; do sleep 1; done"])
+        .spawn()
+        .expect("test: spawn");
+    let pid = child.id();
+    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
+    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_083, LaneRole::Live) }).expect("test: record");
+    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_083 };
+
+    let arms = std::sync::Arc::new(AtomicUsize::new(0));
+    let live = LiveLane::with_watcher(Box::new(FailingWatcher(arms.clone())));
+    let sync = |live: &std::sync::Arc<LiveLane>| {
+        let _writes = writes();
+        sync_live_locked(&dir, &pidfile, live);
+    };
+    sync(&live);
+    tokio::task::yield_now().await; // the waiter runs: its wait ends Unobservable
+    for _ in 0..3 {
+        sync(&live);
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(arms.load(Ordering::SeqCst), 1, "one arm attempt in all: an unobservable engine is never re-armed");
+    assert_eq!(*live.subscribe().borrow(), Some(engine), "still published: it is verified live on every sync");
+    assert!(!live.trusts(Some(engine)), "never trusted without a probe");
+
+    child.kill().expect("test: end the fixture process");
+    child.wait().expect("test: reap it");
+    std::fs::remove_dir_all(&dir).expect("test: clean up");
+}

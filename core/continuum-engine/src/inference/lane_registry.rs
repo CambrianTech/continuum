@@ -284,33 +284,74 @@ static LIVE_LANE: std::sync::LazyLock<std::sync::Arc<LiveLane>> = std::sync::Laz
 
 type LiveIncarnation = Option<super::engine_residency::EngineIncarnation>;
 
-/// One registry's verified live lane, as a watch, and the armed exit watch of the published engine.
+/// One registry's verified live lane, as a watch, and the exit watch of the published engine.
 pub(crate) struct LiveLane {
     published: tokio::sync::watch::Sender<LiveIncarnation>,
     exit_watch: parking_lot::Mutex<Option<ExitWatch>>,
     generations: std::sync::atomic::AtomicU64,
+    watcher: Box<dyn EngineExitWatcher>,
 }
 
-/// One armed exit watch: the engine it is bound to, and the registration it is (so an older watch's guard can
-/// never clear a newer one).
+/// How a lane awaits its engine's exit. In production the process-completion owner
+/// ([`continuum_host::process_exit`]); a test injects its own to drive the failure paths.
+pub(crate) trait EngineExitWatcher: Send + Sync {
+    /// Bind the exit watch of `pid`, then prove it with `is_expected` ([`continuum_host::process_exit::arm`]); the
+    /// future resolves on that process's exit.
+    fn arm(
+        &self,
+        pid: u32,
+        is_expected: &dyn Fn() -> bool,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal>;
+}
+
+/// The kernel's exit event, through the one process-completion owner.
+struct KernelExitWatcher;
+
+impl EngineExitWatcher for KernelExitWatcher {
+    fn arm(
+        &self,
+        pid: u32,
+        is_expected: &dyn Fn() -> bool,
+    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal> {
+        let armed = continuum_host::process_exit::arm(pid, is_expected)?;
+        Ok(Box::pin(armed.exited()))
+    }
+}
+
+/// The exit watch of the published engine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ExitWatch {
-    engine: super::engine_residency::EngineIncarnation,
-    generation: u64,
+enum ExitWatch {
+    /// Armed and awaited: the engine is trusted without a probe. `generation` names this registration, so an
+    /// older watch's guard can never clear a newer one.
+    Armed { engine: super::engine_residency::EngineIncarnation, generation: u64 },
+    /// Its exit cannot be awaited (the kernel refused, or the wait ended without an answer): published but never
+    /// trusted, so every sync verifies it against the OS, and never armed again for this incarnation (a
+    /// persistent failure is one attempt, not a spin of threads; Codex on #6099 b4c75bc57).
+    Unobservable { engine: super::engine_residency::EngineIncarnation },
 }
 
 /// Owned by the waiting task from before it is spawned: however the task ends (exit seen, abort, runtime
-/// shutdown before its first poll), the watch it stood for stops being trusted. It clears only its own
+/// shutdown before its first poll), the armed watch it stood for stops being trusted. It clears only its own
 /// generation.
 struct ExitWatchGuard {
     lane: std::sync::Arc<LiveLane>,
     generation: u64,
 }
 
+impl ExitWatchGuard {
+    /// The armed watch could not be awaited: keep the engine published, untrusted, and never re-armed.
+    fn unobservable(self, engine: super::engine_residency::EngineIncarnation) {
+        let mut watch = self.lane.exit_watch.lock();
+        if matches!(*watch, Some(ExitWatch::Armed { generation, .. }) if generation == self.generation) {
+            *watch = Some(ExitWatch::Unobservable { engine });
+        }
+    }
+}
+
 impl Drop for ExitWatchGuard {
     fn drop(&mut self) {
         let mut watch = self.lane.exit_watch.lock();
-        if watch.is_some_and(|w| w.generation == self.generation) {
+        if matches!(*watch, Some(ExitWatch::Armed { generation, .. }) if generation == self.generation) {
             *watch = None;
         }
     }
@@ -318,10 +359,15 @@ impl Drop for ExitWatchGuard {
 
 impl LiveLane {
     pub(crate) fn new() -> std::sync::Arc<Self> {
+        Self::with_watcher(Box::new(KernelExitWatcher))
+    }
+
+    pub(crate) fn with_watcher(watcher: Box<dyn EngineExitWatcher>) -> std::sync::Arc<Self> {
         std::sync::Arc::new(Self {
             published: tokio::sync::watch::channel(None).0,
             exit_watch: parking_lot::Mutex::new(None),
             generations: std::sync::atomic::AtomicU64::new(0),
+            watcher,
         })
     }
 
@@ -333,54 +379,61 @@ impl LiveLane {
     /// engine has an ARMED exit watch (so its death would already have revoked it).
     fn trusts(&self, on_disk: LiveIncarnation) -> bool {
         let published = *self.published.borrow();
-        on_disk == published && published.is_none_or(|engine| self.exit_watch.lock().is_some_and(|w| w.engine == engine))
+        on_disk == published
+            && published.is_none_or(|engine| matches!(*self.exit_watch.lock(), Some(ExitWatch::Armed { engine: armed, .. }) if armed == engine))
     }
 
     /// What to publish for `engine`, just verified from `dir` + `pidfile`: arm its exit watch FIRST (the kernel
-    /// binding, then the start-time check against it). Armed or already armed: the engine. Refused (exited, or
-    /// the pid now names another process): nothing, never the earlier verification. Unobservable or no runtime
-    /// to await on: the engine, verified now but untrusted, so every sync verifies against the OS.
+    /// binding, then the start-time check against it). Armed, already armed, or already known unobservable: the
+    /// engine (the last untrusted, never re-armed). Refused (exited, or the pid now names another process):
+    /// nothing, never the earlier verification. Unobservable now, or no runtime to await on: the engine, verified
+    /// now but untrusted, so every sync verifies against the OS.
     fn publishable(self: &std::sync::Arc<Self>, engine: super::engine_residency::EngineIncarnation, dir: &Path, pidfile: &Path) -> LiveIncarnation {
-        use continuum_host::process_exit::{arm, ArmRefusal, ExitObserved};
-        if self.exit_watch.lock().is_some_and(|w| w.engine == engine) {
+        use continuum_host::process_exit::{ArmRefusal, ExitObserved};
+        if matches!(*self.exit_watch.lock(), Some(ExitWatch::Armed { engine: e, .. } | ExitWatch::Unobservable { engine: e }) if e == engine) {
             return Some(engine);
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
             return Some(engine);
         };
         let is_engine = || super::engine_residency::process_start_s(engine.pid) == Some(engine.started_s);
-        let armed = match arm(engine.pid, is_engine) {
-            Ok(armed) => armed,
+        let exited = match self.watcher.arm(engine.pid, &is_engine) {
+            Ok(exited) => exited,
             Err(ArmRefusal::AlreadyExited | ArmRefusal::NotThatProcess) => return None,
             Err(ArmRefusal::Unobservable(why)) => {
+                *self.exit_watch.lock() = Some(ExitWatch::Unobservable { engine });
                 continuum_base::probe!(
                     class = "lane.live.exit_unobservable",
                     pid = engine.pid,
                     why = %why,
-                    "the live engine's exit cannot be awaited: its lane is verified against the OS on every sync"
+                    "the live engine's exit cannot be awaited: published untrusted, verified against the OS on every sync"
                 );
                 return Some(engine);
             }
         };
         let generation = self.generations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        *self.exit_watch.lock() = Some(ExitWatch { engine, generation });
+        *self.exit_watch.lock() = Some(ExitWatch::Armed { engine, generation });
         let guard = ExitWatchGuard { lane: std::sync::Arc::clone(self), generation };
         let (dir, pidfile) = (dir.to_path_buf(), pidfile.to_path_buf());
         runtime.spawn(async move {
             let guard = guard;
-            let observed = armed.exited().await;
-            let lane = std::sync::Arc::clone(&guard.lane);
-            drop(guard); // the watch is spent: untrusted before the re-verify below
-            if let ExitObserved::Unobservable(why) = observed {
-                continuum_base::probe!(
-                    class = "lane.live.exit_unobservable",
-                    pid = engine.pid,
-                    why = %why,
-                    "the live engine's exit watch ended without an answer: re-verified against the OS"
-                );
+            match exited.await {
+                ExitObserved::Exited => {
+                    let lane = std::sync::Arc::clone(&guard.lane);
+                    drop(guard); // the watch is spent: untrusted before the re-verify below
+                    let _writes = writes();
+                    sync_live_locked(&dir, &pidfile, &lane);
+                }
+                ExitObserved::Unobservable(why) => {
+                    continuum_base::probe!(
+                        class = "lane.live.exit_unobservable",
+                        pid = engine.pid,
+                        why = %why,
+                        "the live engine's exit watch ended without an answer: published untrusted, never re-armed"
+                    );
+                    guard.unobservable(engine);
+                }
             }
-            let _writes = writes();
-            sync_live_locked(&dir, &pidfile, &lane);
         });
         Some(engine)
     }
