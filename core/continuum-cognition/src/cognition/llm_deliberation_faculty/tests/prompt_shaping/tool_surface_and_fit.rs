@@ -907,3 +907,30 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     let adopted = faculty.prompt_view_within(&ws, 200_000);
     assert!(adopted.protocol_error.is_none(), "the capture she was served adopts, and lifts the refusal: {:?}", adopted.protocol_error);
 }
+
+// what this catches (Codex's review of #6105 at 8ff046e15): her resume TOOK her view and head out of
+// her memory, so a periodic checkpoint written between the resume and her faculty's next keep saved no
+// view and an unrecorded head over a valid one, and the restart after it re-read her head from the live
+// surface: the re-prefill this custody exists to prevent. The interleaving, deterministically: resume,
+// then checkpoint before anything is kept, and that checkpoint carries the original pair.
+#[test]
+fn a_checkpoint_between_her_resume_and_her_next_keep_still_carries_her_pair() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    before.view_served(&first);
+    let held = wm.snapshot().context_hands;
+    assert!(matches!(held, crate::cognition::hands_custody::HandsCustody::Held(_)), "her head is held before the restart");
+
+    let (restored, after) = after_a_restart(&wm, None);
+    after.resume_custody();
+    let between = restored.snapshot();
+    assert_eq!(between.context_hands, held, "the checkpoint after her resume carries her held head");
+    assert!(between.context_view.is_some(), "and her view");
+
+    // A restart from that checkpoint sends the head her engine holds, not the live registry's.
+    let (_, again) = after_a_restart(&restored, None);
+    let resumed = again.prompt_view_within(&ws, 200_000);
+    assert_eq!(schemas(resumed.tools.specs.as_deref().expect("her hands are a surface")), schemas(first.tools.specs.as_deref().expect("her hands are a surface")), "her head survives the save in between"); // JUSTIFIED: test fixture
+}

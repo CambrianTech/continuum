@@ -256,18 +256,25 @@ impl WorkingMemory {
         self.touch();
     }
 
-    /// Her context view and its hands as a checkpoint restored them, taken once, together, by the
-    /// act that resumes them.
-    pub(crate) fn take_custody(&self) -> (Option<ContextView>, crate::cognition::hands_custody::HandsCustody) {
-        let mut custody = self.view.lock();
-        let taken = (custody.view.take(), std::mem::take(&mut custody.hands));
-        self.touch();
-        taken
+    /// Her context view and its hands as her checkpoint holds them, read together by the act that
+    /// resumes them. Read, never taken: the pair stays in her memory until her faculty keeps its own
+    /// (`keep_custody`), so a checkpoint written in between still carries it. A take left no view
+    /// and an unrecorded head for a periodic save to persist over a valid one (Codex's review of
+    /// #6105 at 8ff046e15). The copy is made once per resume, never per act.
+    pub(crate) fn resumed_custody(&self) -> (Option<ContextView>, crate::cognition::hands_custody::HandsCustody) {
+        let custody = self.view.lock();
+        (custody.view.clone(), custody.hands.clone())
     }
 
     /// Drop the view and hands this memory holds, so the next act starts its own.
     pub fn release_custody(&self) {
-        drop(self.take_custody());
+        {
+            let mut custody = self.view.lock();
+            custody.view = None;
+            custody.hands = crate::cognition::hands_custody::HandsCustody::default();
+        }
+        // After the change: a checkpoint that read the new generation always snapshots it.
+        self.touch();
     }
 
     /// Her held verbs whose live contract she has not been told, as this act found them: what her

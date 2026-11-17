@@ -28,7 +28,7 @@ impl LlmDeliberationFaculty {
         if view.is_some() || self.tools_epoch.lock().is_some() || self.hands_refused.lock().is_some() {
             return;
         }
-        let (restored, hands) = memory.take_custody();
+        let (restored, hands) = memory.resumed_custody();
         let refusal = match hands {
             HandsCustody::Held(hands) => {
                 continuum_base::probe!(
