@@ -519,3 +519,18 @@ mod census_for_admission {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+
+// what this catches: the live-lane watch page IO's retained custody waits on (Codex on #6097's recovery shape):
+// a stale publication (an older engine generation, e.g. a late adoption read) overwriting a newer one, and a
+// removal clearing the watch by pid alone when a replacement reuses it.
+#[test]
+fn the_live_lane_watch_never_goes_back_a_generation() {
+    use crate::inference::engine_residency::EngineIncarnation;
+    let old = EngineIncarnation { pid: 45_376, started_s: 1_794_889_235, port: 58057 };
+    let new = EngineIncarnation { pid: 45_376, started_s: 1_794_899_000, port: 58057 }; // same pid, replaced
+    assert!(publishes(&None, &old), "the first verified lane publishes");
+    assert!(!publishes(&Some(old), &old), "the same incarnation is not a change");
+    assert!(publishes(&Some(old), &new), "a newer generation replaces the older");
+    assert!(!publishes(&Some(new), &old), "an older generation never overwrites a newer one");
+}
+

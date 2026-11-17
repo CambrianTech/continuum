@@ -248,15 +248,77 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
             "no home dir for lane registry",
         )
     })?;
-    record_in(&dir, rec)
+    record_in(&dir, rec)?;
+    if rec.role == LaneRole::Live {
+        publish_verified_live();
+    }
+    Ok(())
 }
 
 /// Remove a lane's record on graceful teardown. Idempotent — a missing file is
 /// success.
 pub fn remove(pid: u32) {
     if let Some(dir) = lanes_dir() {
+        let removed = std::fs::read_to_string(record_path(&dir, pid))
+            .ok()
+            .and_then(|raw| serde_json::from_str::<LaneRecord>(&raw).ok());
         remove_in(&dir, pid);
+        if let Some(rec) = removed {
+            retire_live(&rec.incarnation());
+        }
     }
+}
+
+/// The live lane THIS PROCESS has verified, as a watch: a waiter (page IO's retained custody, waiting for an
+/// adopted engine's identity) awaits a change instead of polling. Single-process by design: it tracks the
+/// registry writes this process makes, and its first value is the live lane already on disk when it is first
+/// read (an adopting core never records). A value is published only when the canonical pidfile and the live
+/// record agree and the pid is a running llama-server ([`live_lane`]); it is cleared only for the EXACT
+/// incarnation removed, and an older incarnation never overwrites a newer one.
+static LIVE_LANE: std::sync::LazyLock<tokio::sync::watch::Sender<Option<super::engine_residency::EngineIncarnation>>> =
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(verified_live()).0);
+
+/// Subscribe to the verified live lane of this process ([`LIVE_LANE`]).
+pub fn subscribe_live() -> tokio::sync::watch::Receiver<Option<super::engine_residency::EngineIncarnation>> {
+    LIVE_LANE.subscribe()
+}
+
+/// The live lane on disk, verified: pidfile and live record agree, the record names a start time, and the
+/// pid is a running llama-server.
+fn verified_live() -> Option<super::engine_residency::EngineIncarnation> {
+    live_lane().filter(|rec| rec.started_s != 0).map(|rec| rec.incarnation())
+}
+
+fn publish_verified_live() {
+    let Some(incarnation) = verified_live() else {
+        return;
+    };
+    LIVE_LANE.send_if_modified(|current| {
+        let publish = publishes(current, &incarnation);
+        if publish {
+            *current = Some(incarnation);
+        }
+        publish
+    });
+}
+
+/// Whether `incarnation` replaces the published live lane: not the same one, and never an older generation
+/// over a newer one.
+fn publishes(
+    current: &Option<super::engine_residency::EngineIncarnation>,
+    incarnation: &super::engine_residency::EngineIncarnation,
+) -> bool {
+    !matches!(current, Some(published) if published == incarnation || published.started_s > incarnation.started_s)
+}
+
+fn retire_live(incarnation: &super::engine_residency::EngineIncarnation) {
+    LIVE_LANE.send_if_modified(|current| {
+        let retire = current.as_ref() == Some(incarnation); // only the exact incarnation removed, never by pid
+        if retire {
+            *current = None;
+        }
+        retire
+    });
 }
 
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and
