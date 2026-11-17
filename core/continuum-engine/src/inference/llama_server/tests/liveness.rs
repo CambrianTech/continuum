@@ -253,22 +253,20 @@ fn only_an_empty_that_stopped_is_the_lanes_failure() {
     use super::{classify_real_decode, RealDecodeOutcome};
     use crate::ai::types::FinishReason;
 
-    // Nothing produced at all: the relaunch is the cure.
+    // Nothing produced: report the typed empty-completion outcome.
     assert_eq!(
         classify_real_decode(true, false, FinishReason::Stop),
         RealDecodeOutcome::DeliveredNothing,
-        "an empty local-lane generation that STOPPED must count AGAINST the lane — \
-         this is the evidence the heartbeat relaunches on"
+        "an empty local-lane generation that STOPPED must remain observable"
     );
-    // The cap ended it. The backend generated; the allowance ran out. Relaunching
-    // would bounce a working lane and fix nothing — the output allowance owns this.
+    // The cap ended it: report the distinct output-allowance outcome.
     assert_eq!(
         classify_real_decode(true, false, FinishReason::Length),
         RealDecodeOutcome::CappedBeforeOutput,
         "an empty that hit the OUTPUT CAP is an allowance fault on healthy hardware, \
          never lane wedge evidence"
     );
-    // Real output is still proof of life whatever ended it, and still ends the streak.
+    // Real output is still proof of life whatever ended it.
     assert_eq!(
         classify_real_decode(true, true, FinishReason::Stop),
         RealDecodeOutcome::ProofOfLife

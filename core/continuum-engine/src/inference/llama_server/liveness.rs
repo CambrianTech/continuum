@@ -48,11 +48,8 @@ pub enum RealDecodeOutcome {
 /// `delivered_something` is the OR of content, reasoning and tool calls: a native tool
 /// turn legitimately carries empty text, so text alone is not the test.
 ///
-/// The FINISH REASON separates two empties that read identically in a receipt and have
-/// opposite cures (Cormac's review of #4344, measured across two nodes the same hour):
-/// an empty that STOPPED is a backend that produced nothing and wants a relaunch; an
-/// empty that hit LENGTH is a healthy backend whose output cap ended it, and relaunching
-/// it would bounce a working lane and change nothing. Only the first is the lane's fault.
+/// Finish reason distinguishes a clean empty completion from exhausted output allowance.
+/// Neither outcome authorizes an engine restart.
 pub fn classify_real_decode(
     local_lane: bool,
     delivered_something: bool,
@@ -79,7 +76,6 @@ pub fn classify_real_decode(
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
-    // A success ends the failure streak regardless of clock readability below.
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
@@ -113,11 +109,8 @@ pub enum NeverStartedClass {
     /// completions at 17.5 t/s between the kills. The round died to its own
     /// health monitor.
     Starved,
-    /// No real decode landed for anyone across the whole window we waited (or
-    /// none has ever been observed) — the timeout IS evidence the lane cannot
-    /// serve, and it must count toward the relaunch threshold (#363: an
-    /// undersized/dead lane rejecting the fleet's real prompts is exactly what
-    /// the real-turn counter exists to catch).
+    /// No real decode was observed during the wait: a diagnostic stall outcome.
+    /// Absence of observed progress does not authorize retiring the engine.
     WedgeEvidence,
 }
 
