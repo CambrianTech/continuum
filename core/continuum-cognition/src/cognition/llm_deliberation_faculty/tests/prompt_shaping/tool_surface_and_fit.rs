@@ -707,19 +707,23 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     // A record that did not decode (its decode is `hands_custody`'s unit test), restored beside her view.
     let mut corrupt = saved.clone();
     let record = crate::cognition::hands_custody::CorruptHands { raw: unreadable, error: "invalid type".to_string(), original: None };
-    corrupt.context_hands = HandsCustody::Corrupt(record.clone());
+    let as_read = HandsCustody::Corrupt(record);
+    corrupt.context_hands = as_read.clone();
     let broken = Arc::new(WorkingMemory::new(8));
     broken.restore(corrupt);
     let repairing = asha_with_hands().with_working_memory(Arc::clone(&broken));
     let refused = repairing.prompt_view_within(&ws, 200_000);
     assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
-    assert_eq!(broken.snapshot().context_hands, HandsCustody::Corrupt(record.clone()), "it is checkpointed as it was");
+    assert_eq!(broken.snapshot().context_hands, as_read, "it is checkpointed as it was");
     broken.request_hands_adoption("operator");
     let repaired = repairing.prompt_view_within(&ws, 200_000);
     assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
     let kept = broken.snapshot().superseded_hands;
     let [replaced] = kept.as_slice() else {
         panic!("one adoption replaced one head: {kept:?}"); // JUSTIFIED: test fixture
+    };
+    let HandsCustody::Corrupt(record) = as_read else {
+        panic!("the record restored is corrupt"); // JUSTIFIED: test fixture
     };
     assert_eq!(replaced.prior, SupersededPrior::Corrupt(record), "the record it replaced is kept, never erased");
     assert_eq!((replaced.by.as_str(), replaced.generation >= 1), ("operator", true), "with who asked and the generation that replaced it");

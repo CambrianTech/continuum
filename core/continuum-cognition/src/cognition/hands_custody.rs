@@ -440,7 +440,8 @@ mod tests {
         };
         assert_eq!((&record.raw, &record.original), (&serde_json::json!({"generation": "x"}), &None), "parsed, not yet preserved");
         let original = PreservedCheckpoint { path: "kept/abc.json".into(), sha256: "abc".to_string() };
-        corrupt.hands.keep_original(|| Ok::<_, std::convert::Infallible>(original.clone())).expect("infallible");
+        let preserved = original.clone();
+        corrupt.hands.keep_original(|| Ok::<_, std::convert::Infallible>(preserved)).expect("infallible");
         corrupt.hands.keep_original(|| Err("an original is kept once, never replaced")).expect("kept already");
         let rewritten: Checkpoint = serde_json::from_str(&serde_json::to_string(&corrupt).expect("encodes")).expect("decodes");
         let HandsCustody::Corrupt(record) = rewritten.hands else {
