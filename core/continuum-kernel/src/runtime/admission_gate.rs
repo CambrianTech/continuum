@@ -26,6 +26,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const CLOSED: u64 = 1 << 63;
 
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
+#[derive(Debug)]
 pub struct AdmissionGate {
     word: AtomicU64,
     /// Published when the gate becomes closed AND empty: the event a stop subscribes to

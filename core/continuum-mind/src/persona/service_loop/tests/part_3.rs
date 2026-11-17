@@ -444,3 +444,31 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
         assert!(conversation.said().is_empty());
     }
 
+
+// Closing before the task starts must not consume even its first inbox item or
+// finish/drop the loop. The owner retains it until checkpoint custody is proved.
+#[tokio::test]
+async fn closed_slot_retains_the_loop_and_its_unread_input() {
+    let persona = Uuid::new_v4();
+    let hosted = hosted_with_heuristic(persona);
+    let event_id = Uuid::new_v4();
+    let mut conversation = ScriptedConversation::new().with_events(vec![Ok(Some(IncomingMessage {
+        work: None, media: Vec::new(), event_id, lamport: 1,
+        peer_id: Uuid::new_v4(), text: "unread while resting".into(), room_id: Uuid::new_v4(),
+    }))]);
+    let options = ServeOptions::default();
+    assert!(options.turns.close());
+    {
+        let retained = serve_persona_loop_inner::serve_persona_loop_inner(
+            &hosted, &mut conversation, options, test_obligations(&hosted),
+        );
+        tokio::pin!(retained);
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(retained.as_mut(), cx).is_pending(), "closure retains the live future");
+            std::task::Poll::Ready(())
+        }).await;
+    }
+    let unread = conversation.next_message().await.expect("scripted inbox").expect("input retained");
+    assert_eq!(unread.event_id, event_id);
+    assert!(conversation.said().is_empty());
+}

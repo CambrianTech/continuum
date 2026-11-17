@@ -723,21 +723,24 @@ impl PersonaSpawnSupervisor {
         let role = ctx.role;
         // Her role is a live fact of the roster (card ccb316a7): the grid seats her as it.
         self.registry.set_role(persona_id, role);
-        // Hand the loop the SAME quiesce atomic the registry slot holds so an
-        // eval-preemption lease can suspend her autonomic self-tick. Register precedes
-        // spawn, so the flag is present; if it somehow isn't, that's a registration
-        // bug, not a serving one — degrade to a private never-set flag (she's simply
-        // never quiescable) rather than fail her whole boot.
-        let quiesced = self
-            .registry
-            .quiesced_flag(persona_id)
-            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        // Bind both gates to one slot. Missing registration is a boot refusal,
+        // never a private gate the lifecycle owner cannot close.
+        let Some((quiesced, turns)) = self.registry.service_gates(persona_id) else {
+            summary.failures.push(BootSlotFailure {
+                slot_index: slot_idx,
+                role: Some(role),
+                persona_id: Some(persona_id),
+                reason: "registered persona slot disappeared before service admission was bound".into(),
+            });
+            return;
+        };
         // Her obligation store (card 920619c5), on the same wired executor her hands use.
         let obligations = crate::persona::obligation::Obligations::new(executor, persona_id, &agent_name);
         let handle = match spawn_persona_service(
             ctx,
             ServeOptions {
                 quiesced,
+                turns,
                 ..ServeOptions::default()
             },
             obligations,

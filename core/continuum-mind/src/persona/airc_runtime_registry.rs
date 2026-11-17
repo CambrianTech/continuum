@@ -90,6 +90,8 @@ pub struct PersonaSlot {
     /// despawn (which aborts the loop task entirely).
     /// [[benchmark-is-a-governor-preemption-lease]] [[first-class-citizens-even-during-benchmarks]]
     quiesced: Arc<AtomicBool>,
+    /// This exact slot's receives and acts; closed admission retains the live slot.
+    turns: Arc<continuum_kernel::runtime::AdmissionGate>,
     /// The role the spawner named for her (`set_role`), read by the grid allocator.
     role: OnceLock<crate::experience::role::RoleId>,
 }
@@ -186,6 +188,7 @@ impl PersonaAircRuntimeRegistry {
             runtime: runtime_arc.clone(),
             service_loop: Mutex::new(None),
             quiesced: Arc::new(AtomicBool::new(false)),
+            turns: Arc::new(continuum_kernel::runtime::AdmissionGate::new()),
             role: OnceLock::new(),
         });
         self.inner.insert(persona_id, slot);
@@ -335,6 +338,11 @@ impl PersonaAircRuntimeRegistry {
     /// The role she was spawned for; `None` if she is not online or was never stamped.
     pub fn role_of(&self, persona_id: Uuid) -> Option<crate::experience::role::RoleId> {
         self.inner.get(&persona_id).and_then(|e| e.role.get().copied())
+    }
+
+    /// Capture the two service gates from the SAME registered slot at spawn.
+    pub fn service_gates(&self, persona_id: Uuid) -> Option<(Arc<AtomicBool>, Arc<continuum_kernel::runtime::AdmissionGate>)> {
+        self.inner.get(&persona_id).map(|slot| (Arc::clone(&slot.quiesced), Arc::clone(&slot.turns)))
     }
 
     /// The persona's autonomic-quiesce flag (a shared handle). The service loop

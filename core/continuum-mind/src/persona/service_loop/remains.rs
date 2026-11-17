@@ -58,6 +58,8 @@ pub struct ServeOptions {
     /// is simply never quiesced). Registry owns write, loop owns read.
     /// [[benchmark-is-a-governor-preemption-lease]]
     pub quiesced: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Slot-owned admission covers input acquisition and its entire act.
+    pub turns: std::sync::Arc<continuum_kernel::runtime::AdmissionGate>,
 }
 
 impl Default for ServeOptions {
@@ -72,6 +74,7 @@ impl Default for ServeOptions {
             // simply never quiesced (no lease can reach this atomic). Production
             // overrides it with the registry's shared flag.
             quiesced: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            turns: std::sync::Arc::new(continuum_kernel::runtime::AdmissionGate::new()),
         }
     }
 }
