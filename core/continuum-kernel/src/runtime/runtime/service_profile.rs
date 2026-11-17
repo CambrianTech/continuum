@@ -336,6 +336,27 @@ pub(super) struct ShutdownOperation {
     recovery_running: Arc<parking_lot::Mutex<bool>>,
 }
 
+/// Own the evidence even when recovery unwinds or its executor drops the task.
+/// Constructed before spawning, so cancellation before the first poll is covered.
+struct RecoveryPublication {
+    receipt: ShutdownReceipt,
+    result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
+    running: Arc<parking_lot::Mutex<bool>>,
+    completed: bool,
+}
+
+impl Drop for RecoveryPublication {
+    fn drop(&mut self) {
+        // These are receipt descriptors, never the resident blocks themselves.
+        self.result.send_replace(Some(self.receipt.clone()));
+        *self.running.lock() = false;
+        if !self.completed {
+            continuum_base::probe!(class = "shutdown.recovery.interrupted",
+                "recovery interrupted; latest verified evidence retained and explicit recovery available");
+        }
+    }
+}
+
 impl ShutdownOperation {
     pub(super) fn new() -> Self {
         Self {
@@ -394,20 +415,20 @@ impl ShutdownOperation {
         let mut running = self.recovery_running.lock();
         if !*running {
             let receipt = self.result.borrow().clone();
-            if let Some(mut receipt) = receipt.filter(|receipt| receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained)) {
+            if let Some(receipt) = receipt.filter(|receipt| receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained)) {
                 *running = true;
                 self.result.send_replace(None);
-                let tx = self.result.clone();
-                let running = self.recovery_running.clone();
+                let mut publication = RecoveryPublication {
+                    receipt, result: self.result.clone(), running: self.recovery_running.clone(), completed: false,
+                };
                 tokio::spawn(async move {
-                    if let Err(error) = crate::runtime::extensions::recover_retained_custody(&mut receipt.custody).await {
+                    if let Err(error) = crate::runtime::extensions::recover_retained_custody(&mut publication.receipt.custody).await {
                         continuum_base::probe!(class = "shutdown.recovery.refused", error = %error,
                             "custody recovery refused; unresolved owners and completed evidence retained");
                     }
                     // Publish before reopening explicit recovery admission. Completed
                     // entries will not be included in any subsequent recovery request.
-                    tx.send_replace(Some(receipt));
-                    *running.lock() = false;
+                    publication.completed = true;
                 });
             }
         }
@@ -543,6 +564,36 @@ async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<Shut
 #[cfg(test)]
 mod signal_receipt_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn interrupted_recovery_publishes_evidence_and_reopens_admission() -> Result<(), Box<dyn std::error::Error>> {
+        for unwind in [false, true] {
+            let operation = ShutdownOperation::new();
+            *operation.recovery_running.lock() = true;
+            let receipt = ShutdownReceipt { modules: vec![], total_ms: 1, custody: vec![SettledCustody {
+                participant: "interrupted-owner".into(), endpoint: "retained".into(),
+                process: Some(SettledProcess { pid: 42, started_s: 7 }), state: CustodyState::Retained,
+            }] };
+            let publication = RecoveryPublication {
+                receipt: receipt.clone(), result: operation.result.clone(),
+                running: operation.recovery_running.clone(), completed: false,
+            };
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _publication = publication;
+                let _ = entered.send(());
+                if unwind { std::panic::resume_unwind(Box::new("injected recovery unwind")); }
+                std::future::pending::<()>().await;
+            });
+            waiting.await?;
+            if !unwind { task.abort(); }
+            let failure = task.await.err().ok_or("fault did not interrupt recovery")?;
+            assert_eq!(failure.is_panic(), unwind);
+            assert_eq!(*operation.result.borrow(), Some(receipt));
+            assert!(!*operation.recovery_running.lock());
+        }
+        Ok(())
+    }
 
     struct RecoveryOwner {
         calls: Arc<std::sync::atomic::AtomicUsize>,
