@@ -785,10 +785,15 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // 18752 -> 18783 (#5998 merged onto canary with #6000 + #6001): the +29 above plus +2 for
     // #6000's `code/git/merge`, now offered by its path `code_git_merge` rather than its alias
     // `git_merge`. Measured in CI on merge 9f093107c (job 132431324749).
-    // 18783 -> 18790 (#6102, card 60a8875d, the M5 2026-11-17: a resident's empty work/note erased her card's
-    // ledger, nine times): work/note's `known` is required with at least one fact (minItems 1). +7 measured
-    // in CI at bd44951a6 (job 133883093369).
-    const AGENTIC_SURFACE_CEILING: u32 = 18790;
+    // 18783 -> 18869 (#6101, the M5 2026-11-17: Benchy was offered `code_git_merge` with NO parameters and
+    // was refused for a missing `action` three times): a params `oneOf` of object variants is now offered as
+    // the one object it merges into (`action` = start | continue | abort with each variant's line, `from`),
+    // never `properties: {}`. +86 is those parameters reaching the model. Measured in CI at 320cf9b71
+    // (job 133877655532).
+    // 18869 -> 18876 (#6102, card 60a8875d, the MacBookPro 2026-11-17: Iris's empty work/note erased her
+    // card's ledger, over and over): work/note's `known` is required with at least one fact (minItems 1).
+    // +7 measured alone in CI at bd44951a6 (job 133883093369), stacked on #6101's +86.
+    const AGENTIC_SURFACE_CEILING: u32 = 18876;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

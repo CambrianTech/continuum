@@ -191,7 +191,7 @@ fn projection_preserves_command_name_and_emits_open_schema() {
         // No AiSafe commands compiled into this build — nothing to assert.
         return;
     };
-    let spec = descriptor_to_tool_spec(d);
+    let spec = descriptor_to_tool_spec(d).expect("test: a registered command projects to a tool");
     assert_eq!(spec.name, d.name, "tool name is the command name verbatim");
     assert_eq!(spec.input_schema.schema_type, "object");
     assert!(
@@ -217,7 +217,7 @@ fn nested_param_schema_carries_its_definitions() {
     }) else {
         return;
     };
-    let spec = descriptor_to_tool_spec(d);
+    let spec = descriptor_to_tool_spec(d).expect("test: a registered command projects to a tool");
     let defs = spec
         .input_schema
         .definitions
