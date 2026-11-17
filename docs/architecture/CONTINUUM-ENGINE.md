@@ -2034,7 +2034,11 @@ prior art for this section).
    or pinned, the sequence whose reservation does not fit leaves this frame with a typed `deferred(no_room)` and the
    others decode. Waiting for a natural release alone can deadlock (every active sequence keeps growing and none
    ends), so a deferred sequence ages: past its bound it outranks the coldest active one, which is parked at its next
-   frame boundary to make room. No slot is failed, no request gets a 500, nothing is relaunched.
+   frame boundary to make room. Aging never overrides a genuine pin, an in-flight learning step or a fence, and
+   `ResourceDaemon` may refuse the park's RAM: progress is guaranteed only when a legal displacement exists. When none
+   does (every candidate pinned, or the host budget denies parking), the outcome is an explicit `blocked` with its real
+   wake sources (a pin released, a fence passed, host RAM granted), never a forced eviction. No slot is failed, no
+   request gets a 500, nothing is relaunched.
 4. **A request that can never fit is refused at admission**, before any decode, typed (`exceeds_pool`), judged by its
    declared maximum growth (prompt plus its generation limit) against the pool it can be granted, and re-judged when
    that grant shrinks; never by a guess at its future length, never discovered mid-generation.
@@ -2046,7 +2050,8 @@ prior art for this section).
 **Gates.** Simulator and replay first: the BigMama overcommit (two or more minds growing into one unified pool with
 MTP) runs with no slot error, no 500, every mind progressing, a park and restore per pressure event; a fixture where
 every other resident is pinned yields the typed deferral and progress after release; a fixture where every active
-sequence keeps growing with no natural release still gives the deferred one progress through aging; a large prompt
+sequence keeps growing with no natural release still gives the deferred one progress through aging; a fixture where every candidate is pinned, and one where
+`ResourceDaemon` denies park RAM, each return `blocked` with their wake sources and never evict; a large prompt
 split across ubatches with MTP on never splits a verification group. Then live on the M5 and BigMama:
 zero "failed to find free space" and zero "not inside the current sub-batch" lines, parks and restores counted in the
 frame records (4.13).
