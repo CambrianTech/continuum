@@ -223,7 +223,9 @@ async fn recover_one(
                 // stamped with another engine. An unstamped or unprobed pool is missing evidence: Retained.
                 let replaced = {
                     let state = endpoint.state.lock();
-                    let other_generation = !state.generation().is_some_and(|g| g.same_engine(&generation));
+                    // positive evidence only: ANOTHER generation is there. None (it ended while recovery waited for
+                    // the writer) proves nothing about the original: Retained.
+                    let other_generation = state.generation().is_some_and(|g| !g.same_engine(&generation));
                     let other_engine = match state.pool() {
                         Probed::Known(pool) => pool.incarnation().is_some_and(|stamped| Some(stamped) != original),
                         Probed::NotAsked | Probed::Absent(_) => false,
@@ -504,7 +506,7 @@ mod tests {
         };
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("test: generation");
-        transition.ready(&root, &generation, contract).expect("test: ready");
+        transition.ready(&root, &generation, contract.clone()).expect("test: ready");
         drop(transition);
         let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
         let me = std::process::id();
@@ -515,6 +517,23 @@ mod tests {
         let unverified = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
         assert_eq!(unverified, held, "an unstamped pool proves nothing: Retained, untouched");
         assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted without proven identity");
+
+        // the generation ends WHILE recovery waits for the writer (Codex on #6100 edf4ab3f1): missing evidence, so
+        // the alive original stays Retained, nothing contacted
+        let writer = endpoint.transition().await;
+        let mut waiting = Box::pin(recover_one(&reqwest::Client::new(), held.clone()));
+        assert!(futures::poll!(&mut waiting).is_pending(), "recovery read the generation and waits for the writer");
+        endpoint.state.lock().engine = super::super::kv_slot_pool::Engine::Unprobed;
+        drop(writer);
+        assert_eq!(waiting.await.expect("recovery answers"), held, "a generation gone while waiting proves nothing: Retained");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted after the generation ended");
+
+        // a new owned generation serves again, its pool not yet stamped with the original
+        let transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("test: generation");
+        transition.ready(&root, &generation, contract.clone()).expect("test: ready");
+        drop(transition);
+        let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
 
         pool.mark_incarnation((4_242_424, 1)); // now proven: the replacement engine is behind this endpoint
         let recovered = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
