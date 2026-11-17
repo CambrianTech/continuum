@@ -691,6 +691,52 @@ fn a_contract_notice_is_told_once_from_what_was_served_and_survives_a_restart() 
     assert!(later.working_memory.as_deref().is_some_and(|wm| wm.contract_changes().is_empty()), "what she was told survives the restart");
 }
 
+// what this catches (Codex's review of #6105 at 34a1febb7): a transition she was told before
+// (A -> B, then B -> A, then A -> B again, a restart between each) named by the same key as the first
+// notice, so her view kept the old notice as unchanged and the served receipt marked B told while her
+// newest notice still said A. Each notice is its own occurrence: the third is appended after the
+// second, and serving it is what tells her B.
+#[test]
+fn a_repeated_contract_transition_is_a_new_notice_after_the_latest_one() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    let moved = first.tools.specs.clone().expect("her hands are a surface")[0].name.clone(); // JUSTIFIED: test fixture
+    let canonical = crate::ai::tool_dialect::resolve_wire_name(&moved).to_string();
+    let notices = |view: &DeliberationPromptView| -> Vec<String> {
+        view.messages.iter().map(|m| m.content_text().to_string()).filter(|text| text.contains(&format!("My tool `{canonical}` changed"))).collect()
+    };
+
+    // A -> B, served.
+    let (memory, to_b) = after_a_restart(&wm, Some(registry_changing(&before, &moved)));
+    let view = to_b.prompt_view_within(&ws, 200_000);
+    let b = memory.contract_changes()[0].now.id().expect("B is offered"); // JUSTIFIED: test fixture
+    to_b.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "B is told");
+
+    // B -> A, served.
+    let (memory, to_a) = after_a_restart(&memory, None);
+    let view = to_a.prompt_view_within(&ws, 200_000);
+    let a = memory.contract_changes()[0].now.id().expect("A is offered"); // JUSTIFIED: test fixture
+    to_a.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "A is told");
+
+    // A -> B again: the same edge as the first notice, after the latest one.
+    let (memory, again) = after_a_restart(&memory, Some(registry_changing(&before, &moved)));
+    let view = again.prompt_view_within(&ws, 200_000);
+    let shown = notices(&view);
+    assert_eq!(shown.len(), 3, "each transition is its own notice: {shown:#?}");
+    assert!(shown[1].contains(&format!("-> {}", a.hex())), "the second says A");
+    assert!(shown[2].contains(&format!("-> {}", b.hex())), "her newest notice says B, after the one that said A");
+    assert_eq!(memory.contract_changes().len(), 1, "not told until served");
+    again.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "served whole, B is told");
+    let (memory, later) = after_a_restart(&memory, Some(registry_changing(&before, &moved)));
+    later.prompt_view_within(&ws, 200_000);
+    assert!(memory.contract_changes().is_empty(), "what she was told survives the restart: B, not the A the old receipt would leave");
+}
+
 // what this catches (Codex's review of 9cf06ade): an undecodable head read as absent and silently
 // replaced by the live tools, or its bytes lost; and a view checkpointed with no head beside it given
 // the live tools silently, or its blocks dropped. Both wait for an explicit adoption, view kept.

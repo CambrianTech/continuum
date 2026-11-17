@@ -58,6 +58,11 @@ pub(crate) struct VerbContract {
     pub(crate) frozen: Option<ContractId>,
     #[serde(default)]
     pub(crate) told: Told,
+    /// How many notices about this verb a served prompt has shown her since the freeze: each next
+    /// notice is a new occurrence, so a transition she was told before (A -> B, B -> A, A -> B) is
+    /// never read as the earlier notice already in her view (Codex's review of #6105).
+    #[serde(default)]
+    pub(crate) tells: u32,
 }
 
 /// What a SUBMITTED prompt last told her about a held verb's contract since her head froze it:
@@ -76,7 +81,7 @@ pub(crate) enum Told {
 impl VerbContract {
     /// A verb frozen under `frozen`, nothing told yet.
     pub(crate) fn frozen(frozen: Option<ContractId>) -> Self {
-        Self { frozen, told: Told::Nothing }
+        Self { frozen, told: Told::Nothing, tells: 0 }
     }
 
     /// The contract she knows: the newest a submitted prompt told her, else the frozen one.
@@ -114,14 +119,19 @@ pub(crate) struct ContractChange {
     /// The contract she knows: the newest she was told, else the frozen one.
     pub(crate) known: Option<ContractId>,
     pub(crate) now: LiveContract,
+    /// Her head's epoch the verb is held in (`HeldHands::generation`).
+    pub(crate) generation: u64,
+    /// Which notice about this verb this is in that epoch (`VerbContract::tells` when made).
+    pub(crate) occurrence: u32,
 }
 
 impl ContractChange {
-    /// The notice's key: one per transition, so a notice is appended once and a later transition
-    /// appends a new one.
+    /// The notice's key: one per occurrence (her head's epoch, the verb's notice count, the
+    /// contract it moved to), so a notice is appended once and every later transition appends its
+    /// own, a repeat of an earlier one included.
     pub(crate) fn key(&self) -> String {
         let now = self.now.id().map_or_else(|| "removed".to_string(), |id| id.hex()); // map_or_else: a removed verb has no contract
-        format!("tool-contract/{}/{now}", self.name)
+        format!("tool-contract/{}/{}/{now}/{}", self.generation, self.occurrence, self.name)
     }
 
     /// What she reads: which verb, that her head still shows the earlier schema until her next
@@ -149,9 +159,12 @@ impl ContractChange {
 }
 
 impl HeldHands {
-    /// The contract she knows for `canonical`, when her head holds that verb.
-    pub(crate) fn held(&self, canonical: &str) -> Option<VerbContract> {
-        self.names.iter().position(|name| name == canonical).and_then(|at| self.contracts.get(at).copied())
+    /// `canonical`'s change, when her head holds that verb and its live contract (`now`) is not the
+    /// one she knows: the one constructor of a change, so the gate and the notice name one occurrence.
+    pub(crate) fn change(&self, canonical: &str, now: LiveContract) -> Option<ContractChange> {
+        let contract = self.names.iter().position(|name| name == canonical).and_then(|at| self.contracts.get(at))?;
+        let known = contract.known();
+        (now.id() != known).then(|| ContractChange { name: canonical.to_string(), known, now, generation: self.generation, occurrence: contract.tells })
     }
 
     /// The menu categories her head holds expanded.
@@ -163,15 +176,7 @@ impl HeldHands {
     /// in sent order. A verb restored to the contract she was frozen with after she was told about
     /// another one is a change again.
     pub(crate) fn changes(&self, live: impl Fn(&str) -> LiveContract) -> Vec<ContractChange> {
-        self.names
-            .iter()
-            .zip(&self.contracts)
-            .filter_map(|(name, contract)| {
-                let now = live(name);
-                let known = contract.known();
-                (now.id() != known).then(|| ContractChange { name: name.clone(), known, now })
-            })
-            .collect()
+        self.names.iter().filter_map(|name| self.change(name, live(name))).collect()
     }
 
     /// A submitted prompt showed her `change` whole: she now knows its contract.
@@ -179,6 +184,7 @@ impl HeldHands {
         let told = change.now.id().map_or(Told::Removed, Told::Offered); // map_or: told no contract is told it removed
         if let Some(contract) = self.names.iter().position(|name| *name == change.name).and_then(|at| self.contracts.get_mut(at)) {
             contract.told = told;
+            contract.tells = contract.tells.saturating_add(1);
         }
     }
 }

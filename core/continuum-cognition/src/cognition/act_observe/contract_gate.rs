@@ -28,9 +28,9 @@ pub(super) fn held_back(batch: &CallBatch, memory: &WorkingMemory) -> Vec<HeldCa
         .filter_map(|entry| match entry {
             Disposed::Committed(committed) => {
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&committed.call().name).to_string();
-                let known = memory.held_contract(&canonical)?.known();
                 let now = memory.live_contract(&canonical)?;
-                (now.id() != known).then(|| HeldCall { call: committed.call().clone(), change: ContractChange { name: canonical, known, now } })
+                let change = memory.held_change(&canonical, now)?;
+                Some(HeldCall { call: committed.call().clone(), change })
             }
             _ => None,
         })

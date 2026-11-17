@@ -333,11 +333,11 @@ impl WorkingMemory {
         self.live_surface.lock().as_ref().map(|surface| surface.live_contract(canonical))
     }
 
-    /// The contract she knows for `canonical`, when her held head holds that verb: what a call to it
-    /// is checked against at dispatch (`act_observe::contract_gate`).
-    pub(crate) fn held_contract(&self, canonical: &str) -> Option<crate::cognition::hands_custody::VerbContract> {
+    /// `canonical`'s change when her held head holds that verb and `now` is not the contract she
+    /// knows: what a call to it is checked against at dispatch (`act_observe::contract_gate`).
+    pub(crate) fn held_change(&self, canonical: &str, now: crate::cognition::hands_custody::LiveContract) -> Option<crate::cognition::hands_custody::ContractChange> {
         match &self.view.lock().hands {
-            crate::cognition::hands_custody::HandsCustody::Held(hands) => hands.held(canonical),
+            crate::cognition::hands_custody::HandsCustody::Held(hands) => hands.change(canonical, now),
             _ => None,
         }
     }
