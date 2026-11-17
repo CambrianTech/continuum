@@ -59,11 +59,10 @@ pub(super) async fn run_turn_cycle(
             // (GENE-REUSE-FORK-MINT §3d): every gene whose region the turn's focused line is
             // inside, weighted by depth (`genome::composer`). They stay on her cycle until
             // the next turn selects, so nothing between turns flips her slot's adapters (each
-            // flip clears her KV). Unknown: the genome she holds, or her turn waits. The receipt names the
-            // genes that ran (GenerationReceipt::genes).
-            if !crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &workspace_burst.rendered).await.may_act() {
-                return CycleVerdict::Skip; // her genome is unknown: her turn waits, never the base model
-            }
+            // flip clears her KV). Unknown: the genome she holds, or her turn waits (settled below,
+            // once her attention is known, so the input stays owed). The receipt names the genes that
+            // ran (GenerationReceipt::genes).
+            let genes = crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &workspace_burst.rendered).await;
             // Run the mind over the metadata-rich burst built above
             // (WHO/WHEN/WHAT per inbox item, own posts attributed, room as the
             // WHERE). Recall (the persona's own memories) is injected by the
@@ -110,6 +109,13 @@ pub(super) async fn run_turn_cycle(
                 .then(|| deferred_input.attention_for(msg))
                 .flatten()
                 .unwrap_or_else(|| new_message_attention(ctx, msg)); // A new message has no retained attention; derive it from its actual sender and mentions.
+            if !genes.may_act() {
+                // Her genome is unknown and she holds none: the turn waits, deferred before dispatch
+                // through the one retention owner, so a priority input and its obligation stay owed
+                // and are served once her genome is known, never on the base model.
+                deferred_input.settle(msg, wake_engram, attention, &crate::cognition::act_observe::SettleStep::DeferredBeforeDispatch);
+                return CycleVerdict::Skip;
+            }
             if attention.requires_priority() {
                 // Focus = she is TAKING the turn on it; the heard receipt
                 // already fired at the drain (`wake_backlog::publish_heard`).
