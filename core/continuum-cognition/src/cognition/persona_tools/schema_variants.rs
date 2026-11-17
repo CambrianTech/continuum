@@ -47,6 +47,19 @@ impl PropertySchema {
         Self::deserialize(value).ok()
     }
 
+    /// This property with `other`'s enum values added (unchanged when either has no enum).
+    fn with_enum_of(mut self, other: &Value) -> Value {
+        let more = PropertySchema::decode(other).and_then(|other| other.values);
+        if let (Some(values), Some(more)) = (self.values.as_mut(), more) {
+            for value in more {
+                if !values.contains(&value) {
+                    values.push(value);
+                }
+            }
+        }
+        self.encode()
+    }
+
     fn encode(self) -> Value {
         let mut schema = self.rest;
         if let Some(values) = self.values {
@@ -56,9 +69,17 @@ impl PropertySchema {
     }
 }
 
-/// The variants of `schema` merged into one object schema: its properties and what every variant requires.
-/// `None` when `schema` is not a `oneOf` of object variants (or also has properties of its own).
-pub(super) fn merged_object_variants(schema: &Value) -> Option<(Value, Vec<String>)> {
+/// The one object schema a set of object variants merges into.
+pub(super) struct MergedObject {
+    /// The union of the variants' properties.
+    pub(super) properties: Value,
+    /// What every variant requires.
+    pub(super) required: Vec<String>,
+}
+
+/// The variants of `schema` merged into one object schema. `None` when `schema` is not a `oneOf` of object
+/// variants (or also has properties of its own).
+pub(super) fn merged_object_variants(schema: &Value) -> Option<MergedObject> {
     let Variants { one_of, properties: None } = Variants::deserialize(schema).ok()? else {
         return None;
     };
@@ -68,7 +89,10 @@ pub(super) fn merged_object_variants(schema: &Value) -> Option<(Value, Vec<Strin
         for (name, property) in &variant.properties {
             let merged = match properties.remove(name) {
                 None => property.clone(),
-                Some(existing) => union_enums(existing, property),
+                Some(existing) => match PropertySchema::decode(&existing) {
+                    Some(schema) => schema.with_enum_of(property),
+                    None => existing,
+                },
             };
             properties.insert(name.clone(), merged);
         }
@@ -82,23 +106,7 @@ pub(super) fn merged_object_variants(schema: &Value) -> Option<(Value, Vec<Strin
     if let Some(tag) = discriminator(&one_of) {
         describe_variants(&mut properties, &tag, &one_of);
     }
-    Some((Value::Object(properties), required))
-}
-
-/// `existing` with `other`'s enum values added; unchanged when either has no enum.
-fn union_enums(existing: Value, other: &Value) -> Value {
-    let (Some(mut merged), Some(other)) = (PropertySchema::decode(&existing), PropertySchema::decode(other)) else {
-        return existing;
-    };
-    let (Some(values), Some(more)) = (merged.values.as_mut(), other.values) else {
-        return existing;
-    };
-    for value in more {
-        if !values.contains(&value) {
-            values.push(value);
-        }
-    }
-    merged.encode()
+    Some(MergedObject { properties: Value::Object(properties), required })
 }
 
 /// The property every variant declares with exactly one enum value: what tells the variants apart.
@@ -161,7 +169,7 @@ mod tests {
                  "properties":{"action":{"type":"string","enum":["abort"]}}}]}"#,
         )
         .expect("test: schema");
-        let (properties, required) = merged_object_variants(&schema).expect("a oneOf of object variants merges");
+        let MergedObject { properties, required } = merged_object_variants(&schema).expect("a oneOf of object variants merges");
 
         #[derive(Deserialize)]
         struct Tag {

@@ -491,7 +491,7 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
         .map(|d| lead_paragraph_descriptions(d.clone()));
     // An enum-with-data params type (`code/git/merge`) is a `oneOf` of object variants: offer the model the one
     // object they merge into, never an empty one (schema_variants).
-    if let Some((properties, required)) = schema_variants::merged_object_variants(&schema) {
+    if let Some(schema_variants::MergedObject { properties, required }) = schema_variants::merged_object_variants(&schema) {
         return ToolInputSchema {
             schema_type: "object".to_string(),
             properties: lead_paragraph_descriptions(properties),
