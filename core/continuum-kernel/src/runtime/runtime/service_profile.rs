@@ -540,7 +540,8 @@ pub async fn run_signal_shutdown() -> SignalShutdown {
 }
 
 async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>) -> SignalShutdown {
-    let receipt = rx.wait_for(Option::is_some).await.ok().and_then(|value| value.clone());
+    let observed = rx.wait_for(Option::is_some).await.ok();
+    let receipt = observed.as_deref().and_then(Option::as_ref);
     match receipt {
         Some(receipt) => {
             // The caller must preserve the process and its children on refusal.

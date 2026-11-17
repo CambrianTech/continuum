@@ -32,7 +32,7 @@ pub enum CustodyRecoveryRefusal {
 pub(super) fn merge_recovery(
     receipt: &mut [SettledCustody],
     participant: &str,
-    recovered: Vec<HeldCustody>,
+    recovered: &[HeldCustody],
 ) -> Result<(), CustodyRecoveryError> {
     let invalid = |reason| CustodyRecoveryError {
         participant: participant.to_owned(), reason,
@@ -82,16 +82,16 @@ mod tests {
         };
         let mut receipt = vec![entry("saved", CustodyState::Saved), entry("held", CustodyState::Retained)];
         let before = receipt.clone();
-        assert!(merge_recovery(&mut receipt, "pages", vec![HeldCustody {
+        assert!(merge_recovery(&mut receipt, "pages", &[HeldCustody {
             endpoint: "held".into(), process: Some(SettledProcess { pid: 42, started_s: 11 }), state: CustodyState::Saved,
         }]).is_err());
         assert_eq!(receipt, before);
-        assert!(merge_recovery(&mut receipt, "pages", vec![HeldCustody {
+        assert!(merge_recovery(&mut receipt, "pages", &[HeldCustody {
             endpoint: "held".into(), process: Some(process), state: CustodyState::Lost,
         }]).is_ok());
         assert_eq!(receipt[0], before[0]);
         assert_eq!(receipt[1].state, CustodyState::Lost);
-        assert!(merge_recovery(&mut receipt, "pages", vec![HeldCustody {
+        assert!(merge_recovery(&mut receipt, "pages", &[HeldCustody {
             endpoint: "held".into(), process: Some(process), state: CustodyState::Saved,
         }]).is_err());
     }

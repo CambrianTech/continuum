@@ -83,7 +83,7 @@ pub(crate) async fn recover_retained_custody(custody: &mut [super::SettledCustod
         let retained = custody.iter().filter(|entry| entry.participant == name && entry.state == super::CustodyState::Retained)
             .map(|entry| super::HeldCustody { endpoint: entry.endpoint.clone(), process: entry.process, state: entry.state }).collect();
         let recovered = owner.recover(retained).await?;
-        custody_recovery::merge_recovery(custody, &name, recovered)?;
+        custody_recovery::merge_recovery(custody, &name, &recovered)?;
     }
     Ok(())
 }
