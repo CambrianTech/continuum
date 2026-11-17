@@ -98,6 +98,9 @@ pub(crate) struct ViewCustody {
     /// Her held verbs whose live contract she has not been told, as this act found them: derived
     /// each act from `hands` and the live surface, never saved.
     pub(crate) changes: Vec<crate::cognition::hands_custody::ContractChange>,
+    /// Who asked that her head be adopted from the live surface (`persona/hands/adopt`), until her
+    /// next act honours it.
+    pub(crate) adoption: Option<String>,
 }
 
 

@@ -685,10 +685,10 @@ fn a_contract_notice_is_told_once_from_what_was_served_and_survives_a_restart() 
 }
 
 // what this catches (Codex's review of 9cf06ade): an undecodable head read as absent and silently
-// replaced by the live tools, or its bytes lost; and a view checkpointed before heads were recorded
-// turned over (its blocks dropped) instead of resumed with a head selected afresh.
+// replaced by the live tools, or its bytes lost; and a view checkpointed with no head beside it given
+// the live tools silently, or its blocks dropped. Both wait for an explicit adoption, view kept.
 #[test]
-fn a_corrupt_head_refuses_her_act_and_keeps_its_bytes_and_an_unrecorded_one_keeps_her_view() {
+fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoption() {
     let wm = Arc::new(WorkingMemory::new(8));
     let ws = Workspace::new("what changed on the board?");
     let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
@@ -703,7 +703,7 @@ fn a_corrupt_head_refuses_her_act_and_keeps_its_bytes_and_an_unrecorded_one_keep
     let broken = Arc::new(WorkingMemory::new(8));
     broken.restore(serde_json::from_value(corrupt).expect("the checkpoint still decodes"));
     let refused = asha_with_hands().with_working_memory(Arc::clone(&broken)).prompt_view_within(&ws, 200_000);
-    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode")), "{:?}", refused.protocol_error);
+    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
     let rewritten = serde_json::to_value(broken.snapshot()).expect("a checkpoint encodes");
     assert_eq!(rewritten["context_hands"], serde_json::json!({"generation": "not a number"}), "its bytes are written back as they were");
 
@@ -712,7 +712,11 @@ fn a_corrupt_head_refuses_her_act_and_keeps_its_bytes_and_an_unrecorded_one_keep
     let old = Arc::new(WorkingMemory::new(8));
     old.restore(serde_json::from_value(legacy).expect("a checkpoint from before heads decodes"));
     let resumed = asha_with_hands().with_working_memory(Arc::clone(&old));
-    let view = resumed.prompt_view_within(&ws, 200_000);
-    assert!(view.protocol_error.is_none(), "{:?}", view.protocol_error);
-    assert_eq!(view_epoch(&resumed), epoch, "her view resumes, its blocks kept");
+    let waiting = resumed.prompt_view_within(&ws, 200_000);
+    assert!(waiting.protocol_error.as_deref().is_some_and(|error| error.contains("no head beside it")), "{:?}", waiting.protocol_error);
+    assert_eq!(view_epoch(&resumed), epoch, "her view is kept, its blocks too");
+    old.request_hands_adoption("operator");
+    let adopted = resumed.prompt_view_within(&ws, 200_000);
+    assert!(adopted.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", adopted.protocol_error);
+    assert_eq!(view_epoch(&resumed), epoch, "and keeps her view");
 }

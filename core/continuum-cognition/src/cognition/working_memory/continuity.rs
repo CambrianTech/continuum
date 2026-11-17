@@ -276,6 +276,17 @@ impl WorkingMemory {
         self.view.lock().changes.clone()
     }
 
+    /// Ask that her head be adopted from the live surface at her next act (`persona/hands/adopt`):
+    /// the explicit repair of a refused head, recorded with who asked.
+    pub fn request_hands_adoption(&self, by: &str) {
+        self.view.lock().adoption = Some(by.to_string());
+    }
+
+    /// A requested adoption, taken once by the act that honours it.
+    pub(crate) fn take_hands_adoption(&self) -> Option<String> {
+        self.view.lock().adoption.take()
+    }
+
     /// The contract she knows for `canonical`, when her held head holds that verb: what a call to it
     /// is checked against at dispatch (`act_observe::contract_gate`).
     pub(crate) fn held_contract(&self, canonical: &str) -> Option<crate::cognition::hands_custody::VerbContract> {

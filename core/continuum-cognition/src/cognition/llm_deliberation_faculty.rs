@@ -235,9 +235,9 @@ pub struct LlmDeliberationFaculty {
     /// Her head's current epoch: the verbs, levels and exact schemas it froze, and what she was told
     /// since (`prompt/tools_epoch.rs`, `hands_custody`). Checkpointed with her view as one pair.
     tools_epoch: parking_lot::Mutex<Option<crate::cognition::hands_custody::HeldHands>>,
-    /// Her head's checkpointed custody when it did not decode: its bytes, kept to be written back
-    /// as they were, and why. Her acts are refused while it is held (`prompt/hands.rs`).
-    hands_corrupt: parking_lot::Mutex<Option<(String, String)>>,
+    /// Why her acts wait for her head to be adopted (a corrupt record, kept as it was, or a view with
+    /// no head beside it), her view kept (`prompt/hands.rs`).
+    hands_refused: parking_lot::Mutex<Option<crate::cognition::hands_custody::HandsRefusal>>,
     /// Each standing block's last version per room (`prompt/messages.rs`): a block this
     /// cycle did not gather keeps its place in her view instead of leaving it.
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
@@ -276,7 +276,7 @@ impl LlmDeliberationFaculty {
             working_set: None,
             context_view: parking_lot::Mutex::new(None),
             tools_epoch: parking_lot::Mutex::new(None),
-            hands_corrupt: parking_lot::Mutex::new(None),
+            hands_refused: parking_lot::Mutex::new(None),
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,

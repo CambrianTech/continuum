@@ -3,23 +3,36 @@
 //! every act so a contract that moved is told to her before she acts on it (`hands_custody`).
 
 use super::*;
-use crate::cognition::hands_custody::HandsCustody;
+use crate::cognition::hands_custody::{HandsCustody, HandsRefusal};
 use crate::cognition::working_memory::{ContextView, WorkingMemory};
 
 impl LlmDeliberationFaculty {
     /// Resume her view and her head together from her checkpoint, before this act selects anything:
     /// a restart sends the bytes her engine holds instead of a head re-read from the live surface.
-    /// Only a faculty holding neither resumes (a fresh one after a restart).
+    /// Only a faculty holding neither resumes (a fresh one after a restart). A requested adoption
+    /// (`persona/hands/adopt`) is honoured first: her head is selected afresh from the live surface
+    /// as a new epoch, and any refusal lifts.
     pub(in super::super) fn resume_custody(&self) {
         let Some(memory) = self.working_memory.as_deref() else {
             return;
         };
+        if let Some(by) = memory.take_hands_adoption() {
+            let lifted = self.hands_refused.lock().take();
+            *self.tools_epoch.lock() = None;
+            continuum_base::probe!(
+                class = "tools.custody.adopted",
+                persona = %self.persona_name,
+                by = %by,
+                lifted = %lifted.as_ref().map_or_else(String::new, crate::cognition::hands_custody::HandsRefusal::reason), // map_or_else: nothing was refused
+                "her head is adopted from the live surface as a new epoch, at an explicit request"
+            );
+        }
         let mut view = self.context_view.lock();
-        if view.is_some() || self.tools_epoch.lock().is_some() || self.hands_corrupt.lock().is_some() {
+        if view.is_some() || self.tools_epoch.lock().is_some() || self.hands_refused.lock().is_some() {
             return;
         }
         let (restored, hands) = memory.take_custody();
-        match hands {
+        let refusal = match hands {
             HandsCustody::Held(hands) => {
                 continuum_base::probe!(
                     class = "tools.custody.resumed",
@@ -30,36 +43,29 @@ impl LlmDeliberationFaculty {
                     "her head resumes as her checkpoint froze it: the same schemas her engine holds"
                 );
                 *self.tools_epoch.lock() = Some(hands);
+                None
             }
-            HandsCustody::Corrupt { raw, error } => {
-                continuum_base::probe!(
-                    class = "tools.custody.refused",
-                    persona = %self.persona_name,
-                    error = %error,
-                    bytes = raw.len(),
-                    "her head's checkpointed custody does not decode: kept as it was, her acts refused until it is repaired"
-                );
-                *self.hands_corrupt.lock() = Some((raw, error));
-            }
-            HandsCustody::Unrecorded if restored.is_some() => {
-                // A view checkpointed before her head was: her first act selects her head from the
-                // live surface (measured, never called restored) and her view's blocks are kept.
-                continuum_base::probe!(
-                    class = "tools.custody.unrecorded",
-                    persona = %self.persona_name,
-                    "her view resumes with no head recorded beside it: her head is selected afresh and the engine pays what differs"
-                );
-            }
-            HandsCustody::Unrecorded => {}
+            HandsCustody::Corrupt { raw, error } => Some(HandsRefusal::Corrupt { raw, error }),
+            // A view checkpointed before heads were: nothing of hers says which schemas her engine
+            // holds, so her acts wait for an explicit adoption rather than a silent substitute.
+            HandsCustody::Unrecorded if restored.is_some() => Some(HandsRefusal::Unrecorded),
+            HandsCustody::Unrecorded => None,
+        };
+        if let Some(refusal) = refusal {
+            continuum_base::probe!(
+                class = "tools.custody.refused",
+                persona = %self.persona_name,
+                reason = %refusal.reason(),
+                "her head's custody cannot be resumed: her view is kept and her acts wait for persona/hands/adopt"
+            );
+            *self.hands_refused.lock() = Some(refusal);
         }
         *view = restored;
     }
 
-    /// Why her acts are refused while her head's custody is corrupt, or `None`.
+    /// Why her acts are refused while her head waits for adoption, or `None`.
     pub(in super::super) fn hands_refusal(&self) -> Option<String> {
-        self.hands_corrupt.lock().as_ref().map(|(raw, error)| {
-            format!("her head's checkpointed custody does not decode ({error}); its {} bytes are kept as they were until it is repaired", raw.len())
-        })
+        self.hands_refused.lock().as_ref().map(HandsRefusal::reason)
     }
 
     /// Her held verbs whose live contract she has not been told, into her memory for this act's
@@ -108,10 +114,10 @@ impl LlmDeliberationFaculty {
         memory.set_contract_changes(untold);
     }
 
-    /// Her head's custody as this faculty holds it now: corrupt bytes kept, else her held head.
+    /// Her head's custody as this faculty holds it now: a refused one as it was, else her held head.
     fn hands_custody(&self) -> HandsCustody {
-        if let Some((raw, error)) = self.hands_corrupt.lock().clone() {
-            return HandsCustody::Corrupt { raw, error };
+        if let Some(refusal) = self.hands_refused.lock().as_ref() {
+            return refusal.custody();
         }
         self.tools_epoch.lock().clone().map_or(HandsCustody::Unrecorded, HandsCustody::Held) // map_or: no head held records none
     }

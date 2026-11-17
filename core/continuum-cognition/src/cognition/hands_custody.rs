@@ -227,6 +227,35 @@ impl HandsCustody {
     }
 }
 
+/// Why her acts are refused until her head is adopted (`persona/hands/adopt`), her view kept: never
+/// a silent substitute of the live tools for the ones her engine holds (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum HandsRefusal {
+    /// Her head's record does not decode: kept whole, written back as it was.
+    Corrupt { raw: String, error: String },
+    /// Her view was checkpointed with no head beside it, and no captured request of hers shows it.
+    Unrecorded,
+}
+
+impl HandsRefusal {
+    /// What she and her operator read.
+    pub(crate) fn reason(&self) -> String {
+        let why = match self {
+            HandsRefusal::Corrupt { raw, error } => format!("her head's checkpointed custody does not decode ({error}); its {} bytes are kept as they were", raw.len()),
+            HandsRefusal::Unrecorded => "her view was checkpointed with no head beside it and no captured request of hers shows that view".to_string(),
+        };
+        format!("{why}: her acts wait until her head is adopted (persona/hands/adopt), and her view is kept")
+    }
+
+    /// What a checkpoint keeps for it: a corrupt record as it was, else nothing recorded.
+    pub(crate) fn custody(&self) -> HandsCustody {
+        match self {
+            HandsRefusal::Corrupt { raw, error } => HandsCustody::Corrupt { raw: raw.clone(), error: error.clone() },
+            HandsRefusal::Unrecorded => HandsCustody::Unrecorded,
+        }
+    }
+}
+
 /// The checkpoint field: a recorded custody is written as recorded (a corrupt one as its raw bytes).
 pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer: S) -> Result<S::Ok, S::Error> {
     use serde::Serialize;
