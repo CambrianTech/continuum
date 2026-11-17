@@ -166,13 +166,13 @@ impl HeldHands {
     /// quietly finds nothing and so is neither told nor gated (Codex's review of #6105). `levels`
     /// is not checked here: its rungs are matched against her verb set when held (`rungs_of`), and
     /// a mismatch re-chooses them visibly.
-    fn misalignment(&self) -> Option<String> {
+    fn misalignment(&self) -> Option<HeadDecode> {
         let verbs = self.names.len();
         if self.contracts.len() != verbs {
-            return Some(format!("her head records {verbs} verbs and {} contracts", self.contracts.len()));
+            return Some(HeadDecode::Contracts { verbs, contracts: self.contracts.len() });
         }
         if self.whole.len() != verbs {
-            return Some(format!("her head records {verbs} verbs and {} whole schemas", self.whole.len()));
+            return Some(HeadDecode::Whole { verbs, whole: self.whole.len() });
         }
         None
     }
@@ -372,6 +372,18 @@ pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer
     }
 }
 
+/// Why a recorded head is not one this code could have frozen: typed until the checkpoint boundary,
+/// where it is rendered once into the corrupt record's diagnostic.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeadDecode {
+    #[error("{0}")]
+    Shape(serde_json::Error),
+    #[error("her head records {verbs} verbs and {contracts} contracts")]
+    Contracts { verbs: usize, contracts: usize },
+    #[error("her head records {verbs} verbs and {whole} whole schemas")]
+    Whole { verbs: usize, whole: usize },
+}
+
 /// The checkpoint field read back: absent is [`HandsCustody::Unrecorded`]; present but undecodable
 /// is [`HandsCustody::Corrupt`], its bytes kept, and says so.
 pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<HandsCustody, D::Error> {
@@ -383,7 +395,7 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
     if let Ok(Written::Corrupt(corrupt)) = <Written as serde::Deserialize>::deserialize(&recorded) {
         return Ok(HandsCustody::Corrupt(corrupt));
     }
-    let decoded = <HeldHands as serde::Deserialize>::deserialize(&recorded).map_err(|error| error.to_string());
+    let decoded = <HeldHands as serde::Deserialize>::deserialize(&recorded).map_err(HeadDecode::Shape);
     Ok(match decoded.and_then(|hands| hands.misalignment().map_or(Ok(hands), Err)) { // map_or: an aligned head is held; a misaligned one is its reason
         Ok(hands) => HandsCustody::Held(hands),
         Err(error) => {
@@ -392,7 +404,8 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
                 error = %error,
                 "her head's recorded custody is not a head this code could freeze: it is kept whole and her act is refused until it is repaired"
             );
-            HandsCustody::Corrupt(CorruptHands { raw: recorded, error, original: None })
+            // The persisted diagnostic is rendered here, at the checkpoint boundary, from the typed cause.
+            HandsCustody::Corrupt(CorruptHands { raw: recorded, error: error.to_string(), original: None })
         }
     })
 }
