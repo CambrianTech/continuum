@@ -5,6 +5,7 @@
 pub mod embed_tools;
 pub mod generate_recipe;
 pub mod generate_response;
+pub mod hands_adopt;
 pub mod plan_turn_batch;
 pub mod rate_proposals;
 pub mod semantic_search_tools;

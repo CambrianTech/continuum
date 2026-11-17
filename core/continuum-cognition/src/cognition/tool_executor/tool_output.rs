@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn every_surface_she_is_offered_holds_the_verb_her_handles_name() {
         use crate::cognition::tool_surface::ToolSurface;
-        let surface = ToolSurface::build(crate::cognition::persona_tools::native_offers(), Vec::new(), |s| s);
+        let surface = ToolSurface::build(crate::cognition::persona_tools::native_offers(), Vec::new(), |s| s, |_| continuum_base::tool_contract::ContractRevision::FIRST);
         for declared in [vec![], vec!["code/git/**".to_string()], vec!["code/read".to_string()]] {
             let selected = surface.select(&declared, &[]);
             let names = surface.names_of(&selected);

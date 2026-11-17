@@ -58,13 +58,13 @@ fn her_view_survives_a_restart_in_her_checkpoint() {
     let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
     let rendered = |view: &View<super::ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>();
     let before = rendered(&view);
-    memory.keep_view(Some(view));
+    memory.keep_custody(Some(view), crate::cognition::hands_custody::HandsCustody::Unrecorded);
 
     let restored = WorkingMemory::new(8);
     restored.restore(memory.snapshot());
-    let resumed = restored.take_view().expect("the checkpoint carried her view");
+    let resumed = restored.resumed_custody().0.expect("the checkpoint carried her view");
     assert_eq!(rendered(&resumed), before);
-    assert!(restored.take_view().is_none(), "taken once, by the act that resumes it");
+    assert!(restored.snapshot().context_view.is_some(), "read, never taken: a checkpoint after the resume still carries her view");
 }
 
 // what this catches: the 2026-10-31 M5 outage. #5639 added `level` to the view's events, so every
@@ -83,7 +83,7 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };
     let whole = |claims: &[Claim]| claims.iter().map(|claim| claim.full).collect();
     let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), &[&actions as &dyn Source<_>], whole).unwrap();
-    memory.keep_view(Some(view));
+    memory.keep_custody(Some(view), crate::cognition::hands_custody::HandsCustody::Unrecorded);
     // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
     let good = serde_json::to_string(&memory.snapshot()).expect("encode");
 
@@ -103,7 +103,7 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let snap: VolatileSnapshot = serde_json::from_str(&older).expect("an older view never refuses the checkpoint");
     let restored = WorkingMemory::new(8);
     restored.restore(snap);
-    assert!(restored.take_view().is_none(), "the stale view is dropped: her next act opens a new epoch");
+    assert!(restored.resumed_custody().0.is_none(), "the stale view is dropped: her next act opens a new epoch");
     assert!(restored.has_receipt(), "her newest result survives");
     let settled = |m: &WorkingMemory| m.recent_entries().iter().any(|entry| entry.text.contains("listed the four files"));
     assert!(settled(&restored), "her settlement survives");
@@ -112,7 +112,7 @@ fn a_view_from_an_older_build_is_dropped_and_authoritative_state_survives() {
     let current: VolatileSnapshot = serde_json::from_str(&good).expect("the current view decodes");
     let resumed = WorkingMemory::new(8);
     resumed.restore(current);
-    assert!(resumed.take_view().is_some(), "a view that decodes is kept");
+    assert!(resumed.resumed_custody().0.is_some(), "a view that decodes is kept");
 
     // The next save keeps every authoritative field and carries no view until she renders one.
     let saved = serde_json::to_string(&restored.snapshot()).expect("encode");

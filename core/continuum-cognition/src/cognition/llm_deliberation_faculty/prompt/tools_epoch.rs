@@ -22,7 +22,7 @@
 //! head; re-selecting the head there turned a view re-prefill into a whole one.
 //!
 //! So the set AND its levels (her verbs' and her menu's, `framing.rs`) are held across her view's
-//! turnovers ([`ToolsEpoch`]) and change only:
+//! turnovers ([`HeldHands`]) and change only:
 //! - when the window cannot hold them (`delib.tools.epoch_level_lost`): re-chosen within it, and
 //!   held;
 //! - when the moves her held cards give her change (`delib.tools.epoch_moves_changed`), or the
@@ -30,6 +30,14 @@
 //!   permanent), at the next start of her view that funds what the new head adds, never mid-epoch:
 //!   a card's transition is a new epoch of her hands, one cached prefix (STATE-DRIVEN-SURFACE.md);
 //! - when her surface is rebuilt (`rebuild_tool_surface` clears it).
+//!
+//! # A held head sends the bytes it froze
+//!
+//! Each epoch of her head freezes its exact schemas (`hands_custody`, card 9cf06ade): its verbs
+//! whole, to price levels from, and its payload at its levels, sent by every act of the epoch
+//! without being rendered again, and checkpointed with her view, so a restart or a deploy that
+//! changed a schema sends the bytes her engine holds. A verb whose live contract moved is told
+//! to her as a notice instead (`context_streams::tool_contracts`).
 //!
 //! # The template puts her hands at the head
 //!
@@ -49,35 +57,14 @@
 //! set: its command refuses a call that no longer applies.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use continuum_context::allocation::{id, ActPlan, Head};
 
 use super::framing::FramingOffer;
 use super::*;
-use crate::cognition::tool_surface::{SelectedSurface, SurfaceReason, ToolSet, ToolsLeveled};
-
-/// What her head holds for its epoch: her verbs as canonical names in the order sent, each at its
-/// level, why, the held-card moves they were selected for, and her menu's expanded categories.
-#[derive(Clone, Debug)]
-pub(in super::super) struct ToolsEpoch {
-    names: Vec<String>,
-    /// Each verb's level, in sent order (`tool_surface::VerbLevels`: 0 whole).
-    levels: Vec<usize>,
-    reason: SurfaceReason,
-    /// The held-card moves it was selected for (`HeldWork::move_commands`).
-    moves: Vec<String>,
-    /// Moves that changed since and whose set waits for her head's next epoch: said once.
-    waiting: Vec<String>,
-    /// The menu categories her framing shows expanded (`framing.rs`).
-    menu: BTreeSet<String>,
-}
-
-impl ToolsEpoch {
-    /// The menu categories her head holds expanded.
-    pub(in super::super) fn menu(&self) -> &BTreeSet<String> {
-        &self.menu
-    }
-}
+use crate::cognition::hands_custody::{HeldHands, LiveContract, VerbContract};
+use crate::cognition::tool_surface::{SelectedSurface, ToolSet, ToolsLeveled};
 
 /// This act's hands before the allocation: her surface whole, its verbs as a consumer, and the
 /// levels her head holds.
@@ -91,6 +78,8 @@ pub(in super::super) struct ToolsOffer {
     moves: Vec<String>,
     /// The set her changed moves select, adopted at her head's next epoch.
     adopt: Option<SelectedSurface>,
+    /// Her held head as it froze, when she holds one.
+    frozen: Option<HeldHands>,
 }
 
 impl ToolsOffer {
@@ -116,6 +105,13 @@ pub(in super::super) struct NextHead {
     pub(in super::super) growth: usize,
 }
 
+/// What a new epoch of her head is adopted with, beside the surface it sends.
+struct Adoption {
+    levels: Vec<usize>,
+    menu: BTreeSet<String>,
+    moves: Vec<String>,
+}
+
 /// This act's hands after the allocation.
 pub(in super::super) struct ToolsChoice {
     /// What the budget charges and the request sends.
@@ -134,7 +130,7 @@ impl LlmDeliberationFaculty {
     /// moves add ride the tail until her head's next epoch), else this act's selection. Demand
     /// never depends on a grant.
     pub(in super::super) fn tools_offer(&self, ws: &Workspace, charge: &dyn Fn(usize) -> u32) -> ToolsOffer {
-        let held = self.tools_epoch.lock().clone();
+        let held = self.held_hands();
         let moves = ws.held.move_commands();
         let fresh = self.select_tool_surface(ws);
         let changed = held.as_ref().is_some_and(|held| held.moves != moves);
@@ -149,13 +145,14 @@ impl LlmDeliberationFaculty {
                         "a held card's transition changed the moves in her hands: her tool set changes at her head's next epoch; its new verbs ride the tail until then"
                     );
                 }
-                let mut sent = self.surface.retained(&held.names, held.reason, 0);
+                // Her held head as it froze: its own schemas, never re-read from the live surface,
+                // so a restart or a changed registry sends the bytes her engine holds.
+                let mut sent = SelectedSurface::frozen_whole(&held.whole, held.reason);
                 sent.tail = fresh.tail.clone(); // the verbs she loaded ride the tail, outside the prefix
                 let mut adopt = None;
                 if changed {
                     // The verbs her new moves add that the held head lacks ride the tail now.
-                    let head = self.surface.names_of(&sent);
-                    let added = self.surface.names_of(&fresh).into_iter().filter(|name| !head.contains(name)).collect::<Vec<_>>();
+                    let added = self.surface.names_of(&fresh).into_iter().filter(|name| !held.names.contains(name)).collect::<Vec<_>>();
                     let riding = self.surface.retained(&added, fresh.reason, 0).specs.as_deref().map(<[_]>::to_vec).unwrap_or_default(); // unwrap_or_default: a surface with no tools adds no verbs
                     let riding: Vec<_> = riding.into_iter().filter(|spec| !sent.tail.iter().any(|loaded| loaded.name == spec.name)).collect();
                     sent.tail.extend(riding);
@@ -165,22 +162,31 @@ impl LlmDeliberationFaculty {
             }
             None => (fresh, false, None),
         };
-        let set = self.tool_set_of(&surface, &moves);
+        // A held head is named as it froze, so a verb the live surface no longer offers keeps its place.
+        let set = match held.as_ref() {
+            Some(held) => self.tool_set_named(&held.names, &surface, &moves),
+            None => self.tool_set_of(&surface, &moves),
+        };
         let leveled = set.leveled(charge);
-        let held = held.as_ref().and_then(|held| set.rungs_of(&leveled, &held.levels));
-        ToolsOffer { surface, set, leveled, held, kept, moves, adopt }
+        let held_rungs = held.as_ref().and_then(|held| set.rungs_of(&leveled, &held.levels));
+        ToolsOffer { surface, set, leveled, held: held_rungs, kept, moves, adopt, frozen: held }
     }
 
     /// `surface` as a consumer, its verbs ranked by her held cards' moves and her learned head.
     fn tool_set_of(&self, surface: &SelectedSurface, moves: &[String]) -> ToolSet {
+        self.tool_set_named(&self.surface.names_of(surface), surface, moves)
+    }
+
+    /// [`Self::tool_set_of`] with `surface`'s canonical names given.
+    fn tool_set_named(&self, names: &[String], surface: &SelectedSurface, moves: &[String]) -> ToolSet {
         let head = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head ranks no verb by use
-        self.surface.tool_set(surface, moves, &head)
+        self.surface.tool_set_named(names, surface, moves, &head)
     }
 
     /// The surface the allocation's levels buy, and what her head adopts at its next epoch. A
     /// window that could no longer hold her held levels re-chose them, and says so.
     pub(in super::super) fn granted_tools(&self, ws: &Workspace, offer: ToolsOffer, framing: &FramingOffer, act: &ActPlan, charge: &dyn Fn(usize) -> u32) -> ToolsChoice {
-        let ToolsOffer { surface, set, leveled, held, kept, moves, adopt } = offer;
+        let ToolsOffer { surface, set, leveled, held, kept, moves, adopt, frozen } = offer;
         let rungs = act.chosen(id::TOOLS).map_or_else(|| leveled.leveled.at_limit().rungs, |choice| choice.rungs.clone()); // map_or_else: an unchosen part sits at its hard limit
         let levels = set.levels_of(&leveled, &rungs);
         let menu_rungs = act.chosen(id::FRAMING).map_or_else(|| framing.leveled.at_limit().rungs, |choice| choice.rungs.clone()); // map_or_else: as above
@@ -194,8 +200,18 @@ impl LlmDeliberationFaculty {
                 "the window could not hold her head's levels: they were re-chosen within it, and the whole prompt re-prefills"
             );
         }
-        let demand = set.render(&set.whole()).1;
-        let sent = surface.clone().at_levels(&set, &levels).with_demand(demand);
+        // A held head at its held levels sends the payload it froze, shared, never rendered again;
+        // its whole was priced at the freeze. Anything else renders once, and is frozen when held.
+        let held_at_levels = frozen.as_ref().filter(|held| kept && held.levels == levels);
+        let demand = held_at_levels.map_or_else(|| set.render(&set.whole()).1, |held| held.demand_tokens); // map_or_else: a head not held at these levels is priced from its schemas
+        let sent = match held_at_levels {
+            Some(held) => {
+                let mut sent = SelectedSurface::frozen_sent(&held.sent, held.sent_tokens, held.reason, demand);
+                sent.tail = surface.tail.clone();
+                sent
+            }
+            None => surface.clone().at_levels(&set, &levels).with_demand(demand),
+        };
         // Her learned head reserves the head her next epoch would hold, within this act's grant.
         self.reserve_next_head(ws, act.granted(id::TOOLS));
         let rise_menu = act.rise(id::FRAMING).map(|choice| framing.expanded(&choice.rungs));
@@ -245,21 +261,78 @@ impl LlmDeliberationFaculty {
         if refused {
             return (sent, menu); // a refused turn sent no surface
         }
-        let (sent, levels, menu, moves) = match next {
-            Some(next) if head_funded => (next.surface, next.levels, next.menu, moves),
-            Some(_) if kept => {
-                // Her set waits for her head's next epoch; the change is said once.
-                if let Some(held) = self.tools_epoch.lock().as_mut() {
-                    held.waiting = moves.clone();
-                    held.levels = levels;
-                    held.menu = menu.clone();
-                }
-                return (sent, menu);
+        let held = self.tools_epoch.lock().clone();
+        let (sent, menu, hands) = match (next, held) {
+            // This act started an epoch of her view that funded her head's next epoch: adopted.
+            (Some(next), held) if head_funded => {
+                let adoption = Adoption { levels: next.levels, menu: next.menu.clone(), moves };
+                let hands = self.freeze(&next.surface, adoption, held.as_ref());
+                (next.surface, next.menu, hands)
             }
-            _ => (sent, levels, menu, moves),
+            // Her head holds its set: a changed set waits for her head's next epoch (said once);
+            // levels the window re-chose are the same frozen verbs at new levels, a new epoch.
+            (next, Some(mut held)) if kept => {
+                held.waiting = if next.is_some() { moves } else { Vec::new() };
+                if held.levels != levels {
+                    held.levels = levels;
+                    held.sent = sent.specs.clone().unwrap_or_else(|| Arc::from(Vec::new())); // unwrap_or_else: a surface with no tools freezes none
+                    held.sent_tokens = sent.tokens;
+                    held.generation += 1;
+                }
+                held.menu = menu.clone();
+                (sent, menu, held)
+            }
+            // No head held (her first act, a rebuilt surface, levels lost): what this act sends.
+            (_, held) => {
+                let adoption = Adoption { levels, menu: menu.clone(), moves };
+                let hands = self.freeze(&sent, adoption, held.as_ref());
+                (sent, menu, hands)
+            }
         };
-        *self.tools_epoch.lock() = Some(ToolsEpoch { names: self.surface.names_of(&sent), levels, reason: sent.reason, moves, waiting: Vec::new(), menu: menu.clone() });
+        let generation = hands.generation;
+        *self.tools_epoch.lock() = Some(hands);
+        self.complete_adoption(generation);
+        self.keep_custody();
         (sent, menu)
+    }
+
+    /// A new epoch of her head from what `sent` carries: its verbs whole and its payload as sent,
+    /// each verb's contract as the live surface has it now, nothing told yet.
+    fn freeze(&self, sent: &SelectedSurface, adoption: Adoption, previous: Option<&HeldHands>) -> HeldHands {
+        let Adoption { levels, menu, moves } = adoption;
+        let names = self.surface.names_of(sent);
+        let none = || Arc::from(Vec::new());
+        let whole = self.surface.retained(&names, sent.reason, 0).specs.unwrap_or_else(none); // unwrap_or_else: a surface with no tools freezes none
+        let contracts = names
+            .iter()
+            .map(|name| match self.surface.live_contract(name) {
+                LiveContract::Offered { id, .. } => VerbContract::frozen(Some(id)),
+                LiveContract::Removed => VerbContract::frozen(None),
+            })
+            .collect();
+        let hands = HeldHands {
+            generation: previous.map_or(1, |previous| previous.generation + 1), // map_or: her first head is generation 1
+            names,
+            levels,
+            reason: sent.reason,
+            moves,
+            waiting: Vec::new(),
+            menu,
+            whole,
+            sent: sent.specs.clone().unwrap_or_else(none), // unwrap_or_else: a surface with no tools freezes none
+            sent_tokens: sent.tokens,
+            demand_tokens: sent.demand_tokens(),
+            contracts,
+        };
+        continuum_base::probe!(
+            class = "tools.custody.frozen",
+            persona = %self.persona_name,
+            generation = hands.generation,
+            verbs = hands.names.len(),
+            sent_tokens = hands.sent_tokens,
+            "a new epoch of her head: its exact schemas are frozen and sent by every act until the next"
+        );
+        hands
     }
 }
 

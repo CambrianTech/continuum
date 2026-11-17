@@ -18,6 +18,7 @@ pub(crate) mod open_views;
 pub(crate) mod tail;
 pub(crate) mod tasks;
 pub(crate) mod thoughts;
+pub(crate) mod tool_contracts;
 
 use continuum_context::epoch::Block;
 
@@ -44,6 +45,8 @@ pub(crate) enum Producer {
     /// A line of her act's tail named by what it says (`tail`): her framing, her working context,
     /// her statement, an empty room's world state, her call. Last, so no earlier id moves.
     Tail,
+    /// A held verb's contract notice (`tool_contracts`). After `Tail`, so no earlier id moves.
+    ToolContract,
 }
 
 /// An occurrence's id from its producer's own stable identity: whose (`persona`), which producer,
@@ -51,6 +54,12 @@ pub(crate) enum Producer {
 /// survives epochs and restarts exactly as long as the producer's identity does.
 pub(crate) fn element(persona: uuid::Uuid, producer: Producer, local: &[u8]) -> continuum_context::cause::ElementId {
     continuum_context::cause::ElementId::of(&[persona.as_bytes(), &[producer as u8], local])
+}
+
+/// A contract notice's occurrence id: the notice and the render receipt that shows it name one
+/// id, so what she was told is read from what she was shown (card 9cf06ade).
+pub(crate) fn tool_contract_element(persona: uuid::Uuid, change: &crate::cognition::hands_custody::ContractChange) -> continuum_context::cause::ElementId {
+    element(persona, Producer::ToolContract, change.key().as_bytes())
 }
 
 /// A standing item of `source` (a banner, a block that leads her view): the root of its activity,
@@ -67,6 +76,7 @@ pub(crate) struct MemoryStreams<'a> {
     pub tasks: tasks::Tasks<'a>,
     pub open_views: open_views::OpenViews<'a>,
     pub notices: notices::Notices<'a>,
+    pub tool_contracts: tool_contracts::ToolContracts<'a>,
 }
 
 impl<'a> MemoryStreams<'a> {
@@ -77,6 +87,7 @@ impl<'a> MemoryStreams<'a> {
             tasks: tasks::Tasks { memory, persona },
             open_views: open_views::OpenViews { memory, persona },
             notices: notices::Notices { memory, persona },
+            tool_contracts: tool_contracts::ToolContracts { memory, persona },
         }
     }
 }

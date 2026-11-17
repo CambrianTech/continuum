@@ -21,6 +21,7 @@ pub mod shell_portable;
 pub mod shown_text;
 pub mod time;
 pub mod token_estimate;
+pub mod tool_contract;
 pub mod tool_disclosure;
 pub mod tool_effect;
 pub mod tool_evidence;

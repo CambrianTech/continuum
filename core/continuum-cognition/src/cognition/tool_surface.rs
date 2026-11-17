@@ -50,7 +50,7 @@ use crate::ai::types::NativeToolSpec;
 ///
 /// `Default` is `NoTools` so a default `ContextComposition` is coherent: zero
 /// `tool_tokens` because no tools were offered, not a reason that disagrees with its cost.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum SurfaceReason {
     /// She has no native specs at all: nothing to offer, nothing to price.
     #[default]
@@ -130,6 +130,9 @@ pub struct ToolSurface {
     /// native registry alone, a help-loaded verb that was not native was silently dropped, and
     /// help's "callable on your next act" was false (the M5, 10-30: Atlas, 35 help calls).
     authorized: Offer,
+    /// Each `authorized` verb's contract (its declared revision and its exact wire bytes), same
+    /// order: computed once here, compared by value on every act (card 9cf06ade).
+    contracts: Vec<continuum_base::tool_contract::ContractId>,
     /// Her hands: every verb whose command declares `Core` or `OnDemand`.
     hands: Offer,
     /// The canonical name of each entry in `hands`, same order.
@@ -163,17 +166,23 @@ impl ToolSurface {
     /// now (`moves`), then the verbs her learned head holds (`head`: her measured use), then the
     /// rest. A verb nothing expands (`Always`) floors at its summary.
     pub fn tool_set(&self, selected: &SelectedSurface, moves: &[String], head: &[String]) -> ToolSet {
+        self.tool_set_named(&self.names_of(selected), selected, moves, head)
+    }
+
+    /// [`Self::tool_set`] with `selected`'s canonical names given, in its order: a held head's names
+    /// as it froze them, so a verb this surface no longer offers keeps its place (card 9cf06ade).
+    pub(crate) fn tool_set_named(&self, names: &[String], selected: &SelectedSurface, moves: &[String], head: &[String]) -> ToolSet {
         let finder = self
             .authorized_names
             .iter()
             .zip(self.authorized.specs.iter())
             .find(|(name, _)| name.as_str() == crate::cognition::tool_head::FINDER)
             .map_or(crate::cognition::tool_head::FINDER, |(_, spec)| spec.name.as_str()); // map_or: a surface without the finder names it canonically
-        let names = self.names_of(selected);
         let specs = selected.specs.as_deref().unwrap_or(&[]); // unwrap_or: no surface sends no verbs
         ToolSet::new(
             names
-                .into_iter()
+                .iter()
+                .cloned()
                 .zip(specs)
                 .map(|(name, spec)| {
                     let always = self.always.contains(&name);
@@ -239,6 +248,7 @@ impl ToolSurface {
         mut offers: Vec<OfferedTool>,
         mut authorized: Vec<NativeToolSpec>,
         to_wire: impl Fn(NativeToolSpec) -> NativeToolSpec,
+        revision_of: impl Fn(&str) -> continuum_base::tool_contract::ContractRevision,
     ) -> Self {
         let held_by = |disclosure: Disclosure| match disclosure {
             Disclosure::Always => 0,
@@ -255,9 +265,17 @@ impl ToolSurface {
         authorized.extend(raw.iter().cloned());
         authorized.sort_by(|a, b| a.name.cmp(&b.name));
         let wire = |specs: Vec<NativeToolSpec>| Offer::of(specs.into_iter().map(&to_wire).collect());
+        let authorized_names: Vec<String> = authorized.iter().map(|spec| &spec.name).cloned().collect();
+        let authorized = wire(authorized);
+        let contracts = authorized_names
+            .iter()
+            .zip(authorized.specs.iter())
+            .map(|(name, spec)| contract_id(revision_of(name), spec))
+            .collect();
         Self {
-            authorized_names: authorized.iter().map(|spec| spec.name.clone()).collect(),
-            authorized: wire(authorized),
+            authorized_names,
+            authorized,
+            contracts,
             names: raw.iter().map(|spec| spec.name.clone()).collect(),
             hands: wire(hands_surface(&offers)),
             hands_names: offers.iter().filter(|offer| offer.disclosure.in_hands()).map(|offer| offer.spec.name.clone()).collect(),
@@ -306,6 +324,16 @@ impl ToolSurface {
             })
             .collect::<Result<Vec<_>, String>>()?;
         tool_working_set::Vocabulary::new(schemas)
+    }
+
+    /// `canonical`'s contract as she would be offered it now, with its whole schema: what her held
+    /// hands are compared against (`hands_custody`). A verb no longer authorized here is removed.
+    pub(crate) fn live_contract(&self, canonical: &str) -> super::hands_custody::LiveContract {
+        self.authorized_names
+            .iter()
+            .position(|name| name == canonical)
+            .and_then(|at| Some((*self.contracts.get(at)?, self.authorized.specs.get(at)?.clone())))
+            .map_or(super::hands_custody::LiveContract::Removed, |(id, spec)| super::hands_custody::LiveContract::Offered { id, spec }) // map_or: a verb this surface no longer authorizes is removed for her
     }
 
     /// The canonical names of what `selected` sends in its head, in the order it sends them:
@@ -428,6 +456,17 @@ impl SelectedSurface {
         self.demand
     }
 
+    /// Her held head's whole schemas as it froze them, to price its levels from (card 9cf06ade).
+    pub(crate) fn frozen_whole(whole: &Arc<[NativeToolSpec]>, reason: SurfaceReason) -> Self {
+        Self::shared(whole, 0, reason, 0)
+    }
+
+    /// Exactly what her held head sends at its levels: the payload rendered once at its freeze,
+    /// shared by every act's request, never rendered again (card 9cf06ade).
+    pub(crate) fn frozen_sent(sent: &Arc<[NativeToolSpec]>, tokens: usize, reason: SurfaceReason, demand: usize) -> Self {
+        Self::shared(sent, tokens, reason, demand)
+    }
+
     /// No surface: a turn refused for capacity before it could be offered one.
     pub fn none() -> Self {
         Self { specs: None, tokens: 0, reason: SurfaceReason::NoTools, demand: 0, tail: Vec::new() }
@@ -478,6 +517,21 @@ pub fn core_hands(offers: &[OfferedTool]) -> Vec<NativeToolSpec> {
 /// `Withheld` verb stays callable by name and never joins them.
 pub fn hands_surface(offers: &[OfferedTool]) -> Vec<NativeToolSpec> {
     offers.iter().filter(|offer| offer.disclosure.in_hands()).map(|offer| offer.spec.clone()).collect()
+}
+
+/// A verb's contract identity: its declared revision and every field of its spec as sent. The one
+/// function a surface's build and dispatch's re-check (`hands_custody::live_at_dispatch`) both
+/// compute, so the two cannot disagree (card 9cf06ade).
+pub(crate) fn contract_id(revision: continuum_base::tool_contract::ContractRevision, wire: &NativeToolSpec) -> continuum_base::tool_contract::ContractId {
+    continuum_base::tool_contract::ContractId::of(revision, &wire_bytes(wire))
+}
+
+/// Every field of a spec as the wire carries it, separated: what a contract identity is computed
+/// over. Built from the fields themselves (a JSON value's text cannot fail), so no error is dropped.
+fn wire_bytes(spec: &NativeToolSpec) -> Vec<u8> {
+    let schema = &spec.input_schema;
+    let definitions = schema.definitions.as_ref().map_or_else(String::new, ToString::to_string); // map_or_else: a schema with no definitions has none to show
+    format!("{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{:?}\u{1f}{definitions}", spec.name, spec.description, schema.schema_type, schema.properties, schema.required).into_bytes()
 }
 
 /// Serialize and count a tool surface: paid once per [`ToolSurface::build`], never per turn.
@@ -552,7 +606,8 @@ mod tests {
         let native: Vec<_> = REGISTRY.iter().map(offer).collect();
         let mut authorized: Vec<_> = native.iter().map(|o| o.spec.clone()).collect();
         authorized.push(spec("chat/poll"));
-        let surface = ToolSurface::build(native, authorized.clone(), |s| s);
+        let held = authorized.clone();
+        let surface = ToolSurface::build(native, held, |s| s, |_| continuum_base::tool_contract::ContractRevision::FIRST);
         let floor = surface.hands().to_vec();
         let selected = surface.learned(&floor, &[], &["chat/poll".to_string()]);
         assert!(selected.tail.iter().any(|t| t.name == "chat/poll"), "{:?}", selected.tail);
@@ -614,7 +669,7 @@ mod tests {
     fn built<'a>(order: impl Iterator<Item = &'a (&'static str, Disclosure)>) -> ToolSurface {
         let offers: Vec<_> = order.map(offer).collect();
         let specs = offers.iter().map(|o| o.spec.clone()).collect();
-        ToolSurface::build(offers, specs, |s| s)
+        ToolSurface::build(offers, specs, |s| s, |_| continuum_base::tool_contract::ContractRevision::FIRST)
     }
 
     // what this catches: a verb's place in her hands decided by its name instead of the value its

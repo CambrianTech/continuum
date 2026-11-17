@@ -398,6 +398,8 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
     /// For a `Withheld` verb: why, and what to use instead. See [`CommandSpec::WITHHELD`].
     const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
+    /// Which revision of its meaning the schema stands for. See [`CommandSpec::CONTRACT_REVISION`].
+    const CONTRACT_REVISION: continuum_base::tool_contract::ContractRevision = continuum_base::tool_contract::ContractRevision::FIRST;
 
     /// The typed request payload (a ts-rs wire type). `JsonSchema` so its schema
     /// is derived automatically (no hand-authoring) and exposed to every SDK.
@@ -421,6 +423,7 @@ impl<T: ActionCommand> CommandSpec for T {
     const EFFECT: continuum_base::tool_effect::ToolEffect = <T as ActionCommand>::EFFECT;
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = <T as ActionCommand>::DISCLOSURE;
     const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = <T as ActionCommand>::WITHHELD;
+    const CONTRACT_REVISION: continuum_base::tool_contract::ContractRevision = <T as ActionCommand>::CONTRACT_REVISION;
     const WIRE: WireShape = WireShape::Bare;
     type Params = <T as ActionCommand>::Params;
     type Result = <T as ActionCommand>::Output;

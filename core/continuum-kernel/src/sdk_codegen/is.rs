@@ -133,6 +133,10 @@ pub trait CommandSpec {
     const DISCLOSURE: continuum_base::tool_disclosure::Disclosure = continuum_base::tool_disclosure::Disclosure::Core;
     /// For a `Withheld` verb: why, and what to use instead, shown when she reaches for it.
     const WITHHELD: Option<continuum_base::tool_disclosure::WithheldGuidance> = None;
+    /// Which revision of this command's meaning its schema stands for. Bump it when a call valid
+    /// under the same schema now does something else: a mind holding the older contract is told
+    /// before her next act (card 9cf06ade). A schema or description edit needs no bump.
+    const CONTRACT_REVISION: continuum_base::tool_contract::ContractRevision = continuum_base::tool_contract::ContractRevision::FIRST;
     /// The handler's ACTUAL wire convention — decides whether the generated
     /// surface is enveloped or bare. MUST match what the handler really does
     /// (a mismatch is a type that lies about the wire).
@@ -278,6 +282,8 @@ pub struct CommandDescriptor {
     pub disclosure: continuum_base::tool_disclosure::Disclosure,
     /// Why a withheld verb is withheld and what to use instead (from [`CommandSpec::WITHHELD`]).
     pub withheld: Option<continuum_base::tool_disclosure::WithheldGuidance>,
+    /// Which revision of its meaning the schema stands for (from [`CommandSpec::CONTRACT_REVISION`]).
+    pub contract_revision: continuum_base::tool_contract::ContractRevision,
     pub params: TypeRef,
     /// The params' JSON Schema (from [`CommandSpec::params_schema`]) — the
     /// canonical input contract every SDK/interface adapts from. `Null` when the
@@ -322,6 +328,7 @@ impl CommandDescriptor {
             effect: C::EFFECT,
             disclosure: C::DISCLOSURE,
             withheld: C::WITHHELD,
+            contract_revision: C::CONTRACT_REVISION,
             params,
             params_schema,
             result,

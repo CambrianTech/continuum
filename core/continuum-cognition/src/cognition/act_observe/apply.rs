@@ -183,6 +183,10 @@ pub async fn apply_act(
     // (ONE-ACT 6b): a held call (cut, errored, unreported, malformed) is no effect, is never
     // dispatched in the background, and reaches the executor only to be answered with why.
     let batch = crate::ai::types::CallBatch::classify(calls.iter().cloned(), origin);
+    // A call on a verb whose contract moved, before a served prompt told her, runs on neither
+    // route below: it is answered with what moved (`contract_gate`, card 9cf06ade).
+    let contract_held = super::contract_gate::held_back(&batch, &body.working_memory);
+    let batch = batch.without_committed(|committed| contract_held.iter().any(|held| held.call.id == committed.call().id));
     let effect_calls: Vec<(String, String)> = batch
         .committed()
         .map(|committed| committed.call())
@@ -261,7 +265,8 @@ pub async fn apply_act(
             }
             fg
         }
-        None => calls.to_vec(),
+        // The batch as gated: a call the contract gate held back is answered only by the gate.
+        None => batch.entries().iter().map(|entry| entry.call()).cloned().collect(),
     };
 
     // #186 compass: the hands are moving — fire the Act axis on the live glass-box the
@@ -435,6 +440,7 @@ pub async fn apply_act(
     // Every requested call needs its own truthful receipt, including background
     // calls in a mixed batch. Native continuation must never omit their IDs.
     append_dispatched_observations(&mut acts, &dispatched_calls);
+    acts.extend(contract_held.iter().map(|held| super::contract_gate::refused(&held.call, &held.change)));
     let call_order: std::collections::HashMap<_, _> = calls.iter()
         .enumerate().map(|(ordinal, call)| (call.id.as_str(), ordinal)).collect();
     acts.sort_by_key(|observation| call_order.get(observation.call.id.as_str()).copied());

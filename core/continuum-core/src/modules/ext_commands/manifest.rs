@@ -339,6 +339,9 @@ impl ProcessCommand {
             // disclosure, and the author chose `native` to put it in her prompt.
             disclosure: continuum_base::tool_disclosure::Disclosure::Core,
             withheld: None,
+            // Its manifest declares no revision: a change to an authored command reaches her
+            // through its schema bytes, which its ContractId already binds.
+            contract_revision: continuum_base::tool_contract::ContractRevision::FIRST,
             params: json.clone(),
             params_schema: self.manifest.params.clone(),
             result: json.clone(),

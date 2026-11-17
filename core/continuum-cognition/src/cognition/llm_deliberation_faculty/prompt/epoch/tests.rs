@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::context_streams::blocks::Grounding;
 use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;
@@ -145,7 +146,7 @@ fn consecutive_acts_share_the_whole_view_and_a_turnover_keeps_the_settled_front(
         LlmDeliberationFaculty::view_sources(&now, Some(&memory_streams)).iter().map(|s| s.name()).collect();
     assert_eq!(
         names,
-        ["workspace-map", "room-kanban", "recall", "held-work", "actions", "conversation", "thoughts", "tasks", "open-views", "notices", "facts"],
+        ["workspace-map", "room-kanban", "recall", "held-work", "actions", "conversation", "thoughts", "tasks", "open-views", "notices", "tool-contracts", "facts"],
         "a first start's tie: her grounding blocks, her held work, her actions and conversation, then what changes within an epoch, then what her situation shows now, right before the act's tail"
     );
 

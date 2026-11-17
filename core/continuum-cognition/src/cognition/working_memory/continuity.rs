@@ -200,6 +200,11 @@ impl WorkingMemory {
                 .collect();
             (actions.records().cloned().collect::<Vec<action_log::ActionRecord>>(), recent_results)
         };
+        // Her view and its hands under their ONE lock, taken before the literal (see above).
+        let (context_view, context_hands, superseded_hands) = {
+            let custody = self.view.lock();
+            (custody.view.clone(), custody.hands.clone(), custody.superseded.clone())
+        };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
             entries,
@@ -223,7 +228,9 @@ impl WorkingMemory {
                 .collect(),
             actions: records,
             thoughts: self.thoughts(),
-            context_view: self.view.lock().clone(),
+            context_view,
+            context_hands,
+            superseded_hands,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
             act_times: self.act_times.lock().clone(),
@@ -238,16 +245,82 @@ impl WorkingMemory {
     /// labels it recorded as pending. It does not establish when an interruption
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
-    /// Keep her context view as this act left it, for the checkpoint.
-    pub(crate) fn keep_view(&self, view: Option<ContextView>) {
+    /// Keep her context view and the hands it is rendered with as her faculty holds them now, as
+    /// one pair under one lock, for the checkpoint (card 9cf06ade).
+    pub(crate) fn keep_custody(&self, view: Option<ContextView>, hands: crate::cognition::hands_custody::HandsCustody) {
+        let mut custody = self.view.lock();
+        custody.view = view;
+        custody.hands = hands;
+        // After the change: a checkpoint that read the new generation always snapshots it.
         self.touch();
-        *self.view.lock() = view;
     }
 
-    /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
-    pub fn take_view(&self) -> Option<ContextView> {
+    /// Her context view and its hands as her checkpoint holds them, read together by the act that
+    /// resumes them. Read, never taken: the pair stays in her memory until her faculty keeps its own
+    /// (`keep_custody`), so a checkpoint written in between still carries it. A take left no view
+    /// and an unrecorded head for a periodic save to persist over a valid one (Codex's review of
+    /// #6105 at 8ff046e15). The copy is made once per resume, never per act.
+    pub(crate) fn resumed_custody(&self) -> (Option<ContextView>, crate::cognition::hands_custody::HandsCustody) {
+        let custody = self.view.lock();
+        (custody.view.clone(), custody.hands.clone())
+    }
+
+    /// Drop the view and hands this memory holds, so the next act starts its own.
+    pub fn release_custody(&self) {
+        {
+            let mut custody = self.view.lock();
+            custody.view = None;
+            custody.hands = crate::cognition::hands_custody::HandsCustody::default();
+        }
+        // After the change: a checkpoint that read the new generation always snapshots it.
         self.touch();
-        self.view.lock().take()
+    }
+
+    /// Her held verbs whose live contract she has not been told, as this act found them: what her
+    /// view's contract notices render (`context_streams::tool_contracts`).
+    pub(crate) fn set_contract_changes(&self, changes: impl IntoIterator<Item = crate::cognition::hands_custody::ContractChange>) {
+        self.view.lock().changes = changes.into_iter().collect();
+    }
+
+    pub(crate) fn contract_changes(&self) -> Vec<crate::cognition::hands_custody::ContractChange> {
+        self.view.lock().changes.clone()
+    }
+
+    /// Ask that her head be adopted from the live surface at her next act (`persona/hands/adopt`):
+    /// the explicit repair of a refused head, recorded with who asked.
+    pub fn request_hands_adoption(&self, by: &str) {
+        self.view.lock().adoption = Some(by.to_string());
+    }
+
+    /// Keep the head an adoption replaced, as it was, with her checkpoint.
+    pub(crate) fn record_superseded(&self, superseded: crate::cognition::hands_custody::SupersededHands) {
+        self.view.lock().superseded.push(superseded);
+        self.touch();
+    }
+
+    /// Who asked that her head be adopted, taken once by the act that honours it.
+    pub(crate) fn take_hands_adoption(&self) -> Option<String> {
+        self.view.lock().adoption.take()
+    }
+
+    /// Her faculty's built surface, shared at every rebuild (`LlmDeliberationFaculty::share_vocabulary`).
+    pub(crate) fn set_live_surface(&self, surface: Arc<crate::cognition::tool_surface::ToolSurface>) {
+        *self.live_surface.lock() = Some(surface);
+    }
+
+    /// `canonical`'s contract as her current surface offers it, by the identity computed once at its
+    /// build: a lookup, never a re-derivation. `None` before her faculty has shared a surface.
+    pub(crate) fn live_contract(&self, canonical: &str) -> Option<crate::cognition::hands_custody::LiveContract> {
+        self.live_surface.lock().as_ref().map(|surface| surface.live_contract(canonical))
+    }
+
+    /// `canonical`'s change when her held head holds that verb and `now` is not the contract she
+    /// knows: what a call to it is checked against at dispatch (`act_observe::contract_gate`).
+    pub(crate) fn held_change(&self, canonical: &str, now: crate::cognition::hands_custody::LiveContract) -> Option<crate::cognition::hands_custody::ContractChange> {
+        match &self.view.lock().hands {
+            crate::cognition::hands_custody::HandsCustody::Held(hands) => hands.change(canonical, now),
+            _ => None,
+        }
     }
 
     pub fn restore(&self, mut snap: VolatileSnapshot) {
@@ -315,7 +388,13 @@ impl WorkingMemory {
         *self.actions.lock() = action_log::ActionLog::from_records(records);
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;
-        *self.view.lock() = snap.context_view;
+        {
+            let mut custody = self.view.lock();
+            custody.view = snap.context_view;
+            custody.hands = snap.context_hands;
+            custody.superseded = snap.superseded_hands;
+            custody.changes.clear();
+        }
         *self.act_times.lock() = snap.act_times;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
         // Restored bodies stay resident until the memory owner sheds: neither the window (a

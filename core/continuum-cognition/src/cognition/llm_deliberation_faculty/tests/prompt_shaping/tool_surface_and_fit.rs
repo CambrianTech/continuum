@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::cognition::working_memory::WorkingMemory;
 
 // what this catches: THE echo-loop fix. A mixed thread (peer → self → peer)
 // must reach the model as ROLE-ATTRIBUTED messages — the persona's own earlier
@@ -599,4 +600,250 @@ fn the_request_and_its_clone_carry_her_head_without_copying_it() {
     let owned: Vec<NativeToolSpec> = head.to_vec();
     let (shared_wire, owned_wire) = (serde_json::to_string(sent).expect("schemas"), serde_json::to_string(&owned).expect("schemas"));
     assert_eq!(shared_wire, owned_wire, "the wire bytes are the schemas', whoever holds them");
+}
+
+/// A deploy between two acts: her checkpoint written and read back by a new process, whose
+/// faculty is built on the restored memory with `surface` (`None`: the registry as it is).
+fn after_a_restart(wm: &WorkingMemory, surface: Option<crate::cognition::tool_surface::ToolSurface>) -> (Arc<WorkingMemory>, LlmDeliberationFaculty) {
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let saved = serde_json::to_string(&wm.snapshot()).expect("a checkpoint encodes");
+    let restored = Arc::new(WorkingMemory::new(8));
+    restored.restore(serde_json::from_str(&saved).expect("its own checkpoint decodes"));
+    let mut faculty = asha_with_hands().with_working_memory(Arc::clone(&restored));
+    if let Some(surface) = surface {
+        faculty.surface = Arc::new(surface);
+        faculty.share_vocabulary();
+    }
+    (restored, faculty)
+}
+
+/// The live registry with one held verb's description changed: a deploy that changed its schema.
+fn registry_changing(faculty: &LlmDeliberationFaculty, wire_name: &str) -> crate::cognition::tool_surface::ToolSurface {
+    let mut offers = crate::cognition::persona_tools::native_offers();
+    let offer = offers
+        .iter_mut()
+        .find(|offer| {
+            let spec = offer.spec.clone();
+            crate::ai::tool_dialect::to_wire_spec(spec).name == wire_name
+        })
+        .expect("the held verb is a native offer"); // JUSTIFIED: test fixture
+    offer.spec.description.push_str(" Its contract changed in this deploy.");
+    let tools = faculty.tools.clone();
+    crate::cognition::tool_surface::ToolSurface::build(offers, tools, crate::ai::tool_dialect::to_wire_spec, |_| continuum_base::tool_contract::ContractRevision::FIRST)
+}
+
+fn schemas(specs: &[NativeToolSpec]) -> String {
+    serde_json::to_string(specs).expect("schemas")
+}
+
+// what this catches (card 9cf06ade; the M5's #6102 deploy, 2026-11-17: `work_note`'s description
+// changed, every resident's prefix broke at token 5,739 and Aiko's 119,972-token prompt was
+// recomputed in 435 s): a restart re-reading her head from a registry whose schema changed. The
+// schema-only replay: the same messages, one held verb's contract changed between the acts. Her
+// head after the restart is byte-identical to the one her engine holds, her system turn too, and
+// she is told the verb's contract moved before she acts.
+#[test]
+fn a_restart_sends_the_head_she_froze_and_tells_her_what_moved() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    assert!(first.capacity_error.is_none(), "{:?}", first.capacity_error);
+    let frozen = first.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    let moved = frozen[0].name.clone();
+    let canonical = crate::ai::tool_dialect::resolve_wire_name(&moved);
+    let changed = registry_changing(&before, &moved);
+    let (_, after) = after_a_restart(&wm, Some(changed));
+    let second = after.prompt_view_within(&ws, 200_000);
+    assert!(second.capacity_error.is_none(), "{:?}", second.capacity_error);
+    let sent = second.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    assert_eq!(schemas(&sent), schemas(&frozen), "her head is the bytes her engine holds, not the changed registry's");
+    assert_eq!(second.system, first.system, "her system turn is unchanged");
+    let told = |view: &DeliberationPromptView| view.messages.iter().filter(|m| m.content_text().contains(&format!("My tool `{canonical}` changed"))).count();
+    assert_eq!(told(&first), 0, "nothing moved before the deploy");
+    assert_eq!(told(&second), 1, "she is told before she acts, once");
+}
+
+// what this catches (Codex's review of 9cf06ade): a notice marked told when it was made rather than
+// when a served prompt showed it, or told again on every wake and after every restart.
+#[test]
+fn a_contract_notice_is_told_once_from_what_was_served_and_survives_a_restart() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    let frozen = first.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    let moved = frozen[0].name.clone();
+    let canonical = crate::ai::tool_dialect::resolve_wire_name(&moved);
+    let notice = format!("My tool `{canonical}` changed");
+    let (restored, after) = after_a_restart(&wm, Some(registry_changing(&before, &moved)));
+    let second = after.prompt_view_within(&ws, 200_000);
+    assert!(second.messages.iter().any(|m| m.content_text().contains(&notice)), "the notice is in her prompt");
+    // Not served: the next wake still owes it.
+    assert_eq!(restored.contract_changes().len(), 1, "made is not told");
+    after.view_served(&second);
+    let third = after.prompt_view_within(&ws, 200_000);
+    assert!(restored.contract_changes().is_empty(), "served whole, it is told");
+    assert_eq!(third.messages.iter().filter(|m| m.content_text().contains(&notice)).count(), 1, "kept in her view once, never appended again");
+    let (_, later) = after_a_restart(&restored, Some(registry_changing(&before, &moved)));
+    let fourth = later.prompt_view_within(&ws, 200_000);
+    assert_eq!(schemas(fourth.tools.specs.as_deref().expect("her hands are a surface")), schemas(&frozen), "her head is still the bytes her engine holds"); // JUSTIFIED: test fixture
+    assert!(later.working_memory.as_deref().is_some_and(|wm| wm.contract_changes().is_empty()), "what she was told survives the restart");
+}
+
+// what this catches (Codex's review of #6105 at 34a1febb7): a transition she was told before
+// (A -> B, then B -> A, then A -> B again, a restart between each) named by the same key as the first
+// notice, so her view kept the old notice as unchanged and the served receipt marked B told while her
+// newest notice still said A. Each notice is its own occurrence: the third is appended after the
+// second, and serving it is what tells her B.
+#[test]
+fn a_repeated_contract_transition_is_a_new_notice_after_the_latest_one() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    let moved = first.tools.specs.clone().expect("her hands are a surface")[0].name.clone(); // JUSTIFIED: test fixture
+    let canonical = crate::ai::tool_dialect::resolve_wire_name(&moved).to_string();
+    let notices = |view: &DeliberationPromptView| -> Vec<String> {
+        view.messages.iter().map(|m| m.content_text().to_string()).filter(|text| text.contains(&format!("My tool `{canonical}` changed"))).collect()
+    };
+
+    // A -> B, served.
+    let (memory, to_b) = after_a_restart(&wm, Some(registry_changing(&before, &moved)));
+    let view = to_b.prompt_view_within(&ws, 200_000);
+    let b = memory.contract_changes()[0].now.id().expect("B is offered"); // JUSTIFIED: test fixture
+    to_b.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "B is told");
+
+    // B -> A, served.
+    let (memory, to_a) = after_a_restart(&memory, None);
+    let view = to_a.prompt_view_within(&ws, 200_000);
+    let a = memory.contract_changes()[0].now.id().expect("A is offered"); // JUSTIFIED: test fixture
+    to_a.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "A is told");
+
+    // A -> B again: the same edge as the first notice, after the latest one.
+    let (memory, again) = after_a_restart(&memory, Some(registry_changing(&before, &moved)));
+    let view = again.prompt_view_within(&ws, 200_000);
+    let shown = notices(&view);
+    assert_eq!(shown.len(), 3, "each transition is its own notice: {shown:#?}");
+    assert!(shown[1].contains(&format!("-> {}", a.hex())), "the second says A");
+    assert!(shown[2].contains(&format!("-> {}", b.hex())), "her newest notice says B, after the one that said A");
+    assert_eq!(memory.contract_changes().len(), 1, "not told until served");
+    again.view_served(&view);
+    assert!(memory.contract_changes().is_empty(), "served whole, B is told");
+    let (memory, later) = after_a_restart(&memory, Some(registry_changing(&before, &moved)));
+    later.prompt_view_within(&ws, 200_000);
+    assert!(memory.contract_changes().is_empty(), "what she was told survives the restart: B, not the A the old receipt would leave");
+}
+
+// what this catches (Codex's review of 9cf06ade): an undecodable head read as absent and silently
+// replaced by the live tools, or its bytes lost: it waits for an explicit adoption, view kept. And
+// (Joel, 2026-11-17: no legacy in a beta) a view checkpointed before heads were recorded is legacy
+// data: dropped, never adopted warm and never a refusal; her next act opens a new epoch.
+#[test]
+fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoption() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
+    use crate::cognition::hands_custody::{HandsCustody, SupersededPrior};
+    let saved = wm.snapshot();
+    assert!(matches!(saved.context_hands, HandsCustody::Held(_)), "her head is checkpointed beside her view");
+    let unreadable = serde_json::json!({"generation": "not a number"});
+
+    // A record that did not decode (its decode is `hands_custody`'s unit test), restored beside her view.
+    let mut corrupt = saved.clone();
+    let record = crate::cognition::hands_custody::CorruptHands { raw: unreadable, error: "invalid type".to_string(), original: None };
+    let as_read = HandsCustody::Corrupt(record);
+    corrupt.context_hands = as_read.clone();
+    let broken = Arc::new(WorkingMemory::new(8));
+    broken.restore(corrupt);
+    let repairing = asha_with_hands().with_working_memory(Arc::clone(&broken));
+    let refused = repairing.prompt_view_within(&ws, 200_000);
+    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
+    assert_eq!(broken.snapshot().context_hands, as_read, "it is checkpointed as it was");
+    broken.request_hands_adoption("operator");
+    let repaired = repairing.prompt_view_within(&ws, 200_000);
+    assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
+    let kept = broken.snapshot().superseded_hands;
+    let [replaced] = kept.as_slice() else {
+        panic!("one adoption replaced one head: {kept:?}"); // JUSTIFIED: test fixture
+    };
+    let HandsCustody::Corrupt(record) = as_read else {
+        panic!("the record restored is corrupt"); // JUSTIFIED: test fixture
+    };
+    assert_eq!(replaced.prior, SupersededPrior::Corrupt(record), "the record it replaced is kept, never erased");
+    assert_eq!((replaced.by.as_str(), replaced.generation >= 1), ("operator", true), "with who asked and the generation that replaced it");
+
+    // Legacy data: a view checkpointed with no head beside it.
+    let mut legacy = saved;
+    legacy.context_hands = HandsCustody::Unrecorded;
+    let old = Arc::new(WorkingMemory::new(8));
+    old.restore(legacy);
+    let resumed = asha_with_hands().with_working_memory(Arc::clone(&old));
+    let fresh = resumed.prompt_view_within(&ws, 200_000);
+    assert!(fresh.protocol_error.is_none(), "legacy data is dropped, never a refusal: {:?}", fresh.protocol_error);
+    assert!(matches!(old.snapshot().context_hands, HandsCustody::Held(_)), "her next act freezes her head");
+    assert!(old.snapshot().superseded_hands.is_empty(), "nothing was adopted from the legacy view");
+}
+
+// what this catches (Codex's review of #6105 at 8ff046e15): her resume TOOK her view and head out of
+// her memory, so a periodic checkpoint written between the resume and her faculty's next keep saved no
+// view and an unrecorded head over a valid one, and the restart after it re-read her head from the live
+// surface: the re-prefill this custody exists to prevent. The interleaving, deterministically: resume,
+// then checkpoint before anything is kept, and that checkpoint carries the original pair.
+#[test]
+fn a_checkpoint_between_her_resume_and_her_next_keep_still_carries_her_pair() {
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    before.view_served(&first);
+    let held = wm.snapshot().context_hands;
+    assert!(matches!(held, crate::cognition::hands_custody::HandsCustody::Held(_)), "her head is held before the restart");
+
+    let (restored, after) = after_a_restart(&wm, None);
+    after.resume_custody();
+    let between = restored.snapshot();
+    assert_eq!(between.context_hands, held, "the checkpoint after her resume carries her held head");
+    assert!(between.context_view.is_some(), "and her view");
+
+    // A restart from that checkpoint sends the head her engine holds, not the live registry's.
+    let (_, again) = after_a_restart(&restored, None);
+    let resumed = again.prompt_view_within(&ws, 200_000);
+    assert_eq!(schemas(resumed.tools.specs.as_deref().expect("her hands are a surface")), schemas(first.tools.specs.as_deref().expect("her hands are a surface")), "her head survives the save in between"); // JUSTIFIED: test fixture
+}
+
+// what this catches (Codex's review of #6105 at 89a641c01): a checkpoint whose head decodes but whose
+// verbs and contracts do not line up, resumed as held. Her contract gate then found no contract for
+// the verb and neither told her of a change nor held the call back. Only the contracts are changed in
+// an otherwise valid checkpoint: her act is refused, her view kept, and the record kept as written.
+#[test]
+fn a_checkpointed_head_whose_contracts_do_not_line_up_refuses_her_act_and_is_kept() {
+    use crate::cognition::hands_custody::HandsCustody;
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    before.view_served(&first);
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let saved = serde_json::to_string(&wm.snapshot()).expect("a checkpoint encodes"); // JUSTIFIED: test fixture
+    let hands_at = saved.find("\"context_hands\":").expect("her head is checkpointed"); // JUSTIFIED: test fixture
+    let start = hands_at + saved[hands_at..].find("\"contracts\":[").expect("with its contracts"); // JUSTIFIED: test fixture
+    let end = start + saved[start..].find(']').expect("a contract list closes"); // JUSTIFIED: test fixture
+    let altered = format!("{}\"contracts\":[{}", &saved[..start], &saved[end..]);
+
+    let restored = Arc::new(WorkingMemory::new(8));
+    restored.restore(serde_json::from_str(&altered).expect("the checkpoint still decodes")); // JUSTIFIED: test fixture
+    let HandsCustody::Corrupt(record) = restored.snapshot().context_hands else {
+        panic!("a head whose contracts do not line up is corrupt, never held"); // JUSTIFIED: test fixture
+    };
+    assert_eq!(record.raw["contracts"], serde_json::json!([]), "kept as written");
+    let after = asha_with_hands().with_working_memory(Arc::clone(&restored));
+    let refused = after.prompt_view_within(&ws, 200_000);
+    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("contracts")), "her act is refused with the reason: {:?}", refused.protocol_error);
+    assert!(restored.snapshot().context_view.is_some(), "her view is kept");
+    assert!(matches!(restored.snapshot().context_hands, HandsCustody::Corrupt(_)), "and her record, never replaced by the live tools");
 }

@@ -1,0 +1,515 @@
+//! The hands an epoch of her head froze, and what she has been told about their contracts since
+//! (card 9cf06ade).
+//!
+//! The served model's template renders her tool schemas at the very head of the prompt, so one
+//! changed schema re-prefills everything behind it: the #6102 deploy on the M5 (2026-11-17) changed
+//! `work_note`'s description, the shared prefix broke at token 5,739, and Aiko's 119,972-token
+//! prompt was recomputed in 435 s while Aris waited behind it. So an epoch of her head keeps the
+//! exact schemas it sent ([`HeldHands::sent`]) and sends them on every act until her head's next
+//! epoch, a restart included, and a verb whose contract moved since is told to her as a notice
+//! before her next act ([`HeldHands::changes`]): she is never held to a contract she was not shown.
+//!
+//! What she was TOLD is tracked apart from what was FROZEN ([`HeldHands::told`]): a contract that
+//! moves A -> B and back to A after she was told about B is a change again (restored to A), or
+//! her newest notice would still say B.
+
+use std::collections::BTreeSet;
+use std::sync::Arc;
+
+use continuum_base::tool_contract::ContractId;
+
+use super::tool_surface::SurfaceReason;
+use crate::ai::types::NativeToolSpec;
+
+/// One epoch of her head: which verbs, at which levels, the exact schemas sent, and each verb's
+/// contract as frozen and as last told.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct HeldHands {
+    /// Which epoch of her head this is: a new set, new levels, or a new surface start a new one.
+    pub(crate) generation: u64,
+    /// Her verbs as canonical names, in the order sent.
+    pub(crate) names: Vec<String>,
+    /// Each verb's level, in sent order (`tool_surface::VerbLevels`: 0 whole).
+    pub(crate) levels: Vec<usize>,
+    pub(crate) reason: SurfaceReason,
+    /// The held-card moves it was selected for (`HeldWork::move_commands`).
+    pub(crate) moves: Vec<String>,
+    /// Moves that changed since and whose set waits for her head's next epoch: said once.
+    pub(crate) waiting: Vec<String>,
+    /// The menu categories her framing shows expanded (`framing.rs`).
+    pub(crate) menu: BTreeSet<String>,
+    /// Each held verb whole as frozen, in sent order: what a level is priced from this epoch.
+    pub(crate) whole: Arc<[NativeToolSpec]>,
+    /// Exactly what her head sends at `levels`: rendered once at the freeze, then shared by every
+    /// act's request of this epoch.
+    pub(crate) sent: Arc<[NativeToolSpec]>,
+    /// What `sent` costs.
+    pub(crate) sent_tokens: usize,
+    /// What her held verbs cost whole: her head's demand, priced once at the freeze.
+    pub(crate) demand_tokens: usize,
+    /// Each held verb's contract, aligned with `names`: as frozen, and as last told.
+    pub(crate) contracts: Vec<VerbContract>,
+}
+
+/// One held verb's contract: as her head froze it, and what a served prompt last told her since.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct VerbContract {
+    /// Its contract when frozen; `None` when the surface no longer offered it then.
+    pub(crate) frozen: Option<ContractId>,
+    #[serde(default)]
+    pub(crate) told: Told,
+    /// How many notices about this verb a served prompt has shown her since the freeze: each next
+    /// notice is a new occurrence, so a transition she was told before (A -> B, B -> A, A -> B) is
+    /// never read as the earlier notice already in her view (Codex's review of #6105).
+    #[serde(default)]
+    pub(crate) tells: u32,
+}
+
+/// What a SUBMITTED prompt last told her about a held verb's contract since her head froze it:
+/// marked from the render receipt, never when a notice is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Told {
+    /// Nothing since the freeze: she knows the frozen contract.
+    #[default]
+    Nothing,
+    /// This contract.
+    Offered(ContractId),
+    /// That the verb was removed.
+    Removed,
+}
+
+impl VerbContract {
+    /// A verb frozen under `frozen`, nothing told yet.
+    pub(crate) fn frozen(frozen: Option<ContractId>) -> Self {
+        Self { frozen, told: Told::Nothing, tells: 0 }
+    }
+
+    /// The contract she knows: the newest a submitted prompt told her, else the frozen one.
+    pub(crate) fn known(&self) -> Option<ContractId> {
+        match self.told {
+            Told::Nothing => self.frozen,
+            Told::Offered(id) => Some(id),
+            Told::Removed => None,
+        }
+    }
+}
+
+/// A held verb's contract as the live surface has it now.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum LiveContract {
+    /// It is offered under this contract, with this whole schema.
+    Offered { id: ContractId, spec: NativeToolSpec },
+    /// It is no longer offered to her: a call to it is refused, never run from the frozen schema.
+    Removed,
+}
+
+impl LiveContract {
+    pub(crate) fn id(&self) -> Option<ContractId> {
+        match self {
+            LiveContract::Offered { id, .. } => Some(*id),
+            LiveContract::Removed => None,
+        }
+    }
+}
+
+/// A held verb whose live contract is not the one she knows: what her next act must be told.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ContractChange {
+    pub(crate) name: String,
+    /// The contract she knows: the newest she was told, else the frozen one.
+    pub(crate) known: Option<ContractId>,
+    pub(crate) now: LiveContract,
+    /// Her head's epoch the verb is held in (`HeldHands::generation`).
+    pub(crate) generation: u64,
+    /// Which notice about this verb this is in that epoch (`VerbContract::tells` when made).
+    pub(crate) occurrence: u32,
+}
+
+impl ContractChange {
+    /// The notice's key: one per occurrence (her head's epoch, the verb's notice count, the
+    /// contract it moved to), so a notice is appended once and every later transition appends its
+    /// own, a repeat of an earlier one included.
+    pub(crate) fn key(&self) -> String {
+        let now = self.now.id().map_or_else(|| "removed".to_string(), |id| id.hex()); // map_or_else: a removed verb has no contract
+        format!("tool-contract/{}/{}/{now}/{}", self.generation, self.occurrence, self.name)
+    }
+
+    /// What she reads: which verb, that her head still shows the earlier schema until her next
+    /// epoch, and the contract a call is now checked against.
+    pub(crate) fn text(&self) -> String {
+        let known = self.known.map_or_else(|| "removed".to_string(), |id| id.hex()); // map_or_else: she knew it removed
+        match &self.now {
+            LiveContract::Removed => format!(
+                "My tool `{}` was removed (contract {known} -> removed). My tool list above still shows it until my head's next epoch; a call to it is refused.",
+                self.name
+            ),
+            LiveContract::Offered { id, spec } => {
+                let schema = &spec.input_schema;
+                let required = schema.required.as_deref().map_or_else(String::new, |required| required.join(", ")); // map_or_else: a schema that requires nothing names nothing
+                format!(
+                    "My tool `{}` changed (contract {known} -> {}). My tool list above still shows the earlier schema until my head's next epoch; a call is checked against this one:\n{}\nparameters: {}\nrequired: {required}",
+                    self.name,
+                    id.hex(),
+                    spec.description,
+                    schema.properties,
+                )
+            }
+        }
+    }
+}
+
+impl HeldHands {
+    /// Why a recorded head is not one this code could have frozen, or `None`: each held verb has
+    /// exactly one contract and one whole schema, in the order of `names` (`tools_epoch::freeze`
+    /// builds both from `names`). Checked once, when her checkpoint is read (`deserialize`), never
+    /// per act. A head that fails is Corrupt with its bytes kept, never a verb whose contract lookup
+    /// quietly finds nothing and so is neither told nor gated (Codex's review of #6105). `levels`
+    /// is not checked here: its rungs are matched against her verb set when held (`rungs_of`), and
+    /// a mismatch re-chooses them visibly.
+    fn misalignment(&self) -> Option<HeadDecode> {
+        let verbs = self.names.len();
+        if self.contracts.len() != verbs {
+            return Some(HeadDecode::Contracts { verbs, contracts: self.contracts.len() });
+        }
+        if self.whole.len() != verbs {
+            return Some(HeadDecode::Whole { verbs, whole: self.whole.len() });
+        }
+        None
+    }
+
+    /// `canonical`'s change, when her head holds that verb and its live contract (`now`) is not the
+    /// one she knows: the one constructor of a change, so the gate and the notice name one occurrence.
+    pub(crate) fn change(&self, canonical: &str, now: LiveContract) -> Option<ContractChange> {
+        let contract = self.names.iter().position(|name| name == canonical).and_then(|at| self.contracts.get(at))?;
+        let known = contract.known();
+        (now.id() != known).then(|| ContractChange { name: canonical.to_string(), known, now, generation: self.generation, occurrence: contract.tells })
+    }
+
+    /// The menu categories her head holds expanded.
+    pub(crate) fn menu(&self) -> &BTreeSet<String> {
+        &self.menu
+    }
+
+    /// Every held verb whose live contract (`live`, by canonical name) is not the one she knows,
+    /// in sent order. A verb restored to the contract she was frozen with after she was told about
+    /// another one is a change again.
+    pub(crate) fn changes(&self, live: impl Fn(&str) -> LiveContract) -> Vec<ContractChange> {
+        self.names.iter().filter_map(|name| self.change(name, live(name))).collect()
+    }
+
+    /// A submitted prompt showed her `change` whole: she now knows its contract.
+    pub(crate) fn tell(&mut self, change: &ContractChange) {
+        let told = change.now.id().map_or(Told::Removed, Told::Offered); // map_or: told no contract is told it removed
+        if let Some(contract) = self.names.iter().position(|name| *name == change.name).and_then(|at| self.contracts.get_mut(at)) {
+            contract.told = told;
+            contract.tells = contract.tells.saturating_add(1);
+        }
+    }
+}
+
+/// Her head's custody as a checkpoint holds it, beside her view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) enum HandsCustody {
+    /// No hands were recorded (a checkpoint written before this, or a mind with no tools yet).
+    #[default]
+    Unrecorded,
+    Held(HeldHands),
+    /// Recorded but undecodable: never read as absent; her act is refused until it is repaired
+    /// (Codex's review of 9cf06ade).
+    Corrupt(CorruptHands),
+}
+
+impl HandsCustody {
+    pub(crate) fn is_unrecorded(&self) -> bool {
+        matches!(self, HandsCustody::Unrecorded)
+    }
+
+    /// A corrupt record's original checkpoint, kept byte for byte before anything rewrites it
+    /// (`checkpoint_adoption::preserve_unresumable`, called at load): once, and never replaced.
+    pub(crate) fn keep_original<E>(&mut self, preserve: impl FnOnce() -> Result<PreservedCheckpoint, E>) -> Result<(), E> {
+        if let HandsCustody::Corrupt(corrupt) = self {
+            if corrupt.original.is_none() {
+                corrupt.original = Some(preserve()?);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A head's record that does not decode. Its custody is the checkpoint it was read from, kept whole
+/// and content-addressed (`original`); `raw` is the parsed view of the record beside it, which a
+/// rewrite may normalize, so it is never the custody (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CorruptHands {
+    pub(crate) raw: serde_json::Value,
+    pub(crate) error: String,
+    /// Absent only between decoding and the load that preserves it.
+    pub(crate) original: Option<PreservedCheckpoint>,
+}
+
+/// A checkpoint kept whole: where its bytes are, and their sha256.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreservedCheckpoint {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) sha256: String,
+}
+
+/// A head her explicit adoption replaced (`persona/hands/adopt`): kept as it was, never erased, with
+/// who asked, why, and the epoch of her head that replaced it (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SupersededHands {
+    /// The custody it replaced, as it was read.
+    pub(crate) prior: SupersededPrior,
+    pub(crate) reason: String,
+    pub(crate) by: String,
+    /// The generation of her head that replaced it.
+    pub(crate) generation: u64,
+}
+
+/// The custody an adoption replaced, kept as it was read.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum SupersededPrior {
+    Unrecorded,
+    Held(HeldHands),
+    /// A record that did not decode, with its original checkpoint.
+    Corrupt(CorruptHands),
+}
+
+/// An adoption asked for and not yet frozen: what it replaces, and who asked why.
+#[derive(Clone, Debug)]
+pub(crate) struct PendingAdoption {
+    pub(crate) prior: HandsCustody,
+    pub(crate) reason: String,
+    pub(crate) by: String,
+}
+
+impl PendingAdoption {
+    /// The record it leaves once her new head is frozen at `generation`.
+    pub(crate) fn superseded(self, generation: u64) -> SupersededHands {
+        let prior = match self.prior {
+            HandsCustody::Unrecorded => SupersededPrior::Unrecorded,
+            HandsCustody::Held(hands) => SupersededPrior::Held(hands),
+            HandsCustody::Corrupt(corrupt) => SupersededPrior::Corrupt(corrupt),
+        };
+        SupersededHands { prior, reason: self.reason, by: self.by, generation }
+    }
+}
+
+/// Why her acts are refused until her head is adopted (`persona/hands/adopt`), her view kept: never
+/// a silent substitute of the live tools for the ones her engine holds (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum HandsRefusal {
+    /// Her head's record does not decode: its original checkpoint is kept.
+    Corrupt(CorruptHands),
+}
+
+impl HandsRefusal {
+    /// What she and her operator read.
+    pub(crate) fn reason(&self) -> String {
+        let why = match self {
+            HandsRefusal::Corrupt(corrupt) => format!("her head's checkpointed custody does not decode ({}); its checkpoint is kept as it was", corrupt.error),
+        };
+        format!("{why}: her acts wait until her head is adopted (persona/hands/adopt), and her view is kept")
+    }
+
+    /// What a checkpoint keeps for it: a corrupt record as it was, else nothing recorded.
+    pub(crate) fn custody(&self) -> HandsCustody {
+        match self {
+            HandsRefusal::Corrupt(corrupt) => {
+                let kept = corrupt.clone();
+                HandsCustody::Corrupt(kept)
+            }
+        }
+    }
+}
+
+/// A corrupt record as a checkpoint writes it, so a later load reads it back as the same corrupt
+/// record with its original, never as a new corruption of the rewritten bytes.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum Written {
+    Corrupt(CorruptHands),
+}
+
+/// [`Written`] by reference: the same shape on the wire, written without copying the record.
+#[derive(serde::Serialize)]
+enum WrittenRef<'a> {
+    Corrupt(&'a CorruptHands),
+}
+
+/// The checkpoint field: a held head as recorded, a corrupt one with its preserved original.
+pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer: S) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    match custody {
+        HandsCustody::Unrecorded => serializer.serialize_none(),
+        HandsCustody::Held(hands) => hands.serialize(serializer),
+        HandsCustody::Corrupt(corrupt) => WrittenRef::Corrupt(corrupt).serialize(serializer),
+    }
+}
+
+/// Why a recorded head is not one this code could have frozen: typed until the checkpoint boundary,
+/// where it is rendered once into the corrupt record's diagnostic.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum HeadDecode {
+    #[error("{0}")]
+    Shape(serde_json::Error),
+    #[error("her head records {verbs} verbs and {contracts} contracts")]
+    Contracts { verbs: usize, contracts: usize },
+    #[error("her head records {verbs} verbs and {whole} whole schemas")]
+    Whole { verbs: usize, whole: usize },
+}
+
+/// The checkpoint field read back: absent is [`HandsCustody::Unrecorded`]; present but undecodable
+/// is [`HandsCustody::Corrupt`], its bytes kept, and says so.
+pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<HandsCustody, D::Error> {
+    // Read as JSON first, so a record that does not decode as hands is still held whole.
+    let recorded = <Option<serde_json::Value> as serde::Deserialize>::deserialize(deserializer)?;
+    let Some(recorded) = recorded.filter(|value| !value.is_null()) else {
+        return Ok(HandsCustody::Unrecorded);
+    };
+    if let Ok(Written::Corrupt(corrupt)) = <Written as serde::Deserialize>::deserialize(&recorded) {
+        return Ok(HandsCustody::Corrupt(corrupt));
+    }
+    let decoded = <HeldHands as serde::Deserialize>::deserialize(&recorded).map_err(HeadDecode::Shape);
+    Ok(match decoded.and_then(|hands| hands.misalignment().map_or(Ok(hands), Err)) { // map_or: an aligned head is held; a misaligned one is its reason
+        Ok(hands) => HandsCustody::Held(hands),
+        Err(error) => {
+            continuum_base::probe!(
+                class = "tools.custody.corrupt",
+                error = %error,
+                "her head's recorded custody is not a head this code could freeze: it is kept whole and her act is refused until it is repaired"
+            );
+            // The persisted diagnostic is rendered here, at the checkpoint boundary, from the typed cause.
+            HandsCustody::Corrupt(CorruptHands { raw: recorded, error: error.to_string(), original: None })
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use continuum_base::tool_contract::ContractRevision;
+
+    fn spec(name: &str, description: &str) -> NativeToolSpec {
+        NativeToolSpec {
+            name: name.to_string(),
+            description: description.to_string(),
+            input_schema: crate::ai::types::ToolInputSchema {
+                schema_type: "object".into(),
+                properties: serde_json::json!({}),
+                required: None,
+                definitions: None,
+            },
+        }
+    }
+
+    fn id(text: &str) -> ContractId {
+        ContractId::of(ContractRevision::FIRST, text.as_bytes())
+    }
+
+    fn held(name: &str, frozen: &str) -> HeldHands {
+        let whole: Arc<[NativeToolSpec]> = vec![spec(name, frozen)].into();
+        HeldHands {
+            generation: 1,
+            names: vec![name.to_string()],
+            levels: vec![0],
+            reason: SurfaceReason::Hands,
+            moves: Vec::new(),
+            waiting: Vec::new(),
+            menu: BTreeSet::new(),
+            sent: Arc::clone(&whole),
+            whole,
+            sent_tokens: 10,
+            demand_tokens: 10,
+            contracts: vec![VerbContract::frozen(Some(id(frozen)))],
+        }
+    }
+
+    fn offered(text: &str) -> LiveContract {
+        LiveContract::Offered { id: id(text), spec: spec("work/note", text) }
+    }
+
+    // what this catches (Codex's review of 9cf06ade): A -> B -> A dropping the transition after she
+    // was told about B, leaving her newest notice saying B while calls are checked against A.
+    #[test]
+    fn a_contract_restored_after_she_was_told_its_change_is_a_change_again() {
+        let mut hands = held("work/note", "A");
+        assert!(hands.changes(|_| offered("A")).is_empty(), "unchanged: nothing to tell");
+        let to_b = hands.changes(|_| offered("B"));
+        assert_eq!(to_b.len(), 1, "A -> B is told");
+        assert!(hands.changes(|_| offered("A")).is_empty(), "B never told: back at A, she still knows A");
+        hands.tell(&to_b[0]);
+        assert!(hands.changes(|_| offered("B")).is_empty(), "told B: B is known");
+        let back = hands.changes(|_| offered("A"));
+        assert_eq!(back.len(), 1, "B -> A after she was told B is told again");
+        assert_eq!(back[0].known, Some(id("B")));
+        assert_ne!(back[0].key(), to_b[0].key(), "each transition is its own notice");
+    }
+
+    // what this catches: a removed verb run from her frozen schema, or told twice.
+    #[test]
+    fn a_removed_verb_is_told_once_and_a_return_is_told() {
+        let mut hands = held("work/note", "A");
+        let removed = hands.changes(|_| LiveContract::Removed);
+        assert_eq!(removed.len(), 1);
+        assert!(removed[0].text().contains("refused"), "she reads that a call is refused");
+        hands.tell(&removed[0]);
+        assert!(hands.changes(|_| LiveContract::Removed).is_empty(), "told removed: nothing more");
+        assert_eq!(hands.changes(|_| offered("A")).len(), 1, "its return is a change she is told");
+    }
+
+    // what this catches: a restart that loses what she was told, or a corrupt record read as absent
+    // (and so silently replaced by the live tools).
+    #[test]
+    fn custody_survives_its_checkpoint_and_a_corrupt_record_is_kept_whole() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Checkpoint {
+            #[serde(default, serialize_with = "serialize", deserialize_with = "deserialize", skip_serializing_if = "HandsCustody::is_unrecorded")]
+            hands: HandsCustody,
+        }
+        let mut hands = held("work/note", "A");
+        let change = hands.changes(|_| offered("B")).remove(0);
+        hands.tell(&change);
+        let text = serde_json::to_string(&Checkpoint { hands: HandsCustody::Held(hands.clone()) }).expect("encodes");
+        let back: Checkpoint = serde_json::from_str(&text).expect("decodes");
+        assert_eq!(back.hands, HandsCustody::Held(hands), "generation, frozen bytes and what she was told survive");
+
+        let absent: Checkpoint = serde_json::from_str("{}").expect("decodes");
+        assert_eq!(absent.hands, HandsCustody::Unrecorded, "a checkpoint from before this records nothing");
+
+        let corrupt: Checkpoint = serde_json::from_str(r#"{"hands":{"generation":"x"}}"#).expect("the checkpoint still decodes");
+        let mut corrupt = corrupt;
+        let HandsCustody::Corrupt(record) = &corrupt.hands else {
+            panic!("an undecodable record is corrupt, never absent"); // JUSTIFIED: test fixture
+        };
+        assert_eq!((&record.raw, &record.original), (&serde_json::json!({"generation": "x"}), &None), "parsed, not yet preserved");
+        let original = PreservedCheckpoint { path: "kept/abc.json".into(), sha256: "abc".to_string() };
+        let preserved = original.clone();
+        corrupt.hands.keep_original(|| Ok::<_, std::convert::Infallible>(preserved)).expect("infallible");
+        corrupt.hands.keep_original(|| Err("an original is kept once, never replaced")).expect("kept already");
+        let rewritten: Checkpoint = serde_json::from_str(&serde_json::to_string(&corrupt).expect("encodes")).expect("decodes");
+        let HandsCustody::Corrupt(record) = rewritten.hands else {
+            panic!("a rewritten corrupt record reads back corrupt"); // JUSTIFIED: test fixture
+        };
+        assert_eq!(record.original, Some(original), "its original survives every rewrite, never re-preserved from normalized bytes");
+    }
+
+    // what this catches (Codex's review of #6105 at 89a641c01): a record that decodes as hands but
+    // whose verbs do not line up with their contracts or schemas, read as Held. Its contract lookup
+    // then found nothing, so a moved contract was neither told nor gated. It is Corrupt, its bytes
+    // kept exactly as recorded; an aligned head is still held.
+    #[test]
+    fn a_head_whose_verbs_and_contracts_do_not_line_up_is_corrupt_never_held() {
+        let valid = serde_json::to_value(held("work/note", "A")).expect("encodes"); // JUSTIFIED: test fixture
+        for (field, named) in [("contracts", "contracts"), ("whole", "whole schemas")] {
+            let mut recorded = valid.clone();
+            recorded[field] = serde_json::json!([]);
+            let custody = deserialize(&recorded).expect("the checkpoint still decodes"); // JUSTIFIED: test fixture
+            let HandsCustody::Corrupt(corrupt) = custody else {
+                panic!("{field}: a misaligned head is corrupt, never held"); // JUSTIFIED: test fixture
+            };
+            assert_eq!(corrupt.raw, recorded, "{field}: kept exactly as recorded");
+            assert!(corrupt.error.contains(named), "{field}: says what does not line up: {}", corrupt.error);
+        }
+        assert!(matches!(deserialize(&valid).expect("decodes"), HandsCustody::Held(_)), "an aligned head is held"); // JUSTIFIED: test fixture
+    }
+}

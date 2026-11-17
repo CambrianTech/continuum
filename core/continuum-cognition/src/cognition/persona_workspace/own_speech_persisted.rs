@@ -185,17 +185,57 @@ pub(super) fn result_handles_at(
 }
 
 pub(super) fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
-    load_volatile_at(&volatile_path(persona_id)?)
+    restore_volatile_at(&volatile_path(persona_id)?)
+}
+
+/// Her checkpoint for restoring her: a head record that does not decode has its checkpoint kept
+/// byte for byte (content-addressed beside it) before anything rewrites it, under the same lock
+/// (Codex's review of 9cf06ade). Failing to keep it fails the load: no rewrite without custody.
+pub(super) fn restore_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
+    let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    let Some((bytes, mut persisted)) = read_volatile(path)? else {
+        return Ok(None);
+    };
+    persisted.wm.context_hands.keep_original(|| keep_unresumable(path, &bytes))?;
+    Ok(Some(persisted))
+}
+
+/// Keep a checkpoint whose head could not be resumed, whole and content-addressed beside it
+/// (`.unresumable-hands/<sha256>.json`): staged, synced and published under a name nothing
+/// overwrites. The same bytes published before are the same object, fenced and reused. This is the
+/// custody of a corrupt head record, never its re-serialized parse.
+fn keep_unresumable(checkpoint: &std::path::Path, bytes: &[u8]) -> std::io::Result<crate::cognition::hands_custody::PreservedCheckpoint> {
+    use sha2::Digest;
+    let Some(parent) = checkpoint.parent() else {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} names no checkpoint directory", checkpoint.display())));
+    };
+    let kept = parent.join(".unresumable-hands");
+    std::fs::create_dir_all(&kept)?;
+    let sha256 = format!("{:x}", sha2::Sha256::digest(bytes));
+    let name = std::path::PathBuf::from(format!("{sha256}.json"));
+    let dir = continuum_host::confine::open_root(&kept)?;
+    let mut staging = continuum_host::durable::Staging::new(&dir)?;
+    staging.write_all(bytes)?;
+    match staging.publish_new(&name) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continuum_host::durable::fence_existing(&dir, &name)?,
+        Err(error) => return Err(error),
+    }
+    Ok(crate::cognition::hands_custody::PreservedCheckpoint { path: kept.join(name), sha256 })
 }
 
 pub(super) fn load_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
     let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    Ok(read_volatile(path)?.map(|(_, persisted)| persisted))
+}
+
+/// The checkpoint's bytes and their decode; the caller holds the checkpoint lock.
+fn read_volatile(path: &std::path::Path) -> std::io::Result<Option<(Vec<u8>, PersistedVolatile)>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    let persisted = serde_json::from_slice(&bytes).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(Some((bytes, persisted)))
 }

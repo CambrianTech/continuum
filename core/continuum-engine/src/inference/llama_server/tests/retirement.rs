@@ -16,6 +16,27 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         let _ = std::io::stdin().read(&mut byte);
         return;
     }
+    // This fixture asserts a COMPLETE process-wide page-owner census. Parallel
+    // retirement fixtures legitimately hold children with no known page directory;
+    // those must refuse migration, including into this fixture's private directory.
+    // Isolate the census, not the production guard or its fail-closed assertion.
+    const ISOLATED: &str = "CONTINUUM_PAGE_OWNER_TEST_ISOLATED";
+    if std::env::var_os(ISOLATED).is_none() {
+        let mut command = tokio::process::Command::new(std::env::current_exe().expect("test executable")); // JUSTIFIED: test fixture
+        command
+            .args(["--exact", "inference::llama_server::tests::retirement::retiring_page_owner_requires_observed_child_exit", "--nocapture"])
+            .env(ISOLATED, "1")
+            .kill_on_drop(true);
+        #[cfg(windows)]
+        command.creation_flags(0x08000000); // CREATE_NO_WINDOW: fixture never opens a console.
+        let result = command.output().await.expect("isolated retirement fixture completes"); // JUSTIFIED: test fixture
+        assert!(result.status.success(), "isolated retirement fixture failed: {}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        let output = String::from_utf8_lossy(&result.stdout);
+        assert!(output.contains("retiring_page_owner_requires_observed_child_exit ... ok")
+            && output.contains("test result: ok. 1 passed;"),
+            "isolated fixture must run exactly one successful test, not silently match zero: {output}");
+        return;
+    }
     let resources = crate::resources::ResourceDaemon::start(
         vec![Arc::new(crate::resources::MockCapacitySource::new(
             crate::resources::ResourceKind::Vram,
