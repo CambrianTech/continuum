@@ -20,8 +20,8 @@ use crate::genome::signature::SignatureStore;
 /// One persona's genome.
 pub struct Genome {
     persona: Uuid,
-    /// Her gene trials; `None` when this node keeps no genome store (she has no genes here).
-    trials: Option<GeneTrials>,
+    /// Her gene trials, or why her store could not be resolved (an unknown genome, never an empty one).
+    trials: Result<GeneTrials, String>,
     /// Where her genes' signatures live, or why that could not be resolved.
     signatures: Result<PathBuf, String>,
     residency: Arc<GeneResidency>,
@@ -32,7 +32,7 @@ impl Genome {
     pub fn of(persona: Uuid) -> Self {
         Self {
             persona,
-            trials: GeneTrials::default_store(),
+            trials: GeneTrials::resolve(),
             signatures: crate::genome::signature::signature_store_path(),
             residency: Arc::clone(GeneResidency::global()),
         }
@@ -40,17 +40,26 @@ impl Genome {
 
     /// Her genome over given stores (another root, or a test's own directory).
     pub fn at(persona: Uuid, trials: GeneTrials, signatures: PathBuf, residency: Arc<GeneResidency>) -> Self {
-        Self { persona, trials: Some(trials), signatures: Ok(signatures), residency }
+        Self { persona, trials: Ok(trials), signatures: Ok(signatures), residency }
     }
 
     /// Her phenotype for the next turn on `base` (the model being served, `None` when not known
-    /// yet), composed from `perception` (what her mind is on: the turn's focused line). Unknown only
-    /// when her trials do not read, or the base is unknown while she holds genes; no genes is an
-    /// answer, never an unknown.
+    /// yet), composed from `perception` (what her mind is on: the turn's focused line). Unknown when
+    /// her trial store does not resolve or read, when the base is unknown while she holds genes, or
+    /// when her genes' signatures do not read; no genes is an answer, never an unknown.
     pub async fn compose(&self, base: Option<&str>, perception: &str) -> Composition {
         let persona = self.persona;
-        let Some(store) = &self.trials else {
-            return Composition::Genes(Phenotype::default());
+        let store = match &self.trials {
+            Ok(store) => store,
+            Err(cause) => {
+                continuum_base::probe!(
+                    class = "genome.trial.unresolved",
+                    persona = %persona,
+                    cause = cause.as_str(),
+                    "her gene trial store did not resolve: her genome is unknown this turn"
+                );
+                return Composition::Unknown("her gene trial store did not resolve");
+            }
         };
         let trials = match store.load() {
             Ok(trials) => trials,
@@ -81,13 +90,15 @@ impl Genome {
         let signatures = match self.signatures.as_ref().map_err(String::clone).and_then(|path| SignatureStore::load_at(path)) {
             Ok(store) => store,
             Err(error) => {
+                // A missing sidecar is an empty store (load_at); one that does not read would route
+                // her genes blind, so her genome is unknown this turn rather than unrouted.
                 continuum_base::probe!(
                     class = "genome.select.signatures_unreadable",
                     persona = %persona,
                     error = error.as_str(),
-                    "the signature sidecar did not read: her genes run unrouted this turn"
+                    "the signature sidecar did not read: her genome is unknown this turn"
                 );
-                SignatureStore::default()
+                return Composition::Unknown("her gene signatures did not read");
             }
         };
         let candidates: Vec<Candidate<'_>> = genes.into_iter().map(|gene| Candidate { signature: signatures.by_path.get(&gene.path), gene }).collect();
@@ -155,8 +166,15 @@ mod tests {
         };
         assert!(none.genes.is_empty(), "her retired gene on another base does not run");
 
+        // Signatures present but unreadable (a directory where the file belongs): unknown, never unrouted.
+        std::fs::create_dir_all(dir.join("signatures.json")).expect("test: an unreadable signature path");
+        assert!(matches!(genome.compose(Some("qwen-a"), "fix the build").await, Composition::Unknown(_)), "unreadable signatures are unknown, never unrouted");
+        std::fs::remove_dir(dir.join("signatures.json")).expect("test: restore the signature path");
+
         std::fs::write(dir.join("trials.json"), "not a trial file").expect("test: corrupt the file");
         assert!(matches!(genome.compose(Some("qwen-a"), "fix the build").await, Composition::Unknown(_)), "an unreadable store is unknown, never empty");
+        let unresolved = Genome { persona: aris, trials: Err("no continuum home".into()), signatures: Ok(dir.join("signatures.json")), residency: Arc::new(GeneResidency::default()) };
+        assert!(matches!(unresolved.compose(Some("qwen-a"), "fix the build").await, Composition::Unknown(_)), "an unresolved store is unknown, never no genes");
         std::fs::remove_dir_all(&dir).expect("test: clean up");
     }
 }

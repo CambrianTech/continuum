@@ -331,11 +331,14 @@ impl GeneTrials {
         Self { path: path.into() }
     }
 
-    /// `~/.continuum/genome/trials.json`; `None` without a home directory.
+    /// `~/.continuum/genome/trials.json`, or why this node's home did not resolve.
+    pub fn resolve() -> Result<Self, String> {
+        crate::paths::ContinuumLayout::home().map(|layout| Self::at(layout.genome().join("trials.json")))
+    }
+
+    /// [`Self::resolve`] without its cause, for callers that refuse on their own terms.
     pub fn default_store() -> Option<Self> {
-        crate::paths::ContinuumLayout::home()
-            .ok()
-            .map(|layout| Self::at(layout.genome().join("trials.json")))
+        Self::resolve().ok()
     }
 
     pub fn path(&self) -> &Path {
