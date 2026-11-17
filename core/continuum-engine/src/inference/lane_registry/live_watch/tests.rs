@@ -1,5 +1,6 @@
 //! Live-watch regressions, compiled only for Unix tests.
 #![cfg(test)]
+#![cfg(unix)]
 
 use super::*;
 use super::super::{record_in, tests::{temp_dir, rec}};

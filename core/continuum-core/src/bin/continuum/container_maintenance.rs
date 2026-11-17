@@ -18,48 +18,13 @@ struct Custody {
 
 
 fn confirm_images_exited(images: &LegacyImageCustody) -> Result<(), String> {
-    use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let held: std::collections::HashSet<PathBuf> =
-        images.held_image_paths().map(Path::to_path_buf).collect();
-    let mut system = System::new();
-    system.refresh_processes_specifics(
-        ProcessesToUpdate::All,
-        true,
-        ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
-    );
-    if !system
-        .processes()
-        .contains_key(&sysinfo::Pid::from_u32(std::process::id()))
-    {
-        return Err("process census is unavailable after image exclusion".into());
-    }
-    for process in system.processes().values() {
-        if process.pid().as_u32() == std::process::id() {
-            continue;
-        }
-        let possibly_managed = process_matches_fragment(process.name(), process.exe(), "continuum")
-            || process_matches_fragment(process.name(), process.exe(), "llama-server");
-        let actual = process.exe().map(Path::canonicalize).transpose();
-        match actual {
-            Ok(Some(path)) if held.contains(&path) => {
-                return Err(format!(
-                    "managed image PID {} still has an existing mapping after launch exclusion",
-                    process.pid()
-                ))
-            }
-            Ok(Some(_)) => {} // Outside the managed closure: explicit operator window.
-            _ if possibly_managed => {
-                return Err(format!(
-                    "cannot identify possible managed image PID {}; absence is unproven",
-                    process.pid()
-                ))
-            }
-            _ => {}
-        }
-    }
-    Ok(())
+    use continuum_core::system_resources::process_tree::ProcessTable;
+    let held = images.held_image_paths().map(Path::to_path_buf).collect();
+    let observer = std::process::id();
+    ProcessTable::read()
+        .confirm_managed_images_unmapped(observer, &held)
+        .map_err(|refusal| refusal.to_string())
 }
-
 impl ContainerMigrationCustody for Custody {
     fn revalidate(&self, root: &Path, _stage: MigrationStage) -> Result<(), String> {
         if root != self.source {

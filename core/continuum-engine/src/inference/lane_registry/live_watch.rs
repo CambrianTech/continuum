@@ -222,5 +222,5 @@ fn verified_live_in(dir: &Path, pidfile: &Path) -> Option<crate::inference::engi
 }
 
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests;

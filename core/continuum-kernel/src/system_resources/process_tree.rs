@@ -71,7 +71,49 @@ pub struct ProcessTable {
     rows: Vec<ProcessRow>,
 }
 
+/// Why a managed-image exclusion cannot yet authorize retiring its backing bytes.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub enum ImageExclusionRefusal {
+    #[error("process census did not observe the requesting process {observer:?}")]
+    CensusUnavailable { observer: u32 },
+    #[error("managed image is still mapped by {process:?}")]
+    StillMapped { process: ProcessIdentity },
+    #[error("cannot identify possible managed image for {process:?}; absence is unproven")]
+    Unidentified { process: ProcessIdentity },
+}
+
 impl ProcessTable {
+    /// Confirm the held images have no other mappings in this census. The launch-exclusion
+    /// owner must keep new readers excluded until retirement finishes. Missing or unresolvable
+    /// managed images are a refusal, never proof of absence.
+    pub fn confirm_managed_images_unmapped(
+        &self,
+        observer: u32,
+        held: &std::collections::HashSet<PathBuf>,
+    ) -> Result<(), ImageExclusionRefusal> {
+        if !self.rows.iter().any(|row| row.identity.pid == observer) {
+            return Err(ImageExclusionRefusal::CensusUnavailable { observer });
+        }
+        for row in self.rows.iter().filter(|row| row.identity.pid != observer) {
+            let possibly_managed = ["continuum", "llama-server"].iter().any(|fragment| {
+                row.name.contains(fragment)
+                    || row.exe.as_deref().and_then(Path::file_name)
+                        .is_some_and(|name| name.to_string_lossy().contains(fragment))
+            });
+            match row.exe.as_deref().map(Path::canonicalize).transpose() {
+                Ok(Some(path)) if held.contains(&path) => {
+                    return Err(ImageExclusionRefusal::StillMapped { process: row.identity });
+                }
+                Ok(Some(_)) => {}
+                _ if possibly_managed => {
+                    return Err(ImageExclusionRefusal::Unidentified { process: row.identity });
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     /// Read every process once. A table that cannot be read is empty, which callers already
     /// treat as "nobody" in the direction they err (derived artifacts the next build recreates).
     pub fn read() -> Self {
@@ -277,6 +319,32 @@ impl CpuWatch {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn image_exclusion_refuses_incomplete_census_and_live_mappings() {
+        use super::{ImageExclusionRefusal, ProcessIdentity, ProcessRow, ProcessTable};
+        let dir = tempfile::tempdir().expect("test directory");
+        let image = dir.path().join("llama-server");
+        std::fs::write(&image, b"fixture").expect("test image");
+        let image = image.canonicalize().expect("test canonical image");
+        let observer = ProcessIdentity { pid: 10, start_time: 1 };
+        let other = ProcessIdentity { pid: 11, start_time: 2 };
+        let row = |identity, name: &str, exe| ProcessRow { identity, name: name.into(), exe };
+        let held = std::collections::HashSet::from([image.clone()]);
+        assert_eq!(ProcessTable::of(vec![]).confirm_managed_images_unmapped(observer.pid, &held),
+            Err(ImageExclusionRefusal::CensusUnavailable { observer: observer.pid }));
+        let own = row(observer, "maintenance", None);
+        let mapped = row(other, "anything", Some(image));
+        assert_eq!(ProcessTable::of(vec![own.clone(), mapped]).confirm_managed_images_unmapped(observer.pid, &held),
+            Err(ImageExclusionRefusal::StillMapped { process: other }));
+        for exe in [None, Some(dir.path().join("missing"))] {
+            let unknown = row(other, "llama-server", exe);
+            assert_eq!(ProcessTable::of(vec![own.clone(), unknown]).confirm_managed_images_unmapped(observer.pid, &held),
+                Err(ImageExclusionRefusal::Unidentified { process: other }));
+        }
+        assert_eq!(ProcessTable::of(vec![own, row(other, "unrelated", None)])
+            .confirm_managed_images_unmapped(observer.pid, &held), Ok(()));
+    }
+
     use super::*;
 
     fn own_identity() -> ProcessIdentity {
