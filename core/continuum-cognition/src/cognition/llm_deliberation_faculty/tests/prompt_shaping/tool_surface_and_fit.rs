@@ -857,7 +857,8 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     let first = faculty.prompt_view_within(&ws, 200_000);
     assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
     let binding = faculty.binding.load_full();
-    let captured = faculty.build_request_within(&binding, first.completion_reserve, first.messages.clone(), first.tools.specs.clone(), first.system.clone(), None, Some(ws.room_id), TurnKind::Pass);
+    let (messages, tools, system) = (first.messages.clone(), first.tools.specs.clone(), first.system.clone());
+    let captured = faculty.build_request_within(&binding, first.completion_reserve, messages, tools, system, None, Some(ws.room_id), TurnKind::Pass);
     faculty.view_served(&first);
     let custody = wm.snapshot().context_hands;
     let ask_over = |request: crate::ai::types::TextGenerationRequest, expected_custody_sha256: String| {
@@ -867,7 +868,8 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     let ask = |request: crate::ai::types::TextGenerationRequest| ask_over(request, wm.custody_receipt().expect("her custody digests").sha256); // JUSTIFIED: test fixture
 
     // The act matches the capture exactly, but the adoption names a custody she does not hold.
-    ask_over(captured.clone(), "a custody she does not hold".to_string());
+    let exact = captured.clone();
+    ask_over(exact, "a custody she does not hold".to_string());
     let moved = faculty.prompt_view_within(&ws, 200_000);
     assert!(moved.protocol_error.as_deref().is_some_and(|error| error.contains("adoption from a captured request was refused") && error.contains("her custody is")), "{:?}", moved.protocol_error);
     assert_eq!(wm.snapshot().context_hands, custody, "her custody is as it was");
@@ -878,7 +880,8 @@ fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
     assert_eq!(restarted_memory.snapshot().context_hands, custody, "and her held head");
 
     let mut longer = captured.clone();
-    longer.messages.push(longer.messages[0].clone());
+    let repeated = longer.messages[0].clone();
+    longer.messages.push(repeated);
     let mut system = captured.clone();
     system.system_prompt = system.system_prompt.map(|text| format!("{text} "));
     let mut tools = captured.clone();
