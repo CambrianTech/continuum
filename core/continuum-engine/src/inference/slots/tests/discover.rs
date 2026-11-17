@@ -155,13 +155,22 @@ fn a_pool_records_the_engines_declared_minds_once() {
 /// A fake engine declaring resident minds on `/props`, and this core's owned spawn of it: a ready generation
 /// whose pool was published from the launch contract (no minds declaration yet).
 async fn owned_spawn_declaring_minds() -> (String, Arc<KvSlotPool>, tempfile::TempDir, tokio::task::JoinHandle<()>) {
-    let props = serde_json::json!({
-        "total_slots": 2,
-        "context_geometry": {
-            "allocated_tokens": 8192, "max_tokens_per_sequence": 4096, "sequence_capacity": 4,
-            "resident_minds": {"enabled": true, "lanes": 2, "parked_ids": 2, "parked_free": 2, "incarnation": 42}
-        }
-    });
+    // the fork's /props shape for an engine with resident minds, typed (as the engine writes it)
+    #[derive(serde::Serialize, Clone)]
+    struct Minds { enabled: bool, lanes: u64, parked_ids: u64, parked_free: u64, incarnation: u64 }
+    #[derive(serde::Serialize, Clone)]
+    struct Geometry { allocated_tokens: u64, max_tokens_per_sequence: u64, sequence_capacity: u64, resident_minds: Minds }
+    #[derive(serde::Serialize, Clone)]
+    struct Props { total_slots: u32, context_geometry: Geometry }
+    let props = Props {
+        total_slots: 2,
+        context_geometry: Geometry {
+            allocated_tokens: 8192,
+            max_tokens_per_sequence: 4096,
+            sequence_capacity: 4,
+            resident_minds: Minds { enabled: true, lanes: 2, parked_ids: 2, parked_free: 2, incarnation: 42 },
+        },
+    };
     let app = axum::Router::new()
         .route("/props", axum::routing::get(move || { let props = props.clone(); async move { axum::Json(props) } }));
     let namespace = format!("/{}", uuid::Uuid::new_v4()); // a recycled port is not this fixture engine
