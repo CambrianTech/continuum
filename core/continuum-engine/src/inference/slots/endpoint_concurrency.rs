@@ -37,6 +37,16 @@ struct Circulation {
     returned: Arc<Notify>,
 }
 
+/// How many generations an endpoint runs at once, whatever its resident slots: ONE. Every slot keeps its
+/// persona's KV resident; only one of them is on the engine. Measured on the M5 (2026-11-17, Qwen3.6-35B-A3B,
+/// `--parallel 5`): four minds generating together each decoded at 2.1-2.4 tok/s (the engine's own
+/// `decodeTokensPerSecond`), 4.3 tok/s summed, and every other mind's turn waited behind them
+/// (`delib.window.waiting` BehindActs { acting: 3 }); one stream on the same engine is ~80 tok/s. So a mind
+/// takes the engine whole for her turn and the next waits for it, the way a GPU renders one view at a time.
+pub(super) fn active_decodes(slots: u32) -> usize {
+    (slots as usize).min(1)
+}
+
 pub struct EndpointConcurrency {
     circulation: Arc<Circulation>,
 }
