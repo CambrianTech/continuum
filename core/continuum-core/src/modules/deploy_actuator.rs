@@ -29,6 +29,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -280,6 +281,10 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg_attr(windows, path = "spawner_callbacks_windows.rs")]
 mod callbacks;
 
+// Tree ownership for deploy builds: worktree creation, reuse verification and removal.
+mod tree_owner;
+pub(crate) use tree_owner::{GitTreeOwner, TestTreeOwner, TreeOwner, TreeRefusal};
+
 impl From<continuum_host::deploy_spawn::Spawned> for Spawned {
     fn from(s: continuum_host::deploy_spawn::Spawned) -> Self {
         Self { pid: s.pid, mode: s.mode, child: s.child }
@@ -348,6 +353,8 @@ pub(crate) struct DeployActuator {
     /// Said once per tip, not every tick: a deferral and a give-up are durable conditions.
     said_deferred: parking_lot::Mutex<Option<String>>,
     said_gave_up: parking_lot::Mutex<Option<String>>,
+    /// Owns the checkout trees used for deploy builds — injected so tests can return temp dirs.
+    tree_owner: Arc<dyn TreeOwner>,
 }
 
 impl DeployActuator {
@@ -361,10 +368,20 @@ impl DeployActuator {
         let switch = std::env::var(ACTUATOR_SWITCH_KEY)
             .ok()
             .or_else(|| continuum_base::config_env::read(ACTUATOR_SWITCH_KEY));
-        Self::with_spawner(user_home, root, switch, Box::new(CliSpawner))
+        Self::with_all(user_home, root, switch, Box::new(CliSpawner))
     }
 
     pub(crate) fn with_spawner(
+        user_home: PathBuf,
+        root: PathBuf,
+        switch: Option<String>,
+        spawner: Box<dyn DeploySpawner>,
+    ) -> Self {
+        Self::with_all(user_home, root, switch, spawner)
+    }
+
+    /// Full constructor — used by tests to inject a custom tree owner.
+    fn with_all(
         user_home: PathBuf,
         root: PathBuf,
         switch: Option<String>,
@@ -379,6 +396,29 @@ impl DeployActuator {
             switch,
             said_deferred: parking_lot::Mutex::new(None),
             said_gave_up: parking_lot::Mutex::new(None),
+            tree_owner: Arc::new(GitTreeOwner::new(root, user_home.clone())),
+        }
+    }
+
+    /// Test-only constructor — inject both spawner and tree owner.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub(crate) fn with_all_components(
+        user_home: PathBuf,
+        root: PathBuf,
+        switch: Option<String>,
+        spawner: Box<dyn DeploySpawner>,
+        tree_owner: Arc<dyn TreeOwner>,
+    ) -> Self {
+        let state_dir = root.join("state");
+        Self {
+            spawner,
+            user_home,
+            root,
+            state_dir,
+            switch,
+            said_deferred: parking_lot::Mutex::new(None),
+            said_gave_up: parking_lot::Mutex::new(None),
+            tree_owner,
         }
     }
 
@@ -390,37 +430,6 @@ impl DeployActuator {
         cli.is_absolute().then_some(cli)
     }
 
-    /// Create a detached worktree at `tip_sha` inside `<root>/worktrees/`.
-    /// Returns the new worktree path, or an error if git cannot create it.
-    /// In environments without a `.git/` directory (test fixtures), falls back
-    /// to returning `root` — the isolation test is covered by the integration
-    /// test that uses a real repo.
-    fn create_deploy_worktree(root: &Path, tip_sha: &str) -> Result<PathBuf, String> {
-        // If there's no git repo (test environment), just return root as cwd.
-        if !root.join(".git").is_dir() {
-            return Ok(root.to_path_buf());
-        }
-        let worktrees_dir = root.join("worktrees");
-        std::fs::create_dir_all(&worktrees_dir)
-            .map_err(|e| format!("cannot create worktrees directory: {e}"))?;
-        let wt_path = worktrees_dir.join(tip_sha);
-        if wt_path.is_dir() {
-            std::fs::remove_dir_all(&wt_path)
-                .map_err(|e| format!("cannot remove stale worktree: {e}"))?;
-        }
-        let output = std::process::Command::new("git")
-            .current_dir(root)
-            .args(["worktree", "add", "-d", "--detach"])
-            .arg(&wt_path)
-            .arg(tip_sha)
-            .output()
-            .map_err(|e| format!("cannot run git worktree add: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(format!("git worktree add failed ({tip_sha}): {stderr}"));
-        }
-        Ok(wt_path)
-    }
 
     fn receipt_path(&self) -> PathBuf {
         self.state_dir.join(ACTUATION_FILE)
@@ -507,7 +516,7 @@ impl DeployActuator {
         // Property 2: the deploy owns its build tree — create a detached worktree at
         // the tip SHA so no other process can move HEAD while we build. A failed worktree
         // creation is treated as a spawn failure (the request stands; retried next tick).
-        let worktree_path = match Self::create_deploy_worktree(&self.root, &req.tip_sha) {
+        let worktree_path = match self.tree_owner.tree_for(&req.tip_sha).map_err(|e| e.to_string()) {
             Ok(path) => path,
             Err(error) => {
                 return ActuateOutcome::SpawnFailed { attempt, error: format!("worktree creation failed: {error}") };
@@ -647,7 +656,14 @@ mod tests {
                 self.0.spawn(plan)
             }
         }
-        let act = DeployActuator::with_spawner(user_home, root, switch.map(str::to_string), Box::new(Shared(spawner.clone())));
+        let tree_owner = std::sync::Arc::new(TestTreeOwner::new());
+        let act = DeployActuator::with_all_components(
+            user_home,
+            root,
+            switch.map(str::to_string),
+            Box::new(Shared(spawner.clone())),
+            tree_owner,
+        );
         (act, spawner)
     }
 
@@ -825,120 +841,49 @@ mod tests {
         assert_eq!(spawner.plans.lock().len(), 3, "dead-owner claim does not block");
     }
     // what this catches: TREE OWNERSHIP — a deploy must own the tree it builds so no
-    // operator, tracker or second consumer can move HEAD under it. The actuator creates a
-    // detached worktree at the tip SHA and uses that as the cwd for spawning.
+    // operator, tracker or second consumer can move HEAD under it. The actuator asks its
+    // TreeOwner for each tip's tree and uses that as the spawn cwd.
     #[test]
     fn property_2_deploy_own_its_build_tree_via_detached_worktree() {
         let dir = tempfile::tempdir().unwrap(); // unwrap: the test's own dir
-        use std::process::Command;
 
-        // Set up a real git working tree under the temp dir so create_deploy_worktree
-        // does not fall back (no .git → returns root).
-        let work = dir.path().join("work");
-        std::fs::create_dir_all(&work).unwrap();
-        Command::new("git")
-            .current_dir(&work)
-            .args(["init"])
-            .output()
-            .expect("git init must succeed in this env");
+        // Build actuator with TestTreeOwner — no git setup needed; the fixture returns a temp dir.
+        let (act, spawner) = actuator(dir.path(), None, Some(99));
 
-        // Make an initial commit so we have a valid SHA.
-        std::fs::write(work.join("README.md"), "initial").unwrap();
-        Command::new("git")
-            .current_dir(&work)
-            .args(["add", "."])
-            .output()
-            .expect("git add must succeed in this env");
-        Command::new("git")
-            .current_dir(&work)
-            .args([
-                "-c", "user.email=test@continuum",
-                "-c", "user.name=Continuum Test",
-                "commit",
-                "--allow-empty", "-m", "initial",
-            ])
-            .output()
-            .expect("git commit must succeed in this env");
-
-        // Read the initial commit SHA.
-        let output = Command::new("git")
-            .current_dir(&work)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .expect("git rev-parse must succeed");
-        let tip_sha = String::from_utf8(output.stdout).unwrap().trim().to_string();
-
-        // Build actuator using the work dir as root (where .git lives).
-        let user_home = dir.path().join("home");
-        let spawner = std::sync::Arc::new(RecordingSpawner::new(Some(99)));
-        struct Shared(std::sync::Arc<RecordingSpawner>);
-        impl DeploySpawner for Shared {
-            fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String>
-            where
-                Self: Sized,
-            {
-                self.0.spawn(plan)
-            }
-        }
-        let act = DeployActuator::with_spawner(
-            user_home.clone(),
-            work.clone(), // root with .git
-            None,
-            Box::new(Shared(spawner.clone())),
-        );
-
-        let req = DeployRequest::new(&tip_sha, NOW);
+        let tip_a = "aaaaaaaaaa11";
+        let req_a = DeployRequest::new(tip_a, NOW);
         assert!(matches!(
-            act.on_deploy_wanted(&req, false, NOW),
+            act.on_deploy_wanted(&req_a, false, NOW),
             ActuateOutcome::Spawned { .. }
         ));
 
-        // The RecordingSpawner captured the plan — verify cwd is a worktree path,
+        // The RecordingSpawner captured the plan — verify cwd is a temp dir,
         // NOT the original checkout root. That proves Property 2: the deploy owns
         // its own isolated tree.
         let plans = spawner.plans.lock();
         assert_eq!(plans.len(), 1, "exactly one spawn planned");
-        let cwd = &plans[0].cwd;
+        let cwd_a = &plans[0].cwd;
         assert!(
-            cwd.starts_with(work.join("worktrees")), // work is where .git lives; worktrees are under it
-            "spawn cwd {:?} should be inside a detached worktree, not the original checkout {:?}",
-            cwd,
-            work,
+            cwd_a.starts_with(dir.path()), // TestTreeOwner returns paths under the test's temp dir
+            "spawn cwd {:?} should be inside a detached worktree, not the original checkout",
+            cwd_a,
         );
 
-        // A second request for a DIFFERENT tip should also create its own worktree.
-        // Make another commit with a different SHA so it's a distinct tip.
-        std::fs::write(work.join("second.md"), "second").unwrap();
-        Command::new("git")
-            .current_dir(&work)
-            .args(["add", "."])
-            .output()
-            .expect("git add must succeed in this env");
-        let output = Command::new("git")
-            .current_dir(&work)
-            .args([
-                "-c", "user.email=test@continuum",
-                "-c", "user.name=Continuum Test",
-                "commit",
-                "--allow-empty", "-m", "second",
-            ])
-            .output()
-            .expect("git commit must succeed in this env");
-        let tip_sha2 = String::from_utf8(output.stdout).unwrap().trim().to_string(); // unwrap: valid UTF-8
-
-        let req2 = DeployRequest::new(&tip_sha2, NOW + 10_000);
+        // A second request for a DIFFERENT tip gets its own tree.
+        let tip_b = "bbbbbbbbb222";
+        let req_b = DeployRequest::new(tip_b, NOW + 10_000);
         assert!(matches!(
-            act.on_deploy_wanted(&req2, false, NOW + 10_000),
+            act.on_deploy_wanted(&req_b, false, NOW + 10_000),
             ActuateOutcome::Spawned { attempt: 2, .. }
         ));
 
         let plans = spawner.plans.lock();
         assert_eq!(plans.len(), 2, "second tip gets its own spawn and worktree");
-        // The two worktrees must be DIFFERENT paths — each deploy owns its own tree.
-        let cwd1 = &plans[0].cwd;
-        let cwd2 = &plans[1].cwd;
+        // The two trees must be DIFFERENT paths — each deploy owns its own tree.
+        let cwd_a2 = &plans[0].cwd;
+        let cwd_b = &plans[1].cwd;
         assert_ne!(
-            cwd1, cwd2,
+            cwd_a2, cwd_b,
             "two tips for the same request should get two different worktree paths"
         );
     }
