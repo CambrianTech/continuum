@@ -56,7 +56,7 @@ pub(crate) enum Decided {
 }
 
 /// The attempt cap shared between the actuator's decision logic and the consumer's own ledger. Defined here so both the library (deploy_actuator) and binary (deploy_ledger) see a single source of truth — no drift risk.
-pub(crate) const CONSUME_MAX_ATTEMPTS: u32 = 3;
+pub const CONSUME_MAX_ATTEMPTS: u32 = 3;
 /// What one actuation recorded about itself. Kept as the standing evidence of the last
 /// grade the action against the build it produced.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +280,12 @@ fn open_log_for_child(path: &Path) -> std::io::Result<std::fs::File> {
 #[cfg_attr(windows, path = "spawner_callbacks_windows.rs")]
 mod callbacks;
 
+impl From<continuum_host::deploy_spawn::Spawned> for Spawned {
+    fn from(s: continuum_host::deploy_spawn::Spawned) -> Self {
+        Self { pid: s.pid, mode: s.mode, child: s.child }
+    }
+}
+
 /// The real spawner — delegates all OS-specific spawning to [`continuum_host::deploy_spawn`].
 pub(crate) struct CliSpawner;
 
@@ -293,6 +299,7 @@ impl DeploySpawner for CliSpawner {
             log: plan.log.clone(),
         };
         continuum_host::deploy_spawn::spawn_deploy(&host_plan, probe, permit_check)
+            .map(Spawned::from)
     }
 }
 
@@ -391,7 +398,7 @@ impl DeployActuator {
     fn create_deploy_worktree(root: &Path, tip_sha: &str) -> Result<PathBuf, String> {
         // If there's no git repo (test environment), just return root as cwd.
         if !root.join(".git").is_dir() {
-            return Ok(root.clone());
+            return Ok(root.to_path_buf());
         }
         let worktrees_dir = root.join("worktrees");
         std::fs::create_dir_all(&worktrees_dir)
@@ -475,7 +482,7 @@ impl DeployActuator {
                     continuum_base::probe!(
                         class = "deploy.actuate.gave_up",
                         tip = req.tip_sha.as_str(),
-                        attempts,
+                        attempts = *attempts,
                         "the consumer was launched this many times for this tip and it is not running — not launching again; a new tip resets this"
                     );
                 }
@@ -486,9 +493,9 @@ impl DeployActuator {
                     class = "deploy.actuate.decision",
                     verdict = "awaiting_bound",
                     tip = req.tip_sha.as_str(),
-                    *attempt,
-                    *elapsed_ms,
-                    *bound_ms,
+                    attempt = *attempt as i64,
+                    elapsed_ms = *elapsed_ms as i64,
+                    bound_ms = *bound_ms as i64,
                     "stranded, but inside the bound derived from the last measured deploy — not re-actuated blindly"
                 );
                 return ActuateOutcome::Skipped(ActuateSkipReason::AwaitingBound { attempt: *attempt, elapsed_ms: *elapsed_ms, bound_ms: *bound_ms });
