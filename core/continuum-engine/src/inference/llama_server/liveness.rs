@@ -17,13 +17,8 @@
 pub(super) static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 
-/// Consecutive REAL generations that FAILED on the served lane since the last success —
-/// the other half of "delivery beats probing" (#363). The 2026-08-07 blackout proved a
-/// wedge class the 1-token smoke probe cannot see: an UNDERSIZED slot rejects the
-/// fleet's real 12k-token prompts (every citizen turn dies mid-stream) while a tiny
-/// synthetic probe still passes — "can generate" is not "can serve the actual working
-/// set". Sustained real-turn failure is the honest wedge evidence, symmetric with real
-/// tokens being the honest liveness evidence above.
+/// Diagnostic count of failed real generations since the last success.
+/// A failed request does not establish engine death or authorize retirement.
 pub(super) static REAL_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 
@@ -36,9 +31,7 @@ pub fn note_real_decode_failure() {
 }
 
 
-/// Consecutive real-generation failures since the last success. The serving daemon's
-/// heartbeat treats `>= HEALTH_FAILS_TO_RELAUNCH` as wedge evidence that OUTRANKS both
-/// the recent-decode trust window and a passing smoke probe.
+/// Diagnostic failure streak, exposed in request-failure telemetry only.
 pub fn consecutive_real_decode_failures() -> u64 {
     REAL_DECODE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
 }

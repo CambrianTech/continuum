@@ -125,13 +125,6 @@ type DecodeAgeSource = Arc<dyn Fn() -> Option<u64> + Send + Sync>;
 type LeasedInSentSource =
     Arc<dyn Fn() -> Vec<crate::inference::resource_admission::PromptSample> + Send + Sync>;
 
-/// Where the heartbeat reads "consecutive REAL generations that failed on the live lane
-/// since the last success" (#363). Defaults to the llama-server process-global stamped by
-/// the adapter's local-lane error paths; tests inject their own so a parallel test that
-/// stamps the global cannot leak order-dependence in
-/// ([[a-process-global-read-inside-a-decision-makes-tests-order-dependent]]).
-type RealFailsSource = Arc<dyn Fn() -> u64 + Send + Sync>;
-
 pub struct ServingDaemonModule {
     gpu: Arc<GpuMemoryManager>,
     /// Live system memory monitor — the budget comes from what's actually FREE
@@ -240,10 +233,6 @@ pub struct ServingDaemonModule {
     /// Defaults to the lane registry; tests own it ([`Self::set_inherited_lane`]). See
     /// [`InheritedLaneSource`] for the measured defect this closes (#438).
     inherited_lane: InheritedLaneSource,
-    /// Where the heartbeat reads the real-turn failure streak (#363). Sustained real
-    /// failure is wedge evidence that OUTRANKS a passing smoke probe — the undersized-slot
-    /// wedge class rejects the fleet's real prompts while a tiny probe still succeeds.
-    real_fails: RealFailsSource,
     /// The last HEALTHY lane's (window, lanes) — the #363 prevention half. The #175
     /// sticky floor reads the live snapshot, but declaring a wedge EMPTIES that snapshot
     /// first, so every wedge-heal relaunch bypassed the floor by construction and spawned
@@ -550,7 +539,6 @@ impl ServingDaemonModule {
             last_miss_slots_fp: Arc::new(parking_lot::Mutex::new(None)),
             frozen_slots: Arc::new(parking_lot::Mutex::new(None)),
             inherited_lane: Arc::new(crate::inference::lane_registry::live_lane),
-            real_fails: Arc::new(crate::inference::llama_server::consecutive_real_decode_failures),
             last_healthy_window: Arc::new(AtomicU32::new(0)),
             spawn_baseline_vram: Arc::new(AtomicU64::new(0)),
             engine_device_credit: Arc::new(
@@ -611,7 +599,7 @@ pub use policy::{
 mod health;
 use health::FrozenSlots;
 #[cfg(test)]
-use health::{FROZEN_ENGINE_MS, HEALTH_FAILS_TO_RELAUNCH, HEALTH_PROBE_EVERY_TICKS};
+use health::{FROZEN_ENGINE_MS, HEALTH_PROBE_EVERY_TICKS};
 mod publication;
 #[cfg(test)]
 use publication::SERVING_SNAPSHOT_EVENT;

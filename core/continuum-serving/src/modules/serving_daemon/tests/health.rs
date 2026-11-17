@@ -265,41 +265,32 @@ async fn a_lane_proven_alive_by_real_decode_is_not_probed() {
     }
 }
 
-// what this catches: the #363 blackout class — a lane that REJECTS the fleet's
-// real prompts (undersized slot / mid-stream death) while both trust paths stay
-// green: recent-decode trust says alive, the 1-token smoke probe would pass.
-// Sustained REAL-turn failure must outrank both and declare the wedge, flipping
-// the snapshot not-ready + arming force_relaunch — without ever spending a probe.
-// Regression for the 2026-08-07 25-minute room blackout (serving/status
-// ready:true throughout, 4 citizens' turns all dying mid-stream).
+// BigMama 2026-11-16: request context rejections and empty EOFs accumulated
+// into a global failure streak, which restarted every resident. Request failure
+// is not engine death, even when repeated while the lane is doing useful work.
 #[tokio::test]
-async fn sustained_real_turn_failures_outrank_a_passing_probe() {
+async fn request_failures_do_not_retire_a_progressing_engine() {
     let serves = Arc::new(AtomicUsize::new(0));
-    let mut d = daemon_with(Arc::new(FakeServer {
-        // The smoke probe WOULD pass — that is the point: it must not get the
-        // chance to vouch for a lane the real workload proves broken.
-        smoke_ok: Arc::new(AtomicBool::new(true)),
-        ..FakeServer::healthy(serves, true)
-    }));
-    // Fresh decode trust too (a partial stream can stamp it) — must ALSO be outranked.
+    let mut d = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
     let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
     d.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
-    d.set_real_fails_source(Arc::new(|| HEALTH_FAILS_TO_RELAUNCH as u64));
+    // Exercise the adapter's diagnostic counter; the daemon no longer reads it.
+    for _ in 0..3 {
+        crate::inference::llama_server::note_real_decode_failure();
+    }
     let _ = d.serving_tx.send_replace(ready_snapshot());
 
-    assert!(
-        d.spawn_health_heartbeat_if_due().is_none(),
-        "the wedge verdict is immediate — no probe task is spawned"
-    );
-    assert!(
-        !d.serving_tx.borrow().ready,
-        "sustained real failures must flip the snapshot not-ready even though the \
-             smoke probe would pass and decode trust is fresh"
-    );
-    assert!(
-        d.force_relaunch.load(Ordering::Acquire),
-        "the reconcile must be forced to re-prove the lane, not re-adopt it"
-    );
+    for _ in 0..(HEALTH_PROBE_EVERY_TICKS * 3) {
+        assert!(d.spawn_health_heartbeat_if_due().is_none());
+        assert!(
+            d.serving_tx.borrow().ready,
+            "request errors must not unseat residents"
+        );
+        assert!(
+            !d.force_relaunch.load(Ordering::Acquire),
+            "request errors must not authorize engine replacement"
+        );
+    }
 }
 
 // what this catches (L11 — the 2026-08-16 23-minute boot kill-loop): after a
@@ -320,11 +311,8 @@ async fn a_smoke_miss_on_a_lane_with_advancing_slots_is_not_wedge_evidence() {
         slots_fp: slots_fp.clone(),
         ..FakeServer::healthy(serves, true)
     }));
-    // Pin both process-global evidence sources to inert test values — the
-    // globals are stamped by unrelated tests under full-suite parallelism
-    // (the #7 isolation class), which would silently skip the probe path.
+    // Own the progress source so unrelated tests cannot skip this probe path.
     d.set_decode_age_source(Arc::new(|| None));
-    d.set_real_fails_source(Arc::new(|| 0));
     let _ = d.serving_tx.send_replace(ready_snapshot());
 
     // Drive a heartbeat probe to completion (the cadence gate only fires
@@ -479,7 +467,6 @@ async fn a_smoke_miss_on_a_lane_with_advancing_slots_is_not_wedge_evidence() {
     let age = Arc::new(AtomicU64::new(FROZEN_ENGINE_MS * 10));
     let sampled_age = age.clone();
     frozen.set_decode_age_source(Arc::new(move || Some(sampled_age.load(Ordering::Acquire))));
-    frozen.set_real_fails_source(Arc::new(|| 0));
     let mut snapshot = ready_snapshot();
     snapshot.base_url = format!("{root}/v1");
     frozen.serving_tx.send_replace(snapshot.clone());
@@ -526,7 +513,6 @@ async fn a_smoke_miss_on_a_lane_with_advancing_slots_is_not_wedge_evidence() {
         ..FakeServer::healthy(Arc::new(AtomicUsize::new(0)), true)
     }));
     stale.set_decode_age_source(Arc::new(|| Some(FROZEN_ENGINE_MS * 10)));
-    stale.set_real_fails_source(Arc::new(|| 0));
     stale.prefill_knee_reading.store(true, Ordering::Release);
     stale.serving_tx.send_replace(snapshot);
     *stale.frozen_slots.lock() = Some(FrozenSlots {

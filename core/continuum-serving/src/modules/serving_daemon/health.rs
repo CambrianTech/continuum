@@ -105,14 +105,6 @@ impl ServingDaemonModule {
         self.decode_age = source;
     }
 
-    /// Test seam: own the heartbeat's real-turn-failure evidence (#363) instead of
-    /// inheriting the process-global stamped by other tests' adapters. Same rationale
-    /// as [`Self::set_decode_age_source`].
-    #[cfg(test)]
-    pub(super) fn set_real_fails_source(&mut self, source: RealFailsSource) {
-        self.real_fails = source;
-    }
-
     /// The liveness HEARTBEAT (#175 self-heal) — see also [`judge_smoke_miss`] (L11),
     /// which decides whether a missed probe is contention or wedge evidence.
     /// On a cadence far slower than [`TICK`],
@@ -191,36 +183,6 @@ impl ServingDaemonModule {
             return None;
         }
         let _ = self.spawn_prefill_knee_read();
-        // #363: SUSTAINED REAL-TURN FAILURE OUTRANKS EVERY TRUST PATH BELOW. The
-        // 2026-08-07 blackout (25 min, every citizen turn dead, serving/status
-        // ready:true throughout) was a wedge class neither trust path can see:
-        // an undersized/mid-stream-dying lane REJECTS the fleet's real prompts
-        // while (a) partial streams may stamp recent-decode trust and (b) a tiny
-        // 1-token smoke probe still PASSES — "can generate" is not "can serve the
-        // actual working set". Real failures are the honest evidence, stamped at
-        // the adapter's local-lane error paths, and the same threshold as the
-        // decode heartbeat keeps one hysteresis constant, not two.
-        let real_fails = (self.real_fails)();
-        if real_fails >= HEALTH_FAILS_TO_RELAUNCH as u64 {
-            crate::inference::llama_server::reset_real_decode_failures();
-            self.health_fails.store(0, Ordering::Relaxed);
-            continuum_base::probe!(
-                target: "continuum_core::modules::serving_daemon", class = "serving.health",
-                ok = false,
-                via = "real_turn_failures",
-                consecutive = real_fails,
-                threshold = HEALTH_FAILS_TO_RELAUNCH as u64,
-                "consecutive REAL generations failed on the live lane — wedge evidence \
-                 that outranks a passing smoke probe (#363 undersized/mid-stream class)",
-            );
-            Self::declare_lane_wedged(
-                &self.force_relaunch,
-                &self.serving_tx,
-                self.bus.get(),
-                "sustained real-turn failures (smoke probe may still pass)",
-            );
-            return None;
-        }
         // DELIVERY BEATS PROBING. `decode_smoke_ok` is a real multi-token generation through
         // the LIVE slots, so it competes for the same slots as actual work. A lane saturated by
         // long prefills cannot hand it a slot, the miss reads as "no decode", and
@@ -327,8 +289,8 @@ impl ServingDaemonModule {
         // scratch slot the smoke probe lands on the slot a resident's live KV occupies; the
         // 72-token prompt replaced a 53,980-token conversation and the next save wrote that as
         // her page, so every restore after it re-prefilled from ~0. A quiet lane with a seated
-        // resident is not probed: a wedge there surfaces on her next real turn, which the
-        // real-turn-failure arm above already condemns.
+        // resident is not probed. Request failures remain visible to their callers;
+        // they do not authorize retiring every resident's engine.
         // This check is the CHEAP early-out; the authority is the slot permit taken in the spawned
         // probe below (Codex on #4960: a check here races a turn that seats a resident before the
         // probe's POST).
