@@ -10,27 +10,20 @@ impl LlmDeliberationFaculty {
     /// Resume her view and her head together from her checkpoint, before this act selects anything:
     /// a restart sends the bytes her engine holds instead of a head re-read from the live surface.
     /// Only a faculty holding neither resumes (a fresh one after a restart). A requested adoption
-    /// (`persona/hands/adopt`) is honoured first: her head is selected afresh from the live surface
-    /// as a new epoch, and any refusal lifts.
+    /// (`persona/hands/adopt`, `persona/hands/adopt_capture`) is honoured after, so it replaces
+    /// what was resumed (`capture_adoption.rs`).
     pub(in super::super) fn resume_custody(&self) {
         let Some(memory) = self.working_memory.as_deref() else {
             return;
         };
-        if let Some(by) = memory.take_hands_adoption() {
-            // What it replaces is kept as it was (a refused head's record, else her held head), and
-            // her old head keeps its generation until the new one freezes after it.
-            let lifted = self.hands_refused.lock().take();
-            let reason = lifted.as_ref().map_or_else(|| "an explicit request".to_string(), HandsRefusal::reason); // map_or_else: nothing was refused
-            let prior = lifted.as_ref().map_or_else(|| self.tools_epoch.lock().clone().map_or(HandsCustody::Unrecorded, HandsCustody::Held), HandsRefusal::custody); // map_or_else: a head that was not refused is replaced as held; map_or: none held is none
-            continuum_base::probe!(
-                class = "tools.custody.adoption_requested",
-                persona = %self.persona_name,
-                by = %by,
-                reason = %reason,
-                "her head is adopted from the live surface at her next frozen epoch, at an explicit request; what it replaces is kept"
-            );
-            *self.adopting.lock() = Some(crate::cognition::hands_custody::PendingAdoption { prior, reason, by });
+        self.resume_from_checkpoint(memory);
+        if let Some(request) = memory.take_hands_adoption() {
+            self.begin_adoption(request);
         }
+    }
+
+    /// Her view and head as her checkpoint kept them, once per faculty.
+    fn resume_from_checkpoint(&self, memory: &WorkingMemory) {
         let mut view = self.context_view.lock();
         if view.is_some() || self.tools_epoch.lock().is_some() || self.hands_refused.lock().is_some() {
             return;
@@ -69,7 +62,11 @@ impl LlmDeliberationFaculty {
 
     /// Why her acts are refused while her head waits for adoption, or `None`.
     pub(in super::super) fn hands_refusal(&self) -> Option<String> {
-        self.hands_refused.lock().as_ref().map(HandsRefusal::reason)
+        let refusal = self.hands_refused.lock().as_ref().map(HandsRefusal::reason)?;
+        Some(match self.capture_refused.lock().as_ref() {
+            Some(mismatch) => format!("{refusal}. Her last adoption from a captured request was refused: {mismatch}"),
+            None => refusal,
+        })
     }
 
     /// Her held head as this act offers it: none while an adoption waits to freeze a new one.
@@ -147,6 +144,10 @@ impl LlmDeliberationFaculty {
     fn hands_custody(&self) -> HandsCustody {
         if let Some(refusal) = self.hands_refused.lock().as_ref() {
             return refusal.custody();
+        }
+        // An adoption under way keeps what it replaces until it commits (`capture_adoption.rs`).
+        if let Some(pending) = self.adopting.lock().as_ref() {
+            return pending.prior.clone();
         }
         self.tools_epoch.lock().clone().map_or(HandsCustody::Unrecorded, HandsCustody::Held) // map_or: no head held records none
     }

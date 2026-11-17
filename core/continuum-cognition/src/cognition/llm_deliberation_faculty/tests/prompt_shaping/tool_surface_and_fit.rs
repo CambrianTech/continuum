@@ -742,3 +742,52 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     assert!(adopted.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", adopted.protocol_error);
     assert_eq!(view_epoch(&resumed), epoch, "and keeps her view");
 }
+
+// what this catches (Codex's review of 9cf06ade): a legacy head handed back warm on a guess, or a
+// capture that differs adopted anyway. A view checkpointed before heads, with the request her engine
+// was served recorded, adopts that request's head only where her accepted frontier (her sent view,
+// through the render her acts send) and this act's system prompt, tool payload, model and messages
+// match it byte for byte, over the custody the adoption names. A capture that differs is refused with
+// where it differs and her refusal kept; the one that matches is adopted and recorded as such.
+#[test]
+fn a_head_is_adopted_from_the_capture_it_matches_and_refused_from_one_that_differs() {
+    use crate::cognition::capture_adoption::{CaptureBinding, CapturedHead};
+    use crate::cognition::hands_custody::HandsCustody;
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
+    // The request her engine was served: what her capture records.
+    let binding = before.binding.load_full();
+    let (messages, tools, system) = (first.messages.clone(), first.tools.specs.clone(), first.system.clone());
+    let captured = before.build_request_within(&binding, first.completion_reserve, messages, tools, system, None, Some(ws.room_id), TurnKind::Pass);
+    before.view_served(&first);
+
+    // A checkpoint from before heads: her view, no head beside it.
+    let mut legacy = wm.snapshot();
+    legacy.context_hands = HandsCustody::Unrecorded;
+    let restored = Arc::new(WorkingMemory::new(8));
+    restored.restore(legacy);
+    let after = asha_with_hands().with_working_memory(Arc::clone(&restored));
+    assert!(after.prompt_view_within(&ws, 200_000).protocol_error.is_some(), "a legacy view waits for an adoption");
+    let ask = |request: crate::ai::types::TextGenerationRequest| {
+        let expected_custody_sha256 = restored.custody_receipt().expect("her custody digests").sha256;
+        let binding = CaptureBinding { cursor: "the capture".to_string(), request_sha256: "its digest".to_string(), expected_custody_sha256 };
+        restored.request_capture_adoption("operator", CapturedHead { binding, request: Arc::new(request) });
+    };
+
+    let mut differs = captured.clone();
+    differs.system_prompt = differs.system_prompt.map(|system| format!("{system} "));
+    ask(differs);
+    let refused = after.prompt_view_within(&ws, 200_000);
+    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("system prompt differs")), "{:?}", refused.protocol_error);
+    assert!(restored.snapshot().superseded_hands.is_empty(), "nothing was adopted");
+
+    ask(captured);
+    let adopted = after.prompt_view_within(&ws, 200_000);
+    assert!(adopted.protocol_error.is_none(), "the capture she was served adopts: {:?}", adopted.protocol_error);
+    let kept = restored.snapshot().superseded_hands;
+    assert!(kept.last().is_some_and(|replaced| replaced.from_capture.as_ref().is_some_and(|from| from.cursor == "the capture")), "recorded as adopted from it: {kept:?}");
+    assert!(matches!(restored.snapshot().context_hands, HandsCustody::Held(_)), "her head is held");
+}

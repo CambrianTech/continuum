@@ -562,7 +562,8 @@ impl LlmDeliberationFaculty {
         );
 
         // A head whose checkpointed custody does not decode refuses the act; its bytes are kept.
-        let protocol_error = self.hands_refusal().or_else(|| all_messages.active_protocol_error());
+        let message_error = all_messages.active_protocol_error();
+        let protocol_error = self.hands_refusal().or_else(|| message_error.clone());
         // HER VIEW IS NOT THE FIT'S TO CUT. The allocation sized it once (`fit_view`); the fit
         // sees only the fresh tail and the required input, within their own grants. Handed
         // the view too, it evicted from the front, where the view leads, to make room for a
@@ -808,6 +809,19 @@ impl LlmDeliberationFaculty {
             })
         } else {
             None
+        };
+        // An adoption from a captured request commits only when this act sends exactly what it sent.
+        let binding = self.binding.load_full();
+        let payload = crate::cognition::capture_adoption::ActPayload {
+            system: &system,
+            tools: selected.specs.as_deref().unwrap_or_default(), // unwrap_or_default: a surface with no tools sends none
+            model: binding.model.as_deref(),
+            messages: &messages,
+        };
+        let protocol_error = match self.settle_capture_adoption(&payload) {
+            Some(Ok(())) => message_error,
+            Some(Err(_)) => self.hands_refusal().or(message_error),
+            None => protocol_error,
         };
         let segments = segment_map(&system, &messages);
         DeliberationPromptView {

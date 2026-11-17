@@ -242,6 +242,9 @@ pub struct LlmDeliberationFaculty {
     hands_refused: parking_lot::Mutex<Option<crate::cognition::hands_custody::HandsRefusal>>,
     /// An adoption asked for, until her next frozen head records what it replaced (`prompt/hands.rs`).
     adopting: parking_lot::Mutex<Option<crate::cognition::hands_custody::PendingAdoption>>,
+    /// Why her last adoption from a capture was refused, shown with her refusal until the next
+    /// adoption is asked (`prompt/capture_adoption.rs`).
+    capture_refused: parking_lot::Mutex<Option<crate::cognition::capture_adoption::CaptureMismatch>>,
     /// Each standing block's last version per room (`prompt/messages.rs`): a block this
     /// cycle did not gather keeps its place in her view instead of leaving it.
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
@@ -282,6 +285,7 @@ impl LlmDeliberationFaculty {
             tools_epoch: parking_lot::Mutex::new(None),
             hands_refused: parking_lot::Mutex::new(None),
             adopting: parking_lot::Mutex::new(None),
+            capture_refused: parking_lot::Mutex::new(None),
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,

@@ -2771,6 +2771,7 @@ dependencies = [
  "continuum-rooms",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tracing",
  "ts-rs 12.0.1",

@@ -280,7 +280,31 @@ impl WorkingMemory {
     /// Ask that her head be adopted from the live surface at her next act (`persona/hands/adopt`):
     /// the explicit repair of a refused head, recorded with who asked.
     pub fn request_hands_adoption(&self, by: &str) {
-        self.view.lock().adoption = Some(by.to_string());
+        self.view.lock().adoption = Some(crate::cognition::capture_adoption::AdoptionRequest::Live { by: by.to_string() });
+    }
+
+    /// Ask that her head be adopted from one captured request at her next act, only where it
+    /// matches exactly (`persona/hands/adopt_capture`, `capture_adoption`).
+    pub(crate) fn request_capture_adoption(&self, by: &str, head: crate::cognition::capture_adoption::CapturedHead) {
+        self.view.lock().adoption = Some(crate::cognition::capture_adoption::AdoptionRequest::Capture { by: by.to_string(), head });
+    }
+
+    /// Her custody now, as an operator reads it before asking an adoption over it.
+    pub(crate) fn custody_receipt(&self) -> Result<crate::cognition::capture_adoption::CustodyReceipt, crate::cognition::capture_adoption::CaptureMismatch> {
+        let custody = self.view.lock();
+        crate::cognition::capture_adoption::CustodyReceipt::of(&custody.hands, custody.view.as_ref())
+    }
+
+    /// Replace her custody with `hands` only while it is still the custody `expected` digests, under
+    /// the one lock: an adoption asked over a custody that moved in between is refused, never applied.
+    pub(crate) fn adopt_custody_if(&self, expected: &str, hands: crate::cognition::hands_custody::HandsCustody) -> Result<(), crate::cognition::capture_adoption::CaptureMismatch> {
+        let mut custody = self.view.lock();
+        let actual = crate::cognition::capture_adoption::custody_sha256(&custody.hands)?;
+        if actual != expected {
+            return Err(crate::cognition::capture_adoption::CaptureMismatch::CustodyMoved { expected: expected.to_string(), actual });
+        }
+        custody.hands = hands;
+        Ok(())
     }
 
     /// Keep the head an adoption replaced, as it was, with her checkpoint.
@@ -289,7 +313,7 @@ impl WorkingMemory {
     }
 
     /// A requested adoption, taken once by the act that honours it.
-    pub(crate) fn take_hands_adoption(&self) -> Option<String> {
+    pub(crate) fn take_hands_adoption(&self) -> Option<crate::cognition::capture_adoption::AdoptionRequest> {
         self.view.lock().adoption.take()
     }
 

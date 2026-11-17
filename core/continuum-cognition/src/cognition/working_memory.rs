@@ -100,7 +100,7 @@ pub(crate) struct ViewCustody {
     pub(crate) changes: Vec<crate::cognition::hands_custody::ContractChange>,
     /// Who asked that her head be adopted from the live surface (`persona/hands/adopt`), until her
     /// next act honours it.
-    pub(crate) adoption: Option<String>,
+    pub(crate) adoption: Option<crate::cognition::capture_adoption::AdoptionRequest>,
     /// The heads her explicit adoptions replaced, kept as they were (never erased), checkpointed.
     pub(crate) superseded: Vec<crate::cognition::hands_custody::SupersededHands>,
 }
