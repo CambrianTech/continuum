@@ -103,7 +103,7 @@ pub(super) fn reconcile_ephemeral_census() -> Vec<crate::inference::lane_registr
             }
             // Dead, or the pid was recycled onto an unrelated process. Either way it
             // holds no VRAM of ours and must not weigh on the decision.
-            lane_registry::remove(rec.pid);
+            lane_registry::remove(rec);
             false
         })
         .collect()

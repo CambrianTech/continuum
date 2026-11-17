@@ -667,3 +667,29 @@ async fn empty_prose_with_no_tools_is_a_pass() {
         .expect("verdict");
     assert_eq!(c.decision, Some(Decision::pass()));
 }
+
+// what this catches: a one-token "warm" request sent between her act and her next generation (the
+// deleted prefill_during_tool). It re-sent the prompt she was served, so the engine truncated her
+// generated reasoning and call out of her KV and her next generation recomputed them (the M5,
+// 2026-11-17). Her act, then her next generation: exactly two calls, neither a one-token pass.
+#[tokio::test]
+async fn her_act_and_her_next_generation_are_the_only_requests_on_her_slot() {
+    let call = ToolCall { id: "t1".to_string(), name: "code/read".to_string(), input: json!({ "path": "deploy.md" }) };
+    let adapter = Arc::new(ScriptedAdapter {
+        prompt_cache: crate::ai::adapter::PromptCache::PinnedSlot,
+        ..ScriptedAdapter::new(vec![
+            make_response(FinishReason::ToolUse, "", Some(vec![call])),
+            make_response(FinishReason::Stop, "deploy.md says it landed", None),
+        ])
+    });
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", Arc::clone(&adapter) as Arc<dyn AIProviderAdapter>)
+        .with_tools(vec![read_tool()])
+        .with_context_window(32_768);
+    let ws = Workspace::new("teammate asks: did the deploy fix land?");
+    let first = faculty.contribute(&ws).await.expect("verdict");
+    assert!(matches!(first.decision, Some(Decision::Act { .. })), "her act dispatches the tool");
+    faculty.contribute(&ws).await.expect("verdict");
+    let seen = adapter.seen.lock().expect("fixture request log");
+    assert_eq!(seen.len(), 2, "her act, then her next generation: nothing between them on her slot");
+    assert!(seen.iter().all(|request| request.max_tokens != Some(1)), "no one-token pass truncates what she generated");
+}
