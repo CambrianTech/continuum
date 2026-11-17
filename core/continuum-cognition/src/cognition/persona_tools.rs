@@ -91,7 +91,7 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
         // SDK adapts from. Commands not yet on a base trait carry a `Null` schema;
         // those fall back to an open object (the command still validates its typed
         // params). One source, every interface ([[command-organization]]).
-        input_schema: tool_input_schema_from(&d.params_schema),
+        input_schema: tool_input_schema_from(d.name, &d.params_schema),
     }
 }
 
@@ -462,7 +462,7 @@ pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
 /// Drop the map and llama.cpp rejects the whole turn with a 400 ("definitions not
 /// in {…}") — the bug that kept every tool-enabled persona turn silent until the
 /// command-registry migration exposed the first nested-param tool.
-fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
+fn tool_input_schema_from(tool: &str, schema: &serde_json::Value) -> ToolInputSchema {
     if schema.is_null() {
         return ToolInputSchema {
             schema_type: "object".to_string(),
@@ -490,14 +490,25 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
         .or_else(|| schema.get("$defs"))
         .map(|d| lead_paragraph_descriptions(d.clone()));
     // An enum-with-data params type (`code/git/merge`) is a `oneOf` of object variants: offer the model the one
-    // object they merge into, never an empty one (schema_variants).
-    if let Some(schema_variants::MergedObject { properties, required }) = schema_variants::merged_object_variants(&schema) {
-        return ToolInputSchema {
-            schema_type: "object".to_string(),
-            properties: lead_paragraph_descriptions(properties),
-            required: (!required.is_empty()).then_some(required),
-            definitions,
-        };
+    // object they merge into, never an empty one (schema_variants). A oneOf the merge cannot express is loud.
+    match schema_variants::merged_object_variants(&schema) {
+        schema_variants::VariantsMerge::Merged(schema_variants::MergedObject { properties, required }) => {
+            return ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: lead_paragraph_descriptions(properties),
+                required: (!required.is_empty()).then_some(required),
+                definitions,
+            };
+        }
+        schema_variants::VariantsMerge::Unsupported(why) => {
+            continuum_base::probe!(
+                class = "tool.schema.variants_unsupported",
+                tool = %tool,
+                reason = why.reason(),
+                "a tool's params oneOf cannot be offered as one object: the model sees no parameters for it"
+            );
+        }
+        schema_variants::VariantsMerge::NotVariants => {}
     }
     ToolInputSchema {
         schema_type: schema

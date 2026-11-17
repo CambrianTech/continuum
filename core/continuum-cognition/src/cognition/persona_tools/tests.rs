@@ -52,7 +52,7 @@
             }
         });
 
-        let out = tool_input_schema_from(&schema);
+        let out = tool_input_schema_from("test/tool", &schema);
         let recipe = out.properties["recipe"]["description"].as_str().unwrap();
         assert_eq!(
             recipe, "Which recipe to build from — the EXACT `purpose` key.",
