@@ -194,7 +194,7 @@ async fn recover_one(
     if held.state != CustodyState::Retained {
         return Err(invalid("only retained custody is recovered"));
     }
-    let Some(endpoint) = super::directory().endpoints.get(&held.endpoint).map(|e| e.value().clone()) else {
+    let Some(endpoint) = super::directory().endpoints.get(&held.endpoint).map(|e| std::sync::Arc::clone(e.value())) else {
         return Err(invalid("the retained endpoint is not one this process pages"));
     };
     let original = held.process.map(|p| (p.pid, p.started_s));
