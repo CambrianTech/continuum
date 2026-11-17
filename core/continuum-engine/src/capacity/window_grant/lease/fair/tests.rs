@@ -447,3 +447,35 @@ fn resizing_a_continuously_held_seat_preserves_its_earned_yield() {
         assert!(bench.owner.hold_act(big, || Some(next)).is_none());
     }
 }
+
+// what this catches (card 250d7603; observed live on engine pid 33236, build 4f96d32b and still at
+// canary tip 978e3f16): a request that ends without its terminal receipt leaves one Unresolved
+// custody entry behind (settle with no receipt -> Drop -> abandon), and such entries clear only at an
+// engine fence. The reclaim candidate filter (`!state.entries.contains_key(mind)`) treats a holder
+// with even one orphan as acting forever: she is armed every evaluation yet never reclaimed, so the
+// waiter behind her waits BehindActs until the 1500s act floor, over and over - no named bound. In
+// the wild this sat for 8h+ (256 evaluations, owed fixed at one publication seq while the holder's
+// unresolved entries grew 7 -> 10 and her terminal receipts flowed). Unresolved means nothing is at
+// the engine and no one holds the reservation handle; a reclaim's physical safety rides on the
+// engine's save-and-erase receipt (this path issues its tickets directly), not on this bookkeeping.
+#[test]
+#[ignore = "pins card 250d7603: an orphan-only holder blocks seat turnover for the engine's life; un-ignore with the fix"]
+fn an_orphan_only_holder_does_not_hold_the_seat_forever() {
+    let mut bench = Bench::new();
+    let (a, b) = (mind(1), mind(2));
+    // a holds the whole pool: b's only seat to take is a's.
+    bench.publish(&[demand(a, 100, 100)], 100);
+    bench.serve(a);
+    let lease = bench.lease(a);
+    // One of a's requests ends without its terminal receipt (a cut stream): the reservation is
+    // dropped, leaving exactly one Unresolved entry - nothing at the engine, no handle held.
+    drop(bench.owner.reserve_against(a, lease, 10, || Some(lease)).expect("test: reserved")); // test: her own grant
+    let demands = [demand(a, 100, 100), demand(b, 90, 100)];
+    for _ in 0..3 {
+        let tickets = bench.publish(&demands, 100);
+        for ticket in tickets {
+            bench.owner.lock().reclaimed.insert(ticket.persona(), ticket.lease()); // test: the engine reclaimed it
+        }
+    }
+    assert_eq!(bench.grants().get(&b), Some(&90), "the waiter seats once the holder's acts are all orphans");
+}
