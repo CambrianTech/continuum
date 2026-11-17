@@ -55,6 +55,8 @@
 //! - Migration of `PersonaInstanceInfo` callers to read from
 //!   Identity table (Slice 1B, follow-up PR)
 
+#[cfg(test)]
+use futures::TryStreamExt;
 use continuum_orm_derive::Entity;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -434,7 +436,7 @@ mod tests {
         assert_eq!(loaded_alice.default_room, shared_room);
         assert_eq!(loaded_alice.agent_provider, None);
 
-        let all = store.find_all().await.expect("find_all");
+        let all = store.scan().await.expect("find_all").try_collect::<Vec<_>>().await.expect("test: stream rows");
         assert_eq!(all.len(), 2, "both identities present");
 
         // Manual filter by kind — exercises the round-trip end to

@@ -446,14 +446,14 @@
     #[tokio::test]
     async fn engram_recall_metadata_cascade_deletes_with_engram() {
         use continuum_kernel::orm::adapter::StorageAdapter;
-        use continuum_kernel::orm::sqlite::SqliteAdapter;
+        use continuum_kernel::orm::SeaOrmAdapter;
         use continuum_kernel::orm::OrmStore;
         use crate::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("engrams.sqlite");
-        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+        let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         let engrams = OrmStore::<Engram>::new(Arc::clone(&adapter))

@@ -53,7 +53,7 @@ impl ChatModule {
         tie.insert("timestamp".to_string(), json!({ "$eq": anchor_timestamp }));
         tie.insert("id".to_string(), operator(strictly, json!(anchor.to_string())));
         let mut rows = self
-            .query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(tie), Some(json!([{ "field": "id", "direction": sort }])), Some(limit))
+            .query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(tie), Some(json!([{ "field": "id", "direction": sort }])), limit)
             .await?;
 
         if rows.len() < limit {
@@ -63,7 +63,7 @@ impl ChatModule {
                 { "field": "timestamp", "direction": sort },
                 { "field": "id", "direction": sort },
             ]);
-            rows.extend(self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(past), Some(order), Some(limit - rows.len())).await?);
+            rows.extend(self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(past), Some(order), limit - rows.len()).await?);
         }
         Ok(rows)
     }
@@ -74,7 +74,7 @@ impl ChatModule {
             { "field": "timestamp", "direction": "desc" },
             { "field": "id", "direction": "desc" },
         ]);
-        self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(room_filter(room_id)), Some(order), Some(limit)).await
+        self.query_rows(CHAT_MESSAGES_COLLECTION, Value::Object(room_filter(room_id)), Some(order), limit).await
     }
 }
 

@@ -185,6 +185,12 @@ impl OrmEntityRegistry {
         map.get(collection).cloned()
     }
 
+    /// Snapshot the boot declarations for adapter admission. The lock is released
+    /// before the storage owner performs asynchronous schema operations.
+    pub fn declarations(&self) -> Vec<CollectionSchema> {
+        self.schemas.read().values().cloned().collect()
+    }
+
     /// Test-only reset of the global singleton. NOT for production use
     /// — registry is write-once at boot by design. Most tests should
     /// construct fresh `OrmEntityRegistry::new()` instances instead of
@@ -283,6 +289,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
     use crate::orm::types::{FieldType, SchemaField};
     vec![
         SchemaField {
+                default_value: None,
             name: "id".to_string(),
             field_type: FieldType::Uuid,
             indexed: true,
@@ -292,6 +299,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "createdAt".to_string(),
             field_type: FieldType::Date,
             indexed: true,
@@ -301,6 +309,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "updatedAt".to_string(),
             field_type: FieldType::Date,
             indexed: true,
@@ -310,6 +319,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
             foreign_key: None,
         },
         SchemaField {
+                default_value: None,
             name: "version".to_string(),
             field_type: FieldType::Number,
             indexed: false,
@@ -326,7 +336,7 @@ pub fn base_entity_fields() -> Vec<crate::orm::types::SchemaField> {
 /// flags) + composite index set. Field ORDER doesn't matter for
 /// equivalence — two registrations with the same fields in different
 /// orders are equivalent.
-fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> bool {
+pub(crate) fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> bool {
     if a.collection != b.collection {
         return false;
     }
@@ -335,17 +345,14 @@ fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> bool {
     }
     // Order-independent compare. Build a name-keyed map of one side, walk
     // the other.
-    let a_by_name: HashMap<&str, &crate::orm::types::SchemaField> =
+    let mut a_by_name: HashMap<&str, &crate::orm::types::SchemaField> =
         a.fields.iter().map(|f| (f.name.as_str(), f)).collect();
+    if a_by_name.len() != a.fields.len() { return false; }
     for bf in &b.fields {
-        let Some(af) = a_by_name.get(bf.name.as_str()) else {
+        let Some(af) = a_by_name.remove(bf.name.as_str()) else {
             return false;
         };
-        if af.field_type != bf.field_type
-            || af.indexed != bf.indexed
-            || af.unique != bf.unique
-            || af.nullable != bf.nullable
-            || af.max_length != bf.max_length
+        if af != bf
         {
             return false;
         }
@@ -354,13 +361,14 @@ fn schemas_equivalent(a: &CollectionSchema, b: &CollectionSchema) -> bool {
     if a.indexes.len() != b.indexes.len() {
         return false;
     }
-    let a_idx_by_name: HashMap<&str, &crate::orm::types::SchemaIndex> =
+    let mut a_idx_by_name: HashMap<&str, &crate::orm::types::SchemaIndex> =
         a.indexes.iter().map(|i| (i.name.as_str(), i)).collect();
+    if a_idx_by_name.len() != a.indexes.len() { return false; }
     for bi in &b.indexes {
-        let Some(ai) = a_idx_by_name.get(bi.name.as_str()) else {
+        let Some(ai) = a_idx_by_name.remove(bi.name.as_str()) else {
             return false;
         };
-        if ai.fields != bi.fields || ai.unique != bi.unique {
+        if ai != bi {
             return false;
         }
     }
@@ -383,6 +391,7 @@ mod tests {
             CollectionSchema {
                 collection: "alpha_test_collection".to_string(),
                 fields: vec![SchemaField {
+                default_value: None,
                     name: "id".to_string(),
                     field_type: FieldType::String,
                     indexed: true,
@@ -404,6 +413,7 @@ mod tests {
                 collection: "beta_test_collection".to_string(),
                 fields: vec![
                     SchemaField {
+                default_value: None,
                         name: "id".to_string(),
                         field_type: FieldType::String,
                         indexed: true,
@@ -413,6 +423,7 @@ mod tests {
                         foreign_key: None,
                     },
                     SchemaField {
+                default_value: None,
                         name: "value".to_string(),
                         field_type: FieldType::Number,
                         indexed: false,
@@ -423,6 +434,7 @@ mod tests {
                     },
                 ],
                 indexes: vec![SchemaIndex {
+                    descending: false,
                     name: "idx_value".to_string(),
                     fields: vec!["value".to_string()],
                     unique: false,
@@ -440,6 +452,7 @@ mod tests {
             CollectionSchema {
                 collection: "beta_test_collection".to_string(),
                 fields: vec![SchemaField {
+                default_value: None,
                     name: "different_field".to_string(),
                     field_type: FieldType::Boolean,
                     indexed: false,
@@ -555,6 +568,26 @@ mod tests {
             .expect("updated_at must parse as RFC3339");
     }
 
+    #[test]
+    fn declaration_comparison_covers_defaults_relationships_and_index_direction() {
+        let original = Alpha::collection_schema();
+        let mut changed = original.clone();
+        changed.fields[0].default_value = Some(serde_json::json!("new default"));
+        assert!(!schemas_equivalent(&original, &changed));
+        changed = original.clone();
+        changed.fields[0].foreign_key = Some(crate::orm::types::ForeignKeyRef {
+            collection: "parents".into(), field: "id".into(),
+            on_delete: crate::orm::types::CascadeRule::Restrict,
+            on_update: crate::orm::types::CascadeRule::Restrict,
+        });
+        assert!(!schemas_equivalent(&original, &changed));
+        let mut indexed = original;
+        indexed.indexes.push(SchemaIndex { name: "by_id".into(), fields: vec!["id".into()], unique: true, descending: false });
+        changed = indexed.clone();
+        changed.indexes[0].descending = true;
+        assert!(!schemas_equivalent(&indexed, &changed));
+    }
+
     /// Field order doesn't affect schema equivalence (idempotent
     /// reregistration of structs whose fields happen to be declared in
     /// a different order must still no-op).
@@ -570,6 +603,7 @@ mod tests {
                     collection: "order_test".to_string(),
                     fields: vec![
                         SchemaField {
+                default_value: None,
                             name: "a".to_string(),
                             field_type: FieldType::String,
                             indexed: false,
@@ -579,6 +613,7 @@ mod tests {
                             foreign_key: None,
                         },
                         SchemaField {
+                default_value: None,
                             name: "b".to_string(),
                             field_type: FieldType::Number,
                             indexed: false,
@@ -600,6 +635,7 @@ mod tests {
                     collection: "order_test".to_string(),
                     fields: vec![
                         SchemaField {
+                default_value: None,
                             name: "b".to_string(),
                             field_type: FieldType::Number,
                             indexed: false,
@@ -609,6 +645,7 @@ mod tests {
                             foreign_key: None,
                         },
                         SchemaField {
+                default_value: None,
                             name: "a".to_string(),
                             field_type: FieldType::String,
                             indexed: false,

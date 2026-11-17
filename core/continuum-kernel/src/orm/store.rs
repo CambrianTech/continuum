@@ -9,7 +9,7 @@
 //! ### The compression principle
 //!
 //! Per [[organization-purity-as-we-migrate]] + the substrate's
-//! E=mc² doctrine in CLAUDE.md: ONE generic helper instead of N
+//! E=mcÂ² doctrine in CLAUDE.md: ONE generic helper instead of N
 //! per-entity persistence shims. Every `T: OrmEntity + Serialize +
 //! DeserializeOwned` gets save/find_all/find_by_id/update/delete for
 //! free. Add `impl OrmEntity for FooEntity` → `OrmStore<FooEntity>`
@@ -39,6 +39,8 @@
 //!   [`OrmStore::update_op`]) and [`commit`] applies them together, so a
 //!   decision and the record it changes land in ONE transaction.
 
+#[cfg(test)]
+use futures::TryStreamExt;
 use std::marker::PhantomData;
 use std::sync::Arc;
 
@@ -157,13 +159,21 @@ where
         Ok(())
     }
 
-    /// Load every row in the collection, paired with its row id.
-    /// Order is adapter-defined (no ORDER BY); callers needing a
-    /// specific order should drop down to QueryBuilder + sort_asc /
-    /// sort_desc on the relevant field.
-    pub async fn find_all(&self) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
-        // bounded: the verb itself; each caller of find_all is counted where it reads (source-hygiene store_reads/reads.rs)
-        self.find_matching(QueryBuilder::new(T::COLLECTION).build()).await
+    /// Count matching entities in the database without decoding their bodies.
+    pub async fn count(&self) -> Result<usize, OrmStoreError> {
+        unwrap_adapter(self.adapter.count(QueryBuilder::new(T::COLLECTION).build()).await, "count", T::COLLECTION)
+    }
+
+    /// Stream boot replay in stable row order without collecting an intermediate result set.
+    pub async fn scan(&self) -> Result<futures::stream::BoxStream<'_, Result<(Uuid, T), OrmStoreError>>, OrmStoreError> {
+        use futures::StreamExt;
+        let rows = self.adapter.scan(QueryBuilder::new(T::COLLECTION).build()).await
+            .map_err(|detail| OrmStoreError::AdapterFailed { operation: "scan", collection: T::COLLECTION.into(), detail })?;
+        Ok(rows.map(|row| {
+            let row = row.map_err(|detail| OrmStoreError::AdapterFailed { operation: "scan", collection: T::COLLECTION.into(), detail })?;
+            let id = Uuid::parse_str(&row.id).map_err(OrmStoreError::InvalidUuid)?;
+            Ok((id, row.decode().map_err(OrmStoreError::DeserializeFailed)?))
+        }).boxed())
     }
 
     /// Load the rows `query` selects, paired with their row ids. The query must
@@ -187,9 +197,9 @@ where
         &self,
         field: &str,
         value: impl Into<serde_json::Value>,
+        limit: usize,
     ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
-        // bounded: the verb itself; each caller of find_eq is counted where it reads (source-hygiene store_reads/reads.rs)
-        self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).build())
+        self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).limit(limit).build())
             .await
     }
 
@@ -219,7 +229,10 @@ where
     /// Overwrite an existing row's data. Increments the BaseEntity
     /// version counter (optimistic concurrency control surface).
     pub async fn update(&self, id: Uuid, entity: &T) -> Result<(), OrmStoreError> {
-        self.update_fields(id, entity).await
+        let data = update_data(entity)?;
+        let result = self.adapter.update(T::COLLECTION, &id.to_string(), data, true).await;
+        unwrap_adapter(result, "update", T::COLLECTION)?;
+        Ok(())
     }
 
     /// Write a concrete typed subset of this entity's columns. This avoids
@@ -257,7 +270,7 @@ where
             operation_type: BatchOperationType::Update,
             collection: T::COLLECTION.to_string(),
             id: Some(id.to_string()),
-            data: Some(row_data(entity)?),
+            data: Some(update_data(entity)?),
         })
     }
 
@@ -312,6 +325,19 @@ where
 /// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
 fn row_data<P: Serialize>(entity: &P) -> Result<serde_json::Value, OrmStoreError> {
     serde_json::to_value(entity).map_err(OrmStoreError::SerializeFailed) // storage boundary: the adapter's row format (SQLite JSON)
+}
+
+/// Full entity snapshots carry BaseEntity read metadata. The typed owner sends
+/// only mutable payload columns; the adapter retains creation time and advances
+/// its own version/update time. Partial updates remain strict about metadata.
+fn update_data<T: Serialize>(entity: &T) -> Result<serde_json::Value, OrmStoreError> {
+    let mut data = row_data(entity)?;
+    if let Some(fields) = data.as_object_mut() {
+        for key in crate::orm::types::METADATA_KEYS {
+            fields.remove(*key);
+        }
+    }
+    Ok(data)
 }
 
 /// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none
@@ -406,9 +432,9 @@ fn unwrap_storage<T>(
 /// at test-end cleans up cleanly (no `/tmp` accumulation).
 #[cfg(any(test, feature = "test-fixtures"))]
 pub async fn fresh_adapter() -> (Arc<dyn StorageAdapter>, tempfile::TempDir) {
-    use crate::orm::sqlite::SqliteAdapter;
+    use crate::orm::SeaOrmAdapter;
     let tmp = tempfile::tempdir().expect("tempdir");
-    let adapter = SqliteAdapter::open(&tmp.path().join("orm-store-test.sqlite"))
+    let adapter = SeaOrmAdapter::open(&tmp.path().join("orm-store-test.sqlite"))
         .await
         .expect("adapter open");
     (Arc::new(adapter), tmp)
@@ -443,6 +469,7 @@ mod tests {
         fn collection_schema() -> CollectionSchema {
             let mut fields = crate::orm::entity::base_entity_fields();
             fields.push(SchemaField {
+                default_value: None,
                 name: "label".to_string(),
                 field_type: FieldType::String,
                 indexed: false,
@@ -511,7 +538,7 @@ mod tests {
         store.save(id, &tiny(id, looks_like_json)).await.expect("save");
         let by_id = store.find_by_id(id).await.expect("find_by_id").expect("present");
         assert_eq!(by_id.label, looks_like_json, "find_by_id kept the text verbatim");
-        let all = store.find_all().await.expect("find_all decodes every row");
+        let all = store.scan().await.expect("find_all decodes every row").try_collect::<Vec<_>>().await.expect("test: stream rows");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].1.label, looks_like_json, "find_all kept the text verbatim");
     }
@@ -541,7 +568,7 @@ mod tests {
                 .expect("save");
         }
 
-        let loaded = store.find_all().await.expect("find_all");
+        let loaded = store.scan().await.expect("find_all").try_collect::<Vec<_>>().await.expect("test: stream rows");
         assert_eq!(loaded.len(), 3);
 
         let loaded_ids: std::collections::BTreeSet<Uuid> =
@@ -572,6 +599,7 @@ mod tests {
             .expect("find_by_id")
             .expect("present");
         assert_eq!(loaded.label, "revised");
+        assert_eq!(loaded.version, 2, "storage increments the persisted version once");
     }
 
     /// What this catches: delete removes the row, subsequent

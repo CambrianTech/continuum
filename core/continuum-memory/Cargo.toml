@@ -12,6 +12,7 @@ repository = "https://github.com/CambrianTech/continuum"
 
 [dependencies]
 continuum-engine = { path = "../continuum-engine" }
+continuum-client = { path = "../../client/continuum-client" }
 tokio.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -26,5 +27,6 @@ ts-rs.workspace = true  # TypeScript type generation
 inventory = { workspace = true }  # the action_command! macro registers each typed memory command
 
 [dev-dependencies]
+continuum-client = { path = "../../client/continuum-client", features = ["test-fixtures"] }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }  # every test build of this crate gets the per-process continuum home (card d11d9827)
 tokio = { workspace = true, features = ["test-util"] }

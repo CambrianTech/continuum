@@ -181,7 +181,7 @@ impl AdmissionState {
         recall_metadata: Arc<crate::cognition::recall_metadata::RecallMetadataRegistry>,
     ) -> Result<Self, crate::orm::OrmStoreError> {
         use crate::orm::adapter::StorageAdapter;
-        use crate::orm::sqlite::SqliteAdapter;
+        use crate::orm::SeaOrmAdapter;
         use crate::orm::OrmStore;
         use crate::cognition::admission_persistence::{OrmLoader, OrmPersistenceSink};
         use crate::cognition::engram::Engram;
@@ -202,7 +202,7 @@ impl AdmissionState {
 
         // Open the per-persona SQLite. The adapter handles WAL + FK
         // pragmas etc; we just hand it the path.
-        let adapter = SqliteAdapter::open(&home.engrams_db())
+        let adapter = SeaOrmAdapter::open(&home.engrams_db())
             .await
             .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
                 operation: "initialize",

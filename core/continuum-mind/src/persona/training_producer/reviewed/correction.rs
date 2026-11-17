@@ -13,60 +13,39 @@
 
 use super::*;
 
-/// Her staged rows on `card_id`, read through the substrate; `None` when they cannot be read
-/// (named by the probe; the caller then settles as before).
-async fn card_rows(persona_name: &str, card_id: Uuid) -> Option<(Connection<InProcessTransport>, Vec<StagedCredit>)> {
-    let executor = EXECUTOR.cloned()?;
-    let substrate = substrate_connection(&executor);
-    let listed = substrate
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCredit::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": { "cardId": card_id.to_string() },
-            }),
-        )
-        .await
-        .and_then(staged_credit_from_list);
-    match listed {
-        Ok(rows) => Some((substrate, rows)),
-        Err(error) => {
-            continuum_base::probe!(
-                class = "training.credit.correction_rows_unreadable",
-                persona = %persona_name,
-                card = %card_id,
-                error = %error,
-                "her staged rows on a reviewed card could not be read: a failure marks nothing, a pass settles as a plain pass"
-            );
-            None
-        }
-    }
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RejectionRow {
+    id: Uuid,
+    rejected_at_ms: Option<u64>,
 }
 
-/// A failed review of her submission rejects every row staged on its card so far, so a later
-/// passing review settles as a correction (and the rejected rows never train as passing).
-pub(super) async fn reject_on_failed_review(persona_name: &str, card_id: Uuid) {
-    if let Some((substrate, rows)) = card_rows(persona_name, card_id).await {
-        mark_rejected(&substrate, persona_name, card_id, &rows).await;
-    }
+/// Read rejection state through the caller's storage authority. An unavailable read is
+/// an unsettled review, never evidence of a plain pass.
+async fn card_rows<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid) -> Result<Vec<RejectionRow>, ClientError> {
+    crate::orm::client_read::matching(
+        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
+        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]),
+        Some(vec!["rejectedAtMs".into()]),
+    ).await
 }
 
-/// The verdict a passing review of the submission bound to `revision` settles with:
-/// `Corrected` when an earlier failure rejected a row on this card and `revision` is not one
-/// of them (her revised work after the failure), else `Passed`. A pass of the very revision a
-/// failure rejected is a changed verdict, not a correction.
-pub(super) async fn passing_verdict(persona_name: &str, card_id: Uuid, revision: Uuid) -> CardVerdict {
-    let Some((_, rows)) = card_rows(persona_name, card_id).await else {
-        return CardVerdict::Passed;
-    };
-    corrected_or_passed(&rows, revision)
+/// A failed review is settled only once its rejection marks are durably written.
+/// Bookkeeping retains substrate authority; persona identities cannot update these rows.
+pub(super) async fn reject_on_failed_review<T: Transport>(substrate: &Connection<T>, persona_name: &str, card_id: Uuid) -> Result<(), ClientError> {
+    let rows = card_rows(substrate, persona_name, card_id).await?;
+    mark_rejected(substrate, persona_name, card_id, &rows.iter().map(|r| (r.id, r.rejected_at_ms)).collect::<Vec<_>>()).await
+}
+
+/// A revised pass is a correction only when the durable rejection state proves it.
+pub(super) async fn passing_verdict<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid, revision: Uuid) -> Result<CardVerdict, ClientError> {
+    let rows = card_rows(conn, persona_name, card_id).await?;
+    Ok(corrected_or_passed(&rows, revision))
 }
 
 /// PURE: the rule [`passing_verdict`] applies to her rows.
-fn corrected_or_passed(rows: &[StagedCredit], revision: Uuid) -> CardVerdict {
-    let rejected = |row: &StagedCredit| row.rejected_at_ms.is_some();
+fn corrected_or_passed(rows: &[RejectionRow], revision: Uuid) -> CardVerdict {
+    let rejected = |row: &RejectionRow| row.rejected_at_ms.is_some();
     let revision_rejected = rows.iter().any(|row| row.id == revision && rejected(row));
     if !revision_rejected && rows.iter().any(rejected) {
         CardVerdict::Corrected
@@ -79,14 +58,35 @@ fn corrected_or_passed(rows: &[StagedCredit], revision: Uuid) -> CardVerdict {
 mod tests {
     use super::*;
 
-    fn row(rejected: Option<u64>) -> StagedCredit {
-        let mut row: StagedCredit = serde_json::from_value(json!({
-            "id": Uuid::new_v4(), "cardId": Uuid::from_u128(0x5c0), "claimId": null, "owner": null,
-            "role": null, "receipts": [], "served": null, "prompt": "p", "completion": "c", "stagedAtMs": 1,
-        }))
-        .expect("a minimal staged row"); // expect: the literal above is a complete StagedCredit
-        row.rejected_at_ms = rejected;
-        row
+    #[tokio::test]
+    async fn unreadable_rejections_cannot_become_a_passing_verdict() {
+        let mock = continuum_client::mock::MockTransport::new();
+        mock.respond_to("data/list", |_| Err(ClientError::Transport("store unavailable".into())));
+        let result = passing_verdict(&Connection::new(mock), "fixture", Uuid::new_v4(), Uuid::new_v4()).await;
+        assert!(matches!(result, Err(ClientError::Transport(message)) if message == "store unavailable"));
+    }
+
+    #[tokio::test]
+    async fn rejection_commit_is_one_transaction_and_failure_stays_unsettled() {
+        let mock = continuum_client::mock::MockTransport::new();
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        mock.respond_to("data/batch", move |params| {
+            let operations = params["operations"].as_array().expect("transaction operations");
+            assert_eq!(operations.len(), 2);
+            assert_eq!(operations[0]["id"], first.to_string());
+            assert_eq!(operations[1]["id"], second.to_string());
+            assert_eq!(operations[0]["data"]["rejectedAtMs"], operations[1]["data"]["rejectedAtMs"]);
+            Err(ClientError::Transport("commit refused".into()))
+        });
+        let result = mark_rejected(&Connection::new(mock), "fixture", Uuid::new_v4(), &[
+            (first, None), (Uuid::new_v4(), Some(42)), (second, None),
+        ]).await;
+        assert!(matches!(result, Err(ClientError::Transport(message)) if message == "commit refused"));
+    }
+
+    fn row(rejected: Option<u64>) -> RejectionRow {
+        RejectionRow { id: Uuid::new_v4(), rejected_at_ms: rejected }
     }
 
     // what this catches: the live review path settling a reviewed correction as a plain pass

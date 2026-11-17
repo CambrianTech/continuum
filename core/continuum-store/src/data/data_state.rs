@@ -1,4 +1,6 @@
 use super::*;
+use super::vector_corpus::EMBEDDING_FIELD;
+use super::vector_index::{unit_f32, Producer, VectorCorpus, VectorStoreError};
 
 // Migration command params now live with their typed ActionCommands in
 // commands/migration/*. The `migration/*` output structs (MigrationProgress,
@@ -107,7 +109,7 @@ impl DataState {
             collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             select: params.select,
             ..Default::default()
@@ -153,7 +155,11 @@ impl DataState {
             .await
             .map_err(|_| "query semaphore closed")?;
 
-        let handle = params.handle.as_deref().unwrap_or("main");
+        // The public request schema defines an omitted handle as the shared store.
+        let handle = match params.handle.as_deref() {
+            Some(handle) => handle,
+            None => "main",
+        };
 
         // Plain-JSON filter → typed FieldFilter map. FieldFilter is untagged, so
         // `{"roomId": "general"}` becomes an equality match and
@@ -180,7 +186,7 @@ impl DataState {
                 .collect::<Vec<_>>()
         });
 
-        require_query_fields(&filter, &sort, &None)?;
+        require_query_fields(&filter, &sort, &params.select)?;
         let adapter = self.get_adapter(handle).await?;
 
         // Accurate total: SQL COUNT over the same filter, independent of paging.
@@ -191,38 +197,28 @@ impl DataState {
                 ..Default::default()
             })
             .await;
-        if !count_res.success {
-            return Err(format!(
-                "data/list: count failed for '{}' — {}",
-                params.collection,
-                count_res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-        let total = count_res.data.unwrap_or(0) as u32;
+        let total = count_res.into_result()
+            .map_err(|e| format!("data/list: count failed for '{}' - {e}", params.collection))?;
+        let total = u32::try_from(total)
+            .map_err(|_| "data/list: count exceeds response representation".to_string())?;
 
         let res = adapter
             .query(StorageQuery {
                 collection: params.collection.clone(),
                 filter,
                 sort,
-                limit: params.limit.map(|n| n as usize),
+                select: params.select,
+                limit: Some(params.limit.get() as usize),
                 offset: params.offset.map(|n| n as usize),
                 ..Default::default()
             })
             .await;
-        if !res.success {
-            return Err(format!(
-                "data/list: query failed for '{}' — {}",
-                params.collection,
-                res.error.unwrap_or_else(|| "unknown error".into())
-            ));
-        }
-
-        let records = res.data.unwrap_or_default();
+        let records = res.into_result()
+            .map_err(|e| format!("data/list: query failed for '{}' - {e}", params.collection))?;
         let mut items = Vec::with_capacity(records.len());
         for r in records {
             items.push(
-                serde_json::to_value(r)
+                serde_json::to_value(r) // data/list wire response: collections have dynamic record schemas.
                     .map_err(|e| format!("data/list: serialize record — {e}"))?,
             );
         }
@@ -253,7 +249,7 @@ impl DataState {
             collection: params.collection,
             filter: params.filter,
             sort: params.sort,
-            limit: params.limit,
+            limit: Some(params.limit),
             offset: params.offset,
             joins: params.joins,
             select: params.select,
@@ -331,27 +327,9 @@ impl DataState {
         collection: &str,
     ) -> Result<StorageResult<bool>, String> {
         require_public_collection(collection)?;
-        // Resolution order per [[orm-everything-not-hand-edited-files]]:
-        //   1. Rust-native registry (substrate entities authored Rust-first:
-        //      hw_tiers, role_templates, identity pools, universes).
-        //   2. entity_schemas.json (TS-decorator authored: chat, users,
-        //      cognition, timeline — the existing pipeline).
-        //   3. Error — collection unknown to either path.
-        let collection_schema = if let Some(rust_schema) =
-            crate::orm::OrmEntityRegistry::global().resolve(collection)
-        {
-            rust_schema
-        } else if let Some(entity) = crate::entity_schemas::resolve(collection).map_err(|e| e.to_string())? {
-            crate::entity_schemas::to_collection_schema(entity)
-        } else {
-            return Err(format!(
-                "Unknown collection '{collection}' — not in the Rust ORM registry and not in \
-                 entity_schemas.json. If this is a newly added TS-decorated entity, \
-                 rebuild TS: `npm run build:ts`. If it's a Rust-native substrate entity, \
-                 confirm OrmEntityRegistry::global().register::<YourEntity>() is called \
-                 at boot."
-            ));
-        };
+        let collection_schema = super::adapters::resolve_collection_schema(
+            crate::orm::OrmEntityRegistry::global(), collection,
+        )?;
         let adapter = self.get_adapter(handle).await?;
         Ok(adapter.ensure_schema(collection_schema).await)
     }
@@ -393,106 +371,36 @@ impl DataState {
         })
     }
 
-    // =========================================================================
-    // Vector Search (migrated from data-daemon-worker)
-    // =========================================================================
-
-    /// Parse embedding from record data (supports BLOB and JSON array)
-    pub(super) fn parse_embedding(value: &Value) -> Vec<f64> {
-        match value {
-            Value::Array(arr) => arr.iter().filter_map(|v| v.as_f64()).collect(),
-            Value::String(s) => {
-                // Try parsing as JSON array
-                serde_json::from_str(s).unwrap_or_default()
-            }
-            _ => Vec::new(),
-        }
-    }
-
-    /// Cosine similarity between two vectors
-    /// Uses 4-way loop unrolling for SIMD-like performance
-    pub(super) fn cosine_similarity(a: &[f64], b: &[f64]) -> f64 {
-        if a.len() != b.len() || a.is_empty() {
-            return 0.0;
-        }
-
-        let len = a.len();
-        let limit = len - (len % 4);
-
-        let mut dot = 0.0;
-        let mut norm_a = 0.0;
-        let mut norm_b = 0.0;
-
-        // 4-way unrolled loop
-        let mut i = 0;
-        while i < limit {
-            let a0 = a[i];
-            let a1 = a[i + 1];
-            let a2 = a[i + 2];
-            let a3 = a[i + 3];
-            let b0 = b[i];
-            let b1 = b[i + 1];
-            let b2 = b[i + 2];
-            let b3 = b[i + 3];
-
-            dot += a0 * b0 + a1 * b1 + a2 * b2 + a3 * b3;
-            norm_a += a0 * a0 + a1 * a1 + a2 * a2 + a3 * a3;
-            norm_b += b0 * b0 + b1 * b1 + b2 * b2 + b3 * b3;
-            i += 4;
-        }
-
-        // Handle remainder
-        while i < len {
-            dot += a[i] * b[i];
-            norm_a += a[i] * a[i];
-            norm_b += b[i] * b[i];
-            i += 1;
-        }
-
-        let denominator = (norm_a * norm_b).sqrt();
-        if denominator == 0.0 {
-            0.0
-        } else {
-            dot / denominator
-        }
-    }
-
-    /// Index a vector - store embedding for a record
-    /// Updates the record's 'embedding' field with the provided vector
-    /// Store an embedding on a record (the record's `embedding` field) and drop
-    /// the collection's cached vector set so the next search reloads it.
+    /// Store a record's embedding as a native unit vector and retire the collection's
+    /// resident matrix, so the next search rebuilds it. The wire carries f64 numbers; this
+    /// is their producer, so it normalizes them once here (refusing a zero or non-finite
+    /// vector) and every later search scores them with one dot product.
     pub(crate) async fn index_vector(
         &self,
         handle: &str,
         collection: &str,
         id: String,
         embedding: Vec<f64>,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(collection)?;
-        use std::time::Instant;
-        let start = Instant::now();
+    ) -> Result<DataRecord, VectorStoreError> {
+        require_public_collection(collection).map_err(|fault| VectorStoreError::Refused(fault.into()))?;
+        let start = std::time::Instant::now();
 
-        let (scope, adapter) = self.adapter_with_identity(handle).await?;
-
-        // Update the record's embedding field
-        let update_data = json!({ "embedding": embedding });
-
-        let result = adapter.update(collection, &id, update_data, false).await;
-
-        // Invalidate vector cache for this collection since we modified an embedding
+        let (scope, adapter) = self.adapter_with_identity(handle).await.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+        let payload = unit_f32(embedding.iter().map(|value| *value as f32), &Producer::IndexCommand)?;
+        let written = adapter
+            .update_binary(
+                collection,
+                &id,
+                std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                crate::orm::binary::BinaryWriteCondition::Replace,
+            )
+            .await
+            .into_result();
+        // The cached matrix may hold this row's previous vector, whatever the write did.
         self.vector_cache.invalidate(&scope, collection);
-
-        let total_ms = start.elapsed().as_millis();
-        log_info!(
-            "data",
-            "vector/index",
-            "Indexed vector for {} in {}ms, success={}",
-            id,
-            total_ms,
-            result.success
-        );
-
-        Ok(result)
+        written.map_err(|fault| VectorStoreError::Store(fault.into()))?;
+        log_info!("data", "vector/index", "Indexed vector for {} in {}ms", id, start.elapsed().as_millis());
+        adapter.read(collection, &id).await.into_result().map_err(|fault| VectorStoreError::Store(fault.into()))
     }
 
     /// Get vector index statistics for a collection.
@@ -507,43 +415,17 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        // Get total record count
-        let total_query = StorageQuery {
-            collection: collection.to_string(),
-            ..Default::default()
-        };
-        let total_result = adapter.count(total_query).await;
-        let total_records = total_result.data.unwrap_or(0);
-
-        // Query to count records WITH embeddings
-        // We need to query and check which have embedding field
-        let query = StorageQuery {
-            collection: collection.to_string(),
-            limit: Some(10000), // Reasonable limit
-            ..Default::default()
-        };
-        let result = adapter.query(query).await;
-
-        let mut records_with_vectors = 0;
-        let mut vector_dimensions = 0;
-
-        if let Some(records) = result.data {
-            for record in &records {
-                if let Some(embedding) = record.data.get("embedding") {
-                    let vec = Self::parse_embedding(embedding);
-                    if !vec.is_empty() {
-                        records_with_vectors += 1;
-                        if vector_dimensions == 0 {
-                            vector_dimensions = vec.len();
-                        }
-                    }
-                }
-            }
+        let stats = adapter.numeric_array_stats(collection, EMBEDDING_FIELD).await.into_result()
+            .map_err(|e| format!("vector stats for {collection}: {e}"))?;
+        if stats.min_length != stats.max_length {
+            return Err(format!("{collection} contains inconsistent embedding dimensions: {} to {}", stats.min_length, stats.max_length));
         }
+        let total_records = stats.total_records;
+        let records_with_vectors = stats.non_empty_records;
+        let vector_dimensions = stats.max_length;
 
         // Check cache status
-        let cached_count = self.vector_cache.get::<Vec<CachedVector>>(&scope, collection)
-            .map_or(0, |vectors| vectors.len());
+        let cached_count = self.vector_cache.get::<VectorCorpus>(&scope, collection).map_or(0, |corpus| corpus.len());
 
         let total_ms = start.elapsed().as_millis();
         log_info!(

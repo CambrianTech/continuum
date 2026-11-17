@@ -35,6 +35,8 @@ pub enum FieldType {
     Boolean,
     Date,
     Json,
+    /// Producer-native bytes with a typed descriptor, stored as paired BLOBs.
+    Binary,
     Uuid,
 }
 
@@ -86,31 +88,30 @@ impl Default for CascadeRule {
     export,
     export_to = "../../../protocol/typescript/orm/ForeignKeyRef.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForeignKeyRef {
     /// Target collection name (e.g. "engrams").
     pub collection: String,
     /// Target field on the referenced row. Almost always "id" but
     /// named so non-id natural-key references are expressible.
     pub field: String,
-    #[serde(default)]
     pub on_delete: CascadeRule,
-    #[serde(default)]
     pub on_update: CascadeRule,
 }
 
 /// Schema field definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaField.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaField {
+    /// Explicit declared insertion value; absence never invents a value.
+    #[serde(default)]
+    #[ts(optional, type = "unknown")]
+    pub default_value: Option<Value>,
     pub name: String,
     pub field_type: FieldType,
-    #[serde(default)]
     pub indexed: bool,
-    #[serde(default)]
     pub unique: bool,
-    #[serde(default)]
     pub nullable: bool,
     #[ts(optional)]
     pub max_length: Option<usize>,
@@ -123,27 +124,27 @@ pub struct SchemaField {
 }
 
 /// Composite index definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaIndex.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaIndex {
+    /// Direction of the final indexed column, matching decorator metadata.
+    pub descending: bool,
     pub name: String,
     pub fields: Vec<String>,
-    #[serde(default)]
     pub unique: bool,
 }
 
 /// Collection schema - defines table structure
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/orm/CollectionSchema.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionSchema {
     pub collection: String,
     pub fields: Vec<SchemaField>,
-    #[serde(default)]
     pub indexes: Vec<SchemaIndex>,
 }
 
@@ -210,6 +211,15 @@ pub struct StorageResult<T> {
 }
 
 impl<T> StorageResult<T> {
+    /// Validate the storage receipt before exposing its payload to a caller.
+    pub fn into_result(self) -> Result<T, String> {
+        match (self.success, self.data, self.error) {
+            (true, Some(data), None) => Ok(data),
+            (false, None, Some(error)) => Err(error),
+            _ => Err("Invalid storage receipt: success, data, and error disagree".into()),
+        }
+    }
+
     pub fn ok(data: T) -> Self {
         Self {
             success: true,
@@ -325,6 +335,25 @@ pub struct BatchOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn storage_receipt_rejects_missing_or_contradictory_payloads() {
+        assert_eq!(StorageResult::ok(0usize).into_result(), Ok(0));
+        assert_eq!(StorageResult::<usize>::err("database unavailable").into_result(),
+            Err("database unavailable".into()));
+        for success in [false, true] {
+            for data in [None, Some(7usize)] {
+                for error in [None, Some("failure".to_string())] {
+                    let valid = (success && data.is_some() && error.is_none())
+                        || (!success && data.is_none() && error.is_some());
+                    let receipt = StorageResult { success, data, error, metadata: None };
+                    if !valid {
+                        assert!(receipt.into_result().is_err());
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn test_storage_result_ok() {

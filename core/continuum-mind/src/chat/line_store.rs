@@ -123,24 +123,24 @@ fn message_row(
     operation_type: BatchOperationType,
     reply_to: Option<Uuid>,
     content: Value,
-) -> BatchOperation {
-    BatchOperation {
+) -> Result<BatchOperation, String> {
+    let row = super::orm_entities::MessageRow {
+        id: line.message_id,
+        room_id: line.room.as_uuid(),
+        sender_id: line.author.as_uuid(),
+        timestamp: now_iso(line.occurred_at_ms),
+        content,
+        reply_to_id: reply_to,
+        metadata: json!({ "source": "user" }),
+        status: "sent".into(),
+    };
+    Ok(BatchOperation {
         operation_type,
         collection: CHAT_MESSAGES_COLLECTION.to_string(),
         id: Some(line.message_id.to_string()),
-        data: Some(json!({
-            "id": line.message_id.to_string(),
-            "roomId": line.room.as_uuid().to_string(),
-            "senderId": line.author.as_uuid().to_string(),
-            "timestamp": now_iso(line.occurred_at_ms),
-            "content": content,
-            "replyToId": reply_to.map(|id| id.to_string()),
-            "metadata": { "source": "user" },
-            "status": "sent",
-        })),
-    }
+        data: Some(serde_json::to_value(row).map_err(|error| format!("chat message: {error}"))?),
+    })
 }
-
 /// Records every imported line and reports each as fresh, in order: the seam's test importer.
 #[cfg(any(test, feature = "test-fixtures"))]
 #[derive(Default)]
@@ -240,7 +240,7 @@ impl ChatModule {
             BatchOperationType::Create,
             reply_to,
             content,
-        )];
+        )?];
         operations.extend(extra);
         self.run_batch(operations).await.map(|_| ())
     }
@@ -254,7 +254,7 @@ impl ChatModule {
         reply_to: Option<Uuid>,
         content: Value,
     ) -> Result<Imported, String> {
-        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content);
+        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content)?;
         let arrival = Arrival::new(
             line.message_id,
             line.room,
