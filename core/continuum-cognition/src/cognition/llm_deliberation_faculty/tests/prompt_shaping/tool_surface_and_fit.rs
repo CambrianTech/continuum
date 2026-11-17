@@ -934,3 +934,35 @@ fn a_checkpoint_between_her_resume_and_her_next_keep_still_carries_her_pair() {
     let resumed = again.prompt_view_within(&ws, 200_000);
     assert_eq!(schemas(resumed.tools.specs.as_deref().expect("her hands are a surface")), schemas(first.tools.specs.as_deref().expect("her hands are a surface")), "her head survives the save in between"); // JUSTIFIED: test fixture
 }
+
+// what this catches (Codex's review of #6105 at 89a641c01): a checkpoint whose head decodes but whose
+// verbs and contracts do not line up, resumed as held. Her contract gate then found no contract for
+// the verb and neither told her of a change nor held the call back. Only the contracts are changed in
+// an otherwise valid checkpoint: her act is refused, her view kept, and the record kept as written.
+#[test]
+fn a_checkpointed_head_whose_contracts_do_not_line_up_refuses_her_act_and_is_kept() {
+    use crate::cognition::hands_custody::HandsCustody;
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let before = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = before.prompt_view_within(&ws, 200_000);
+    before.view_served(&first);
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let saved = serde_json::to_string(&wm.snapshot()).expect("a checkpoint encodes"); // JUSTIFIED: test fixture
+    let hands_at = saved.find("\"context_hands\":").expect("her head is checkpointed"); // JUSTIFIED: test fixture
+    let start = hands_at + saved[hands_at..].find("\"contracts\":[").expect("with its contracts"); // JUSTIFIED: test fixture
+    let end = start + saved[start..].find(']').expect("a contract list closes"); // JUSTIFIED: test fixture
+    let altered = format!("{}\"contracts\":[{}", &saved[..start], &saved[end..]);
+
+    let restored = Arc::new(WorkingMemory::new(8));
+    restored.restore(serde_json::from_str(&altered).expect("the checkpoint still decodes")); // JUSTIFIED: test fixture
+    let HandsCustody::Corrupt(record) = restored.snapshot().context_hands else {
+        panic!("a head whose contracts do not line up is corrupt, never held"); // JUSTIFIED: test fixture
+    };
+    assert_eq!(record.raw["contracts"], serde_json::json!([]), "kept as written");
+    let after = asha_with_hands().with_working_memory(Arc::clone(&restored));
+    let refused = after.prompt_view_within(&ws, 200_000);
+    assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("contracts")), "her act is refused with the reason: {:?}", refused.protocol_error);
+    assert!(restored.snapshot().context_view.is_some(), "her view is kept");
+    assert!(matches!(restored.snapshot().context_hands, HandsCustody::Corrupt(_)), "and her record, never replaced by the live tools");
+}

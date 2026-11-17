@@ -159,6 +159,24 @@ impl ContractChange {
 }
 
 impl HeldHands {
+    /// Why a recorded head is not one this code could have frozen, or `None`: each held verb has
+    /// exactly one contract and one whole schema, in the order of `names` (`tools_epoch::freeze`
+    /// builds both from `names`). Checked once, when her checkpoint is read (`deserialize`), never
+    /// per act. A head that fails is Corrupt with its bytes kept, never a verb whose contract lookup
+    /// quietly finds nothing and so is neither told nor gated (Codex's review of #6105). `levels`
+    /// is not checked here: its rungs are matched against her verb set when held (`rungs_of`), and
+    /// a mismatch re-chooses them visibly.
+    fn misalignment(&self) -> Option<String> {
+        let verbs = self.names.len();
+        if self.contracts.len() != verbs {
+            return Some(format!("her head records {verbs} verbs and {} contracts", self.contracts.len()));
+        }
+        if self.whole.len() != verbs {
+            return Some(format!("her head records {verbs} verbs and {} whole schemas", self.whole.len()));
+        }
+        None
+    }
+
     /// `canonical`'s change, when her head holds that verb and its live contract (`now`) is not the
     /// one she knows: the one constructor of a change, so the gate and the notice name one occurrence.
     pub(crate) fn change(&self, canonical: &str, now: LiveContract) -> Option<ContractChange> {
@@ -365,15 +383,16 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
     if let Ok(Written::Corrupt(corrupt)) = <Written as serde::Deserialize>::deserialize(&recorded) {
         return Ok(HandsCustody::Corrupt(corrupt));
     }
-    Ok(match <HeldHands as serde::Deserialize>::deserialize(&recorded) {
+    let decoded = <HeldHands as serde::Deserialize>::deserialize(&recorded).map_err(|error| error.to_string());
+    Ok(match decoded.and_then(|hands| hands.misalignment().map_or(Ok(hands), Err)) { // map_or: an aligned head is held; a misaligned one is its reason
         Ok(hands) => HandsCustody::Held(hands),
         Err(error) => {
             continuum_base::probe!(
                 class = "tools.custody.corrupt",
                 error = %error,
-                "her head's recorded custody does not decode: it is kept whole and her act is refused until it is repaired"
+                "her head's recorded custody is not a head this code could freeze: it is kept whole and her act is refused until it is repaired"
             );
-            HandsCustody::Corrupt(CorruptHands { raw: recorded, error: error.to_string(), original: None })
+            HandsCustody::Corrupt(CorruptHands { raw: recorded, error, original: None })
         }
     })
 }
@@ -485,5 +504,25 @@ mod tests {
             panic!("a rewritten corrupt record reads back corrupt"); // JUSTIFIED: test fixture
         };
         assert_eq!(record.original, Some(original), "its original survives every rewrite, never re-preserved from normalized bytes");
+    }
+
+    // what this catches (Codex's review of #6105 at 89a641c01): a record that decodes as hands but
+    // whose verbs do not line up with their contracts or schemas, read as Held. Its contract lookup
+    // then found nothing, so a moved contract was neither told nor gated. It is Corrupt, its bytes
+    // kept exactly as recorded; an aligned head is still held.
+    #[test]
+    fn a_head_whose_verbs_and_contracts_do_not_line_up_is_corrupt_never_held() {
+        let valid = serde_json::to_value(held("work/note", "A")).expect("encodes"); // JUSTIFIED: test fixture
+        for (field, named) in [("contracts", "contracts"), ("whole", "whole schemas")] {
+            let mut recorded = valid.clone();
+            recorded[field] = serde_json::json!([]);
+            let custody = deserialize(&recorded).expect("the checkpoint still decodes"); // JUSTIFIED: test fixture
+            let HandsCustody::Corrupt(corrupt) = custody else {
+                panic!("{field}: a misaligned head is corrupt, never held"); // JUSTIFIED: test fixture
+            };
+            assert_eq!(corrupt.raw, recorded, "{field}: kept exactly as recorded");
+            assert!(corrupt.error.contains(named), "{field}: says what does not line up: {}", corrupt.error);
+        }
+        assert!(matches!(deserialize(&valid).expect("decodes"), HandsCustody::Held(_)), "an aligned head is held"); // JUSTIFIED: test fixture
     }
 }
