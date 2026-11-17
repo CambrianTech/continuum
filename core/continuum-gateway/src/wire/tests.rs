@@ -147,7 +147,7 @@ fn responses_groups_items_refuses_missing_state_and_numbers_its_events() {
     assert_eq!(call.request.system_prompt.as_deref(), Some("You are Grok.\n\nSandbox: workspace-write."), "a leading developer item joins the instructions");
     assert_eq!(call.request.messages.len(), 4, "user, one assistant turn with both calls, two tool replies");
     assert_eq!(parts(&call.request.messages[1]).len(), 2);
-    assert_eq!(call.request.tools.as_ref().map(Vec::len), Some(1));
+    assert_eq!(call.request.tools.as_deref().map(<[_]>::len), Some(1));
 
     let mut s = Responses::streamer("qwen", "resp_1");
     let mut frames = s.opened();

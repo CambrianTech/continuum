@@ -58,7 +58,7 @@ impl LlmDeliberationFaculty {
     /// head holds beyond it (`ToolSurface::learned`), never fewer, on a server that takes
     /// `tail_tools`, where a verb outside the head stays callable. How much of each verb is shown is
     /// the act's allocation's (`prompt/tools_epoch.rs`): no grant enters which verbs these are.
-    fn with_learned_head<'a>(&'a self, selected: SelectedSurface<'a>) -> SelectedSurface<'a> {
+    fn with_learned_head(&self, selected: SelectedSurface) -> SelectedSurface {
         let Some(memory) = self.working_memory.as_deref() else {
             return selected;
         };
@@ -97,7 +97,7 @@ impl LlmDeliberationFaculty {
 
     /// Her hands for this act, every verb whole: her activity's surface (her core hands, or the
     /// room's recipe, with her held cards' moves) and her learned head's verbs.
-    pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface<'_> {
+    pub fn select_tool_surface(&self, ws: &Workspace) -> SelectedSurface {
         let activity = self.surface.select(&ws.room_affordances, &ws.held.move_commands());
         self.with_learned_head(activity)
     }

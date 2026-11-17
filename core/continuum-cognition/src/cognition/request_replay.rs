@@ -144,7 +144,7 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         if replacement.schema_type != "object" || !replacement.properties.is_object() || encoded != change.input_schema {
             return Err(CommandError::Invalid("tool schema must round-trip exactly through the native object schema".into()));
         }
-        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate()
+        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate() // unwrap_or_default: a captured request with no tools matches no override
             .filter(|(_, tool)| tool.name == change.tool_name).collect();
         if matches.len() != 1 {
             return Err(CommandError::Invalid(format!("tool schema override must match exactly one captured tool: {}", change.tool_name)));
@@ -183,12 +183,15 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
     });
     let tool_schema = if let Some((index, replacement, audit)) = schema_change {
         // The index was validated above, before any mutation, and nothing since touches the tools.
-        let Some(tool) = request.tools.as_mut().and_then(|tools| tools.get_mut(index)) else {
+        // The captured surface is shared; this diagnostic variant owns its one changed copy.
+        let mut tools = request.tools.as_deref().map(<[_]>::to_vec);
+        let Some(tool) = tools.as_mut().and_then(|tools| tools.get_mut(index)) else {
             return Err(CommandError::Internal(format!(
                 "validated tool {index} ({}) is no longer in the captured request", audit.tool_name
             )));
         };
         tool.input_schema = replacement;
+        request.tools = tools.map(Into::into);
         Some(audit)
     } else { None };
     Ok(InputComparison {
@@ -437,7 +440,7 @@ mod tests {
                     "type":"object", "properties":{"mode":{"$ref":"#/definitions/Mode"}},
                     "required":["mode"], "definitions":{"Mode":{"type":"string","enum":["append"]}}
                 })).unwrap(),
-            }]),
+            }].into()),
             ..Default::default()
         };
         let call = PromptCall {
@@ -573,8 +576,10 @@ mod tests {
             assert_eq!(serde_json::to_value(&copy).unwrap(), serde_json::to_value(&request).unwrap());
         }
         let mut duplicate = request.clone();
-        let repeated_tool = duplicate.tools.as_ref().unwrap()[0].clone();
-        duplicate.tools.as_mut().unwrap().push(repeated_tool);
+        let mut tools = duplicate.tools.as_deref().unwrap().to_vec();
+        let repeated = tools[0].clone();
+        tools.push(repeated);
+        duplicate.tools = Some(tools.into());
         let mut duplicate_params = schema_params.clone();
         duplicate_params.expected_request_sha256 = Some(request_hash(&duplicate).unwrap());
         assert!(compare_input(&mut duplicate, &duplicate_params).is_err());

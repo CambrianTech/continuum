@@ -299,9 +299,8 @@ impl LlmDeliberationFaculty {
                     }
                     // Verbs she loaded into the tail ride beside the head, callable natively.
                     let tail = std::mem::take(&mut selected.tail);
-                    // Selection and budget accounting borrow the cached schemas. Only the
-                    // owned inference request needs a copy of the selected surface.
-                    let tools = selected.specs.map(std::borrow::Cow::into_owned);
+                    // The request points at the same shared schemas: no copy (card 9cf06ade).
+                    let tools = selected.specs;
 
                     let request = self.build_request_within(
                         &binding,
