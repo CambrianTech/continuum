@@ -378,7 +378,7 @@ fn shutdown_reaps_the_live_lane_that_boot_leaves_alone() {
     let stop_dir = temp_dir("mode-shutdown");
     let _ = std::fs::remove_dir_all(&stop_dir);
     record_in(&stop_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
-    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown);
+    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown(&Attested::default()));
     assert!(
         !matches!(outcomes.as_slice(), [SweepOutcome::LeftLive { .. }]),
         "shutdown must NEVER leave a live lane running, got {outcomes:?}"
@@ -518,4 +518,40 @@ mod census_for_admission {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+}
+
+// what this catches: a stop reaping an engine its durable receipt never attested saved (Codex on #6097: the
+// role-blind shutdown sweep validated the live process but not saved custody, so a replacement engine, or an
+// ephemeral lane holding a genome eval or a vision lease, could be reaped with its state). Only a Saved,
+// stamped, LOCAL custody entry attests a lane, and only its exact incarnation (port, pid, start time).
+#[test]
+fn a_receipt_attests_only_the_exact_local_incarnations_it_saved() {
+    use crate::runtime::{CustodyState, SettledCustody, SettledProcess};
+    assert_eq!(local_endpoint_port("http://127.0.0.1:58057"), Some(58057));
+    assert_eq!(local_endpoint_port("http://localhost:58057/"), Some(58057));
+    assert_eq!(local_endpoint_port("http://[::1]:58057"), Some(58057));
+    assert_eq!(local_endpoint_port("http://10.0.0.7:58057"), None, "a remote host on the same port is not this engine");
+    assert_eq!(local_endpoint_port("http://127.0.0.1:58057/v1"), None, "a root, not a path");
+    assert_eq!(local_endpoint_port("https://127.0.0.1:58057"), None);
+
+    let entry = |endpoint: &str, pid, started_s, state| SettledCustody {
+        participant: "page_io".into(),
+        endpoint: endpoint.into(),
+        process: Some(SettledProcess { pid, started_s }),
+        state,
+    };
+    let attested = Attested::from_custody(&[
+        entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Saved),
+        entry("http://127.0.0.1:58058", 7, 11, CustodyState::Retained),
+        entry("http://10.0.0.7:58059", 8, 12, CustodyState::Saved),
+        entry("http://127.0.0.1:58060", 9, 0, CustodyState::Saved),
+    ]);
+    let lane = |pid, port, started_s| LaneRecord { started_s, ..rec(pid, port, LaneRole::Live) };
+    assert!(attested.covers(&lane(45_376, 58057, 1_794_889_235)), "the saved incarnation is attested");
+    assert!(!attested.covers(&lane(45_376, 58057, 1_794_889_999)), "a replacement on the same pid and port is not");
+    assert!(!attested.covers(&lane(45_376, 58061, 1_794_889_235)), "another port is not");
+    assert!(!attested.covers(&lane(7, 58058, 11)), "a retained entry attests nothing");
+    assert!(!attested.covers(&lane(8, 58059, 12)), "a remote endpoint attests nothing on this machine");
+    assert!(!attested.covers(&lane(9, 58060, 0)), "an unstamped process attests nothing");
+    assert!(!Attested::default().covers(&lane(45_376, 58057, 1_794_889_235)), "no receipt attests nothing");
 }

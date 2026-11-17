@@ -199,13 +199,55 @@ pub fn live_incarnation() -> Option<super::engine_residency::EngineIncarnation> 
 /// never-blind-kill, GC dead records, drop unparseable garbage — is shared by
 /// construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SweepMode {
+pub enum SweepMode<'a> {
     /// A fresh core starting up. Ephemeral records are definitionally orphans;
     /// the LIVE record is left for `lane_pidfile` to adopt-or-reap.
     Boot,
-    /// This core is shutting down. EVERY lane it owns must die with it, live
-    /// included — `stop` that leaves a server holding VRAM has not stopped.
-    Shutdown,
+    /// This core is shutting down. A lane is reaped only when the durable receipt ATTESTS its exact
+    /// incarnation saved; any other lane, live or ephemeral, is retained and reported with its owner and
+    /// reason (an ephemeral lane may hold a genome A/B eval or a vision lease: its role is not proof that
+    /// nothing is unfinished).
+    Shutdown(&'a Attested),
+}
+
+/// What a durable shutdown receipt attests: the exact LOCAL engine incarnations (port, pid, start time)
+/// whose state it saved. Built only from the receipt's custody; a lane outside it is never reaped.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Attested(Vec<super::engine_residency::EngineIncarnation>);
+
+impl Attested {
+    /// The receipt's `Saved` custody entries on a local endpoint with a stamped process. A remote URL on the
+    /// same port, an unstamped process or a retained entry attests nothing.
+    pub fn from_custody(custody: &[crate::runtime::SettledCustody]) -> Self {
+        Self(
+            custody
+                .iter()
+                .filter(|c| matches!(c.state, crate::runtime::CustodyState::Saved))
+                .filter_map(|c| {
+                    let process = c.process.as_ref()?;
+                    let port = local_endpoint_port(&c.endpoint)?;
+                    (process.started_s != 0).then_some(super::engine_residency::EngineIncarnation {
+                        pid: process.pid,
+                        started_s: process.started_s,
+                        port,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    fn covers(&self, rec: &LaneRecord) -> bool {
+        rec.started_s != 0 && self.0.contains(&rec.incarnation())
+    }
+}
+
+/// The port of a LOCAL engine root (`http://127.0.0.1:P`, `http://localhost:P`, `http://[::1]:P`, no path):
+/// the only endpoints a lane record on this machine can be. Anything else is not this machine's engine.
+fn local_endpoint_port(endpoint: &str) -> Option<u16> {
+    let authority = endpoint.strip_prefix("http://")?.trim_end_matches('/');
+    let (host, port) = authority.rsplit_once(':')?;
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]").then_some(())?;
+    port.parse().ok()
 }
 
 /// What a sweep did to one record — exhaustive so every branch is
@@ -227,6 +269,9 @@ pub enum SweepOutcome {
     RemovedReused { pid: u32 },
     /// A live-lane record — left for `lane_pidfile` to adopt-or-reap.
     LeftLive { pid: u32 },
+    /// A running lane no durable receipt attests saved: left running WITH its record (shutdown only). Its owner
+    /// (the core that recorded it, or its lease/completion owner) must attest it before it may be retired.
+    RetainedUnattested { pid: u32, port: u16, role: LaneRole },
     /// A `.lane` file that didn't parse — removed as garbage.
     RemovedUnparseable { path: PathBuf },
 }
@@ -282,13 +327,14 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub async fn sweep_all(deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
+pub async fn sweep_all(attested: &Attested, deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
+    let attested = attested.clone();
     let (outcomes, pending) = tokio::task::spawn_blocking(move || {
         let mut pending = Vec::new();
-        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending);
+        let outcomes = sweep_collect(&dir, SweepMode::Shutdown(&attested), &mut pending);
         (outcomes, pending)
     })
     .await
@@ -551,11 +597,11 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 }
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
-fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
+fn sweep_in(dir: &Path, mode: SweepMode<'_>) -> Vec<SweepOutcome> {
     sweep_collect(dir, mode, &mut Vec::new())
 }
 
-fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
+fn sweep_collect(dir: &Path, mode: SweepMode<'_>, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
     let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
@@ -592,7 +638,7 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
         // adoptable — this core is exiting — so every role is reaped.
         let reap = match (rec.role, mode) {
             (LaneRole::Ephemeral, _) => true,
-            (LaneRole::Live, SweepMode::Shutdown) => true,
+            (LaneRole::Live, SweepMode::Shutdown(_)) => true,
             // The live lane's port is `lane_pidfile`'s job (adopt-or-reap). Leave
             // both the process and its record; if `lane_pidfile` reaps it, the next
             // boot sees a dead pid here and GCs the file.
@@ -603,6 +649,13 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             continue;
         }
         if lane_process::is_llama_server(rec.pid) {
+            // A running lane the receipt does not attest saved keeps running, with its record.
+            if let SweepMode::Shutdown(attested) = mode {
+                if !attested.covers(&rec) {
+                    outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role });
+                    continue;
+                }
+            }
             // Capture the stamped incarnation before signalling. Unstamped
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;

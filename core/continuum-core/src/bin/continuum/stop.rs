@@ -56,7 +56,10 @@ pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continu
     Ok((pids == [target.pid as i32]).then_some(target))
 }
 
-pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+/// The stop's outcome and what its durable receipt attests saved (the only lanes a teardown may reap).
+pub(super) async fn commit_graceful_shutdown(
+    target: continuum_core::commands::system::shutdown::ShutdownTarget,
+) -> Result<(GracefulStop, continuum_core::inference::lane_registry::Attested), String> {
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
@@ -75,6 +78,7 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
         GracefulStop::Incomplete(result.receipt.summary())
     };
     graceful.require_durable()?;
+    let attested = continuum_core::inference::lane_registry::Attested::from_custody(&result.receipt.custody);
     let pid = target.pid as i32;
     let commit = ShutdownCommitParams {
         target,
@@ -91,7 +95,7 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
     if !evidence.core_pids.is_empty() {
         return Err("another core is present after acknowledged exit; refusing replacement teardown".into());
     }
-    Ok(graceful)
+    Ok((graceful, attested))
 }
 
 // Every stop preserves unfinished work. Engine teardown is not permission to
@@ -110,7 +114,7 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
     let target = probe_shutdown_target(&pids).await?
         .ok_or_else(|| "stop requires one receipt-bound core; missing or ambiguous cores remain running".to_string())?;
     let self_exited = target.pid as i32;
-    let graceful = commit_graceful_shutdown(target).await?;
+    let (graceful, attested) = commit_graceful_shutdown(target).await?;
     graceful.require_durable()?;
     let (to_stderr, line) = render_graceful_outcome(&graceful);
     if to_stderr {
@@ -143,7 +147,8 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
         return Ok(graceful);
     }
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline).await? {
+    let mut retained_lanes = Vec::new();
+    for outcome in continuum_core::inference::lane_registry::sweep_all(&attested, teardown_deadline).await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),
@@ -162,12 +167,16 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
             S::RemovedDead { .. } | S::RemovedReused { .. } | S::RemovedUnparseable { .. } => {}
             // Unreachable under Shutdown (every role is reaped) — but matched
             // explicitly so adding a mode can never silently fall through here.
+            S::RetainedUnattested { pid, port, role } => retained_lanes.push(format!("pid={pid} port={port} role={role:?}")),
             S::LeftLive { pid } => {
                 println!("  WARNING: serving lane (pid {pid}) left running by a shutdown sweep — report this")
             }
         }
     }
 
+    if !retained_lanes.is_empty() {
+        return Err(format!("lanes retained, still running with their records: the durable receipt does not attest their state saved {retained_lanes:?}; their owner must attest before they may be retired"));
+    }
     if !unconfirmed_lanes.is_empty() {
         return Err(format!("serving lane exit not confirmed for {unconfirmed_lanes:?}; ownership records retained, retry stop after resolving termination authority"));
     }
