@@ -603,43 +603,12 @@ impl OpenAICompatibleAdapter {
                 crate::inference::llama_server::note_real_decode();
             }
             crate::inference::llama_server::RealDecodeOutcome::DeliveredNothing => {
-                // A stream that reached EOF CLEANLY having delivered nothing is a FAILED
-                // real generation, not a quiet one — and it was the only wedge class the
-                // liveness record could not see. The failure stamps in `sse_stream` fire on
-                // transport death (read error, mid-stream silence, non-200); a latched Metal
-                // backend does none of that. It answers 200, streams a well-formed SSE body
-                // with zero deltas, and closes. Success was correctly withheld here (the
-                // guard above), but nothing recorded a FAILURE either — so `REAL_DECODE_FAILS`
-                // stayed at 0 and the heartbeat's wedge evidence, which outranks both the
-                // recent-decode trust window and a passing 1-token smoke probe, never fired.
-                //
-                // Measured on the M5 2026-09-22, one llama-server log: 145
-                // `kIOGPUCommandBufferCallbackErrorOutOfMemory` lines resolving to 2 root
-                // Metal OOMs, each latching the backend ("backend is in error state from a
-                // previous command buffer failure - recreate the backend to recover") which
-                // the server never acts on. 113 tasks were then launched and released with
-                // NO generation eval at all — prefill ran, generation never did. Downstream:
-                // 73 `delib.empty_completion` faults across six citizens (Rania, Freya,
-                // Mathis, Esme, Benchy, Cyrus), every one `reasoning_chars = 0`, each after
-                // 30–190s of waiting. The deliberation faculty correctly refuses to launder
-                // that as chosen silence, but the fault stayed PER-CITIZEN: six minds each
-                // retried into the same dead backend for hours because no one told the LANE.
-                //
-                // Empty is the lane's failure, so the lane records it. At
-                // `HEALTH_FAILS_TO_RELAUNCH` (2) consecutive, the heartbeat relaunches and
-                // the Metal backend is recreated — the recovery the server's own log asks
-                // for. Gated on `local_lane` like every other stamp, so a cloud provider's
-                // empty turn can never smear the local record.
-                // [[the-measurement-already-exists-and-nothing-consumes-it]]
-                crate::inference::llama_server::note_real_decode_failure();
                 continuum_base::probe!(
                     class = "inference.lane.delivered_nothing",
                     model = resp_model.as_deref().unwrap_or("<unknown>"), // Missing model stays explicitly unknown in telemetry; no control decision uses this label.
                     response_time_ms,
-                    consecutive =
-                        crate::inference::llama_server::consecutive_real_decode_failures(),
                     "the local lane streamed a clean EOF with no content, no reasoning and \
-                     no tool call — counted against the lane, not the citizen"
+                     no tool call — an empty completion, not evidence of engine death"
                 );
             }
         }

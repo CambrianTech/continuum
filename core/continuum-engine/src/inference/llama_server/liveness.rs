@@ -17,38 +17,10 @@
 pub(super) static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 
-/// Diagnostic count of failed real generations since the last success.
-/// A failed request does not establish engine death or authorize retirement.
-pub(super) static REAL_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-
-/// Record that a real generation FAILED terminally on the served lane (stream read
-/// error, mid-stream silence, transport death). Called from the adapter's error paths —
-/// gated by the caller on the request actually targeting the LOCAL serving lane, so a
-/// cloud provider's 529 can never smear the local lane's record.
-pub fn note_real_decode_failure() {
-    REAL_DECODE_FAILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-
-/// Diagnostic failure streak, exposed in request-failure telemetry only.
-pub fn consecutive_real_decode_failures() -> u64 {
-    REAL_DECODE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-
-/// Reset the failure streak — called when the lane is declared wedged (so the freshly
-/// relaunched lane starts clean instead of being instantly re-condemned by its
-/// predecessor's record) and implicitly by every successful decode.
-pub fn reset_real_decode_failures() {
-    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
-}
-
-
 /// What a FINISHED real generation says about the served lane's health.
 ///
 /// The classification is pure so it can be tested without touching the process-global
-/// counters it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
+/// delivery stamps it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealDecodeOutcome {
     /// Tokens reached the citizen: proof of life, and it ends any failure streak.
@@ -58,7 +30,7 @@ pub enum RealDecodeOutcome {
     /// (a Metal compute context that has gone bad still answers 200 and streams a
     /// well-formed body with zero deltas), and it is the one wedge the liveness record
     /// could not previously see: the transport never failed, so nothing stamped a
-    /// failure, so `REAL_DECODE_FAILS` stayed 0 while every citizen on the lane got an
+    /// failure while every citizen on the lane got an
     /// empty turn. A relaunch IS the cure, so this counts against the lane.
     DeliveredNothing,
     /// Empty, but the engine said the OUTPUT CAP ended it. The lane is healthy — it
@@ -113,7 +85,6 @@ pub fn classify_real_decode(
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
     // A success ends the failure streak regardless of clock readability below.
-    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.

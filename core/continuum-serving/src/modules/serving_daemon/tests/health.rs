@@ -265,34 +265,6 @@ async fn a_lane_proven_alive_by_real_decode_is_not_probed() {
     }
 }
 
-// BigMama 2026-11-16: request context rejections and empty EOFs accumulated
-// into a global failure streak, which restarted every resident. Request failure
-// is not engine death, even when repeated while the lane is doing useful work.
-#[tokio::test]
-async fn request_failures_do_not_retire_a_progressing_engine() {
-    let serves = Arc::new(AtomicUsize::new(0));
-    let mut d = daemon_with(Arc::new(FakeServer::healthy(serves, true)));
-    let window_ms = TICK.as_millis() as u64 * HEALTH_PROBE_EVERY_TICKS;
-    d.set_decode_age_source(Arc::new(move || Some(window_ms / 2)));
-    // Exercise the adapter's diagnostic counter; the daemon no longer reads it.
-    for _ in 0..3 {
-        crate::inference::llama_server::note_real_decode_failure();
-    }
-    let _ = d.serving_tx.send_replace(ready_snapshot());
-
-    for _ in 0..(HEALTH_PROBE_EVERY_TICKS * 3) {
-        assert!(d.spawn_health_heartbeat_if_due().is_none());
-        assert!(
-            d.serving_tx.borrow().ready,
-            "request errors must not unseat residents"
-        );
-        assert!(
-            !d.force_relaunch.load(Ordering::Acquire),
-            "request errors must not authorize engine replacement"
-        );
-    }
-}
-
 // what this catches (L11 — the 2026-08-16 23-minute boot kill-loop): after a
 // reboot, the adopted lane ground through the dead core's GHOST turns — real
 // work no adapter stream observes, so decode-age trust (L9) was blind, two

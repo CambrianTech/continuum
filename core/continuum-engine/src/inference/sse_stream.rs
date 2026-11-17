@@ -460,19 +460,14 @@ pub(crate) async fn consume_sse_stream(
                 }
                 if local_lane {
                     if started {
-                        // Started-then-stopped is per-slot evidence about OUR
-                        // generation — always counts toward the relaunch threshold.
-                        // Every count gets a row: 2026-09-05 four of these relaunched
-                        // a lane (12 citizens re-prefilled cold) with nothing naming
-                        // which generation or why (absence-read-as-a-value class).
+                        // Report this request's stalled progress without retiring the lane.
                         continuum_base::probe!(
                             class = "inference.decode.failed",
                             kind = "started_then_stopped",
                             name = %cfg.name,
                             idle_secs = idle.as_secs(),
-                            "generation started then stopped past the idle budget — counted toward relaunch"
+                            "generation started then stopped past the idle budget — request failed"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     } else {
                         // Never-started is ambiguous: dead backend vs oversubscribed
                         // queue. Judge it by the lane's own delivery record — if real
@@ -490,9 +485,8 @@ pub(crate) async fn consume_sse_stream(
                                     name = %cfg.name,
                                     idle_secs = idle.as_secs(),
                                     ms_since_real_work = crate::inference::llama_server::ms_since_real_work(),
-                                    "generation never started and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                                    "generation never started and the lane delivered nothing to anyone meanwhile — request failed"
                                 );
-                                crate::inference::llama_server::note_real_decode_failure();
                             }
                             NeverStartedClass::Starved => {
                                 // The capacity shortfall stays LOUD on its own channel
@@ -504,7 +498,7 @@ pub(crate) async fn consume_sse_stream(
                                     waited_s = idle.as_secs(),
                                     "never-started timeout on a lane that delivered real \
                                      tokens within the wait — oversubscription, not wedge \
-                                     evidence; no real-turn failure stamped",
+                                     evidence; the lane remains intact",
                                 );
                             }
                         }
@@ -533,7 +527,7 @@ pub(crate) async fn consume_sse_stream(
             if local_lane && waits_on(class, stream_opened.elapsed()) {
                 // BUSY IS NOT DEAD (card 115f9a14): our counters stalled because the batch
                 // served another slot; the lane is working, so the bound is a checkpoint,
-                // with no failure probe and no relaunch strike.
+                // with no failure probe.
                 continuum_base::probe!(
                     class = "inference.stream.busy_not_dead",
                     provider = cfg.name.as_str(),
@@ -565,7 +559,7 @@ pub(crate) async fn consume_sse_stream(
                 // evidence relaunched a fresh, delivering lane on the IntelMac (2026-09-27
                 // 21:23Z: two stamps, `real_turn_failures`, while health read ok via real_work
                 // and slot_progress seconds earlier). The turn still fails either way; only a
-                // lane that delivered nothing to anyone in the window counts toward relaunch.
+                // lane that delivered nothing to anyone in the window is reported separately.
                 use crate::inference::llama_server::NeverStartedClass;
                 // WHICH request, HOW FAR it got, and whether the lane was working for anyone
                 // else meanwhile (card 18d306f8): a reader must tell "starved behind a
@@ -591,9 +585,8 @@ pub(crate) async fn consume_sse_stream(
                             prefill_processed,
                             prefill_total,
                             ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
-                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — request failed"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     }
                     NeverStartedClass::Starved => {
                         continuum_base::probe!(
@@ -607,7 +600,7 @@ pub(crate) async fn consume_sse_stream(
                             prefill_processed,
                             prefill_total,
                             ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
-                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; no real-turn failure stamped",
+                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; the lane remains intact",
                         );
                     }
                 }
@@ -632,9 +625,8 @@ pub(crate) async fn consume_sse_stream(
                     kind = "stream_read_error",
                     name = %cfg.name,
                     error = %e,
-                    "stream read error mid-generation — counted toward relaunch"
+                    "stream read error mid-generation — request failed"
                 );
-                crate::inference::llama_server::note_real_decode_failure();
             }
             format!("{}: stream read error: {e}", cfg.name)
         })?;
@@ -664,8 +656,7 @@ pub(crate) async fn consume_sse_stream(
                     Ok(p) => p,
                     Err(_) => continue, // keepalive / comment / non-JSON line
                 };
-                // A failure frame ends the act as a failure, with the server's words. It
-                // counts toward the lane's relaunch the same way a broken stream does.
+                // A failure frame ends the act as a failure, with the server's words. The caller receives the failure.
                 if let Some(error) = parsed.error {
                     if local_lane {
                         continuum_base::probe!(
@@ -677,7 +668,6 @@ pub(crate) async fn consume_sse_stream(
                             error = %error.message,
                             "the server sent an error frame mid-stream: the act failed, never an empty completion"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     }
                     return Err(format!(
                         "{}: server error {}{}: {}",
