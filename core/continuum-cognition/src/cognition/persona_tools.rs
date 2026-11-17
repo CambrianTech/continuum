@@ -483,6 +483,22 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
     // `{"not": {}}` = no value), leaving keyword booleans (`nullable: true`,
     // `deprecated: true`) untouched.
     let schema = sanitize_schema_booleans(schema.clone());
+    // Carry the nested-type definitions under the key the refs name. schemars
+    // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
+    let definitions = schema
+        .get("definitions")
+        .or_else(|| schema.get("$defs"))
+        .map(|d| lead_paragraph_descriptions(d.clone()));
+    // An enum-with-data params type (`code/git/merge`) is a `oneOf` of object variants: offer the model the one
+    // object they merge into, never an empty one (schema_variants).
+    if let Some((properties, required)) = schema_variants::merged_object_variants(&schema) {
+        return ToolInputSchema {
+            schema_type: "object".to_string(),
+            properties: lead_paragraph_descriptions(properties),
+            required: (!required.is_empty()).then_some(required),
+            definitions,
+        };
+    }
     ToolInputSchema {
         schema_type: schema
             .get("type")
@@ -498,12 +514,7 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect()
         }),
-        // Carry the nested-type definitions under the key the refs name. schemars
-        // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
-        definitions: schema
-            .get("definitions")
-            .or_else(|| schema.get("$defs"))
-            .map(|d| lead_paragraph_descriptions(d.clone())),
+        definitions,
     }
 }
 
@@ -663,6 +674,8 @@ pub struct ToolSurfaceReport {
     /// (`Privileged` / `Internal`) — the single reason, no hunting.
     pub excluded: Vec<(String, AccessLevel)>,
 }
+
+mod schema_variants;
 
 #[cfg(test)]
 mod tests;
