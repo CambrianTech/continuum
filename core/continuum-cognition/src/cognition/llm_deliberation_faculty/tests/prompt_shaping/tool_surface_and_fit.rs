@@ -1,6 +1,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::cognition::working_memory::WorkingMemory;
 
 // what this catches: THE echo-loop fix. A mixed thread (peer → self → peer)
 // must reach the model as ROLE-ATTRIBUTED messages — the persona's own earlier
@@ -609,7 +610,8 @@ fn after_a_restart(wm: &WorkingMemory, surface: Option<crate::cognition::tool_su
     restored.restore(serde_json::from_value(saved).expect("its own checkpoint decodes"));
     let mut faculty = asha_with_hands().with_working_memory(Arc::clone(&restored));
     if let Some(surface) = surface {
-        faculty.surface = surface;
+        faculty.surface = Arc::new(surface);
+        faculty.share_vocabulary();
     }
     (restored, faculty)
 }

@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 use super::*;
+use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::context_streams::blocks::Grounding;
 use crate::cognition::context_streams::conversation::{Conversation, Turn};
 use crate::cognition::context_streams::Role;

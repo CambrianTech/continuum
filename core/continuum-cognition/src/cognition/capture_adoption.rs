@@ -91,7 +91,7 @@ pub(crate) struct CustodyReceipt {
     /// What it holds: `held generation N`, `corrupt`, or `unrecorded`.
     pub(crate) holds: String,
     /// How many events of her view's epoch her last sent act carried; `None` with no view.
-    pub(crate) frontier_events: Option<usize>,
+    pub(crate) frontier_events: Option<u64>,
 }
 
 impl CustodyReceipt {
@@ -101,7 +101,7 @@ impl CustodyReceipt {
             HandsCustody::Corrupt(_) => "corrupt".to_string(),
             HandsCustody::Unrecorded => "unrecorded".to_string(),
         };
-        Ok(CustodyReceipt { sha256: custody_sha256(custody)?, holds, frontier_events: view.map(ContextView::sent_events) })
+        Ok(CustodyReceipt { sha256: custody_sha256(custody)?, holds, frontier_events: view.map(|view| view.sent_events() as u64) }) // as: a usize count widened to u64, lossless on every target we build
     }
 }
 

@@ -28,13 +28,19 @@ pub enum AdoptCaptureRefusal {
     Digest { cursor: String, expected: String, actual: String },
     #[error("capture {cursor} is persona {captured:?}'s request, not persona {persona}'s")]
     NotHers { cursor: String, persona: Uuid, captured: Option<String> },
+    #[error("capture {cursor}'s request cannot be digested")]
+    Undigestable {
+        cursor: String,
+        #[source]
+        source: serde_json::Error,
+    },
 }
 
 impl RefusalCause for AdoptCaptureRefusal {
     fn category(&self) -> Category {
         match self {
             AdoptCaptureRefusal::Unresolved { .. } | AdoptCaptureRefusal::NotHere { .. } | AdoptCaptureRefusal::NoHands { .. } | AdoptCaptureRefusal::Unreadable { .. } => Category::NotFound,
-            AdoptCaptureRefusal::Digest { .. } | AdoptCaptureRefusal::NotHers { .. } => Category::Invalid,
+            AdoptCaptureRefusal::Digest { .. } | AdoptCaptureRefusal::NotHers { .. } | AdoptCaptureRefusal::Undigestable { .. } => Category::Invalid,
         }
     }
 }
@@ -87,9 +93,9 @@ crate::action_command! {
         let cursor = params.cursor.clone();
         let read = tokio::task::spawn_blocking(move || read_capture(persona_id, &cursor))
             .await
-            .map_err(|error| CommandError::Internal(format!("capture read worker: {error}")))?;
+            .map_err(|error| CommandError::Internal(error.to_string()))?;
         let request = read.map_err(refused)?;
-        let actual = continuum_capture::request_digest::request_sha256(&request).map_err(|error| CommandError::Internal(format!("capture digest: {error}")))?;
+        let actual = continuum_capture::request_digest::request_sha256(&request).map_err(|source| refused(AdoptCaptureRefusal::Undigestable { cursor: params.cursor.clone(), source }))?;
         if actual != params.request_sha256 {
             return Err(refused(AdoptCaptureRefusal::Digest { cursor: params.cursor, expected: params.request_sha256, actual }));
         }

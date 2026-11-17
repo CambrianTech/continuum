@@ -15,11 +15,20 @@ pub enum CustodyReadRefusal {
     NotHere { persona: Uuid },
     #[error("persona {persona} has no hands whose custody could be read")]
     NoHands { persona: Uuid },
+    #[error("persona {persona}'s custody cannot be digested")]
+    Undigestable {
+        persona: Uuid,
+        #[source]
+        source: crate::cognition::capture_adoption::CaptureMismatch,
+    },
 }
 
 impl RefusalCause for CustodyReadRefusal {
     fn category(&self) -> Category {
-        Category::NotFound
+        match self {
+            CustodyReadRefusal::Undigestable { .. } => Category::Invalid,
+            CustodyReadRefusal::Unresolved { .. } | CustodyReadRefusal::NotHere { .. } | CustodyReadRefusal::NoHands { .. } => Category::NotFound,
+        }
     }
 }
 
@@ -47,8 +56,8 @@ pub struct PersonaHandsCustodyResult {
     /// What it holds: held generation N, corrupt, or unrecorded.
     pub holds: String,
     /// How many events of her view's epoch her last sent act carried; absent with no view.
-    #[ts(optional)]
-    pub frontier_events: Option<u32>,
+    #[ts(optional, type = "number")]
+    pub frontier_events: Option<u64>,
 }
 
 crate::action_command! {
@@ -67,12 +76,12 @@ crate::action_command! {
             .as_uuid();
         let cycle = registry.get(&persona_id).ok_or_else(|| refused(CustodyReadRefusal::NotHere { persona: persona_id }))?;
         let body = cycle.acting().ok_or_else(|| refused(CustodyReadRefusal::NoHands { persona: persona_id }))?;
-        let receipt = body.working_memory.custody_receipt().map_err(|error| CommandError::Internal(format!("custody digest: {error}")))?;
+        let receipt = body.working_memory.custody_receipt().map_err(|source| refused(CustodyReadRefusal::Undigestable { persona: persona_id, source }))?;
         Ok(PersonaHandsCustodyResult {
             persona_id,
             custody_sha256: receipt.sha256,
             holds: receipt.holds,
-            frontier_events: receipt.frontier_events.map(|events| u32::try_from(events).unwrap_or(u32::MAX)), // unwrap_or: a frontier past u32::MAX events reads as the largest count
+            frontier_events: receipt.frontier_events,
         })
     }
 }

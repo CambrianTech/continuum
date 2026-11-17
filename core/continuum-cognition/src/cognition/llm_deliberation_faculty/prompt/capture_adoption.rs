@@ -24,7 +24,7 @@ impl LlmDeliberationFaculty {
             AdoptionRequest::Capture { head, .. } => {
                 let frontier = self.context_view.lock().as_ref().map_or(Err(CaptureMismatch::NoAcceptedFrontier), |view| frontier_matches(view, &head.request.messages)); // map_or: no view has no frontier
                 if let Err(mismatch) = frontier {
-                    self.refuse_capture(lifted, mismatch);
+                    self.refuse_capture(lifted, &mismatch);
                     return;
                 }
                 Some(head)
@@ -69,7 +69,8 @@ impl LlmDeliberationFaculty {
         };
         let committed = act_matches(act, &head.request).and_then(|()| {
             let memory = self.working_memory.as_deref().ok_or(CaptureMismatch::NoMemory)?;
-            memory.adopt_custody_if(&head.binding.expected_custody_sha256, HandsCustody::Held(candidate.clone()))
+            let held = HandsCustody::Held(candidate.clone());
+            memory.adopt_custody_if(&head.binding.expected_custody_sha256, held)
         });
         Some(match committed {
             Ok(()) => {
@@ -91,7 +92,7 @@ impl LlmDeliberationFaculty {
             }
             Err(mismatch) => {
                 let lifted = HandsRefusal::of(&pending.prior);
-                self.refuse_capture(lifted, mismatch.clone());
+                self.refuse_capture(lifted, &mismatch);
                 Err(mismatch)
             }
         })
@@ -99,7 +100,7 @@ impl LlmDeliberationFaculty {
 
     /// A capture adoption that does not match: her refusal is restored as it was, her view is kept,
     /// and where it differs is shown with her refusal until the next adoption is asked.
-    fn refuse_capture(&self, lifted: Option<HandsRefusal>, mismatch: CaptureMismatch) {
+    fn refuse_capture(&self, lifted: Option<HandsRefusal>, mismatch: &CaptureMismatch) {
         continuum_base::probe!(
             class = "tools.custody.capture_refused",
             persona = %self.persona_name,
@@ -107,7 +108,7 @@ impl LlmDeliberationFaculty {
             "an adoption from a captured request does not match what she sends: refused, her refusal and view kept"
         );
         *self.hands_refused.lock() = lifted;
-        *self.capture_refused.lock() = Some(mismatch);
+        *self.capture_refused.lock() = Some(mismatch.clone());
         self.keep_custody();
     }
 }
