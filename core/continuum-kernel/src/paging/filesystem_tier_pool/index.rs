@@ -6,7 +6,7 @@
 //! made, then each change the kernel reports updates only the paths it names: usage is a counter, and the
 //! eviction order is an ordered set by mtime, so the oldest file is found without a sort.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -15,7 +15,8 @@ use std::time::SystemTime;
 pub(super) struct DirIndex {
     /// Ordered by path, so everything under a directory is one contiguous range.
     by_path: BTreeMap<PathBuf, (u64, SystemTime)>,
-    by_age: BTreeSet<(SystemTime, PathBuf)>,
+    /// Ordered by mtime, each with its size: the eviction order, read without a lookup.
+    by_age: BTreeMap<(SystemTime, PathBuf), u64>,
     total: u64,
 }
 
@@ -33,7 +34,7 @@ impl DirIndex {
 
     /// The files oldest-first by mtime, with their sizes: the eviction order.
     pub(super) fn oldest_first(&self) -> Vec<(PathBuf, u64)> {
-        self.by_age.iter().map(|(_, path)| (path.clone(), self.by_path.get(path).map_or(0, |(size, _)| *size))).collect() // map_or: by_age and by_path hold the same paths
+        self.by_age.iter().map(|((_, path), size)| (path.clone(), *size)).collect()
     }
 
     /// What the kernel says changed at `path`, reconciled against what is there now: a file is recorded
@@ -61,7 +62,7 @@ impl DirIndex {
     fn record(&mut self, path: &Path, size: u64, mtime: SystemTime) {
         self.forget(path);
         self.by_path.insert(path.to_path_buf(), (size, mtime));
-        self.by_age.insert((mtime, path.to_path_buf()));
+        self.by_age.insert((mtime, path.to_path_buf()), size);
         self.total = self.total.saturating_add(size);
     }
 
