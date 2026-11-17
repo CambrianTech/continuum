@@ -141,7 +141,7 @@ pub fn read() -> Option<u32> {
 }
 
 /// Read and parse the pid at `path`. `None` for an absent or unparseable file.
-fn read_at(path: &Path) -> Option<u32> {
+pub(crate) fn read_at(path: &Path) -> Option<u32> {
     std::fs::read_to_string(path)
         .ok()
         .and_then(|raw| raw.trim().parse::<u32>().ok())
