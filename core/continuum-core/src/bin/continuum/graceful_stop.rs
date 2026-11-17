@@ -74,24 +74,20 @@ pub(super) fn cores_to_tear_down() -> Vec<i32> {
     pids
 }
 
-/// How long a core gets to leave the process table after being asked to stop and
-/// then killed.
+/// How long a receipt-acknowledged core gets to leave the process table.
 pub(super) const TEARDOWN_EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Wait, bounded, for `pid` to leave the process table.
 ///
-/// NOT an immediate `pid_alive` after the kill: SIGTERM and taskkill are both
-/// asynchronous, so a perfectly healthy core is still in the table on the very next
-/// line, and an immediate probe would manufacture "the kill was refused" on every
-/// ordinary stop (Astra, 2026-09-22). Only failing to go within the deadline is
-/// evidence of anything.
+/// The commit closes the core asynchronously. A timeout leaves its pidfile intact
+/// and refuses handoff; this observer never terminates the process.
 pub(super) async fn exited_within(pid: i32, deadline: Duration) -> Result<(), String> {
     let until = std::time::Instant::now() + deadline;
     while pid_alive(pid) {
         if std::time::Instant::now() >= until {
             return Err(format!(
-                "core pid {pid} is still running {}s after being asked to stop and then \
-                 killed; its pidfile is left in place because the process it names still \
+                "core pid {pid} is still running {}s after receipt-bound exit acknowledgment; \
+                 its pidfile is left in place because the process it names still \
                  exists, and no handoff is issued over a core that did not go",
                 deadline.as_secs()
             ));
