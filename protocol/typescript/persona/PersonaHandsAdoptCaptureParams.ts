@@ -4,19 +4,19 @@ import type { PersonaRef } from "../identity/PersonaRef";
 /**
  * Whose head to adopt, from which capture, over which custody.
  */
-export type PersonaHandsAdoptCaptureParams = {
+export type PersonaHandsAdoptCaptureParams = { 
 /**
  * The persona: full UUID, 8-char short id, or name.
  */
-persona: PersonaRef,
+persona: PersonaRef, 
 /**
  * The capture's stable cursor, from cognition/playback.
  */
-cursor: string,
+cursor: string, 
 /**
  * The captured request's canonical sha256 (the replay digest).
  */
-request_sha256: string,
+request_sha256: string, 
 /**
  * Her custody's sha256 when this adoption is asked, from persona/hands/custody.
  */

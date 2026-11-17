@@ -3,19 +3,19 @@
 /**
  * Her head custody now.
  */
-export type PersonaHandsCustodyResult = {
+export type PersonaHandsCustodyResult = { 
 /**
  * Her persona id.
  */
-persona_id: string,
+persona_id: string, 
 /**
  * Her custody's sha256: what persona/hands/adopt_capture is asked over.
  */
-custody_sha256: string,
+custody_sha256: string, 
 /**
  * What it holds: held generation N, corrupt, or unrecorded.
  */
-holds: string,
+holds: string, 
 /**
  * How many events of her view's epoch her last sent act carried; absent with no view.
  */

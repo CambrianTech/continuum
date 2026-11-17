@@ -4,7 +4,7 @@ import type { PersonaRef } from "../identity/PersonaRef";
 /**
  * Whose head to adopt from the live tool surface.
  */
-export type PersonaHandsAdoptParams = {
+export type PersonaHandsAdoptParams = { 
 /**
  * The persona: full UUID, 8-char short id, or name.
  */

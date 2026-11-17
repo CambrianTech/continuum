@@ -3,7 +3,7 @@
 /**
  * The adoption her next act checks.
  */
-export type PersonaHandsAdoptCaptureResult = {
+export type PersonaHandsAdoptCaptureResult = { 
 /**
  * Her persona id.
  */

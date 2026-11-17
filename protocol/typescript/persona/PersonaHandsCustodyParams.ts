@@ -4,7 +4,7 @@ import type { PersonaRef } from "../identity/PersonaRef";
 /**
  * Whose head custody to read.
  */
-export type PersonaHandsCustodyParams = {
+export type PersonaHandsCustodyParams = { 
 /**
  * The persona: full UUID, 8-char short id, or name.
  */
