@@ -2020,25 +2020,34 @@ overcommit with the wrong error; unslothai/llama.cpp#184, open, which parks a sl
 prior art for this section).
 
 **The design.**
-1. **Reserve, then decode.** Before a frame decodes, the batcher computes the cells each sequence in it will occupy
-   (its new tokens, its draft's verification tokens, the draft model's own cells) and reserves them in the pool. A
-   frame never asks `llama_decode` for cells the pool does not have; the KV-full ladder (halve and retry) is deleted.
+1. **Reserve, then decode.** Before a frame decodes, the engine's own KV allocator (not a scalar free-cell sum)
+   reserves the cells each sequence in it will occupy: its new tokens, its draft's verification tokens and the draft
+   model's own cells, with the pool's real fragmentation, contiguity and ubatch geometry. A failed reservation rolls
+   back atomically before any slot, sequence or batch state is changed. A frame never asks `llama_decode` for cells
+   the allocator has not reserved; the KV-full ladder (halve and retry) is deleted.
 2. **Make room by moving the coldest, never by failing a slot.** When the reservation does not fit, the mover parks
    the coldest resident sequence that is not in this frame and not pinned (activity temperature, 4.11.9): its cells
    go to RAM (the #139 park, `llama_state_seq_get_data_ext`), its task stays alive, and it is restored ahead of its
-   next decode (`prefetch`). Each move is a typed `placed` event with its cost.
-3. **When nothing can legally move, defer, typed.** If every other resident is in the frame or pinned, the sequence
-   whose reservation does not fit leaves this frame with a typed `deferred(no_room, wakes_on = release)` and the
-   others decode; it rejoins on the release event. No slot is failed, no request gets a 500, nothing is relaunched.
-4. **A request that can never fit is refused at admission**, before any decode, typed (`exceeds_pool`), never
-   discovered mid-generation.
-5. **Speculation within a frame is whole.** Because a frame is reserved before it decodes, it is never split, so a
-   slot's verification tokens never straddle sub-batches and the #24840 throw has no path (it stays as an assertion,
-   not a handled case).
+   next decode (`prefetch`). Each move is a typed `placed` event with its cost. Parked RAM is bounded and admitted by
+   `ResourceDaemon` like any other bytes, and no cells are released before the park's copy is committed (custody).
+3. **When nothing can legally move, defer, typed, with guaranteed progress.** If every other resident is in the frame
+   or pinned, the sequence whose reservation does not fit leaves this frame with a typed `deferred(no_room)` and the
+   others decode. Waiting for a natural release alone can deadlock (every active sequence keeps growing and none
+   ends), so a deferred sequence ages: past its bound it outranks the coldest active one, which is parked at its next
+   frame boundary to make room. No slot is failed, no request gets a 500, nothing is relaunched.
+4. **A request that can never fit is refused at admission**, before any decode, typed (`exceeds_pool`), judged by its
+   declared maximum growth (prompt plus its generation limit) against the pool it can be granted, and re-judged when
+   that grant shrinks; never by a guess at its future length, never discovered mid-generation.
+5. **A speculative verification group is never split.** Reservation does not stop ordinary `n_batch`/`n_ubatch`
+   splitting of a large frame; the batcher places each MTP verification group wholly inside one evaluation unit, so
+   the #24840 throw has no path (it stays an assertion, not a handled case). Tested with normal splitting and under
+   pool pressure together.
 
 **Gates.** Simulator and replay first: the BigMama overcommit (two or more minds growing into one unified pool with
 MTP) runs with no slot error, no 500, every mind progressing, a park and restore per pressure event; a fixture where
-every other resident is pinned yields the typed deferral and progress after release. Then live on the M5 and BigMama:
+every other resident is pinned yields the typed deferral and progress after release; a fixture where every active
+sequence keeps growing with no natural release still gives the deferred one progress through aging; a large prompt
+split across ubatches with MTP on never splits a verification group. Then live on the M5 and BigMama:
 zero "failed to find free space" and zero "not inside the current sub-batch" lines, parks and restores counted in the
 frame records (4.13).
 
