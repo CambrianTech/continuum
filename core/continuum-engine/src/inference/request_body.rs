@@ -738,7 +738,7 @@ mod tests {
             },
         };
         let request = TextGenerationRequest {
-            tools: Some(vec![spec("commands_help")]),
+            tools: Some(vec![spec("commands_help")].into()),
             tail_tools: Some(vec![spec("code_git_apply")]),
             ..Default::default()
         };

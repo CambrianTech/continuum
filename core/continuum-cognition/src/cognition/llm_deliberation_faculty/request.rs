@@ -313,7 +313,8 @@ impl LlmDeliberationFaculty {
         // its prompt. Carried as `max_tokens` verbatim, never re-derived here.
         allowance: u32,
         messages: Vec<ChatMessage>,
-        tools: Option<Vec<NativeToolSpec>>,
+        // Her surface as built: shared, never copied into the request (card 9cf06ade).
+        tools: Option<std::sync::Arc<[NativeToolSpec]>>,
         system_prompt: String,
         stop_sequences: Option<Vec<String>>,
         // The room this turn speaks in — the ACTIVITY identity. It is authoritative

@@ -345,8 +345,8 @@ mod tests {
                 definitions: None,
             },
         };
-        a.tools = Some(vec![tool("code/read")]);
-        b.tools = Some(vec![tool("code/write")]);
+        a.tools = Some(vec![tool("code/read")].into());
+        b.tools = Some(vec![tool("code/write")].into());
         let found = compare(&rendered(&a), &rendered(&b));
         assert_eq!(found.first_divergent.map(|(i, _)| i), Some(1), "the tool surface sits right after the system prompt");
     }

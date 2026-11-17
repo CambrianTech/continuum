@@ -371,7 +371,7 @@ fn asha_with_hands() -> LlmDeliberationFaculty {
 }
 
 /// The schemas a surface puts on the wire, as bytes.
-fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
+fn wire(tools: &crate::cognition::tool_surface::SelectedSurface) -> String {
     serde_json::to_string(&tools.specs).expect("schemas")
 }
 
@@ -399,7 +399,7 @@ fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
 
 /// Her hands as the act's one allocation chooses them within `window`, beside her framing alone:
 /// the path `prompt_view` takes, without the rest of a prompt.
-fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice<'a>, continuum_context::allocation::ActPlan) {
+fn tools_within(faculty: &LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice, continuum_context::allocation::ActPlan) {
     use continuum_context::allocation::{allocate, id, ActClaims, Head, Span};
     use continuum_context::ladder::Leveled;
     let charge = |tokens: usize| tokens as u32;

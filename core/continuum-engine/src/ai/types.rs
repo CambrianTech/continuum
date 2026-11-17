@@ -261,10 +261,11 @@ pub struct TextGenerationRequest {
     #[ts(optional)]
     pub stop_sequences: Option<Vec<String>>,
 
-    // Tool calling (native JSON format)
+    // Tool calling (native JSON format). Shared, never copied: a mind's surface is built once and
+    // every act's request points at the same schemas (card 9cf06ade). Encoded only on the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub tools: Option<Vec<NativeToolSpec>>,
+    #[ts(optional, type = "Array<NativeToolSpec>")]
+    pub tools: Option<std::sync::Arc<[NativeToolSpec]>>,
     /// Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
     /// grammar accept them) but never rendered in the head, so the cached prefix is unchanged
     /// (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.

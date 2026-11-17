@@ -820,7 +820,7 @@ impl LlmDeliberationFaculty {
             newest_result_reduced,
             newest_result_tokens,
             allocation,
-            tools: selected.into_owned(),
+            tools: selected,
             tools_grant,
             act_room,
             output_shortfall,
