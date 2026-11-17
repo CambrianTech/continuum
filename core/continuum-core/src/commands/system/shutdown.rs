@@ -125,23 +125,33 @@ crate::action_command! {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownRecoveryResult.ts")]
+pub enum ShutdownRecoveryResult {
+    NoDrainedShutdown,
+    ReceiptOwnerClosed,
+    Completed(ShutdownResult),
+}
+
 crate::action_command! {
-    /// Explicitly resume retained custody on this process's existing shutdown.
-    /// Observer timeout never cancels recovery or retries a completed owner.
+    /// Resume retained custody and await the existing shutdown receipt watch.
+    /// Disconnecting drops only this observer; the operation retains its work.
     pub struct SystemShutdownRecover;
     name: "system/shutdown-recover",
     access: Privileged,
     params: ShutdownTarget,
-    output: ShutdownResult,
+    output: ShutdownRecoveryResult,
     run(_this, _ctx, p) => {
         validate_target(&p, shutdown_target())?;
-        let rx = crate::runtime::recover_shutdown_custody();
-        let receipt = crate::runtime::await_shutdown(rx, std::time::Duration::from_secs(15)).await
-            .ok_or_else(|| crate::sdk_codegen::CommandError::Invalid(
-                "shutdown recovery has no completed receipt; the operation and its owners remain retained".into()
-            ))?;
-        Ok(ShutdownResult {
-            state_is_durable: receipt.state_is_durable(), summary: receipt.summary(), receipt,
+        let Ok(mut rx) = crate::runtime::recover_shutdown_custody() else {
+            return Ok(ShutdownRecoveryResult::NoDrainedShutdown);
+        };
+        let receipt = rx.wait_for(Option::is_some).await.ok().and_then(|value| value.clone());
+        Ok(match receipt {
+            None => ShutdownRecoveryResult::ReceiptOwnerClosed,
+            Some(receipt) => ShutdownRecoveryResult::Completed(ShutdownResult {
+                state_is_durable: receipt.state_is_durable(), summary: receipt.summary(), receipt,
+            }),
         })
     }
 }
@@ -243,8 +253,10 @@ mod tests {
 
     #[tokio::test]
     async fn recovery_rejects_a_recycled_process_target_before_touching_owners() {
+        let before = crate::runtime::shutdown_receipt();
         let stale = ShutdownTarget { pid: std::process::id(), instance: "not-this-instance".into() };
         assert!(SystemShutdownRecover.run(&Ctx::default(), stale).await.is_err());
+        assert_eq!(crate::runtime::shutdown_receipt(), before);
     }
 
     // A receipt acknowledgment must never exit a replacement process, or exit

@@ -411,11 +411,11 @@ impl ShutdownOperation {
 
     /// Recovery belongs to this operation, never to the requesting connection.
     /// Reconnecting observers join the same future and see its merged receipt.
-    pub(super) fn recover_custody(&self) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    pub(super) fn recover_custody(&self) -> Result<tokio::sync::watch::Receiver<Option<ShutdownReceipt>>, NoDrainedShutdown> {
         let mut running = self.recovery_running.lock();
         if !*running {
-            let receipt = self.result.borrow().clone();
-            if let Some(receipt) = receipt.filter(|receipt| receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained)) {
+            let receipt = self.result.borrow().clone().ok_or(NoDrainedShutdown)?;
+            if receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained) {
                 *running = true;
                 self.result.send_replace(None);
                 let mut publication = RecoveryPublication {
@@ -432,7 +432,7 @@ impl ShutdownOperation {
                 });
             }
         }
-        self.result.subscribe()
+        Ok(self.result.subscribe())
     }
 }
 
@@ -464,7 +464,11 @@ pub fn shutdown_receipt() -> Option<ShutdownReceipt> {
 
 /// Join selective custody recovery on the existing shutdown owner. This does not
 /// replay module shutdown phases or erase incomplete module evidence.
-pub fn recover_shutdown_custody() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no drained shutdown receipt exists to recover")]
+pub struct NoDrainedShutdown;
+
+pub fn recover_shutdown_custody() -> Result<tokio::sync::watch::Receiver<Option<ShutdownReceipt>>, NoDrainedShutdown> {
     process_shutdown().recover_custody()
 }
 
@@ -565,6 +569,18 @@ async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<Shut
 mod signal_receipt_tests {
     use super::*;
 
+    #[test]
+    fn recovery_without_a_drained_receipt_refuses_without_starting_work() {
+        let operation = ShutdownOperation::new();
+        assert!(matches!(operation.recover_custody(), Err(NoDrainedShutdown)));
+        assert!(!*operation.recovery_running.lock());
+        assert!(operation.result.borrow().is_none());
+        operation.started.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(operation.recover_custody(), Err(NoDrainedShutdown)));
+        assert!(!*operation.recovery_running.lock());
+        assert!(operation.result.borrow().is_none());
+    }
+
     #[tokio::test]
     async fn interrupted_recovery_publishes_evidence_and_reopens_admission() -> Result<(), Box<dyn std::error::Error>> {
         for unwind in [false, true] {
@@ -638,15 +654,15 @@ mod signal_receipt_tests {
         operation.result.send_replace(Some(ShutdownReceipt {
             modules: vec![], total_ms: 1, custody: vec![saved.clone(), entry("retained", CustodyState::Retained)],
         }));
-        drop(operation.recover_custody());
+        drop(operation.recover_custody()?);
         entered.notified().await;
-        let mut observer = operation.recover_custody();
+        let mut observer = operation.recover_custody()?;
         assert!(observer.borrow().is_none(), "in-progress recovery cannot authorize commit");
         release.notify_one();
         let receipt = observer.wait_for(Option::is_some).await?.clone().ok_or("missing receipt")?;
         assert_eq!(receipt.custody[0], saved);
         assert!(receipt.state_is_durable());
-        drop(operation.recover_custody());
+        drop(operation.recover_custody()?);
         assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
         Ok(())
     }
