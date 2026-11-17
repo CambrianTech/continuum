@@ -72,6 +72,11 @@ fn validate_commit(params: &ShutdownCommitParams, current: &ShutdownTarget, rece
             "shutdown commit requires the completed save receipt from this process".into(),
         ));
     }
+    if !receipt.is_some_and(ShutdownReceipt::state_is_durable) {
+        return Err(crate::sdk_codegen::CommandError::Invalid(
+            "shutdown commit refused: state is not durable; retain the core and engine until custody is resolved".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -196,6 +201,10 @@ crate::action_command! {
 }
 
 #[cfg(test)]
+#[path = "shutdown_custody_tests.rs"]
+mod custody_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::sdk_codegen::{ActionCommand, Ctx};
@@ -231,6 +240,31 @@ mod tests {
         params.target = current.clone();
         params.receipt_sha256.push('0');
         assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+    }
+
+    // A correctly acknowledged receipt is not permission to destroy unfinished work.
+    #[test]
+    fn matching_receipt_cannot_commit_an_incomplete_training_drain() -> Result<(), crate::sdk_codegen::CommandError> {
+        use crate::runtime::{DrainOutcome, ModuleStop, ModuleStopOutcome};
+        let current = ShutdownTarget { pid: 42, instance: "training-owner".into() };
+        for outcome in [ModuleStopOutcome::Clean, ModuleStopOutcome::JoinTimedOut] {
+            let receipt = ShutdownReceipt {
+                modules: vec![ModuleStop {
+                    module: "training-trigger".into(),
+                    drain: DrainOutcome::Incomplete { in_flight: 3 },
+                    outcome,
+                    ms: 2000,
+                }],
+                total_ms: 2000,
+                custody: vec![],
+            };
+            let params = ShutdownCommitParams {
+                target: current.clone(),
+                receipt_sha256: shutdown_receipt_digest(&receipt)?,
+            };
+            assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+        }
+        Ok(())
     }
 
     // Exercise the real exit in an isolated test child, never the serving core.

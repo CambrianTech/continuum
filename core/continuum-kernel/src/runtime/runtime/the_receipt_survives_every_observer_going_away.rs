@@ -11,7 +11,7 @@ pub(super) mod conditional_modules_tests {
         #[tokio::test]
         async fn a_signal_without_a_runtime_publishes_no_durability_receipt() {
             assert!(matches!(super::super::signal_runtime(), Err(super::super::ShutdownUnavailable)));
-            super::super::run_signal_shutdown().await;
+            assert!(matches!(super::super::run_signal_shutdown().await, super::super::SignalShutdown::Unavailable));
             assert!(super::super::shutdown_receipt().is_none());
         }
         use super::super::*;

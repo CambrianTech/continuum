@@ -449,7 +449,17 @@ pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
     SIGNAL_RUNTIME.get().cloned().ok_or(ShutdownUnavailable)
 }
 
-pub async fn run_signal_shutdown() {
+/// Only a durable receipt permits the signal caller to retire the process.
+#[derive(Debug)]
+pub enum SignalShutdown {
+    Durable,
+    Retained,
+    Pending,
+    Unavailable,
+}
+
+#[must_use]
+pub async fn run_signal_shutdown() -> SignalShutdown {
     // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
     // signal arriving while the verb is running joins that broadcast instead of starting
     // a second one over the same state. The bound is deliberately larger than one phase:
@@ -463,20 +473,21 @@ pub async fn run_signal_shutdown() {
         Ok(rt) => rt,
         Err(reason) => {
             eprintln!("[continuum-core] shutdown unavailable: {reason}");
-            return;
+            return SignalShutdown::Unavailable;
         }
     };
     let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
-            // A signal handler cannot return an exit code to anyone, so the receipt's only
-            // readers are the log and the probe ledger — which is exactly why it is
-            // written here rather than dropped. `_exit` follows immediately.
+            // The caller must preserve the process and its children on refusal.
             if !receipt.state_is_durable() {
                 eprintln!(
-                    "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
+                    "[continuum-core] STOP REFUSED, STATE RETAINED: {}",
                     receipt.summary()
                 );
+                SignalShutdown::Retained
+            } else {
+                SignalShutdown::Durable
             }
         }
         None => {
@@ -490,6 +501,7 @@ pub async fn run_signal_shutdown() {
             eprintln!(
                 "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
             );
+            SignalShutdown::Pending
         }
     }
 }

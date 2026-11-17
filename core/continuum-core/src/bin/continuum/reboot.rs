@@ -546,7 +546,7 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         Some(supervisor_install::maintenance::StartupPermit::acquire(&continuum_core::paths::continuum_home()?).await?)
     } else { None };
     let mut dark = DarkWindow::start();
-    if let Err(failed) = stop_with_authority(true, options.operator_present).await {
+    if let Err(failed) = stop_with(true).await {
         #[cfg(windows)]
         if let Some(selected) = &service { return Err(selected.unwind_engine_promotion(failed).await.into()); }
         return Err(failed.into());
