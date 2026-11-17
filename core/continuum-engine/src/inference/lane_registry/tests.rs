@@ -400,7 +400,7 @@ fn shutdown_reaps_the_live_lane_that_boot_leaves_alone() {
     let stop_dir = temp_dir("mode-shutdown");
     let _ = std::fs::remove_dir_all(&stop_dir);
     record_in(&stop_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
-    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown);
+    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown(&Attested::default()));
     assert!(
         !matches!(outcomes.as_slice(), [SweepOutcome::LeftLive { .. }]),
         "shutdown must NEVER leave a live lane running, got {outcomes:?}"
