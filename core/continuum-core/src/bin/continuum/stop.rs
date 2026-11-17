@@ -78,7 +78,7 @@ pub(super) async fn commit_graceful_shutdown(
         GracefulStop::Incomplete(result.receipt.summary())
     };
     graceful.require_durable()?;
-    let attested = continuum_core::inference::lane_registry::Attested::from_custody(&result.receipt.custody);
+    let attested = continuum_core::inference::lane_registry::Attested::from_receipt(&result.receipt);
     let pid = target.pid as i32;
     let commit = ShutdownCommitParams {
         target,
@@ -167,7 +167,9 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
             S::RemovedDead { .. } | S::RemovedReused { .. } | S::RemovedUnparseable { .. } => {}
             // Unreachable under Shutdown (every role is reaped) — but matched
             // explicitly so adding a mode can never silently fall through here.
-            S::RetainedUnattested { pid, port, role } => retained_lanes.push(format!("pid={pid} port={port} role={role:?}")),
+            S::RetainedUnattested { pid, port, role, persisted } => {
+                retained_lanes.push(format!("pid={pid} port={port} role={role:?} retention_persisted={persisted}"))
+            }
             S::LeftLive { pid } => {
                 println!("  WARNING: serving lane (pid {pid}) left running by a shutdown sweep — report this")
             }

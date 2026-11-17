@@ -216,24 +216,36 @@ pub enum SweepMode<'a> {
 pub struct Attested(Vec<super::engine_residency::EngineIncarnation>);
 
 impl Attested {
-    /// The receipt's `Saved` custody entries on a local endpoint with a stamped process. A remote URL on the
-    /// same port, an unstamped process or a retained entry attests nothing.
-    pub fn from_custody(custody: &[crate::runtime::SettledCustody]) -> Self {
-        Self(
-            custody
-                .iter()
-                .filter(|c| matches!(c.state, crate::runtime::CustodyState::Saved))
-                .filter_map(|c| {
-                    let process = c.process.as_ref()?;
-                    let port = local_endpoint_port(&c.endpoint)?;
-                    (process.started_s != 0).then_some(super::engine_residency::EngineIncarnation {
-                        pid: process.pid,
-                        started_s: process.started_s,
-                        port,
-                    })
-                })
-                .collect(),
-        )
+    /// What a receipt attests. A receipt that is not durable attests nothing. In a durable one, an incarnation
+    /// (a stamped process on a LOCAL endpoint) is attested only when EVERY participant's entry for it is
+    /// `Saved`: one participant's retention or loss outweighs any other's save. A remote URL on the same port
+    /// or an unstamped process attests nothing.
+    pub fn from_receipt(receipt: &crate::runtime::ShutdownReceipt) -> Self {
+        if !receipt.state_is_durable() {
+            return Self::default();
+        }
+        let incarnation = |c: &crate::runtime::SettledCustody| {
+            let process = c.process.as_ref()?;
+            let port = local_endpoint_port(&c.endpoint)?;
+            (process.started_s != 0).then_some(super::engine_residency::EngineIncarnation {
+                pid: process.pid,
+                started_s: process.started_s,
+                port,
+            })
+        };
+        let mut attested: Vec<super::engine_residency::EngineIncarnation> = Vec::new();
+        let mut contradicted: Vec<super::engine_residency::EngineIncarnation> = Vec::new();
+        for entry in &receipt.custody {
+            let Some(found) = incarnation(entry) else { continue };
+            if matches!(entry.state, crate::runtime::CustodyState::Saved) {
+                attested.push(found);
+            } else {
+                contradicted.push(found);
+            }
+        }
+        attested.retain(|found| !contradicted.contains(found));
+        attested.dedup();
+        Self(attested)
     }
 
     fn covers(&self, rec: &LaneRecord) -> bool {
@@ -271,7 +283,7 @@ pub enum SweepOutcome {
     LeftLive { pid: u32 },
     /// A running lane no durable receipt attests saved: left running WITH its record (shutdown only). Its owner
     /// (the core that recorded it, or its lease/completion owner) must attest it before it may be retired.
-    RetainedUnattested { pid: u32, port: u16, role: LaneRole },
+    RetainedUnattested { pid: u32, port: u16, role: LaneRole, persisted: bool },
     /// A `.lane` file that didn't parse — removed as garbage.
     RemovedUnparseable { path: PathBuf },
 }
@@ -449,6 +461,56 @@ fn record_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("{pid}.lane"))
 }
 
+/// Why a running lane was retained, beside its record: the exact incarnation (so a reused pid is never
+/// protected) and the reason. Written by a shutdown that could not attest the lane saved; honored by the next
+/// boot; removed with the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RetainedMarker {
+    pid: u32,
+    started_s: u64,
+    port: u16,
+    role: LaneRole,
+    reason: String,
+}
+
+fn retained_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("{pid}.retained"))
+}
+
+fn write_retained_marker(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
+    let marker = RetainedMarker {
+        pid: rec.pid,
+        started_s: rec.started_s,
+        port: rec.port,
+        role: rec.role,
+        reason: "a shutdown's durable receipt did not attest this lane's state saved; its owner must attest it".into(),
+    };
+    let body = serde_json::to_string_pretty(&marker).map_err(std::io::Error::other)?;
+    std::fs::write(retained_path(dir, rec.pid), body)
+}
+
+/// Remove a lane's retention marker with its record. Absent is the normal case; any other failure is reported,
+/// never discarded (a marker left behind would keep a dead incarnation's reason on disk, which boot ignores
+/// because it names a start time no live process has).
+fn remove_retained_marker(dir: &Path, pid: u32) {
+    match std::fs::remove_file(retained_path(dir, pid)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => continuum_base::probe!(
+            class = "serving.lane_retention_marker",
+            pid = pid,
+            error = error.to_string().as_str(),
+            "a lane's retention marker could not be removed with its record"
+        ),
+        _ => {}
+    }
+}
+
+fn retained_marker_matches(dir: &Path, rec: &LaneRecord) -> bool {
+    std::fs::read_to_string(retained_path(dir, rec.pid))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<RetainedMarker>(&raw).ok())
+        .is_some_and(|marker| rec.started_s != 0 && marker.pid == rec.pid && marker.started_s == rec.started_s && marker.port == rec.port)
+}
+
 /// Write `rec` as JSON to `<pid>.lane`, creating the directory if needed. Pure:
 /// the caller owns the dir so tests never touch the real registry.
 pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
@@ -500,6 +562,7 @@ fn clear_live_records_in(dir: &Path) {
 pub(crate) fn remove_in(dir: &Path, pid: u32) {
     let _writes = writes();
     let _ = std::fs::remove_file(record_path(dir, pid));
+    remove_retained_marker(dir, pid);
 }
 
 /// Every lane record on disk, in no particular order.
@@ -629,7 +692,14 @@ fn sweep_collect(dir: &Path, mode: SweepMode<'_>, pending: &mut Vec<(PathBuf, La
         // number.
         if !continuum_cli_lifecycle::process::is_alive(rec.pid) {
             let _ = std::fs::remove_file(&path);
+            remove_retained_marker(dir, rec.pid);
             outcomes.push(SweepOutcome::RemovedDead { pid: rec.pid });
+            continue;
+        }
+        // A lane a shutdown retained (its receipt did not attest it saved) survives the next boot too: only its
+        // owner's attestation retires it, never a role-based orphan reap.
+        if matches!(mode, SweepMode::Boot) && retained_marker_matches(dir, &rec) && lane_process::is_llama_server(rec.pid) {
+            outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role, persisted: true });
             continue;
         }
 
@@ -652,7 +722,8 @@ fn sweep_collect(dir: &Path, mode: SweepMode<'_>, pending: &mut Vec<(PathBuf, La
             // A running lane the receipt does not attest saved keeps running, with its record.
             if let SweepMode::Shutdown(attested) = mode {
                 if !attested.covers(&rec) {
-                    outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role });
+                    let persisted = write_retained_marker(dir, &rec).is_ok();
+                    outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role, persisted });
                     continue;
                 }
             }

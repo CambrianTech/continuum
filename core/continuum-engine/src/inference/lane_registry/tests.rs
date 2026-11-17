@@ -540,18 +540,69 @@ fn a_receipt_attests_only_the_exact_local_incarnations_it_saved() {
         process: Some(SettledProcess { pid, started_s }),
         state,
     };
-    let attested = Attested::from_custody(&[
+    let receipt = |custody| crate::runtime::ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody };
+    let attested = Attested::from_receipt(&receipt(vec![
         entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Saved),
-        entry("http://127.0.0.1:58058", 7, 11, CustodyState::Retained),
         entry("http://10.0.0.7:58059", 8, 12, CustodyState::Saved),
         entry("http://127.0.0.1:58060", 9, 0, CustodyState::Saved),
-    ]);
+    ]));
     let lane = |pid, port, started_s| LaneRecord { started_s, ..rec(pid, port, LaneRole::Live) };
     assert!(attested.covers(&lane(45_376, 58057, 1_794_889_235)), "the saved incarnation is attested");
     assert!(!attested.covers(&lane(45_376, 58057, 1_794_889_999)), "a replacement on the same pid and port is not");
     assert!(!attested.covers(&lane(45_376, 58061, 1_794_889_235)), "another port is not");
-    assert!(!attested.covers(&lane(7, 58058, 11)), "a retained entry attests nothing");
     assert!(!attested.covers(&lane(8, 58059, 12)), "a remote endpoint attests nothing on this machine");
     assert!(!attested.covers(&lane(9, 58060, 0)), "an unstamped process attests nothing");
     assert!(!Attested::default().covers(&lane(45_376, 58057, 1_794_889_235)), "no receipt attests nothing");
+
+    // one participant's retention outweighs another's save of the same incarnation (and the receipt is then not
+    // durable, which attests nothing at all)
+    let mixed = Attested::from_receipt(&receipt(vec![
+        SettledCustody { participant: "page_io".into(), ..entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Saved) },
+        SettledCustody { participant: "learner".into(), ..entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Retained) },
+    ]));
+    assert!(!mixed.covers(&lane(45_376, 58057, 1_794_889_235)), "a contradicted save attests nothing");
+}
+
+// what this catches: a stop or the next boot killing a running engine lane its durable receipt never attested
+// saved (Codex on #6098: an ephemeral lane may hold a genome A/B eval or a vision lease; the old boot sweep
+// reaped every ephemeral as an orphan, so a lane retained at shutdown died on the next start). A REAL process
+// named llama-server (the sweep's own identification) must survive a shutdown sweep with an empty receipt, with
+// its retention persisted, and then survive the next boot sweep; only after that is it killed, by the test.
+#[cfg(unix)]
+#[test]
+fn an_unattested_running_lane_survives_the_stop_and_the_next_boot() {
+    let dir = temp_dir("retained-survives");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
+    }
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let program = dir.join("llama-server");
+    std::fs::copy("/bin/sleep", &program).expect("test: a process named llama-server");
+    let mut child = std::process::Command::new(&program).arg("60").spawn().expect("test: spawn");
+    let pid = child.id();
+    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    for role in [LaneRole::Ephemeral, LaneRole::Live] {
+        let lane = LaneRecord { started_s, ..rec(pid, 58_071, role) };
+        record_in(&dir, &lane).expect("test: record");
+        assert_eq!(
+            sweep_in(&dir, SweepMode::Shutdown(&Attested::default())),
+            vec![SweepOutcome::RetainedUnattested { pid, port: 58_071, role, persisted: true }],
+            "the stop retains a lane no durable receipt attests"
+        );
+        assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the stop");
+        assert!(record_path(&dir, pid).exists(), "its record kept");
+        if role == LaneRole::Ephemeral {
+            assert_eq!(
+                sweep_in(&dir, SweepMode::Boot),
+                vec![SweepOutcome::RetainedUnattested { pid, port: 58_071, role, persisted: true }],
+                "the next boot honors the retention instead of reaping an 'orphan'"
+            );
+        }
+        assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the next boot");
+        remove_in(&dir, pid);
+        assert!(!retained_path(&dir, pid).exists(), "the retention goes with its record");
+    }
+    child.kill().expect("test: end the fixture process");
+    child.wait().expect("test: reap it");
+    std::fs::remove_dir_all(&dir).expect("test: clean up");
 }
