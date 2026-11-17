@@ -454,21 +454,13 @@ pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
 pub enum SignalShutdown {
     Durable,
     Retained,
-    Pending,
     Unavailable,
 }
 
 #[must_use]
 pub async fn run_signal_shutdown() -> SignalShutdown {
-    // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
-    // signal arriving while the verb is running joins that broadcast instead of starting
-    // a second one over the same state. The bound is deliberately larger than one phase:
-    // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
-    // and a tighter cap here would cut off the save phase on any node slow enough to
-    // need it.
-    // No time for turns: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
-    // console close), not ours to spend waiting on them. The settle participants still run
-    // (`ShutdownOperation::begin`): the page checkpoint ends on its own events.
+    // Join the same owner as command shutdown. An observer deadline cannot
+    // authorize exit or abandon the decision when the receipt arrives later.
     let rt = match signal_runtime() {
         Ok(rt) => rt,
         Err(reason) => {
@@ -477,10 +469,17 @@ pub async fn run_signal_shutdown() -> SignalShutdown {
         }
     };
     let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
-    match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
+    signal_shutdown_result(rx).await
+}
+
+async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>) -> SignalShutdown {
+    let receipt = rx.wait_for(Option::is_some).await.ok().and_then(|value| value.clone());
+    match receipt {
         Some(receipt) => {
             // The caller must preserve the process and its children on refusal.
             if !receipt.state_is_durable() {
+                continuum_base::probe!(class = "shutdown.refused", reason = "state_retained",
+                    receipt = receipt.summary(), "shutdown refused; unresolved state remains in its owners");
                 eprintln!(
                     "[continuum-core] STOP REFUSED, STATE RETAINED: {}",
                     receipt.summary()
@@ -491,17 +490,33 @@ pub async fn run_signal_shutdown() -> SignalShutdown {
             }
         }
         None => {
-            // Name the step that never completed (card b5b9bef3): a SIGTERM that joins a stop
-            // already stalled in a settle participant (the M5's page checkpoint, 2026-11-14) must
-            // say so, not only that the save is unknown.
-            let step = match crate::runtime::extensions::settling() {
-                Some(participant) => format!("the `{participant}` settle"),
-                None => "the module save".to_owned(),
-            };
-            eprintln!(
-                "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
-            );
-            SignalShutdown::Pending
+            continuum_base::probe!(class = "shutdown.refused", reason = "receipt_owner_closed",
+                "shutdown owner closed without a receipt; core and children retained");
+            eprintln!("[continuum-core] STOP REFUSED: shutdown owner closed without a receipt");
+            SignalShutdown::Unavailable
         }
+    }
+}
+
+#[cfg(test)]
+mod signal_receipt_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn signal_observer_waits_for_the_owners_late_receipt() -> Result<(), Box<dyn std::error::Error>> {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        let waiting = tokio::spawn(signal_shutdown_result(observer));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        owner.send_replace(Some(ShutdownReceipt { modules: vec![], total_ms: 9000, custody: vec![] }));
+        assert!(matches!(waiting.await?, SignalShutdown::Durable));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn losing_the_receipt_owner_never_authorizes_exit() {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        drop(owner);
+        assert!(matches!(signal_shutdown_result(observer).await, SignalShutdown::Unavailable));
     }
 }
