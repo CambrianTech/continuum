@@ -44,15 +44,6 @@ pub(crate) struct OpenAITimings {
     pub(crate) predicted_per_second: f64,
 }
 
-/// How long the inference lane may stay SILENT mid-stream before we declare it
-/// dead. This is a LIVENESS watchdog, not a deadline: a slow-but-producing decode
-/// (a 4B model on CPU emitting a token every few hundred ms) stays alive
-/// indefinitely as long as it keeps streaming. Only true silence — the backend
-/// stuck, crashed, or the socket wedged — trips it, and then we fail loud naming
-/// the cause ([[fallbacks-are-illegal-fail-loud]]). Replaces the old wall-clock
-/// total-request timeout that killed legitimately-long generations.
-pub(crate) const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
-
 // Lane-send constants live in `crate::inference::lane_send` (S3b decompose).
 
 
@@ -244,10 +235,11 @@ pub(crate) struct StreamToolAccum {
 }
 
 /// Fold one streamed tool-call fragment into the per-index accumulator.
-pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
-    let idx = tc.index.unwrap_or(0);
+pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) -> Result<(), String> {
+    let idx = tc.index.ok_or_else(|| "streamed tool call is missing its index".to_string())?;
     if acc.len() <= idx {
-        acc.resize_with(idx + 1, StreamToolAccum::default);
+        let len = idx.checked_add(1).ok_or_else(|| "streamed tool-call index overflows".to_string())?;
+        acc.resize_with(len, StreamToolAccum::default);
     }
     let slot = &mut acc[idx];
     if let Some(id) = tc.id {
@@ -265,6 +257,7 @@ pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: Op
             slot.arguments.push_str(&a);
         }
     }
+    Ok(())
 }
 
 /// Everything the stream accumulated, handed back to the caller's post-processing
@@ -317,42 +310,17 @@ pub(crate) async fn consume_sse_stream(
 ) -> Result<StreamOutcome, String> {
     // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives, and its
     // consumer gets the turn before the next is parsed (`stream_sinks::deliver`).
-    // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
-    // silence means the backend died, NOT that generation is simply long.
+    // Request waits share the existing turn-bound owner; silence is not engine death.
     use futures::StreamExt;
     let mut byte_stream = response.bytes_stream();
-    // QUEUE WAIT IS NOT SILENCE. Two different things were being policed by one
-    // budget. MEASURED 2026-08-13 on the live 1-slot lane: a TINY (2,237-token)
-    // request got its first byte of any kind at t=115.2s — not because prefill
-    // was slow (it finished within the same second) but because the slot was
-    // busy with a co-tenant's turn for 115s first. llama-server says nothing
-    // while a task is queued; there is no frame to send until a slot picks it
-    // up. So the 90s liveness budget was being spent on CONTENTION, and with
-    // total_slots=1 and four citizens it expires routinely on a healthy lane.
-    //
-    // Split by what the silence MEANS. Before the server shows any sign of
-    // working on THIS request, the bound is the same one the header wait
-    // already uses and justifies — queue wait is a capacity fact, minutes are
-    // legitimate, and the job is releasing eternal holds, not policing slow
-    // ones. Once the slot IS working (a prefill-progress frame or a token),
-    // the tight liveness budget applies: from then on, silence really is the
-    // backend dying, which is what #385 was always about.
-    //
-    // The queue bound is the header wait's FLOOR or the turn's own measured bound
-    // above it (`TextGenerationRequest::turn_bound`, card ba82d0a0): a request queued
-    // behind a co-tenant's 30k prefill on a 25 tok/s box hears nothing for ~1200 s,
-    // and a constant 300 s read every such turn as dead.
+    // Queue, prefill and decode waits use the same effective request bound.
+    // Progress still refreshes the wait; a missing observation is a request failure,
+    // never authority to retire the engine.
     let (queue_budget, queue_source) = crate::inference::turn_bound::effective_bound_with_source(
         std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
         request.turn_bound,
     );
-    let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
-    // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
-    // death on the local lane is wedge evidence the smoke probe cannot see (an
-    // undersized slot passes a tiny probe while rejecting real prompts); a
-    // completed stream is proof of life. Both stamps are gated on this request
-    // actually targeting the published serving lane.
-
+    let live_budget = queue_budget;
     let mut sse_buf: Vec<u8> = Vec::new();
     // Each raw event, kept only when a capture armed this request (card fb6d7912).
     let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
@@ -718,11 +686,11 @@ pub(crate) async fn consume_sse_stream(
                             provider = cfg.name.as_str(),
                             elapsed_s = elapsed.as_secs(),
                             queued_s = first_frame.duration_since(stream_opened).as_secs(),
-                            old_budget_s = live_budget.as_secs(),
+                            request_budget_s = live_budget.as_secs(),
                             processed = p.processed,
                             total = p.total,
                             cached = p.cache,
-                            "prefill outlived the OLD decode watchdog and is STILL \
+                            "prefill outlived the request watchdog and is STILL \
                              advancing — under the previous flat budget this turn \
                              would have been killed here and retried forever",
                         );
@@ -816,7 +784,7 @@ pub(crate) async fn consume_sse_stream(
                         }
                         if let Some(tcs) = delta.tool_calls {
                             for tc in tcs {
-                                accumulate_stream_tool_call(&mut acc_tools, tc);
+                                accumulate_stream_tool_call(&mut acc_tools, tc)?;
                                 last_progress = Instant::now();
                             }
                         }
@@ -849,6 +817,20 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn missing_tool_index_is_rejected_without_overwriting_a_call() {
+        let mut acc = vec![StreamToolAccum {
+            id: "held".into(), name: "work/read".into(), arguments: "{}".into(),
+        }];
+        let tc: OpenAIStreamToolCall = serde_json::from_str(
+            r#"{"id":"wrong","function":{"name":"work/write","arguments":"bad"}}"#,
+        ).expect("test: fragment without index");
+        assert!(accumulate_stream_tool_call(&mut acc, tc).is_err());
+        assert_eq!(acc.len(), 1);
+        assert_eq!(acc[0].id, "held");
+        assert_eq!(acc[0].name, "work/read");
+        assert_eq!(acc[0].arguments, "{}");
+    }
     // what this catches (Astra on #4978): a captured retry replayed as one stream. The
     // accumulator starts fresh on every attempt, so an interrupted attempt's index-0
     // arguments merged with its retry's would replay arguments the response never held.
@@ -868,7 +850,7 @@ mod tests {
                     let chunk: OpenAIStreamChunk = serde_json::from_str(data).expect("test: chunk");
                     for choice in chunk.choices {
                         for tc in choice.delta.and_then(|d| d.tool_calls).unwrap_or_default() {
-                            accumulate_stream_tool_call(&mut acc, tc);
+                            accumulate_stream_tool_call(&mut acc, tc).expect("test: indexed tool fragment");
                         }
                     }
                 }

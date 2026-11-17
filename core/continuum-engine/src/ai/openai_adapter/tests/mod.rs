@@ -6,7 +6,7 @@ use crate::inference::request_body::close_trailing_assistant;
 use crate::inference::serving_guard::{
     settled_on_another_model, snapshot_guarantees, unguaranteed_model_refusal,
 };
-use crate::inference::sse_stream::{OpenAIStreamChunk, STREAM_IDLE_TIMEOUT_SECS};
+use crate::inference::sse_stream::OpenAIStreamChunk;
 
 use crate::ai::types::{ChatMessage, ImageInput, MessageContent};
 
