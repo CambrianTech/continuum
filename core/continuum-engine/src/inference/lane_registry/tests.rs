@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// A record removed under the registry's write lock, as `remove` does for the default directory.
+fn remove_under_lock(dir: &Path, pid: u32) {
+    let _writes = writes();
+    remove_locked(dir, pid);
+}
+
 // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
 // file that does not parse is a lane the lenient read silently drops — and a sweep
 // reading that inventory would delete the page dir of a lane it never saw. The
@@ -51,7 +57,7 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Gpu).expect("restamp"), "the record changed since it was read");
     let replaced = LaneRecord { started_s: 8, ..kept.clone() };
     assert!(!restamp_placement_in(dir.path(), &replaced, LanePlacement::Cpu).expect("restamp"), "another incarnation's read");
-    remove_in(dir.path(), kept.pid);
+    remove_under_lock(dir.path(), kept.pid);
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"), "a removed record");
     assert_eq!(records_in(dir.path()), vec![other], "a removed record is never recreated");
 }
@@ -234,7 +240,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
 }
 
 // what this catches: record_in → the file exists and round-trips through JSON;
-// remove_in deletes it and is idempotent. The accounting is useless if a
+// a locked remove deletes it and is idempotent. The accounting is useless if a
 // recorded lane can't be read back or cleaned up.
 #[test]
 fn record_round_trips_and_remove_is_idempotent() {
@@ -247,9 +253,9 @@ fn record_round_trips_and_remove_is_idempotent() {
     let back: LaneRecord = serde_json::from_str(&raw).expect("parse");
     assert_eq!(back, r, "record round-trips through JSON");
 
-    remove_in(&dir, 4242);
+    remove_under_lock(&dir, 4242);
     assert!(!record_path(&dir, 4242).exists(), "removed");
-    remove_in(&dir, 4242); // idempotent — second remove must not panic
+    remove_under_lock(&dir, 4242); // idempotent — second remove must not panic
     let _ = std::fs::remove_dir_all(&dir);
 }
 
