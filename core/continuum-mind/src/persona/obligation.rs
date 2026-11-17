@@ -311,6 +311,33 @@ pub(crate) fn test_store_executor() -> Arc<CommandExecutor> {
     executor
 }
 
+/// A resident on the live workspace registry with hands (a scripted tool executor), the cycle a
+/// real turn runs on. Shared by every test that drives her turn through `persona_workspace`.
+#[cfg(test)]
+pub(crate) fn resident_with(persona: uuid::Uuid, adapter: crate::ai::HeuristicInferenceAdapter) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
+    let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
+        persona_id: persona,
+        persona_name: "Rhea".into(),
+        system_prompt: "You are Rhea.".into(),
+        admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
+            crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
+        ))),
+        adapter: Arc::new(adapter),
+        grounding_sources: Vec::new(),
+        embedder: None,
+        tool_executor: Some(Arc::new(crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]))),
+        experience: None,
+        // Roomy enough for framing + tools + a reply: a refused prompt is not what these test.
+        context_window: 65_536,
+        defer_recall: false,
+        defer_grounding: false,
+        suppress_recall: false,
+        forked: false,
+        read_receipt: None,
+    };
+    crate::cognition::persona_workspace::global().register_from_cfg(cfg).unwrap() // unwrap: test fixture
+}
+
 mod effects;
 mod recover;
 pub use effects::ObligationMark;
