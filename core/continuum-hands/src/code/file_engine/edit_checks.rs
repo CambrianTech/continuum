@@ -310,7 +310,7 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         new_content,
     } = edit_mode
     else {
-        return GENERAL.to_string();
+        return fault_in_her_content(abs_path, old_content, edit_mode).unwrap_or_else(|| GENERAL.to_string()); // unwrap_or_else: a fault outside what she sent gets the general guidance
     };
 
     // The tail her range cut into lies inside the construct her END line sits in (a string's
@@ -318,7 +318,7 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
     // so that measured span bounds the search: never past it into unrelated code.
     let old_lines: Vec<&str> = old_content.lines().collect();
     let Some(span) = construct_span(old_content, *end_line) else {
-        return GENERAL.to_string();
+        return fault_in_her_content(abs_path, old_content, edit_mode).unwrap_or_else(|| GENERAL.to_string()); // unwrap_or_else: a fault outside what she sent gets the general guidance
     };
     for candidate in (end_line + 1)..=*span.end() {
         let widened = EditMode::LineRange {
@@ -348,7 +348,47 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
             );
         }
     }
-    GENERAL.to_string()
+    fault_in_her_content(abs_path, old_content, edit_mode).unwrap_or_else(|| GENERAL.to_string()) // unwrap_or_else: a fault outside what she sent gets the general guidance
+}
+
+/// When the parser stops on a line her edit put there, quote that line of what she sent as where it
+/// stopped (usually the line at fault; possibly the first place an earlier unclosed construct shows),
+/// instead of the general advice about ranges that stop short, which sends her after the wrong thing.
+///
+/// Aris on the M5, 2026-11-17 (card #5953): an `insert_at` whose new comment began `//!`, an inner
+/// doc comment that Rust allows only at the top of a file, was refused three times in an hour with
+/// "the most common cause is a line range that ends INSIDE a construct". She was not using a range.
+///
+/// Nothing is guessed: the stop line comes from the parser, the lines her content occupies come from
+/// where this edit applied to the file as it stands, and the claim is made only when her whole content
+/// is found at that position, so a line that is not hers is never quoted as hers.
+fn fault_in_her_content(abs_path: &std::path::Path, old_content: &str, edit_mode: &EditMode) -> Option<String> {
+    let new_text = apply_edit(old_content, edit_mode).ok()?;
+    let fault_line = validator_for(abs_path)?.parse_check(&new_text).err()?.line?;
+    let (first, sent) = match edit_mode {
+        EditMode::LineRange { start_line, new_content, .. } => (*start_line as usize, new_content.as_str()),
+        EditMode::InsertAt { line, content } => ((*line as usize).min(old_content.lines().count() + 1), content.as_str()),
+        EditMode::Append { content } => (old_content.lines().count() + 1, content.as_str()),
+        // Where THIS edit applied: its search text is unique in the file as it stood (apply_edit
+        // refuses a second verbatim match), so its offset there is the line the replacement starts on.
+        // Never the first place the replacement's text appears, which can be an older identical block.
+        // Every site (`all`) and an indent-tolerant match have no single position to name.
+        EditMode::SearchReplace { all: true, .. } => return None,
+        EditMode::SearchReplace { search, replace, .. } => (old_content[..old_content.find(search.as_str())?].matches('\n').count() + 1, replace.as_str()),
+        // A batch's lines move under each later edit: no single position to name.
+        EditMode::Batch { .. } => return None,
+    };
+    let sent_lines: Vec<&str> = sent.lines().collect();
+    let placed: Vec<&str> = new_text.lines().skip(first.checked_sub(1)?).take(sent_lines.len()).collect();
+    if placed != sent_lines {
+        return None;
+    }
+    let index = fault_line.checked_sub(first).filter(|index| *index < sent_lines.len())?;
+    Some(format!(
+        "THE PARSER STOPS INSIDE WHAT YOU SENT: at line {fault_line}, which is line {} of your content:\n{fault_line:>6} | {}\nCheck that line first. This is where the parser stopped, which is usually the line at fault but can be the first place an unclosed construct earlier in the file shows.",
+        index + 1,
+        sent_lines[index]
+    ))
 }
 
 /// The syntax error `content` WOULD produce at this path's language, formatted for a persona.
