@@ -2466,7 +2466,10 @@ is replaced, not joined by a second scheduler. llama-server remains only the Ope
 ```rust
 /// One persona's execution state, owned once: native blocks + token history + receipts (fork #147).
 pub struct Persona { raw: llama::PersonaHandle, id: PersonaId, epoch: Epoch, residency: Residency }
-pub enum Residency { Active { stream: Stream }, Staged { stream: Stream }, Host, Flash }
+/// Where her blocks are, including in flight: the transfer owner holds the fences, so readiness is never exposed
+/// before its fence, and active + next + retiring are each accounted while they overlap.
+pub enum Residency { Active { stream: Stream }, Staging { stream: Stream, fence: TransferFence },
+                     Staged { stream: Stream }, Retiring { stream: Stream, fence: TransferFence }, Host, Flash }
 
 /// The one engine owner: one context, ONE mind decoding at a time, the next staged beside her.
 pub struct PersonaEngine { ctx: llama::Context, personas: PersonaTable, active: Option<PersonaId>, next: Option<PersonaId> }
@@ -2479,14 +2482,19 @@ impl PersonaEngine {
     /// Reserve her blocks, tokens and receipts under the aggregate admission owner (Codex's), once per epoch.
     pub fn admit(&mut self, persona: PersonaId, epoch: Epoch, terms: AdmittedCapacity) -> Result<(), AdmitRefusal>;
     /// Bind her (if staged/host), append the delta, decode ONLY it, sample to her stop; generated ids join her tail.
-    /// A replayed seq returns its recorded Completion and never decodes again.
-    pub fn act(&mut self, append: Append<'_>, terms: GenerationTerms) -> ActStream;
+    /// The operation is the engine's: its terminal outcome (completed, interrupted, refused) is recorded under her
+    /// request seq whatever any observer does; `ActStream` only observes it, and dropping it cancels nothing and
+    /// frees nothing. A replayed seq returns its recorded outcome and never decodes again.
+    pub fn act(&mut self, append: Append<'_>, terms: GenerationTerms) -> Result<ActHandle, ActRefusal>;
+    pub fn observe(&self, act: ActHandle) -> ActStream;
     /// Stream the next persona's blocks into a free stream while the active one decodes (transfer, not decode).
     pub fn stage(&mut self, next: PersonaId) -> Result<StageFence, StageRefusal>;
     /// Raw move of her blocks to host after the handoff fence; her token history moves with them by reference.
     pub fn retire(&mut self, persona: PersonaId) -> RetireFence;
-    /// Publish every resident persona's native flash generation, then retire: computed state is never dropped.
-    pub fn shutdown(self) -> ShutdownReceipt;
+    /// Publish every resident persona's native flash generation, then retire: computed state is never dropped. The
+    /// owner is retained through it: a failed publication is a retryable refusal that keeps the context, every
+    /// persona and the previous generation; nothing is freed by Drop while unsaved.
+    pub fn shutdown(&mut self) -> Result<ShutdownReceipt, ShutdownRefusal>;
 }
 ```
 Ownership and the conditions before production (Codex): a terminal completion retains her state (never
