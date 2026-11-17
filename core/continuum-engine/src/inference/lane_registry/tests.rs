@@ -3,10 +3,10 @@
 
 use super::*;
 
-/// A record removed under the registry's write lock, as `remove` does for the default directory.
-fn remove_under_lock(dir: &Path, pid: u32) {
+/// `expected`'s record removed under the registry's write lock, as `remove` does for the default directory.
+fn remove_under_lock(dir: &Path, expected: &LaneRecord) -> bool {
     let _writes = writes();
-    remove_locked(dir, pid);
+    remove_locked(dir, expected)
 }
 
 // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
@@ -57,7 +57,7 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Gpu).expect("restamp"), "the record changed since it was read");
     let replaced = LaneRecord { started_s: 8, ..kept.clone() };
     assert!(!restamp_placement_in(dir.path(), &replaced, LanePlacement::Cpu).expect("restamp"), "another incarnation's read");
-    remove_under_lock(dir.path(), kept.pid);
+    remove_under_lock(dir.path(), &kept);
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"), "a removed record");
     assert_eq!(records_in(dir.path()), vec![other], "a removed record is never recreated");
 }
@@ -253,10 +253,23 @@ fn record_round_trips_and_remove_is_idempotent() {
     let back: LaneRecord = serde_json::from_str(&raw).expect("parse");
     assert_eq!(back, r, "record round-trips through JSON");
 
-    remove_under_lock(&dir, 4242);
+    assert!(remove_under_lock(&dir, &r));
     assert!(!record_path(&dir, 4242).exists(), "removed");
-    remove_under_lock(&dir, 4242); // idempotent — second remove must not panic
+    assert!(!remove_under_lock(&dir, &r), "idempotent: nothing left to remove");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// what this catches: a teardown of the ORIGINAL lane deleting its REPLACEMENT's record, written under the same
+// reused pid (Codex on #6099 6853fa3c8). Removal deletes only the incarnation it was given.
+#[test]
+fn removing_an_original_never_deletes_the_replacement_under_its_reused_pid() {
+    let dir = tempfile::tempdir().expect("test: tempdir");
+    let original = LaneRecord { started_s: 7, ..rec(4243, 58_201, LaneRole::Ephemeral) };
+    let replacement = LaneRecord { started_s: 8, ..original.clone() };
+    record_in(dir.path(), &replacement).expect("test: the replacement's record");
+    assert!(!remove_under_lock(dir.path(), &original), "the original's teardown finds another incarnation");
+    assert_eq!(records_in(dir.path()), vec![replacement.clone()], "the replacement's record survives");
+    assert!(remove_under_lock(dir.path(), &replacement), "its own teardown removes it");
 }
 
 // what this catches: a LIVE lane is singular — recording a new live lane
@@ -531,8 +544,8 @@ mod census_for_admission {
 // llama-server (same image, another start time) must never be published; a removal must clear the watch in the
 // same locked step. A REAL process named llama-server stands in for the engine.
 #[cfg(unix)]
-#[test]
-fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
+#[tokio::test]
+async fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
     let dir = temp_dir("live-watch");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).expect("test: a clean dir");
@@ -549,7 +562,8 @@ fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
         .expect("test: spawn");
     let pid = child.id();
     let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
-    let (live, mut waiter) = tokio::sync::watch::channel(None);
+    let live = LiveLane::new();
+    let mut waiter = live.subscribe();
     std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
 
     // the same image under the same pid but another start time: a recycled pid, never published
@@ -570,13 +584,25 @@ fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
     );
     assert_eq!(*waiter.borrow_and_update(), Some(crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 }));
 
+    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 };
+    assert!(live.trusts(Some(engine)), "a published engine whose exit is awaited is trusted without a probe");
+
     // the record removed: cleared in the same step
     std::fs::remove_file(record_path(&dir, pid)).expect("test: remove the record");
     sync_live_locked(&dir, &pidfile, &live);
     assert!(waiter.has_changed().expect("test: watch open"), "the removal wakes the waiter");
-    assert_eq!(*waiter.borrow(), None, "no live lane once its record is gone");
+    assert_eq!(*waiter.borrow_and_update(), None, "no live lane once its record is gone");
 
+    // published again; then the engine EXITS with its pidfile and record unchanged: the exit revokes it
+    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
+    sync_live_locked(&dir, &pidfile, &live);
+    assert_eq!(*waiter.borrow_and_update(), Some(engine));
     child.kill().expect("test: end the fixture process");
     child.wait().expect("test: reap it");
+    tokio::time::timeout(std::time::Duration::from_secs(10), waiter.wait_for(Option::is_none)) // test watchdog only
+        .await
+        .expect("the engine's exit revokes it, with its files unchanged")
+        .expect("test: watch open");
+    assert!(!live.trusts(Some(engine)), "a dead engine is never trusted from its unchanged files");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
 }

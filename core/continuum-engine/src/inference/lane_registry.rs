@@ -255,14 +255,15 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Remove a lane's record on graceful teardown. Idempotent — a missing file is
-/// success.
-pub fn remove(pid: u32) {
+/// Remove `expected`'s record on graceful teardown, only while the record on disk is still that incarnation:
+/// a pid reused by a replacement lane names the replacement's record, which is never deleted for the original
+/// (Codex on #6099 6853fa3c8). Idempotent: a missing record is nothing to remove.
+pub fn remove(expected: &LaneRecord) {
     let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
         return;
     };
     let _writes = writes();
-    remove_locked(&dir, pid);
+    remove_locked(&dir, expected);
     sync_live_locked(&dir, &pidfile, &LIVE_LANE); // in the same lock: no read can interleave with the removal
 }
 
@@ -274,21 +275,85 @@ pub fn remove(pid: u32) {
 /// record agree AND the pid is a running llama-server whose OS start time equals the record's: a recycled pid
 /// running another llama-server is never published. No generation counter is needed: every write recomputes
 /// the one truth under the lock, so a stale read cannot republish over a newer state.
-static LIVE_LANE: std::sync::LazyLock<tokio::sync::watch::Sender<Option<super::engine_residency::EngineIncarnation>>> =
-    std::sync::LazyLock::new(|| tokio::sync::watch::channel(None).0);
+///
+/// A published engine that EXITS is revoked by the process-completion owner ([`continuum_host::process_exit`]):
+/// publishing arms one kernel exit watch for that exact incarnation, and its exit re-verifies under [`writes`].
+/// So a dead original is never kept published while its pidfile and record stay unchanged (Codex on #6099).
+static LIVE_LANE: std::sync::LazyLock<std::sync::Arc<LiveLane>> = std::sync::LazyLock::new(LiveLane::new);
+
+type LiveIncarnation = Option<super::engine_residency::EngineIncarnation>;
+
+/// One registry's verified live lane, as a watch, and the incarnation whose exit is being awaited.
+pub(crate) struct LiveLane {
+    published: tokio::sync::watch::Sender<LiveIncarnation>,
+    exit_watched: parking_lot::Mutex<LiveIncarnation>,
+}
+
+impl LiveLane {
+    pub(crate) fn new() -> std::sync::Arc<Self> {
+        std::sync::Arc::new(Self { published: tokio::sync::watch::channel(None).0, exit_watched: parking_lot::Mutex::new(None) })
+    }
+
+    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<LiveIncarnation> {
+        self.published.subscribe()
+    }
+
+    /// Whether the published value stands for `on_disk` without a process probe: they agree, and a published
+    /// engine's exit is being awaited (so its death would already have revoked it).
+    fn trusts(&self, on_disk: LiveIncarnation) -> bool {
+        let published = *self.published.borrow();
+        on_disk == published && published.is_none_or(|engine| *self.exit_watched.lock() == Some(engine))
+    }
+
+    /// Arm one exit watch for `engine`, which was just verified and published from `dir` + `pidfile`. Its exit
+    /// clears the watch and re-verifies under [`writes`]. Without a runtime to await on, nothing is armed and the
+    /// published value is never trusted without a probe ([`Self::trusts`]).
+    fn watch_exit(self: &std::sync::Arc<Self>, engine: super::engine_residency::EngineIncarnation, dir: &Path, pidfile: &Path) {
+        let mut watched = self.exit_watched.lock();
+        if *watched == Some(engine) {
+            return;
+        }
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        *watched = Some(engine);
+        drop(watched);
+        let (lane, dir, pidfile) = (std::sync::Arc::clone(self), dir.to_path_buf(), pidfile.to_path_buf());
+        runtime.spawn(async move {
+            let observed = continuum_host::process_exit::exited(engine.pid).await;
+            {
+                let mut watched = lane.exit_watched.lock();
+                if *watched == Some(engine) {
+                    *watched = None;
+                }
+            }
+            if let continuum_host::process_exit::ExitObserved::Unobservable(why) = observed {
+                continuum_base::probe!(
+                    class = "lane.live.exit_unobservable",
+                    pid = engine.pid,
+                    why = %why,
+                    "the live engine's exit cannot be awaited: its lane is verified against the OS on every sync"
+                );
+                return;
+            }
+            let _writes = writes();
+            sync_live_locked(&dir, &pidfile, &lane);
+        });
+    }
+}
 
 /// Subscribe to the verified live lane of this process ([`LIVE_LANE`]). The first subscription brings the watch
 /// to the truth on disk (an adopting core may never record).
-pub fn subscribe_live() -> tokio::sync::watch::Receiver<Option<super::engine_residency::EngineIncarnation>> {
+pub fn subscribe_live() -> tokio::sync::watch::Receiver<LiveIncarnation> {
     sync_live();
     LIVE_LANE.subscribe()
 }
 
 /// Bring the watch to the verified truth. Cheap when nothing changed: the file-only incarnation
-/// ([`live_incarnation`], two small reads) already equals the published one, so the reconcile may call it on
-/// every `AlreadyServing` without a process probe per tick.
+/// ([`live_incarnation`], two small reads) agrees with the published one AND that engine's exit is awaited, so
+/// the reconcile may call it on every `AlreadyServing` without a process probe per tick.
 pub fn sync_live() {
-    if live_incarnation() == *LIVE_LANE.borrow() {
+    if LIVE_LANE.trusts(live_incarnation()) {
         return;
     }
     let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
@@ -298,20 +363,20 @@ pub fn sync_live() {
     sync_live_locked(&dir, &pidfile, &LIVE_LANE);
 }
 
-/// Publish the verified truth of `dir` + `pidfile` on `live`. The caller holds [`writes`].
-pub(crate) fn sync_live_locked(
-    dir: &Path,
-    pidfile: &Path,
-    live: &tokio::sync::watch::Sender<Option<super::engine_residency::EngineIncarnation>>,
-) {
+/// Publish the verified truth of `dir` + `pidfile` on `live`, arming the exit watch of a published engine. The
+/// caller holds [`writes`].
+pub(crate) fn sync_live_locked(dir: &Path, pidfile: &Path, live: &std::sync::Arc<LiveLane>) {
     let truth = verified_live_in(dir, pidfile);
-    live.send_if_modified(|current| {
+    live.published.send_if_modified(|current| {
         let changed = *current != truth;
         if changed {
             *current = truth;
         }
         changed
     });
+    if let Some(engine) = truth {
+        live.watch_exit(engine, dir, pidfile);
+    }
 }
 
 /// The live lane of `dir` + `pidfile`, verified against the OS: pidfile and live record agree, the record names
@@ -518,9 +583,17 @@ fn clear_live_records_in(dir: &Path) {
     }
 }
 
-/// Remove a lane's record. Idempotent. The caller holds [`writes`].
-fn remove_locked(dir: &Path, pid: u32) {
-    let _ = std::fs::remove_file(record_path(dir, pid));
+/// Delete `expected`'s record, only if the record at its pid is still that incarnation (pid, start time, port).
+/// The caller holds [`writes`]. Whether it was deleted.
+fn remove_locked(dir: &Path, expected: &LaneRecord) -> bool {
+    let path = record_path(dir, expected.pid);
+    let Ok(body) = std::fs::read_to_string(&path) else {
+        return false; // no record: nothing to remove
+    };
+    let Ok(found) = serde_json::from_str::<LaneRecord>(&body) else {
+        return false; // unparseable: the sweep owns garbage, never a teardown
+    };
+    found.incarnation() == expected.incarnation() && std::fs::remove_file(&path).is_ok()
 }
 
 /// Every lane record on disk, in no particular order.
