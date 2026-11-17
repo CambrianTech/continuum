@@ -2055,9 +2055,18 @@ projection of that one authority, never a mutable copy.
 5. **Simulator first** (section 7.0). Each module's invariants (no mind starved, budget never exceeded, no state
    lost, a learning step never visible half-done) are simulator assertions before code, and tonight's M5 logs
    become replay scenarios.
-6. **A module lands with its deletions.** The "Replaces" column is deleted in the same change. A new module beside
+6. **No guessing recovery** (Joel, 2026-11-17: "your error handling actually causes errors and timeouts. Same with
+   fallbacks... They all do the opposite of their intention. You'd be better off without"). No synthetic probe with a
+   guessed timeout may kill, restart, evict or reset anything; liveness is real progress (the engine's frames advancing
+   while work is queued, 4.13) and a stall is a typed fact to its owner, not a kill. No fallback path, no retry loop,
+   no client timeout on work that is merely slow: wait on its completion event. The receipt: the lane decode
+   heartbeat (`llama_server` `DECODE_SMOKE_TIMEOUT`, a 10 s guess that "killed healthy lanes all night", re-guessed
+   to 75 s) queues behind real prefills, and BigMama logged 13 lane kill-and-respawns in 106 minutes (#6056), each
+   restarting every mind. A rule a module cannot meet means the module is redesigned. Every timeout, retry, fallback
+   or self-heal a module adds states what it destroys on a false positive; if anything, it is not added.
+7. **A module lands with its deletions.** The "Replaces" column is deleted in the same change. A new module beside
    an old path is patchwork.
-7. **Measured on the live node before it is called done.** `ServingObserver`'s numbers before and after, the gate
+8. **Measured on the live node before it is called done.** `ServingObserver`'s numbers before and after, the gate
    of 4.11.9.
 
 **Order:** one order for 4.12 and 4.13, given in 4.13 ("Order"). Each step is one vertical change: the native contract
