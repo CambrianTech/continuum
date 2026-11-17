@@ -95,7 +95,10 @@ crate::action_command! {
             .await
             .map_err(|error| CommandError::Internal(error.to_string()))?;
         let request = read.map_err(refused)?;
-        let actual = continuum_capture::request_digest::request_sha256(&request).map_err(|source| refused(AdoptCaptureRefusal::Undigestable { cursor: params.cursor.clone(), source }))?;
+        let actual = match continuum_capture::request_digest::request_sha256(&request) {
+            Ok(actual) => actual,
+            Err(source) => return Err(refused(AdoptCaptureRefusal::Undigestable { cursor: params.cursor, source })),
+        };
         if actual != params.request_sha256 {
             return Err(refused(AdoptCaptureRefusal::Digest { cursor: params.cursor, expected: params.request_sha256, actual }));
         }

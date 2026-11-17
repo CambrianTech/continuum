@@ -69,6 +69,11 @@ pub(super) fn refused(call: &ToolCall, change: &ContractChange) -> Observation {
 #[cfg(test)]
 pub(super) fn holding_an_older(verb: &str) -> WorkingMemory {
     let memory = WorkingMemory::new(8);
+    // her live surface, as her faculty shares it: the gate reads each verb's identity from it
+    let offers = crate::cognition::persona_tools::native_offers();
+    let authorized = offers.iter().map(|offer| &offer.spec).cloned().collect();
+    let surface = crate::cognition::tool_surface::ToolSurface::build(offers, authorized, crate::ai::tool_dialect::to_wire_spec, |_| continuum_base::tool_contract::ContractRevision::FIRST);
+    memory.set_live_surface(std::sync::Arc::new(surface));
     let none: std::sync::Arc<[crate::ai::types::NativeToolSpec]> = Vec::new().into();
     memory.keep_custody(None, crate::cognition::hands_custody::HandsCustody::Held(crate::cognition::hands_custody::HeldHands {
         generation: 1,

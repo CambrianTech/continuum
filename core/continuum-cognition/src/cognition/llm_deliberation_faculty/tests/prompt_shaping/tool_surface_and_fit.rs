@@ -605,9 +605,10 @@ fn the_request_and_its_clone_carry_her_head_without_copying_it() {
 /// A deploy between two acts: her checkpoint written and read back by a new process, whose
 /// faculty is built on the restored memory with `surface` (`None`: the registry as it is).
 fn after_a_restart(wm: &WorkingMemory, surface: Option<crate::cognition::tool_surface::ToolSurface>) -> (Arc<WorkingMemory>, LlmDeliberationFaculty) {
-    let saved = serde_json::to_value(wm.snapshot()).expect("a checkpoint encodes");
+    // Text, never `serde_json::Value`: the view's element ids are u128, which a Value cannot hold.
+    let saved = serde_json::to_string(&wm.snapshot()).expect("a checkpoint encodes");
     let restored = Arc::new(WorkingMemory::new(8));
-    restored.restore(serde_json::from_value(saved).expect("its own checkpoint decodes"));
+    restored.restore(serde_json::from_str(&saved).expect("its own checkpoint decodes"));
     let mut faculty = asha_with_hands().with_working_memory(Arc::clone(&restored));
     if let Some(surface) = surface {
         faculty.surface = Arc::new(surface);

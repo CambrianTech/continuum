@@ -8,7 +8,7 @@ use crate::sdk_codegen::{Category, CommandError, NextMoves, NoMove, Refusal, Ref
 
 /// Why a persona's custody cannot be read on this node.
 #[derive(Debug, thiserror::Error)]
-pub enum CustodyReadRefusal {
+pub(crate) enum CustodyReadRefusal {
     #[error("no persona here answers to {reference}: {why}")]
     Unresolved { reference: String, why: String },
     #[error("persona {persona} has no mind assembled on this node")]
