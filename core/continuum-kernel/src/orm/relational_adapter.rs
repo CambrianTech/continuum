@@ -1,30 +1,24 @@
 //! StorageAdapter boundary for the schema-driven SeaORM provider.
+use super::storage_error::StorageError;
 use super::{
     adapter::{AdapterCapabilities, AdapterConfig, ClearAllResult, StorageAdapter},
     query::{QueryBuilder, StorageQuery},
     relational::RelationalStore,
-    types::{BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID},
+    seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Written},
+    types::{BatchOperation, BatchOutcome, CollectionSchema, CollectionStats, DataRecord, UUID},
 };
 use async_trait::async_trait;
-use serde_json::Value;
 
 pub struct SeaOrmAdapter {
     store: RelationalStore,
 }
 
-fn receipt<T>(result: Result<T, String>) -> StorageResult<T> {
-    match result {
-        Ok(value) => StorageResult::ok(value),
-        Err(error) => StorageResult::err(error),
-    }
-}
-
 impl SeaOrmAdapter {
     /// Open the file owned by a typed ORM store.
-    pub async fn open(path: &std::path::Path) -> Result<Self, String> {
+    pub async fn open(path: &std::path::Path) -> Result<Self, StorageError> {
         let connection_string = path
             .to_str()
-            .ok_or_else(|| format!("database path {} is not valid UTF-8", path.display()))?
+            .ok_or(StorageError::Config(super::storage_error::ConfigFault::PathText))?
             .to_owned();
         Self::connect(AdapterConfig {
             connection_string,
@@ -33,9 +27,9 @@ impl SeaOrmAdapter {
         .await
     }
 
-    pub async fn connect(config: AdapterConfig) -> Result<Self, String> {
+    pub async fn connect(config: AdapterConfig) -> Result<Self, StorageError> {
         Ok(Self {
-            store: RelationalStore::open(config).await?,
+            store: RelationalStore::open(&config).await?,
         })
     }
 }
@@ -56,163 +50,107 @@ impl StorageAdapter for SeaOrmAdapter {
             max_record_size: 1_000_000_000,
         }
     }
-    async fn close(&mut self) -> Result<(), String> {
+    async fn close(&mut self) -> Result<(), StorageError> {
         let _guard = self.store.writer_gate.lock().await;
+        Ok(self.store.db.clone().close().await?)
+    }
+    async fn create(&self, record: DataRecord) -> Result<DataRecord, StorageError> {
+        self.store.create(record).await
+    }
+    async fn read(&self, row: RowRef<'_>) -> Result<DataRecord, StorageError> {
         self.store
-            .db
-            .clone()
-            .close()
-            .await
-            .map_err(|e| e.to_string())
+            .read_on(&self.store.db, row.collection, row.id)
+            .await?
+            .ok_or_else(|| StorageError::NotFound { collection: row.collection.to_owned().into(), id: row.id.clone() })
     }
-    async fn create(&self, record: DataRecord) -> StorageResult<DataRecord> {
-        receipt(self.store.create(record).await)
-    }
-    async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord> {
-        receipt(
-            self.store
-                .read_on(&self.store.db, collection, id)
-                .await
-                .and_then(|row| row.ok_or_else(|| format!("Record not found: {id}"))),
-        )
-    }
-    async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
-        receipt(self.store.query(query).await)
+    async fn query(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
+        self.store.query(query).await
     }
     async fn scan(
         &self,
-        query: StorageQuery,
-    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String> {
+        query: &StorageQuery,
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, StorageError>>, StorageError> {
         use futures::StreamExt;
         use sea_orm::StreamTrait;
         let schema = self.store.schema(&query.collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
-        let statement = super::relational_query::select(
-            &schema,
-            &query,
-            super::relational_query::Selection::Stream,
-        )?;
-        let rows = self
+        let statement =
+            super::relational_query::select(&schema, query, super::relational_query::Selection::Stream)?;
+        let decoder = super::relational_codec::RowDecoder::new(schema, &[]);
+        let rows = self.store.db.stream(sea_orm::DbBackend::Sqlite.build(&statement)).await?;
+        Ok(rows.map(move |row| row.map_err(StorageError::from).and_then(|row| decoder.decode(row))).boxed())
+    }
+    async fn query_with_join(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
+        self.store.query_joined(query).await
+    }
+    async fn count(&self, query: &StorageQuery) -> Result<usize, StorageError> {
+        self.store.count(query).await
+    }
+    async fn update(&self, update: Update<'_>) -> Result<DataRecord, StorageError> {
+        let row = super::types::RowKey { collection: update.row.collection.to_owned(), id: update.row.id.to_owned() };
+        self.store.update(row, update.data, update.versioning).await
+    }
+    async fn delete(&self, row: RowRef<'_>) -> Result<Deleted, StorageError> {
+        let removed = self
             .store
-            .db
-            .stream(sea_orm::DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(rows
-            .map(move |row| {
-                row.map_err(|error| error.to_string())
-                    .and_then(|row| decoder.decode(row))
-            })
-            .boxed())
+            .delete_matching(QueryBuilder::new(row.collection).filter_eq("id", row.id.as_str()).build())
+            .await?;
+        Ok(if removed == 0 { Deleted::Absent } else { Deleted::Removed })
     }
-    async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>> {
-        receipt(self.store.query_joined(query).await)
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> Result<Written, StorageError> {
+        let written = self.store.upsert_monotonic(record, field.to_owned()).await?;
+        Ok(if written { Written::Written } else { Written::Kept })
     }
-    async fn count(&self, query: StorageQuery) -> StorageResult<usize> {
-        receipt(self.store.count(query).await)
+    async fn delete_matching(&self, query: StorageQuery) -> Result<usize, StorageError> {
+        self.store.delete_matching(query).await
     }
-    async fn update(
-        &self,
-        collection: &str,
-        id: &UUID,
-        data: Value,
-        increment: bool,
-    ) -> StorageResult<DataRecord> {
-        receipt(
-            self.store
-                .update(collection.into(), id.clone(), data, increment)
-                .await,
-        )
-    }
-    async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool> {
-        receipt(
-            self.store
-                .delete_matching(
-                    QueryBuilder::new(collection)
-                        .filter_eq("id", id.clone())
-                        .build(),
-                )
-                .await
-                .map(|n| n != 0),
-        )
-    }
-    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool> {
-        receipt(self.store.upsert_monotonic(record, field.into()).await)
-    }
-    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize> {
-        receipt(self.store.delete_matching(query).await)
-    }
-    async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>> {
-        receipt(self.store.batch(operations).await)
+    async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, StorageError> {
+        self.store.batch(operations).await
     }
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
-        self.store
-            .revision(super::relational_sequence::Domain::Append, collection)
+        self.store.revision(super::relational_sequence::Domain::Append, collection)
     }
     fn native_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64> {
-        self.store
-            .revision(super::relational_sequence::Domain::Native, collection)
+        self.store.revision(super::relational_sequence::Domain::Native, collection)
     }
-    async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool> {
-        receipt(self.store.ensure(schema).await.map(|()| true))
+    async fn ensure_schema(&self, schema: &CollectionSchema) -> Result<(), StorageError> {
+        self.store.ensure(schema).await
     }
-    fn collection_schema(&self, collection: &str) -> StorageResult<CollectionSchema> {
-        receipt(
-            self.store
-                .schema(collection)
-                .map(|schema| schema.as_ref().clone()),
-        )
+    fn collection_schema(&self, collection: &str) -> Result<std::sync::Arc<CollectionSchema>, StorageError> {
+        self.store.schema(collection)
     }
-    async fn list_collections(&self) -> StorageResult<Vec<String>> {
-        StorageResult::ok(self.store.collections())
+    async fn list_collections(&self) -> Result<Vec<String>, StorageError> {
+        Ok(self.store.collections())
     }
-    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String> {
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, StorageError> {
         self.store.binary_snapshot(collection).await
     }
     async fn create_binary(
         &self,
         record: DataRecord,
         payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
-    ) -> StorageResult<String> {
-        receipt(self.store.create_binary(record, payloads).await)
+    ) -> Result<UUID, StorageError> {
+        self.store.create_binary(record, payloads).await
     }
-    async fn update_binary(
-        &self,
-        collection: &str,
-        id: &str,
-        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
-        condition: super::binary::BinaryWriteCondition,
-    ) -> StorageResult<bool> {
-        receipt(
-            self.store
-                .update_binary(collection.to_owned(), id.to_owned(), payloads, condition)
-                .await,
-        )
+    async fn update_binary(&self, write: BinaryWrite<'_>) -> Result<BinaryWritten, StorageError> {
+        let written = self
+            .store
+            .update_binary(write)
+            .await?;
+        Ok(if written { BinaryWritten::Written } else { BinaryWritten::Unchanged })
     }
-
-    async fn numeric_array_stats(
-        &self,
-        collection: &str,
-        field: &str,
-    ) -> StorageResult<super::adapter::NumericArrayStats> {
-        receipt(self.store.numeric_array_stats(collection, field).await)
+    async fn numeric_array_stats(&self, field: FieldRef<'_>) -> Result<super::adapter::NumericArrayStats, StorageError> {
+        self.store.numeric_array_stats(field.collection, field.field).await
     }
-
-    async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats> {
-        receipt(self.store.stats(collection).await)
+    async fn collection_stats(&self, collection: &str) -> Result<CollectionStats, StorageError> {
+        self.store.stats(collection).await
     }
-    async fn truncate(&self, collection: &str) -> StorageResult<bool> {
-        receipt(
-            self.store
-                .delete_matching(QueryBuilder::new(collection).build())
-                .await
-                .map(|_| true),
-        )
+    async fn truncate(&self, collection: &str) -> Result<usize, StorageError> {
+        self.store.delete_matching(QueryBuilder::new(collection).build()).await
     }
-    async fn clear_all(&self) -> StorageResult<ClearAllResult> {
-        receipt(self.store.clear().await)
+    async fn clear_all(&self) -> Result<ClearAllResult, StorageError> {
+        self.store.clear().await
     }
-    async fn cleanup(&self) -> Result<(), String> {
+    async fn cleanup(&self) -> Result<(), StorageError> {
         self.store.optimize().await
     }
 }

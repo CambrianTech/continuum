@@ -425,7 +425,9 @@ impl OrmLoader {
         &self,
     ) -> Result<(Vec<Engram>, Vec<(Uuid, RecallMetadata)>, Vec<(Uuid, Uuid)>), OrmStoreError> {
         use futures::TryStreamExt;
+        // bounded: this persona's own engram corpus, which the admission index holds resident by design; streamed, never a second copy
         let engrams = self.engram_store.scan().await?.map_ok(|(_, engram)| engram).try_collect().await?;
+        // bounded: one recall-metadata row per engram of the corpus above, streamed
         let mut rows = self.metadata_store.scan().await?;
         let mut metadata = Vec::new();
         let mut row_id_pairs = Vec::new();

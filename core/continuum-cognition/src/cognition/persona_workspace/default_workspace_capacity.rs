@@ -382,7 +382,7 @@ pub(super) fn assemble_workspace_cycle(
     // so a message is embedded ONCE and shared across every persona (never 14× for
     // 14 personas). `None` (harnesses) falls back to the lexical bootstrap, which
     // works on any machine with no model. Relevance > recency either way.
-    let embedder = cfg.embedder.unwrap_or_else(|| {
+    let embedder = cfg.embedder.unwrap_or_else(|| { // unwrap_or_else: a host with no model embeds lexically, the documented bootstrap
         Arc::new(CachingEmbeddingProvider::new(Arc::new(
             LexicalEmbedder::new(),
         )))

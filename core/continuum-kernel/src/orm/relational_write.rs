@@ -1,4 +1,5 @@
 //! Mutation statements use the same declared columns and codecs as reads.
+use super::storage_error::{QueryFault, Shape, StorageError};
 use super::{
     adapter::naming,
     query::{QueryBuilder, StorageQuery},
@@ -8,15 +9,23 @@ use sea_orm::sea_query::{Alias, Expr, OnConflict, Query};
 use sea_orm::{ConnectionTrait, DbBackend};
 use serde_json::Value;
 
+
+/// Encoded column values for one row, and whether the write advances its version.
+pub(super) struct FieldWrite<'a, I> {
+    pub(super) row: super::seam::RowRef<'a>,
+    pub(super) fields: I,
+    pub(super) versioning: super::seam::Versioning,
+}
+
 impl super::relational::RelationalStore {
     pub async fn read_on<C: ConnectionTrait>(
         &self,
         connection: &C,
         collection: &str,
         id: &str,
-    ) -> Result<Option<DataRecord>, String> {
+    ) -> Result<Option<DataRecord>, StorageError> {
         let schema = self.schema(collection)?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &[]);
+        let decoder = super::relational_codec::RowDecoder::new(schema.as_ref(), &[]);
         let query = QueryBuilder::new(collection)
             .filter_eq("id", id)
             .limit(1)
@@ -28,8 +37,7 @@ impl super::relational::RelationalStore {
         )?;
         connection
             .query_one(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .map(|row| decoder.decode(row))
             .transpose()
     }
@@ -37,61 +45,51 @@ impl super::relational::RelationalStore {
     pub async fn update_on<C: ConnectionTrait>(
         &self,
         connection: &C,
-        collection: &str,
-        id: &str,
+        row: super::seam::RowRef<'_>,
         data: Value,
-        increment: bool,
-    ) -> Result<bool, String> {
+        versioning: super::seam::Versioning,
+    ) -> Result<bool, StorageError> {
+        let collection = row.collection;
         let schema = self.schema(collection)?;
 
         let mut fields = Vec::new();
-        for (name, value) in data.as_object().ok_or("update requires an object")? {
+        for (name, value) in data.as_object().ok_or_else(|| StorageError::Malformed { collection: collection.to_string().into(), expected: Shape::Object })? {
             if super::types::METADATA_KEYS.contains(&name.as_str()) {
-                return Err(format!("metadata {name} is owned by storage"));
+                return Err(StorageError::StorageOwned { field: name.clone().into() });
             }
             let field = schema
                 .fields
                 .iter()
                 .find(|f| f.name == *name)
-                .ok_or_else(|| format!("undeclared update field {collection}.{name}"))?;
+                .ok_or_else(|| StorageError::Undeclared { collection: collection.to_string().into(), field: name.clone().into() })?;
             fields.push((
                 Alias::new(naming::to_snake_case(name)),
                 super::relational_codec::encode(field, value)?,
             ));
         }
-        self.update_fields_on(connection, collection, id, fields, increment)
-            .await
+        self.update_fields_on(connection, FieldWrite { row, fields, versioning }).await
     }
 
     /// Shared metadata/custody mutation for already schema-validated typed bindings.
-    pub(super) async fn update_fields_on<C: ConnectionTrait>(
-        &self,
-        connection: &C,
-        collection: &str,
-        id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
-        increment: bool,
-    ) -> Result<bool, String> {
-        self.update_fields_matching_on(
-            connection,
-            collection,
-            id,
-            fields,
-            increment,
-            sea_orm::Condition::all(),
-        )
-        .await
+    pub(super) async fn update_fields_on<C, I>(&self, connection: &C, write: FieldWrite<'_, I>) -> Result<bool, StorageError>
+    where
+        C: ConnectionTrait,
+        I: IntoIterator<Item = (Alias, sea_orm::sea_query::Value)>,
+    {
+        self.update_fields_matching_on(connection, write, sea_orm::Condition::all()).await
     }
 
-    pub(super) async fn update_fields_matching_on<C: ConnectionTrait>(
+    pub(super) async fn update_fields_matching_on<C, I>(
         &self,
         connection: &C,
-        collection: &str,
-        id: &str,
-        fields: Vec<(Alias, sea_orm::sea_query::Value)>,
-        increment: bool,
+        write: FieldWrite<'_, I>,
         condition: sea_orm::Condition,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, StorageError>
+    where
+        C: ConnectionTrait,
+        I: IntoIterator<Item = (Alias, sea_orm::sea_query::Value)>,
+    {
+        let FieldWrite { row: super::seam::RowRef { collection, id }, fields, versioning } = write;
         let mut statement = Query::update();
         statement
             .table(Alias::new(naming::to_table_name(collection)))
@@ -103,7 +101,7 @@ impl super::relational::RelationalStore {
                     .map(|(column, value)| (column, Expr::val(value).into())),
             );
         statement.value(Alias::new("updated_at"), chrono::Utc::now().to_rfc3339());
-        if increment {
+        if versioning == super::seam::Versioning::Increment {
             statement.value(
                 Alias::new("version"),
                 Expr::col(Alias::new("version")).add(1),
@@ -111,8 +109,7 @@ impl super::relational::RelationalStore {
         }
         Ok(connection
             .execute(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .rows_affected()
             != 0)
     }
@@ -121,9 +118,9 @@ impl super::relational::RelationalStore {
         &self,
         connection: &sea_orm::DatabaseTransaction,
         query: StorageQuery,
-    ) -> Result<super::relational_transaction::Deletion, String> {
+    ) -> Result<super::relational_transaction::Deletion, StorageError> {
         if query.joins.is_some() || query.limit.is_some() || query.offset.is_some() {
-            return Err("delete_matching accepts a predicate, not joins or pagination".into());
+            return Err(StorageError::Unqueryable(QueryFault::DeletePredicate));
         }
         let schema = self.schema(&query.collection)?;
         let revisions = self.native_deleting_on(connection, &schema, &query).await?;
@@ -133,11 +130,10 @@ impl super::relational::RelationalStore {
             .to_owned();
         let count = connection
             .execute(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .rows_affected()
             .try_into()
-            .map_err(|_| "affected row count exceeds usize".to_owned())?;
+            .map_err(|_| StorageError::Overflow { what: "an affected row count" })?;
         Ok(super::relational_transaction::Deletion { count, revisions })
     }
 
@@ -145,13 +141,12 @@ impl super::relational::RelationalStore {
         &self,
         connection: &C,
         record: &DataRecord,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, StorageError> {
         let mut statement = self.insert_statement(record)?;
         statement.on_conflict(OnConflict::column(Alias::new("id")).do_nothing().to_owned());
         Ok(connection
             .execute(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .rows_affected()
             != 0)
     }
@@ -161,7 +156,7 @@ impl super::relational::RelationalStore {
         connection: &C,
         record: &DataRecord,
         field: &str,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, StorageError> {
         let schema = self.schema(&record.collection)?;
         let compare = super::relational_query::column(&schema, field)?;
         if !record
@@ -169,7 +164,7 @@ impl super::relational::RelationalStore {
             .as_object()
             .is_some_and(|data| data.contains_key(field))
         {
-            return Err(format!("record omitted monotonic field {field}"));
+            return Err(StorageError::Required { collection: record.collection.clone().into(), field: field.to_string().into() });
         }
         let table = Alias::new(naming::to_table_name(&record.collection));
         let mut conflict = OnConflict::column(Alias::new("id"));
@@ -191,8 +186,7 @@ impl super::relational::RelationalStore {
         statement.on_conflict(conflict);
         Ok(connection
             .execute(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .rows_affected()
             != 0)
     }

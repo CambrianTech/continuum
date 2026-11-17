@@ -197,12 +197,11 @@ impl ChatModule {
             state: PublicationState::Pending,
         };
         let data = serde_json::to_value(&obligation).map_err(|e| format!("publication: {e}"))?; // storage boundary: the adapter's row format
-        Ok(crate::orm::types::BatchOperation {
-            operation_type: crate::orm::types::BatchOperationType::Create,
+        Ok(crate::orm::types::BatchOperation::Create(crate::orm::types::RowWrite {
             collection: <PublicationObligation as crate::orm::OrmEntity>::COLLECTION.to_string(),
-            id: Some(message_id.to_string()),
-            data: Some(data),
-        })
+            id: message_id.to_string(),
+            data,
+        }))
     }
 
     /// The fallback path's custody: the line is already stored (its sender's own publish failed), so

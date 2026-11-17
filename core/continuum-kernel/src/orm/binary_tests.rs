@@ -62,9 +62,8 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
         })
         .await?,
     );
-    real.ensure_schema(RequiredNativeRow::collection_schema())
-        .await
-        .into_result()?;
+    real.ensure_schema(&RequiredNativeRow::collection_schema())
+        .await?;
     let gated = Arc::new(super::gated_adapter::GatedAdapter::new(real.clone()));
     let mut native_changes = real.native_revision(RequiredNativeRow::COLLECTION);
     let append_changes = real.sequence_revision(RequiredNativeRow::COLLECTION);
@@ -98,18 +97,16 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
                         ]),
                     )
                     .await
-                    .into_result()
                     .map(|_| ())
             } else {
+                let row_id = uuid::Uuid::from_u128(1).to_string();
                 caller
-                    .update_binary(
-                        RequiredNativeRow::COLLECTION,
-                        &uuid::Uuid::from_u128(1).to_string(),
-                        std::collections::BTreeMap::from([("payload".into(), payload)]),
-                        BinaryWriteCondition::Replace,
-                    )
+                    .update_binary(crate::orm::seam::BinaryWrite {
+                        row: crate::orm::seam::RowRef { collection: RequiredNativeRow::COLLECTION, id: &row_id },
+                        payloads: std::collections::BTreeMap::from([("payload".into(), payload)]),
+                        condition: BinaryWriteCondition::Replace,
+                    })
                     .await
-                    .into_result()
                     .map(|_| ())
             }
         });
@@ -118,9 +115,8 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
         assert!(request.await.is_err_and(|error| error.is_cancelled()));
         // A pending write must not block an independent metadata reader.
         let count = real
-            .count(QueryBuilder::new(RequiredNativeRow::COLLECTION).build())
-            .await
-            .into_result()?;
+            .count(&QueryBuilder::new(RequiredNativeRow::COLLECTION).build())
+            .await?;
         assert_eq!(count, usize::from(!creating));
         gate.release.notify_one();
         gate.done.await?;
@@ -174,7 +170,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
     drop(real);
     let reopened = open(path).await?;
     reopened
-        .ensure(RequiredNativeRow::collection_schema())
+        .ensure(&RequiredNativeRow::collection_schema())
         .await?;
     assert_eq!(
         *reopened
@@ -185,7 +181,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
             .borrow(),
         2
     );
-    let page = read_page(&reopened, RequiredNativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: RequiredNativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(
         page[0]
             .value
@@ -198,7 +194,7 @@ async fn native_write_fault_replay_keeps_bytes_after_request_cancellation(
 }
 
 #[test]
-fn native_payload_moves_allocation_and_checks_only_descriptor() -> Result<(), String> {
+fn native_payload_moves_allocation_and_checks_only_descriptor() -> Result<(), Box<dyn std::error::Error>> {
     // Arbitrary bit patterns must survive; storage is not a numeric validator.
     let bytes = vec![0xff, 0x7f, 0x00, 0x80];
     let pointer = bytes.as_ptr();
@@ -216,7 +212,7 @@ fn native_payload_moves_allocation_and_checks_only_descriptor() -> Result<(), St
 }
 
 #[test]
-fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<(), String> {
+fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<(), Box<dyn std::error::Error>> {
     for (bits, bytes) in [(0, 0), (1, 1), (8, 1), (9, 2), (768, 96)] {
         assert_eq!(descriptor(ElementType::Bit, vec![bits]).byte_len()?, bytes);
     }
@@ -263,18 +259,18 @@ fn packed_bits_and_quantization_headers_are_exact_and_fail_closed() -> Result<()
     Ok(())
 }
 
-async fn open(path: &str) -> Result<RelationalStore, String> {
-    let store = RelationalStore::open(AdapterConfig {
+async fn open(path: &str) -> Result<RelationalStore, Box<dyn std::error::Error>> {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.into(),
         ..Default::default()
     })
     .await?;
-    store.ensure(NativeRow::collection_schema()).await?;
+    store.ensure(&NativeRow::collection_schema()).await?;
     Ok(store)
 }
 
 #[tokio::test]
-async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<(), String> {
+async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<(), Box<dyn std::error::Error>> {
     let store = open(":memory:").await?;
     store
         .create(DataRecord {
@@ -290,12 +286,7 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
     let delayed = BinaryValue::new(descriptor(ElementType::F32, vec![2]), vec![0; 8])?;
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(1).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), winner.clone())]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), winner.clone())]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     let metadata_query = || {
@@ -305,35 +296,25 @@ async fn delayed_backfill_cannot_replace_a_newer_producer_payload() -> Result<()
             .limit(1)
             .build()
     };
-    let before = store.query(metadata_query()).await?;
+    let before = store.query(&metadata_query()).await?;
     let native_changes = store.revision(
         super::relational_sequence::Domain::Native,
         NativeRow::COLLECTION,
     );
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(1).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), delayed)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), delayed)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
-    let after = store.query(metadata_query()).await?;
-    assert!(!native_changes.has_changed().map_err(|e| e.to_string())?);
+    let after = store.query(&metadata_query()).await?;
+    assert!(!native_changes.has_changed()?);
     assert_eq!(before[0].metadata.version, after[0].metadata.version);
     assert_eq!(before[0].metadata.updated_at, after[0].metadata.updated_at);
-    let page = read_page(&store, NativeRow::COLLECTION, "payload", None, 1).await?;
+    let page = read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 1).await?;
     assert_eq!(page[0].value.as_ref(), Some(&winner));
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(2).to_string(),
-                std::collections::BTreeMap::from([("payload".into(), winner)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(2).to_string() }, payloads: std::collections::BTreeMap::from([("payload".into(), winner)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     Ok(())
@@ -347,12 +328,11 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     let path = path.to_str().ok_or("non-UTF8 test path")?;
     let store = open(path).await?;
     let operations = (0..10003)
-        .map(|n| types::BatchOperation {
-            operation_type: types::BatchOperationType::Create,
+        .map(|n| types::BatchOperation::Create(types::RowWrite {
             collection: NativeRow::COLLECTION.into(),
-            id: Some(uuid::Uuid::from_u128(n as u128).to_string()),
-            data: Some(json!({"payload":null})),
-        })
+            id: uuid::Uuid::from_u128(n as u128).to_string(),
+            data: json!({"payload":null}),
+        }))
         .collect();
     store.batch(operations).await?;
     let variants = [
@@ -365,18 +345,13 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     ];
     for (n, (kind, bytes)) in variants.iter().enumerate() {
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                uuid::Uuid::from_u128(n as u128).to_string(),
-                std::collections::BTreeMap::from([(
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(n as u128).to_string() }, payloads: std::collections::BTreeMap::from([(
                     "payload".into(),
                     BinaryValue::new(descriptor(*kind, vec![2]), bytes.clone())?,
-                )]),
-                BinaryWriteCondition::Replace,
-            )
+                )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
-    assert!(read_page(&store, NativeRow::COLLECTION, "payload", None, 0)
+    assert!(read_page(&store, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, None, 0)
         .await
         .is_err());
     let stats = store
@@ -399,8 +374,8 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
             .select(vec!["id".into()])
             .limit(2)
             .build();
-        assert_eq!(store.count(missing.clone()).await?, expected);
-        let rows = store.query(missing).await?;
+        assert_eq!(store.count(&missing).await?, expected);
+        let rows = store.query(&missing).await?;
         assert_eq!(rows.len(), expected.min(2));
         assert!(rows.iter().all(|row| row.data.get("payload").is_none()));
     }
@@ -408,10 +383,9 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     assert!(store
         .update_on(
             &store.db,
-            NativeRow::COLLECTION,
-            &uuid::Uuid::nil().to_string(),
+            crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::nil().to_string() },
             json!({"payload":null}),
-            true
+            crate::orm::seam::Versioning::Increment,
         )
         .await
         .is_err());
@@ -419,7 +393,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
     let reopened = open(path).await?;
     let mut cursor = None;
     for (n, (kind, bytes)) in variants.iter().enumerate() {
-        let page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+        let page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
         assert_eq!(page.len(), 1);
         assert_eq!(page[0].id, uuid::Uuid::from_u128(n as u128).to_string());
         let value = page[0].value.as_ref().ok_or("missing native payload")?;
@@ -427,7 +401,7 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
         assert_eq!(value.descriptor(), &descriptor(*kind, vec![2]));
         cursor = Some(page[0].id.clone());
     }
-    let null_page = read_page(&reopened, NativeRow::COLLECTION, "payload", cursor, 1).await?;
+    let null_page = read_page(&reopened, crate::orm::seam::FieldRef { collection: NativeRow::COLLECTION, field: "payload" }, cursor, 1).await?;
     assert!(null_page.is_empty());
     Ok(())
 }
@@ -440,11 +414,11 @@ struct TestRecord {
 }
 async fn read_page(
     store: &RelationalStore,
-    collection: &str,
-    field: &str,
+    column: crate::orm::seam::FieldRef<'_>,
     after: Option<String>,
     limit: usize,
-) -> Result<Vec<TestRecord>, String> {
+) -> Result<Vec<TestRecord>, Box<dyn std::error::Error>> {
+    let crate::orm::seam::FieldRef { collection, field } = column;
     let mut bytes = Vec::new();
     let mut ids = Vec::new();
     let snapshot = store.binary_snapshot(collection).await?;
@@ -455,7 +429,7 @@ async fn read_page(
                 after: after
                     .map(|id| uuid::Uuid::parse_str(&id))
                     .transpose()
-                    .map_err(|e| e.to_string())?,
+                    ?,
                 limit: std::num::NonZeroUsize::new(limit)
                     .ok_or("test page size must be positive")?,
             },
@@ -481,7 +455,7 @@ async fn read_page(
 
 #[tokio::test]
 async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomically(
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let store = open(":memory:").await?;
     // More empty rows than the requested page: filtering must happen before LIMIT.
     for id in [0, 1, 2] {
@@ -559,7 +533,7 @@ async fn bulk_native_page_reuses_capacity_and_refuses_mixed_descriptors_atomical
 }
 #[tokio::test]
 async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending(
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
     use sea_orm::ConnectionTrait;
     let store = open(":memory:").await?;
     let value = || BinaryValue::new(descriptor(ElementType::I8, vec![2]), vec![1, 2]);
@@ -600,8 +574,7 @@ async fn native_identity_refuses_aliases_and_corrupt_late_rows_without_appending
             Box::pin(async move {
                 transaction
                     .execute(sea_orm::DbBackend::Sqlite.build(&statement))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
                 Ok(())
             })
         })
@@ -674,12 +647,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     assert!(!revision.deleted);
     assert!(
         !store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::IfAbsent
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     assert_eq!(
@@ -692,12 +660,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
@@ -709,13 +672,13 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
         2
     );
     let failed_id = id.clone();
-    let failed: Result<(), String> = store
+    let failed: Result<(), crate::orm::StorageError> = store
         .write(move |store, transaction| {
             Box::pin(async move {
                 store
                     .native_changed_on(transaction, NativeRow::COLLECTION, &failed_id)
                     .await?;
-                Err("injected failure after revision write".into())
+                Err(crate::orm::StorageError::Corrupt { what: "injected failure after revision write" })
             })
         })
         .await;
@@ -748,12 +711,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(
-                NativeRow::COLLECTION.into(),
-                id.clone(),
-                std::collections::BTreeMap::from([("payload".into(), payload()?)]),
-                BinaryWriteCondition::Replace
-            )
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
@@ -767,7 +725,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     Ok(())
 }
 #[tokio::test]
-async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result<(), String> {
+async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result<(), Box<dyn std::error::Error>> {
     use super::relational_sequence::{next_on, Domain};
     let store = open(":memory:").await?;
     assert_eq!(
@@ -791,7 +749,7 @@ async fn revision_counter_exhaustion_refuses_without_float_promotion() -> Result
     ))
     .one(&store.db)
     .await
-    .map_err(|e| e.to_string())?
+    ?
     .ok_or("missing maximum head")?;
     assert_eq!(persisted.high, i64::MAX);
     Ok(())
@@ -822,21 +780,15 @@ async fn native_delete_batch_clear_and_recreate_keep_transactional_tombstones(
             )
             .await?;
     }
-    let delete = |n| types::BatchOperation {
-        operation_type: types::BatchOperationType::Delete,
-        collection: NativeRow::COLLECTION.into(),
-        id: Some(id(n)),
-        data: None,
-    };
+    let delete = |n| types::BatchOperation::Delete(types::RowKey { collection: NativeRow::COLLECTION.into(), id: id(n) });
     let failed = store
         .batch(vec![
             delete(1),
-            types::BatchOperation {
-                operation_type: types::BatchOperationType::Create,
+            types::BatchOperation::Create(types::RowWrite {
                 collection: NativeRow::COLLECTION.into(),
-                id: Some(id(2)),
-                data: Some(json!({"payload": null})),
-            },
+                id: id(2),
+                data: json!({"payload": null}),
+            }),
         ])
         .await;
     assert!(failed.is_err());
@@ -849,7 +801,7 @@ async fn native_delete_batch_clear_and_recreate_keep_transactional_tombstones(
     assert_eq!(receipt.revision, 1);
     assert_eq!(
         store
-            .count(QueryBuilder::new(NativeRow::COLLECTION).build())
+            .count(&QueryBuilder::new(NativeRow::COLLECTION).build())
             .await?,
         3
     );

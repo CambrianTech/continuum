@@ -3,7 +3,7 @@
 mod migration;
 
 #[tokio::main]
-async fn main() -> Result<(), String> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = std::env::args_os().skip(1);
     let path = args.next().ok_or(
         "usage: migrate-training-progress OFFLINE_DATABASE [--apply-historical-unstarted]",
@@ -21,7 +21,7 @@ async fn main() -> Result<(), String> {
     let receipt = migration::run(std::path::Path::new(&path), apply).await?;
     println!(
         "{}",
-        serde_json::to_string(&receipt).map_err(|error| error.to_string())?
+        serde_json::to_string(&receipt)? // stdout: the migration receipt this CLI prints for its operator
     );
     Ok(())
 }

@@ -51,27 +51,22 @@ use uuid::Uuid;
 use crate::orm::adapter::StorageAdapter;
 use crate::orm::entity::OrmEntity;
 use crate::orm::query::{QueryBuilder, StorageQuery};
-use crate::orm::types::{BatchOperation, BatchOperationType, DataRecord, RecordMetadata, SequenceSpec, Sequenced, StorageResult};
+use crate::orm::seam::{Deleted, RowRef, Update, Versioning, Written};
+use crate::orm::storage_error::StorageError;
+use crate::orm::types::{Appended, BatchOperation, BatchOutcome, DataRecord, RecordMetadata, RowWrite, SequenceSpec};
 
 /// Typed failure modes for OrmStore operations. Per [[no-fallbacks-
 /// ever]] + the typed-error pattern: every failure mode is named so
 /// callers pattern-match, never swallow.
 #[derive(Debug, thiserror::Error)]
 pub enum OrmStoreError {
-    /// `adapter.ensure_schema` failed on construction. The underlying
-    /// reason is wrapped from the adapter's error string.
-    #[error("schema ensure failed for collection {collection}: {detail}")]
-    SchemaFailed { collection: String, detail: String },
-
-    /// An adapter CRUD call returned `success: false`. We propagate
-    /// the adapter's error verbatim — diagnosing the underlying
-    /// (sqlite vs grid-replicated) failure is the
-    /// adapter's responsibility, not ours.
-    #[error("adapter {operation} failed for collection {collection}: {detail}")]
-    AdapterFailed {
+    /// The adapter refused or failed the operation; the source says why, as a variant.
+    #[error("{operation} on {collection}: {source}")]
+    Storage {
         operation: &'static str,
-        collection: String,
-        detail: String,
+        collection: &'static str,
+        #[source]
+        source: StorageError,
     },
 
     /// Entity → JSON serialization failed. Shouldn't happen if the
@@ -122,16 +117,7 @@ where
     /// is a no-op at the adapter layer.
     pub async fn new(adapter: Arc<dyn StorageAdapter>) -> Result<Self, OrmStoreError> {
         let schema = T::collection_schema();
-        let result = adapter.ensure_schema(schema).await;
-        unwrap_storage(
-            result,
-            "ensure_schema",
-            T::COLLECTION,
-            OrmStoreError::SchemaFailed {
-                collection: T::COLLECTION.to_string(),
-                detail: String::new(),
-            },
-        )?;
+        adapter.ensure_schema(&schema).await.map_err(failed::<T>("ensure_schema"))?;
         Ok(Self {
             adapter,
             _marker: PhantomData,
@@ -154,23 +140,40 @@ where
             data,
             metadata: RecordMetadata::default(),
         };
-        let result = self.adapter.create(record).await;
-        unwrap_adapter(result, "create", T::COLLECTION)?;
+        self.adapter.create(record).await.map_err(failed::<T>("create"))?;
+        Ok(())
+    }
+
+    /// Persist an entity and its native fields in the same committing operation.
+    /// Payload ownership moves to storage; entity fields are serialized only at this boundary.
+    pub async fn save_native(&self, write: NativeEntityWrite<'_, T>) -> Result<(), OrmStoreError> {
+        let record = DataRecord {
+            id: write.id.to_string(),
+            collection: T::COLLECTION.to_owned(),
+            data: row_data(write.entity)?,
+            metadata: RecordMetadata::default(),
+        };
+        if write.payloads.is_empty() {
+            self.adapter.create(record).await.map_err(failed::<T>("create"))?;
+        } else {
+            self.adapter.create_binary(record, write.payloads).await.map_err(failed::<T>("create_binary"))?;
+        }
         Ok(())
     }
 
     /// Count matching entities in the database without decoding their bodies.
     pub async fn count(&self) -> Result<usize, OrmStoreError> {
-        unwrap_adapter(self.adapter.count(QueryBuilder::new(T::COLLECTION).build()).await, "count", T::COLLECTION)
+        // bounded: a count returns one number and decodes no rows
+        self.adapter.count(&QueryBuilder::new(T::COLLECTION).build()).await.map_err(failed::<T>("count"))
     }
 
     /// Stream boot replay in stable row order without collecting an intermediate result set.
     pub async fn scan(&self) -> Result<futures::stream::BoxStream<'_, Result<(Uuid, T), OrmStoreError>>, OrmStoreError> {
         use futures::StreamExt;
-        let rows = self.adapter.scan(QueryBuilder::new(T::COLLECTION).build()).await
-            .map_err(|detail| OrmStoreError::AdapterFailed { operation: "scan", collection: T::COLLECTION.into(), detail })?;
+        // bounded: a stream of one row at a time with no result set; each caller states what bounds its table
+        let rows = self.adapter.scan(&QueryBuilder::new(T::COLLECTION).build()).await.map_err(failed::<T>("scan"))?;
         Ok(rows.map(|row| {
-            let row = row.map_err(|detail| OrmStoreError::AdapterFailed { operation: "scan", collection: T::COLLECTION.into(), detail })?;
+            let row = row.map_err(failed::<T>("scan"))?;
             let id = Uuid::parse_str(&row.id).map_err(OrmStoreError::InvalidUuid)?;
             Ok((id, row.decode().map_err(OrmStoreError::DeserializeFailed)?))
         }).boxed())
@@ -178,9 +181,27 @@ where
 
     /// Load the rows `query` selects, paired with their row ids. The query must
     /// target this store's collection.
-    pub async fn find_matching(&self, query: StorageQuery) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
-        let result = self.adapter.query(query).await;
-        let records = unwrap_adapter(result, "query", T::COLLECTION)?;
+    pub async fn find_matching(&self, query: &StorageQuery) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        let records = self.adapter.query(query).await.map_err(failed::<T>("query"))?;
+        Self::decode_records(records)
+    }
+
+    /// Read typed scalars from the same committed view as native payload pages.
+    pub async fn find_matching_in(
+        &self,
+        snapshot: &super::BinarySnapshot,
+        query: &StorageQuery,
+    ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
+        if query.collection != T::COLLECTION {
+            return Err(failed::<T>("snapshot query")(StorageError::SnapshotCollection {
+                expected: T::COLLECTION.into(), found: (&query.collection).into(),
+            }));
+        }
+        let records = snapshot.query(query).await.map_err(failed::<T>("snapshot query"))?;
+        Self::decode_records(records)
+    }
+
+    fn decode_records(records: Vec<DataRecord>) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
         records
             .into_iter()
             .map(|r| -> Result<(Uuid, T), OrmStoreError> {
@@ -199,40 +220,24 @@ where
         value: impl Into<serde_json::Value>,
         limit: usize,
     ) -> Result<Vec<(Uuid, T)>, OrmStoreError> {
-        self.find_matching(QueryBuilder::new(T::COLLECTION).filter_eq(field, value).limit(limit).build())
+        self.find_matching(&QueryBuilder::new(T::COLLECTION).filter_eq(field, value).limit(limit).build())
             .await
     }
 
-    /// Resolve a single row by id. Returns `Ok(None)` when the row
-    /// doesn't exist — clean Option semantics, not the adapter's
-    /// "Record not found" error-string convention.
+    /// The row `id`, or `None` when it does not exist (the adapter's typed NotFound).
     pub async fn find_by_id(&self, id: Uuid) -> Result<Option<T>, OrmStoreError> {
-        // Use query() with an id filter rather than read(), because
-        // the adapter's read() returns not-found as an error string
-        // ("Record not found: <uuid>") that we'd have to substring-
-        // match to discriminate from real errors. query() with 0
-        // results is the clean signal.
-        let query = QueryBuilder::new(T::COLLECTION)
-            .filter_eq("id", id.to_string())
-            .limit(1)
-            .build();
-        let result = self.adapter.query(query).await;
-        let mut records = unwrap_adapter(result, "query", T::COLLECTION)?;
-        match records.pop() {
-            Some(r) => Ok(Some(
-                r.decode().map_err(OrmStoreError::DeserializeFailed)?,
-            )),
-            None => Ok(None),
+        let id = id.to_string();
+        match self.adapter.read(RowRef { collection: T::COLLECTION, id: &id }).await {
+            Ok(record) => Ok(Some(record.decode().map_err(OrmStoreError::DeserializeFailed)?)),
+            Err(StorageError::NotFound { .. }) => Ok(None),
+            Err(source) => Err(failed::<T>("read")(source)),
         }
     }
 
     /// Overwrite an existing row's data. Increments the BaseEntity
     /// version counter (optimistic concurrency control surface).
     pub async fn update(&self, id: Uuid, entity: &T) -> Result<(), OrmStoreError> {
-        let data = update_data(entity)?;
-        let result = self.adapter.update(T::COLLECTION, &id.to_string(), data, true).await;
-        unwrap_adapter(result, "update", T::COLLECTION)?;
-        Ok(())
+        self.write_update(id, update_data(entity)?).await
     }
 
     /// Write a concrete typed subset of this entity's columns. This avoids
@@ -244,37 +249,32 @@ where
         id: Uuid,
         fields: &P,
     ) -> Result<(), OrmStoreError> {
-        let data = row_data(fields)?;
-        let result = self
-            .adapter
-            .update(T::COLLECTION, &id.to_string(), data, true)
-            .await;
-        unwrap_adapter(result, "update", T::COLLECTION)?;
+        self.write_update(id, row_data(fields)?).await
+    }
+
+    /// The one update path: `data` becomes row `id`'s declared fields and its version moves.
+    async fn write_update(&self, id: Uuid, data: serde_json::Value) -> Result<(), OrmStoreError> {
+        let id = id.to_string();
+        let row = RowRef { collection: T::COLLECTION, id: &id };
+        self.adapter
+            .update(Update { row, data, versioning: Versioning::Increment })
+            .await
+            .map_err(failed::<T>("update"))?;
         Ok(())
     }
 
     /// The create of a new row, as one operation of an atomic [`commit`].
     pub fn create_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
-        Ok(BatchOperation {
-            operation_type: BatchOperationType::Create,
-            collection: T::COLLECTION.to_string(),
-            id: Some(id.to_string()),
-            data: Some(row_data(entity)?),
-        })
+        Ok(BatchOperation::Create(RowWrite { collection: T::COLLECTION.to_string(), id: id.to_string(), data: row_data(entity)? }))
     }
 
     /// The overwrite of an existing row ([`OrmStore::update`]), as one operation of an atomic
     /// [`commit`].
     pub fn update_op(&self, id: Uuid, entity: &T) -> Result<BatchOperation, OrmStoreError> {
-        Ok(BatchOperation {
-            operation_type: BatchOperationType::Update,
-            collection: T::COLLECTION.to_string(),
-            id: Some(id.to_string()),
-            data: Some(update_data(entity)?),
-        })
+        Ok(BatchOperation::Update(RowWrite { collection: T::COLLECTION.to_string(), id: id.to_string(), data: update_data(entity)? }))
     }
 
-    /// The sequenced append of a new row ([`BatchOperationType::Append`]), as the last operation
+    /// The sequenced append of a new row ([`BatchOperation::Append`]), as the last operation
     /// of an atomic [`commit_appending`].
     pub fn append_op(
         &self,
@@ -282,11 +282,9 @@ where
         entity: &T,
         spec: SequenceSpec,
     ) -> Result<BatchOperation, OrmStoreError> {
-        Ok(BatchOperation {
-            operation_type: BatchOperationType::Append(spec),
-            collection: T::COLLECTION.to_string(),
-            id: Some(id.to_string()),
-            data: Some(row_data(entity)?),
+        Ok(BatchOperation::Append {
+            row: RowWrite { collection: T::COLLECTION.to_string(), id: id.to_string(), data: row_data(entity)? },
+            spec,
         })
     }
 
@@ -297,29 +295,35 @@ where
 
     /// Save `entity` as row `id` unless that row already holds a GREATER `field`: ONE
     /// atomic backend operation ([`StorageAdapter::upsert_monotonic`]), so the compare
-    /// can never be separated from the write. Returns whether it was written.
-    pub async fn save_monotonic(&self, id: Uuid, entity: &T, field: &str) -> Result<bool, OrmStoreError> {
+    /// can never be separated from the write. Returns whether it was written or kept.
+    pub async fn save_monotonic(&self, id: Uuid, entity: &T, field: &str) -> Result<Written, OrmStoreError> {
         let record = DataRecord {
             id: id.to_string(),
             collection: T::COLLECTION.to_string(),
             data: row_data(entity)?,
             metadata: RecordMetadata::default(),
         };
-        unwrap_adapter(self.adapter.upsert_monotonic(record, field).await, "upsert_monotonic", T::COLLECTION)
+        self.adapter.upsert_monotonic(record, field).await.map_err(failed::<T>("upsert_monotonic"))
     }
 
     /// Delete every row `query` selects, judged when the delete runs: ONE backend
     /// statement ([`StorageAdapter::delete_matching`]). Returns the count removed.
     pub async fn delete_matching(&self, query: StorageQuery) -> Result<usize, OrmStoreError> {
-        unwrap_adapter(self.adapter.delete_matching(query).await, "delete_matching", T::COLLECTION)
+        self.adapter.delete_matching(query).await.map_err(failed::<T>("delete_matching"))
     }
 
-    /// Delete a row. Returns `Ok(true)` if a row was deleted,
-    /// `Ok(false)` if the id wasn't present.
-    pub async fn delete(&self, id: Uuid) -> Result<bool, OrmStoreError> {
-        let result = self.adapter.delete(T::COLLECTION, &id.to_string()).await;
-        Ok(unwrap_adapter(result, "delete", T::COLLECTION)?)
+    /// Delete a row: removed, or absent.
+    pub async fn delete(&self, id: Uuid) -> Result<Deleted, OrmStoreError> {
+        let id = id.to_string();
+        self.adapter.delete(RowRef { collection: T::COLLECTION, id: &id }).await.map_err(failed::<T>("delete"))
     }
+}
+
+/// One atomic entity admission, including any opaque native fields.
+pub struct NativeEntityWrite<'a, T> {
+    pub id: Uuid,
+    pub entity: &'a T,
+    pub payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
 }
 
 /// An entity's row as the storage adapter takes it: the ONE place a store encodes a row.
@@ -343,8 +347,7 @@ fn update_data<T: Serialize>(entity: &T) -> Result<serde_json::Value, OrmStoreEr
 /// Apply `operations` (built by stores sharing `adapter`) ATOMICALLY: every one commits, or none
 /// does. The one way a decision and the row it changes are written together.
 pub async fn commit(adapter: &Arc<dyn StorageAdapter>, operations: Vec<BatchOperation>) -> Result<(), OrmStoreError> {
-    let result = adapter.batch(operations).await;
-    unwrap_adapter(result, "batch", "atomic commit")?;
+    adapter.batch(operations).await.map_err(|source| OrmStoreError::Storage { operation: "batch", collection: "atomic commit", source })?;
     Ok(())
 }
 
@@ -355,66 +358,25 @@ pub async fn commit_appending(
     adapter: &Arc<dyn StorageAdapter>,
     mut prior: Vec<BatchOperation>,
     append: BatchOperation,
-) -> Result<Sequenced, OrmStoreError> {
-    let collection = append.collection.clone();
+) -> Result<Appended, OrmStoreError> {
     prior.push(append);
-    let values = unwrap_adapter(adapter.batch(prior).await, "batch", "atomic append")?;
-    values
-        .last()
-        .and_then(|v| {
-            Some(Sequenced {
-                seq: v.get("seq")?.as_u64()?,
-                fresh: v.get("fresh")?.as_bool()?,
-            })
-        })
-        .ok_or(OrmStoreError::AdapterFailed {
+    let outcomes = adapter
+        .batch(prior)
+        .await
+        .map_err(|source| OrmStoreError::Storage { operation: "batch", collection: "atomic append", source })?;
+    match outcomes.last() {
+        Some(BatchOutcome::Appended { appended }) => Ok(*appended),
+        _ => Err(OrmStoreError::Storage {
             operation: "append",
-            collection,
-            detail: "the adapter's append result carried no sequence".to_string(),
-        })
-}
-
-/// Generic StorageResult unwrap for adapter CRUD operations.
-fn unwrap_adapter<T>(
-    result: StorageResult<T>,
-    operation: &'static str,
-    collection: &'static str,
-) -> Result<T, OrmStoreError> {
-    if result.success {
-        result.data.ok_or_else(|| OrmStoreError::AdapterFailed {
-            operation,
-            collection: collection.to_string(),
-            detail: "adapter reported success but returned no data".to_string(),
-        })
-    } else {
-        Err(OrmStoreError::AdapterFailed {
-            operation,
-            collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
-        })
+            collection: "atomic append",
+            source: StorageError::Corrupt { what: "an atomic append's last outcome is not its append" },
+        }),
     }
 }
 
-/// Variant of unwrap_adapter for ensure_schema — the failure mode
-/// is named differently because it's a setup/lifecycle concern, not
-/// a CRUD operation.
-fn unwrap_storage<T>(
-    result: StorageResult<T>,
-    _operation: &'static str,
-    collection: &'static str,
-    _fallback: OrmStoreError,
-) -> Result<T, OrmStoreError> {
-    if result.success {
-        result.data.ok_or_else(|| OrmStoreError::SchemaFailed {
-            collection: collection.to_string(),
-            detail: "adapter reported success but returned no data".to_string(),
-        })
-    } else {
-        Err(OrmStoreError::SchemaFailed {
-            collection: collection.to_string(),
-            detail: result.error.unwrap_or_else(|| "the adapter gave no reason".to_string()), // unwrap_or_else: a failure without a message is reported as one
-        })
-    }
+/// The error of a failed adapter call on `T`'s collection.
+fn failed<T: OrmEntity>(operation: &'static str) -> impl Fn(StorageError) -> OrmStoreError {
+    move |source| OrmStoreError::Storage { operation, collection: T::COLLECTION, source }
 }
 
 // ─── Shared test fixture (module-level, cfg-test gated) ────────────────
@@ -613,13 +575,13 @@ mod tests {
         let id = Uuid::new_v4();
         store.save(id, &tiny(id, "doomed")).await.expect("save");
         let deleted = store.delete(id).await.expect("delete");
-        assert!(deleted, "first delete reports row was removed");
+        assert_eq!(deleted, Deleted::Removed, "first delete reports row was removed");
 
         let absent = store.find_by_id(id).await.expect("find_by_id");
         assert!(absent.is_none(), "deleted row is gone");
 
         let again = store.delete(id).await.expect("delete absent");
-        assert!(!again, "second delete reports nothing-to-do");
+        assert_eq!(again, Deleted::Absent, "second delete reports nothing-to-do");
     }
 
     /// What this catches: collection() returns the entity's COLLECTION

@@ -189,26 +189,17 @@ impl AdmissionState {
 
         // Ensure the persona's home directory exists. fs::create_dir_all
         // is idempotent and safe to call on every boot.
-        home.ensure_exists()
-            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
-                operation: "ensure_persona_home",
-                collection: "engrams".to_string(),
-                detail: format!(
-                    "failed to ensure persona home dir {}: {}",
-                    home.root().display(),
-                    e
-                ),
-            })?;
+        home.ensure_exists().map_err(|source| crate::orm::OrmStoreError::Storage {
+            operation: "ensure_persona_home",
+            collection: "engrams",
+            source: crate::orm::StorageError::Io { path: home.root().to_path_buf(), source },
+        })?;
 
         // Open the per-persona SQLite. The adapter handles WAL + FK
         // pragmas etc; we just hand it the path.
         let adapter = SeaOrmAdapter::open(&home.engrams_db())
             .await
-            .map_err(|e| crate::orm::OrmStoreError::AdapterFailed {
-                operation: "initialize",
-                collection: "engrams".to_string(),
-                detail: e,
-            })?;
+            .map_err(|source| crate::orm::OrmStoreError::Storage { operation: "initialize", collection: "engrams", source })?;
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         // Build the typed stores. Each ensure_schema runs on
@@ -293,7 +284,7 @@ impl AdmissionState {
     /// output — a storage-tier weight on a structurally-known kind (a receipt),
     /// the recall-side twin of the recency-vs-recall channel split in act_observe.
     pub fn set_recall_salience(&self, engram_id: uuid::Uuid, salience: f32) {
-        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default();
+        let mut meta = self.recall_metadata.get(engram_id).unwrap_or_default(); // unwrap_or_default: an engram never recalled has empty recall metadata
         meta.salience = salience;
         self.recall_metadata.admit(engram_id, meta);
     }
@@ -338,7 +329,7 @@ impl AdmissionState {
         // `record_side_effects` for the external path.
         self.seen_content.record(hash, engram.id);
         self.recall_metadata.admit_with_defaults(engram.id);
-        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+        let metadata = self.recall_metadata.get(engram.id).unwrap_or_default(); // unwrap_or_default: an engram never recalled has empty recall metadata
         self.persistence
             .read()
             .observe_admission(&engram, metadata);
@@ -372,7 +363,7 @@ impl AdmissionState {
                 // fires-and-forgets the disk write through tokio::spawn.
                 // The metadata snapshot reflects the just-admitted
                 // default state (admit_with_defaults above).
-                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default();
+                let metadata = self.recall_metadata.get(engram.id).unwrap_or_default(); // unwrap_or_default: an engram never recalled has empty recall metadata
                 self.persistence
                     .read()
                     .observe_admission(engram, metadata);

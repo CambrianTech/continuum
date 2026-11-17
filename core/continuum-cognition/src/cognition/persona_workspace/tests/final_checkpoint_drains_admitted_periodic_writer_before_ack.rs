@@ -144,7 +144,7 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            context_window: 8_192, // fixture: a window the harness prompts fit, not the planner floor
             // Synchronous recall in the harness: these tests assert recall bids in
             // phase 1 on the same tick, which a deferred (cold-start) worker can't
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.

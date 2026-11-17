@@ -1,5 +1,6 @@
 //! Commit-ordered sequence heads are declared once and advanced inside the write transaction.
 use sea_orm::entity::prelude::*;
+use super::storage_error::{AppendFault, StorageError};
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
 #[sea_orm(table_name = "orm_sequence_heads")]
 pub struct Model {
@@ -20,14 +21,15 @@ impl super::relational::RelationalStore {
         connection: &C,
         mut record: super::types::DataRecord,
         spec: &super::types::SequenceSpec,
-    ) -> Result<super::types::Sequenced, String> {
+    ) -> Result<super::types::Appended, StorageError> {
         use sea_orm::sea_query::{Alias, Expr, Query};
         let schema = self.schema(&record.collection)?;
+        let refuse = |fault| StorageError::Append { collection: record.collection.clone().into(), fault };
         let unique_field = schema
             .fields
             .iter()
             .find(|field| field.name == spec.unique)
-            .ok_or("append unique field is not declared")?;
+            .ok_or_else(|| refuse(AppendFault::UniqueUndeclared))?;
         if unique_field.nullable
             || !(unique_field.unique
                 || schema
@@ -35,22 +37,22 @@ impl super::relational::RelationalStore {
                     .iter()
                     .any(|index| index.unique && index.fields == [spec.unique.clone()]))
         {
-            return Err("append identity requires a declared non-null unique constraint".into());
+            return Err(refuse(AppendFault::NotUnique));
         }
         let sequence_field = schema
             .fields
             .iter()
             .find(|field| field.name == spec.sequence)
-            .ok_or("append sequence field is not declared")?;
+            .ok_or_else(|| refuse(AppendFault::SequenceUndeclared))?;
         if sequence_field.nullable || sequence_field.field_type != super::types::FieldType::Number {
-            return Err("append sequence requires a declared non-null numeric field".into());
+            return Err(refuse(AppendFault::SequenceNotNumber));
         }
         let sequence = super::relational_query::column(&schema, &spec.sequence)?;
         let unique = super::relational_query::column(&schema, &spec.unique)?;
         let unique_value = record
             .data
             .get(&spec.unique)
-            .ok_or("append omitted its unique field")?;
+            .ok_or_else(|| refuse(AppendFault::UniqueOmitted))?;
         let table_name = super::adapter::naming::to_table_name(&record.collection);
         let table = Alias::new(&table_name);
         let existing = Query::select()
@@ -61,21 +63,18 @@ impl super::relational::RelationalStore {
             .to_owned();
         if let Some(row) = connection
             .query_one(connection.get_database_backend().build(&existing))
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
         {
-            let seq: i64 = row.try_get_by_index(0).map_err(|e| e.to_string())?;
-            return Ok(super::types::Sequenced {
-                seq: seq.try_into().map_err(|_| "negative sequence")?,
-                fresh: false,
-            });
+            let seq: i64 = row.try_get_by_index(0)?;
+            return Ok(super::types::Appended::Existing(
+                seq.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
+            ));
         }
         let seed = match Entity::find_by_id(("append".to_owned(), table_name.clone()))
             .one(connection)
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
         {
-            Some(head) => head.high.checked_add(1).ok_or("sequence exhausted")?,
+            Some(head) => head.high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone().into() })?,
             None => {
                 let max = Query::select()
                     .expr(Expr::col(sequence).max())
@@ -83,12 +82,11 @@ impl super::relational::RelationalStore {
                     .to_owned();
                 let row = connection
                     .query_one(connection.get_database_backend().build(&max))
-                    .await
-                    .map_err(|e| e.to_string())?
-                    .ok_or("MAX returned no row")?;
-                let max: Option<i64> = row.try_get_by_index(0).map_err(|e| e.to_string())?;
+                    .await?
+                    .ok_or(StorageError::Corrupt { what: "a MAX returned no row" })?;
+                let max: Option<i64> = row.try_get_by_index(0)?;
                 match max {
-                    Some(high) => high.checked_add(1).ok_or("sequence exhausted")?,
+                    Some(high) => high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone().into() })?,
                     None => 1,
                 }
             }
@@ -97,13 +95,12 @@ impl super::relational::RelationalStore {
         record
             .data
             .as_object_mut()
-            .ok_or("append requires object data")?
+            .ok_or_else(|| StorageError::Malformed { collection: record.collection.clone().into(), expected: super::storage_error::Shape::Object })?
             .insert(spec.sequence.clone(), serde_json::json!(high));
         self.insert(connection, &record).await?;
-        Ok(super::types::Sequenced {
-            seq: high.try_into().map_err(|_| "negative sequence")?,
-            fresh: true,
-        })
+        Ok(super::types::Appended::Fresh(
+            high.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
+        ))
     }
 }
 
@@ -114,20 +111,19 @@ pub(super) async fn next_on<C: ConnectionTrait>(
     domain: Domain,
     key: &str,
     seed: i64,
-) -> Result<i64, String> {
+) -> Result<i64, StorageError> {
     use sea_orm::sea_query::{Expr, OnConflict, Query};
     let domain = match domain {
         Domain::Append => "append",
         Domain::Native => "native",
     };
     if seed <= 0 {
-        return Err("sequence seed must be positive".into());
+        return Err(StorageError::Corrupt { what: "a sequence seed is not positive" });
     }
     let statement = Query::insert()
         .into_table(Entity)
         .columns([Column::Domain, Column::Collection, Column::High])
-        .values([domain.into(), key.into(), seed.into()])
-        .map_err(|e| e.to_string())?
+        .values([domain.into(), key.into(), seed.into()])?
         .on_conflict(
             OnConflict::columns([Column::Domain, Column::Collection])
                 .value(Column::High, Expr::col(Column::High).add(1))
@@ -142,10 +138,9 @@ pub(super) async fn next_on<C: ConnectionTrait>(
         .to_owned();
     let row = connection
         .query_one(connection.get_database_backend().build(&statement))
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or("sequence exhausted or invalid persisted head")?;
-    row.try_get("", "high").map_err(|e| e.to_string())
+        .await?
+        .ok_or_else(|| StorageError::SequenceExhausted { collection: key.to_owned().into() })?;
+    Ok(row.try_get("", "high")?)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(super) enum Domain {

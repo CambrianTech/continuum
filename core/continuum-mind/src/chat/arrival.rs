@@ -122,11 +122,13 @@ impl Arrival {
     /// The batch operation that appends this arrival under [`arrival_sequence`]; commit it in the
     /// same batch as its message row.
     pub fn append_op(&self) -> Result<crate::orm::types::BatchOperation, OrmStoreError> {
-        Ok(crate::orm::types::BatchOperation {
-            operation_type: crate::orm::types::BatchOperationType::Append(arrival_sequence()),
-            collection: <Self as crate::orm::OrmEntity>::COLLECTION.to_string(),
-            id: Some(self.id.to_string()),
-            data: Some(serde_json::to_value(self).map_err(OrmStoreError::SerializeFailed)?), // storage boundary: the adapter's row format
+        Ok(crate::orm::types::BatchOperation::Append {
+            row: crate::orm::types::RowWrite {
+                collection: <Self as crate::orm::OrmEntity>::COLLECTION.to_string(),
+                id: self.id.to_string(),
+                data: serde_json::to_value(self).map_err(OrmStoreError::SerializeFailed)?, // storage boundary: the adapter's row format
+            },
+            spec: arrival_sequence(),
         })
     }
 }

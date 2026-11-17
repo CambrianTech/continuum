@@ -1,4 +1,5 @@
 //! Joins use declared relationships and project related columns in the database.
+use super::storage_error::{QueryFault, StorageError};
 use super::{
     adapter::naming,
     query::StorageQuery,
@@ -26,7 +27,7 @@ fn declared(from: &CollectionSchema, field: &str, to: &CollectionSchema, target:
 }
 
 impl super::relational::RelationalStore {
-    pub async fn query_joined(&self, query: StorageQuery) -> Result<Vec<DataRecord>, String> {
+    pub async fn query_joined(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError> {
         let schema = self.schema(&query.collection)?;
         let mut primary = query.clone();
         primary.joins = None;
@@ -37,10 +38,10 @@ impl super::relational::RelationalStore {
         if let Some(joins) = &query.joins {
             for (number, join) in joins.iter().enumerate() {
                 if join.alias.is_empty()
-                    || !aliases.insert(join.alias.clone())
+                    || !aliases.insert(join.alias.as_str())
                     || schema.fields.iter().any(|f| f.name == join.alias)
                 {
-                    return Err(format!("invalid or colliding join alias {}", join.alias));
+                    return Err(StorageError::Unqueryable(QueryFault::JoinAlias));
                 }
                 let related = self.schema(&join.collection)?;
                 let local = super::relational_query::column(&schema, &join.local_field)?;
@@ -48,10 +49,7 @@ impl super::relational::RelationalStore {
                 if !declared(&schema, &join.local_field, &related, &join.foreign_field)
                     && !declared(&related, &join.foreign_field, &schema, &join.local_field)
                 {
-                    return Err(format!(
-                        "{} -> {} is not a declared entity relationship",
-                        schema.collection, related.collection
-                    ));
+                    return Err(StorageError::Unqueryable(QueryFault::JoinUndeclared));
                 }
                 let alias = Alias::new(format!("relation_{number}"));
                 statement.join_as(
@@ -79,7 +77,7 @@ impl super::relational::RelationalStore {
                         .fields
                         .iter()
                         .find(|f| naming::to_snake_case(&f.name) == naming::to_snake_case(name))
-                        .ok_or_else(|| format!("undeclared joined field {name}"))?
+                        .ok_or_else(|| StorageError::Undeclared { collection: join.collection.clone().into(), field: name.clone().into() })?
                         .clone();
                     let output = format!("joined_{number}_field_{i}");
                     statement.expr_as(Expr::col((alias.clone(), col)), Alias::new(&output));
@@ -104,22 +102,20 @@ impl super::relational::RelationalStore {
             .iter()
             .any(|field| joined_columns.contains(&naming::to_snake_case(&field.name)))
         {
-            return Err("generated join projection collides with a declared column".into());
+            return Err(StorageError::Unqueryable(QueryFault::JoinCollision));
         }
         let rows = self
             .db
             .query_all(DbBackend::Sqlite.build(&statement))
-            .await
-            .map_err(|e| e.to_string())?;
-        let decoder = super::relational_codec::RowDecoder::new(schema.clone(), &joined_columns);
+            .await?;
+        let decoder = super::relational_codec::RowDecoder::new(schema.as_ref(), &joined_columns);
         rows.into_iter()
             .map(|result| {
-                let row = result.try_as_sqlite_row().ok_or("SQLite result required")?;
+                let row = result.try_as_sqlite_row().ok_or(StorageError::Corrupt { what: "a result is not a SQLite row" })?;
                 let mut nested = Map::new();
                 for join in &joined {
                     let id = row
-                        .try_get_raw(join.id_alias.as_str())
-                        .map_err(|e| e.to_string())?;
+                        .try_get_raw(join.id_alias.as_str())?;
                     if id.is_null() {
                         nested.insert(join.alias.clone(), Value::Null);
                         continue;
@@ -130,7 +126,7 @@ impl super::relational::RelationalStore {
                             .columns()
                             .iter()
                             .position(|c| c.name() == alias)
-                            .ok_or("missing joined column")?;
+                            .ok_or(StorageError::Corrupt { what: "a joined row without its declared column" })?;
                         fields.insert(
                             field.name.clone(),
                             super::relational_codec::scalar(row, index, field)?,
@@ -143,7 +139,7 @@ impl super::relational::RelationalStore {
                 record
                     .data
                     .as_object_mut()
-                    .ok_or("record data is not an object")?
+                    .ok_or(StorageError::Corrupt { what: "a decoded record is not an object" })?
                     .extend(nested);
                 Ok(record)
             })

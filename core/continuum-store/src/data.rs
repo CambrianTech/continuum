@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Mutex;
 
 // ============================================================================
 // Vector Search Types and Cache
@@ -73,6 +73,9 @@ use crate::orm::list_result::DataListResult;
 
 mod data_list_params;
 pub use data_list_params::*;
+
+mod store_handle;
+pub use store_handle::StoreHandle;
 
 #[cfg(test)]
 mod tests;

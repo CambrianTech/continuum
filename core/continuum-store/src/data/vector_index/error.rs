@@ -44,8 +44,8 @@ fn listed(descriptors: &[EmbeddingDescriptor]) -> String {
     descriptors.iter().map(ToString::to_string).collect::<Vec<_>>().join(", ")
 }
 
-/// A fault the storage owner reported as text. Its interface is untyped; this names that text as
-/// the storage owner's own, so it is never mistaken for a vector failure or parsed.
+/// A fault opening the store (handle resolution, backend selection), reported as text by those two
+/// functions; named as the store's own so it is never mistaken for a vector failure or parsed.
 #[derive(Debug)]
 pub(crate) struct StorageFault(String);
 
@@ -71,9 +71,12 @@ pub(crate) enum VectorStoreError {
     /// The collection policy refused the collection (a protected or malformed name).
     #[error("{0}")]
     Refused(StorageFault),
-    /// The storage owner's interface reports its faults as text; they stay its own.
+    /// The store could not be opened for this handle.
     #[error("vector storage: {0}")]
-    Store(StorageFault),
+    Open(StorageFault),
+    /// The store refused or failed a read or write.
+    #[error("vector storage: {0}")]
+    Store(#[from] crate::orm::StorageError),
     /// The store's page size is zero, so no page could ever be read.
     #[error("the store's page size is zero")]
     PageSize,
@@ -82,7 +85,7 @@ pub(crate) enum VectorStoreError {
     CacheType,
     /// A ranked record disappeared before its hydration read.
     #[error("vector result {id}: {fault}")]
-    Hydration { id: super::RecordId, fault: StorageFault },
+    Hydration { id: super::RecordId, fault: crate::orm::StorageError },
     /// The CPU seal task ended without its matrix.
     #[error("vector seal task: {0}")]
     Seal(#[from] tokio::task::JoinError),
@@ -98,6 +101,7 @@ impl From<VectorStoreError> for CommandError {
                 CommandError::Invalid(error.to_string())
             }
             VectorStoreError::Index(_)
+            | VectorStoreError::Open(_)
             | VectorStoreError::Store(_)
             | VectorStoreError::PageSize
             | VectorStoreError::Seal(_)

@@ -508,7 +508,7 @@ async fn foreign_key_cascade_deletes_children_via_db_enforcement() {
     // Delete the parent widget. SQLite's CASCADE rule must propagate
     // and wipe the child note row.
     let deleted = widgets.delete(widget_id).await.expect("delete widget");
-    assert!(deleted);
+    assert_eq!(deleted, crate::orm::seam::Deleted::Removed);
 
     let after = notes
         .find_by_id(note_id)
@@ -641,16 +641,20 @@ fn type_inference_probe_registers_cleanly() {
 #[tokio::test]
 async fn declared_optional_number_is_exact_and_rejects_text() {
     let (adapter, _tmp) = fresh_adapter().await;
-    let store = OrmStore::<EvolvingV2>::new(adapter.clone()).await.expect("declared numeric schema");
+    let store = OrmStore::<EvolvingV2>::new(std::sync::Arc::clone(&adapter)).await.expect("declared numeric schema");
     for number in [None, Some(9_007_199_254_740_993)] {
         let row = EvolvingV2 { base: BaseEntity::for_new_record(), name: "numeric".into(), rejected_at_ms: number };
         let id = Uuid::parse_str(&row.base.id).expect("fixture UUID");
         store.save(id, &row).await.expect("typed save");
         let loaded = store.find_by_id(id).await.expect("read").expect("present");
         assert_eq!(loaded.rejected_at_ms, number);
-        let result = adapter.update(EvolvingV2::COLLECTION, &id.to_string(),
-            serde_json::json!({"rejectedAtMs":"9007199254740993"}), true).await;
-        assert!(!result.success, "numeric declarations reject text instead of guessing codecs");
+        let row_id = id.to_string();
+        let result = adapter.update(crate::orm::seam::Update {
+            row: crate::orm::seam::RowRef { collection: EvolvingV2::COLLECTION, id: &row_id },
+            data: serde_json::json!({"rejectedAtMs":"9007199254740993"}),
+            versioning: crate::orm::seam::Versioning::Increment,
+        }).await;
+        assert!(matches!(result, Err(crate::orm::StorageError::TypeMismatch { .. })), "numeric declarations reject text instead of guessing codecs");
     }
     assert!(OrmStore::<EvolvingText>::new(adapter).await.is_err(), "a second declaration cannot reinterpret a numeric column");
 }
@@ -658,7 +662,7 @@ async fn declared_optional_number_is_exact_and_rejects_text() {
 #[tokio::test]
 async fn derived_optional_field_evolves_without_mutating_saved_values() -> Result<(), Box<dyn std::error::Error>> {
     let (adapter, _tmp) = fresh_adapter().await;
-    let store = OrmStore::<EvolvingV1>::new(adapter.clone()).await.expect("schema");
+    let store = OrmStore::<EvolvingV1>::new(std::sync::Arc::clone(&adapter)).await.expect("schema");
     let row = EvolvingV1 { base: BaseEntity::for_new_record(), name: "retained".into() };
     let id = Uuid::parse_str(&row.base.id).expect("fixture UUID");
     store.save(id, &row).await.expect("save");

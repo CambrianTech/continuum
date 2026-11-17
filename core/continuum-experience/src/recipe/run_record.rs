@@ -313,7 +313,7 @@ impl RecipeRuns {
         if let Some(peer) = caller_peer {
             query = query.filter_eq("callerPeerId", peer.to_string());
         }
-        let rows = self.store.find_matching(query.build()).await.map_err(|e| e.to_string())?;
+        let rows = self.store.find_matching(&query.build()).await.map_err(|e| e.to_string())?;
         Ok(rows.into_iter().map(|(_, run)| run).collect())
     }
 

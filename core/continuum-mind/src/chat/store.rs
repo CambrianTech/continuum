@@ -6,7 +6,7 @@
 
 use super::chat_data_handle::{ChatModule, CHAT_DATA_HANDLE};
 use super::orm_entities::CHAT_ORM_COLLECTIONS;
-use crate::orm::types::BatchOperation;
+use crate::orm::types::{BatchOperation, BatchOutcome};
 use crate::runtime::{command_executor::CommandExecutor, LateBound};
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -67,7 +67,8 @@ impl Default for ChatSlot {
 }
 
 impl ChatModule {
-    /// Run a `data/*` command against the chat handle: the module's ONE way into its store.
+    /// Run a `data/*` command against the chat handle: the module's ONE way into its store. A typed
+    /// command answers with its value; its failure is the executor's error.
     pub(super) async fn store(&self, command: &str, mut params: Value) -> Result<Value, String> {
         let executor = self.executor()?;
         self.executor_slot
@@ -75,11 +76,14 @@ impl ChatModule {
             .get_or_try_init(|| ensure_chat_collections(&executor))
             .await?;
         params["dbPath"] = json!(CHAT_DATA_HANDLE);
-        let result = executor
-            .execute_json(command, params)
-            .await
-            .map_err(|e| format!("chat store: {command} failed: {e}"))?;
-        match refusal(command, &result) {
+        executor.execute_json(command, params).await.map_err(|e| format!("chat store: {command} failed: {e}"))
+    }
+
+    /// The legacy JSON `data/query` route, which still answers with a success receipt (card
+    /// 6837890b moves this module to typed store calls).
+    async fn legacy_query(&self, query: Value) -> Result<Value, String> {
+        let result = self.store("data/query", query).await?;
+        match refusal("data/query", &result) {
             Some(refused) => Err(refused),
             None => Ok(result),
         }
@@ -97,12 +101,12 @@ impl ChatModule {
         if let Some(sort) = sort {
             query["sort"] = sort;
         }
-        records(collection, self.store("data/query", query).await?)
+        records(collection, self.legacy_query(query).await?)
     }
 
     /// Only the identities needed for bounded reconciliation, ordered by the store.
     pub(super) async fn query_ids(&self, collection: &str, filter: Value, limit: usize) -> Result<Vec<Uuid>, String> {
-        let response = self.store("data/query", json!({
+        let response = self.legacy_query(json!({
             "collection": collection, "filter": filter, "select": ["id"],
             "sort": [{"field": "id", "direction": "asc"}], "limit": limit,
         })).await?;
@@ -135,9 +139,9 @@ impl ChatModule {
     }
 
     /// Run `operations` as one atomic batch.
-    pub(super) async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Value, String> {
-        self.store("data/batch", json!({ "operations": operations }))
-            .await
+    pub(super) async fn run_batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, String> {
+        let outcomes = self.store("data/batch", json!({ "operations": operations })).await?;
+        serde_json::from_value::<crate::orm::data_outputs::BatchOutcomes>(outcomes).map(|batch| batch.outcomes).map_err(|e| format!("chat store: data/batch outcome: {e}")) // command-bus envelope: chat reaches data/batch through execute_json until typed in-process calls (card d2856ec5)
     }
 }
 
@@ -146,13 +150,10 @@ impl ChatModule {
 async fn ensure_chat_collections(executor: &Arc<CommandExecutor>) -> Result<(), String> {
     for collection in CHAT_ORM_COLLECTIONS {
         let params = json!({ "collection": collection, "dbPath": CHAT_DATA_HANDLE });
-        let result = executor
+        executor
             .execute_json("data/ensure-schema", params)
             .await
             .map_err(|e| format!("chat store: ensuring {collection} failed: {e}"))?;
-        if let Some(refused) = refusal("data/ensure-schema", &result) {
-            return Err(refused);
-        }
     }
     Ok(())
 }

@@ -2,163 +2,110 @@
 //! Acknowledged writes detach the backend corpus. Detached writes after caller
 //! cancellation and direct adapter writes still require their own invalidation.
 use super::{DataState, require_public_collection, require_record_fields};
-use crate::orm::types::{BatchOperation, DataRecord, RecordMetadata, StorageResult, UUID};
+use crate::orm::seam::{Deleted, RowRef, Update, Versioning};
+use crate::orm::types::{BatchOperation, BatchOutcome, DataRecord, RecordMetadata, UUID};
+use crate::sdk_codegen::CommandError;
 use serde_json::{json, Value};
 
 impl DataState {
-    /// Phase 1 typed-IPC scaffold: takes already-deserialized `CreateParams`.
-    /// Dispatch (handle_command) does the parse; handler body is pure logic.
-    /// Follow this shape for QW#3's other hot-handler conversions.
-    /// Create a record (single source for the typed `data/create` command).
-    /// `handle` names the storage; the persona-facing command defaults it to
-    /// "main". A missing `id` is minted. Publishes `<collection>:created` on
-    /// success. The body is unchanged from the legacy `handle_create` arm.
+    /// Create a record (the one source behind `data/create`). `handle` names the storage; a
+    /// missing `id` is minted (UUIDv7, time-ordered). Publishes `<collection>:created`.
     pub(crate) async fn create_record(
         &self,
         handle: &str,
         collection: String,
         id: Option<UUID>,
         data: Value,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(&collection)?;
+    ) -> Result<DataRecord, CommandError> {
+        require_public_collection(&collection).map_err(CommandError::Invalid)?;
         let start = std::time::Instant::now();
-
-        require_record_fields(&data)?;
-        let id = id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-        let record = DataRecord {
-            id: id.clone(),
-            collection: collection.clone(),
-            data,
-            metadata: RecordMetadata::default(),
-        };
-
+        require_record_fields(&data).map_err(CommandError::Invalid)?;
+        let id = id.unwrap_or_else(|| uuid::Uuid::now_v7().to_string()); // unwrap_or_else: an id the caller did not choose is minted here
+        let record = DataRecord { id: id.clone(), collection: collection.clone(), data, metadata: RecordMetadata::default() };
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter.create(record).await;
+        let created = adapter.create(record).await;
         self.log_slow_query("create", &collection, start.elapsed().as_millis());
-
-        if result.success {
-            self.vector_cache.invalidate(&scope, &collection);
-            self.publish_event(
-                &collection,
-                "created",
-                json!({ "id": id, "collection": collection }),
-            );
-        }
-
-        Ok(result)
+        let created = created?;
+        self.vector_cache.invalidate(&scope, &collection);
+        self.publish_event(&collection, "created", json!({ "id": id, "collection": collection }));
+        Ok(created)
     }
 
-    /// Update a record by id (single source for the typed `data/update` command).
-    /// Publishes `<collection>:updated` on success.
+    /// Update a record by id (the one source behind `data/update`). Publishes `<collection>:updated`.
     pub(crate) async fn update_record(
         &self,
         handle: &str,
-        collection: String,
-        id: UUID,
+        collection: &str,
+        id: &UUID,
         data: Value,
-        increment_version: bool,
-    ) -> Result<StorageResult<DataRecord>, String> {
-        require_public_collection(&collection)?;
-        require_record_fields(&data)?;
+        versioning: Versioning,
+    ) -> Result<DataRecord, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
+        require_record_fields(&data).map_err(CommandError::Invalid)?;
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter
-            .update(&collection, &id, data, increment_version)
-            .await;
-
-        if result.success {
-            self.vector_cache.invalidate(&scope, &collection);
-            self.publish_event(
-                &collection,
-                "updated",
-                json!({ "id": id, "collection": collection }),
-            );
-        }
-
-        Ok(result)
+        let updated = adapter.update(Update { row: RowRef { collection, id }, data, versioning }).await?;
+        self.vector_cache.invalidate(&scope, collection);
+        self.publish_event(collection, "updated", json!({ "id": id, "collection": collection }));
+        Ok(updated)
     }
 
-    /// Delete a record by id (single source for the typed `data/delete` command).
-    /// Publishes `<collection>:deleted` on success.
-    pub(crate) async fn delete_record(
-        &self,
-        handle: &str,
-        collection: String,
-        id: UUID,
-    ) -> Result<StorageResult<bool>, String> {
-        require_public_collection(&collection)?;
+    /// Delete a record by id (the one source behind `data/delete`). Publishes `<collection>:deleted`
+    /// when a row was removed.
+    pub(crate) async fn delete_record(&self, handle: &str, collection: &str, id: UUID) -> Result<Deleted, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter.delete(&collection, &id).await;
-
-        if result.success {
-            self.vector_cache.invalidate(&scope, &collection);
-            self.publish_event(
-                &collection,
-                "deleted",
-                json!({ "id": id, "collection": collection }),
-            );
+        let deleted = adapter.delete(RowRef { collection, id: &id }).await?;
+        if deleted == Deleted::Removed {
+            self.vector_cache.invalidate(&scope, collection);
+            self.publish_event(collection, "deleted", json!({ "id": id, "collection": collection }));
         }
-
-        Ok(result)
+        Ok(deleted)
     }
 
-    /// Apply a batch of create/update/delete operations atomically. Drives
-    /// `data/batch`.
+    /// Apply a batch atomically (the one source behind `data/batch`).
     pub(crate) async fn batch_operations(
         &self,
         handle: &str,
         operations: Vec<BatchOperation>,
-    ) -> Result<StorageResult<Vec<Value>>, String> {
+    ) -> Result<Vec<BatchOutcome>, CommandError> {
         for operation in &operations {
-            require_public_collection(&operation.collection)?;
-            if let Some(data) = &operation.data {
-                require_record_fields(data)?;
+            let (collection, data) = match operation {
+                BatchOperation::Read(row) | BatchOperation::Delete(row) => (&row.collection, None),
+                BatchOperation::Create(row) | BatchOperation::Update(row) | BatchOperation::Ensure(row) => {
+                    (&row.collection, Some(&row.data))
+                }
+                BatchOperation::Append { row, .. } => (&row.collection, Some(&row.data)),
+            };
+            require_public_collection(collection).map_err(CommandError::Invalid)?;
+            if let Some(data) = data {
+                require_record_fields(data).map_err(CommandError::Invalid)?;
             }
         }
-        let op_count = operations.len();
-
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter.batch(operations).await;
-
-        // Batch operations can touch several collections in this store.
+        let outcomes = adapter.batch(operations).await?;
+        // A batch can touch several collections in this store.
         self.vector_cache.invalidate_scope(&scope);
-        // Publish batch event on success
-        if result.success {
-            self.publish_event(
-                "batch",
-                "completed",
-                json!({
-                    "operationCount": op_count,
-                    "successCount": result.data.as_ref().map(|d| d.len()).unwrap_or(0)
-                }),
-            );
-        }
-
-        Ok(result)
+        self.publish_event("batch", "completed", json!({ "operationCount": outcomes.len() }));
+        Ok(outcomes)
     }
 
-    /// Delete every record in one collection (keeps the schema). Drives
-    /// `data/truncate`.
-    pub(crate) async fn truncate_collection(
-        &self,
-        handle: &str,
-        collection: &str,
-    ) -> Result<StorageResult<bool>, String> {
-        require_public_collection(collection)?;
+    /// Delete every record in one collection, keeping its schema (`data/truncate`); returns how many.
+    pub(crate) async fn truncate_collection(&self, handle: &str, collection: &str) -> Result<usize, CommandError> {
+        require_public_collection(collection).map_err(CommandError::Invalid)?;
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter.truncate(collection).await;
+        let removed = adapter.truncate(collection).await?;
         self.vector_cache.invalidate(&scope, collection);
-        Ok(result)
+        Ok(removed)
     }
 
-    /// Wipe every collection in a store. Drives `data/clear-all`.
+    /// Wipe every collection in a store (`data/clear-all`).
     pub(crate) async fn clear_all_collections(
         &self,
         handle: &str,
-    ) -> Result<StorageResult<crate::orm::adapter::ClearAllResult>, String> {
+    ) -> Result<crate::orm::adapter::ClearAllResult, CommandError> {
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
-        let result = adapter.clear_all().await;
+        let cleared = adapter.clear_all().await?;
         self.vector_cache.invalidate_scope(&scope);
-        Ok(result)
+        Ok(cleared)
     }
-
 }

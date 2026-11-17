@@ -1,5 +1,6 @@
 //! Compile declared cascade closure into a database-side recursive identity relation.
 //! No record body or materialized victim list crosses the storage boundary.
+use super::storage_error::StorageError;
 use super::{
     adapter::naming,
     query::StorageQuery,
@@ -17,7 +18,7 @@ impl super::relational::RelationalStore {
         &self,
         schema: &CollectionSchema,
         query: &StorageQuery,
-    ) -> Result<(WithClause, Vec<String>), String> {
+    ) -> Result<(WithClause, Vec<String>), StorageError> {
         let schemas = self
             .collections()
             .iter()
@@ -53,7 +54,7 @@ impl super::relational::RelationalStore {
         let physical = |name: &str| (Alias::new("main"), Alias::new(naming::to_table_name(name)));
         let mut closure = Query::select();
         closure
-            .expr(Expr::val(schema.collection.clone()))
+            .expr(Expr::val(schema.collection.as_str()))
             .column(Alias::new("id"))
             .from(physical(&schema.collection))
             .cond_where(super::relational_query::condition(schema, query)?);
@@ -72,12 +73,12 @@ impl super::relational::RelationalStore {
                 }
                 let parent_name = names
                     .get(&naming::to_table_name(&reference.collection))
-                    .ok_or("cascade parent has no admitted declaration")?;
+                    .ok_or(StorageError::Corrupt { what: "a cascade parent has no admitted declaration" })?;
                 let c = Alias::new("child_row");
                 let p = Alias::new("parent_row");
                 let v = Alias::new("victim_row");
                 let branch = Query::select()
-                    .expr(Expr::val(child.collection.clone()))
+                    .expr(Expr::val(child.collection.as_str()))
                     .column((c.clone(), Alias::new("id")))
                     .from_as(physical(&child.collection), c.clone())
                     .join_as(
@@ -96,7 +97,7 @@ impl super::relational::RelationalStore {
                         Alias::new(VICTIMS),
                         v.clone(),
                         Expr::col((v.clone(), Alias::new("collection")))
-                            .eq(parent_name.clone())
+                            .eq(parent_name.as_str())
                             .and(
                                 Expr::col((v, Alias::new("id")))
                                     .eq(Expr::col((p, Alias::new("id")))),

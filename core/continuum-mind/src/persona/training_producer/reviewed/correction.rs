@@ -23,11 +23,7 @@ struct RejectionRow {
 /// Read rejection state through the caller's storage authority. An unavailable read is
 /// an unsettled review, never evidence of a plain pass.
 async fn card_rows<T: Transport>(conn: &Connection<T>, persona_name: &str, card_id: Uuid) -> Result<Vec<RejectionRow>, ClientError> {
-    crate::orm::client_read::matching(
-        conn, &format!("@persona:{persona_name}"), StagedCredit::COLLECTION,
-        serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]),
-        Some(vec!["rejectedAtMs".into()]),
-    ).await
+    crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCredit::COLLECTION, filter: &serde_json::Map::from_iter([("cardId".into(), json!(card_id.to_string()))]), select: Some(&["rejectedAtMs"]) }).await
 }
 
 /// A failed review is settled only once its rejection marks are durably written.
@@ -79,10 +75,13 @@ mod tests {
             assert_eq!(operations[0]["data"]["rejectedAtMs"], operations[1]["data"]["rejectedAtMs"]);
             Err(ClientError::Transport("commit refused".into()))
         });
-        let result = mark_rejected(&Connection::new(mock), "fixture", Uuid::new_v4(), &[
+        let card = Uuid::new_v4();
+        let result = mark_rejected(&Connection::new(mock), "fixture", card, &[
             (first, None), (Uuid::new_v4(), Some(42)), (second, None),
         ]).await;
-        assert!(matches!(result, Err(ClientError::Transport(message)) if message == "commit refused"));
+        let expected = format!("card {card} rejection transaction failed: {}",
+            ClientError::Transport("commit refused".into()));
+        assert!(matches!(result, Err(ClientError::Transport(message)) if message == expected));
     }
 
     fn row(rejected: Option<u64>) -> RejectionRow {

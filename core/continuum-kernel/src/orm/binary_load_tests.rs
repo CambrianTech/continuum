@@ -31,14 +31,16 @@ fn record(collection: &str, id: String, data: serde_json::Value) -> DataRecord {
     DataRecord { id, collection: collection.into(), data, metadata: RecordMetadata::default() }
 }
 
-async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes: Vec<u8>) -> Result<(), String> {
+async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
     let collection = if native { Native::COLLECTION } else { JsonBaseline::COLLECTION };
     let start = Instant::now();
     let mut operations = tokio::task::JoinSet::new();
-    // Fixed offered arrivals, not a closed loop that stops submitting during stalls.
+    // Fixed offered arrivals, not a closed loop that stops submitting during stalls: an
+    // interval that bursts to catch up keeps every arrival on its schedule.
+    let mut arrivals = tokio::time::interval(Duration::from_millis(5));
+    arrivals.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Burst);
     for sequence in 0..128_u32 {
-        let scheduled = start + Duration::from_millis(u64::from(sequence) * 5);
-        tokio::time::sleep_until(tokio::time::Instant::from_std(scheduled)).await;
+        let scheduled = arrivals.tick().await.into_std();
         let store = store.clone();
         let expected = expected.clone();
         let bytes = bytes.clone();
@@ -57,28 +59,28 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
                     .ok_or("missing native descriptor")?;
                 rows = ids.len();
                 if descriptor.byte_len()? != bytes.len() || contiguous.len() != rows * bytes.len() {
-                    return Err("native replay shape mismatch".to_string());
+                    return Err("native replay shape mismatch".into());
                 }
                 for row in contiguous.chunks_exact(bytes.len()) {
-                    if row != bytes { return Err("native replay byte mismatch".to_string()); }
+                    if row != bytes { return Err("native replay byte mismatch".into()); }
                 }            } else {
                 let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.to_string().into())).limit(32).build();
-                let page = store.query(query).await?;
+                let page = store.query(&query).await?;
                 rows = page.len();
                 for mut row in page {
                     // Reproduce the former corpus consumer's numeric materialization.
-                    let values: Vec<f32> = serde_json::from_value(row.data["payload"].take()).map_err(|e| e.to_string())?;
-                    if values != expected { return Err("JSON replay value mismatch".to_string()); }
+                    let values: Vec<f32> = serde_json::from_value(row.data["payload"].take())?;
+                    if values != expected { return Err("JSON replay value mismatch".into()); }
                 }
             }
-            if rows != 32 { return Err("replay page cardinality mismatch".to_string()); }
-            Ok((scheduled.elapsed().as_secs_f64() * 1000.0, execution_start.elapsed().as_secs_f64() * 1000.0))
+            if rows != 32 { return Err("replay page cardinality mismatch".into()); }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>((scheduled.elapsed().as_secs_f64() * 1000.0, execution_start.elapsed().as_secs_f64() * 1000.0))
         });
     }
     let mut arrival_ms = Vec::new();
     let mut execution_ms = Vec::new();
     while let Some(result) = operations.join_next().await {
-        let (arrival, execution) = result.map_err(|e| e.to_string())??;
+        let (arrival, execution) = result?.map_err(|error| -> Box<dyn std::error::Error> { error })?;
         arrival_ms.push(arrival);
         execution_ms.push(execution);
     }
@@ -95,11 +97,11 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
 async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let path = directory.path().join("replay.db");
-    let store = RelationalStore::open(AdapterConfig {
+    let store = RelationalStore::open(&AdapterConfig {
         connection_string: path.to_str().ok_or("non-UTF8 fixture path")?.into(), ..Default::default()
     }).await?;
-    store.ensure(Native::collection_schema()).await?;
-    store.ensure(JsonBaseline::collection_schema()).await?;
+    store.ensure(&Native::collection_schema()).await?;
+    store.ensure(&JsonBaseline::collection_schema()).await?;
     // Deterministic offline fixture generation, never a production storage codec.
     let expected: Vec<f32> = (0..768).map(|i| ((i * 17 % 251) as f32 - 125.0) / 128.0).collect();
     let bytes: Vec<u8> = expected.iter().flat_map(|value| value.to_ne_bytes()).collect();
@@ -120,7 +122,7 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         store.write(move |_, transaction| Box::pin(async move {
             use sea_orm::ConnectionTrait;
             for statement in native_statements.into_iter().chain(json_statements) {
-                transaction.execute(sea_orm::DbBackend::Sqlite.build(&statement)).await.map_err(|e| e.to_string())?;
+                transaction.execute(sea_orm::DbBackend::Sqlite.build(&statement)).await?;
             }
             Ok(())
         })).await?;

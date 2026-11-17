@@ -66,12 +66,10 @@ pub(super) async fn the_region_settles_a_refused_decided_credit_with_no_turn_rev
     assert_eq!(status.destination.and_then(|d| d.error_kind).as_deref(), Some("RecoveryRequired"), "the waiting credit names why it waits");
 
     // A decision kept before refusals were: no refusal row, only the decision to find it by.
-    let delete = crate::orm::types::BatchOperation {
-        operation_type: crate::orm::types::BatchOperationType::Delete,
+    let delete = crate::orm::types::BatchOperation::Delete(crate::orm::types::RowKey {
         collection: reviewed::CreditSubmitRefusal::COLLECTION.into(),
-        id: Some(fx.selection.submission_id.to_string()),
-        data: None,
-    };
+        id: fx.selection.submission_id.to_string(),
+    });
     let forget = json!({"operations": [delete], "dbPath": format!("@persona:{}", fx.name)});
     fx.data.commands().execute_value("data/batch", forget).await.expect("delete the refusal row");
 
@@ -113,15 +111,14 @@ pub(super) async fn a_bad_or_hanging_decision_never_starves_the_rest() {
         .expect("the review is consumed");
 
     // A decision row ahead of hers in id order whose data is not a decision.
-    let malformed = crate::orm::types::BatchOperation {
-        operation_type: crate::orm::types::BatchOperationType::Create,
+    let malformed = crate::orm::types::BatchOperation::Create(crate::orm::types::RowWrite {
         collection: reviewed::CreditReviewDecision::COLLECTION.into(),
-        id: Some("00000000-0000-0000-0000-000000000001".into()),
-        data: Some(json!({"id": "00000000-0000-0000-0000-000000000001", "bindingId": fx.selection.submission_id, "review": "not a review"})),
-    };
+        id: "00000000-0000-0000-0000-000000000001".into(),
+        data: json!({"id": "00000000-0000-0000-0000-000000000001", "bindingId": fx.selection.submission_id, "review": "not a review"}),
+    });
     let insert = json!({"operations": [malformed], "dbPath": format!("@persona:{}", fx.name)});
-    let inserted = fx.data.commands().execute_value("data/batch", insert).await.expect("insert the malformed row");
-    assert_ne!(inserted["success"], json!(false), "the malformed row is stored: {inserted}");
+    let inserted: crate::orm::data_outputs::BatchOutcomes = fx.data.commands().execute("data/batch", insert).await.expect("insert the malformed row");
+    assert!(matches!(inserted.outcomes[..], [crate::orm::types::BatchOutcome::Created { .. }]), "the malformed row is stored: {:?}", inserted.outcomes);
 
     // Her settle hangs on the region's first pass (a submit that never returns), then the
     // trigger accepts.

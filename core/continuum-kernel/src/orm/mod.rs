@@ -21,7 +21,6 @@
 
 pub mod list_result;
 pub mod adapter;
-pub mod connection_manager;
 pub mod entity;
 pub mod migration;
 pub mod query;
@@ -32,9 +31,11 @@ mod relational_structure;
 mod relational_catalog_tokens;
 mod relational_evolution;
 mod relational_conversion;
-#[cfg(test)]
-mod relational_derived_tests;
 pub mod schema_error;
+pub mod seam;
+pub mod data_outputs;
+pub mod names;
+pub mod storage_error;
 mod relational_query;
 mod relational_codec;
 mod relational;
@@ -54,7 +55,6 @@ pub mod vector;
 pub(crate) mod gated_adapter; // test-only: the file is `#![cfg(test)]`
 
 pub use adapter::StorageAdapter;
-pub use connection_manager::{ConnectionManager, ConnectionManagerConfig};
 pub use entity::{
     base_entity_fields, is_base_entity_column, BaseEntity, OrmEntity, OrmEntityRegistry,
     RegistrationError,
@@ -72,12 +72,15 @@ pub use relational_adapter::SeaOrmAdapter;
 pub use store::{commit_appending, OrmStore, OrmStoreError};
 pub use types::{
     CascadeRule, CollectionSchema, DataRecord, FieldType, ForeignKeyRef, RecordMetadata,
-    SchemaField, SchemaIndex, SequenceSpec, Sequenced, StorageResult,
+    SchemaField, SchemaIndex, SequenceSpec, Appended, BatchOperation, BatchOutcome, RowKey, RowWrite,
+    StorageResult,
 };
+pub use seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Versioning, Written};
+pub use storage_error::StorageError;
 pub use vector::{
     BackfillVectorsProgress, BackfillVectorsRequest, EmbeddingModel, GenerateEmbeddingRequest,
     GenerateEmbeddingResponse, IndexVectorRequest, VectorEmbedding, VectorIndexStats,
-    VectorSearchAdapter, VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
+    VectorSearchOptions, VectorSearchResponse, VectorSearchResult,
 };
 pub mod client_read;
 

@@ -24,17 +24,16 @@ impl DataState {
     ) -> Result<Arc<VectorCorpus>, VectorStoreError> {
         let scope = self
             .resolve_handle(handle)
-            .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+            .map_err(|fault| VectorStoreError::Open(fault.into()))?;
         self.vector_cache
             .get_or_try_compute(&scope, collection, async {
                 let adapter = self
                     .adapter_for_backend(handle, scope.clone())
                     .await
-                    .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                    .map_err(|fault| VectorStoreError::Open(fault.into()))?;
                 let snapshot = adapter
                     .binary_snapshot(collection)
-                    .await
-                    .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                    .await?;
                 // The store's page size bounds one transfer, not the searchable corpus.
                 let limit = NonZeroUsize::new(super::default_page_size())
                     .ok_or(VectorStoreError::PageSize)?;
@@ -78,8 +77,7 @@ pub(super) async fn read_groups(
         };
         let stored = snapshot
             .descriptor_page(&request)
-            .await
-            .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+            .await?;
         if stored.is_empty() {
             break;
         }
@@ -105,8 +103,7 @@ pub(super) async fn read_groups(
                             ids: &mut ids,
                         },
                     )
-                    .await
-                    .map_err(|fault| VectorStoreError::Store(fault.into()))?;
+                    .await?;
                 let Some(page) = page else { break };
                 builder.append_page(&page, &bytes, &ids)?;
                 match ids.last() {

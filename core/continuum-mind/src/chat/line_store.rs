@@ -12,7 +12,7 @@ use super::chat_data_handle::{now_iso, ChatModule};
 use super::import_watermark::{ImportHistory, ImportWatermark, ImportedThrough};
 use super::publication::PublicationObligation;
 use super::types::CHAT_MESSAGES_COLLECTION;
-use crate::orm::types::{BatchOperation, BatchOperationType};
+use crate::orm::types::{Appended, BatchOperation, BatchOutcome, RowWrite};
 use crate::runtime::late_bound::LateBound;
 
 /// A room line, typed: the routing header and the text, never a JSON payload to fish fields from.
@@ -120,7 +120,7 @@ async fn ready() -> Result<std::sync::Arc<ChatModule>, String> {
 /// writer; WHO spoke is `senderId`, and `metadata.source: "user"` for all citizens alike.
 fn message_row(
     line: &PostedLine,
-    operation_type: BatchOperationType,
+    operation: fn(RowWrite) -> BatchOperation,
     reply_to: Option<Uuid>,
     content: Value,
 ) -> Result<BatchOperation, String> {
@@ -134,12 +134,11 @@ fn message_row(
         metadata: json!({ "source": "user" }),
         status: "sent".into(),
     };
-    Ok(BatchOperation {
-        operation_type,
+    Ok(operation(RowWrite {
         collection: CHAT_MESSAGES_COLLECTION.to_string(),
-        id: Some(line.message_id.to_string()),
-        data: Some(serde_json::to_value(row).map_err(|error| format!("chat message: {error}"))?),
-    })
+        id: line.message_id.to_string(),
+        data: serde_json::to_value(row).map_err(|error| format!("chat message: {error}"))?, // disk: the chat row body is the ORM document column until chat_messages is a typed entity (card d2856ec5)
+    }))
 }
 /// Records every imported line and reports each as fresh, in order: the seam's test importer.
 #[cfg(any(test, feature = "test-fixtures"))]
@@ -237,7 +236,7 @@ impl ChatModule {
     ) -> Result<(), String> {
         let mut operations = vec![message_row(
             line,
-            BatchOperationType::Create,
+            BatchOperation::Create,
             reply_to,
             content,
         )?];
@@ -254,7 +253,7 @@ impl ChatModule {
         reply_to: Option<Uuid>,
         content: Value,
     ) -> Result<Imported, String> {
-        let message_op = message_row(line, BatchOperationType::Ensure, reply_to, content)?;
+        let message_op = message_row(line, BatchOperation::Ensure, reply_to, content)?;
         let arrival = Arrival::new(
             line.message_id,
             line.room,
@@ -267,30 +266,23 @@ impl ChatModule {
         if line.retires_publication {
             // The relayed line came back: its obligation is marked retired with the import,
             // atomically. Kept, not deleted, so an exact replay after a restart is recognized.
-            operations.push(BatchOperation {
-                operation_type: BatchOperationType::Update,
-                collection:
-                    <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION
-                        .to_string(),
-                id: Some(line.message_id.to_string()),
-                data: Some(json!({ "state": super::publication::PublicationState::Retired })),
-            });
+            operations.push(BatchOperation::Update(RowWrite {
+                collection: <super::publication::PublicationObligation as crate::orm::OrmEntity>::COLLECTION.to_string(),
+                id: line.message_id.to_string(),
+                data: json!({ "state": super::publication::PublicationState::Retired }),
+            }));
         }
-        let result = self.run_batch(operations).await?;
-        let appended = result
-            .get("data")
-            .and_then(|d| d.get(1))
-            .ok_or("chat line: the batch reported no arrival")?;
-        let arrival_seq = appended
-            .get("seq")
-            .and_then(Value::as_u64)
-            .ok_or("chat line: the arrival carried no sequence")?;
-        match appended.get("fresh").and_then(Value::as_bool) {
-            Some(true) => Ok(Imported::Fresh { arrival_seq }),
-            Some(false) => Ok(Imported::Duplicate { arrival_seq }),
-            // An append that does not say whether it created the arrival is a malformed reply, never a
-            // duplicate: reading it as one would vouch for a line nobody confirmed (Codex on #5694).
-            None => Err("chat line: the arrival did not say whether it was fresh".to_string()),
+        let outcomes = self.run_batch(operations).await?;
+        // The arrival is the batch's second operation; its outcome is typed, so a reply that does
+        // not say fresh or existing cannot decode (Codex on #5694: never read it as a duplicate).
+        match outcomes.get(1) {
+            Some(BatchOutcome::Appended { appended: Appended::Fresh(arrival_seq) }) => {
+                Ok(Imported::Fresh { arrival_seq: *arrival_seq })
+            }
+            Some(BatchOutcome::Appended { appended: Appended::Existing(arrival_seq) }) => {
+                Ok(Imported::Duplicate { arrival_seq: *arrival_seq })
+            }
+            _ => Err("chat line: the batch reported no arrival".to_string()),
         }
     }
 }

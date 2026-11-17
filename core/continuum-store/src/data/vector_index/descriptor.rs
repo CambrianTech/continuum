@@ -24,7 +24,7 @@ impl Producer {
     }
 
     /// The inverse of the identity the descriptor stores.
-    pub(super) fn from_identity(identity: &str) -> Self {
+    pub fn from_identity(identity: &str) -> Self {
         match identity {
             Self::WIRE_QUERY => Self::WireQuery,
             Self::INDEX_COMMAND => Self::IndexCommand,

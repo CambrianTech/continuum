@@ -121,7 +121,7 @@ impl ChatModule {
     /// shares the anchor's millisecond (see `keyset_page.rs`).
     /// Rows come back chronological whichever way the query ran.
     pub async fn poll(&self, params: ChatPollParams) -> Result<ChatPollResult, String> {
-        let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
+        let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT); // unwrap_or: a poll that names no page size reads the default page
 
         // The two anchors are opposite scroll directions — both at once
         // has no coherent ordering. Fail loud, never guess.
@@ -431,5 +431,5 @@ pub(super) fn now_iso(unix_ms: u64) -> String {
     let nsec_part = ((unix_ms % 1000) * 1_000_000) as u32;
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nsec_part)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string())
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string()) // unwrap_or_else: a time chrono cannot represent renders as the epoch
 }

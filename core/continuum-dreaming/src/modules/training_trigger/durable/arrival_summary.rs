@@ -46,12 +46,12 @@ impl DurableStore {
             .ok_or_else(|| format!("submission {id} disappeared during summary migration"))?;
         let summary = ArrivalSummary::of(&row.batch);
         drop(row);
-        let result = self.adapter.batch(vec![crate::orm::types::BatchOperation {
-            operation_type: crate::orm::types::BatchOperationType::Update,
-            collection: Submission::COLLECTION.into(), id: Some(id.to_string()),
-            data: Some(serde_json::json!({"arrivalSummary": summary})),
-        }]).await;
-        if !result.success { return Err(format!("submission {id} summary migration failed: {:?}", result.error)); }
+        let row_id = id.to_string();
+        self.adapter.update(crate::orm::seam::Update {
+            row: crate::orm::seam::RowRef { collection: Submission::COLLECTION, id: &row_id },
+            data: serde_json::json!({"arrivalSummary": summary}),
+            versioning: crate::orm::seam::Versioning::Keep,
+        }).await.map_err(|e| format!("submission {id} summary migration failed: {e}"))?;
         Ok(summary)
     }
 }
@@ -59,7 +59,6 @@ impl DurableStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orm::types::{BatchOperation, BatchOperationType};
 
     #[test]
     fn projected_header_requires_explicit_progress() {
@@ -84,12 +83,12 @@ mod tests {
         let store = DurableStore::new(adapter).await.expect("test: schema");
         let (id, row) = super::super::arrivals::tests::submission(1, 2);
         store.submissions.save(id, &row).await.expect("test: save");
-        let changed = store.adapter.batch(vec![BatchOperation {
-            operation_type: BatchOperationType::Update,
-            collection: Submission::COLLECTION.into(), id: Some(id.to_string()),
-            data: Some(serde_json::json!({"batch": "intentionally invalid body"})),
-        }]).await;
-        assert!(changed.success);
+        let row_id = id.to_string();
+        store.adapter.update(crate::orm::seam::Update {
+            row: crate::orm::seam::RowRef { collection: Submission::COLLECTION, id: &row_id },
+            data: serde_json::json!({"batch": "intentionally invalid body"}),
+            versioning: crate::orm::seam::Versioning::Keep,
+        }).await.expect("test: damage only the body");
         let arrivals = store.arrivals(0, 256).await.expect("metadata discovery must not decode batch");
         assert_eq!(arrivals.len(), 1);
         assert_eq!(arrivals[0].examples.len(), 2);

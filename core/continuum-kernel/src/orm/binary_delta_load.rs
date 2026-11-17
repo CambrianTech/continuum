@@ -10,22 +10,17 @@ pub(super) async fn replay(
     store: &RelationalStore,
     descriptor: &BinaryDescriptor,
     original: &[u8],
-) -> Result<(), String> {
+) -> Result<(), Box<dyn std::error::Error>> {
     // The existing corpus is already cached by the baseline's full scan. Its initial
     // fixture inserts have no revision receipts; this is incremental sync, not bootstrap.
     // Admit the rows participating in this mutation schedule through the real native
     // owner before capturing the cached revision. Unchanged fixture rows stay cached.
     for id in 0..32 {
         store
-            .update_binary(
-                Native::COLLECTION.into(),
-                uuid::Uuid::from_u128(id).to_string(),
-                BTreeMap::from([(
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: Native::COLLECTION, id: &uuid::Uuid::from_u128(id).to_string() }, payloads: BTreeMap::from([(
                     "payload".into(),
                     BinaryValue::new(descriptor.clone(), original.to_vec())?,
-                )]),
-                BinaryWriteCondition::Replace,
-            )
+                )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
     let since = store.binary_snapshot(Native::COLLECTION).await?.revision();
@@ -33,15 +28,10 @@ pub(super) async fn replay(
     *updated.first_mut().ok_or("fixture payload is empty")? ^= 1;
     for id in 0..28 {
         store
-            .update_binary(
-                Native::COLLECTION.into(),
-                uuid::Uuid::from_u128(id).to_string(),
-                BTreeMap::from([(
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: Native::COLLECTION, id: &uuid::Uuid::from_u128(id).to_string() }, payloads: BTreeMap::from([(
                     "payload".into(),
                     BinaryValue::new(descriptor.clone(), updated.clone())?,
-                )]),
-                BinaryWriteCondition::Replace,
-            )
+                )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
     let deleted = (28..32)
@@ -85,7 +75,7 @@ pub(super) async fn replay(
                         },
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                    ?;
                 for change in &changes {
                     let id = change.cursor.id.as_u128();
                     assert!(seen.insert(id), "duplicate delta identity");

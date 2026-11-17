@@ -10,6 +10,7 @@
 //! - Non-destructive (source data is never deleted)
 //! - Bounded pages; progress follows committed writes
 
+use super::storage_error::StorageError;
 use serde::{Deserialize, Serialize};
 #[cfg(test)]
 use serde_json::json;
@@ -27,21 +28,24 @@ use super::types::{DataRecord, RecordMetadata};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationConfig {
-    /// Records per batch (default: 500)
+    /// Records per page: positive by type, so a zero page cannot be configured (default 500).
     #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
+    pub batch_size: std::num::NonZeroUsize,
     /// Optional list of collections to migrate (None = all)
     pub collections: Option<Vec<String>>,
 }
 
-fn default_batch_size() -> usize {
-    500
+/// The default migration page.
+pub const DEFAULT_BATCH_SIZE: std::num::NonZeroUsize = std::num::NonZeroUsize::MIN.saturating_add(499);
+
+fn default_batch_size() -> std::num::NonZeroUsize {
+    DEFAULT_BATCH_SIZE
 }
 
 impl Default for MigrationConfig {
     fn default() -> Self {
         Self {
-            batch_size: 500,
+            batch_size: DEFAULT_BATCH_SIZE,
             collections: None,
         }
     }
@@ -87,7 +91,7 @@ impl CollectionMigrationState {
     fn to_progress(&self) -> CollectionProgress {
         CollectionProgress {
             collection: self.collection.clone(),
-            status: format!("{:?}", *self.status.read()).to_lowercase(),
+            status: *self.status.read(),
             total: self.total.load(Ordering::Relaxed),
             migrated: self.migrated.load(Ordering::Relaxed),
             failed: self.failed.load(Ordering::Relaxed),
@@ -106,8 +110,7 @@ impl CollectionMigrationState {
 )]
 pub struct CollectionProgress {
     pub collection: String,
-    /// Lowercased status: `pending` | `inprogress` | `completed` | `failed` | `paused`.
-    pub status: String,
+    pub status: MigrationStatus,
     pub total: usize,
     pub migrated: usize,
     pub failed: usize,
@@ -166,6 +169,8 @@ pub struct MigrationVerification {
 /// Progress uses atomics/RwLock; pause/resume is retained watch state.
 #[derive(Clone)]
 pub struct MigrationHandle {
+    /// The migration's page, which verification reads in too.
+    page: std::num::NonZeroUsize,
     states: Arc<parking_lot::RwLock<HashMap<String, Arc<CollectionMigrationState>>>>,
     paused: tokio::sync::watch::Sender<bool>,
     running: Arc<AtomicBool>,
@@ -219,30 +224,19 @@ impl MigrationHandle {
 
     /// Verify receipts, schemas and exact scalar/native values in bounded snapshots.
     /// Offline callers must keep writers quiescent across collections and adoption.
-    pub async fn verify(&self) -> Result<MigrationVerification, String> {
+    pub async fn verify(&self) -> Result<MigrationVerification, StorageError> {
         let mut results = Vec::new();
         let states = self.states.read().clone();
         // No collection receipts means no migration evidence, not successful
         // verification (including a failed discovery/count before initialization).
         let mut all_match = !states.is_empty();
         for (collection, state) in &states {
-            let source_count = self
-                .source
-                .count(StorageQuery {
-                    collection: collection.clone(),
-                    ..Default::default()
-                })
-                .await;
-            let target_count = self
-                .target
-                .count(StorageQuery {
-                    collection: collection.clone(),
-                    ..Default::default()
-                })
-                .await;
+            // The two counts are independent: both stores answer at once.
+            let whole = StorageQuery { collection: collection.clone(), ..Default::default() };
+            let (source_count, target_count) = tokio::join!(self.source.count(&whole), self.target.count(&whole));
 
-            let src = source_count.into_result()?;
-            let tgt = target_count.into_result()?;
+            let src = source_count?;
+            let tgt = target_count?;
             let receipts_match = src == tgt
                 && *state.status.read() == MigrationStatus::Completed
                 && state.failed.load(Ordering::Relaxed) == 0
@@ -251,8 +245,7 @@ impl MigrationHandle {
                 let source = self.source.binary_snapshot(collection).await?;
                 let target = self.target.binary_snapshot(collection).await?;
                 // A transfer-page bound, not a limit on verified rows.
-                source.migration_matches(&target, std::num::NonZeroUsize::new(64)
-                    .ok_or("invalid verification page size")?).await?
+                source.migration_matches(&target, self.page).await?
             } else { false };
             if !matches {
                 all_match = false;
@@ -309,6 +302,7 @@ impl MigrationEngine {
     /// Get a lightweight handle for status/pause/verify (safe to use while engine runs)
     pub fn handle(&self) -> MigrationHandle {
         MigrationHandle {
+            page: self.config.batch_size,
             states: self.states.clone(),
             paused: self.paused.clone(),
             running: self.running.clone(),
@@ -318,7 +312,7 @@ impl MigrationEngine {
     }
 
     /// Run the full migration
-    pub async fn run(&mut self) -> Result<MigrationProgress, String> {
+    pub async fn run(&mut self) -> Result<MigrationProgress, StorageError> {
         self.running.store(true, Ordering::Relaxed);
         self.wait_until_resumed().await?;
 
@@ -326,7 +320,7 @@ impl MigrationEngine {
         let collections = match &self.config.collections {
             Some(explicit) => explicit.clone(),
             None => {
-                self.source.list_collections().await.into_result().map_err(|error| {
+                self.source.list_collections().await.map_err(|error| {
                     self.running.store(false, Ordering::Relaxed);
                     error
                 })?
@@ -339,16 +333,16 @@ impl MigrationEngine {
         for collection in &collections {
             let count = self
                 .source
-                .count(StorageQuery {
+                .count(&StorageQuery {
                     collection: collection.clone(),
                     ..Default::default()
                 })
                 .await;
-            let total = match count.into_result() {
+            let total = match count {
                 Ok(total) => total,
                 Err(error) => {
                     self.running.store(false, Ordering::Relaxed);
-                    return Err(format!("count source {collection}: {error}"));
+                    return Err(error);
                 }
             };
             counted.push((collection.clone(), total));
@@ -375,12 +369,12 @@ impl MigrationEngine {
     }
 
     /// Migrate a single collection with streaming pagination
-    async fn migrate_collection(&self, collection: &str) -> Result<(), String> {
+    async fn migrate_collection(&self, collection: &str) -> Result<(), StorageError> {
         let state = {
             let states = self.states.read();
             states
                 .get(collection)
-                .ok_or_else(|| format!("No state for collection: {}", collection))?
+                .ok_or(StorageError::Corrupt { what: "a migrating collection has no state" })?
                 .clone()
         };
 
@@ -388,16 +382,15 @@ impl MigrationEngine {
 
         // Copy the admitted entity contract even when the collection is empty.
         // Constraints and codecs come from declarations, never the first row.
-        let schema = self.source.collection_schema(collection).into_result()?;
-        self.target.ensure_schema(schema).await.into_result()?;
+        let schema = self.source.collection_schema(collection)?;
+        self.target.ensure_schema(&schema).await?;
         let total = state.total.load(Ordering::Relaxed);
         if total == 0 {
             *state.status.write() = MigrationStatus::Completed;
             return Ok(());
         }
 
-        let batch_size = std::num::NonZeroUsize::new(self.config.batch_size)
-            .ok_or("migration batch size must be positive")?;
+        let batch_size = self.config.batch_size;
         let snapshot = self.source.binary_snapshot(collection).await?;
         let mut after: Option<String> = None;
 
@@ -414,7 +407,7 @@ impl MigrationEngine {
                 Ok(rows) if rows.is_empty() => break,
                 Ok(rows) => rows,
                 Err(err) => {
-                    *state.error.write() = Some(err.clone());
+                    *state.error.write() = Some(err.to_string());
                     *state.status.write() = MigrationStatus::Failed;
                     return Err(err);
                 }
@@ -428,13 +421,13 @@ impl MigrationEngine {
                 // Move the owned row into the destination; a rejected write is not
                 // migrated work and must never be followed by Completed/verified.
                 let inserted = if row.payloads.is_empty() {
-                    self.target.create(row.record).await.into_result().map(|_| ())
+                    self.target.create(row.record).await.map(|_| ())
                 } else {
-                    self.target.create_binary(row.record, row.payloads).await.into_result().map(|_| ())
+                    self.target.create_binary(row.record, row.payloads).await.map(|_| ())
                 };
                 if let Err(error) = inserted {
                     state.failed.fetch_add(1, Ordering::Relaxed);
-                    *state.error.write() = Some(error.clone());
+                    *state.error.write() = Some(error.to_string());
                     *state.status.write() = MigrationStatus::Failed;
                     return Err(error);
                 }
@@ -463,15 +456,15 @@ impl MigrationEngine {
         self.paused.send_replace(false);
     }
 
-    async fn wait_until_resumed(&self) -> Result<(), String> {
+    async fn wait_until_resumed(&self) -> Result<(), StorageError> {
         let mut control = self.paused.subscribe();
         control.wait_for(|paused| !*paused).await
             .map(|_| ())
-            .map_err(|error| format!("migration control closed: {error}"))
+            .map_err(|_| StorageError::ControlClosed { what: "migration" })
     }
 
     /// Convenience: verify
-    pub async fn verify(&self) -> Result<MigrationVerification, String> {
+    pub async fn verify(&self) -> Result<MigrationVerification, StorageError> {
         self.handle().verify().await
     }
 }

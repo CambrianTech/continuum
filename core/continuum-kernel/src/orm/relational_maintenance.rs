@@ -1,4 +1,5 @@
 //! Database-side aggregates and maintenance over admitted entity declarations.
+use super::storage_error::StorageError;
 use super::{
     adapter::{naming, ClearAllResult},
     query::QueryBuilder,
@@ -8,7 +9,7 @@ use sea_orm::sea_query::{Alias, Expr, Func, Query, SimpleExpr};
 use sea_orm::{ConnectionTrait, DbBackend};
 
 impl super::relational::RelationalStore {
-    pub async fn stats(&self, collection: &str) -> Result<CollectionStats, String> {
+    pub async fn stats(&self, collection: &str) -> Result<CollectionStats, StorageError> {
         let schema = self.schema(collection)?;
         // Logical stored value bytes, not allocated SQLite file/page bytes. The database
         // computes this aggregate; no record body crosses the connection boundary.
@@ -35,22 +36,21 @@ impl super::relational::RelationalStore {
         let row = self
             .db
             .query_one(DbBackend::Sqlite.build(&query))
-            .await
-            .map_err(|e| e.to_string())?
-            .ok_or("statistics returned no row")?;
-        let count: i64 = row.try_get("", "count").map_err(|e| e.to_string())?;
-        let bytes: i64 = row.try_get("", "bytes").map_err(|e| e.to_string())?;
-        let modified: Option<String> = row.try_get("", "modified").map_err(|e| e.to_string())?;
+            .await?
+            .ok_or(StorageError::Corrupt { what: "statistics returned no row" })?;
+        let count: i64 = row.try_get("", "count")?;
+        let bytes: i64 = row.try_get("", "bytes")?;
+        let modified: Option<String> = row.try_get("", "modified")?;
         Ok(CollectionStats {
             name: collection.into(),
-            record_count: count.try_into().map_err(|_| "count exceeds usize")?,
-            total_size: bytes.try_into().map_err(|_| "size exceeds usize")?,
+            record_count: count.try_into().map_err(|_| StorageError::Overflow { what: "a record count" })?,
+            total_size: bytes.try_into().map_err(|_| StorageError::Overflow { what: "a table size" })?,
             // Empty collections have no last mutation timestamp in this row-based API.
             last_modified: match modified {
                 Some(value) => value,
                 None => String::new(),
             },
-            schema: Some(serde_json::to_string(schema.as_ref()).map_err(|e| e.to_string())?),
+            schema: Some(serde_json::to_string(schema.as_ref())?), // wire: collection stats report the declared schema to clients as text
             indices: Some(
                 schema
                     .indexes
@@ -61,7 +61,7 @@ impl super::relational::RelationalStore {
         })
     }
 
-    pub async fn clear(&self) -> Result<ClearAllResult, String> {
+    pub async fn clear(&self) -> Result<ClearAllResult, StorageError> {
         let mut remaining = self
             .collections()
             .into_iter()
@@ -83,7 +83,7 @@ impl super::relational::RelationalStore {
                             })
                     })
                 })
-                .ok_or("clear_all requires an explicit deletion policy for cyclic foreign keys")?;
+                .ok_or(StorageError::Unqueryable(super::storage_error::QueryFault::CyclicDelete))?;
             ordered.push(remaining.remove(leaf).collection.clone());
         }
         self.write_with_revisions(move |store, transaction| {
@@ -92,11 +92,12 @@ impl super::relational::RelationalStore {
                 let mut revisions = Vec::new();
                 for collection in &ordered {
                     let deleted = store
+                        // bounded: clearing deletes every row by intent, in the store, loading none
                         .delete_on(transaction, QueryBuilder::new(collection).build())
                         .await?;
                     records_deleted = records_deleted
                         .checked_add(deleted.count)
-                        .ok_or("deleted count exceeds usize")?;
+                        .ok_or(StorageError::Overflow { what: "a deleted count" })?;
                     revisions.extend(deleted.revisions);
                 }
                 // Sequence high-water records deliberately survive content deletion.
@@ -112,11 +113,9 @@ impl super::relational::RelationalStore {
         .await
     }
 
-    pub async fn optimize(&self) -> Result<(), String> {
+    pub async fn optimize(&self) -> Result<(), StorageError> {
         if self.in_memory {
-            return Err(
-                "connection retirement is not supported for volatile in-memory storage".into(),
-            );
+            return Err(StorageError::Unsupported { adapter: "sqlite in-memory", operation: "optimize" });
         }
         let _guard = self.writer_gate.lock().await;
         // SQLx owns SQLite's optimize-on-close protocol. Retire one pooled connection
@@ -124,10 +123,9 @@ impl super::relational::RelationalStore {
         self.db
             .get_sqlite_connection_pool()
             .acquire()
-            .await
-            .map_err(|e| e.to_string())?
+            .await?
             .close()
-            .await
-            .map_err(|e| e.to_string())
+            .await?;
+        Ok(())
     }
 }

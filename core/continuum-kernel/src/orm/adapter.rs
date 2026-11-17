@@ -12,11 +12,12 @@
 //! - JSON file (future)
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use super::query::StorageQuery;
+use super::seam::{BinaryWrite, BinaryWritten, Deleted, FieldRef, RowRef, Update, Written};
+use super::storage_error::StorageError;
 use super::types::{
-    BatchOperation, CollectionSchema, CollectionStats, DataRecord, StorageResult, UUID,
+    BatchOperation, BatchOutcome, CollectionSchema, CollectionStats, DataRecord, UUID,
 };
 
 /// Database-side summary of a declared binary vector field.
@@ -75,132 +76,86 @@ pub struct AdapterCapabilities {
 /// these methods; adapters translate to native database operations.
 #[async_trait]
 pub trait StorageAdapter: Send + Sync {
-    /// Get adapter name (e.g., "sqlite")
+    /// The backend's name (e.g. "sqlite").
     fn name(&self) -> &'static str;
-
-    /// Get adapter capabilities
+    /// What this backend provides.
     fn capabilities(&self) -> AdapterCapabilities;
+    /// Close the connection: the one call that changes the adapter itself.
+    async fn close(&mut self) -> Result<(), StorageError>;
 
-    /// Close the adapter connection
-    async fn close(&mut self) -> Result<(), String>;
-
-    // ─── CRUD Operations ─────────────────────────────────────────────────────
-
-    /// Create a new record
-    async fn create(&self, record: DataRecord) -> StorageResult<DataRecord>;
-
-    /// Read a record by ID
-    async fn read(&self, collection: &str, id: &UUID) -> StorageResult<DataRecord>;
-
-    /// Query records with filters
-    async fn query(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>>;
-
-    /// Stream declared records for replay without materializing a result set.
-    /// Dropping the stream releases its database read and connection.
+    // ─── Rows ────────────────────────────────────────────────────────────────
+    /// Create `record`; returns the stored row.
+    async fn create(&self, record: DataRecord) -> Result<DataRecord, StorageError>;
+    /// The row `row` names; [`StorageError::NotFound`] when it does not exist.
+    async fn read(&self, row: RowRef<'_>) -> Result<DataRecord, StorageError>;
+    /// The rows `query` selects.
+    async fn query(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError>;
+    /// Stream the rows `query` selects without materializing them. Dropping the stream
+    /// releases its database read and connection.
     async fn scan(
         &self,
-        query: StorageQuery,
-    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, String>>, String>;
+        query: &StorageQuery,
+    ) -> Result<futures::stream::BoxStream<'_, Result<DataRecord, StorageError>>, StorageError>;
+    /// The rows `query` selects with their joins nested under alias keys.
+    async fn query_with_join(&self, query: &StorageQuery) -> Result<Vec<DataRecord>, StorageError>;
+    /// How many rows `query` selects (SQL COUNT, nothing fetched).
+    async fn count(&self, query: &StorageQuery) -> Result<usize, StorageError>;
+    /// Apply `update` to its row; returns the stored row.
+    async fn update(&self, update: Update<'_>) -> Result<DataRecord, StorageError>;
+    /// Delete one row.
+    async fn delete(&self, row: RowRef<'_>) -> Result<Deleted, StorageError>;
+    /// Write `record` unless its row already holds a GREATER `field`, as ONE atomic operation:
+    /// create the row if absent, overwrite it when the stored `field` <= the record's, keep it
+    /// otherwise. The compare runs inside the write, so no other writer can slip between a read
+    /// and the write it justified. The primitive for a monotonic high-water mark.
+    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> Result<Written, StorageError>;
+    /// Delete every row `query`'s filter selects, as ONE statement; returns the count. The filter
+    /// is judged when the delete runs, never by a stale selection.
+    async fn delete_matching(&self, query: StorageQuery) -> Result<usize, StorageError>;
 
-    /// Query with JOINs for optimal loading of related data
-    /// Returns records with joined data nested under alias keys
-    async fn query_with_join(&self, query: StorageQuery) -> StorageResult<Vec<DataRecord>>;
-
-    /// Count records matching query (uses SQL COUNT, not fetch all)
-    async fn count(&self, query: StorageQuery) -> StorageResult<usize>;
-
-    /// Update a record
-    async fn update(
-        &self,
-        collection: &str,
-        id: &UUID,
-        data: Value,
-        increment_version: bool,
-    ) -> StorageResult<DataRecord>;
-
-    /// Delete a record
-    async fn delete(&self, collection: &str, id: &UUID) -> StorageResult<bool>;
-
-    /// Write `record` unless its row already holds a GREATER `field`, as ONE atomic
-    /// operation on the backend: create the row if absent, overwrite it when the stored
-    /// `field` <= the record's, refuse otherwise. Returns whether it was written.
-    ///
-    /// The compare runs inside the write, so no other writer, second store over this
-    /// adapter, or write that outlives its cancelled caller can slip between a read and
-    /// the write it justified. The primitive for a monotonic high-water mark.
-    async fn upsert_monotonic(&self, record: DataRecord, field: &str) -> StorageResult<bool>;
-
-    /// Delete every row `query`'s filter selects, as ONE statement, returning the count.
-    /// The filter is judged when the delete runs, so a row changed after the caller chose
-    /// to delete is kept or removed by its current values, never by a stale selection.
-    async fn delete_matching(&self, query: StorageQuery) -> StorageResult<usize>;
-
-    // ─── Batch Operations ────────────────────────────────────────────────────
-
-    /// Execute batch operations ATOMICALLY — all of them commit, or none do.
-    ///
-    /// The first failing operation aborts the batch, rolls back every earlier
-    /// operation in it, and returns `StorageResult::err`. Implementations must
-    /// NOT report partial application as success: a caller writing a parent row
-    /// and its dependent rows in one batch relies on never observing the parent
-    /// without them.
-    ///
-    /// A failure is an ERROR, not a `{"success": false}` element in the returned
-    /// vector. The returned values describe operations that all committed.
-    async fn batch(&self, operations: Vec<BatchOperation>) -> StorageResult<Vec<Value>>;
-
+    // ─── Batches ─────────────────────────────────────────────────────────────
+    /// Execute `operations` ATOMICALLY: all commit, or none do. The first failing operation
+    /// aborts the batch, rolls back every earlier one, and is the error; the returned values
+    /// describe operations that all committed.
+    /// The operations are owned: the committing task outlives this call and moves each record in.
+    async fn batch(&self, operations: Vec<BatchOperation>) -> Result<Vec<BatchOutcome>, StorageError>;
     /// The committed high-water of a collection written by
-    /// [`super::types::BatchOperationType::Append`]: rises when an append commits, published by
-    /// the committing write itself (cancellation-safe for the caller). A hint to drain from a
-    /// cursor, never the data.
+    /// [`super::types::BatchOperation::Append`], published by the committing write itself.
+    /// A hint to drain from a cursor, never the data.
     fn sequence_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
-    /// Native commits use an independent domain in the shared revision owner.
+    /// Native commits, in their own domain of the shared revision owner.
     fn native_revision(&self, collection: &str) -> tokio::sync::watch::Receiver<u64>;
 
-    // ─── Schema Operations ───────────────────────────────────────────────────
+    // ─── Schemas ─────────────────────────────────────────────────────────────
+    /// Admit `schema`: create or evolve its table to the declaration.
+    async fn ensure_schema(&self, schema: &CollectionSchema) -> Result<(), StorageError>;
+    /// The admitted declaration, shared; never inferred from row values.
+    fn collection_schema(&self, collection: &str) -> Result<std::sync::Arc<CollectionSchema>, StorageError>;
+    /// Every admitted collection.
+    async fn list_collections(&self) -> Result<Vec<String>, StorageError>;
 
-    /// Ensure collection schema exists
-    async fn ensure_schema(&self, schema: CollectionSchema) -> StorageResult<bool>;
-
-    /// Return the admitted declaration, never infer a schema from row values.
-    fn collection_schema(&self, collection: &str) -> StorageResult<CollectionSchema>;
-
-    /// List all collections
-    async fn list_collections(&self) -> StorageResult<Vec<String>>;
-
+    // ─── Native payloads ─────────────────────────────────────────────────────
     /// Bounded native payload reads; scalar projections use the normal query owner.
-    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, String>;
+    async fn binary_snapshot(&self, collection: &str) -> Result<super::BinarySnapshot, StorageError>;
+    /// Create `record` with its native payloads; returns the new row's id.
     async fn create_binary(
         &self,
         record: DataRecord,
         payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
-    ) -> StorageResult<String>;
-    async fn update_binary(
-        &self,
-        collection: &str,
-        id: &str,
-        payloads: std::collections::BTreeMap<String, super::binary::BinaryValue>,
-        condition: super::binary::BinaryWriteCondition,
-    ) -> StorageResult<bool>;
+    ) -> Result<UUID, StorageError>;
+    /// Write native payloads to one row under its condition.
+    async fn update_binary(&self, write: BinaryWrite<'_>) -> Result<BinaryWritten, StorageError>;
+    /// Counts and lengths of one binary field, from descriptors only (no payload is read).
+    async fn numeric_array_stats(&self, field: FieldRef<'_>) -> Result<NumericArrayStats, StorageError>;
+    async fn collection_stats(&self, collection: &str) -> Result<CollectionStats, StorageError>;
 
-    async fn numeric_array_stats(
-        &self,
-        collection: &str,
-        field: &str,
-    ) -> StorageResult<NumericArrayStats>;
-
-    async fn collection_stats(&self, collection: &str) -> StorageResult<CollectionStats>;
-
-    // ─── Maintenance Operations ──────────────────────────────────────────────
-
-    /// Truncate a collection (delete all records)
-    async fn truncate(&self, collection: &str) -> StorageResult<bool>;
-
-    /// Clear all collections
-    async fn clear_all(&self) -> StorageResult<ClearAllResult>;
-
-    /// Run cleanup/optimization (e.g., VACUUM for SQLite)
-    async fn cleanup(&self) -> Result<(), String>;
+    // ─── Maintenance ─────────────────────────────────────────────────────────
+    /// Delete every row of a collection; returns how many.
+    async fn truncate(&self, collection: &str) -> Result<usize, StorageError>;
+    /// Clear every collection.
+    async fn clear_all(&self) -> Result<ClearAllResult, StorageError>;
+    /// Reclaim space (e.g. VACUUM for SQLite).
+    async fn cleanup(&self) -> Result<(), StorageError>;
 }
 
 /// Result of clear_all operation

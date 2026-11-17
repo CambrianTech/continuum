@@ -18,9 +18,9 @@
 //!   gives her the same port back.
 //! - Keyed by node (Fable on the plan): a port is a fact about one machine, and `main` may be
 //!   a database several nodes share (`DATABASE_URL`).
-//! - Bounded: the range is 1,000 ports and a citizen holds at most
-//!   [`MAX_LEASES_PER_CITIZEN`]. There is no TTL, since a TTL would hand a running server's
-//!   port to someone else.
+//! - Bounded by the range: 1,000 ports shared by every citizen, each holding what her work
+//!   needs (no per-citizen share; a mind gets what she needs, never a division). There is no
+//!   TTL, since a TTL would hand a running server's port to someone else.
 //! - Stored through the ORM ([`PortLease`], `port_leases`), with unique(node, port) and
 //!   unique(node, holder, service) as the backstop. The ORM has no transactions, so choosing
 //!   and saving is serialized in-process: one core owns its node's ports.
@@ -42,10 +42,6 @@ use crate::sdk_codegen::CommandError;
 /// 32768, macOS and Windows at 49152), clear of every fixed port Continuum binds, and clear of
 /// the common dev-server defaults (3000, 5173, 8080) a framework picks on its own.
 pub const CITIZEN_PORT_RANGE: std::ops::RangeInclusive<u16> = 31_000..=31_999;
-
-/// The most leases one citizen holds at once: enough for a web app's server, database,
-/// preview and test runner several times over, and a bound on one citizen's share.
-pub const MAX_LEASES_PER_CITIZEN: usize = 16;
 
 /// How long a released port stays unavailable to anyone else: long enough for a service that
 /// was still shutting down, or restarting, to be gone.
@@ -92,8 +88,6 @@ pub type NodeIdentity = Arc<dyn Fn() -> Option<PeerId> + Send + Sync>;
 pub enum PortLeaseError {
     #[error("a service name is 1 to 48 characters of a-z, 0-9, '-', '_' or '.'; got {0:?}")]
     InvalidService(String),
-    #[error("you hold {} port leases, the most one citizen may: {}. Release one with ports/release first", .held.len(), listed(.held))]
-    AtCap { held: Vec<(String, u16)> },
     #[error("every port in {}-{} is leased, recently released or will not bind on this node{}", CITIZEN_PORT_RANGE.start(), CITIZEN_PORT_RANGE.end(), unbindable_note(.unbindable))]
     RangeExhausted {
         /// The free-by-lease ports that would not bind here, as `(first, last)` runs, so she
@@ -112,16 +106,11 @@ impl From<PortLeaseError> for CommandError {
     fn from(e: PortLeaseError) -> Self {
         match e {
             PortLeaseError::Store(_) | PortLeaseError::NodeUnknown => CommandError::Internal(e.to_string()),
-            PortLeaseError::InvalidService(_) | PortLeaseError::AtCap { .. } | PortLeaseError::RangeExhausted { .. } => {
+            PortLeaseError::InvalidService(_) | PortLeaseError::RangeExhausted { .. } => {
                 CommandError::Invalid(e.to_string())
             }
         }
     }
-}
-
-/// Her leases as `service -> port`, for a refusal that names them.
-fn listed(held: &[(String, u16)]) -> String {
-    held.iter().map(|(service, port)| format!("{service} -> {port}")).collect::<Vec<_>>().join(", ")
 }
 
 /// Where a refusal names the blocks that would not bind, and how to see who reserved them.
@@ -189,10 +178,6 @@ pub(crate) fn decide(
             LeaseDecision::Reclaim(existing.clone())
         });
     }
-    let hers: Vec<(String, u16)> = on_node.iter().filter(|l| l.holder == holder && l.active()).map(|l| (l.service.clone(), l.port)).collect();
-    if hers.len() >= MAX_LEASES_PER_CITIZEN {
-        return Err(PortLeaseError::AtCap { held: hers });
-    }
     let unavailable: BTreeSet<u16> = on_node.iter().filter(|l| l.active() || l.quarantined(now_ms)).map(|l| l.port).collect();
     pick(&unavailable).map(LeaseDecision::Take).ok_or(PortLeaseError::RangeExhausted { unbindable: Vec::new() })
 }
@@ -224,6 +209,7 @@ impl PortLeases {
     /// Load every lease from `store`; `node` names this node once it is known.
     pub async fn load(store: OrmStore<PortLease>, node: NodeIdentity) -> Result<Self, PortLeaseError> {
         use futures::TryStreamExt;
+        // bounded: at most one lease per port in CITIZEN_PORT_RANGE
         let leases = store.scan().await.map_err(|e| PortLeaseError::Store(e.to_string()))?
             .map_ok(|(_, lease)| lease).try_collect().await.map_err(|e| PortLeaseError::Store(e.to_string()))?;
         Ok(Self { store, leases: parking_lot::RwLock::new(leases), write: tokio::sync::Mutex::new(()), node })
@@ -394,12 +380,8 @@ mod tests {
         assert!(matches!(again, LeaseDecision::Held(l) if l.port == 31_000));
         assert_eq!(decide(&on_node, kimi, "cw-db", 5, first_not_in), Ok(LeaseDecision::Take(31_002)), "the first port nobody leases");
 
-        let full: Vec<PortLease> = (0..MAX_LEASES_PER_CITIZEN as u16).map(|i| lease(kimi, &format!("s{i}"), 31_100 + i)).collect();
-        match decide(&full, kimi, "one-more", 5, |_| Some(31_500)) {
-            Err(PortLeaseError::AtCap { held }) => assert_eq!(held.len(), MAX_LEASES_PER_CITIZEN),
-            other => panic!("at the cap she is refused, got {other:?}"),
-        }
-        assert!(decide(&full, iris, "one-more", 5, |_| Some(31_500)).is_ok(), "the cap is per citizen");
+        let many: Vec<PortLease> = (0..64u16).map(|i| lease(kimi, &format!("s{i}"), 31_100 + i)).collect();
+        assert!(decide(&many, kimi, "one-more", 5, |_| Some(31_500)).is_ok(), "she leases what her work needs; only the shared range bounds her");
 
         assert_eq!(decide(&on_node, kimi, "Bad Name", 5, |_| Some(31_500)), Err(PortLeaseError::InvalidService("Bad Name".into())));
         assert_eq!(decide(&on_node, kimi, "x", 5, |_| None), Err(PortLeaseError::RangeExhausted { unbindable: Vec::new() }));

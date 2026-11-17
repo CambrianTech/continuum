@@ -33,8 +33,7 @@ async fn delta_refuses_late_corruption_without_partial_output(
             Box::pin(async move {
                 transaction
                     .execute(DbBackend::Sqlite.build(&malformed))
-                    .await
-                    .map_err(|e| e.to_string())?;
+                    .await?;
                 Ok(())
             })
         })
@@ -108,7 +107,7 @@ async fn delta_refuses_late_corruption_without_partial_output(
     Ok(())
 }
 
-fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, String> {
+fn payload(bytes: Vec<u8>) -> Result<BTreeMap<String, BinaryValue>, Box<dyn std::error::Error>> {
     Ok(BTreeMap::from([(
         "payload".into(),
         BinaryValue::new(descriptor(ElementType::I8, vec![2]), bytes)?,
@@ -153,12 +152,7 @@ async fn native_delta_pages_pin_payloads_and_include_tied_tombstones(
         2
     );
     store
-        .update_binary(
-            NativeRow::COLLECTION.into(),
-            uuid::Uuid::from_u128(1).to_string(),
-            payload(vec![3, 4])?,
-            BinaryWriteCondition::Replace,
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: payload(vec![3, 4])?, condition: BinaryWriteCondition::Replace })
         .await?;
     // Recreating only scalar state does not resurrect an absent native field.
     store
@@ -172,12 +166,7 @@ async fn native_delta_pages_pin_payloads_and_include_tied_tombstones(
     let snapshot = store.binary_snapshot(NativeRow::COLLECTION).await?;
     assert_eq!(snapshot.revision(), 6);
     store
-        .update_binary(
-            NativeRow::COLLECTION.into(),
-            uuid::Uuid::from_u128(1).to_string(),
-            payload(vec![5, 6])?,
-            BinaryWriteCondition::Replace,
-        )
+        .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &uuid::Uuid::from_u128(1).to_string() }, payloads: payload(vec![5, 6])?, condition: BinaryWriteCondition::Replace })
         .await?;
     let mut bytes = vec![99];
     let mut changes = Vec::new();

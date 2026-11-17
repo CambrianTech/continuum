@@ -1,6 +1,12 @@
 //! Producer-owned native payloads. Only the small descriptor is decoded by storage.
 //! Payload bytes are never interpreted, normalized, or converted here.
 
+/// Native payloads for an already selected scalar page, in the same snapshot.
+pub struct BinarySelection<'a> {
+    pub field: &'a str,
+    pub ids: &'a [uuid::Uuid],
+}
+
 /// A bounded native read. Absence of a cursor means the beginning, not missing input.
 #[derive(Debug, Clone, Copy)]
 pub struct BinaryPageRequest<'a> {
@@ -43,12 +49,36 @@ pub enum BinaryDescriptorError {
     AddressSpace,
     #[error("binary payload holds {found} bytes, its descriptor needs {expected}")]
     PayloadLength { expected: usize, found: usize },
+    #[error("binary descriptor header: {0}")]
+    Header(HeaderFault),
 }
 
-/// The storage owner's string-error paths still carry descriptor faults as text.
-impl From<BinaryDescriptorError> for String {
-    fn from(error: BinaryDescriptorError) -> Self {
-        error.to_string()
+/// What is wrong with a stored descriptor header (or one too large to encode).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum HeaderFault {
+    #[error("truncated")]
+    Truncated,
+    #[error("unsupported version")]
+    Version,
+    #[error("unknown element type")]
+    ElementType,
+    #[error("unknown byte order")]
+    ByteOrder,
+    #[error("unknown flags")]
+    Flags,
+    #[error("its length disagrees with its rank and producer")]
+    Length,
+    #[error("the producer identity is not UTF-8")]
+    ProducerText,
+    #[error("the rank exceeds the format")]
+    Rank,
+    #[error("the producer identity exceeds the format")]
+    ProducerLength,
+}
+
+impl From<HeaderFault> for BinaryDescriptorError {
+    fn from(fault: HeaderFault) -> Self {
+        Self::Header(fault)
     }
 }
 
@@ -68,8 +98,8 @@ impl ElementType {
         };
         elements.checked_mul(width).ok_or(BinaryDescriptorError::AddressSpace)
     }
-    fn read(tag: u8) -> Result<Self, String> {
-        match tag { 1 => Ok(Self::U8), 2 => Ok(Self::I8), 3 => Ok(Self::F16), 4 => Ok(Self::Bf16), 5 => Ok(Self::F32), 6 => Ok(Self::F64), 7 => Ok(Self::Bit), _ => Err("unknown binary element type".into()) }
+    fn read(tag: u8) -> Result<Self, HeaderFault> {
+        match tag { 1 => Ok(Self::U8), 2 => Ok(Self::I8), 3 => Ok(Self::F16), 4 => Ok(Self::Bf16), 5 => Ok(Self::F32), 6 => Ok(Self::F64), 7 => Ok(Self::Bit), _ => Err(HeaderFault::ElementType) }
     }
 }
 
@@ -109,10 +139,10 @@ impl BinaryDescriptor {
         self.element_type.payload_len(elements)
     }
 
-    pub(super) fn encode(&self) -> Result<Vec<u8>, String> {
+    pub(super) fn encode(&self) -> Result<Vec<u8>, BinaryDescriptorError> {
         self.byte_len()?;
-        let rank = u8::try_from(self.shape.len()).map_err(|_| "binary rank exceeds descriptor format")?;
-        let producer_len = u32::try_from(self.producer.len()).map_err(|_| "producer identity exceeds descriptor format")?;
+        let rank = u8::try_from(self.shape.len()).map_err(|_| HeaderFault::Rank)?;
+        let producer_len = u32::try_from(self.producer.len()).map_err(|_| HeaderFault::ProducerLength)?;
         let mut header = vec![2, self.element_type as u8, self.byte_order as u8, rank];
         header.extend_from_slice(&producer_len.to_le_bytes());
         header.push(u8::from(self.unit) | (u8::from(self.scale.is_some()) << 1));
@@ -122,27 +152,29 @@ impl BinaryDescriptor {
         Ok(header)
     }
 
-    pub(super) fn decode(header: &[u8]) -> Result<Self, String> {
-        let prefix = header.get(..9).ok_or("truncated binary descriptor")?;
-        if prefix[0] != 2 { return Err("unsupported binary descriptor version".into()); }
+    pub(super) fn decode(header: &[u8]) -> Result<Self, BinaryDescriptorError> {
+        let prefix: &[u8; 9] = header.get(..9).and_then(|prefix| prefix.try_into().ok()).ok_or(HeaderFault::Truncated)?;
+        if prefix[0] != 2 { return Err(HeaderFault::Version.into()); }
         let element_type = ElementType::read(prefix[1])?;
-        let byte_order = match prefix[2] { 1 => ByteOrder::Little, 2 => ByteOrder::Big, _ => return Err("unknown binary byte order".into()) };
+        let byte_order = match prefix[2] { 1 => ByteOrder::Little, 2 => ByteOrder::Big, _ => return Err(HeaderFault::ByteOrder.into()) };
         let rank = usize::from(prefix[3]);
-        let producer_len = u32::from_le_bytes(prefix[4..8].try_into().map_err(|_| "invalid producer length")?) as usize;
+        let producer_len = u32::from_le_bytes([prefix[4], prefix[5], prefix[6], prefix[7]]) as usize;
         let flags = prefix[8];
-        if flags & !3 != 0 { return Err("unknown binary descriptor flags".into()); }
+        if flags & !3 != 0 { return Err(HeaderFault::Flags.into()); }
         let unit = flags & 1 != 0;
         let (scale, dimensions_start) = if flags & 2 != 0 {
-            let bytes = header.get(9..13).ok_or("truncated binary scale")?;
-            (Some(f32::from_le_bytes(bytes.try_into().map_err(|_| "invalid binary scale")?)), 13)
+            let bytes: [u8; 4] = header.get(9..13).and_then(|bytes| bytes.try_into().ok()).ok_or(HeaderFault::Truncated)?;
+            (Some(f32::from_le_bytes(bytes)), 13)
         } else { (None, 9) };
         let dimensions_end = dimensions_start + rank * 8;
-        if dimensions_end.checked_add(producer_len) != Some(header.len()) { return Err("binary descriptor length mismatch".into()); }
-        let dimensions = header.get(dimensions_start..dimensions_end).ok_or("truncated binary dimensions")?;
-        let shape = dimensions.chunks_exact(8).map(|dimension| {
-            Ok(u64::from_le_bytes(dimension.try_into().map_err(|_| "invalid binary dimension")?))
-        }).collect::<Result<Vec<_>, String>>()?;
-        let producer = std::str::from_utf8(&header[dimensions_end..]).map_err(|_| "producer identity is not UTF-8")?.to_owned();
+        if dimensions_end.checked_add(producer_len) != Some(header.len()) { return Err(HeaderFault::Length.into()); }
+        let dimensions = header.get(dimensions_start..dimensions_end).ok_or(HeaderFault::Truncated)?;
+        // chunks_exact(8) yields only 8-byte chunks, so each converts.
+        let shape = dimensions
+            .chunks_exact(8)
+            .map(|dimension| <[u8; 8]>::try_from(dimension).map(u64::from_le_bytes).map_err(|_| HeaderFault::Truncated))
+            .collect::<Result<Vec<_>, HeaderFault>>()?;
+        let producer = std::str::from_utf8(&header[dimensions_end..]).map_err(|_| HeaderFault::ProducerText)?.to_owned();
         let descriptor = Self { element_type, byte_order, shape, producer, unit, scale };
         descriptor.byte_len()?;
         Ok(descriptor)
@@ -173,11 +205,12 @@ pub(super) fn descriptor_column(field: &str) -> String {
 
 /// A typed page cursor must have exactly the same ordering as persisted identity text.
 /// Validate canonical spelling on native writes and reads; never silently rewrite it.
-pub(super) fn native_identity(text: &str) -> Result<uuid::Uuid, String> {
-    let id = uuid::Uuid::parse_str(text).map_err(|e| format!("invalid native row identity: {e}"))?;
+pub(super) fn native_identity(text: &str) -> Result<uuid::Uuid, super::storage_error::StorageError> {
+    let not_canonical = || super::storage_error::StorageError::NotCanonicalId { id: text.to_owned() };
+    let id = uuid::Uuid::parse_str(text).map_err(|_| not_canonical())?;
     let mut canonical = [0_u8; 36];
     if id.hyphenated().encode_lower(&mut canonical) != text {
-        return Err("native row identity requires canonical lowercase hyphenated UUID".into());
+        return Err(not_canonical());
     }
     Ok(id)
 }

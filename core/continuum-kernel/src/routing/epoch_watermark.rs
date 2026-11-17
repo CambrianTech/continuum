@@ -50,8 +50,8 @@ pub enum WatermarkDecision {
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum WatermarkError {
     /// The watermark database could not be opened.
-    #[error("open epoch watermark store {path}: {detail}")]
-    Open { path: std::path::PathBuf, detail: String },
+    #[error("open epoch watermark store {path}: {source}")]
+    Open { path: std::path::PathBuf, #[source] source: std::sync::Arc<crate::orm::StorageError> },
     /// An epoch the store cannot hold exactly (above 2^53).
     #[error("epoch {0} exceeds the exactly-stored range (2^53)")]
     EpochOutOfRange(u64),
@@ -175,9 +175,9 @@ impl OrmEpochWatermark {
     /// Open (creating if absent) the watermark database at `path` — the grant
     /// watermark of one airc home. Runs once at boot, not on the dispatch path.
     pub async fn open(path: &std::path::Path) -> Result<Self, WatermarkError> {
-        let adapter = Arc::new(SeaOrmAdapter::open(path).await.map_err(|detail| WatermarkError::Open {
+        let adapter = Arc::new(SeaOrmAdapter::open(path).await.map_err(|source| WatermarkError::Open {
             path: path.to_path_buf(),
-            detail,
+            source: std::sync::Arc::new(source),
         })?);
         let watermark = Self::over(Arc::clone(&adapter) as Arc<dyn StorageAdapter>).await?;
         Ok(watermark)
@@ -215,10 +215,9 @@ impl EpochWatermarkStore for OrmEpochWatermark {
             .save_monotonic(grantee.as_uuid(), &row, "epoch")
             .await
             .map_err(store_error)?;
-        Ok(if advanced {
-            WatermarkDecision::Accepted
-        } else {
-            WatermarkDecision::Superseded
+        Ok(match advanced {
+            crate::orm::seam::Written::Written => WatermarkDecision::Accepted,
+            crate::orm::seam::Written::Kept => WatermarkDecision::Superseded,
         })
     }
 

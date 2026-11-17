@@ -51,7 +51,7 @@ use crate::runtime::{CommandExecutor, InProcessTransport, LateBound};
 use continuum_client::{ClientError, Connection, Transport};
 
 use crate::genome::training_outcome::SubmitOutcome;
-use crate::orm::types::{BatchOperation, BatchOperationType};
+use crate::orm::types::{BatchOperation, RowKey, RowWrite};
 // `COLLECTION` is an associated const on the OrmEntity trait; the derive puts it
 // there, so the trait must be in scope to name it.
 use crate::orm::OrmEntity;

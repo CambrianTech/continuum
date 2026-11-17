@@ -151,14 +151,14 @@ impl ActionCommand for RecipeRun {
         let executor = self
             .executor_slot
             .get()
-            .ok_or_else(|| CommandError::Internal("recipe/run: substrate executor not yet bound".into()))?;
+            .ok_or_else(|| CommandError::Internal("the substrate executor is not bound yet".into()))?;
         let runs = runs_of(&self.runs)?.clone();
 
         // One registry for what a room IS and what an activity DOES (S2). Absence
         // of the source is a boot-order fact, not a recipe fact — say which.
         let source = crate::experience::source::node_experience_source().ok_or_else(|| {
             CommandError::Internal(
-                "recipe/run: the node's experience source is not installed — the boot path \
+                "the node's experience source is not installed — the boot path \
                  that builds the room-purpose index has not run"
                     .into(),
             )
@@ -178,7 +178,7 @@ async fn run_recipe(
 ) -> Result<RecipeRunResult, CommandError> {
     let recipe = source.recipe_for_purpose(&p.name).ok_or_else(|| {
         CommandError::Invalid(format!(
-            "no recipe with purpose `{}` — `activity/recipes` lists the catalogue; author \
+            "no recipe with purpose `{}` — the recipe catalogue lists every purpose; author \
              one as a JSON file in the recipes overlay directory (no code, no deploy)",
             p.name
         ))

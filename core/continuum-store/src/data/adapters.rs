@@ -70,7 +70,7 @@ impl DataState {
                 handle,
                 connection_string
             );
-            let sqlite = SeaOrmAdapter::connect(config).await?;
+            let sqlite = SeaOrmAdapter::connect(config).await.map_err(|e| e.to_string())?;
             ensure_declared_schemas(&sqlite, crate::orm::OrmEntityRegistry::global()).await?;
             Arc::new(sqlite)
         };
@@ -100,9 +100,9 @@ pub(super) async fn ensure_declared_schemas(
     }
     for schema in declarations.into_values() {
         adapter
-            .ensure_schema(schema)
+            .ensure_schema(&schema)
             .await
-            .into_result()?;
+            .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

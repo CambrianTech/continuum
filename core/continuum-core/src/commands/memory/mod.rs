@@ -46,7 +46,8 @@ mod tests {
         )))
     }
 
-    fn test_memory(persona_id: &str, id: &str, content: &str) -> serde_json::Value {
+    fn test_memory(persona_id: &str, fixture_name: &str, content: &str) -> serde_json::Value {
+        let id = uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_OID, fixture_name.as_bytes());
         serde_json::json!({
             "record": {
                 "id": id,
@@ -199,7 +200,7 @@ mod tests {
             assert!(appended.appended);
 
             // The durable row exists NOW — not merely the cache — in THIS citizen's bucket.
-            let counted: crate::orm::types::StorageResult<usize> = h
+            let counted: crate::orm::data_outputs::RecordCount = h
                 .execute(
                     "data/count",
                     serde_json::json!({
@@ -210,7 +211,7 @@ mod tests {
                 .await
                 .expect("data/count");
             assert_eq!(
-                counted.into_result(), Ok(1),
+                counted.count, 1,
                 "append must write through to {persona_id}'s longterm.db"
             );
         }
@@ -251,7 +252,12 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn empty_load_corpus_refuses_to_clobber_a_live_corpus() {
         use crate::runtime::module_harness::ModuleHarness;
-        let h = ModuleHarness::with(fresh_memory_module()).await;
+        let h = ModuleHarness::with_modules([
+            fresh_memory_module(),
+            Arc::new(crate::modules::data_wiring::data_module())
+                as Arc<dyn crate::runtime::ServiceModule>,
+        ])
+        .await;
         let persona = "clobber-guard-persona";
         // Fresh persona: an empty load is a legitimate bring-up — allowed.
         let first = h
