@@ -65,6 +65,29 @@ pub async fn settle_before_stop(cap: Duration) -> Vec<super::SettledCustody> {
     settle_within(&settlers, cap, &SETTLING).await
 }
 
+/// Resume only retained custody through the participants that originally owned it.
+/// Completed and lost entries are never handed back to a participant.
+pub(crate) async fn recover_retained_custody(custody: &mut [super::SettledCustody]) -> Result<(), CustodyRecoveryError> {
+    let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
+    let mut names = Vec::new();
+    for entry in custody.iter().filter(|entry| entry.state == super::CustodyState::Retained) {
+        if !names.contains(&entry.participant) { names.push(entry.participant.clone()); }
+    }
+    for name in names {
+        let owners: Vec<_> = settlers.iter().filter(|owner| owner.name() == name).collect();
+        let [owner] = owners.as_slice() else {
+            return Err(CustodyRecoveryError::InvalidEvidence {
+                participant: name, reason: "retained custody must resolve to exactly one installed owner".into(),
+            });
+        };
+        let retained = custody.iter().filter(|entry| entry.participant == name && entry.state == super::CustodyState::Retained)
+            .map(|entry| super::HeldCustody { endpoint: entry.endpoint.clone(), process: entry.process, state: entry.state }).collect();
+        let recovered = owner.recover(retained).await?;
+        custody_recovery::merge_recovery(custody, &name, recovered)?;
+    }
+    Ok(())
+}
+
 /// The participant settling right now, so a stop whose watchdog fires names the step that never
 /// completed instead of "still running" (card b5b9bef3: the page checkpoint held the M5's stop with
 /// nothing saying so).

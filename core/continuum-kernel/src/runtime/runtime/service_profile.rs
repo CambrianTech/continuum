@@ -333,6 +333,7 @@ impl ShutdownReceipt {
 pub(super) struct ShutdownOperation {
     pub(super) result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
     pub(super) started: std::sync::atomic::AtomicBool,
+    recovery_running: Arc<parking_lot::Mutex<bool>>,
 }
 
 impl ShutdownOperation {
@@ -340,6 +341,7 @@ impl ShutdownOperation {
         Self {
             result: tokio::sync::watch::channel(None).0,
             started: std::sync::atomic::AtomicBool::new(false),
+            recovery_running: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
 
@@ -385,6 +387,32 @@ impl ShutdownOperation {
         }
         self.result.subscribe()
     }
+
+    /// Recovery belongs to this operation, never to the requesting connection.
+    /// Reconnecting observers join the same future and see its merged receipt.
+    pub(super) fn recover_custody(&self) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+        let mut running = self.recovery_running.lock();
+        if !*running {
+            let receipt = self.result.borrow().clone();
+            if let Some(mut receipt) = receipt.filter(|receipt| receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained)) {
+                *running = true;
+                self.result.send_replace(None);
+                let tx = self.result.clone();
+                let running = self.recovery_running.clone();
+                tokio::spawn(async move {
+                    if let Err(error) = crate::runtime::extensions::recover_retained_custody(&mut receipt.custody).await {
+                        continuum_base::probe!(class = "shutdown.recovery.refused", error = %error,
+                            "custody recovery refused; unresolved owners and completed evidence retained");
+                    }
+                    // Publish before reopening explicit recovery admission. Completed
+                    // entries will not be included in any subsequent recovery request.
+                    tx.send_replace(Some(receipt));
+                    *running.lock() = false;
+                });
+            }
+        }
+        self.result.subscribe()
+    }
 }
 
 impl Default for ShutdownOperation {
@@ -411,6 +439,12 @@ pub fn begin_shutdown(rt: &Arc<Runtime>, settle: std::time::Duration) -> tokio::
 /// Observe the retained terminal receipt without starting a shutdown.
 pub fn shutdown_receipt() -> Option<ShutdownReceipt> {
     process_shutdown().result.borrow().clone()
+}
+
+/// Join selective custody recovery on the existing shutdown owner. This does not
+/// replay module shutdown phases or erase incomplete module evidence.
+pub fn recover_shutdown_custody() -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().recover_custody()
 }
 
 /// Wait for the shutdown to finish, up to `budget`.
@@ -509,6 +543,62 @@ async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<Shut
 #[cfg(test)]
 mod signal_receipt_tests {
     use super::*;
+
+    struct RecoveryOwner {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::runtime::extensions::SettleBeforeStop for RecoveryOwner {
+        fn name(&self) -> &'static str { "recovery-observer-fixture" }
+        fn settle(&self, _: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HeldCustody>> + Send>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn recover(&self, mut retained: Vec<HeldCustody>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send>> {
+            let calls = self.calls.clone();
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(retained.len(), 1, "completed state must never be recomputed");
+                entered.notify_one();
+                release.notified().await;
+                retained[0].state = CustodyState::Saved;
+                Ok(retained)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_survives_observer_disconnect_and_never_replays_saved_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        crate::runtime::extensions::install_settle_before_stop(Arc::new(RecoveryOwner {
+            calls: calls.clone(), entered: entered.clone(), release: release.clone(),
+        }));
+        let operation = ShutdownOperation::new();
+        let entry = |endpoint: &str, state| SettledCustody {
+            participant: "recovery-observer-fixture".into(), endpoint: endpoint.into(),
+            process: Some(SettledProcess { pid: 42, started_s: 7 }), state,
+        };
+        let saved = entry("already-saved", CustodyState::Saved);
+        operation.result.send_replace(Some(ShutdownReceipt {
+            modules: vec![], total_ms: 1, custody: vec![saved.clone(), entry("retained", CustodyState::Retained)],
+        }));
+        drop(operation.recover_custody());
+        entered.notified().await;
+        let mut observer = operation.recover_custody();
+        assert!(observer.borrow().is_none(), "in-progress recovery cannot authorize commit");
+        release.notify_one();
+        let receipt = observer.wait_for(Option::is_some).await?.clone().ok_or("missing receipt")?;
+        assert_eq!(receipt.custody[0], saved);
+        assert!(receipt.state_is_durable());
+        drop(operation.recover_custody());
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn signal_observer_waits_for_the_owners_late_receipt() -> Result<(), Box<dyn std::error::Error>> {
