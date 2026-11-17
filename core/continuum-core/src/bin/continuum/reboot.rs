@@ -306,7 +306,7 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         return Ok(());
     }
     #[cfg(windows)]
-    let _install_lease = take_install_lease(&PathBuf::from(home_dir()?).join(".continuum"))?;
+    let _install_lease = take_install_lease(&continuum_core::paths::continuum_home()?)?;
     #[cfg(windows)]
     if let Some(expected) = &options.service_descriptor_sha {
         PreparedCoreService::query()
