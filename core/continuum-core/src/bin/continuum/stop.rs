@@ -41,19 +41,43 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 }
 
 /// Discover receipt-acknowledged exit without beginning shutdown.
-pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::commands::system::shutdown::ShutdownTarget>, String> {
+/// Why a stop has no single receipt-bound core to drain: each case leaves every core and engine running.
+#[derive(Debug)]
+pub(super) enum NoBoundCore {
+    /// No core answered the capability probe.
+    Unanswered,
+    /// A core answered, but it is not the one core this stop found (none, or several, are running).
+    NotTheOnlyCore,
+    /// The answer did not decode as a process identity.
+    Invalid(String),
+}
+
+impl std::fmt::Display for NoBoundCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unanswered => f.write_str("no core answered the shutdown capability; every core remains running"),
+            Self::NotTheOnlyCore => f.write_str("the answering core is not the only core running; every core remains running"),
+            Self::Invalid(why) => write!(f, "invalid shutdown capability ({why}); every core remains running"),
+        }
+    }
+}
+
+pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<continuum_core::commands::system::shutdown::ShutdownTarget, NoBoundCore> {
     use continuum_core::commands::system::shutdown::ShutdownTarget;
     let conn = connection();
     let cmds = conn.commands();
     let reply = tokio::time::timeout(Duration::from_secs(3), cmds.execute_value("system/shutdown-target", serde_json::json!({}))).await;
-    // Capability discovery does not drain. Missing or ambiguous identity refuses stop.
-    let Ok(Ok(value)) = reply else { return Ok(None) };
+    // Capability discovery does not drain. An unanswered or ambiguous identity refuses the stop.
+    let Ok(Ok(value)) = reply else { return Err(NoBoundCore::Unanswered) };
     let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
-        .map_err(|e| format!("invalid shutdown capability: {e}"))?;
+        .map_err(|e| NoBoundCore::Invalid(e.to_string()))?;
     if target.pid > i32::MAX as u32 || target.instance.is_empty() {
-        return Err("invalid shutdown process identity".into());
+        return Err(NoBoundCore::Invalid("process identity out of range or unnamed".into()));
     }
-    Ok((pids == [target.pid as i32]).then_some(target))
+    if pids != [target.pid as i32] {
+        return Err(NoBoundCore::NotTheOnlyCore);
+    }
+    Ok(target)
 }
 
 /// The stop's outcome and what its durable receipt attests saved (the only lanes a teardown may reap).
@@ -111,8 +135,7 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
         }
         return Ok(GracefulStop::NothingRunning);
     }
-    let target = probe_shutdown_target(&pids).await?
-        .ok_or_else(|| "stop requires one receipt-bound core; missing or ambiguous cores remain running".to_string())?;
+    let target = probe_shutdown_target(&pids).await.map_err(|refusal| refusal.to_string())?;
     let self_exited = target.pid as i32;
     let (graceful, attested) = commit_graceful_shutdown(target).await?;
     graceful.require_durable()?;
