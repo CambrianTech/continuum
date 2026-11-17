@@ -80,7 +80,7 @@ impl VerbContract {
     }
 
     /// The contract she knows: the newest a submitted prompt told her, else the frozen one.
-    fn known(&self) -> Option<ContractId> {
+    pub(crate) fn known(&self) -> Option<ContractId> {
         match self.told {
             Told::Nothing => self.frozen,
             Told::Offered(id) => Some(id),
@@ -99,7 +99,7 @@ pub(crate) enum LiveContract {
 }
 
 impl LiveContract {
-    fn id(&self) -> Option<ContractId> {
+    pub(crate) fn id(&self) -> Option<ContractId> {
         match self {
             LiveContract::Offered { id, .. } => Some(*id),
             LiveContract::Removed => None,
@@ -148,7 +148,38 @@ impl ContractChange {
     }
 }
 
+/// `canonical`'s contract as its current owner declares it now, recomputed at dispatch (Codex's
+/// review: bind a call to the contract she was shown and recheck the owner before any effect), by
+/// the same projection and identity a surface's build uses. `None` for a verb that is the turn's own
+/// protocol (a verdict verb), which no command owns; a held verb no command owns now is removed.
+pub(crate) fn live_at_dispatch(canonical: &str) -> Option<LiveContract> {
+    let Some(descriptor) = crate::sdk_codegen::command_descriptor(canonical) else {
+        let verdict = crate::cognition::persona_tools::verdict_tool_specs().iter().any(|spec| spec.name == canonical);
+        return (!verdict).then_some(LiveContract::Removed);
+    };
+    Some(match crate::cognition::persona_tools::descriptor_to_tool_spec(descriptor) {
+        Ok(spec) => {
+            let spec = crate::ai::tool_dialect::to_wire_spec(spec);
+            LiveContract::Offered { id: super::tool_surface::contract_id(descriptor.contract_revision, &spec), spec }
+        }
+        Err(exclusion) => {
+            continuum_base::probe!(
+                class = "tool.call.contract_excluded",
+                verb = %canonical,
+                reason = %exclusion.reason,
+                "a held verb's command can no longer be offered as a tool: it is removed for her, and a call to it is refused"
+            );
+            LiveContract::Removed
+        }
+    })
+}
+
 impl HeldHands {
+    /// The contract she knows for `canonical`, when her head holds that verb.
+    pub(crate) fn held(&self, canonical: &str) -> Option<VerbContract> {
+        self.names.iter().position(|name| name == canonical).and_then(|at| self.contracts.get(at).copied())
+    }
+
     /// The menu categories her head holds expanded.
     pub(crate) fn menu(&self) -> &BTreeSet<String> {
         &self.menu

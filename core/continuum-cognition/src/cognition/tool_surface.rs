@@ -270,7 +270,7 @@ impl ToolSurface {
         let contracts = authorized_names
             .iter()
             .zip(authorized.specs.iter())
-            .map(|(name, spec)| continuum_base::tool_contract::ContractId::of(revision_of(name), &wire_bytes(spec)))
+            .map(|(name, spec)| contract_id(revision_of(name), spec))
             .collect();
         Self {
             authorized_names,
@@ -517,6 +517,13 @@ pub fn core_hands(offers: &[OfferedTool]) -> Vec<NativeToolSpec> {
 /// `Withheld` verb stays callable by name and never joins them.
 pub fn hands_surface(offers: &[OfferedTool]) -> Vec<NativeToolSpec> {
     offers.iter().filter(|offer| offer.disclosure.in_hands()).map(|offer| offer.spec.clone()).collect()
+}
+
+/// A verb's contract identity: its declared revision and every field of its spec as sent. The one
+/// function a surface's build and dispatch's re-check (`hands_custody::live_at_dispatch`) both
+/// compute, so the two cannot disagree (card 9cf06ade).
+pub(crate) fn contract_id(revision: continuum_base::tool_contract::ContractRevision, wire: &NativeToolSpec) -> continuum_base::tool_contract::ContractId {
+    continuum_base::tool_contract::ContractId::of(revision, &wire_bytes(wire))
 }
 
 /// Every field of a spec as the wire carries it, separated: what a contract identity is computed

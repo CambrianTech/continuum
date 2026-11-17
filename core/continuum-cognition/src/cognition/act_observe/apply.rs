@@ -185,7 +185,7 @@ pub async fn apply_act(
     let batch = crate::ai::types::CallBatch::classify(calls.iter().cloned(), origin);
     // A call on a verb whose contract moved, before a served prompt told her, runs on neither
     // route below: it is answered with what moved (`contract_gate`, card 9cf06ade).
-    let contract_held = super::contract_gate::held_back(&batch, &body.working_memory.contract_changes());
+    let contract_held = super::contract_gate::held_back(&batch, &body.working_memory);
     let batch = batch.without_committed(|committed| contract_held.iter().any(|held| held.call.id == committed.call().id));
     let effect_calls: Vec<(String, String)> = batch
         .committed()

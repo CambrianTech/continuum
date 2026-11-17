@@ -276,6 +276,15 @@ impl WorkingMemory {
         self.view.lock().changes.clone()
     }
 
+    /// The contract she knows for `canonical`, when her held head holds that verb: what a call to it
+    /// is checked against at dispatch (`act_observe::contract_gate`).
+    pub(crate) fn held_contract(&self, canonical: &str) -> Option<crate::cognition::hands_custody::VerbContract> {
+        match &self.view.lock().hands {
+            crate::cognition::hands_custody::HandsCustody::Held(hands) => hands.held(canonical),
+            _ => None,
+        }
+    }
+
     pub fn restore(&self, mut snap: VolatileSnapshot) {
         self.touch();
         // Read before any field moves out of the snapshot below.
