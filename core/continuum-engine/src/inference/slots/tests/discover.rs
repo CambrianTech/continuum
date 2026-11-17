@@ -151,3 +151,58 @@ fn a_pool_records_the_engines_declared_minds_once() {
     let discovered = KvSlotPool::new("discovered", 5).with_resident_minds(None); // installed by a /props with no minds
     assert!(!discovered.declare_resident_minds(minds), "a recorded 'no minds' is a declaration, not a blank");
 }
+
+// what this catches: the M5 2026-11-17 outage end to end (owned spawn -> discovery -> admission). A core that
+// spawns its engine publishes the pool at readiness from its launch contract; the engine declares its resident
+// minds only on /props. Discovery must accept that owned pool, record the engine's declaration on it, and grant
+// page admission, so the fast path afterwards returns the same, DECLARED pool (never an undeclared one read as
+// core-paged minds). Before the fix every discovery here returned MindsMismatch.
+#[tokio::test]
+async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
+    use crate::inference::weight_residency::ResidentMinds;
+    let props = serde_json::json!({
+        "total_slots": 2,
+        "context_geometry": {
+            "allocated_tokens": 8192, "max_tokens_per_sequence": 4096, "sequence_capacity": 4,
+            "resident_minds": {"enabled": true, "lanes": 2, "parked_ids": 2, "parked_free": 2, "incarnation": 42}
+        }
+    });
+    let app = axum::Router::new()
+        .route("/props", axum::routing::get(move || { let props = props.clone(); async move { axum::Json(props) } }));
+    let namespace = format!("/{}", uuid::Uuid::new_v4()); // a recycled port is not this fixture engine
+    let app = axum::Router::new().nest(&namespace, app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("test: serve") });
+
+    // the owned spawn: a ready generation publishes the pool from the launch contract
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let endpoint = directory().endpoint(&root);
+    let contract = KvPageContract {
+        model_id: "fixture".into(),
+        model: "fixture.gguf".into(),
+        adapters: vec![],
+        page_dir: Some(dir.path().to_path_buf()),
+        context: 8192,
+        slots: 2,
+        cache_type: Some("q8_0".into()),
+        flash_attn: Some(true),
+        revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+    };
+    let transition = endpoint.transition().await;
+    let generation = transition.start_generation().expect("test: generation");
+    transition.ready(&root, &generation, contract).expect("test: ready");
+    drop(transition);
+    let owned = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
+    assert_eq!(owned.resident_minds(), None, "the spawn knows its contract, not the engine's declaration");
+
+    let declared = Some(ResidentMinds { lanes: 2, parked_ids: 2, incarnation: 42 });
+    let client = reqwest::Client::new();
+    let pool = directory().discover_pool(&client, &root).await.expect("discovery accepts the owned pool");
+    assert!(Arc::ptr_eq(&pool, &owned), "the owned pool is the one discovered, not a replacement");
+    assert_eq!(pool.resident_minds(), declared, "discovery recorded the engine's own declaration");
+    assert!(directory().page_admission_known(&root), "page admission granted after the declaration");
+    let again = directory().discover_pool(&client, &root).await.expect("the fast path");
+    assert!(Arc::ptr_eq(&again, &owned) && again.resident_minds() == declared, "the fast path returns the declared pool");
+    server.abort();
+}

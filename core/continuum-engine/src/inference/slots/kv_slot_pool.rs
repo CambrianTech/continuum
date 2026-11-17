@@ -138,8 +138,8 @@ impl KvSlotPool {
     }
 
     /// This pool, for an engine that declared resident minds on the `/props` that installs it.
-    pub(super) fn with_resident_minds(self, minds: Option<crate::inference::weight_residency::ResidentMinds>) -> Self {
-        let _ = self.resident_minds.set(minds); // a fresh pool: the first and only declaration
+    pub(super) fn with_resident_minds(mut self, minds: Option<crate::inference::weight_residency::ResidentMinds>) -> Self {
+        self.resident_minds = std::sync::OnceLock::from(minds); // a fresh pool: born holding its first and only declaration
         self
     }
 

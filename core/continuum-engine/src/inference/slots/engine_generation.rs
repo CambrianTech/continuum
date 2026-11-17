@@ -764,6 +764,13 @@ impl SlotDirectory {
         if body.get("total_slots").and_then(serde_json::Value::as_u64) != Some(pool.n_slots() as u64) {
             return Err("page-write capabilities do not identify this pool geometry".into());
         }
+        // Admission is granted only on a pool whose minds the engine has declared: this path can precede the first
+        // adapter discovery (a lifecycle checkpoint), and a granted admission is discovery's fast path, so an
+        // undeclared pool admitted here would be read as core-paged minds (M5 2026-11-17).
+        let minds = crate::inference::weight_residency::ContextGeometry::from_props(&body).and_then(|g| g.resident_minds);
+        if !pool.declare_resident_minds(minds) {
+            return Err("the engine's declared resident minds differ from this pool's record".into());
+        }
         if !self.negotiate_page_admission(root, &pool, generation, body.get("slot_save_size_version")).await {
             return Err("engine changed during page-write discovery".into());
         }
