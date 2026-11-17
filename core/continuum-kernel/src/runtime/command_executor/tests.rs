@@ -606,7 +606,7 @@
 
     /// A stateless test command implementing ActionCommand (which gives CommandHandler → DynCommand).
     /// The blanket impl chain means this IS a routable DynCommand.
-    #[derive(Debug, Clone)]
+    #[derive(Debug, Clone, Default)]
     pub struct CallEchoCmd;
 
     #[async_trait::async_trait]
@@ -618,6 +618,8 @@
             Ok(CallTestOutput { echoed: params.value })
         }
     }
+
+    crate::register_stateless_command!(CallEchoCmd);
 
     /// A minimal ServiceModule that exposes our test command via commands().
     struct CallEchoModule;
@@ -663,7 +665,6 @@
     #[tokio::test]
     async fn call_registered_command_returns_typed_output_without_serde() {
         let registry = Arc::new(ModuleRegistry::new());
-        registry.register(Arc::new(CallEchoModule));
 
         let executor = CommandExecutor::new(registry.clone());
 
