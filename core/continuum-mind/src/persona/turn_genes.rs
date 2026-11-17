@@ -44,9 +44,9 @@ impl TurnGenes {
     }
 }
 
-/// Compose her genes for a turn whose focus is `rendered` and settle them on `cycle`. Returns the
-/// decision; the caller runs her act only when [`TurnGenes::may_act`].
-pub(crate) async fn page_turn_genes(cycle: &WorkspaceCycle, persona: uuid::Uuid, name: &str, rendered: &str) -> TurnGenes {
+/// Compose her genes for a turn whose focus is `rendered` and settle them on `cycle`. Returns whether
+/// her act may run this turn ([`TurnGenes::may_act`]); composed genes move onto her cycle.
+pub(crate) async fn page_turn_genes(cycle: &WorkspaceCycle, persona: uuid::Uuid, name: &str, rendered: &str) -> bool {
     let need = crate::cognition::recall_faculty::focused_query(rendered);
     let (composed, unknown) = match crate::genome::composer::compose(persona, need).await {
         crate::genome::composer::Composition::Genes(phenotype) => (Some(phenotype.genes), ""),
@@ -62,10 +62,11 @@ pub(crate) async fn page_turn_genes(cycle: &WorkspaceCycle, persona: uuid::Uuid,
         unknown = unknown,
         "her genes for this turn: composed, unchanged, held, or deferred (never an unknown read as empty)"
     );
-    if let TurnGenes::Composed(genes) = &decision {
-        cycle.page_in(genes.clone());
+    let may_act = decision.may_act();
+    if let TurnGenes::Composed(genes) = decision {
+        cycle.page_in(genes);
     }
-    decision
+    may_act
 }
 
 #[cfg(test)]

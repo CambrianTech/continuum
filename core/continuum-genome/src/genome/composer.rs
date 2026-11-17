@@ -223,7 +223,7 @@ fn route(candidate: &Candidate<'_>, need: Option<&Need<'_>>, was_on: bool) -> Ro
 #[derive(Debug)]
 pub enum Composition {
     Genes(Phenotype),
-    Unknown('static str),
+    Unknown(&'static str),
 }
 
 /// Her phenotype for the next turn, composed from `perception` (what her mind is on: the turn's

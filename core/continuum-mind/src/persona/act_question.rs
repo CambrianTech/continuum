@@ -333,7 +333,7 @@ pub(crate) async fn ask_the_act_question(
                     // the genes whose regions this turn's focused line is inside, weighted by
                     // depth (`genome::composer`), and every receipt names the genes that ran
                     // (`GenerationReceipt::genes`). Unknown: the genome she holds, or her act waits.
-                    if !crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &burst.rendered).await.may_act() {
+                    if !crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &burst.rendered).await {
                         return WorkQuestionOutcome::default(); // her genome is unknown: her act waits, never the base model
                     }
                     // Her credit follows the card she holds through the turn (card 12ddd78f).

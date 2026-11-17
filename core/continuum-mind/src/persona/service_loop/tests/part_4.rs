@@ -640,6 +640,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             HeuristicInferenceAdapter::new().with_canned_response("Here.").with_request_recorder(requests.clone()),
         );
         let hosted = hosted_with_heuristic(persona);
+        const ASKED: &str = "@Paige are you there?";
         let room = Uuid::new_v4();
         let msg = IncomingMessage {
             work: None,
@@ -647,7 +648,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             event_id: Uuid::new_v4(),
             lamport: 1,
             peer_id: Uuid::new_v4(),
-            text: "@Paige are you there?".into(),
+            text: ASKED.into(),
             room_id: room,
         };
         let activity = crate::identity::ActivityRoom::from_uuid(room).unwrap(); // unwrap: a fresh uuid is a valid room
@@ -656,7 +657,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         let mut outcome = ServeOutcome::default();
         let mut pending = crate::persona::wake_backlog::PendingInput::for_persona(persona);
         let input = || CycleInput {
-            workspace_burst: crate::cognition::workspace::Burst::raw_in(activity, msg.text.clone()),
+            workspace_burst: crate::cognition::workspace::Burst::raw_in(activity, ASKED.into()),
             wake_engram: None,
         };
 

@@ -94,7 +94,7 @@ pub(crate) async fn drive_initiative_turn(
         return WorkQuestionOutcome::default();
     };
     // Her genes run on her own time too, composed from what this turn perceives (`turn_genes`).
-    if !crate::persona::turn_genes::page_turn_genes(cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, INITIATIVE_MOMENT).await.may_act() {
+    if !crate::persona::turn_genes::page_turn_genes(cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, INITIATIVE_MOMENT).await {
         return WorkQuestionOutcome::default(); // her genome is unknown: her act waits, never the base model
     }
     // Her own heartbeat caused it, so the cause is Ambient (a lived turn), never Synthetic.
