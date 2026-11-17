@@ -637,7 +637,7 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
         let _cycle = crate::persona::obligation::resident_with(
             persona,
-            HeuristicInferenceAdapter::new().with_canned_response("Here.").with_request_recorder(requests.clone()),
+            HeuristicInferenceAdapter::new().with_canned_response("Here.").with_request_recorder(Arc::clone(&requests)),
         );
         let hosted = hosted_with_heuristic(persona);
         const ASKED: &str = "@Paige are you there?";
