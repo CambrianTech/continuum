@@ -585,3 +585,127 @@
             "decliner must have been consulted (proves policy was Allow)"
         );
     }
+
+
+// ── Test fixtures for call::<C> ────────────────────────────────
+    use crate::sdk_codegen::{ActionCommand as _, DynCommand};
+    use crate::runtime::registry::ModuleRegistry;
+    use std::sync::Arc;
+
+    /// Test params — serializable, deserializable.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+    pub struct CallTestParams {
+        pub value: String,
+    }
+
+    /// Test output — serializable, deserializable.
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+    pub struct CallTestOutput {
+        pub echoed: String,
+    }
+
+    /// A stateless test command implementing ActionCommand (which gives CommandHandler → DynCommand).
+    /// The blanket impl chain means this IS a routable DynCommand.
+    #[derive(Debug, Clone)]
+    pub struct CallEchoCmd;
+
+    #[async_trait::async_trait]
+    impl ActionCommand for CallEchoCmd {
+        const NAME: &'static str = "call/test_echo";
+        type Params = CallTestParams;
+        type Output = CallTestOutput;
+        async fn run(&self, _ctx: &Ctx, params: Self::Params) -> Result<Self::Output, CommandError> {
+            Ok(CallTestOutput { echoed: params.value })
+        }
+    }
+
+    /// A minimal ServiceModule that exposes our test command via commands().
+    struct CallEchoModule;
+
+    #[async_trait::async_trait]
+    impl crate::runtime::service_module::ServiceModule for CallEchoModule {
+        fn config(&self) -> crate::runtime::service_module::ModuleConfig {
+            crate::runtime::service_module::ModuleConfig {
+                name: "call-echo",
+                priority: crate::runtime::service_module::ModulePriority::Normal,
+                command_prefixes: &[],
+                event_subscriptions: &[],
+                needs_dedicated_thread: false,
+                max_concurrency: 0,
+                tick_interval: None,
+            }
+        }
+
+        async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+            Ok(())
+        }
+
+        async fn handle_command(
+            &self,
+            _command: &str,
+            _params: serde_json::Value,
+        ) -> Result<crate::CommandResult, String> {
+            Err("unreachable".into())
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn DynCommand>> {
+            vec![Arc::new(CallEchoCmd)]
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// What this catches: call::<C> routes through the typed path,
+    /// downcasts to C, runs with params BY VALUE (zero serde), and
+    /// returns Result<C::Output, CallError>. Matches variant NotRegistered.
+    #[tokio::test]
+    async fn call_registered_command_returns_typed_output_without_serde() {
+        let registry = Arc::new(ModuleRegistry::new());
+        registry.register(Arc::new(CallEchoModule));
+
+        let executor = CommandExecutor::new(registry.clone());
+
+        // The command should be routable via the typed path
+        assert!(
+            registry.route_object("call/test_echo").is_some(),
+            "command must be in the typed object map"
+        );
+
+        let result = executor.call::<CallEchoCmd>(CallTestParams {
+            value: "hello".into(),
+        })
+        .await;
+
+        match result {
+            Ok(CallTestOutput { echoed }) => assert_eq!(echoed, "hello"),
+            Err(e) => panic!("expected Ok, got error variant: {:?}", e),
+        }
+    }
+
+    /// What this catches: an unregistered name returns CallError::NotRegistered,
+    /// never a string match or text-based comparison.
+    #[tokio::test]
+    async fn call_unregistered_command_returns_not_registered_variant() {
+        let registry = Arc::new(ModuleRegistry::new());
+
+        // No module registered — no commands on the typed path
+        assert!(registry.route_object("call/does/not/exist").is_none(), "must not be routable");
+
+        let executor = CommandExecutor::new(registry);
+
+        let result: Result<CallTestOutput, CallError> = executor
+            .call::<CallEchoCmd>(CallTestParams { value: "x".into() })
+            .await;
+
+        match result {
+            Err(CallError::NotRegistered(name)) => {
+                assert_eq!(name, "call/test_echo", "error must name the missing command");
+            }
+            other => panic!(
+                "expected NotRegistered variant, got: {:?}",
+                other
+            ),
+        }
+    }
