@@ -444,3 +444,54 @@ fn test_obligations(hosted: &HostedPersona) -> crate::persona::obligation::Oblig
         assert!(conversation.said().is_empty());
     }
 
+
+// Closing before the task starts must not consume even its first inbox item or
+// finish/drop the loop. The owner retains it until checkpoint custody is proved.
+#[tokio::test]
+async fn closed_slot_retains_the_loop_and_its_unread_input() {
+    let persona = Uuid::new_v4();
+    let hosted = hosted_with_heuristic(persona);
+    let event_id = Uuid::new_v4();
+    let mut conversation = ScriptedConversation::new().with_events(vec![Ok(Some(IncomingMessage {
+        work: None, media: Vec::new(), event_id, lamport: 1,
+        peer_id: Uuid::new_v4(), text: "unread while resting".into(), room_id: Uuid::new_v4(),
+    }))]);
+    let options = ServeOptions::default();
+    assert!(options.turns.close());
+    {
+        let retained = serve_persona_loop_inner::serve_persona_loop_inner(
+            &hosted, &mut conversation, options, test_obligations(&hosted),
+        );
+        tokio::pin!(retained);
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(retained.as_mut(), cx).is_pending(), "closure retains the live future");
+            std::task::Poll::Ready(())
+        }).await;
+    }
+    let unread = conversation.next_message().await.expect("scripted inbox").expect("input retained");
+    assert_eq!(unread.event_id, event_id);
+    assert!(conversation.said().is_empty());
+}
+
+// A refused rest must resume the SAME future, not construct a new persona or
+// replay startup. The scripted terminal inbox makes resumed progress observable.
+#[tokio::test]
+async fn refused_rest_resumes_the_retained_loop() {
+    let hosted = hosted_with_heuristic(Uuid::new_v4());
+    let mut conversation = ScriptedConversation::new().with_events(vec![Ok(None)]);
+    let options = ServeOptions::default();
+    let gate = Arc::clone(&options.turns);
+    assert!(gate.close_for_rest());
+    let retained = serve_persona_loop_inner::serve_persona_loop_inner(
+        &hosted, &mut conversation, options, test_obligations(&hosted),
+    );
+    tokio::pin!(retained);
+    std::future::poll_fn(|cx| {
+        assert!(std::future::Future::poll(retained.as_mut(), cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    assert!(gate.reopen_drained());
+    tokio::time::timeout(std::time::Duration::from_secs(2), retained)
+        .await.expect("refusal wakes the retained service future")
+        .expect("scripted end completes normally");
+}

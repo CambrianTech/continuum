@@ -6,7 +6,7 @@
 //! the check and the increment, and a drain then reads zero while a producer is about to
 //! make it one.
 //!
-//! This is that pair in a single word: high bit CLOSED, low 63 bits the in-flight count,
+//! This is that pair in a single word: high bits CLOSED/RETIRED, low 62 bits the in-flight count,
 //! admission by `compare_exchange`. It exists as a TYPE rather than a pattern because it
 //! was written twice — once for persona turns, once for the log queue — and the second
 //! copy reintroduced the exact race the first had just removed. Two implementations of an
@@ -21,16 +21,20 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// High bit. Leaves 63 bits of count, which is not a limit anyone reaches: the count is
+/// High bits. Leave 62 bits of count, which is not a limit anyone reaches: the count is
 /// concurrent units of work, bounded by citizens or queue capacity.
 const CLOSED: u64 = 1 << 63;
+const RETIRED: u64 = 1 << 62;
+const FLAGS: u64 = CLOSED | RETIRED;
 
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
+#[derive(Debug)]
 pub struct AdmissionGate {
     word: AtomicU64,
     /// Published when the gate becomes closed AND empty: the event a stop subscribes to
     /// ([`drained`](Self::drained)), never a poll of the count (card b5b9bef3).
     emptied: tokio::sync::Notify,
+    opened: tokio::sync::Notify,
 }
 
 impl AdmissionGate {
@@ -40,6 +44,7 @@ impl AdmissionGate {
         Self {
             word: AtomicU64::new(0),
             emptied: tokio::sync::Notify::const_new(),
+            opened: tokio::sync::Notify::const_new(),
         }
     }
 
@@ -51,7 +56,7 @@ impl AdmissionGate {
             let emptied = self.emptied.notified();
             tokio::pin!(emptied);
             emptied.as_mut().enable();
-            if self.word.load(Ordering::Acquire) == CLOSED {
+            if self.word.load(Ordering::Acquire) & !RETIRED == CLOSED {
                 return;
             }
             emptied.await;
@@ -60,7 +65,7 @@ impl AdmissionGate {
 
     /// Publish [`drained`](Self::drained) when the word a change left is closed and empty.
     fn publish_if_drained(&self, left: u64) {
-        if left == CLOSED {
+        if left & !RETIRED == CLOSED {
             self.emptied.notify_waiters();
         }
     }
@@ -73,7 +78,7 @@ impl AdmissionGate {
 
     /// Units of work admitted and not yet released.
     pub fn in_flight(&self) -> u64 {
-        self.word.load(Ordering::Acquire) & !CLOSED
+        self.word.load(Ordering::Acquire) & !FLAGS
     }
 
     /// ADMIT one unit of work, or refuse because the gate is closed.
@@ -90,6 +95,31 @@ impl AdmissionGate {
     pub fn admit(&self) -> Option<Permit<'_>> {
         // A no-op hook, monomorphised away: production runs the identical loop.
         self.admit_hooked(|| {})
+    }
+
+    /// Retain the caller's state while admission is closed. Subscribe before the
+    /// admission attempt so reopening cannot strand an already-parked caller.
+    pub async fn admit_when_open(&self) -> Permit<'_> {
+        loop {
+            let opened = self.opened.notified();
+            tokio::pin!(opened);
+            opened.as_mut().enable();
+            if let Some(permit) = self.admit() {
+                return permit;
+            }
+            opened.await;
+        }
+    }
+
+    /// Explicit recovery by the lifecycle owner after a refused rest. Never
+    /// reopen over admitted work. The owner must serialize close/recovery/retire
+    /// operations. Permanent shutdown sets RETIRED, so this CAS cannot undo it.
+    pub fn reopen_drained(&self) -> bool {
+        if self.word.compare_exchange(CLOSED, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return false;
+        }
+        self.opened.notify_waiters();
+        true
     }
 
     /// `admit`, with a hook run between the LOAD and the compare-exchange.
@@ -147,13 +177,13 @@ impl AdmissionGate {
         let released = self
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
-                let count = cur & !CLOSED;
+                let count = cur & !FLAGS;
                 if count == 0 {
                     // Nothing to release. Refuse rather than wrap: `cur - 1` here would
                     // borrow from the closed bit and silently REOPEN the gate.
                     None
                 } else {
-                    Some((cur & CLOSED) | (count - 1))
+                    Some((cur & FLAGS) | (count - 1))
                 }
             });
         if let Ok(before) = released {
@@ -161,13 +191,20 @@ impl AdmissionGate {
         }
     }
 
-    /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
+    /// Retire the gate. Returns whether THIS call retired it, so a second caller — a signal
     /// racing a stop verb, a retried request — can tell it is re-entering rather than
-    /// report a fresh close.
+    /// report a fresh retirement. A prior rest pause is not a permanent stop.
     ///
-    /// One-way by design: the only caller is a stop, and a reopen would exist to be called
-    /// by mistake. A gate is re-opened by constructing a new one.
+    /// Permanent shutdown: retirement cannot be undone by a refused-rest recovery.
     pub fn close(&self) -> bool {
+        let before = self.word.fetch_or(FLAGS, Ordering::AcqRel);
+        self.publish_if_drained(before | FLAGS);
+        before & RETIRED == 0
+    }
+
+    /// Pause admission for a resident rest. A permanent close racing this pause
+    /// retains RETIRED; only a drained, non-retired pause can be recovered.
+    pub fn close_for_rest(&self) -> bool {
         let before = self.word.fetch_or(CLOSED, Ordering::AcqRel);
         self.publish_if_drained(before | CLOSED);
         before & CLOSED == 0
@@ -199,6 +236,66 @@ impl Drop for Permit<'_> {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn refused_rest_reopens_only_after_drain_and_wakes_retained_work() {
+        struct WakeCount(std::sync::atomic::AtomicUsize);
+        impl std::task::Wake for WakeCount {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let gate = AdmissionGate::new();
+        for _ in 0..4 {
+            let active = gate.admit().expect("open gate");
+            assert!(gate.close_for_rest());
+            assert!(!gate.reopen_drained(), "cannot reopen over work that still owns state");
+            let mut waiting = std::pin::pin!(gate.admit_when_open());
+            let wakes = std::sync::Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0)));
+            let waker = std::task::Waker::from(std::sync::Arc::clone(&wakes));
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
+            drop(active);
+            gate.drained().await;
+            assert!(gate.reopen_drained());
+            assert!(wakes.0.load(Ordering::Relaxed) > 0, "reopen must notify the parked task before it is polled again");
+            assert!(!gate.reopen_drained(), "already open is not another recovery");
+            let resumed = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await.expect("retained work wakes on reopen");
+            assert_eq!(gate.in_flight(), 1);
+            drop(resumed);
+        }
+    }
+
+    #[tokio::test]
+    async fn permanent_stop_cannot_be_reopened_by_rest_recovery() {
+        for pause_first in [false, true] {
+            let gate = AdmissionGate::new();
+            let active = gate.admit().expect("open gate");
+            if pause_first {
+                assert!(gate.close_for_rest());
+            }
+            assert!(gate.close(), "first permanent stop, including after a rest pause");
+            assert!(!gate.close(), "second permanent stop is re-entry");
+            assert_eq!(gate.in_flight(), 1);
+            assert!(!gate.reopen_drained());
+            drop(active);
+            gate.drained().await;
+            assert!(!gate.reopen_drained(), "retirement survives final permit release");
+            gate.close_for_rest();
+            gate.release_one();
+            assert_eq!(gate.in_flight(), 0);
+            assert!(!gate.reopen_drained(), "neither pause nor extra release clears retirement");
+            assert!(gate.admit().is_none());
+        }
+        let gate = AdmissionGate::new();
+        gate.close_for_rest();
+        assert!(gate.reopen_drained());
+        gate.close();
+        assert!(!gate.reopen_drained(), "a stop after recovery is also permanent");
+    }
     // what this catches: THE RACE, driven through the REAL admit/close rather than a
     // reimplementation of them. With an open flag and a count as separate atomics this
     // order was reachable: admit reads OPEN, close lands, drain reads 0 and saves, admit

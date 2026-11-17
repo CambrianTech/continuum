@@ -217,7 +217,7 @@ pub struct PersonaSpawnSupervisor {
     model_registry: &'static crate::model_registry::Registry,
     rt_handle: tokio::runtime::Handle,
     /// Seats that failed, by persona: attempts and the instant they may be tried again.
-    slot_backoff: std::sync::Mutex<std::collections::HashMap<Uuid, SlotBackoff>>,
+    slot_backoff: parking_lot::Mutex<std::collections::HashMap<Uuid, SlotBackoff>>,
 }
 
 impl PersonaSpawnSupervisor {
@@ -244,7 +244,7 @@ impl PersonaSpawnSupervisor {
             tier_id: tier_id.into(),
             model_registry,
             rt_handle,
-            slot_backoff: std::sync::Mutex::new(std::collections::HashMap::new()),
+            slot_backoff: parking_lot::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
@@ -418,13 +418,13 @@ impl PersonaSpawnSupervisor {
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
         // A pre-1970 clock reads 0 here: every backoff reads as expired: a retry, never a stuck seat.
         let now = EpochMs::now().millis();
-        let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.slot_backoff.lock();
         filter_by_backoff_with(now, &map, plans)
     }
 
     fn note_slot_failure(&self, persona_id: Uuid, reason: &str) {
         let now = EpochMs::now().millis();
-        let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.slot_backoff.lock();
         let entry = map.entry(persona_id).or_insert(SlotBackoff { attempts: 0, until_ms: 0 });
         entry.attempts = entry.attempts.saturating_add(1);
         let delay = backoff_delay(entry.attempts);
@@ -440,9 +440,7 @@ impl PersonaSpawnSupervisor {
     }
 
     fn clear_slot_failure(&self, persona_id: Uuid) {
-        if let Ok(mut map) = self.slot_backoff.lock() {
-            map.remove(&persona_id);
-        }
+        self.slot_backoff.lock().remove(&persona_id);
     }
 
     fn filter_by_hold(
@@ -681,7 +679,7 @@ impl PersonaSpawnSupervisor {
                         self.note_slot_failure(pid, &format!("{err}"));
                     }
                     summary.failures.push(BootSlotFailure {
-                        slot_index: slot_index.unwrap_or(slot_idx),
+                        slot_index,
                         role: Some(role),
                         persona_id,
                         reason: format!("{err}"),
@@ -723,21 +721,24 @@ impl PersonaSpawnSupervisor {
         let role = ctx.role;
         // Her role is a live fact of the roster (card ccb316a7): the grid seats her as it.
         self.registry.set_role(persona_id, role);
-        // Hand the loop the SAME quiesce atomic the registry slot holds so an
-        // eval-preemption lease can suspend her autonomic self-tick. Register precedes
-        // spawn, so the flag is present; if it somehow isn't, that's a registration
-        // bug, not a serving one — degrade to a private never-set flag (she's simply
-        // never quiescable) rather than fail her whole boot.
-        let quiesced = self
-            .registry
-            .quiesced_flag(persona_id)
-            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+        // Bind both gates to one slot. Missing registration is a boot refusal,
+        // never a private gate the lifecycle owner cannot close.
+        let Some((quiesced, turns)) = self.registry.service_gates(persona_id) else {
+            summary.failures.push(BootSlotFailure {
+                slot_index: slot_idx,
+                role: Some(role),
+                persona_id: Some(persona_id),
+                reason: "registered persona slot disappeared before service admission was bound".into(),
+            });
+            return;
+        };
         // Her obligation store (card 920619c5), on the same wired executor her hands use.
         let obligations = crate::persona::obligation::Obligations::new(executor, persona_id, &agent_name);
         let handle = match spawn_persona_service(
             ctx,
             ServeOptions {
                 quiesced,
+                turns,
                 ..ServeOptions::default()
             },
             obligations,
@@ -815,7 +816,13 @@ pub(crate) struct SlotBackoff {
 /// Doubling from 2 s, capped at 10 min: a refused seat is tried again soon in case the
 /// cause was transient (a daemon mid-restart), then rarely, and never at pass rate.
 pub(crate) fn backoff_delay(attempts: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((2u64 << attempts.saturating_sub(1).min(9)).min(600))
+    // derived-or-floor: preserves this supervisor's existing ten-minute retry
+    // ceiling; it is retry policy, not a resource grant or a work deadline. A
+    // persistently refused seat is retried within ten minutes without retrying
+    // at reconciler pass rate; admitted work is never interrupted by this bound.
+    const RETRY_CEILING_SECS: u64 = 600;
+    let seconds = 2u64.saturating_pow(attempts.max(1)).min(RETRY_CEILING_SECS);
+    std::time::Duration::from_secs(seconds)
 }
 
 /// Pure half of the backoff filter. Plans whose persona is inside its backoff are dropped.
@@ -843,7 +850,7 @@ fn supervisor_error_persona(err: &SupervisorError) -> Option<Uuid> {
     }
 }
 
-fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
+fn supervisor_error_facts(err: &SupervisorError) -> (usize, RoleId) {
     match err {
         SupervisorError::Profile {
             slot_index, role, ..
@@ -862,7 +869,7 @@ fn supervisor_error_facts(err: &SupervisorError) -> (Option<usize>, RoleId) {
         }
         | SupervisorError::RuntimeMissing {
             slot_index, role, ..
-        } => (Some(*slot_index), *role),
+        } => (*slot_index, *role),
     }
 }
 

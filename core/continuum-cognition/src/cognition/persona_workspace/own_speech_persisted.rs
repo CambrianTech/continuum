@@ -41,7 +41,7 @@ pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::Path
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Checkpointed {
     Unchanged { archive: crate::cognition::working_memory::ArchiveTick },
-    Written { bytes: usize, archive: crate::cognition::working_memory::ArchiveTick },
+    Written { bytes: usize, archive: crate::cognition::working_memory::ArchiveTick, generation: u64 },
 }
 
 /// Everything a checkpoint writes, as the last write found it: her memory's generation and what
@@ -134,7 +134,7 @@ pub(super) fn save_volatile(
     staging.write_all(&bytes)?;
     staging.replace(std::path::Path::new(name))?;
     last_marks().lock().insert(persona_id, mark);
-    Ok(Checkpointed::Written { bytes: bytes.len(), archive })
+    Ok(Checkpointed::Written { bytes: bytes.len(), archive, generation })
 }
 
 /// Load the previous life's volatile tier under the same owner lock as saves

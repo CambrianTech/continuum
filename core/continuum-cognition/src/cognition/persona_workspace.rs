@@ -59,6 +59,8 @@ pub use acting_hands::*;
 mod root_acting_workspace;
 pub use root_acting_workspace::*;
 mod own_speech_persisted;
+mod resident_checkpoint;
+pub use resident_checkpoint::{ResidentCheckpoint, ResidentCheckpointTarget, ResidentCheckpointError};
 mod mind_results_reporter;
 pub use mind_results_reporter::MindResultsReporter;
 pub(crate) use own_speech_persisted::*;

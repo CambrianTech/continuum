@@ -408,7 +408,7 @@ impl PersonaWorkspaceRegistry {
             let started = std::time::Instant::now();
             let result = save_volatile(id, reason, staged_deadline, &memory);
             let (outcome, bytes, archive) = match &result {
-                Ok(Checkpointed::Written { bytes, archive }) => ("ok", *bytes, *archive),
+                Ok(Checkpointed::Written { bytes, archive, .. }) => ("ok", *bytes, *archive),
                 Ok(Checkpointed::Unchanged { archive }) => ("unchanged", 0, *archive),
                 Err(_) => ("error", 0, Default::default()),
             };
