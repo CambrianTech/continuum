@@ -32,6 +32,7 @@ pub struct AdmissionGate {
     /// Published when the gate becomes closed AND empty: the event a stop subscribes to
     /// ([`drained`](Self::drained)), never a poll of the count (card b5b9bef3).
     emptied: tokio::sync::Notify,
+    opened: tokio::sync::Notify,
 }
 
 impl AdmissionGate {
@@ -41,6 +42,7 @@ impl AdmissionGate {
         Self {
             word: AtomicU64::new(0),
             emptied: tokio::sync::Notify::const_new(),
+            opened: tokio::sync::Notify::const_new(),
         }
     }
 
@@ -91,6 +93,31 @@ impl AdmissionGate {
     pub fn admit(&self) -> Option<Permit<'_>> {
         // A no-op hook, monomorphised away: production runs the identical loop.
         self.admit_hooked(|| {})
+    }
+
+    /// Retain the caller's state while admission is closed. Subscribe before the
+    /// admission attempt so reopening cannot strand an already-parked caller.
+    pub async fn admit_when_open(&self) -> Permit<'_> {
+        loop {
+            let opened = self.opened.notified();
+            tokio::pin!(opened);
+            opened.as_mut().enable();
+            if let Some(permit) = self.admit() {
+                return permit;
+            }
+            opened.await;
+        }
+    }
+
+    /// Explicit recovery by the lifecycle owner after a refused rest. Never
+    /// reopen over admitted work. The owner must serialize close/recovery/retire
+    /// operations; permanent shutdown callers do not invoke this transition.
+    pub fn reopen_drained(&self) -> bool {
+        if self.word.compare_exchange(CLOSED, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
+            return false;
+        }
+        self.opened.notify_waiters();
+        true
     }
 
     /// `admit`, with a hook run between the LOAD and the compare-exchange.
@@ -166,8 +193,8 @@ impl AdmissionGate {
     /// racing a stop verb, a retried request — can tell it is re-entering rather than
     /// report a fresh close.
     ///
-    /// One-way by design: the only caller is a stop, and a reopen would exist to be called
-    /// by mistake. A gate is re-opened by constructing a new one.
+    /// Stop callers leave it closed. A resident lifecycle owner may explicitly
+    /// recover a refused rest with `reopen_drained` after all admitted work ends.
     pub fn close(&self) -> bool {
         let before = self.word.fetch_or(CLOSED, Ordering::AcqRel);
         self.publish_if_drained(before | CLOSED);
@@ -199,6 +226,39 @@ impl Drop for Permit<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn refused_rest_reopens_only_after_drain_and_wakes_retained_work() {
+        struct WakeCount(std::sync::atomic::AtomicUsize);
+        impl std::task::Wake for WakeCount {
+            fn wake(self: std::sync::Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+            fn wake_by_ref(self: &std::sync::Arc<Self>) {
+                self.0.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        let gate = AdmissionGate::new();
+        for _ in 0..4 {
+            let active = gate.admit().expect("open gate");
+            assert!(gate.close());
+            assert!(!gate.reopen_drained(), "cannot reopen over work that still owns state");
+            let mut waiting = std::pin::pin!(gate.admit_when_open());
+            let wakes = std::sync::Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0)));
+            let waker = std::task::Waker::from(std::sync::Arc::clone(&wakes));
+            let mut context = std::task::Context::from_waker(&waker);
+            assert!(std::future::Future::poll(waiting.as_mut(), &mut context).is_pending());
+            drop(active);
+            gate.drained().await;
+            assert!(gate.reopen_drained());
+            assert!(wakes.0.load(Ordering::Relaxed) > 0, "reopen must notify the parked task before it is polled again");
+            assert!(!gate.reopen_drained(), "already open is not another recovery");
+            let resumed = tokio::time::timeout(std::time::Duration::from_secs(1), waiting)
+                .await.expect("retained work wakes on reopen");
+            assert_eq!(gate.in_flight(), 1);
+            drop(resumed);
+        }
+    }
 
     // what this catches: THE RACE, driven through the REAL admit/close rather than a
     // reimplementation of them. With an open flag and a count as separate atomics this

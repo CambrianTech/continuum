@@ -8,9 +8,7 @@ pub(super) async fn serve_persona_loop_inner(
 ) -> Result<ServeOutcome, String> {
     // Startup mutates cursor/obligation state too. A slot closed before its task
     // first runs must remain inert, and a close during startup must wait for it.
-    let Some(startup) = opts.turns.admit() else {
-        match std::future::pending::<std::convert::Infallible>().await {}
-    };
+    let startup = opts.turns.admit_when_open().await;
     // PRECONDITION: caller MUST have called `conversation.prime()`
     // before entering this loop. The supervisor's `spawn_persona_service`
     // does this before spawning the task. Direct callers (e.g.
@@ -101,9 +99,7 @@ pub(super) async fn serve_persona_loop_inner(
         // and its act; it never cancels a partially scanned inbox or loses its wake.
         // Keep the future and workspace alive after closure: only the lifecycle
         // owner may retire them after checkpoint custody has been verified.
-        let Some(_slot_turn) = opts.turns.admit() else {
-            match std::future::pending::<std::convert::Infallible>().await {}
-        };
+        let _slot_turn = opts.turns.admit_when_open().await;
         // An interrupted turn that began an effect closes after a completed turn read its notice.
         for answered in deferred_input.take_answered() {
             obligations.close(Some(answered)).await;
