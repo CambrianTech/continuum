@@ -51,22 +51,65 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
-// what this catches (the M5, 2026-11-17: the engine relaunched at 22:09:39Z mid-step): a dead engine
-// incarnation's learning state kept after the relaunch, so its custody claims never orphan and their
-// leases (Aris's 4.88 GB learning workspace) stay pinned, and every later pass finds 0 bytes free.
-// The dead incarnation's slot, with every claim in it, is dropped; the live one is kept.
+/// Bytes of governed VRAM `authority` has leased out (its capacity is 1 GiB).
+fn leased(authority: &Authority) -> u64 {
+    (1 << 30) - authority.resources.available_for("an observer", crate::resources::ResourceKind::Vram)
+}
+
+/// Seat a learning workspace of `bytes` in `incarnation`'s slot, as a pass leaves one: its lease
+/// in custody, its claim owned by the slot.
+async fn workspace_in(in_place: &InPlace, incarnation: EngineIncarnation, bytes: u64) -> std::sync::Weak<engine_lock::EngineSlot> {
+    let engine = crate::inference::llama_server::LearningEngine::of(incarnation);
+    let workspace = crate::genome::learner::memory::EngineWorkspace::held_for_test(&in_place.authority, &engine, "learning:her:workspace", bytes)
+        .expect("test: the workspace is leased");
+    let slot = in_place.engine(incarnation);
+    let mut held = slot.acquire(None, engine_lock::Phase::Prepare).await;
+    held.workspace = Some(workspace);
+    drop(held);
+    Arc::downgrade(&slot)
+}
+
+// what this catches (the M5, 2026-11-17: the engine relaunched at 22:09:39Z mid-step and a 4.88 GB
+// learning workspace lease stayed pinned, so every later pass found 0 governed bytes free): learning
+// state kept for a dead engine incarnation, whose custody claims then never orphan. A dead
+// incarnation's slot is dropped and its workspace lease is released by the next settle on the dead-
+// process proof; an unreadable incarnation and the live one keep theirs; a slot someone still holds
+// releases only once they let go.
 #[tokio::test]
-async fn a_dead_engines_learning_state_is_retired_and_the_live_one_kept() {
+async fn a_dead_engines_learning_state_is_retired_and_its_leases_released() {
     let in_place = InPlace::new(authority());
     let live = engine(1);
-    // This pid under another start time: a pid since reused, so that incarnation is verifiably dead.
-    let dead = EngineIncarnation { started_s: live.started_s.saturating_sub(1), ..live };
-    let dead_slot = Arc::downgrade(&in_place.engine(dead));
-    let live_slot = Arc::downgrade(&in_place.engine(live));
-    assert_eq!(in_place.retire_dead(live), 1, "the dead incarnation is retired");
-    assert!(dead_slot.upgrade().is_none(), "its slot, and every custody claim in it, is dropped");
+    // The dead one is really dead (this pid under another start time: a pid since reused), since
+    // custody's settle reads the real process; the unreadable one only to the retirement's probe.
+    let dead = EngineIncarnation { port: 2, started_s: live.started_s.saturating_sub(1), ..live };
+    let unreadable = EngineIncarnation { port: 3, ..live };
+    let liveness = |incarnation: &EngineIncarnation| match incarnation.port {
+        2 => Liveness::Dead,
+        3 => Liveness::Unknown,
+        _ => Liveness::Alive,
+    };
+    const MB: u64 = 1 << 20;
+    let dead_slot = workspace_in(&in_place, dead, 5 * MB).await;
+    let unreadable_slot = workspace_in(&in_place, unreadable, 7 * MB).await;
+    let live_slot = workspace_in(&in_place, live, 11 * MB).await;
+    assert_eq!(leased(&in_place.authority), 23 * MB, "three workspaces leased");
+
+    // Someone still holds the dead slot (a fence finishing): retired, but nothing released yet.
+    let still_held = dead_slot.upgrade().expect("test: seated");
+    assert_eq!(in_place.retire_dead_with(live, liveness), 1, "only the dead incarnation is retired");
+    assert_eq!(in_place.authority.custody.held(), (3, 0), "a held slot's claim is not an orphan yet");
+    assert_eq!(in_place.authority.custody.settle_orphans().await, 0);
+    assert_eq!(leased(&in_place.authority), 23 * MB, "nothing released while the slot is held");
+
+    // Let go: the claim orphans, and the settle releases it on the dead-process proof.
+    drop(still_held);
+    assert!(dead_slot.upgrade().is_none(), "the dead incarnation's slot is gone");
+    assert_eq!(in_place.authority.custody.held(), (3, 1), "its workspace claim is an orphan");
+    assert_eq!(in_place.authority.custody.settle_orphans().await, 0, "settled: its process is dead");
+    assert_eq!(leased(&in_place.authority), 18 * MB, "its 5 MB lease is released, the others kept");
+    assert!(unreadable_slot.upgrade().is_some(), "an unreadable incarnation is never taken for dead");
     assert!(live_slot.upgrade().is_some(), "the live engine's learning state is kept");
-    assert_eq!(in_place.retire_dead(live), 0, "nothing is retired twice");
+    assert_eq!(in_place.retire_dead_with(live, liveness), 0, "nothing is retired twice");
 }
 
 // what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her

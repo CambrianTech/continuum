@@ -165,7 +165,13 @@ impl InPlace {
     /// dropped claims become orphans, which `Custody::settle_orphans` releases on the dead-process
     /// proof. An incarnation whose liveness is unknown is kept: unreadable is never dead.
     pub(crate) fn retire_dead(&self, live: EngineIncarnation) -> usize {
-        let dead: Vec<EngineIncarnation> = self.engines.iter().map(|entry| *entry.key()).filter(|incarnation| *incarnation != live && incarnation.liveness() == Liveness::Dead).collect();
+        self.retire_dead_with(live, EngineIncarnation::liveness)
+    }
+
+    /// [`Self::retire_dead`] over a given liveness probe (a test names which incarnation is dead,
+    /// alive or unreadable).
+    fn retire_dead_with(&self, live: EngineIncarnation, liveness: impl Fn(&EngineIncarnation) -> Liveness) -> usize {
+        let dead: Vec<EngineIncarnation> = self.engines.iter().map(|entry| *entry.key()).filter(|incarnation| *incarnation != live && liveness(incarnation) == Liveness::Dead).collect();
         for incarnation in &dead {
             self.engines.remove(incarnation);
         }
