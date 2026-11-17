@@ -1,6 +1,6 @@
 //! Her genes at the start of EVERY turn she takes: a room turn, a question, and her own initiative
-//! alike (GENE-REUSE-FORK-MINT §3d). The genome composer answers for the turn's focused line
-//! (`genome::composer`), and her cycle, which owns the genes she runs with, adopts that answer
+//! alike (GENE-REUSE-FORK-MINT §3d). Her genome ([`Genome`](crate::genome::persona_genome::Genome)) composes for the
+//! turn's focused line on the served base, and her cycle, which owns the genes she runs with, adopts that answer
 //! ([`WorkspaceCycle::adopt_genes`]): a new set pages in, the same set changes nothing, an unknown
 //! genome keeps what she holds or defers her act. No turn path may skip it: a restart starts every
 //! cycle empty, and before this an initiative turn after one ran on the base model (Benchy on the
@@ -12,7 +12,10 @@ use crate::genome::composer::Composition;
 /// Compose her genes for a turn whose focus is `rendered` and have her cycle adopt them. Returns
 /// whether her act may run this turn.
 pub(crate) async fn page_turn_genes(cycle: &WorkspaceCycle, persona: uuid::Uuid, name: &str, rendered: &str) -> bool {
-    let composition = crate::genome::composer::compose(persona, crate::cognition::recall_faculty::focused_query(rendered)).await;
+    let base = crate::inference::llama_server::current_serving().active_model;
+    let composition = crate::genome::persona_genome::Genome::of(persona)
+        .compose(base.as_deref(), crate::cognition::recall_faculty::focused_query(rendered))
+        .await;
     let unknown = match &composition {
         Composition::Unknown(reason) => *reason,
         Composition::Genes(_) => "",
