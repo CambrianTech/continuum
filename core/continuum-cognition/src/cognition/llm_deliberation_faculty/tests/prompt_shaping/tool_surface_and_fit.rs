@@ -842,3 +842,56 @@ fn a_head_is_adopted_from_the_capture_it_matches_and_refused_from_one_that_diffe
     assert!(kept.last().is_some_and(|replaced| replaced.from_capture.as_ref().is_some_and(|from| from.cursor == "the capture")), "recorded as adopted from it: {kept:?}");
     assert!(matches!(restored.snapshot().context_hands, HandsCustody::Held(_)), "her head is held");
 }
+
+// what this catches (Codex's review of #6105 at 13a0d5268): an adoption from a capture asked over a
+// VALID held head and refused. With no head refusal beside it the capture refusal was dropped, so the
+// act that compared it (already carrying the candidate head, not her custody's) was sent, and so was
+// every act after it. Each mismatch, the early frontier one and the act's system prompt, tools and
+// model, refuses that act and the next with where it differs, and leaves her custody as it was.
+#[test]
+fn a_capture_refused_over_a_held_head_refuses_her_acts_and_keeps_her_custody() {
+    use crate::cognition::capture_adoption::{CaptureBinding, CapturedHead};
+    let wm = Arc::new(WorkingMemory::new(8));
+    let ws = Workspace::new("what changed on the board?");
+    let faculty = asha_with_hands().with_working_memory(Arc::clone(&wm));
+    let first = faculty.prompt_view_within(&ws, 200_000);
+    assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
+    let binding = faculty.binding.load_full();
+    let captured = faculty.build_request_within(&binding, first.completion_reserve, first.messages.clone(), first.tools.specs.clone(), first.system.clone(), None, Some(ws.room_id), TurnKind::Pass);
+    faculty.view_served(&first);
+    let custody = wm.snapshot().context_hands;
+    let ask_over = |request: crate::ai::types::TextGenerationRequest, expected_custody_sha256: String| {
+        let binding = CaptureBinding { cursor: "the capture".to_string(), request_sha256: "its digest".to_string(), expected_custody_sha256 };
+        wm.request_capture_adoption("operator", CapturedHead { binding, request: Arc::new(request) });
+    };
+    let ask = |request: crate::ai::types::TextGenerationRequest| ask_over(request, wm.custody_receipt().expect("her custody digests").sha256); // JUSTIFIED: test fixture
+
+    // The act matches the capture exactly, but the adoption names a custody she does not hold.
+    ask_over(captured.clone(), "a custody she does not hold".to_string());
+    let moved = faculty.prompt_view_within(&ws, 200_000);
+    assert!(moved.protocol_error.as_deref().is_some_and(|error| error.contains("adoption from a captured request was refused") && error.contains("her custody is")), "{:?}", moved.protocol_error);
+    assert_eq!(wm.snapshot().context_hands, custody, "her custody is as it was");
+
+    let mut longer = captured.clone();
+    longer.messages.push(longer.messages[0].clone());
+    let mut system = captured.clone();
+    system.system_prompt = system.system_prompt.map(|text| format!("{text} "));
+    let mut tools = captured.clone();
+    tools.tools = tools.tools.map(|specs| specs.iter().take(specs.len().saturating_sub(1)).cloned().collect::<Vec<_>>().into());
+    let mut model = captured.clone();
+    model.model = Some("another-model".to_string());
+    for (differs, says) in [(longer, "accepted frontier"), (system, "system prompt differs"), (tools, "tool schemas"), (model, "is served as")] {
+        ask(differs);
+        let refused = faculty.prompt_view_within(&ws, 200_000);
+        let error = refused.protocol_error.clone().unwrap_or_default(); // unwrap_or_default: an act with no refusal reads as empty, failing the assert below
+        assert!(error.contains("adoption from a captured request was refused") && error.contains(says), "{says}: {error:?}");
+        assert_eq!(wm.snapshot().context_hands, custody, "{says}: her custody is as it was");
+        assert!(wm.snapshot().superseded_hands.is_empty(), "{says}: nothing was adopted");
+        let next = faculty.prompt_view_within(&ws, 200_000);
+        assert!(next.protocol_error.as_deref().is_some_and(|error| error.contains(says)), "{says}: her next act waits too: {:?}", next.protocol_error);
+    }
+
+    ask(captured);
+    let adopted = faculty.prompt_view_within(&ws, 200_000);
+    assert!(adopted.protocol_error.is_none(), "the capture she was served adopts, and lifts the refusal: {:?}", adopted.protocol_error);
+}

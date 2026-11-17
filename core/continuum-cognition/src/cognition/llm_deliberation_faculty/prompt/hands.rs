@@ -60,13 +60,19 @@ impl LlmDeliberationFaculty {
         *view = restored;
     }
 
-    /// Why her acts are refused while her head waits for adoption, or `None`.
+    /// Why her acts are refused, or `None`: a head that waits for adoption, and a refused adoption
+    /// from a captured request, each refuses on its own. A capture refused over a valid held head
+    /// (Codex's review of #6105 at 13a0d5268) refuses too: the act that compared it carries the
+    /// candidate head, never her custody's, and no act runs until the next adoption is asked.
     pub(in super::super) fn hands_refusal(&self) -> Option<String> {
-        let refusal = self.hands_refused.lock().as_ref().map(HandsRefusal::reason)?;
-        Some(match self.capture_refused.lock().as_ref() {
-            Some(mismatch) => format!("{refusal}. Her last adoption from a captured request was refused: {mismatch}"),
-            None => refusal,
-        })
+        let head = self.hands_refused.lock().as_ref().map(HandsRefusal::reason);
+        let capture = self.capture_refused.lock().as_ref().map(|mismatch| {
+            format!("her adoption from a captured request was refused ({mismatch}): her acts wait until an adoption of her head is asked again, and her view and held head are kept")
+        });
+        match (head, capture) {
+            (Some(head), Some(capture)) => Some(format!("{head}. {capture}")),
+            (head, capture) => head.or(capture),
+        }
     }
 
     /// Her held head as this act offers it: none while an adoption waits to freeze a new one.
