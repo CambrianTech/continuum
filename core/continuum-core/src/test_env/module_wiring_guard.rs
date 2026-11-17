@@ -89,6 +89,10 @@ const UNWIRED: &[Unwired] = &[
         why: "fixture: ChatModule's data stand-in",
     },
     Unwired {
+        module: "BusyOwner",
+        why: "fixture: isolated shutdown child owns three blocked jobs to verify custody survives refusal",
+    },
+    Unwired {
         module: "TestModule",
         why: "fixture: this file's own routing tests",
     },

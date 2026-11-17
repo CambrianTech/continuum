@@ -65,7 +65,7 @@ async fn refused_commit_preserves_three_owned_jobs() -> Result<(), Box<dyn std::
     }
     for mode in ["clean-save", "join-timeout"] {
         let mut child = tokio::process::Command::new(std::env::current_exe()?);
-        child.args(["--exact", "commands::system::shutdown::custody_tests::refused_commit_preserves_three_owned_jobs", "--nocapture"])
+        child.args(["--exact", "commands::system::shutdown::tests::custody::refused_commit_preserves_three_owned_jobs", "--nocapture"])
             .env(CHILD, mode).kill_on_drop(true);
         #[cfg(windows)]
         child.creation_flags(0x08000000);

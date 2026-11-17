@@ -201,11 +201,8 @@ crate::action_command! {
 }
 
 #[cfg(test)]
-#[path = "shutdown_custody_tests.rs"]
-mod custody_tests;
-
-#[cfg(test)]
 mod tests {
+    mod custody;
     use super::*;
     use crate::sdk_codegen::{ActionCommand, Ctx};
 
