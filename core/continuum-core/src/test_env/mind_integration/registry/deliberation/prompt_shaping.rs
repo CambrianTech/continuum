@@ -785,7 +785,12 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // 18752 -> 18783 (#5998 merged onto canary with #6000 + #6001): the +29 above plus +2 for
     // #6000's `code/git/merge`, now offered by its path `code_git_merge` rather than its alias
     // `git_merge`. Measured in CI on merge 9f093107c (job 132431324749).
-    const AGENTIC_SURFACE_CEILING: u32 = 18783;
+    // 18783 -> 18869 (#6101, the M5 2026-11-17: Benchy was offered `code_git_merge` with NO parameters and
+    // was refused for a missing `action` three times): a params `oneOf` of object variants is now offered as
+    // the one object it merges into (`action` = start | continue | abort with each variant's line, `from`),
+    // never `properties: {}`. +86 is those parameters reaching the model. Measured in CI at 320cf9b71
+    // (job 133877655532).
+    const AGENTIC_SURFACE_CEILING: u32 = 18869;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
