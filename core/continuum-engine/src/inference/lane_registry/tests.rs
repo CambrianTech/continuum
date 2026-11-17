@@ -534,8 +534,13 @@ fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
     std::fs::create_dir_all(&dir).expect("test: dir");
     let pidfile = dir.join("lane.pid");
     let program = dir.join("llama-server");
-    std::fs::copy("/bin/sleep", &program).expect("test: a process named llama-server");
-    let mut child = std::process::Command::new(&program).arg("60").spawn().expect("test: spawn");
+    // /bin/sh, not /bin/sleep: a multi-call coreutils (one binary dispatching on its name) exits at once when its
+    // copy is named llama-server, and the loop keeps the shell itself alive (no exec into a child image)
+    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
+    let mut child = std::process::Command::new(&program)
+        .args(["-c", "while :; do sleep 1; done"])
+        .spawn()
+        .expect("test: spawn");
     let pid = child.id();
     let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
     let (live, mut waiter) = tokio::sync::watch::channel(None);
