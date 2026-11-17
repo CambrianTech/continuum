@@ -208,7 +208,7 @@ async fn recover_one(
     let state = match route {
         StopRoute::Owned => {
             let Some(generation) = endpoint.state.lock().generation().cloned() else {
-                return Ok(lost(&held)); // the owned engine generation ended
+                return Ok(held); // no generation to prove anything against: missing evidence is Retained, never Lost
             };
             // Under the writer, before readiness or anything else changes: the pool's stamped engine must be the
             // original. A replacement is refused here and never contacted.
@@ -219,10 +219,18 @@ async fn recover_one(
                 })
             };
             let Ok(mut transition) = endpoint.transition_for_generation_if(&generation, &pool_is_original).await else {
-                return Ok(match original {
-                    Some(_) => lost(&held),
-                    None => held, // nothing stamped to prove: retained, untouched
-                });
+                // Lost is terminal, so it needs proof: the endpoint now serves another generation, or its pool is
+                // stamped with another engine. An unstamped or unprobed pool is missing evidence: Retained.
+                let replaced = {
+                    let state = endpoint.state.lock();
+                    let other_generation = !state.generation().is_some_and(|g| g.same_engine(&generation));
+                    let other_engine = match state.pool() {
+                        Probed::Known(pool) => pool.incarnation().is_some_and(|stamped| Some(stamped) != original),
+                        Probed::NotAsked | Probed::Absent(_) => false,
+                    };
+                    other_generation || other_engine
+                };
+                return Ok(if original.is_some() && replaced { lost(&held) } else { held });
             };
             StopCheckpoint::Owned(match transition.checkpoint_residents(client, &held.endpoint).await {
                 Ok(saved) => OwnedStopCheckpoint::Saved { process: saved.pool.incarnation() },
@@ -244,7 +252,7 @@ async fn recover_one(
             match endpoint.adopted_checkpoint_pool(incarnation) {
                 Ok(Probed::Known(_)) => {}
                 Ok(Probed::NotAsked | Probed::Absent(_)) => return Ok(held),
-                Err(_) => return Ok(if original.is_some() { lost(&held) } else { held }),
+                Err(_) => return Ok(held), // a refusal is not proof the original is gone: Retained
             }
             let checkpoint = super::AdoptedCheckpoint { incarnation, intent: super::AdoptedCheckpointIntent::Stop };
             StopCheckpoint::Adopted(
@@ -499,11 +507,16 @@ mod tests {
         transition.ready(&root, &generation, contract).expect("test: ready");
         drop(transition);
         let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
-        pool.mark_incarnation((4_242_424, 1)); // the replacement engine now behind this endpoint
-
         let me = std::process::id();
         let started_s = crate::inference::engine_residency::process_start_s(me).expect("test: own start time");
         let held = HeldCustody { endpoint: root.clone(), process: Some(SettledProcess { pid: me, started_s }), state: CustodyState::Retained };
+
+        // the pool stamps no engine yet: missing evidence, so the alive original stays Retained, nothing contacted
+        let unverified = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
+        assert_eq!(unverified, held, "an unstamped pool proves nothing: Retained, untouched");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted without proven identity");
+
+        pool.mark_incarnation((4_242_424, 1)); // now proven: the replacement engine is behind this endpoint
         let recovered = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
         assert_eq!(recovered, HeldCustody { state: CustodyState::Lost, ..held }, "the original's custody is Lost");
         assert_eq!(requests.load(Ordering::SeqCst), 0, "the replacement engine was never contacted");
