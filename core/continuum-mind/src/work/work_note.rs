@@ -10,10 +10,9 @@ pub struct WorkNote {
 pub struct WorkNoteParams {
     /// Card id (8-char short id accepted).
     pub card_id: String,
+    // The newest note is the card's ledger, so a note that establishes nothing would erase the one before it (M5
+    // 2026-11-17: a resident posted empty notes over her card's ledger). A plain comment: only `///` reaches the schema.
     /// Established facts, at least one: `file:range → what it showed`, `test → assertion`.
-    ///
-    /// The newest note is the card's ledger, so a note that establishes nothing would erase the one before it (M5
-    /// 2026-11-17: a resident posted empty notes over her card's ledger). Only the paragraph above reaches the schema.
     #[schemars(schema_with = "known_facts_schema")]
     #[ts(type = "Array<string>")]
     pub known: continuum_base::non_empty_list::NonEmptyList<continuum_base::non_empty_text::NonEmptyText>,
