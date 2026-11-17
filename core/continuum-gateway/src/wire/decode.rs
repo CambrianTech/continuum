@@ -97,7 +97,7 @@ fn real(
 /// serde's own `missing field` error, never a hand-written presence check. `rest` is every
 /// other field, read by the optional decoders below.
 pub(crate) fn fields<T: serde::de::DeserializeOwned>(body: Value) -> Result<T, BadRequest> {
-    serde_json::from_value(body).map_err(|error| BadRequest(error.to_string()))
+    serde_json::from_value(body).map_err(|error| BadRequest(error.to_string())) // boundary: an agent's request body is JSON on the wire, decoded once into its typed fields
 }
 
 /// The sampling fields every format names the same way: temperature (any non-negative value the
