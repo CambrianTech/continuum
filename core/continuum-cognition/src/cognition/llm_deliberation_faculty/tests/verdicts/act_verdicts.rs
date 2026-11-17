@@ -682,7 +682,7 @@ async fn her_act_and_her_next_generation_are_the_only_requests_on_her_slot() {
             make_response(FinishReason::Stop, "deploy.md says it landed", None),
         ])
     });
-    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", Arc::clone(&adapter))
+    let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Ivar", "You are Ivar.", adapter.clone())
         .with_tools(vec![read_tool()])
         .with_context_window(32_768);
     let ws = Workspace::new("teammate asks: did the deploy fix land?");
