@@ -2365,6 +2365,25 @@ same-process flash round trip, sparse/high/shifted positions, duplicates and sha
 changes, corrupt/truncated extents and partial-write custody, memory and scaling; and a cross-model, same-shape restore
 is refused by owner identity.
 
+**Landed in the prototype (#147, 2026-11-17): the derived indices are native in memory.** `llama_kv_cells` no longer
+holds node containers: `used` is a bitmap over the cell rows with its count and extrema (bounded by the stream, never a
+position), and each sequence's positions are a sorted `{pos, count}` array it owns (`src/llama-kv-cell-index.h`). The
+append at her newest position and the rollback of it stay exact and O(1); any other change (an inner removal, a shift,
+a division that merges positions) marks that sequence stale and the next query recomputes it once from the cells, so
+collisions coalesce by construction and a front discard is never quadratic. Codex's condition: a recomputation is never
+deferred across a freeze, so a persona's save settles every index in its fallible reserve phase (`settle_all`) and her
+bind and every query after it do no scan and no sort. Proof: `test-kv-cell-index` (8 seeds x 20000 random cache
+operations against the replaced `std::set`/`std::map`, every extremum after every step; `freeze_then_bind` with zero
+recomputations after the bind), green on Ubuntu and Windows CI at 347a13ab2. Cost, same workload (append, front discard,
+shift, extrema after each phase), M5, 15:00Z: 4k cells 0.486 ms old vs 0.533 ms native (slower), 32k 4.535 vs 4.300, 100k
+15.747 vs 13.090; no uniform speedup is claimed.
+
+**The flash generation, conditions before code (Codex, 2026-11-17):** the header and ALL of her metadata are one fenced
+generation, including the recurrent rollback state, the draft model's streams, the sampler and the genome generation;
+every offset is checked for overflow, alignment and overlap before use; a direct bind requires native endianness and a
+matching layout id, with checksums and publish completion owned once (never a rehash per switch); the flash I/O
+pipeline stays off decode; and the prior generation is kept until the new one is durably published.
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
