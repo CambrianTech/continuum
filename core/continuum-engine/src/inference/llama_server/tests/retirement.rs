@@ -31,6 +31,10 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         command.creation_flags(0x08000000); // CREATE_NO_WINDOW: fixture never opens a console.
         let result = command.output().await.expect("isolated retirement fixture completes"); // JUSTIFIED: test fixture
         assert!(result.status.success(), "isolated retirement fixture failed: {}\n{}", String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
+        let output = String::from_utf8_lossy(&result.stdout);
+        assert!(output.contains("retiring_page_owner_requires_observed_child_exit ... ok")
+            && output.contains("test result: ok. 1 passed;"),
+            "isolated fixture must run exactly one successful test, not silently match zero: {output}");
         return;
     }
     let resources = crate::resources::ResourceDaemon::start(
