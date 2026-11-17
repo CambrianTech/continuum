@@ -238,7 +238,8 @@ fi
 echo -e "${YELLOW}[4b/6] PostgreSQL database${NC}"
 
 if command -v psql &>/dev/null; then
-  if psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+  _db_list="$(psql -lqt 2>/dev/null | cut -d '|' -f 1)" || true
+  if [[ "$_db_list" == *continuum* ]]; then
     echo -e "  Found: database 'continuum'"
     if confirm "Drop database 'continuum'? (PostgreSQL server will NOT be removed)"; then
       dropdb continuum 2>/dev/null || sudo -u postgres dropdb continuum 2>/dev/null || true
