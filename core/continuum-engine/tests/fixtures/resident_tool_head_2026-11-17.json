@@ -1,0 +1,1327 @@
+[
+  {
+    "name": "commands_help",
+    "description": "Show how to CALL a command: its exact tool-call format + arguments. Pass `name` (e.g. code/read), or `query` (what you want to do) to find one.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "default": null,
+          "description": "The command to explain, e.g. `code/read`. OMIT it to get an INDEX of every command you can call (name + one-line description) — your starting point when you don't yet know which tool to use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "query": {
+          "default": null,
+          "description": "What you want to do, when you do not know the command's name: the best matches, ranked.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "commands_list",
+    "description": "List the available commands (name, description, access, params type) from the live registry. Optional `filter` is a case-insensitive name substring.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "description": "Optional substring filter on the command name (case-insensitive).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "tool_output",
+    "description": "Reopen a saved result by outputId or act: whole, or grep it, or read lines or bytes.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "act": {
+          "description": "Or an act number (#n): its saved output.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "byteLength": {
+          "description": "Bytes wanted from byteOffset.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "byteOffset": {
+          "description": "Exact bytes from here (alone); continue at nextByteOffset.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "contextLines": {
+          "description": "Context lines per match.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "endLine": {
+          "description": "Last line of the range.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "filter": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OutputFilter"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "A preset grep, no regex needed."
+        },
+        "maxMatches": {
+          "description": "Most matches shown.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "outputId": {
+          "description": "The saved output's id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pattern": {
+          "description": "A regex to grep for (overrides filter).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "startLine": {
+          "description": "First line of a range (1-based).",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "definitions": {
+        "OutputFilter": {
+          "enum": [
+            "errors",
+            "warnings",
+            "failures",
+            "summary"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "yield_turn",
+    "description": "Yield this turn and say nothing. Use this when you have nothing to add — silence is a real, first-class choice and costs the room nothing. Prefer it over posting a message that announces you have nothing to say: that announcement IS noise, and it wakes every peer into posting their own. Calling this ends your turn silently.",
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "code_edit",
+    "description": "Edit an existing file: line-range replace, search/replace, insert-at, or append. Undoable.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "description": {
+          "default": null,
+          "description": "Optional note recorded in change history.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "edit_mode": {
+          "$ref": "#/definitions/EditMode",
+          "description": "Operation to apply."
+        },
+        "file_path": {
+          "description": "Path relative to the workspace root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "edit_mode",
+        "file_path"
+      ],
+      "definitions": {
+        "EditMode": {
+          "description": "How to edit a file (five modes).",
+          "oneOf": [
+            {
+              "description": "Replace content between line numbers (1-indexed, inclusive).",
+              "properties": {
+                "end_line": {
+                  "format": "uint32",
+                  "minimum": 0.0,
+                  "type": "integer"
+                },
+                "new_content": {
+                  "type": "string"
+                },
+                "start_line": {
+                  "format": "uint32",
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "type": {
+                  "enum": [
+                    "line_range"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "end_line",
+                "new_content",
+                "start_line",
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Find text and replace it.",
+              "properties": {
+                "all": {
+                  "default": false,
+                  "type": "boolean"
+                },
+                "replace": {
+                  "type": "string"
+                },
+                "search": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "search_replace"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "replace",
+                "search",
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Insert content at a specific line (pushes existing lines down).",
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "line": {
+                  "format": "uint32",
+                  "minimum": 1.0,
+                  "type": "integer"
+                },
+                "type": {
+                  "enum": [
+                    "insert_at"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "line",
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Append content to end of file.",
+              "properties": {
+                "content": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "append"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "content",
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Several edits applied together, each to the result of the one before, and checked once on the final result: all land or none does. For a fix that is only valid whole (move a brace, rename at two sites), whose halves would each be refused as unparseable (Benchy on the M5, 2026-11-11: ~25 minutes of refused halves moving one closing brace).",
+              "properties": {
+                "edits": {
+                  "items": {
+                    "$ref": "#/definitions/EditMode"
+                  },
+                  "type": "array"
+                },
+                "type": {
+                  "enum": [
+                    "batch"
+                  ],
+                  "type": "string"
+                }
+              },
+              "required": [
+                "edits",
+                "type"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "code_git_add",
+    "description": " Stage files for commit (`git add`). Pass workspace-relative paths; stages nothing if `paths` is empty.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "paths": {
+          "default": [],
+          "description": "Paths to stage, relative to the workspace root. Empty stages nothing.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      }
+    }
+  },
+  {
+    "name": "code_git_commit",
+    "description": " Commit the staged changes (`git commit -m`). Returns the new commit's full SHA. Stage files with `code/git/add` first.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "message": {
+          "description": "The commit message.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "message"
+      ]
+    }
+  },
+  {
+    "name": "code_git_diff",
+    "description": " Show the git diff of your work (default: everything since your branch started).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "scope": {
+          "$ref": "#/definitions/DiffScope",
+          "default": "yourWork",
+          "description": "Default `yourWork`: all your work since your branch started."
+        }
+      },
+      "definitions": {
+        "DiffScope": {
+          "enum": [
+            "yourWork",
+            "unstaged",
+            "staged"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "code_git_push",
+    "description": " Push commits to a remote (`git push`). Omit `remote`/`branch` to use git's defaults. Outward-facing — publishes your commits to the shared remote, so it's the one git verb that escapes the workspace sandbox. Declared `Privileged` (the same tier as `code/shell`): a local persona (Trusted) or the owner runs it; a remote `Provisional` room peer is denied by the grid ACL — they can't make your citizen push to a shared remote on their say-so.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "branch": {
+          "default": null,
+          "description": "Branch to push. Omit for git's default (the current branch).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "remote": {
+          "default": null,
+          "description": "Remote name (e.g. `origin`). Omit for git's default.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "code_git_status",
+    "description": " Show git status for your workspace: current branch and the modified, added, deleted, and untracked files. Use before staging or committing to see what changed.",
+    "input_schema": {
+      "type": "object",
+      "properties": {}
+    }
+  },
+  {
+    "name": "code_github_pr-comment",
+    "description": " Comment on a GitHub pull request (`gh pr comment`) — respond to review, ask a question, post an update. This is how you participate in a PR as a teammate. Returns the comment URL.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "description": "The comment body (markdown) — your review feedback, question, or update.",
+          "type": "string"
+        },
+        "number": {
+          "description": "The pull request number to comment on.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "body",
+        "number"
+      ]
+    }
+  },
+  {
+    "name": "code_github_pr-create",
+    "description": " Open a GitHub pull request (`gh pr create`) from your pushed branch. Commit and `code/git/push` your branch FIRST, then open the PR. Write a real body — what changed and why — like a teammate. Returns the PR URL.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "base": {
+          "default": null,
+          "description": "Base branch to merge INTO. Omit for the repo's default branch (usually `main`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "body": {
+          "description": "The PR body / description (markdown). Say WHAT changed and WHY, like a teammate would.",
+          "type": "string"
+        },
+        "draft": {
+          "default": null,
+          "description": "Open as a DRAFT PR (work-in-progress, not yet ready for review).",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "head": {
+          "default": null,
+          "description": "Head branch carrying your changes. Omit for the current branch — push it first with `code/git/push`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "description": "The PR title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "title"
+      ]
+    }
+  },
+  {
+    "name": "code_list",
+    "description": "List a directory (flat, non-recursive): names, kinds, and sizes. Use code/tree for recursion.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "include_hidden": {
+          "default": null,
+          "description": "Include hidden entries (dotfiles, `.git`, …). Defaults to false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "Directory to list, relative to the workspace root. Defaults to \".\" (root).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "code_read",
+    "description": "Read a file from the workspace, optionally a line range; without one, the whole file. Lines come back NUMBERED (`   12 | text`), the numbers code/edit's line_range and insert_at address. The `N | ` gutter is display: never write it back into a file.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "end_line": {
+          "default": null,
+          "description": "1-indexed last line to return (inclusive). Omit to read to the end.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "file_path": {
+          "description": "Path to the file, relative to the workspace (repo) root.",
+          "type": "string"
+        },
+        "start_line": {
+          "default": null,
+          "description": "1-indexed first line to return (inclusive). Omit to read from the start.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "file_path"
+      ]
+    }
+  },
+  {
+    "name": "code_run",
+    "description": "Run code and return its stdout, stderr, exit code, and duration. lang=\"rust\" compiles a complete program (needs its own `fn main`); lang=\"python\" runs a Python script (use this for Python tasks/repos — do NOT pass Python as lang=rust). A compile error or traceback comes back as the result (ok=false) in stderr. Use it to actually RUN and test your own code instead of guessing. For workspace-scoped Rust grading use code/cargo/check and code/cargo/test. Commands (git, pytest, find) go through code/shell, never a Python subprocess wrapper here.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "description": "A COMPLETE program in the chosen `lang` (Rust needs its own `fn main`; Python is a plain script). Passed through verbatim — no markdown-fence stripping, no wrapping: the command runs exactly what it is given. (Cleaning up model formatting is the deliberation layer's job, never the hand's — a hand that second-guesses its input is a heuristic steering cognition.)",
+          "type": "string"
+        },
+        "lang": {
+          "description": "Language to run: `rust` (alias `rs`) → `rustc` a complete program, or `python` (alias `py`/`python3`) → run a Python script. SWE-bench and most repos are Python — use `python`, never `rust` for Python code. Any other value fails loud naming both supported paths (use code/shell for anything else).",
+          "type": "string"
+        },
+        "timeoutSecs": {
+          "default": null,
+          "description": "Optional wall-clock safety timeout in seconds (default 10, hard cap 60).",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "lang"
+      ]
+    }
+  },
+  {
+    "name": "code_search",
+    "description": "Search file contents for a pattern across the workspace (grep). Returns file:line matches.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "file_glob": {
+          "default": null,
+          "description": "Optional glob to restrict which files are searched. Omit to search ALL files. Globs recurse from the workspace root and are layout-independent, e.g. `**/*.rs` (NOT `src/**/*.rs` — don't assume the code lives under src/).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "max_results": {
+          "default": null,
+          "description": "Cap on the number of matches returned. Defaults to 100.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pattern": {
+          "description": "Text/regex pattern to search for.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pattern"
+      ]
+    }
+  },
+  {
+    "name": "code_shell",
+    "description": "New shell per cmd (Windows Bash; configured Unix shell). Files/handles persist; cd/env/options do not. Use native host paths. Shell status follows last-command/pipeline/|| rules, not each child's success. wait_ms defaults to 30000; poll running execution_id with code/shell-poll.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "cmd": {
+          "description": "Command; paths in code strings are not shell-translated.",
+          "type": "string"
+        },
+        "kill_after_ms": {
+          "default": null,
+          "description": "KILLS the command after this many ms; not a wait (raise `wait_ms` to wait longer). Default: none — it runs until done or `code/shell-kill`.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wait_ms": {
+          "default": null,
+          "description": "How long to wait INLINE for completion before returning the execution_id handle to poll. Defaults to 30000 (30s). A long job keeps running past this.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "cmd"
+      ]
+    }
+  },
+  {
+    "name": "code_tree",
+    "description": "Print a recursive directory tree (bounded depth) — the project's structure at a glance.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "include_hidden": {
+          "default": null,
+          "description": "Include hidden entries. Defaults to false.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "max_depth": {
+          "default": null,
+          "description": "Maximum recursion depth. Defaults to 10.",
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "path": {
+          "default": null,
+          "description": "Subdirectory to root the tree at, relative to the workspace root. Defaults to the workspace root.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "code_write",
+    "description": "Create or overwrite a file with new content. Tracked in the change history (undoable).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "content": {
+          "description": "Full new file contents.",
+          "type": "string"
+        },
+        "description": {
+          "default": null,
+          "description": "Optional note describing the change (recorded in the change history).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "file_path": {
+          "description": "Path to the file, relative to the workspace (repo) root.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "file_path"
+      ]
+    }
+  },
+  {
+    "name": "work_claim",
+    "description": "Claim a work card on the shared airc board as yourself, so others see you own it. Pass the card_id from the board. Returns a claim_id.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "The card id (UUID) to claim — from the board (`airc work board`).",
+          "type": "string"
+        },
+        "ttl_ms": {
+          "default": null,
+          "description": "Lease length in ms before the claim goes stale. Defaults to 30 min; extend with a heartbeat.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card_id"
+      ]
+    }
+  },
+  {
+    "name": "work_create",
+    "description": "Create a card on a room's board for known work (a slice, follow-up, review).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "body": {
+          "default": null,
+          "description": "Card body.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/CardPriority"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "p0 (urgent) to p3 (whenever). Defaults to p2."
+        },
+        "repo": {
+          "description": "owner/name; defaults to actionable card.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "room": {
+          "description": "The room whose board gets the card (id or name).",
+          "type": "string"
+        },
+        "title": {
+          "description": "Card title.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "room",
+        "title"
+      ],
+      "definitions": {
+        "CardPriority": {
+          "enum": [
+            "p0",
+            "p1",
+            "p2",
+            "p3"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "work_get",
+    "description": "Read one work card in full (read-only), including signed review verdicts and published evidence_text (null on legacy hash-only reviews): title, body (the task's requirements), state, board room, claimability, lease expiry/heartbeat, owner and claim id. Accepts a full or short id from any room you belong to, without changing your current room. This is how you re-check a spec mid-task.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "The card id — full UUID or short id from any room you belong to.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id"
+      ]
+    }
+  },
+  {
+    "name": "work_heartbeat",
+    "description": "Extend your claim lease on a card so it doesn't go stale during long work (pass card_id + claim_id; short 8-char ids from the board are accepted for both).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "The card id (UUID) whose claim to extend.",
+          "type": "string"
+        },
+        "claim_id": {
+          "description": "The claim_id from work/claim.",
+          "type": "string"
+        },
+        "ttl_ms": {
+          "default": null,
+          "description": "New lease length in ms. Defaults to 30 min.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card_id",
+        "claim_id"
+      ]
+    }
+  },
+  {
+    "name": "work_list",
+    "description": "List the work board's cards (read-only): short id, title, state, owner, and whether it is CLAIMABLE right now: work/claim takes any card not in review/merged/closed, even one someone holds (a takeover; they see it). Each line says who holds a card and how long they have been silent; taking it over is your call. Use the short id with work/get for full requirements. To find takeable work pass `claimable: true`: filtering `state: \"open\"` (the column) misses held and lapsed cards. The result always reports `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty board. With no filter, groups beyond your own cards come back folded, each naming the call that lists it whole. Boards are per room (`room`).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "claimable": {
+          "default": null,
+          "description": "Optional AVAILABILITY filter — the question a citizen looking for work is actually asking. `true` = only cards you can take right now (open, or a lapsed hold); `false` = only cards someone is actively on.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "group": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BoardGroup"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "One folded group, exactly as the board folds it (each fold names its own)."
+        },
+        "room": {
+          "default": null,
+          "description": "Room whose board to read (name or id); default: this room.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "state": {
+          "default": null,
+          "description": "Optional COLUMN filter: open | claimed | in_progress | blocked | review | merged | closed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "definitions": {
+        "BoardGroup": {
+          "description": "A group of the board off her focus: what a node folds, and what `work/list group=` opens.",
+          "enum": [
+            "claimable",
+            "held_by_others",
+            "merged",
+            "closed"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "work_note",
+    "description": "End every work turn with this: your card's ledger — known facts (file:range → what it showed), hypotheses each with the test that settles it, the one unknown, the next test. The next turn opens from it.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "Card id (8-char short id accepted).",
+          "type": "string"
+        },
+        "decided_fix": {
+          "default": null,
+          "description": "Decided fix: `file:line` + intent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "hypotheses": {
+          "default": [],
+          "description": "Competing explanations, each with its settling test.",
+          "items": {
+            "$ref": "#/definitions/HypothesisParam"
+          },
+          "type": "array"
+        },
+        "known": {
+          "description": "Established facts, at least one: `file:range → what it showed`, `test → assertion`.",
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "next_test": {
+          "default": "",
+          "description": "The next test to run.",
+          "type": "string"
+        },
+        "unknown": {
+          "default": "",
+          "description": "The one unknown the answer turns on.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "known"
+      ],
+      "definitions": {
+        "HypothesisParam": {
+          "description": "A hypothesis as the VERB takes it — snake_case like every other work/* parameter. The stored record ([`crate::experience::ledger::LedgerHypothesis`]) is a wire type in camelCase; this is the adapter between the verb surface and the record, so a caller never has to know the storage casing (2026-09-12: my own call sent `nextTest` and the field was silently dropped).",
+          "properties": {
+            "claim": {
+              "type": "string"
+            },
+            "evidence_against": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "evidence_for": {
+              "default": [],
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "test": {
+              "default": "",
+              "description": "The test that settles it.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "claim"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  },
+  {
+    "name": "work_release",
+    "description": "Release your claim on a work card (pass card_id + the claim_id from work/claim; short 8-char ids from the board are accepted for both).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "The card id (UUID) whose claim to release.",
+          "type": "string"
+        },
+        "claim_id": {
+          "description": "The claim_id returned by work/claim.",
+          "type": "string"
+        },
+        "reason": {
+          "default": null,
+          "description": "Optional reason (recorded on the release event).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card_id",
+        "claim_id"
+      ]
+    }
+  },
+  {
+    "name": "work_state",
+    "description": "Move a work card through its lifecycle: in_progress when you start, review when a PR is up, blocked if stuck, closed when done (a card with a PR closes when it merges).",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "The card id (UUID) to transition.",
+          "type": "string"
+        },
+        "state": {
+          "description": "New state: open | claimed | in_progress | blocked | review | merged | closed.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "card_id",
+        "state"
+      ]
+    }
+  },
+  {
+    "name": "work_submit",
+    "description": "Submit own work for review, derived from your checkout. Publication is not success.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/WorkArtifactReference"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Omit: computed from your checkout. Not a git sha."
+        },
+        "base_sha": {
+          "description": "Patch base; defaults to the recorded base.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "card_id": {
+          "description": "The card you hold — board handle or full UUID.",
+          "type": "string"
+        },
+        "claim_id": {
+          "description": "Your claim; defaults to the board.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generation_request_id": {
+          "description": "Generation that issued this work; not with staged_revision_id.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "head": {
+          "description": "Omit: your checkout's committed HEAD.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "instance": {
+          "description": "Instance; defaults to checkout.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "room": {
+          "description": "Optional; the card's board decides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "staged_revision_id": {
+          "description": "Staged revision UUID; bind before publish or no credit.",
+          "format": "uuid",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submission_id": {
+          "description": "Minted when omitted.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submodules": {
+          "description": "Submodule paths you mean to move.",
+          "items": {
+            "type": "string"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "card_id"
+      ],
+      "definitions": {
+        "WorkArtifactReference": {
+          "description": "The same content-addressed reference the AIRC submission protocol carries.",
+          "properties": {
+            "hash": {
+              "description": "SHA-256 of the patch bytes (64 hex), not a git sha.",
+              "type": "string"
+            },
+            "mime": {
+              "description": "Optional media type.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "size_bytes": {
+              "description": "Artifact byte length.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "hash",
+            "size_bytes"
+          ],
+          "type": "object"
+        }
+      }
+    }
+  },
+  {
+    "name": "code_git_merge",
+    "description": " Merge a branch into yours (a remote one fetched first); on conflict fix, add, `continue`.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "action": {
+          "description": "start: Merge `from` (e.g. `origin/canary`) into your branch.; continue: After resolving and adding the files.; abort: Undo the merge.",
+          "enum": [
+            "start",
+            "continue",
+            "abort"
+          ],
+          "type": "string"
+        },
+        "from": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "action"
+      ]
+    }
+  },
+  {
+    "name": "code_github_pr-checks",
+    "description": " A PR's CI at its head: checks failed first, each failed job's annotations and log.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "number": {
+          "description": "PR number.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`; omit for your workspace's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "number"
+      ]
+    }
+  },
+  {
+    "name": "code_github_pr-merge",
+    "description": " Merge a PR: only when open, every check at its head green, mergeable, and a linked card's head passed another's review.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "method": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GithubMergeMethod"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Default squash."
+        },
+        "number": {
+          "description": "PR number.",
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "repo": {
+          "description": "`owner/name`; omit for your workspace's.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "number"
+      ],
+      "definitions": {
+        "GithubMergeMethod": {
+          "description": "How the pull request's commits land on its base.",
+          "enum": [
+            "squash",
+            "merge",
+            "rebase"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "work_submission",
+    "description": "Read submission_id. Task: work/get. Publish: work/submit.",
+    "input_schema": {
+      "type": "object",
+      "properties": {
+        "card_id": {
+          "description": "Card (a review card reads its parent) — handle or UUID.",
+          "type": "string"
+        },
+        "evidence_limit": {
+          "description": "Rows to return.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "evidence_offset": {
+          "description": "First row of the page.",
+          "format": "uint",
+          "minimum": 0.0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "evidence_rows": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StagedEvidenceRows"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Rows to page (default: not matching the claim)."
+        },
+        "include_staged_evidence": {
+          "default": false,
+          "description": "Inspect only: no binding/training. Answers a summary; rows only with evidence_limit.",
+          "type": "boolean"
+        },
+        "room": {
+          "description": "Optional; the card's board decides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "submission_id": {
+          "anyOf": [
+            {
+              "enum": [
+                "latest"
+              ]
+            },
+            {
+              "type": "string"
+            }
+          ],
+          "default": "latest",
+          "description": "`latest` (default) or a submission id."
+        }
+      },
+      "required": [
+        "card_id"
+      ],
+      "definitions": {
+        "StagedEvidenceRows": {
+          "description": "Which staged rows a page is taken from.",
+          "enum": [
+            "not_matching_claim",
+            "all"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  }
+]

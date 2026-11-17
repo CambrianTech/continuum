@@ -199,6 +199,8 @@ jobs:
             -- --exact --ignored --nocapture 2>&1)
           printf '%s\n' "$interop_output"
           [[ "$interop_output" == *"1 passed;"* ]]
+          # THROWAWAY (receipt branch for #6104, never merged): the request-clone measurement.
+          cargo test --locked -p continuum-engine --test request_clone_receipt --profile dev-fast --features "$FEATURES" -- --ignored --nocapture 2>&1 | grep -E "RECEIPT|test result|panicked"
 
       # ---- every other tested crate: lib tests. The selector decides (lib_tests in the root Cargo.toml's
       # [workspace.metadata.ci] own_lib_test_step names the crates with their own steps above and below) ----
