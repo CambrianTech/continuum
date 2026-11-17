@@ -89,7 +89,7 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
         Box::pin(async move {
             let client = reqwest::Client::new();
             let mut recovered = Vec::with_capacity(retained.len());
-            for held in retained {
+            for held in &retained {
                 recovered.push(recover_one(&client, held).await?);
             }
             Ok(recovered)
@@ -184,7 +184,7 @@ async fn checkpoint_one(
 /// not condemned again (the first pass did).
 async fn recover_one(
     client: &reqwest::Client,
-    held: crate::runtime::HeldCustody,
+    held: &crate::runtime::HeldCustody,
 ) -> Result<crate::runtime::HeldCustody, crate::runtime::extensions::CustodyRecoveryError> {
     use crate::runtime::CustodyState;
     let invalid = |reason: &str| crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
@@ -201,14 +201,14 @@ async fn recover_one(
     let lost = |h: &crate::runtime::HeldCustody| crate::runtime::HeldCustody { state: CustodyState::Lost, ..h.clone() };
     if let Some((pid, started_s)) = original {
         if crate::inference::engine_residency::process_start_s(pid) != Some(started_s) {
-            return Ok(lost(&held));
+            return Ok(lost(held));
         }
     }
     let route = StopRoute::of(&endpoint.state.lock());
     let state = match route {
         StopRoute::Owned => {
             let Some(generation) = endpoint.state.lock().generation().cloned() else {
-                return Ok(held); // no generation to prove anything against: missing evidence is Retained, never Lost
+                return Ok(held.clone()); // no generation to prove anything against: missing evidence is Retained, never Lost
             };
             // Under the writer, before readiness or anything else changes: the pool's stamped engine must be the
             // original. A replacement is refused here and never contacted.
@@ -232,7 +232,7 @@ async fn recover_one(
                     };
                     other_generation || other_engine
                 };
-                return Ok(if original.is_some() && replaced { lost(&held) } else { held });
+                return Ok(if original.is_some() && replaced { lost(held) } else { held.clone() });
             };
             StopCheckpoint::Owned(match transition.checkpoint_residents(client, &held.endpoint).await {
                 Ok(saved) => OwnedStopCheckpoint::Saved { process: saved.pool.incarnation() },
@@ -245,16 +245,16 @@ async fn recover_one(
                 .map(|lane| lane.incarnation());
             let incarnation = match (original, lane) {
                 (Some((pid, started_s)), Some(lane)) if (lane.pid, lane.started_s) == (pid, started_s) => lane,
-                (Some(_), Some(_)) => return Ok(lost(&held)), // another engine is live at this root: never contacted
+                (Some(_), Some(_)) => return Ok(lost(held)), // another engine is live at this root: never contacted
                 (None, Some(lane)) => lane,              // an unknown original binds only to the verified lane
-                (_, None) => return Ok(held),            // no verified identity now: retained, untouched
+                (_, None) => return Ok(held.clone()),            // no verified identity now: retained, untouched
             };
             let mut transition = endpoint.transition().await;
             // Under the writer: the recorded pool must be this engine's, with no discovery during recovery.
             match endpoint.adopted_checkpoint_pool(incarnation) {
                 Ok(Probed::Known(_)) => {}
-                Ok(Probed::NotAsked | Probed::Absent(_)) => return Ok(held),
-                Err(_) => return Ok(held), // a refusal is not proof the original is gone: Retained
+                Ok(Probed::NotAsked | Probed::Absent(_)) => return Ok(held.clone()),
+                Err(_) => return Ok(held.clone()), // a refusal is not proof the original is gone: Retained
             }
             let checkpoint = super::AdoptedCheckpoint { incarnation, intent: super::AdoptedCheckpointIntent::Stop };
             StopCheckpoint::Adopted(
@@ -272,8 +272,8 @@ async fn recover_one(
         state: state.custody(),
     };
     Ok(match (original, recovered.process) {
-        (Some(_), None) => held, // the retry named no process: the original identity stays, still Retained
-        (Some(o), Some(now)) if o != (now.pid, now.started_s) => lost(&held),
+        (Some(_), None) => held.clone(), // the retry named no process: the original identity stays, still Retained
+        (Some(o), Some(now)) if o != (now.pid, now.started_s) => lost(held),
         _ => recovered,
     })
 }
@@ -463,12 +463,12 @@ mod tests {
         let gone = SettledProcess { pid: u32::MAX - 7, started_s: 1 }; // no such process
         let held = |state| HeldCustody { endpoint: root.clone(), process: Some(gone), state };
 
-        assert!(recover_one(&client, held(CustodyState::Saved)).await.is_err(), "Saved is immutable, never recovered");
-        assert!(recover_one(&client, held(CustodyState::Lost)).await.is_err(), "Lost is immutable, never recovered");
+        assert!(recover_one(&client, &held(CustodyState::Saved)).await.is_err(), "Saved is immutable, never recovered");
+        assert!(recover_one(&client, &held(CustodyState::Lost)).await.is_err(), "Lost is immutable, never recovered");
         let unknown = HeldCustody { endpoint: format!("http://127.0.0.1:1/{}", uuid::Uuid::new_v4()), ..held(CustodyState::Retained) };
-        assert!(recover_one(&client, unknown).await.is_err(), "an endpoint this process does not page is a protocol failure");
+        assert!(recover_one(&client, &unknown).await.is_err(), "an endpoint this process does not page is a protocol failure");
 
-        let recovered = recover_one(&client, held(CustodyState::Retained)).await.expect("a retained entry recovers");
+        let recovered = recover_one(&client, &held(CustodyState::Retained)).await.expect("a retained entry recovers");
         assert_eq!(recovered, held(CustodyState::Lost), "a gone incarnation is Lost, its endpoint and process preserved");
     }
 
@@ -514,14 +514,14 @@ mod tests {
         let held = HeldCustody { endpoint: root.clone(), process: Some(SettledProcess { pid: me, started_s }), state: CustodyState::Retained };
 
         // the pool stamps no engine yet: missing evidence, so the alive original stays Retained, nothing contacted
-        let unverified = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
+        let unverified = recover_one(&reqwest::Client::new(), &held).await.expect("recovery answers");
         assert_eq!(unverified, held, "an unstamped pool proves nothing: Retained, untouched");
         assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted without proven identity");
 
         // the generation ends WHILE recovery waits for the writer (Codex on #6100 edf4ab3f1): missing evidence, so
         // the alive original stays Retained, nothing contacted
         let writer = endpoint.transition().await;
-        let mut waiting = Box::pin(recover_one(&reqwest::Client::new(), held.clone()));
+        let mut waiting = Box::pin(recover_one(&reqwest::Client::new(), &held));
         assert!(futures::poll!(&mut waiting).is_pending(), "recovery read the generation and waits for the writer");
         endpoint.state.lock().engine = super::super::kv_slot_pool::Engine::Unprobed;
         drop(writer);
@@ -536,7 +536,7 @@ mod tests {
         let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
 
         pool.mark_incarnation((4_242_424, 1)); // now proven: the replacement engine is behind this endpoint
-        let recovered = recover_one(&reqwest::Client::new(), held.clone()).await.expect("recovery answers");
+        let recovered = recover_one(&reqwest::Client::new(), &held).await.expect("recovery answers");
         assert_eq!(recovered, HeldCustody { state: CustodyState::Lost, ..held }, "the original's custody is Lost");
         assert_eq!(requests.load(Ordering::SeqCst), 0, "the replacement engine was never contacted");
         server.abort();
