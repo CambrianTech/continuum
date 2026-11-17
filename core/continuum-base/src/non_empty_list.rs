@@ -6,14 +6,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// At least one item. Serialized as the list itself.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(
-    try_from = "Vec<T>",
-    into = "Vec<T>",
-    bound(serialize = "T: Serialize + Clone", deserialize = "T: Deserialize<'de>")
-)]
+/// At least one item. Serialized as the list itself, borrowed (never copied to serialize); validated where it
+/// is parsed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "Vec<T>", bound(deserialize = "T: Deserialize<'de>"))]
 pub struct NonEmptyList<T>(Vec<T>);
+
+impl<T: Serialize> Serialize for NonEmptyList<T> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.0.serialize(serializer)
+    }
+}
 
 /// The list was empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,5 +80,15 @@ mod tests {
         let list: NonEmptyList<u8> = serde_json::from_str("[1,2]").expect("a list parses");
         assert_eq!(serde_json::to_string(&list).expect("serializes"), "[1,2]"); // test: the wire form is the list
         assert_eq!(NonEmptyList::of(7).into_vec(), [7]);
+    }
+
+    // what this catches: serializing by copying the whole list (an `into = "Vec<T>"` conversion clones it on every
+    // serialization); an item that cannot be cloned still serializes, borrowed.
+    #[test]
+    fn a_list_of_items_that_cannot_be_cloned_serializes_borrowed() {
+        #[derive(Serialize)]
+        struct Fact(u8);
+        let facts = NonEmptyList::of(Fact(3));
+        assert_eq!(serde_json::to_string(&facts).expect("serializes"), "[3]"); // test: the wire form is the list
     }
 }
