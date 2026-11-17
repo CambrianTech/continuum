@@ -74,9 +74,13 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
                 // Drop the pending HTTP save while its physical completion is unknown.
             }
             false
-        } else { transition.checkpoint_adopted_before_replacement(
-            &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
-        ).await.is_ok() };
+        } else {
+            let result = transition.checkpoint_adopted_before_replacement(
+                &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
+            ).await;
+            assert_eq!(result.is_ok(), behavior == 0, "fixture behavior {behavior}, root {root}, checkpoint result: {result:?}");
+            result.is_ok()
+        };
         assert_eq!(saved, behavior == 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(endpoint.is_ready(), behavior == 1, "only terminal refusal resumes");
