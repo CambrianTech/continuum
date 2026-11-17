@@ -277,21 +277,52 @@ pub fn remove(expected: &LaneRecord) {
 /// the one truth under the lock, so a stale read cannot republish over a newer state.
 ///
 /// A published engine that EXITS is revoked by the process-completion owner ([`continuum_host::process_exit`]):
-/// publishing arms one kernel exit watch for that exact incarnation, and its exit re-verifies under [`writes`].
+/// publishing first ARMS one kernel exit watch bound to that exact incarnation (binding, then start-time check),
+/// and its exit re-verifies under [`writes`].
 /// So a dead original is never kept published while its pidfile and record stay unchanged (Codex on #6099).
 static LIVE_LANE: std::sync::LazyLock<std::sync::Arc<LiveLane>> = std::sync::LazyLock::new(LiveLane::new);
 
 type LiveIncarnation = Option<super::engine_residency::EngineIncarnation>;
 
-/// One registry's verified live lane, as a watch, and the incarnation whose exit is being awaited.
+/// One registry's verified live lane, as a watch, and the armed exit watch of the published engine.
 pub(crate) struct LiveLane {
     published: tokio::sync::watch::Sender<LiveIncarnation>,
-    exit_watched: parking_lot::Mutex<LiveIncarnation>,
+    exit_watch: parking_lot::Mutex<Option<ExitWatch>>,
+    generations: std::sync::atomic::AtomicU64,
+}
+
+/// One armed exit watch: the engine it is bound to, and the registration it is (so an older watch's guard can
+/// never clear a newer one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ExitWatch {
+    engine: super::engine_residency::EngineIncarnation,
+    generation: u64,
+}
+
+/// Owned by the waiting task from before it is spawned: however the task ends (exit seen, abort, runtime
+/// shutdown before its first poll), the watch it stood for stops being trusted. It clears only its own
+/// generation.
+struct ExitWatchGuard {
+    lane: std::sync::Arc<LiveLane>,
+    generation: u64,
+}
+
+impl Drop for ExitWatchGuard {
+    fn drop(&mut self) {
+        let mut watch = self.lane.exit_watch.lock();
+        if watch.is_some_and(|w| w.generation == self.generation) {
+            *watch = None;
+        }
+    }
 }
 
 impl LiveLane {
     pub(crate) fn new() -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self { published: tokio::sync::watch::channel(None).0, exit_watched: parking_lot::Mutex::new(None) })
+        std::sync::Arc::new(Self {
+            published: tokio::sync::watch::channel(None).0,
+            exit_watch: parking_lot::Mutex::new(None),
+            generations: std::sync::atomic::AtomicU64::new(0),
+        })
     }
 
     pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<LiveIncarnation> {
@@ -299,46 +330,59 @@ impl LiveLane {
     }
 
     /// Whether the published value stands for `on_disk` without a process probe: they agree, and a published
-    /// engine's exit is being awaited (so its death would already have revoked it).
+    /// engine has an ARMED exit watch (so its death would already have revoked it).
     fn trusts(&self, on_disk: LiveIncarnation) -> bool {
         let published = *self.published.borrow();
-        on_disk == published && published.is_none_or(|engine| *self.exit_watched.lock() == Some(engine))
+        on_disk == published && published.is_none_or(|engine| self.exit_watch.lock().is_some_and(|w| w.engine == engine))
     }
 
-    /// Arm one exit watch for `engine`, which was just verified and published from `dir` + `pidfile`. Its exit
-    /// clears the watch and re-verifies under [`writes`]. Without a runtime to await on, nothing is armed and the
-    /// published value is never trusted without a probe ([`Self::trusts`]).
-    fn watch_exit(self: &std::sync::Arc<Self>, engine: super::engine_residency::EngineIncarnation, dir: &Path, pidfile: &Path) {
-        let mut watched = self.exit_watched.lock();
-        if *watched == Some(engine) {
-            return;
+    /// What to publish for `engine`, just verified from `dir` + `pidfile`: arm its exit watch FIRST (the kernel
+    /// binding, then the start-time check against it). Armed or already armed: the engine. Refused (exited, or
+    /// the pid now names another process): nothing, never the earlier verification. Unobservable or no runtime
+    /// to await on: the engine, verified now but untrusted, so every sync verifies against the OS.
+    fn publishable(self: &std::sync::Arc<Self>, engine: super::engine_residency::EngineIncarnation, dir: &Path, pidfile: &Path) -> LiveIncarnation {
+        use continuum_host::process_exit::{arm, ArmRefusal, ExitObserved};
+        if self.exit_watch.lock().is_some_and(|w| w.engine == engine) {
+            return Some(engine);
         }
         let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return;
+            return Some(engine);
         };
-        *watched = Some(engine);
-        drop(watched);
-        let (lane, dir, pidfile) = (std::sync::Arc::clone(self), dir.to_path_buf(), pidfile.to_path_buf());
-        runtime.spawn(async move {
-            let observed = continuum_host::process_exit::exited(engine.pid).await;
-            {
-                let mut watched = lane.exit_watched.lock();
-                if *watched == Some(engine) {
-                    *watched = None;
-                }
-            }
-            if let continuum_host::process_exit::ExitObserved::Unobservable(why) = observed {
+        let is_engine = || super::engine_residency::process_start_s(engine.pid) == Some(engine.started_s);
+        let armed = match arm(engine.pid, is_engine) {
+            Ok(armed) => armed,
+            Err(ArmRefusal::AlreadyExited | ArmRefusal::NotThatProcess) => return None,
+            Err(ArmRefusal::Unobservable(why)) => {
                 continuum_base::probe!(
                     class = "lane.live.exit_unobservable",
                     pid = engine.pid,
                     why = %why,
                     "the live engine's exit cannot be awaited: its lane is verified against the OS on every sync"
                 );
-                return;
+                return Some(engine);
+            }
+        };
+        let generation = self.generations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        *self.exit_watch.lock() = Some(ExitWatch { engine, generation });
+        let guard = ExitWatchGuard { lane: std::sync::Arc::clone(self), generation };
+        let (dir, pidfile) = (dir.to_path_buf(), pidfile.to_path_buf());
+        runtime.spawn(async move {
+            let guard = guard;
+            let observed = armed.exited().await;
+            let lane = std::sync::Arc::clone(&guard.lane);
+            drop(guard); // the watch is spent: untrusted before the re-verify below
+            if let ExitObserved::Unobservable(why) = observed {
+                continuum_base::probe!(
+                    class = "lane.live.exit_unobservable",
+                    pid = engine.pid,
+                    why = %why,
+                    "the live engine's exit watch ended without an answer: re-verified against the OS"
+                );
             }
             let _writes = writes();
             sync_live_locked(&dir, &pidfile, &lane);
         });
+        Some(engine)
     }
 }
 
@@ -363,10 +407,10 @@ pub fn sync_live() {
     sync_live_locked(&dir, &pidfile, &LIVE_LANE);
 }
 
-/// Publish the verified truth of `dir` + `pidfile` on `live`, arming the exit watch of a published engine. The
-/// caller holds [`writes`].
+/// Publish the verified truth of `dir` + `pidfile` on `live`; a live engine is published only once its exit
+/// watch is armed (or found unobservable). The caller holds [`writes`].
 pub(crate) fn sync_live_locked(dir: &Path, pidfile: &Path, live: &std::sync::Arc<LiveLane>) {
-    let truth = verified_live_in(dir, pidfile);
+    let truth = verified_live_in(dir, pidfile).and_then(|engine| live.publishable(engine, dir, pidfile));
     live.published.send_if_modified(|current| {
         let changed = *current != truth;
         if changed {
@@ -374,9 +418,6 @@ pub(crate) fn sync_live_locked(dir: &Path, pidfile: &Path, live: &std::sync::Arc
         }
         changed
     });
-    if let Some(engine) = truth {
-        live.watch_exit(engine, dir, pidfile);
-    }
 }
 
 /// The live lane of `dir` + `pidfile`, verified against the OS: pidfile and live record agree, the record names

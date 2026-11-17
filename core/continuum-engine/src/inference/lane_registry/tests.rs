@@ -606,3 +606,45 @@ async fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
     assert!(!live.trusts(Some(engine)), "a dead engine is never trusted from its unchanged files");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
 }
+
+// what this catches (Codex on #6099 c41d1e29f): a cancelled exit waiter leaving its engine trusted forever. The
+// waiter's guard is built before the spawn, so a runtime dropped before the task's first poll still clears it,
+// and only its own watch generation.
+#[cfg(unix)]
+#[test]
+fn an_exit_watch_whose_waiter_never_runs_stops_being_trusted() {
+    let dir = temp_dir("live-watch-abort");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
+    }
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let pidfile = dir.join("lane.pid");
+    let program = dir.join("llama-server");
+    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
+    let mut child = std::process::Command::new(&program)
+        .args(["-c", "while :; do sleep 1; done"])
+        .spawn()
+        .expect("test: spawn");
+    let pid = child.id();
+    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
+    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_082, LaneRole::Live) }).expect("test: record");
+    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_082 };
+
+    let live = LiveLane::new();
+    // a runtime nobody drives: the waiter is spawned but never polled
+    let runtime = tokio::runtime::Builder::new_current_thread().build().expect("test: runtime");
+    {
+        let _entered = runtime.enter();
+        let _writes = writes();
+        sync_live_locked(&dir, &pidfile, &live);
+    }
+    assert_eq!(*live.subscribe().borrow(), Some(engine), "armed, then published");
+    assert!(live.trusts(Some(engine)), "trusted while its waiter exists");
+    drop(runtime); // the waiter is dropped before its first poll
+    assert!(!live.trusts(Some(engine)), "its guard cleared the watch: no longer trusted without a probe");
+
+    child.kill().expect("test: end the fixture process");
+    child.wait().expect("test: reap it");
+    std::fs::remove_dir_all(&dir).expect("test: clean up");
+}

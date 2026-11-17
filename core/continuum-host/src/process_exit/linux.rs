@@ -1,4 +1,4 @@
-use super::Unobservable;
+use super::{Armless, Unobservable};
 
 /// Linux keeps a zombie in /proc, where the process table reader sees its status: nothing to add.
 pub(super) fn exited_unreaped(_pid: u32) -> bool {
@@ -16,22 +16,31 @@ impl Drop for Fd {
     }
 }
 
-/// Linux: a pidfd turns readable when its process exits (zombie included); a pid already gone
-/// answers ESRCH, which is that exit.
-pub(super) fn wait_exit(pid: u32) -> Result<(), Unobservable> {
+/// A pidfd: bound to the process that held the pid when it was opened, whatever later holds the number.
+pub(super) struct Armed {
+    fd: Fd,
+    pid: u32,
+}
+
+/// Linux: open the pidfd WITHOUT waiting; a pid with no process answers ESRCH, which is that exit.
+pub(super) fn arm(pid: u32) -> Result<Armed, Armless> {
     // SAFETY: pidfd_open(pid, 0) only creates a descriptor referring to the process.
     let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0) };
     if fd < 0 {
         let error = std::io::Error::last_os_error();
-        return match error.raw_os_error() {
-            Some(libc::ESRCH) => Ok(()),
-            Some(libc::ENOSYS) => Err(Unobservable::Unsupported),
-            _ => Err(Unobservable::Refused { pid, error: error.to_string() }),
-        };
+        return Err(match error.raw_os_error() {
+            Some(libc::ESRCH) => Armless::AlreadyExited,
+            Some(libc::ENOSYS) => Armless::Unobservable(Unobservable::Unsupported),
+            _ => Armless::Unobservable(Unobservable::Refused { pid, error: error.to_string() }),
+        });
     }
-    let fd = fd as libc::c_int;
-    let _fd = Fd(fd);
-    let mut watched = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+    Ok(Armed { fd: Fd(fd as libc::c_int), pid })
+}
+
+/// Block until the pidfd turns readable: its process exited (zombie included).
+pub(super) fn wait(armed: Armed) -> Result<(), Unobservable> {
+    let pid = armed.pid;
+    let mut watched = libc::pollfd { fd: armed.fd.0, events: libc::POLLIN, revents: 0 };
     loop {
         // SAFETY: one valid pollfd; -1 waits for the event with no timeout.
         let n = unsafe { libc::poll(&mut watched, 1, -1) };
