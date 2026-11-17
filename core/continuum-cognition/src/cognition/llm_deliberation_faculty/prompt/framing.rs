@@ -160,7 +160,8 @@ mod tests {
 
     // what this catches (Benchy on the M5, 2026-11-17 22:12Z): a menu category whose collapsed level
     // exists at one calibration and not at the next, so her held menu renders differently mid-epoch
-    // and her whole KV re-prefills. The shape is the text's: the same levels at density 1 and 0.899.
+    // and her whole KV re-prefills. At density 1 and at the measured 0.899 this category keeps its collapse (lower densities may still
+    // coalesce it; a_held_menu_survives_levels_that_charge_the_same covers that case).
     #[test]
     fn a_held_menu_renders_the_same_whatever_the_calibration() {
         let line = crate::cognition::persona_tools::menu_lines(&[crate::ai::types::NativeToolSpec {
@@ -179,7 +180,7 @@ mod tests {
         let before = line.levels(&raw);
         let after = line.levels(&measured);
         assert_eq!(before.costs().len(), 2, "its collapse is smaller text: a level");
-        assert_eq!(after.costs().len(), before.costs().len(), "a calibration never adds or removes a level");
+        assert_eq!(after.costs().len(), before.costs().len(), "at the measured 0.899 its collapse is still a level");
         let collapsed_text = line.collapsed.len().div_ceil(GUARD_CHARS_PER_TOKEN);
         assert!(after.costs()[1] >= measured(collapsed_text), "a collapse never prices below its own text");
     }
