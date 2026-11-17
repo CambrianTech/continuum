@@ -200,8 +200,10 @@ pub fn live_incarnation() -> Option<super::engine_residency::EngineIncarnation> 
 /// construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SweepMode<'a> {
-    /// A fresh core starting up. Ephemeral records are definitionally orphans;
-    /// the LIVE record is left for `lane_pidfile` to adopt-or-reap.
+    /// A fresh core starting up. It never retires a running lane by its role: with no durable receipt
+    /// attesting its work saved (a crash before the stop's marker, a failed marker write), a running ephemeral
+    /// lane and its record stay for their owner (the ephemeral census); the LIVE record is left for
+    /// `lane_pidfile` to adopt-or-reap. Only dead or reused-pid records are collected.
     Boot,
     /// This core is shutting down. A lane is reaped only when the durable receipt ATTESTS its exact
     /// incarnation saved; any other lane, live or ephemeral, is retained and reported with its owner and
@@ -281,8 +283,10 @@ pub enum SweepOutcome {
     RemovedReused { pid: u32 },
     /// A live-lane record — left for `lane_pidfile` to adopt-or-reap.
     LeftLive { pid: u32 },
-    /// A running lane no durable receipt attests saved: left running WITH its record (shutdown only). Its owner
-    /// (the core that recorded it, or its lease/completion owner) must attest it before it may be retired.
+    /// A running lane no durable receipt attests saved: left running WITH its record (a stop retaining it, or a
+    /// boot finding it). Its owner (the core that recorded it, or its lease/completion owner) must attest it
+    /// before it may be retired. `persisted`: a retention marker naming this exact running incarnation (its OS
+    /// start time) is on disk; informational, never the reason it is kept.
     RetainedUnattested { pid: u32, port: u16, role: LaneRole, persisted: bool },
     /// A `.lane` file that didn't parse — removed as garbage.
     RemovedUnparseable { path: PathBuf },
@@ -504,11 +508,15 @@ fn remove_retained_marker(dir: &Path, pid: u32) {
     }
 }
 
-fn retained_marker_matches(dir: &Path, rec: &LaneRecord) -> bool {
-    std::fs::read_to_string(retained_path(dir, rec.pid))
+/// Whether a retention marker names the RUNNING process `rec` points at: the marker matches the record, and the
+/// OS start time of the pid is that incarnation's (never the record alone: a stale marker is no proof of
+/// custody). Informational only: boot retains a running lane with or without it.
+fn retention_on_disk(dir: &Path, rec: &LaneRecord) -> bool {
+    let marked = std::fs::read_to_string(retained_path(dir, rec.pid))
         .ok()
         .and_then(|raw| serde_json::from_str::<RetainedMarker>(&raw).ok())
-        .is_some_and(|marker| rec.started_s != 0 && marker.pid == rec.pid && marker.started_s == rec.started_s && marker.port == rec.port)
+        .is_some_and(|marker| rec.started_s != 0 && marker.pid == rec.pid && marker.started_s == rec.started_s && marker.port == rec.port);
+    marked && super::engine_residency::process_start_s(rec.pid) == Some(rec.started_s)
 }
 
 /// Write `rec` as JSON to `<pid>.lane`, creating the directory if needed. Pure:
@@ -696,10 +704,16 @@ fn sweep_collect(dir: &Path, mode: SweepMode<'_>, pending: &mut Vec<(PathBuf, La
             outcomes.push(SweepOutcome::RemovedDead { pid: rec.pid });
             continue;
         }
-        // A lane a shutdown retained (its receipt did not attest it saved) survives the next boot too: only its
-        // owner's attestation retires it, never a role-based orphan reap.
-        if matches!(mode, SweepMode::Boot) && retained_marker_matches(dir, &rec) && lane_process::is_llama_server(rec.pid) {
-            outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role, persisted: true });
+        // BOOT fails closed: a running ephemeral lane is never retired by its role. Nothing at boot attests its
+        // work saved (the marker is written only after a stop's commit, and may never have been: a crash, a
+        // failed write), so it and its record stay for its owner, the ephemeral census (Codex on #6098).
+        if matches!(mode, SweepMode::Boot) && rec.role == LaneRole::Ephemeral && lane_process::is_llama_server(rec.pid) {
+            outcomes.push(SweepOutcome::RetainedUnattested {
+                pid: rec.pid,
+                port: rec.port,
+                role: rec.role,
+                persisted: retention_on_disk(dir, &rec),
+            });
             continue;
         }
 

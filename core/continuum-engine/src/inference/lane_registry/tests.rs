@@ -576,11 +576,7 @@ fn an_unattested_running_lane_survives_the_stop_and_the_next_boot() {
         std::fs::remove_dir_all(&dir).expect("test: a clean dir");
     }
     std::fs::create_dir_all(&dir).expect("test: dir");
-    let program = dir.join("llama-server");
-    std::fs::copy("/bin/sleep", &program).expect("test: a process named llama-server");
-    let mut child = std::process::Command::new(&program).arg("60").spawn().expect("test: spawn");
-    let pid = child.id();
-    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    let (mut child, pid, started_s) = running_llama_server(&dir);
     for role in [LaneRole::Ephemeral, LaneRole::Live] {
         let lane = LaneRecord { started_s, ..rec(pid, 58_071, role) };
         record_in(&dir, &lane).expect("test: record");
@@ -602,6 +598,59 @@ fn an_unattested_running_lane_survives_the_stop_and_the_next_boot() {
         remove_in(&dir, pid);
         assert!(!retained_path(&dir, pid).exists(), "the retention goes with its record");
     }
+    child.kill().expect("test: end the fixture process");
+    child.wait().expect("test: reap it");
+    std::fs::remove_dir_all(&dir).expect("test: clean up");
+}
+
+/// A REAL process named llama-server (the sweep's own identification) for a test to retire itself: a copied
+/// /bin/sh looping, which stays alive under any name (a multi-call coreutils `sleep` copy exits at once).
+#[cfg(unix)]
+fn running_llama_server(dir: &Path) -> (std::process::Child, u32, u64) {
+    let program = dir.join("llama-server");
+    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
+    let child = std::process::Command::new(&program)
+        .args(["-c", "while :; do sleep 1; done"])
+        .spawn()
+        .expect("test: spawn");
+    let pid = child.id();
+    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    (child, pid, started_s)
+}
+
+// what this catches (Codex on #6098 fb7421c83): boot reaping a running ephemeral lane because no retention
+// marker protects it. The marker is written only after a stop's commit, so a crash before it, a failed write, or
+// a stale marker (another incarnation's start time) must all still leave the running lane and its record to
+// its owner; `persisted` reports a marker only when it names the running process.
+#[cfg(unix)]
+#[test]
+fn boot_never_reaps_a_running_ephemeral_lane_without_attestation() {
+    let dir = temp_dir("boot-fails-closed");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
+    }
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let (mut child, pid, started_s) = running_llama_server(&dir);
+    let lane = LaneRecord { started_s, ..rec(pid, 58_072, LaneRole::Ephemeral) };
+    let retained = |persisted| vec![SweepOutcome::RetainedUnattested { pid, port: 58_072, role: LaneRole::Ephemeral, persisted }];
+
+    // a crash before any stop: no marker at all
+    record_in(&dir, &lane).expect("test: record");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "no marker: still retained, never reaped");
+    assert!(continuum_cli_lifecycle::process::is_alive(pid) && record_path(&dir, pid).exists());
+
+    // a stale marker, naming another incarnation's start time: no proof, still retained
+    write_retained_marker(&dir, &LaneRecord { started_s: started_s + 1, ..lane.clone() }).expect("test: stale marker");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "a stale marker is not custody proof");
+    remove_retained_marker(&dir, pid);
+
+    // the stop's marker write fails (its path is a directory): the stop reports it, and boot still retains
+    std::fs::create_dir_all(retained_path(&dir, pid).join("blocked")).expect("test: block the marker path");
+    assert_eq!(sweep_in(&dir, SweepMode::Shutdown(&Attested::default())), retained(false), "the failed write is reported");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "a failed marker never licenses the next boot to reap");
+    assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the failed stop and the boot");
+    std::fs::remove_dir_all(retained_path(&dir, pid)).expect("test: unblock");
+
     child.kill().expect("test: end the fixture process");
     child.wait().expect("test: reap it");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
