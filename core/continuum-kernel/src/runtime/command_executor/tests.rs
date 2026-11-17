@@ -588,18 +588,18 @@
 
 
 // ── Test fixtures for call::<C> ────────────────────────────────
-    use crate::sdk_codegen::{ActionCommand as _, DynCommand};
+    use crate::sdk_codegen::{ActionCommand as _, DynCommand, Ctx, CommandError};
     use crate::runtime::registry::ModuleRegistry;
     use std::sync::Arc;
 
     /// Test params — serializable, deserializable.
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, schemars::JsonSchema, ts_rs::TS, PartialEq)]
     pub struct CallTestParams {
         pub value: String,
     }
 
     /// Test output — serializable, deserializable.
-    #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
+    #[derive(Debug, Clone, serde::Serialize, schemars::JsonSchema, ts_rs::TS, PartialEq)]
     pub struct CallTestOutput {
         pub echoed: String,
     }
@@ -644,7 +644,7 @@
             &self,
             _command: &str,
             _params: serde_json::Value,
-        ) -> Result<crate::CommandResult, String> {
+        ) -> Result<CommandResult, String> {
             Err("unreachable".into())
         }
 
