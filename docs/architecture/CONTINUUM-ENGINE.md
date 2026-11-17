@@ -2436,6 +2436,21 @@ re-tokenizes the new messages every act: encoding on the hot path).
   the typed refusal (`continuation_refused`), and a cold start is the caller's own whole-view send.
 - *The order is the engine's:* the delta's ids are her call's result, then what arrived, then the clock, so her
   view appends her exchange before it advances its sources (#6110 rework).
+- *Contracts before code (Codex, 2026-11-17 20:28Z; direction approved for an isolated prototype, not deploy):*
+  1. *Append only the delta, into a reserved tail.* `held ++ delta` is an append into capacity her block owner
+     already admitted, never an allocation or copy of the held prefix per act; growth belongs to that admitted
+     owner and is measured separately.
+  2. *An item's ids are keyed by everything that shapes them:* tokenizer, model and template revision, and its
+     framing context (role, tool boundary, what it is adjacent to), because per-item tokenization is not
+     automatically compositional. Proven exact against the canonical framing at role and tool boundaries,
+     empty bodies, Unicode and adjacent text; cached once at a stable boundary; never re-rendered on the hot path.
+  3. *The append is one validated transaction.* Its header names persona, epoch, the expected committed frontier
+     and the request's own identity. The owner atomically validates, reserves and appends. A duplicate of the
+     same request returns its prior receipt; a changed replay is refused; a lost response is never permission to
+     regenerate or to append twice.
+  Across a process boundary the request is a native fixed-width descriptor plus raw bytes; a pointer is used
+  only within its owner's valid lifetime. The draft model's streams, recurrent rollback state, sampler, genome
+  and learning generation and their fences stay with the same persona owner.
 - *Validator:* replay a persona's captured acts as id appends; assert prefilled == appended tokens and
   recomputed == 0 across three or more acts, freezes and binds; and time the core's per-act CPU (expected:
   memcpy of the delta, no tokenizer call).
