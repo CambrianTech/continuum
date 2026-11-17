@@ -228,6 +228,9 @@ pub enum CustodyState {
     /// Not saved, or not proven saved (refused, failed, uncertain, no paging): the live process
     /// may keep the only copy, and ending it would lose that copy.
     Retained,
+    /// The original custodian disappeared before proving its state saved.
+    /// Terminal evidence: a replacement process cannot repair this loss.
+    Lost,
 }
 
 impl CustodyState {
@@ -239,6 +242,7 @@ impl CustodyState {
     /// Two participants' custody of one process: retained by either is retained.
     pub fn combine(self, other: Self) -> Self {
         match (self, other) {
+            (Self::Lost, _) | (_, Self::Lost) => Self::Lost,
             (Self::Saved, Self::Saved) => Self::Saved,
             (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
         }
@@ -304,7 +308,11 @@ impl ShutdownReceipt {
                     None => format!("{} at {} (process unidentified)", c.participant, c.endpoint),
                 })
                 .collect();
-            lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+            if retained.iter().any(|c| c.state == CustodyState::Lost) {
+                lines.push(format!("state NOT saved; a custodian was lost: {}", held.join(", ")));
+            } else {
+                lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+            }
         }
         lines.join("; ")
     }

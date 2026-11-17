@@ -13,6 +13,15 @@ impl crate::runtime::extensions::SettleBeforeStop for SavesOneProcess {
     fn name(&self) -> &'static str {
         "saves_one_process"
     }
+    fn recover(&self, retained: Vec<crate::runtime::HeldCustody>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::runtime::HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send + 'static>> {
+        let participant = self.name().to_owned();
+        Box::pin(async move {
+            if retained.is_empty() { return Ok(Vec::new()); }
+            Err(crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
+                participant, reason: "this participant does not retain process custody".into(),
+            })
+        })
+    }
     fn settle(&self, _cap: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HeldCustody>> + Send + 'static>> {
         Box::pin(async {
             vec![HeldCustody {
