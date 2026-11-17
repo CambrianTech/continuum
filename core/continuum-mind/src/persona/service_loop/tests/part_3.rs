@@ -481,7 +481,7 @@ async fn refused_rest_resumes_the_retained_loop() {
     let mut conversation = ScriptedConversation::new().with_events(vec![Ok(None)]);
     let options = ServeOptions::default();
     let gate = Arc::clone(&options.turns);
-    assert!(gate.close());
+    assert!(gate.close_for_rest());
     let retained = serve_persona_loop_inner::serve_persona_loop_inner(
         &hosted, &mut conversation, options, test_obligations(&hosted),
     );

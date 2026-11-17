@@ -6,7 +6,7 @@
 //! the check and the increment, and a drain then reads zero while a producer is about to
 //! make it one.
 //!
-//! This is that pair in a single word: high bit CLOSED, low 63 bits the in-flight count,
+//! This is that pair in a single word: high bits CLOSED/RETIRED, low 62 bits the in-flight count,
 //! admission by `compare_exchange`. It exists as a TYPE rather than a pattern because it
 //! was written twice — once for persona turns, once for the log queue — and the second
 //! copy reintroduced the exact race the first had just removed. Two implementations of an
@@ -21,9 +21,11 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// High bit. Leaves 63 bits of count, which is not a limit anyone reaches: the count is
+/// High bits. Leave 62 bits of count, which is not a limit anyone reaches: the count is
 /// concurrent units of work, bounded by citizens or queue capacity.
 const CLOSED: u64 = 1 << 63;
+const RETIRED: u64 = 1 << 62;
+const FLAGS: u64 = CLOSED | RETIRED;
 
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
 #[derive(Debug)]
@@ -54,7 +56,7 @@ impl AdmissionGate {
             let emptied = self.emptied.notified();
             tokio::pin!(emptied);
             emptied.as_mut().enable();
-            if self.word.load(Ordering::Acquire) == CLOSED {
+            if self.word.load(Ordering::Acquire) & !RETIRED == CLOSED {
                 return;
             }
             emptied.await;
@@ -63,7 +65,7 @@ impl AdmissionGate {
 
     /// Publish [`drained`](Self::drained) when the word a change left is closed and empty.
     fn publish_if_drained(&self, left: u64) {
-        if left == CLOSED {
+        if left & !RETIRED == CLOSED {
             self.emptied.notify_waiters();
         }
     }
@@ -76,7 +78,7 @@ impl AdmissionGate {
 
     /// Units of work admitted and not yet released.
     pub fn in_flight(&self) -> u64 {
-        self.word.load(Ordering::Acquire) & !CLOSED
+        self.word.load(Ordering::Acquire) & !FLAGS
     }
 
     /// ADMIT one unit of work, or refuse because the gate is closed.
@@ -111,7 +113,7 @@ impl AdmissionGate {
 
     /// Explicit recovery by the lifecycle owner after a refused rest. Never
     /// reopen over admitted work. The owner must serialize close/recovery/retire
-    /// operations; permanent shutdown callers do not invoke this transition.
+    /// operations. Permanent shutdown sets RETIRED, so this CAS cannot undo it.
     pub fn reopen_drained(&self) -> bool {
         if self.word.compare_exchange(CLOSED, 0, Ordering::AcqRel, Ordering::Acquire).is_err() {
             return false;
@@ -175,13 +177,13 @@ impl AdmissionGate {
         let released = self
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
-                let count = cur & !CLOSED;
+                let count = cur & !FLAGS;
                 if count == 0 {
                     // Nothing to release. Refuse rather than wrap: `cur - 1` here would
                     // borrow from the closed bit and silently REOPEN the gate.
                     None
                 } else {
-                    Some((cur & CLOSED) | (count - 1))
+                    Some((cur & FLAGS) | (count - 1))
                 }
             });
         if let Ok(before) = released {
@@ -193,9 +195,16 @@ impl AdmissionGate {
     /// racing a stop verb, a retried request — can tell it is re-entering rather than
     /// report a fresh close.
     ///
-    /// Stop callers leave it closed. A resident lifecycle owner may explicitly
-    /// recover a refused rest with `reopen_drained` after all admitted work ends.
+    /// Permanent shutdown: retirement cannot be undone by a refused-rest recovery.
     pub fn close(&self) -> bool {
+        let before = self.word.fetch_or(FLAGS, Ordering::AcqRel);
+        self.publish_if_drained(before | FLAGS);
+        before & CLOSED == 0
+    }
+
+    /// Pause admission for a resident rest. A permanent close racing this pause
+    /// retains RETIRED; only a drained, non-retired pause can be recovered.
+    pub fn close_for_rest(&self) -> bool {
         let before = self.word.fetch_or(CLOSED, Ordering::AcqRel);
         self.publish_if_drained(before | CLOSED);
         before & CLOSED == 0
@@ -241,7 +250,7 @@ mod tests {
         let gate = AdmissionGate::new();
         for _ in 0..4 {
             let active = gate.admit().expect("open gate");
-            assert!(gate.close());
+            assert!(gate.close_for_rest());
             assert!(!gate.reopen_drained(), "cannot reopen over work that still owns state");
             let mut waiting = std::pin::pin!(gate.admit_when_open());
             let wakes = std::sync::Arc::new(WakeCount(std::sync::atomic::AtomicUsize::new(0)));
@@ -260,6 +269,32 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn permanent_stop_cannot_be_reopened_by_rest_recovery() {
+        for pause_first in [false, true] {
+            let gate = AdmissionGate::new();
+            let active = gate.admit().expect("open gate");
+            if pause_first {
+                assert!(gate.close_for_rest());
+            }
+            gate.close();
+            assert_eq!(gate.in_flight(), 1);
+            assert!(!gate.reopen_drained());
+            drop(active);
+            gate.drained().await;
+            assert!(!gate.reopen_drained(), "retirement survives final permit release");
+            gate.close_for_rest();
+            gate.release_one();
+            assert_eq!(gate.in_flight(), 0);
+            assert!(!gate.reopen_drained(), "neither pause nor extra release clears retirement");
+            assert!(gate.admit().is_none());
+        }
+        let gate = AdmissionGate::new();
+        gate.close_for_rest();
+        assert!(gate.reopen_drained());
+        gate.close();
+        assert!(!gate.reopen_drained(), "a stop after recovery is also permanent");
+    }
     // what this catches: THE RACE, driven through the REAL admit/close rather than a
     // reimplementation of them. With an open flag and a count as separate atomics this
     // order was reachable: admit reads OPEN, close lands, drain reads 0 and saves, admit
