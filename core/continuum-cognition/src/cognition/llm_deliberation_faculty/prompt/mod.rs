@@ -6,7 +6,7 @@ mod view;
 mod system;
 mod messages;
 mod epoch;
-mod capture_adoption;
+mod adoption;
 mod template;
 #[cfg(test)]
 pub(in super) use epoch::SHORT_GRANTS;

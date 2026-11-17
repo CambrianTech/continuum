@@ -106,13 +106,18 @@ pub struct ReplayRequestResult {
 
 use super::super::prompt_capture::{InputComparison, ToolSchemaComparison};
 
-/// The captured request's canonical digest, from its one owner (`continuum_capture::request_digest`).
 fn request_hash(request: &TextGenerationRequest) -> Result<String, CommandError> {
-    continuum_capture::request_digest::request_sha256(request).map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))
+    let value = serde_json::to_value(request) // boundary: canonical request digest shared with diagnostic caller
+        .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
+    value_hash(value)
 }
 
-fn value_hash(value: serde_json::Value) -> Result<String, CommandError> {
-    continuum_capture::request_digest::value_sha256(value).map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))
+fn value_hash(mut value: serde_json::Value) -> Result<String, CommandError> {
+    use sha2::{Digest, Sha256};
+    value.sort_all_objects();
+    let bytes = serde_json::to_vec(&value) // boundary serialization: canonical captured-request integrity digest
+        .map_err(|e| CommandError::Internal(format!("replay request hash: {e}")))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
 }
 
 fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -> Result<InputComparison, CommandError> {

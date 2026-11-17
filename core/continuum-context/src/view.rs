@@ -807,19 +807,6 @@ impl<T: Block> View<T> {
         self.epoch.render()
     }
 
-    /// The prompt her last sent act carried (her accepted frontier): the head, then each event that
-    /// act sent, in order. Empty once an epoch starts and before it is first sent.
-    pub fn sent_render(&self) -> impl Iterator<Item = &T> {
-        let events = self.epoch.events().len();
-        let unsent = events - self.sent_events.min(events);
-        self.epoch.render().take(self.epoch.render().count() - unsent)
-    }
-
-    /// How many of this epoch's events her last sent act carried.
-    pub fn sent_events(&self) -> usize {
-        self.sent_events
-    }
-
     /// What she is shown, in prompt order: each block after the head with its occurrence, the
     /// level the view rendered it at, its version and its size. Taken where the prompt is
     /// SUBMITTED (the caller binds owner, memory incarnation and request there), never at

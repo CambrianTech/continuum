@@ -100,13 +100,9 @@ pub(crate) struct ViewCustody {
     pub(crate) changes: Vec<crate::cognition::hands_custody::ContractChange>,
     /// Who asked that her head be adopted from the live surface (`persona/hands/adopt`), until her
     /// next act honours it.
-    pub(crate) adoption: Option<crate::cognition::capture_adoption::AdoptionRequest>,
+    pub(crate) adoption: Option<String>,
     /// The heads her explicit adoptions replaced, kept as they were (never erased), checkpointed.
     pub(crate) superseded: Vec<crate::cognition::hands_custody::SupersededHands>,
-    /// An adoption from a captured request that was refused, and where it differed: her acts wait
-    /// until an adoption is asked again. Checkpointed, so a restart never clears the refusal an
-    /// operator's request produced (Codex's review of #6105).
-    pub(crate) capture_refused: Option<crate::cognition::capture_adoption::CaptureMismatch>,
 }
 
 
@@ -455,10 +451,6 @@ pub struct VolatileSnapshot {
     /// The heads her explicit adoptions replaced ([`ViewCustody`]'s `superseded`), kept as they were.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) superseded_hands: Vec<crate::cognition::hands_custody::SupersededHands>,
-    /// A refused adoption from a captured request ([`ViewCustody`]'s `capture_refused`). Absent on
-    /// snapshots written before this field, and on every one with no refusal.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) capture_refused: Option<crate::cognition::capture_adoption::CaptureMismatch>,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.

@@ -52,7 +52,6 @@ pub mod inference_session;
 pub mod introspect_commands;
 pub mod llm_deliberation_faculty;
 pub(crate) mod context_streams;
-pub(crate) mod capture_adoption;
 pub(crate) mod hands_custody;
 pub mod tool_surface;
 pub mod tool_head;

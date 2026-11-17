@@ -289,10 +289,6 @@ impl LlmDeliberationFaculty {
                 (sent, menu, hands)
             }
         };
-        // A capture adoption holds this head uncommitted until the act's whole payload is compared.
-        let Some(hands) = self.hold_for_capture(hands) else {
-            return (sent, menu);
-        };
         let generation = hands.generation;
         *self.tools_epoch.lock() = Some(hands);
         self.complete_adoption(generation);

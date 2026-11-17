@@ -264,10 +264,6 @@ pub(crate) struct SupersededHands {
     pub(crate) by: String,
     /// The generation of her head that replaced it.
     pub(crate) generation: u64,
-    /// The captured request it was adopted from and matched byte for byte, when it was
-    /// (`capture_adoption`); `None` for an adoption from the live surface.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) from_capture: Option<super::capture_adoption::CaptureBinding>,
 }
 
 /// The custody an adoption replaced, kept as it was read.
@@ -285,10 +281,6 @@ pub(crate) struct PendingAdoption {
     pub(crate) prior: HandsCustody,
     pub(crate) reason: String,
     pub(crate) by: String,
-    /// The captured request this adoption must match, and the head frozen from this act's live
-    /// selection, held uncommitted until the act's whole payload is compared (`capture_adoption`).
-    pub(crate) capture: Option<super::capture_adoption::CapturedHead>,
-    pub(crate) candidate: Option<HeldHands>,
 }
 
 impl PendingAdoption {
@@ -299,8 +291,7 @@ impl PendingAdoption {
             HandsCustody::Held(hands) => SupersededPrior::Held(hands),
             HandsCustody::Corrupt(corrupt) => SupersededPrior::Corrupt(corrupt),
         };
-        let from_capture = self.capture.map(|capture| capture.binding);
-        SupersededHands { prior, reason: self.reason, by: self.by, generation, from_capture }
+        SupersededHands { prior, reason: self.reason, by: self.by, generation }
     }
 }
 
@@ -310,29 +301,13 @@ impl PendingAdoption {
 pub(crate) enum HandsRefusal {
     /// Her head's record does not decode: its original checkpoint is kept.
     Corrupt(CorruptHands),
-    /// Her view was checkpointed with no head beside it, and no captured request of hers shows it.
-    Unrecorded,
 }
 
 impl HandsRefusal {
-    /// The refusal a custody stands under when an adoption over it does not happen: a corrupt or
-    /// unrecorded head is refused again, a held head is simply kept.
-    pub(crate) fn of(custody: &HandsCustody) -> Option<HandsRefusal> {
-        match custody {
-            HandsCustody::Corrupt(corrupt) => {
-                let kept = corrupt.clone();
-                Some(HandsRefusal::Corrupt(kept))
-            }
-            HandsCustody::Unrecorded => Some(HandsRefusal::Unrecorded),
-            HandsCustody::Held(_) => None,
-        }
-    }
-
     /// What she and her operator read.
     pub(crate) fn reason(&self) -> String {
         let why = match self {
             HandsRefusal::Corrupt(corrupt) => format!("her head's checkpointed custody does not decode ({}); its checkpoint is kept as it was", corrupt.error),
-            HandsRefusal::Unrecorded => "her view was checkpointed with no head beside it and no captured request of hers shows that view".to_string(),
         };
         format!("{why}: her acts wait until her head is adopted (persona/hands/adopt), and her view is kept")
     }
@@ -344,7 +319,6 @@ impl HandsRefusal {
                 let kept = corrupt.clone();
                 HandsCustody::Corrupt(kept)
             }
-            HandsRefusal::Unrecorded => HandsCustody::Unrecorded,
         }
     }
 }

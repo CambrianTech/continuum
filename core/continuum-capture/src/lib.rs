@@ -9,4 +9,3 @@
 /// (persona turns, prompt and workspace captures) and their readers.
 pub mod capture;
 pub mod prompt_capture;
-pub mod request_digest;
