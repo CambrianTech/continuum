@@ -148,7 +148,7 @@ impl PrebuiltCore {
         // checkout the artifact anchors its own receipt; unknown/malformed
         // provenance still fails. With a checkout it must match the checkout's
         // build key (its HEAD when git cannot name the key).
-        let (expected_sha, source) = expected.unwrap_or((&build_sha, "selected prebuilt artifact"));
+        let (expected_sha, source) = expected.unwrap_or((&build_sha, "selected prebuilt artifact")); // No checkout: the explicitly selected artifact anchors provenance; deploy_verdict still rejects malformed SHAs.
         deploy_verdict(Some(&build_sha), expected_sha, source, &path.display().to_string())?;
         Ok(Self { path, build_sha })
     }
@@ -439,7 +439,8 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
         .as_ref()
         .map(|p| p.build_sha.clone())
         .or_else(git_head_short_sha);
-    let _deploy_claim = DeployClaimGuard::take(target_sha.as_deref().unwrap_or("unknown"));
+    let claim_sha = target_sha.as_deref().ok_or("cannot bind deploy claim to a verified artifact or source revision; the running core stands")?;
+    let _deploy_claim = DeployClaimGuard::take(claim_sha);
     // THE BUILD RUNS DARK (Joel, 2026-10-24: "No. Take down serving while building."). The
     // warm build beside a serving core is gone: on unified memory the compiler and the
     // residents' KV share one pool, and no gate taken at start follows either of them for
@@ -462,10 +463,8 @@ async fn reboot_admitted(options: RebootOptions, admission: &HandoffAdmission) -
     } else {
         None
     };
-    // Reboot deliberately does NOT fail on an unsaved module: the caller's goal is a
-    // running core, and refusing to continue would leave the node down over a module that
-    // could not flush. The warning is printed by `stop_with`; `stop` is the verb whose
-    // exit code carries it.
+    // The shutdown owner must attest durable custody before committing the stop.
+    // An unsaved participant retains the running core; reboot cannot override that receipt.
     // Registration may require consent and must succeed before draining the core.
     // The unattended consumer cannot manufacture that consent; attended install
     // converges the launcher contract even when the binary SHA is already current.
