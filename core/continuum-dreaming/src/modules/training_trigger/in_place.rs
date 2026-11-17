@@ -157,6 +157,21 @@ impl InPlace {
         Arc::clone(self.engines.entry(engine).or_default().value())
     }
 
+    /// Retire every engine incarnation other than `live` whose process is verifiably dead, and return
+    /// how many. An incarnation's slot owns its learners' and workspace's custody claims; while it
+    /// stays in the map those claims stay live, so custody never sees them orphaned and keeps their
+    /// leases forever (the M5, 2026-11-17: the engine relaunched at 22:09:39Z and Aris's workspace
+    /// lease, 4.88 GB of governed VRAM, stayed pinned; every pass after it found 0 bytes free). The
+    /// dropped claims become orphans, which `Custody::settle_orphans` releases on the dead-process
+    /// proof. An incarnation whose liveness is unknown is kept: unreadable is never dead.
+    pub(crate) fn retire_dead(&self, live: EngineIncarnation) -> usize {
+        let dead: Vec<EngineIncarnation> = self.engines.iter().map(|entry| *entry.key()).filter(|incarnation| *incarnation != live && incarnation.liveness() == Liveness::Dead).collect();
+        for incarnation in &dead {
+            self.engines.remove(incarnation);
+        }
+        dead.len()
+    }
+
     /// One step of bucket `key`, holding its gate, its engine and `slot`: seat her learner if needed,
     /// then learn her next pending example on `slot` (or restore her generation before it). A lost
     /// answer's fence runs on its own, holding this engine and the slot until the stop is confirmed.

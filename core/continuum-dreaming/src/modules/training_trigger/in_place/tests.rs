@@ -51,6 +51,24 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
+// what this catches (the M5, 2026-11-17: the engine relaunched at 22:09:39Z mid-step): a dead engine
+// incarnation's learning state kept after the relaunch, so its custody claims never orphan and their
+// leases (Aris's 4.88 GB learning workspace) stay pinned, and every later pass finds 0 bytes free.
+// The dead incarnation's slot, with every claim in it, is dropped; the live one is kept.
+#[tokio::test]
+async fn a_dead_engines_learning_state_is_retired_and_the_live_one_kept() {
+    let in_place = InPlace::new(authority());
+    let live = engine(1);
+    // This pid under another start time: a pid since reused, so that incarnation is verifiably dead.
+    let dead = EngineIncarnation { started_s: live.started_s.saturating_sub(1), ..live };
+    let dead_slot = Arc::downgrade(&in_place.engine(dead));
+    let live_slot = Arc::downgrade(&in_place.engine(live));
+    assert_eq!(in_place.retire_dead(live), 1, "the dead incarnation is retired");
+    assert!(dead_slot.upgrade().is_none(), "its slot, and every custody claim in it, is dropped");
+    assert!(live_slot.upgrade().is_some(), "the live engine's learning state is kept");
+    assert_eq!(in_place.retire_dead(live), 0, "nothing is retired twice");
+}
+
 // what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
 // bucket's gate, so her own submit stalled behind her background work. The learner waits for her
 // acts first, holding nothing of the trigger; the gate stays free, and once her act ends the pass
