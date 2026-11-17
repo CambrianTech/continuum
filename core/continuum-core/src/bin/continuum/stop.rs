@@ -24,7 +24,9 @@ pub(super) enum NoBoundCore {
     /// A core answered, but it is not the one core this stop found (none, or several, are running).
     NotTheOnlyCore,
     /// The answer did not decode as a process identity.
-    Invalid(String),
+    Invalid(serde_json::Error),
+    PidOutOfRange { pid: u32 },
+    UnnamedInstance,
 }
 
 impl std::fmt::Display for NoBoundCore {
@@ -33,6 +35,8 @@ impl std::fmt::Display for NoBoundCore {
             Self::Unanswered => f.write_str("no core answered the shutdown capability; every core remains running"),
             Self::NotTheOnlyCore => f.write_str("the answering core is not the only core running; every core remains running"),
             Self::Invalid(why) => write!(f, "invalid shutdown capability ({why}); every core remains running"),
+            Self::PidOutOfRange { pid } => write!(f, "shutdown pid {pid} is out of range; every core remains running"),
+            Self::UnnamedInstance => f.write_str("shutdown instance is unnamed; every core remains running"),
         }
     }
 }
@@ -45,9 +49,12 @@ pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<continuum_core
     // Capability discovery does not drain. An unanswered or ambiguous identity refuses the stop.
     let Ok(Ok(value)) = reply else { return Err(NoBoundCore::Unanswered) };
     let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
-        .map_err(|e| NoBoundCore::Invalid(e.to_string()))?;
-    if target.pid > i32::MAX as u32 || target.instance.is_empty() {
-        return Err(NoBoundCore::Invalid("process identity out of range or unnamed".into()));
+        .map_err(NoBoundCore::Invalid)?;
+    if target.pid > i32::MAX as u32 {
+        return Err(NoBoundCore::PidOutOfRange { pid: target.pid });
+    }
+    if target.instance.is_empty() {
+        return Err(NoBoundCore::UnnamedInstance);
     }
     if pids != [target.pid as i32] {
         return Err(NoBoundCore::NotTheOnlyCore);
