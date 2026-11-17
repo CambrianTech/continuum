@@ -191,15 +191,15 @@ impl AdmissionGate {
         }
     }
 
-    /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
+    /// Retire the gate. Returns whether THIS call retired it, so a second caller — a signal
     /// racing a stop verb, a retried request — can tell it is re-entering rather than
-    /// report a fresh close.
+    /// report a fresh retirement. A prior rest pause is not a permanent stop.
     ///
     /// Permanent shutdown: retirement cannot be undone by a refused-rest recovery.
     pub fn close(&self) -> bool {
         let before = self.word.fetch_or(FLAGS, Ordering::AcqRel);
         self.publish_if_drained(before | FLAGS);
-        before & CLOSED == 0
+        before & RETIRED == 0
     }
 
     /// Pause admission for a resident rest. A permanent close racing this pause
@@ -277,7 +277,8 @@ mod tests {
             if pause_first {
                 assert!(gate.close_for_rest());
             }
-            gate.close();
+            assert!(gate.close(), "first permanent stop, including after a rest pause");
+            assert!(!gate.close(), "second permanent stop is re-entry");
             assert_eq!(gate.in_flight(), 1);
             assert!(!gate.reopen_drained());
             drop(active);
