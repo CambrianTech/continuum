@@ -2455,6 +2455,33 @@ re-tokenizes the new messages every act: encoding on the hot path).
   recomputed == 0 across three or more acts, freezes and binds; and time the core's per-act CPU (expected:
   memcpy of the delta, no tokenizer call).
 
+**The swap, as Joel states it (2026-11-17 22:06Z), and the structure that guarantees it.** "Swap cannot lose last
+state. It has to maintain itself and prepare the next persona and stream it in and last out, only after it's been
+swapped out and onto the next, stream next in, swap in milliseconds, stream out the last as we're also preparing the
+next. Continuous and under a second to perform the transition. No permanent occupation. Cache levels ... vram and
+unified cases. Of flash memory ... well structured. Can't leave out the genome or learning."
+
+*The persona unit (nothing of hers lives outside it).* One owned structure per persona, moved only whole:
+1. execution blocks: KV rows per attention layer, recurrent rows, cell index (#147);
+2. token history + append receipts (`llama-persona-tokens`);
+3. GENOME: her composed gene set and its generation (the adapters her next decode runs with), the trained genes'
+   handles; the M5 lost exactly this on 2026-11-17 when a core restart emptied every cycle's gene set (#6117);
+4. LEARNING: her in-flight learning passes, optimizer moments, learning checkpoints, the training-trigger buckets and
+   their custody (the 21:29Z stop interrupted 9 in-flight passes: the unit owns them so a move never drops them);
+5. draft-model streams, sampler state, recurrent rollback, the act/request-seq completion records.
+A move that cannot carry every part is refused, typed; never a partial move.
+
+*The pipeline, continuous (three roles, never permanent occupation).* While ACTIVE decodes: NEXT streams in (tier ->
+device, layer order, behind compute); at the fenced handoff NEXT becomes ACTIVE in milliseconds (a descriptor bind:
+blocks + genome generation + sampler); only THEN the old ACTIVE becomes RETIRING and streams out, while the next NEXT
+is already being prepared. Transition under a second end to end; the switch itself in milliseconds; no persona holds
+fast memory after her turn unless the scheduler predicts she is next.
+
+*Residency tiers, per hardware, one structure:* discrete GPU (VRAM <- pinned RAM <- flash), unified memory (the M5:
+"device" and RAM are one pool, so stream in is a bind or an intra-pool copy; the tier that matters is RAM <-> flash),
+CPU-only (RAM <-> flash). The same unit and the same verbs on every node; a node's tiers decide only where the bytes
+sit. Flash holds a native generation (4.14 above), demoted on stop and bound on start: never dropped, never re-prefilled.
+
 **The persona engine: our loop on libllama, replacing `llamacpp_scheduler` (2026-11-17; direction agreed by
 Codex 20:57Z, API before integration, no serving switch yet).** llama-server's prompt loop assumes a task holds its
 whole prompt (47 sites: prefix match, checkpoints, batching, context checks), so an append-only persona cannot live
