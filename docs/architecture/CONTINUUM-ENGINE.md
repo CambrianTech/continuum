@@ -1960,7 +1960,7 @@ the mover's frames; each later slice moves its class onto them.
 
 Joel, 2026-11-17, on the M5 read: "So it needs rewrite? Very unreliable logic. It just gives up and breaks."
 
-**What the M5 showed (build 5a754ad98, engine 14844, 2026-11-17 00:06-00:21Z).** The starvation fix (#6093) works:
+**What the M5 showed (build 5a754ad98 verified 00:09:35Z, engine 14844; the 15-minute read 00:09:35-00:24:35Z).** The starvation fix (#6093) works:
 seats rotated strictly oldest-owed with no re-entry, three times. But only ONE mind was ever seated. Each grant was
 158-207k tokens (her whole untrimmed view x `SENT_HEADROOM` 1.25, `window_grant.rs:398-410`), the pool is 300,850,
 and the engine runs 5 lanes, so four residents decoded strictly one after another and never batched. Her real
@@ -1973,24 +1973,38 @@ held one turn ~3 h on 2026-11-16.
 **The replacement:**
 1. **Every resident mind is resident, always.** She is a sequence of the engine's unified pool (fork #139): decoding
    on a lane, or parked beside the lanes, or paged to RAM or flash. There is no seat and no wait for one.
-2. **One memory owner admits by live cells** (4.11.8). Her charge is the cells her sequence actually holds, as the
-   engine's allocator reports them, never her view's ceiling. When live use exceeds the grant from `ResourceDaemon`,
-   the coldest mind's resources go down a tier (by activity temperature), and are streamed back ahead of her next act
-   (`prefetch`). When no legal move exists, the act gets a typed deferral (4.11.8), never an unbounded wait.
+2. **One memory owner admits by physical cost, incrementally, BEFORE it is spent** (4.11.8; Codex on #6092). Each
+   prefill or decode step reserves the physical capacity it is about to allocate, under the grant from
+   `ResourceDaemon`, before allocating: never exceed first and page after. The bill is the engine allocator's
+   physical bytes and cells, not `n_past` (which is only evidence of logical context): shared-prefix cells counted
+   once, the draft's KV, checkpoints, the learning workspace and transfers in flight. When a reservation would exceed
+   the grant, the coldest mind's resources go down a tier first (by activity temperature) and are streamed back ahead
+   of her next act (`prefetch`). When no legal move exists, the step gets a typed deferral (4.11.8) that ends on a
+   named release event, never an unbounded wait.
 3. **Her grant survives only as her view's ceiling:** how much she renders whole (the Aris collapse spiral of
    2026-11-13 is why it is sized to her wish). It never decides whether she runs.
-4. **The scheduler decides only who decodes next** (goal 9): activity temperature as priority, aging so no mind is
-   starved, and every ready mind batched into the same decode step, so throughput is the engine's aggregate rate, not
-   one stream's.
+4. **The scheduler decides only who decodes next** (goal 9): activity temperature as priority, aging so no eligible
+   mind is starved, and as many ready minds batched into one decode step as the MEASURED per-node, per-model
+   concurrency cost curve and the step and latency budgets allow, after physical admission (Codex on #6092). No
+   concurrency count is hard-coded and one-step service is not promised when ready demand exceeds those budgets;
+   batching is judged against the cost curve.
+5. **Custody stays where it is proven.** The existing completion owner keeps terminal, cancellation and fence custody
+   and the save-before-release proofs; the grant-specific handoff APIs are deleted only once their callers use the
+   shared mover's equivalent proof. A dropped or cancelled request never authorizes reuse of live GPU memory.
+6. **Logical residency is not GPU residency.** A parked or paged mind keeps her identity and state (logically
+   resident); it is never a claim that every mind's KV is on the GPU at once. The two states are gated separately.
 
 **Deleted:** the owed queue, `DispatchWait::BehindActs`, reclaim handoffs and their receipts, `yield_after` arming,
 seat publications and grant revisions as admission (`lease/fair.rs` and the reservation paths that serve it).
 
 **Owners:** residency and the memory owner (Fable: #139, 4.11.8, contract slices 3-4); the scheduler (Codex, goal 9).
 
-**Gate (on the M5, the four residents, the 35B):** all four resident at once with no `delib.window.waiting`; batched
-decode (more than one sequence per decode step) observed; aggregate decode tok/s against the 80 tok/s target; switch
-receipts in milliseconds; no mind's act waiting more than one decode step behind a resident with memory free.
+**Gates.** In the simulator and replay first: a contention replay where the aggregate active working sets exceed the
+pool and no legal eviction exists proves a bounded typed deferral and progress after a legal release; tonight's M5
+logs replay without a starved mind. Then on the M5 (the four residents, the 35B): all four logically resident with no
+`delib.window.waiting`; batched decode (more than one sequence per decode step) observed and measured against the
+concurrency cost curve; aggregate decode tok/s against the 80 tok/s target; switch receipts in milliseconds; the
+physical charge never above the `ResourceDaemon` grant.
 
 ### 4.12 The serving modules: one intentional architecture, no patchwork (2026-11-17)
 
@@ -2009,9 +2023,9 @@ built.
 | Module | The one thing it owns | Typed verbs (others call) | Replaces, deleted when it lands |
 |---|---|---|---|
 | `EngineLink` | the engine connection: attach, descriptor, instance, in-flight act custody (4.11.3-5) | `act`, `cancel`, `prefetch`, `release`, `genome_set`, `describe` | request building in `stream.rs`, `minds.rs`, `slots/discover.rs`; `/props` parsing; the JSON routes |
-| `MemoryOwner` | every byte the engine holds for a mind, by live cells, under `ResourceDaemon` grants (4.11.8) | `charge`, `make_room`, `page(mind, tier)`, reads: `resident(mind)` | window grants as admission, `lease/fair.rs` dispatch, prompt-cache sizing as its own policy |
-| `Residency` | each mind's place: logically resident always; GPU / RAM / flash tier (4.11.9) | reads only (snapshot); moves are `MemoryOwner`'s | seats, the owed queue, reclaim handoffs, armed yields |
-| `Scheduler` | who decodes next: activity temperature, aging, batch size by the measured cost curve (goal 9) | `ready(mind, act)`, reads: `next_batch` | `BehindActs`, `delib.window.waiting` polling, lane selection |
+| `MemoryOwner` | every byte the engine holds for a mind, by physical cost reserved before each allocation, under `ResourceDaemon` grants (4.11.8, 4.11.9 points 2 and 5) | `charge`, `make_room`, `page(mind, tier)`, reads: `resident(mind)` | window grants as admission, `lease/fair.rs` dispatch, prompt-cache sizing as its own policy |
+| `Residency` | each mind's place: logically resident always; GPU / RAM / flash tier, gated separately (4.11.9 point 6) | reads only (snapshot); moves are `MemoryOwner`'s | seats, the owed queue, reclaim handoffs, armed yields |
+| `Scheduler` | who decodes next: activity temperature, aging among eligible minds, batch size by the measured concurrency cost curve and step/latency budgets (goal 9, 4.11.9 point 4) | `ready(mind, act)`, reads: `next_batch` | `BehindActs`, `delib.window.waiting` polling, lane selection |
 | `Learning` | the genome's learning switch and duty: share by wakefulness, learning acts through the same path (4.11.6) | `set_learning(layer, on)`, `duty(share, mode)` | ad hoc fresh-adapter writes and swaps beside serving; `/train*` |
 | `ServingObserver` | the numbers: aggregate decode tok/s, per-mind acts/h, switch ms, waits, memory, learning share | reads only; publishes a snapshot | scattered probes nobody aggregates; it decides nothing |
 
