@@ -3,4 +3,4 @@
 /**
  * What a participant's process holds after the settle.
  */
-export type CustodyState = "Saved" | "Retained";
+export type CustodyState = "Saved" | "Retained" | "Lost";
