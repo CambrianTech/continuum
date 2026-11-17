@@ -1963,7 +1963,9 @@ Joel, 2026-11-17, on the M5 read: "So it needs rewrite? Very unreliable logic. I
 **What the M5 showed (build 5a754ad98 verified 00:09:35Z, engine 14844; the 15-minute read 00:09:35-00:24:35Z).** The starvation fix (#6093) works:
 seats rotated strictly oldest-owed with no re-entry, three times. But only ONE mind was ever seated. Each grant was
 158-207k tokens (her whole untrimmed view x `SENT_HEADROOM` 1.25, `window_grant.rs:398-410`), the pool is 300,850,
-and the engine runs 5 lanes, so four residents decoded strictly one after another and never batched. Her real
+and the engine runs 5 lanes, so four residents decoded strictly one after another. (One at a time is the design,
+4.11.9 point 4; the defect is that the switch between them was not milliseconds: each waited on a whole-view grant
+rather than being resident and switched in by id.) Her real
 sequence per act (engine `n_past`) was 50-93k; all four together are about the pool. The code's own premise, "a grant
 is a ceiling, not an allocation: KV is paged on use", is contradicted by admission, which sums grants against the
 pool. Everything built to cope with that (the owed queue, `BehindActs` waits, reclaim handoffs and receipts, armed
@@ -1983,11 +1985,13 @@ held one turn ~3 h on 2026-11-16.
    named release event, never an unbounded wait.
 3. **Her grant survives only as her view's ceiling:** how much she renders whole (the Aris collapse spiral of
    2026-11-13 is why it is sized to her wish). It never decides whether she runs.
-4. **The scheduler decides only who decodes next** (goal 9): activity temperature as priority, aging so no eligible
-   mind is starved, and as many ready minds batched into one decode step as the MEASURED per-node, per-model
-   concurrency cost curve and the step and latency budgets allow, after physical admission (Codex on #6092). No
-   concurrency count is hard-coded and one-step service is not promised when ready demand exceeds those budgets;
-   batching is judged against the cost curve.
+4. **The scheduler decides only who decodes next, ONE mind at a time** (goal 9; Joel, 2026-11-17, after telling us
+   five times: "When we do 4 parallel we drop from 80tps to 1-2 and it ruins it all"). On this hardware several minds
+   in one decode step collapse the engine from ~80 tok/s to 1-2; so exactly one mind decodes, at the full
+   single-stream rate, streamed to her room, and the scheduler time-slices between minds the way a CPU switches
+   processes: activity temperature as priority, aging so no eligible mind is starved, a switch in milliseconds
+   (park and insert by sequence id). Others are resident, not decoding. Putting a second mind into a decode step
+   requires a live receipt that it beats single-stream; none exists.
 5. **Custody stays where it is proven.** The existing completion owner keeps terminal, cancellation and fence custody
    and the save-before-release proofs; the grant-specific handoff APIs are deleted only once their callers use the
    shared mover's equivalent proof. A dropped or cancelled request never authorizes reuse of live GPU memory.
@@ -2002,9 +2006,8 @@ seat publications and grant revisions as admission (`lease/fair.rs` and the rese
 **Gates.** In the simulator and replay first: a contention replay where the aggregate active working sets exceed the
 pool and no legal eviction exists proves a bounded typed deferral and progress after a legal release; tonight's M5
 logs replay without a starved mind. Then on the M5 (the four residents, the 35B): all four logically resident with no
-`delib.window.waiting`; batched decode (more than one sequence per decode step) observed and measured against the
-concurrency cost curve; aggregate decode tok/s against the 80 tok/s target; switch receipts in milliseconds; the
-physical charge never above the `ResourceDaemon` grant.
+`delib.window.waiting`; exactly one mind decoding at a time at ~80 tok/s single-stream, streamed; switch receipts in
+milliseconds; the physical charge never above the `ResourceDaemon` grant.
 
 ### 4.11.10 The engine half of admission: reserve before decode, park instead of the KV-full ladder (2026-11-17, design for review)
 
@@ -2109,7 +2112,7 @@ built.
 | `Residency` | each mind's place: logically resident always; GPU / RAM / flash tier, gated separately (4.11.9 point 6) | reads only (snapshot); moves are `MemoryOwner`'s | seats, the owed queue, reclaim handoffs, armed yields |
 | `Scheduler` | who decodes next: activity temperature, aging among eligible minds, batch size by the measured concurrency cost curve and step/latency budgets (goal 9, 4.11.9 point 4) | `ready(mind, act)`, reads: `next_batch` | `BehindActs`, `delib.window.waiting` polling, lane selection |
 | `Learning` | the genome's learning switch and duty: share by wakefulness, learning acts through the same path (4.11.6) | `set_learning(layer, on)`, `duty(share, mode)` | ad hoc fresh-adapter writes and swaps beside serving; `/train*` |
-| `ServingObserver` | the numbers: aggregate decode tok/s, per-mind acts/h, switch ms, waits, memory, learning share | reads only; publishes a snapshot | scattered probes nobody aggregates; it decides nothing |
+| `ServingObserver` | the numbers: the decoding mind's tok/s, per-mind acts/h, switch ms, waits, memory, learning share | reads only; publishes a snapshot | scattered probes nobody aggregates; it decides nothing |
 
 **Engine modules** (each an engine module, `server-module.h`, all on the one server loop that owns the llama
 context): the frame dispatcher (validates and routes, 4.11.3); the resident-minds table (sequence ids, park/flash,
@@ -2197,8 +2200,9 @@ a good architecture."
 **What interferes today (the M5, 2026-11-16/17):** learning writes and swaps adapters between decode steps with no one
 weighing the cost (402 fresh adapters in one engine log); one mind's 50-93k prefill stalls every other mind's decode;
 view-sized grants serialize the minds (4.11.9); checkpoint misses force full re-prefills; the core polls. Each part is
-locally reasonable and none arbitrates, so single-stream decode ran at 24% of par (13.9 vs 56.1 tok/s) and four
-residents never batched.
+locally reasonable and none arbitrates, so single-stream decode ran at 24% of par (13.9 vs 56.1 tok/s) and switching
+between the four residents took grants and re-prefills instead of milliseconds. (One mind decoding at a time is the
+design, measured: the table under 4.7 shows 59-80 tok/s one at a time against 8-22 batched.)
 
 **What must happen, continuously:** (1) decode, one token per active mind per step, latency-critical, and the source
 of aggregate throughput when several minds batch; (2) prefill, large and bursty, for minds starting or resuming an
@@ -2210,9 +2214,10 @@ optimizer steps on the genome's layers at a duty share (4.11.6); (5) persistence
   tokens, a prefill chunk, a learning step); nothing else touches the llama context or the device. One timeline, one
   owner: interference has no path.
 - **Each frame (one decode step) is composed by priority against a measured time budget:**
-  1. decode for every mind in the ADMITTED active set (bounded by the measured concurrency limit, 4.11.9 point 4),
-     batched, first;
-  2. prefill in chunks that fill the rest of the step budget, so no prompt stalls the others' decode;
+  1. the ONE decoding mind's next token(s), first (4.11.9 point 4: one mind decodes at a time; batching minds collapses
+     the engine from ~80 tok/s to 1-2);
+  2. prefill in chunks that fill the rest of the step budget: the NEXT mind's appended tail, ready before her switch,
+     so no prompt stalls the decoding mind;
   3. learning micro-steps in the budget left, up to the duty share; when minds are idle the slack is large, and that
      is when dreaming runs. A learning step commits at the fence of 4.11.6.
 - **Decode-first never starves the rest** (Codex on #6092). Prefill and learning age: each waiting job carries a
@@ -2250,9 +2255,10 @@ not asserted.
    the measured budget; learning moves into it (the adapter churn beside serving ends).
 4. **Residency and `MemoryOwner`** (4.11.8-9): every mind resident, admission by physical reservation, prefetch on
    lookahead; the grant dispatcher is deleted.
-5. **`Scheduler`** (Codex, goal 9): who is active and how many per frame, from the measured cost curve.
-6. **The gate on the M5:** four residents batched, aggregate decode tok/s against 80, switches in milliseconds,
-   learning within its share without slowing decode beyond it.
+5. **`Scheduler`** (Codex, goal 9): which ONE mind decodes next and when to switch (time-slicing by temperature and
+   aging), never how many decode together.
+6. **The gate on the M5:** one mind decoding at a time at ~80 tok/s single-stream, streamed; switches in milliseconds;
+   four residents served in turn; learning and embedding within their share without slowing the decoding mind.
 
 ## 5. A mind's context and the engine it runs on
 
