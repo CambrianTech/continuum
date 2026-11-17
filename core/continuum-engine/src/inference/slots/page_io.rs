@@ -493,7 +493,7 @@ mod tests {
 
         let dir = tempfile::tempdir().expect("test: page dir");
         let endpoint = super::super::directory().endpoint(&root);
-        let contract = super::super::KvPageContract {
+        let contract = || super::super::KvPageContract {
             model_id: "fixture".into(),
             model: "fixture.gguf".into(),
             adapters: vec![],
@@ -506,7 +506,7 @@ mod tests {
         };
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("test: generation");
-        transition.ready(&root, &generation, contract.clone()).expect("test: ready");
+        transition.ready(&root, &generation, contract()).expect("test: ready");
         drop(transition);
         let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
         let me = std::process::id();
@@ -531,7 +531,7 @@ mod tests {
         // a new owned generation serves again, its pool not yet stamped with the original
         let transition = endpoint.transition().await;
         let generation = transition.start_generation().expect("test: generation");
-        transition.ready(&root, &generation, contract.clone()).expect("test: ready");
+        transition.ready(&root, &generation, contract()).expect("test: ready");
         drop(transition);
         let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
 
