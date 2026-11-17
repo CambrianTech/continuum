@@ -23,6 +23,7 @@
 //! [docs/architecture/COMMAND-ORGANIZATION.md](../../../../docs/architecture/COMMAND-ORGANIZATION.md).
 
 use std::sync::Arc;
+use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;

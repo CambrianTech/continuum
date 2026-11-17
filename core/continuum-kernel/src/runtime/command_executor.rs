@@ -748,7 +748,13 @@ impl CommandExecutor {
         match result {
             Ok(Ok(output)) => Ok(output),
             Ok(Err(_)) => Err(CallError::Unavailable), // CommandError → Unavailable
-            Err(panic_info) => Err(CallError::Panicked(format!("{}", panic_info))),
+            Err(panic_info) => {
+                let msg = panic_info.downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("command panicked");
+                Err(CallError::Panicked(msg.to_string()))
+            }
         }
     }
     pub async fn execute_ts(
