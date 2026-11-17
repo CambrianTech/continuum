@@ -248,18 +248,20 @@ impl WorkingMemory {
     /// Keep her context view and the hands it is rendered with as her faculty holds them now, as
     /// one pair under one lock, for the checkpoint (card 9cf06ade).
     pub(crate) fn keep_custody(&self, view: Option<ContextView>, hands: crate::cognition::hands_custody::HandsCustody) {
-        self.touch();
         let mut custody = self.view.lock();
         custody.view = view;
         custody.hands = hands;
+        // After the change: a checkpoint that read the new generation always snapshots it.
+        self.touch();
     }
 
     /// Her context view and its hands as a checkpoint restored them, taken once, together, by the
     /// act that resumes them.
     pub(crate) fn take_custody(&self) -> (Option<ContextView>, crate::cognition::hands_custody::HandsCustody) {
-        self.touch();
         let mut custody = self.view.lock();
-        (custody.view.take(), std::mem::take(&mut custody.hands))
+        let taken = (custody.view.take(), std::mem::take(&mut custody.hands));
+        self.touch();
+        taken
     }
 
     /// Drop the view and hands this memory holds, so the next act starts its own.
@@ -304,12 +306,15 @@ impl WorkingMemory {
             return Err(crate::cognition::capture_adoption::CaptureMismatch::CustodyMoved { expected: expected.to_string(), actual });
         }
         custody.hands = hands;
+        drop(custody);
+        self.touch();
         Ok(())
     }
 
     /// Keep the head an adoption replaced, as it was, with her checkpoint.
     pub(crate) fn record_superseded(&self, superseded: crate::cognition::hands_custody::SupersededHands) {
         self.view.lock().superseded.push(superseded);
+        self.touch();
     }
 
     /// A requested adoption, taken once by the act that honours it.
