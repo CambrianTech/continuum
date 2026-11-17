@@ -43,6 +43,25 @@ pub struct EngineWorkspace {
 }
 
 impl EngineWorkspace {
+    /// Test-only: a workspace of `bytes` governed VRAM leased from `authority` and held in its custody
+    /// for `engine`, through the same lease and custody hold `cover` uses: what a learning state owns
+    /// per engine incarnation, for a test of who releases it.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn held_for_test(authority: &Authority, engine: &crate::inference::llama_server::LearningEngine, consumer: &str, bytes: u64) -> Result<Self, SeatRefusal> {
+        let guard = crate::inference::training_admission::try_training_memory(
+            &authority.resources,
+            crate::inference::serving_lifecycle::Admission::Free(&authority.serving),
+            consumer,
+            crate::resources::ResourceKind::Vram,
+            bytes,
+        )
+        .map_err(SeatRefusal::Unleased)?
+        .map_err(SeatRefusal::AwaitingMemory)?;
+        let admitted = crate::inference::llama_server::LedgerEngine::fixture("held-for-test");
+        let claim = authority.custody.hold(engine, &admitted, ResidencyId::issue(), vec![guard]);
+        Ok(Self { claim, rows: Vec::new(), superseded: Vec::new() })
+    }
+
     /// Whether this workspace covers every row a preflight requires.
     fn covers(&self, required: &[ResidencyRow]) -> bool {
         covered(&self.rows, required)

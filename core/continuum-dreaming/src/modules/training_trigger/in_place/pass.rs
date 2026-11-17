@@ -9,6 +9,11 @@ impl TrainingTriggerState {
     /// for other bases never hide eligible ones behind them.
     pub(crate) async fn learn_in_place(self: &Arc<Self>, engine: EngineIncarnation, served_model: &str) -> Result<(), String> {
         let store = self.durable.require()?;
+        let retired = self.in_place.retire_dead(engine);
+        if retired > 0 {
+            continuum_base::probe!(class = "training.in_place.dead_engines_retired", retired = retired as u64,
+                "learning state held for engine incarnations that died was dropped; custody settles their leases on the dead-process proof");
+        }
         self.in_place.authority.custody.settle_orphans().await;
         let buckets = eligible_buckets(&store, served_model).await?;
         // learning and candidates progress together: a bucket waiting (for her act, her memory, her
