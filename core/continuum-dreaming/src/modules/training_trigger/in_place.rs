@@ -161,7 +161,8 @@ impl InPlace {
     /// how many. An incarnation's slot owns its learners' and workspace's custody claims; while it
     /// stays in the map those claims stay live, so custody never sees them orphaned and keeps their
     /// leases forever (the M5, 2026-11-17: the engine relaunched at 22:09:39Z and Aris's workspace
-    /// lease, 4.88 GB of governed VRAM, stayed pinned; every pass after it found 0 bytes free). The
+    /// lease, 4.88 GB of governed VRAM, stayed pinned; governed VRAM was already exhausted before it,
+    /// and the pinned lease kept those bytes from ever coming back). The
     /// dropped claims become orphans, which `Custody::settle_orphans` releases on the dead-process
     /// proof. An incarnation whose liveness is unknown is kept: unreadable is never dead.
     pub(crate) fn retire_dead(&self, live: EngineIncarnation) -> usize {

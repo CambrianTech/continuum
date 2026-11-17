@@ -70,7 +70,7 @@ async fn workspace_in(in_place: &InPlace, incarnation: EngineIncarnation, bytes:
 }
 
 // what this catches (the M5, 2026-11-17: the engine relaunched at 22:09:39Z mid-step and a 4.88 GB
-// learning workspace lease stayed pinned, so every later pass found 0 governed bytes free): learning
+// learning workspace lease stayed pinned, on top of a governed VRAM pool already exhausted): learning
 // state kept for a dead engine incarnation, whose custody claims then never orphan. A dead
 // incarnation's slot is dropped and its workspace lease is released by the next settle on the dead-
 // process proof; an unreadable incarnation and the live one keep theirs; a slot someone still holds
