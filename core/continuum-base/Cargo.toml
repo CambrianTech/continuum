@@ -13,4 +13,5 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+serde_json = { workspace = true } # non_empty_list: the empty list is refused at the parse
 tempfile = { workspace = true }
