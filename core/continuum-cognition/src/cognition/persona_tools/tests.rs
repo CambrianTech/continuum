@@ -52,7 +52,7 @@
             }
         });
 
-        let out = tool_input_schema_from("test/tool", &schema);
+        let out = tool_input_schema_from(&schema).expect("test: a plain object schema lifts");
         let recipe = out.properties["recipe"]["description"].as_str().unwrap();
         assert_eq!(
             recipe, "Which recipe to build from — the EXACT `purpose` key.",
@@ -241,3 +241,29 @@
         );
     }
 
+
+    // what this catches: the lift itself (not only the merge helper) offering a oneOf command with no parameters
+    // (Codex on #6101 aa938). A mergeable oneOf lifts to its merged object; one the merge cannot express is a typed
+    // refusal, so descriptor_to_tool_spec excludes the command instead of advertising `properties: {}`.
+    #[test]
+    fn the_lift_merges_object_variants_and_refuses_what_it_cannot_express() {
+        let variants: serde_json::Value = serde_json::from_str(
+            r#"{"oneOf":[
+                {"type":"object","required":["action","from"],"properties":{"action":{"type":"string","enum":["start"]},"from":{"type":"string"}}},
+                {"type":"object","required":["action"],"properties":{"action":{"type":"string","enum":["abort"]}}}]}"#,
+        )
+        .expect("test: schema");
+        let lifted = tool_input_schema_from(&variants).expect("object variants lift");
+        assert_eq!(lifted.schema_type, "object");
+        assert_eq!(lifted.properties["action"]["enum"], json!(["start", "abort"]), "the tag offers every action");
+        assert_eq!(lifted.properties["from"]["type"], json!("string"));
+        assert_eq!(lifted.required, Some(vec!["action".to_string()]));
+
+        let inexpressible: serde_json::Value =
+            serde_json::from_str(r##"{"oneOf":[{"$ref":"#/definitions/A"},{"type":"object","properties":{}}]}"##).expect("test: schema");
+        assert_eq!(
+            tool_input_schema_from(&inexpressible).map(|schema| schema.properties),
+            Err(schema_variants::UnsupportedVariants::NotAnObject),
+            "refused by name, never lifted to an empty object"
+        );
+    }
