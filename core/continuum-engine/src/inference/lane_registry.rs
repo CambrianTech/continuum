@@ -485,8 +485,8 @@ fn write_retained_marker(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
         role: rec.role,
         reason: "a shutdown's durable receipt did not attest this lane's state saved; its owner must attest it".into(),
     };
-    let body = serde_json::to_string_pretty(&marker).map_err(std::io::Error::other)?;
-    std::fs::write(retained_path(dir, rec.pid), body)
+    let body = serde_json::to_string(&marker).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?; // file format on disk: the `.retained` JSON an operator reads beside the `.lane` record and the next boot honors
+    continuum_host::durable::write_replace(&retained_path(dir, rec.pid), body.as_bytes())
 }
 
 /// Remove a lane's retention marker with its record. Absent is the normal case; any other failure is reported,
