@@ -550,7 +550,13 @@ fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
     // the adopted engine verifies: the waiter that subscribed at None wakes with its exact incarnation
     record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
     sync_live_locked(&dir, &pidfile, &live);
-    assert!(waiter.has_changed().expect("test: watch open"), "the waiter wakes");
+    assert!(
+        waiter.has_changed().expect("test: watch open"),
+        "the waiter wakes (pidfile pid {:?}, is_llama_server {}, start now {:?} vs recorded {started_s})",
+        lane_pidfile::read_at(&pidfile),
+        lane_process::is_llama_server(pid),
+        crate::inference::engine_residency::process_start_s(pid),
+    );
     assert_eq!(*waiter.borrow_and_update(), Some(crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 }));
 
     // the record removed: cleared in the same step
