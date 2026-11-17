@@ -790,10 +790,11 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // the one object it merges into (`action` = start | continue | abort with each variant's line, `from`),
     // never `properties: {}`. +86 is those parameters reaching the model. Measured in CI at 320cf9b71
     // (job 133877655532).
-    // 18869 -> 18876 (#6102, card 60a8875d, the MacBookPro 2026-11-17: Iris's empty work/note erased her
+    // 18869 -> 18881 (#6102, card 60a8875d, the MacBookPro 2026-11-17: Iris's empty work/note erased her
     // card's ledger, over and over): work/note's `known` is required with at least one fact (minItems 1).
-    // +7 measured alone in CI at bd44951a6 (job 133883093369), stacked on #6101's +86.
-    const AGENTIC_SURFACE_CEILING: u32 = 18876;
+    // +7 measured alone in CI at bd44951a6 (job 133883093369), stacked on #6101's +86; then +5 for each fact's
+    // minLength 1 (the model is told a fact cannot be empty). 18881 measured in CI at 354709612 (job 133901816976).
+    const AGENTIC_SURFACE_CEILING: u32 = 18881;
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(
