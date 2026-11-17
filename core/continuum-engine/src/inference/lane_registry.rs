@@ -250,7 +250,7 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
     })?;
     record_in(&dir, rec)?;
     if rec.role == LaneRole::Live {
-        publish_verified_live();
+        sync_live();
     }
     Ok(())
 }
@@ -258,67 +258,73 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
 /// Remove a lane's record on graceful teardown. Idempotent — a missing file is
 /// success.
 pub fn remove(pid: u32) {
-    if let Some(dir) = lanes_dir() {
-        let removed = std::fs::read_to_string(record_path(&dir, pid))
-            .ok()
-            .and_then(|raw| serde_json::from_str::<LaneRecord>(&raw).ok());
-        remove_in(&dir, pid);
-        if let Some(rec) = removed {
-            retire_live(&rec.incarnation());
-        }
-    }
+    let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
+        return;
+    };
+    let _writes = writes();
+    let _ = std::fs::remove_file(record_path(&dir, pid));
+    sync_live_locked(&dir, &pidfile, &LIVE_LANE); // in the same lock: no read can interleave with the removal
 }
 
 /// The live lane THIS PROCESS has verified, as a watch: a waiter (page IO's retained custody, waiting for an
-/// adopted engine's identity) awaits a change instead of polling. Single-process by design: it tracks the
-/// registry writes this process makes, and its first value is the live lane already on disk when it is first
-/// read (an adopting core never records). A value is published only when the canonical pidfile and the live
-/// record agree and the pid is a running llama-server ([`live_lane`]); it is cleared only for the EXACT
-/// incarnation removed, and an older incarnation never overwrites a newer one.
+/// adopted engine's identity) awaits a change instead of polling. Single-process by design. Its value is always
+/// the registry's VERIFIED truth, recomputed under the registry's write owner ([`writes`]) whenever it may have
+/// changed: a live record written ([`record`]), a record removed ([`remove`]), or an engine adopted
+/// ([`sync_live`], from the reconcile's `AlreadyServing`). Verified means the canonical pidfile and the live
+/// record agree AND the pid is a running llama-server whose OS start time equals the record's: a recycled pid
+/// running another llama-server is never published. No generation counter is needed: every write recomputes
+/// the one truth under the lock, so a stale read cannot republish over a newer state.
 static LIVE_LANE: std::sync::LazyLock<tokio::sync::watch::Sender<Option<super::engine_residency::EngineIncarnation>>> =
-    std::sync::LazyLock::new(|| tokio::sync::watch::channel(verified_live()).0);
+    std::sync::LazyLock::new(|| tokio::sync::watch::channel(None).0);
 
-/// Subscribe to the verified live lane of this process ([`LIVE_LANE`]).
+/// Subscribe to the verified live lane of this process ([`LIVE_LANE`]). The first subscription brings the watch
+/// to the truth on disk (an adopting core may never record).
 pub fn subscribe_live() -> tokio::sync::watch::Receiver<Option<super::engine_residency::EngineIncarnation>> {
+    sync_live();
     LIVE_LANE.subscribe()
 }
 
-/// The live lane on disk, verified: pidfile and live record agree, the record names a start time, and the
-/// pid is a running llama-server.
-fn verified_live() -> Option<super::engine_residency::EngineIncarnation> {
-    live_lane().filter(|rec| rec.started_s != 0).map(|rec| rec.incarnation())
-}
-
-fn publish_verified_live() {
-    let Some(incarnation) = verified_live() else {
+/// Bring the watch to the verified truth. Cheap when nothing changed: the file-only incarnation
+/// ([`live_incarnation`], two small reads) already equals the published one, so the reconcile may call it on
+/// every `AlreadyServing` without a process probe per tick.
+pub fn sync_live() {
+    if live_incarnation() == *LIVE_LANE.borrow() {
+        return;
+    }
+    let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
         return;
     };
-    LIVE_LANE.send_if_modified(|current| {
-        let publish = publishes(current, &incarnation);
-        if publish {
-            *current = Some(incarnation);
+    let _writes = writes();
+    sync_live_locked(&dir, &pidfile, &LIVE_LANE);
+}
+
+/// Publish the verified truth of `dir` + `pidfile` on `live`. The caller holds [`writes`].
+pub(crate) fn sync_live_locked(
+    dir: &Path,
+    pidfile: &Path,
+    live: &tokio::sync::watch::Sender<Option<super::engine_residency::EngineIncarnation>>,
+) {
+    let truth = verified_live_in(dir, pidfile);
+    live.send_if_modified(|current| {
+        let changed = *current != truth;
+        if changed {
+            *current = truth;
         }
-        publish
+        changed
     });
 }
 
-/// Whether `incarnation` replaces the published live lane: not the same one, and never an older generation
-/// over a newer one.
-fn publishes(
-    current: &Option<super::engine_residency::EngineIncarnation>,
-    incarnation: &super::engine_residency::EngineIncarnation,
-) -> bool {
-    !matches!(current, Some(published) if published == incarnation || published.started_s > incarnation.started_s)
-}
-
-fn retire_live(incarnation: &super::engine_residency::EngineIncarnation) {
-    LIVE_LANE.send_if_modified(|current| {
-        let retire = current.as_ref() == Some(incarnation); // only the exact incarnation removed, never by pid
-        if retire {
-            *current = None;
-        }
-        retire
-    });
+/// The live lane of `dir` + `pidfile`, verified against the OS: pidfile and live record agree, the record names
+/// a start time, the pid is a running llama-server, and its OS start time is the record's.
+fn verified_live_in(dir: &Path, pidfile: &Path) -> Option<super::engine_residency::EngineIncarnation> {
+    let pid = lane_pidfile::read_at(pidfile)?;
+    let body = std::fs::read_to_string(record_path(dir, pid)).ok()?;
+    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
+    let live = rec.role == LaneRole::Live && rec.pid == pid && rec.started_s != 0;
+    (live
+        && lane_process::is_llama_server(pid)
+        && super::engine_residency::process_start_s(pid) == Some(rec.started_s))
+    .then(|| rec.incarnation())
 }
 
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and

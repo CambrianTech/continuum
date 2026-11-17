@@ -570,4 +570,9 @@ pub trait LlamaServerControl: Send + Sync {
     /// as a spawned one's are (card 1d7d6d4c). Default: a fake or remote control has no local
     /// engine to follow.
     fn follow_engine_log(&self) {}
+
+    /// Bring this process's verified live-lane watch to the adopted engine (`lane_registry::sync_live`), so a
+    /// waiter on an adopted engine's identity wakes. The reconcile calls it on every `AlreadyServing`; it costs
+    /// two small file reads when nothing changed. Default: a fake or remote control has no local registry.
+    fn publish_served_lane(&self) {}
 }

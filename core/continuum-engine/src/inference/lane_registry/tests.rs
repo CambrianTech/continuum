@@ -520,17 +520,46 @@ mod census_for_admission {
     }
 }
 
-// what this catches: the live-lane watch page IO's retained custody waits on (Codex on #6097's recovery shape):
-// a stale publication (an older engine generation, e.g. a late adoption read) overwriting a newer one, and a
-// removal clearing the watch by pid alone when a replacement reuses it.
+// what this catches: the live-lane watch page IO's retained custody waits on (Codex on #6099). A waiter that
+// subscribed while no lane was verified must WAKE when an adopted engine verifies; a recycled pid running another
+// llama-server (same image, another start time) must never be published; a removal must clear the watch in the
+// same locked step. A REAL process named llama-server stands in for the engine.
+#[cfg(unix)]
 #[test]
-fn the_live_lane_watch_never_goes_back_a_generation() {
-    use crate::inference::engine_residency::EngineIncarnation;
-    let old = EngineIncarnation { pid: 45_376, started_s: 1_794_889_235, port: 58057 };
-    let new = EngineIncarnation { pid: 45_376, started_s: 1_794_899_000, port: 58057 }; // same pid, replaced
-    assert!(publishes(&None, &old), "the first verified lane publishes");
-    assert!(!publishes(&Some(old), &old), "the same incarnation is not a change");
-    assert!(publishes(&Some(old), &new), "a newer generation replaces the older");
-    assert!(!publishes(&Some(new), &old), "an older generation never overwrites a newer one");
-}
+fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
+    let dir = temp_dir("live-watch");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
+    }
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let pidfile = dir.join("lane.pid");
+    let program = dir.join("llama-server");
+    std::fs::copy("/bin/sleep", &program).expect("test: a process named llama-server");
+    let mut child = std::process::Command::new(&program).arg("60").spawn().expect("test: spawn");
+    let pid = child.id();
+    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
+    let (live, mut waiter) = tokio::sync::watch::channel(None);
+    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
 
+    // the same image under the same pid but another start time: a recycled pid, never published
+    record_in(&dir, &LaneRecord { started_s: started_s + 1, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
+    sync_live_locked(&dir, &pidfile, &live);
+    assert!(!waiter.has_changed().expect("test: watch open"), "a start-time mismatch publishes nothing");
+    assert_eq!(*waiter.borrow(), None);
+
+    // the adopted engine verifies: the waiter that subscribed at None wakes with its exact incarnation
+    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
+    sync_live_locked(&dir, &pidfile, &live);
+    assert!(waiter.has_changed().expect("test: watch open"), "the waiter wakes");
+    assert_eq!(*waiter.borrow_and_update(), Some(crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 }));
+
+    // the record removed: cleared in the same step
+    std::fs::remove_file(record_path(&dir, pid)).expect("test: remove the record");
+    sync_live_locked(&dir, &pidfile, &live);
+    assert!(waiter.has_changed().expect("test: watch open"), "the removal wakes the waiter");
+    assert_eq!(*waiter.borrow(), None, "no live lane once its record is gone");
+
+    child.kill().expect("test: end the fixture process");
+    child.wait().expect("test: reap it");
+    std::fs::remove_dir_all(&dir).expect("test: clean up");
+}

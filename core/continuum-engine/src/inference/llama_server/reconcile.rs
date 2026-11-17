@@ -43,6 +43,7 @@ pub async fn ensure_model_serving_if_current<C: LlamaServerControl + ?Sized>(
     if matches!(outcome, EnsureOutcome::AlreadyServing) {
         ctrl.record_observed_placement().await;
         ctrl.follow_engine_log();
+        ctrl.publish_served_lane();
     }
     outcome
 }
