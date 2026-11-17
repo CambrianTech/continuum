@@ -152,14 +152,9 @@ fn a_pool_records_the_engines_declared_minds_once() {
     assert!(!discovered.declare_resident_minds(minds), "a recorded 'no minds' is a declaration, not a blank");
 }
 
-// what this catches: the M5 2026-11-17 outage end to end (owned spawn -> discovery -> admission). A core that
-// spawns its engine publishes the pool at readiness from its launch contract; the engine declares its resident
-// minds only on /props. Discovery must accept that owned pool, record the engine's declaration on it, and grant
-// page admission, so the fast path afterwards returns the same, DECLARED pool (never an undeclared one read as
-// core-paged minds). Before the fix every discovery here returned MindsMismatch.
-#[tokio::test]
-async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
-    use crate::inference::weight_residency::ResidentMinds;
+/// A fake engine declaring resident minds on `/props`, and this core's owned spawn of it: a ready generation
+/// whose pool was published from the launch contract (no minds declaration yet).
+async fn owned_spawn_declaring_minds() -> (String, Arc<KvSlotPool>, tempfile::TempDir, tokio::task::JoinHandle<()>) {
     let props = serde_json::json!({
         "total_slots": 2,
         "context_geometry": {
@@ -175,7 +170,6 @@ async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
     let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
     let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("test: serve") });
 
-    // the owned spawn: a ready generation publishes the pool from the launch contract
     let dir = tempfile::tempdir().expect("test: page dir");
     let endpoint = directory().endpoint(&root);
     let contract = KvPageContract {
@@ -195,14 +189,39 @@ async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
     drop(transition);
     let owned = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
     assert_eq!(owned.resident_minds(), None, "the spawn knows its contract, not the engine's declaration");
+    (root, owned, dir, server)
+}
 
-    let declared = Some(ResidentMinds { lanes: 2, parked_ids: 2, incarnation: 42 });
+const DECLARED: crate::inference::weight_residency::ResidentMinds =
+    crate::inference::weight_residency::ResidentMinds { lanes: 2, parked_ids: 2, incarnation: 42 };
+
+// what this catches: the M5 2026-11-17 outage end to end (owned spawn -> adapter discovery -> admission). The
+// owned pool must be accepted, record the engine's declaration and be admitted, and the fast path afterwards
+// returns the same DECLARED pool. Before the fix every discovery here returned MindsMismatch.
+#[tokio::test]
+async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
+    let (root, owned, _dir, server) = owned_spawn_declaring_minds().await;
     let client = reqwest::Client::new();
     let pool = directory().discover_pool(&client, &root).await.expect("discovery accepts the owned pool");
     assert!(Arc::ptr_eq(&pool, &owned), "the owned pool is the one discovered, not a replacement");
-    assert_eq!(pool.resident_minds(), declared, "discovery recorded the engine's own declaration");
+    assert_eq!(pool.resident_minds(), Some(DECLARED), "discovery recorded the engine's own declaration");
     assert!(directory().page_admission_known(&root), "page admission granted after the declaration");
     let again = directory().discover_pool(&client, &root).await.expect("the fast path");
-    assert!(Arc::ptr_eq(&again, &owned) && again.resident_minds() == declared, "the fast path returns the declared pool");
+    assert!(Arc::ptr_eq(&again, &owned) && again.resident_minds() == Some(DECLARED), "the fast path returns the declared pool");
+    server.abort();
+}
+
+// what this catches: the lifecycle path granting page admission FIRST (a checkpoint before any adapter request)
+// on an owned pool without the engine's minds declaration; the adapter's discovery then takes the fast path and
+// would read the undeclared pool as core-paged minds (Codex on 5b2f48ae7). The lifecycle grant must declare.
+#[tokio::test]
+async fn a_lifecycle_admission_first_still_declares_the_engines_minds() {
+    let (root, owned, _dir, server) = owned_spawn_declaring_minds().await;
+    let client = reqwest::Client::new();
+    directory().discover_page_admission(&client, &root).await.expect("the lifecycle path grants page admission");
+    assert_eq!(owned.resident_minds(), Some(DECLARED), "the lifecycle grant recorded the engine's declaration");
+    let pool = directory().discover_pool(&client, &root).await.expect("the adapter's fast path");
+    assert!(Arc::ptr_eq(&pool, &owned), "the fast path returned the admitted owned pool");
+    assert_eq!(pool.resident_minds(), Some(DECLARED), "never an undeclared pool read as core-paged minds");
     server.abort();
 }
