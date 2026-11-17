@@ -521,7 +521,8 @@ mod tests {
         // the generation ends WHILE recovery waits for the writer (Codex on #6100 edf4ab3f1): missing evidence, so
         // the alive original stays Retained, nothing contacted
         let writer = endpoint.transition().await;
-        let mut waiting = Box::pin(recover_one(&reqwest::Client::new(), &held));
+        let client = reqwest::Client::new(); // outlives the pinned future that borrows it
+        let mut waiting = Box::pin(recover_one(&client, &held));
         assert!(futures::poll!(&mut waiting).is_pending(), "recovery read the generation and waits for the writer");
         endpoint.state.lock().engine = super::super::kv_slot_pool::Engine::Unprobed;
         drop(writer);
