@@ -6,10 +6,17 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Non-blank text: at least one character that is not whitespace. Serialized as the text itself.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
+/// Non-blank text: at least one character that is not whitespace. Serialized as the text itself, borrowed (never
+/// copied to serialize); validated where it is parsed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
+#[serde(try_from = "String")]
 pub struct NonEmptyText(String);
+
+impl Serialize for NonEmptyText {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.0)
+    }
+}
 
 /// The text was empty or only whitespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

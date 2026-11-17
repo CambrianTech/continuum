@@ -298,22 +298,31 @@ pub(super) fn submit_refused(cause: SubmitRefusal, card_id: Uuid) -> CommandErro
     use crate::sdk_codegen::{NextCall, NextMoves, Refusal};
     let card = card_id.to_string();
     let calls = match &cause {
-        SubmitRefusal::NoChanges { .. } => NextCall::new(
-            WORK_NOTE,
-            &super::super::WorkNoteParams {
-                card_id: card.clone(),
-                known: Vec::new(),
-                hypotheses: Vec::new(),
-                unknown: String::new(),
-                next_test: String::new(),
-                decided_fix: None,
-            },
-            "records on the card what you established, as known facts, when its result is a finding",
-        )
-        .and_then(|note| {
-            let close = super::super::WorkStateParams { card_id: card, state: "closed".to_owned() };
-            Ok((note, NextCall::new(WORK_STATE, &close, "closes the card once its finding is recorded")?))
-        }),
+        SubmitRefusal::NoChanges { base, .. } => {
+            // The one fact the substrate established, so the suggested note records something (a note is the card's
+            // newest ledger: an empty one would erase hers); she adds what she found.
+            let established = format!("work/submit: the branch carries no changes against base {base}");
+            let fact = match continuum_base::non_empty_text::NonEmptyText::try_from(established) {
+                Ok(fact) => fact,
+                Err(blank) => return CommandError::Internal(blank.to_string()),
+            };
+            NextCall::new(
+                WORK_NOTE,
+                &super::super::WorkNoteParams {
+                    card_id: card.clone(),
+                    known: continuum_base::non_empty_list::NonEmptyList::of(fact),
+                    hypotheses: Vec::new(),
+                    unknown: String::new(),
+                    next_test: String::new(),
+                    decided_fix: None,
+                },
+                "records on the card what you established, as known facts, when its result is a finding",
+            )
+            .and_then(|note| {
+                let close = super::super::WorkStateParams { card_id: card, state: "closed".to_owned() };
+                Ok((note, NextCall::new(WORK_STATE, &close, "closes the card once its finding is recorded")?))
+            })
+        }
         SubmitRefusal::Uncommitted { paths, .. } => NextCall::new(
             GIT_ADD,
             &continuum_hands::commands::code::git::add::GitAddParams { paths: paths.clone() },

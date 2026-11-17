@@ -258,7 +258,15 @@ fn param_shape(spec: &Value, root: &Value) -> (String, Value) {
         let placeholder = match ty {
             "boolean" => json!(true),
             "integer" | "number" => numeric_example(spec, ty == "integer"),
-            "array" => json!([]),
+            // A list the contract requires to hold items (`minItems` >= 1) shows that many items of their own type:
+            // fewer would be refused at the parse (work/note's `known`, card 60a8875d).
+            "array" => match <ArraySpec as serde::Deserialize>::deserialize(spec) {
+                Ok(ArraySpec { min_items: Some(min), items: Some(items) }) if min >= 1 => {
+                    let item = param_shape(&items, root).1;
+                    Value::Array(std::iter::repeat_n(item, min as usize).collect())
+                }
+                _ => json!([]),
+            },
             // A nested object carries its own required fields: `{"envelope":{}}` refused as
             // "`envelope.eventId` is required" for 17 manuals (card 1d9c0a64).
             "object" => Value::Object(required_object_example(spec, root)),
@@ -364,6 +372,15 @@ fn required_object_example(spec: &Value, root: &Value) -> serde_json::Map<String
         }
     }
     result
+}
+
+/// An array schema as far as its example reads it: how many items it requires, and their schema.
+#[derive(serde::Deserialize)]
+struct ArraySpec {
+    #[serde(rename = "minItems", default)]
+    min_items: Option<u64>,
+    #[serde(default)]
+    items: Option<Value>,
 }
 
 fn numeric_example(spec: &Value, integer: bool) -> Value {
@@ -534,6 +551,29 @@ mod tests {
             };
             assert!(ok, "{field} ({ty}) placeholder is not a {ty}: {placeholder}");
         }
+    }
+
+    // what this catches: a required list's example holding fewer items than its `minItems`, so the copied call is
+    // refused at the parse (work/note's `known`, card 60a8875d; Codex on #6102 for minItems 2+). Each item is a
+    // placeholder of the item's own type.
+    #[test]
+    fn a_required_list_example_holds_min_items_of_its_own_type() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "facts": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}},
+                "pair": {"type": "array", "minItems": 2, "items": {"type": "integer"}},
+                "open": {"type": "array", "items": {"type": "string"}},
+            }
+        });
+        let example = |field: &str| param_shape(&schema["properties"][field], &schema).1;
+        let facts = example("facts");
+        assert_eq!(facts.as_array().map(Vec::len), Some(1));
+        assert!(facts[0].is_string(), "a fact placeholder is a string: {facts}");
+        let pair = example("pair");
+        assert_eq!(pair.as_array().map(Vec::len), Some(2), "minItems 2 shows two items: {pair}");
+        assert!(pair.as_array().is_some_and(|items| items.iter().all(Value::is_number)));
+        assert_eq!(example("open"), json!([]), "an optional-length list stays empty");
     }
 
     // what this catches: the example envelope carrying OPTIONAL arguments, which a
