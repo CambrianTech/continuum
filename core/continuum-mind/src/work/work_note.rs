@@ -10,10 +10,11 @@ pub struct WorkNote {
 pub struct WorkNoteParams {
     /// Card id (8-char short id accepted).
     pub card_id: String,
-    /// Established facts, at least one: `file:range → what it showed`, `test → assertion`. The newest note is the
-    /// card's ledger, so a note that establishes nothing would erase the one before it (M5 2026-11-17: a resident
-    /// copied an all-empty suggested note twice and blanked her card's ledger).
-    #[schemars(with = "Vec<String>")]
+    /// Established facts, at least one: `file:range → what it showed`, `test → assertion`.
+    ///
+    /// The newest note is the card's ledger, so a note that establishes nothing would erase the one before it (M5
+    /// 2026-11-17: a resident posted empty notes over her card's ledger). Only the paragraph above reaches the schema.
+    #[schemars(with = "Vec<String>", length(min = 1))]
     #[ts(type = "Array<string>")]
     pub known: continuum_base::non_empty_list::NonEmptyList<continuum_base::non_empty_text::NonEmptyText>,
     /// Competing explanations, each with its settling test.
