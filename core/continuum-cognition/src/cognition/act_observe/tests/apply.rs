@@ -561,7 +561,7 @@ async fn a_call_on_a_contract_she_was_not_shown_reaches_no_executor() {
     ];
     let origin = crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished);
     let acts = acts_of(apply_act(&cycle, &calls, origin, "note, then read", Uuid::new_v4(), &ActChain::new(), None, None).await);
-    let of = |id: &str| acts.iter().filter(|act| act.call.id == id).map(|act| act.output.result.content.clone()).collect::<Vec<_>>();
+    let of = |id: &str| acts.iter().filter(|act| act.call.id == id).map(|act| act.output.result.content.as_str()).collect::<Vec<_>>();
     let held = of("held");
     assert_eq!(held.len(), 1, "one answer for the held call: {held:?}");
     assert!(held[0].starts_with("Not run:"), "the gate's refusal, never an executor's result: {held:?}");
