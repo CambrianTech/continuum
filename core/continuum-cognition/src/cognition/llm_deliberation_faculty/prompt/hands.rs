@@ -96,12 +96,16 @@ impl LlmDeliberationFaculty {
         let Some(hands) = held.as_mut() else {
             return;
         };
-        for change in memory.contract_changes() {
-            let element = crate::cognition::context_streams::tool_contract_element(self.persona_id, &change);
-            if shown.contains(&element) {
-                hands.tell(&change);
-            }
+        // What she was shown is told; what remains is untold, and her calls on it are held back
+        // before they run (`act_observe::contract_gate`).
+        let (told, untold): (Vec<_>, Vec<_>) = memory
+            .contract_changes()
+            .into_iter()
+            .partition(|change| shown.contains(&crate::cognition::context_streams::tool_contract_element(self.persona_id, change)));
+        for change in &told {
+            hands.tell(change);
         }
+        memory.set_contract_changes(untold);
     }
 
     /// Her head's custody as this faculty holds it now: corrupt bytes kept, else her held head.
