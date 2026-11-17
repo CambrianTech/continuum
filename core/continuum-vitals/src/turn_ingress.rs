@@ -150,8 +150,8 @@ impl continuum_kernel::runtime::extensions::SettleBeforeStop for TurnsSettle {
         let participant = self.name().to_owned();
         Box::pin(async move {
             if retained.is_empty() { return Ok(Vec::new()); }
-            Err(continuum_kernel::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
-                participant, reason: "this participant does not retain process custody".into(),
+            Err(continuum_kernel::runtime::extensions::CustodyRecoveryError {
+                participant, reason: continuum_kernel::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
             })
         })
     }

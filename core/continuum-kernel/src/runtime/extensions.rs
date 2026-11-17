@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 mod custody_recovery;
-pub use custody_recovery::CustodyRecoveryError;
+pub use custody_recovery::{CustodyRecoveryError, CustodyRecoveryRefusal};
 
 /// Maps a caller's spelling of a command (a trained alias, a former name, a charset-legal
 /// form) to its canonical name. Installed by the layer that owns that vocabulary.
@@ -76,8 +76,8 @@ pub(crate) async fn recover_retained_custody(custody: &mut [super::SettledCustod
     for name in names {
         let owners: Vec<_> = settlers.iter().filter(|owner| owner.name() == name).collect();
         let [owner] = owners.as_slice() else {
-            return Err(CustodyRecoveryError::InvalidEvidence {
-                participant: name, reason: "retained custody must resolve to exactly one installed owner".into(),
+            return Err(CustodyRecoveryError {
+                participant: name, reason: CustodyRecoveryRefusal::AmbiguousOwner,
             });
         };
         let retained = custody.iter().filter(|entry| entry.participant == name && entry.state == super::CustodyState::Retained)
@@ -138,8 +138,8 @@ mod tests {
         let participant = self.name().to_owned();
         Box::pin(async move {
             if retained.is_empty() { return Ok(Vec::new()); }
-            Err(crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
-                participant, reason: "this participant does not retain process custody".into(),
+            Err(crate::runtime::extensions::CustodyRecoveryError {
+                participant, reason: crate::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
             })
         })
     }
@@ -183,8 +183,8 @@ mod tests {
         let participant = self.name().to_owned();
         Box::pin(async move {
             if retained.is_empty() { return Ok(Vec::new()); }
-            Err(crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
-                participant, reason: "this participant does not retain process custody".into(),
+            Err(crate::runtime::extensions::CustodyRecoveryError {
+                participant, reason: crate::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
             })
         })
     }

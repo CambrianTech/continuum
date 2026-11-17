@@ -187,15 +187,15 @@ async fn recover_one(
     held: &crate::runtime::HeldCustody,
 ) -> Result<crate::runtime::HeldCustody, crate::runtime::extensions::CustodyRecoveryError> {
     use crate::runtime::CustodyState;
-    let invalid = |reason: &str| crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
+    let invalid = |reason| crate::runtime::extensions::CustodyRecoveryError {
         participant: "page_io".into(),
-        reason: reason.into(),
+        reason,
     };
     if held.state != CustodyState::Retained {
-        return Err(invalid("only retained custody is recovered"));
+        return Err(invalid(crate::runtime::extensions::CustodyRecoveryRefusal::NotRetained));
     }
     let Some(endpoint) = super::directory().endpoints.get(&held.endpoint).map(|e| std::sync::Arc::clone(e.value())) else {
-        return Err(invalid("the retained endpoint is not one this process pages"));
+        return Err(invalid(crate::runtime::extensions::CustodyRecoveryRefusal::UnknownEndpoint));
     };
     let original = held.process.map(|p| (p.pid, p.started_s));
     let lost = |h: &crate::runtime::HeldCustody| crate::runtime::HeldCustody { state: CustodyState::Lost, ..h.clone() };

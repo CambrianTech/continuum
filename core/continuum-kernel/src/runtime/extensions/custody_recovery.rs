@@ -2,9 +2,31 @@
 use crate::runtime::{CustodyState, HeldCustody, SettledCustody};
 
 #[derive(Debug, thiserror::Error)]
-pub enum CustodyRecoveryError {
-    #[error("invalid recovery evidence from {participant}: {reason}")]
-    InvalidEvidence { participant: String, reason: String },
+#[error("invalid recovery evidence from {participant}: {reason}")]
+pub struct CustodyRecoveryError {
+    pub participant: String,
+    pub reason: CustodyRecoveryRefusal,
+}
+
+/// The failed custody invariant, preserved for callers without parsing diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CustodyRecoveryRefusal {
+    #[error("recovery must cover exactly the retained entries")]
+    IncompleteCoverage,
+    #[error("endpoint and original incarnation must identify one retained entry")]
+    UnmatchedIncarnation,
+    #[error("a retained entry was returned more than once")]
+    DuplicateEntry,
+    #[error("saved recovery requires a verified process incarnation")]
+    UnverifiedProcess,
+    #[error("retained custody must resolve to exactly one installed owner")]
+    AmbiguousOwner,
+    #[error("this participant does not retain process custody")]
+    NonCustodian,
+    #[error("only retained custody is recovered")]
+    NotRetained,
+    #[error("the retained endpoint is not one this process pages")]
+    UnknownEndpoint,
 }
 
 pub(super) fn merge_recovery(
@@ -12,14 +34,14 @@ pub(super) fn merge_recovery(
     participant: &str,
     recovered: Vec<HeldCustody>,
 ) -> Result<(), CustodyRecoveryError> {
-    let invalid = |reason: &str| CustodyRecoveryError::InvalidEvidence {
-        participant: participant.to_owned(), reason: reason.to_owned(),
+    let invalid = |reason| CustodyRecoveryError {
+        participant: participant.to_owned(), reason,
     };
     let retained: Vec<usize> = receipt.iter().enumerate()
         .filter(|(_, entry)| entry.participant == participant && entry.state == CustodyState::Retained)
         .map(|(index, _)| index).collect();
     if retained.len() != recovered.len() {
-        return Err(invalid("recovery must cover exactly the retained entries"));
+        return Err(invalid(CustodyRecoveryRefusal::IncompleteCoverage));
     }
     let mut changes = Vec::with_capacity(retained.len());
     for update in recovered {
@@ -29,13 +51,13 @@ pub(super) fn merge_recovery(
                 (original.process.is_none() || original.process == update.process)
         }).collect();
         let [index] = matches.as_slice() else {
-            return Err(invalid("endpoint and original incarnation must identify one retained entry"));
+            return Err(invalid(CustodyRecoveryRefusal::UnmatchedIncarnation));
         };
         if changes.iter().any(|(used, _)| used == index) {
-            return Err(invalid("a retained entry was returned more than once"));
+            return Err(invalid(CustodyRecoveryRefusal::DuplicateEntry));
         }
         if update.state == CustodyState::Saved && update.process.is_none() {
-            return Err(invalid("saved recovery requires a verified process incarnation"));
+            return Err(invalid(CustodyRecoveryRefusal::UnverifiedProcess));
         }
         changes.push((*index, update));
     }

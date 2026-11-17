@@ -17,8 +17,8 @@ impl crate::runtime::extensions::SettleBeforeStop for SavesOneProcess {
         let participant = self.name().to_owned();
         Box::pin(async move {
             if retained.is_empty() { return Ok(Vec::new()); }
-            Err(crate::runtime::extensions::CustodyRecoveryError::InvalidEvidence {
-                participant, reason: "this participant does not retain process custody".into(),
+            Err(crate::runtime::extensions::CustodyRecoveryError {
+                participant, reason: crate::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
             })
         })
     }
