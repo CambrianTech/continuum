@@ -73,16 +73,9 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     };
 
     if active.as_deref() == Some(target.model_id()) {
-        // Same base model live. Now check the loaded genome SET: a new gene (or a
-        // retired one) is a set change that llama.cpp can only honor by relaunch
-        // (no hot-load API). An unreadable adapter probe is treated as "unknown
-        // set" → relaunch to be safe, never a silent serve of a stale genome.
+        // An unreadable catalog proves neither a match nor permission to replace
+        // the engine. Keep its resident state until the genome owner can answer.
         let desired = target.adapter_paths();
-        // The comment above states the policy: an unreadable probe is an UNKNOWN set →
-        // relaunch. `.unwrap_or_default()` did the opposite whenever `desired` is also
-        // empty (the common no-genome case): the error became an empty Vec that COMPARED
-        // EQUAL to the target, short-circuiting to AlreadyServing — the exact silent
-        // stale-serve the comment promises never happens. Honor the stated policy.
         let genome_matches = match ctrl.active_adapters(target).await {
             Ok(active) if active == desired => true,
             Ok(active) => {
@@ -150,10 +143,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
             }
             Err(e) => {
                 tracing::warn!(target: "continuum_core::inference::llama_server", error = %e,
-                    "could not read the served genome set — treating it as UNKNOWN and \
-                     falling through to relaunch rather than risk serving a stale genome"
+                    "could not read the served genome set; retaining the running engine"
                 );
-                false
+                return EnsureOutcome::Degraded {
+                    reason: format!("served genome set is unknown: {e}"),
+                };
             }
         };
         if genome_matches {
