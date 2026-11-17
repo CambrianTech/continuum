@@ -118,7 +118,7 @@ crate::action_command! {
         let snap = this.catalog.snapshot();
         let live = snap.get(&p.model_id).ok_or_else(|| {
             CommandError::NotFound(format!(
-                "unknown model id '{}' — list available models to see what's live",
+                "unknown model id '{}'; check what's available on this host to find a matching one",
                 p.model_id
             ))
         })?;
@@ -146,7 +146,7 @@ crate::action_command! {
                     "is in the catalog but not downloaded"
                 };
                 return Err(CommandError::Denied(format!(
-                    "model '{}' ({}) — download it first, then pin it",
+                    "model '{}' ({}); obtain its GGUF before attempting to pin",
                     p.model_id, why
                 )));
             }
