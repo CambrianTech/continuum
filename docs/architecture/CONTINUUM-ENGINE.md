@@ -2056,6 +2056,33 @@ split across ubatches with MTP on never splits a verification group. Then live o
 zero "failed to find free space" and zero "not inside the current sub-batch" lines, parks and restores counted in the
 frame records (4.13).
 
+**4.11.10 implementation map (fork, agreed with Codex 2026-11-17; building blocks on `fable/admission-fit`).**
+Mechanism: no new allocator or API. `llama_decode` already prepares (restoring) then consumes the same placement, and
+returns 1 with nothing placed for that piece; pieces before it in the frame are placed and computed.
+- Done: `server_batch` in `server-batch.h` (pure move); `remove_slot(id, from)` removes one slot's unplaced tokens
+  and returns the old-to-new index map; `test-server-batch` covers the middle slot with speculative groups on both
+  sides, embedding rows, and a prompt straddling a placed piece.
+- `decode()` returns a typed `piece_outcome {placed, no_room, invalid, compute_error}`; it no longer sends errors or
+  clears prompts for every slot, and the `n_batch /= 2` ladder and the `n_batch == 1` "Context size has been exceeded"
+  fail-all are deleted. `n_queued_tokens` and output bookkeeping count only placed pieces.
+- On `no_room` at piece `off`, the frame owner (the decode loop in `update_slots`) makes room, in order: move an idle
+  mind out (`flash_coldest`, then an idle lane's mind); else preempt the coldest processing slot that is not pinned,
+  learning or fenced: `remove_slot(id, off)`, remap every slot's `i_batch`/`spec_i_batch`, cut its prompt
+  bookkeeping back to its placed tokens (`keep_first`), move its whole sequence (target and draft) out through the
+  #139 `flash_out` path into a host-RAM-bounded preempted store, set `SLOT_STATE_PREEMPTED`, re-render, decode the
+  same piece again (the frame changed). The idle-slot purge is deleted, not kept behind parking.
+- No legal move: the slot whose tokens do not fit is removed from the frame the same way and stays `blocked` with
+  its wake sources (pin released, fence passed, host RAM granted); the rest of the frame decodes.
+- `SLOT_STATE_PREEMPTED` is skipped by every batch-construction path; at each frame start the oldest preempted slot
+  is restored (`mind_switch`-style insert) when its cells fit, and past its age bound it may preempt the coldest legal
+  active slot (never a pin, learning step or fence).
+- Draft: `common_speculative_process` failure no longer throws to `abort_all_slots`; the slot keeps only verified
+  committed tokens, its n_past/checkpoints/draft are reconciled to that boundary, and its draft state is rebuilt by an
+  admitted `common_speculative_begin` with a typed failed/blocked outcome (no reset/retry loop).
+- Tests (server, unit dir, tiny models): unified-pool overcommit with N processing slots and MTP, all complete with
+  preempt/resume counted and no 500; all-pinned and host-denied return blocked and never evict; draft no-room keeps
+  the target's verified output and leaves other slots untouched; bookkeeping counters exact.
+
 ### 4.12 The serving modules: one intentional architecture, no patchwork (2026-11-17)
 
 Joel, 2026-11-17: "Need reliable service modules. No more patches. Ideal architecture. We have zero need for shit
