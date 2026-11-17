@@ -185,17 +185,33 @@ pub(super) fn result_handles_at(
 }
 
 pub(super) fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<PersistedVolatile>> {
-    load_volatile_at(&volatile_path(persona_id)?)
+    restore_volatile_at(&volatile_path(persona_id)?)
+}
+
+/// Her checkpoint for restoring her: a head record that does not decode has its checkpoint kept
+/// byte for byte (content-addressed beside it) before anything rewrites it, under the same lock
+/// (Codex's review of 9cf06ade). Failing to keep it fails the load: no rewrite without custody.
+pub(super) fn restore_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
+    let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    let Some((bytes, mut persisted)) = read_volatile(path)? else {
+        return Ok(None);
+    };
+    persisted.wm.context_hands.keep_original(|| checkpoint_adoption::preserve_unresumable(path, &bytes).map_err(std::io::Error::other))?;
+    Ok(Some(persisted))
 }
 
 pub(super) fn load_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
     let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    Ok(read_volatile(path)?.map(|(_, persisted)| persisted))
+}
+
+/// The checkpoint's bytes and their decode; the caller holds the checkpoint lock.
+fn read_volatile(path: &std::path::Path) -> std::io::Result<Option<(Vec<u8>, PersistedVolatile)>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(error),
     };
-    serde_json::from_slice(&bytes)
-        .map(Some)
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    let persisted = serde_json::from_slice(&bytes).map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(Some((bytes, persisted)))
 }

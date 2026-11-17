@@ -706,13 +706,14 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
 
     // A record that did not decode (its decode is `hands_custody`'s unit test), restored beside her view.
     let mut corrupt = saved.clone();
-    corrupt.context_hands = HandsCustody::Corrupt { raw: unreadable.clone(), error: "invalid type".to_string() };
+    let record = crate::cognition::hands_custody::CorruptHands { raw: unreadable, error: "invalid type".to_string(), original: None };
+    corrupt.context_hands = HandsCustody::Corrupt(record.clone());
     let broken = Arc::new(WorkingMemory::new(8));
     broken.restore(corrupt);
     let repairing = asha_with_hands().with_working_memory(Arc::clone(&broken));
     let refused = repairing.prompt_view_within(&ws, 200_000);
     assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
-    assert!(matches!(&broken.snapshot().context_hands, HandsCustody::Corrupt { raw, .. } if *raw == unreadable), "it is checkpointed as it was");
+    assert_eq!(broken.snapshot().context_hands, HandsCustody::Corrupt(record.clone()), "it is checkpointed as it was");
     broken.request_hands_adoption("operator");
     let repaired = repairing.prompt_view_within(&ws, 200_000);
     assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
@@ -720,7 +721,7 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     let [replaced] = kept.as_slice() else {
         panic!("one adoption replaced one head: {kept:?}"); // JUSTIFIED: test fixture
     };
-    assert_eq!(replaced.prior, SupersededPrior::Corrupt(unreadable), "the record it replaced is kept, never erased");
+    assert_eq!(replaced.prior, SupersededPrior::Corrupt(record), "the record it replaced is kept, never erased");
     assert_eq!((replaced.by.as_str(), replaced.generation >= 1), ("operator", true), "with who asked and the generation that replaced it");
 
     // A checkpoint from before heads: its view, and no head beside it.

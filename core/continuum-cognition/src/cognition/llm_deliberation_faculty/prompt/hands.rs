@@ -49,7 +49,7 @@ impl LlmDeliberationFaculty {
                 *self.tools_epoch.lock() = Some(hands);
                 None
             }
-            HandsCustody::Corrupt { raw, error } => Some(HandsRefusal::Corrupt { raw, error }),
+            HandsCustody::Corrupt(corrupt) => Some(HandsRefusal::Corrupt(corrupt)),
             // A view checkpointed before heads were: nothing of hers says which schemas her engine
             // holds, so her acts wait for an explicit adoption rather than a silent substitute.
             HandsCustody::Unrecorded if restored.is_some() => Some(HandsRefusal::Unrecorded),

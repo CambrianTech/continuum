@@ -190,15 +190,44 @@ pub(crate) enum HandsCustody {
     #[default]
     Unrecorded,
     Held(HeldHands),
-    /// Recorded but undecodable: kept whole (`raw`, its JSON as read) and written back as it was,
-    /// never read as absent; her act is refused until it is repaired (Codex's review of 9cf06ade).
-    Corrupt { raw: serde_json::Value, error: String },
+    /// Recorded but undecodable: never read as absent; her act is refused until it is repaired
+    /// (Codex's review of 9cf06ade).
+    Corrupt(CorruptHands),
 }
 
 impl HandsCustody {
     pub(crate) fn is_unrecorded(&self) -> bool {
         matches!(self, HandsCustody::Unrecorded)
     }
+
+    /// A corrupt record's original checkpoint, kept byte for byte before anything rewrites it
+    /// (`checkpoint_adoption::preserve_unresumable`, called at load): once, and never replaced.
+    pub(crate) fn keep_original<E>(&mut self, preserve: impl FnOnce() -> Result<PreservedCheckpoint, E>) -> Result<(), E> {
+        if let HandsCustody::Corrupt(corrupt) = self {
+            if corrupt.original.is_none() {
+                corrupt.original = Some(preserve()?);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A head's record that does not decode. Its custody is the checkpoint it was read from, kept whole
+/// and content-addressed (`original`); `raw` is the parsed view of the record beside it, which a
+/// rewrite may normalize, so it is never the custody (Codex's review of 9cf06ade).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct CorruptHands {
+    pub(crate) raw: serde_json::Value,
+    pub(crate) error: String,
+    /// Absent only between decoding and the load that preserves it.
+    pub(crate) original: Option<PreservedCheckpoint>,
+}
+
+/// A checkpoint kept whole: where its bytes are, and their sha256.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreservedCheckpoint {
+    pub(crate) path: std::path::PathBuf,
+    pub(crate) sha256: String,
 }
 
 /// A head her explicit adoption replaced (`persona/hands/adopt`): kept as it was, never erased, with
@@ -218,8 +247,8 @@ pub(crate) struct SupersededHands {
 pub(crate) enum SupersededPrior {
     Unrecorded,
     Held(HeldHands),
-    /// A record that did not decode, its JSON whole.
-    Corrupt(serde_json::Value),
+    /// A record that did not decode, with its original checkpoint.
+    Corrupt(CorruptHands),
 }
 
 /// An adoption asked for and not yet frozen: what it replaces, and who asked why.
@@ -236,7 +265,7 @@ impl PendingAdoption {
         let prior = match self.prior {
             HandsCustody::Unrecorded => SupersededPrior::Unrecorded,
             HandsCustody::Held(hands) => SupersededPrior::Held(hands),
-            HandsCustody::Corrupt { raw, .. } => SupersededPrior::Corrupt(raw),
+            HandsCustody::Corrupt(corrupt) => SupersededPrior::Corrupt(corrupt),
         };
         SupersededHands { prior, reason: self.reason, by: self.by, generation }
     }
@@ -246,8 +275,8 @@ impl PendingAdoption {
 /// a silent substitute of the live tools for the ones her engine holds (Codex's review of 9cf06ade).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum HandsRefusal {
-    /// Her head's record does not decode: kept whole, written back as it was.
-    Corrupt { raw: serde_json::Value, error: String },
+    /// Her head's record does not decode: its original checkpoint is kept.
+    Corrupt(CorruptHands),
     /// Her view was checkpointed with no head beside it, and no captured request of hers shows it.
     Unrecorded,
 }
@@ -256,7 +285,7 @@ impl HandsRefusal {
     /// What she and her operator read.
     pub(crate) fn reason(&self) -> String {
         let why = match self {
-            HandsRefusal::Corrupt { error, .. } => format!("her head's checkpointed custody does not decode ({error}); it is kept as it was"),
+            HandsRefusal::Corrupt(corrupt) => format!("her head's checkpointed custody does not decode ({}); its checkpoint is kept as it was", corrupt.error),
             HandsRefusal::Unrecorded => "her view was checkpointed with no head beside it and no captured request of hers shows that view".to_string(),
         };
         format!("{why}: her acts wait until her head is adopted (persona/hands/adopt), and her view is kept")
@@ -265,19 +294,26 @@ impl HandsRefusal {
     /// What a checkpoint keeps for it: a corrupt record as it was, else nothing recorded.
     pub(crate) fn custody(&self) -> HandsCustody {
         match self {
-            HandsRefusal::Corrupt { raw, error } => HandsCustody::Corrupt { raw: raw.clone(), error: error.clone() },
+            HandsRefusal::Corrupt(corrupt) => HandsCustody::Corrupt(corrupt.clone()),
             HandsRefusal::Unrecorded => HandsCustody::Unrecorded,
         }
     }
 }
 
-/// The checkpoint field: a recorded custody is written as recorded (a corrupt one as its raw bytes).
+/// A corrupt record as a checkpoint writes it, so a later load reads it back as the same corrupt
+/// record with its original, never as a new corruption of the rewritten bytes.
+#[derive(serde::Serialize, serde::Deserialize)]
+enum Written {
+    Corrupt(CorruptHands),
+}
+
+/// The checkpoint field: a held head as recorded, a corrupt one with its preserved original.
 pub(crate) fn serialize<S: serde::Serializer>(custody: &HandsCustody, serializer: S) -> Result<S::Ok, S::Error> {
     use serde::Serialize;
     match custody {
         HandsCustody::Unrecorded => serializer.serialize_none(),
         HandsCustody::Held(hands) => hands.serialize(serializer),
-        HandsCustody::Corrupt { raw, .. } => raw.serialize(serializer),
+        HandsCustody::Corrupt(corrupt) => Written::Corrupt(corrupt.clone()).serialize(serializer),
     }
 }
 
@@ -289,6 +325,9 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
     let Some(recorded) = recorded.filter(|value| !value.is_null()) else {
         return Ok(HandsCustody::Unrecorded);
     };
+    if let Ok(Written::Corrupt(corrupt)) = <Written as serde::Deserialize>::deserialize(&recorded) {
+        return Ok(HandsCustody::Corrupt(corrupt));
+    }
     Ok(match <HeldHands as serde::Deserialize>::deserialize(&recorded) {
         Ok(hands) => HandsCustody::Held(hands),
         Err(error) => {
@@ -297,7 +336,7 @@ pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
                 error = %error,
                 "her head's recorded custody does not decode: it is kept whole and her act is refused until it is repaired"
             );
-            HandsCustody::Corrupt { raw: recorded, error: error.to_string() }
+            HandsCustody::Corrupt(CorruptHands { raw: recorded, error: error.to_string(), original: None })
         }
     })
 }
@@ -395,10 +434,18 @@ mod tests {
         assert_eq!(absent.hands, HandsCustody::Unrecorded, "a checkpoint from before this records nothing");
 
         let corrupt: Checkpoint = serde_json::from_str(r#"{"hands":{"generation":"x"}}"#).expect("the checkpoint still decodes");
-        let HandsCustody::Corrupt { raw, .. } = &corrupt.hands else {
+        let mut corrupt = corrupt;
+        let HandsCustody::Corrupt(record) = &corrupt.hands else {
             panic!("an undecodable record is corrupt, never absent"); // JUSTIFIED: test fixture
         };
-        assert_eq!(raw, &serde_json::json!({"generation": "x"}), "it is kept whole");
-        assert_eq!(serde_json::to_string(&corrupt).expect("encodes"), r#"{"hands":{"generation":"x"}}"#, "and written back as they were");
+        assert_eq!((&record.raw, &record.original), (&serde_json::json!({"generation": "x"}), &None), "parsed, not yet preserved");
+        let original = PreservedCheckpoint { path: "kept/abc.json".into(), sha256: "abc".to_string() };
+        corrupt.hands.keep_original(|| Ok::<_, std::convert::Infallible>(original.clone())).expect("infallible");
+        corrupt.hands.keep_original(|| Err("an original is kept once, never replaced")).expect("kept already");
+        let rewritten: Checkpoint = serde_json::from_str(&serde_json::to_string(&corrupt).expect("encodes")).expect("decodes");
+        let HandsCustody::Corrupt(record) = rewritten.hands else {
+            panic!("a rewritten corrupt record reads back corrupt"); // JUSTIFIED: test fixture
+        };
+        assert_eq!(record.original, Some(original), "its original survives every rewrite, never re-preserved from normalized bytes");
     }
 }

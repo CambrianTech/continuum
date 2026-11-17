@@ -308,6 +308,22 @@ pub(super) fn sync_parent(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
+/// Keep a checkpoint whose head could not be resumed, whole, content-addressed beside it
+/// (`.unresumable-hands/<sha256>.json`) through the same no-overwrite publication as adoption
+/// evidence: the custody of a corrupt head record, never its re-serialized parse.
+pub(super) fn preserve_unresumable(checkpoint: &Path, bytes: &[u8]) -> Result<crate::cognition::hands_custody::PreservedCheckpoint, AdoptionError> {
+    let parent = resolved_path(checkpoint.parent().ok_or_else(|| invalid("checkpoint has no parent"))?)?;
+    let kept = parent.join(".unresumable-hands");
+    fs::create_dir_all(&kept)?;
+    if resolved_path(&kept)? != kept {
+        return Err(invalid("unresumable-hands path is redirected"));
+    }
+    let sha256 = digest(bytes);
+    let path = kept.join(format!("{sha256}.json"));
+    preserve(&path, bytes)?;
+    Ok(crate::cognition::hands_custody::PreservedCheckpoint { path, sha256 })
+}
+
 fn preserve(path: &Path, bytes: &[u8]) -> Result<(), AdoptionError> {
     if exists(path)? {
         return if read_bounded(path)? == bytes {
