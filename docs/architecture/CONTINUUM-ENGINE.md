@@ -2144,20 +2144,20 @@ singular (Codex): memory allocation (`memory_pool`) and a turn's completion and 
 | `speculator` (`speculator.h`) | `draft(slot)`, `verify(slot, outputs) -> committed`, `rebuild(slot) -> ok / blocked` (typed, never throws to abort all) | `speculator_mtp`, `speculator_draft_model`, `speculator_ngram` (each wraps a `common_speculative` kind) | `spec`, `spec_init`, `ctx_dft_seq_rm_type` |
 | `learner` (`learner.h`) | `begin`, `step`, `release_pin`, duty share (4.11.6) | `learner_lora_opt` (ggml-opt, LoRA layers in place) | `learning`, `learning_residencies`, `learn_ledger`, `residency_mirror`, `learn_chunk_us`, `learn_lr` (`trainer`/`/train` deleted when callers move) |
 | `responder` (`responder.h`) | `partial`, `final`, `error`, `embedding`, `rerank` | `responder_http` (OpenAI-compatible JSON, external drivers), `responder_frames` (contract frames, 4.11) | `queue_results` |
-| `task_source` (`task_source.h`) | `next() -> task`, `post` | `task_source_http` (routes -> `server_queue`), `task_source_frames` (contract) | `queue_tasks` |
+| `task_queue` (`task_queue.h`) | the engine's run loop: `post`, `defer`, `new_id`, `yield_to_queue`, sleep and wake | — (one loop; transports are producers that post into it: the HTTP routes, and a contract-frame endpoint with slice 2) | `queue_tasks` |
 | `route_group` (`route_group.h`) | `install(router)` | one class per family: `routes_status`, `routes_generation`, `routes_tokens`, `routes_lora`, `routes_learn`, `routes_control` (HTTP adapter side only) | — |
 | `engine_runtime` (`engine_runtime.h`) | `load`, `sleep`, `wake`, model and context reads | `engine_runtime_llama` | model/context/vocab/chat/params fields |
 | `observer` (`observer.h`) | snapshot of counters and frame records | — | `metrics`, `n_tokens_generated`, `lora_report*`, debug env |
 
-The two transports are the outlier pair that prove the seams (the CLAUDE.md method): `responder_http` +
-`task_source_http` serve external drivers (Hermes, any OpenAI client, plan line 16); `responder_frames` +
-`task_source_frames` serve our own core over the contract. If both fit the same `responder`/`task_source` interfaces
-without forcing, the seams are right.
+The two transports are the outlier pair that prove the seams (the CLAUDE.md method): `responder_http` and the HTTP
+routes serve external drivers (Hermes, any OpenAI client, plan line 16); `responder_frames` and a contract-frame
+endpoint serve our own core. If both fit the same `responder` interface and post into the same `task_queue` without
+forcing, the seams are right.
 
 Order (each one reviewed change: interface + adapter + tests + the include fragment it absorbs deleted): `observer`,
-`responder` (+ `responder_http`), `task_source`, `engine_runtime`, `memory_pool` and `tier_store` (the allocator
+`responder` (+ `responder_http`; llama.cpp#144), `task_queue`, `engine_runtime`, `memory_pool` and `tier_store` (the allocator
 first, so every later class calls it), `mind_table`, `slot` + `slot_registry`, `frame` + `frame_batcher` (4.11.10
-lands here), `speculator`, `learner`, `route_group` classes; then `responder_frames`/`task_source_frames` with
+lands here), `speculator`, `learner`, `route_group` classes; then `responder_frames` and the contract-frame endpoint with
 contract slice 2.
 
 **Rules every module obeys** (a module that cannot meet one is redesigned, not excepted):
