@@ -93,6 +93,9 @@ pub struct LlamaServerProcess {
     /// what the running process was given, read by the serving daemon into the
     /// snapshot — never the plan's latest derivation of what it would give.
     pub(super) launched_prompt_cache_mib: std::sync::atomic::AtomicU32,
+    /// Resident minds the next launch keeps beside its lanes as parked sequences (`--minds`, fork #139), seated
+    /// by the serving daemon ([`super::LlamaServerControl::seat_minds`]). 0: none (every ephemeral lane).
+    pub(super) seated_minds: std::sync::atomic::AtomicU32,
 }
 
 
@@ -160,6 +163,7 @@ impl LlamaServerProcess {
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
             mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
             launched_prompt_cache_mib: std::sync::atomic::AtomicU32::new(0),
+            seated_minds: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -198,6 +202,7 @@ impl LlamaServerProcess {
             smoke_proven_thinking: std::sync::atomic::AtomicBool::new(false),
             mmproj_on_lane: std::sync::atomic::AtomicU8::new(0),
             launched_prompt_cache_mib: std::sync::atomic::AtomicU32::new(0),
+            seated_minds: std::sync::atomic::AtomicU32::new(0),
         }
     }
 

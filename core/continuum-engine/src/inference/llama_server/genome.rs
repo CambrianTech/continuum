@@ -21,7 +21,7 @@ pub(super) static ENGINE_PROBES: parking_lot::Mutex<BTreeMap<String, ProbeOutcom
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ProbeOutcome {
     /// It answered (`answered` or `did_not_enumerate`): never asked again.
-    Answered { train_dir: bool },
+    Answered { train_dir: bool, minds: bool },
     /// It was asked and did not answer: no, for now, and asked again at its next use.
     Unanswered,
 }
@@ -34,14 +34,14 @@ pub(super) fn train_dir_support(bin: &str) -> Option<bool> {
 /// PURE: what the record says about `bin`: its answer, no when it did not answer, nothing when it
 /// was never asked.
 pub(super) fn answer_for(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> Option<bool> {
-    probes.get(bin).map(|outcome| matches!(outcome, ProbeOutcome::Answered { train_dir: true }))
+    probes.get(bin).map(|outcome| matches!(outcome, ProbeOutcome::Answered { train_dir: true, .. }))
 }
 
 /// PURE: what a decision may rest on: `bin`'s answer when it answered, else nothing (never asked,
 /// or asked without an answer), and the caller asks it now.
 pub(super) fn train_dir_known(probes: &BTreeMap<String, ProbeOutcome>, bin: &str) -> Option<bool> {
     match probes.get(bin) {
-        Some(ProbeOutcome::Answered { train_dir }) => Some(*train_dir),
+        Some(ProbeOutcome::Answered { train_dir, .. }) => Some(*train_dir),
         _ => None,
     }
 }
@@ -61,6 +61,17 @@ pub fn engine_accepts_train_dir(bin: &str) -> bool {
 /// The engine lists the flag as an option (not merely mentions the word somewhere).
 pub(super) fn engine_help_lists_train_dir(help: &str) -> bool {
     help.lines().any(|l| l.trim_start().starts_with("--train-dir"))
+}
+
+/// The engine keeps resident minds as parked sequences (`--minds`, fork #139): a mind switch is a sequence
+/// move, never a serialization.
+pub(super) fn engine_help_lists_minds(help: &str) -> bool {
+    help.lines().any(|l| l.trim_start().starts_with("--minds"))
+}
+
+/// Whether `bin` accepts `--minds`. "Not asked yet" reads as no: an older engine refuses to start with it.
+pub fn engine_accepts_minds(bin: &str) -> bool {
+    matches!(ENGINE_PROBES.lock().get(bin), Some(ProbeOutcome::Answered { minds: true, .. }))
 }
 
 

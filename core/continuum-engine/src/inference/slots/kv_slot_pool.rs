@@ -63,6 +63,7 @@ impl KvSlotPool {
             scratch_released: Arc::new(tokio::sync::Notify::new()),
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
+            resident_minds: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
             sequences: Mutex::new(LiveSequences::default()),
         }
@@ -128,6 +129,25 @@ impl KvSlotPool {
     /// The engine process this pool belongs to, when stamped.
     pub(crate) fn incarnation(&self) -> Option<(u32, u64)> {
         self.incarnation.get().copied()
+    }
+
+    /// Whether this pool's engine owns mind switches (fork #139), as its `/props` declared. `None`: the core
+    /// pages minds itself, or the engine has not declared yet.
+    pub(crate) fn resident_minds(&self) -> Option<crate::inference::weight_residency::ResidentMinds> {
+        self.resident_minds.get().copied().flatten()
+    }
+
+    /// This pool, for an engine that declared resident minds on the `/props` that installs it.
+    pub(super) fn with_resident_minds(mut self, minds: Option<crate::inference::weight_residency::ResidentMinds>) -> Self {
+        self.resident_minds = std::sync::OnceLock::from(minds); // a fresh pool: born holding its first and only declaration
+        self
+    }
+
+    /// Record the engine's declared minds on first sight, or check them against the record: `false` only when
+    /// this pool already recorded a DIFFERENT declaration (its paging authority belongs to another engine). A pool
+    /// an owned spawn published has no record yet; its first discovery records the engine's own declaration.
+    pub(super) fn declare_resident_minds(&self, minds: Option<crate::inference::weight_residency::ResidentMinds>) -> bool {
+        *self.resident_minds.get_or_init(|| minds) == minds
     }
 
     pub fn n_slots(&self) -> u32 {

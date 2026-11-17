@@ -90,6 +90,22 @@ impl PageKey {
     }
 }
 
+/// The namespace a fork's engine id is derived in, so it can never equal a mind's (her persona id).
+const FORK_ENGINE_NAMESPACE: Uuid = Uuid::from_u128(0x0dcaba2a_7457_5f3c_9be6_64cb21c5bfea);
+
+impl PageKey {
+    /// The 128-bit id the engine keeps this page's resident mind under (fork #139: `"page"` on a request,
+    /// `/minds/prefetch`). A mind is her persona; a fork is derived from (persona, room) in its own namespace.
+    pub fn engine_id(&self) -> Uuid {
+        match self {
+            Self::Mind(m) => m.persona(),
+            Self::Fork(k) => {
+                Uuid::new_v5(&FORK_ENGINE_NAMESPACE, &[*k.persona.as_bytes(), *k.room.as_bytes()].concat())
+            }
+        }
+    }
+}
+
 /// For probes only; never a key.
 impl fmt::Display for PageKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

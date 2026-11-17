@@ -212,7 +212,10 @@ impl OpenAICompatibleAdapter {
             })?;
             // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
             let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
-            let adm = crate::inference::turn_admission::admit_turn(
+            // Her state streams in while she waits for a lane (fork #139: a mind on flash is inserted into a parked
+            // sequence, so her switch is a sequence move), only from an engine that declared resident minds.
+            let stream_in = turn_key.filter(|_| class.holds_a_page()).zip(pool.resident_minds());
+            let admit = crate::inference::turn_admission::admit_turn(
                 endpoint_permits,
                 class,
                 turn_key,
@@ -221,8 +224,21 @@ impl OpenAICompatibleAdapter {
                 root,
                 approx_tokens,
                 crate::inference::turn_admission::AdmissionPatience::for_turn(),
-            )
-            .await
+            );
+            let adm = match stream_in {
+                None => admit.await,
+                Some((key, minds)) => {
+                    // Admission first: a turn admitted at once never streams. The stream lives only while she
+                    // waits, and is dropped with her wait (admitted or cancelled), so it never outlives its turn.
+                    let mut admit = std::pin::pin!(admit);
+                    let stream = crate::inference::minds::prefetch(&self.client, root, minds, key);
+                    tokio::select! {
+                        biased;
+                        adm = &mut admit => adm,
+                        () = stream => admit.await,
+                    }
+                }
+            }
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
             let scratch = adm.scratch_slot();
             // Only a turn that names its page owns a slot. A Turn with no persona (or a Fork
@@ -273,6 +289,11 @@ impl OpenAICompatibleAdapter {
             if let Some(slot) = placement {
                 if let Some(obj) = body.as_object_mut() {
                     obj.insert("id_slot".to_string(), json!(slot));
+                    // the mind this turn is (fork #139): the engine switches minds on a lane by sequence moves,
+                    // never through its prompt cache; an engine without minds ignores the field
+                    if let (true, Some(key)) = (keyed_turn, turn_key.as_ref()) {
+                        obj.insert("page".to_string(), json!(key.engine_id().simple().to_string()));
+                    }
                 }
                 if let (true, Some(persona)) = (
                     keyed_turn,

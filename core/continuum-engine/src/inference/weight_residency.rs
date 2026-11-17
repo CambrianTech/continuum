@@ -177,6 +177,36 @@ pub struct ContextGeometry {
     pub allocated_tokens: u64,
     pub max_tokens_per_sequence: u64,
     pub sequence_capacity: u64,
+    /// The engine keeps resident minds as parked sequences beside its lanes (fork #139): a mind switch is a
+    /// sequence move it owns. `None`: it does not (the core pages minds itself). Declared, never inferred.
+    pub resident_minds: Option<ResidentMinds>,
+}
+
+/// What an engine that owns mind switches reports: its lanes, the parked sequence ids beside them, and the token
+/// it drew for this incarnation (a prefetch carries it back, so a replaced engine refuses a stream meant for another).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct ResidentMinds {
+    pub lanes: u64,
+    pub parked_ids: u64,
+    pub incarnation: u64,
+}
+
+/// `/props.context_geometry` as the fork writes it, decoded once.
+#[derive(serde::Deserialize)]
+struct GeometryWire {
+    allocated_tokens: u64,
+    max_tokens_per_sequence: u64,
+    sequence_capacity: u64,
+    #[serde(default)]
+    resident_minds: Option<MindsWire>,
+}
+
+/// `resident_minds`: with `enabled` false (no `--minds`) the rest means nothing.
+#[derive(serde::Deserialize)]
+struct MindsWire {
+    enabled: bool,
+    #[serde(flatten)]
+    minds: Option<ResidentMinds>,
 }
 
 impl ContextGeometry {
@@ -195,12 +225,18 @@ impl ContextGeometry {
     /// `None` when the engine reports no geometry (not our fork) or one that does not hold
     /// together: zero tokens, no sequence, or one sequence allowed more than the pool.
     pub fn from_props(props: &serde_json::Value) -> Option<Self> {
-        let geometry = props.get("context_geometry")?;
-        let read = |field: &str| geometry.get(field)?.as_u64();
+        use serde::Deserialize as _;
+        let wire = GeometryWire::deserialize(props.get("context_geometry")?).ok()?;
+        let resident_minds = match wire.resident_minds {
+            Some(MindsWire { enabled: true, minds: Some(minds) }) => Some(minds),
+            Some(MindsWire { enabled: true, minds: None }) => return None, // declared but not whole: no geometry to trust
+            Some(MindsWire { enabled: false, .. }) | None => None,
+        };
         let reported = Self {
-            allocated_tokens: read("allocated_tokens")?,
-            max_tokens_per_sequence: read("max_tokens_per_sequence")?,
-            sequence_capacity: read("sequence_capacity")?,
+            allocated_tokens: wire.allocated_tokens,
+            max_tokens_per_sequence: wire.max_tokens_per_sequence,
+            sequence_capacity: wire.sequence_capacity,
+            resident_minds,
         };
         (reported.allocated_tokens > 0
             && reported.sequence_capacity > 0
@@ -215,7 +251,12 @@ impl ContextGeometry {
 /// pool is larger (IntelMac 2026-11-03: n_ctx 32,768 beside 65,536; Cormac on #5722).
 fn allocated_capacity(props: &serde_json::Value, slots: u32, n_ctx_per_slot: u32) -> Option<u64> {
     let geometry = ContextGeometry::from_props(props)?;
-    (geometry.sequence_capacity == u64::from(slots) && u64::from(n_ctx_per_slot) <= geometry.max_tokens_per_sequence)
+    // an engine keeping resident minds holds its lanes AND their parked ids as sequences
+    let sequences = match geometry.resident_minds {
+        Some(minds) => u64::from(slots) + minds.parked_ids,
+        None => u64::from(slots),
+    };
+    (geometry.sequence_capacity == sequences && u64::from(n_ctx_per_slot) <= geometry.max_tokens_per_sequence)
         .then_some(geometry.allocated_tokens)
 }
 

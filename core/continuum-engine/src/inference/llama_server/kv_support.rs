@@ -16,6 +16,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
         return;
     }
     let mut train_dir = false;
+    let mut minds = false;
     command.arg("--help");
     // owned (continuum_process::run_owned): a help probe that hangs is ended with anything it started
     let probe = continuum_process::run_owned(command, Some(Duration::from_secs(10)), "engine-help-probe", std::sync::Arc::default()).await;
@@ -30,6 +31,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
                 text.push('\n');
                 text.push_str(&String::from_utf8_lossy(&out.stderr.bytes));
                 train_dir = engine_help_lists_train_dir(&text);
+                minds = super::genome::engine_help_lists_minds(&text);
                 match crate::inference::kv_cache_plan::parse_engine_kv_support(&text) {
                     Some(v) => ("answered", Some(v), String::new()),
                     None => ("did_not_enumerate", None, String::new()),
@@ -40,7 +42,7 @@ pub(super) async fn ensure_engine_kv_support_recorded(bin: &str, mut command: to
     crate::inference::kv_cache_plan::record_engine_quantized_kv_support(support); // None = unanswered: the backend table decides
     // This binary's entry alone, written whole: what it said, or that it did not answer.
     let outcome_of_probe = match matches!(outcome, "answered" | "did_not_enumerate") {
-        true => super::genome::ProbeOutcome::Answered { train_dir },
+        true => super::genome::ProbeOutcome::Answered { train_dir, minds },
         false => super::genome::ProbeOutcome::Unanswered,
     };
     super::genome::ENGINE_PROBES.lock().insert(bin.to_owned(), outcome_of_probe);

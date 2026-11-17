@@ -102,7 +102,7 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     let first_probe = tokio::task::spawn_blocking({
         let (dir, pages) = (Arc::clone(&dir), pages.path().to_path_buf());
         move || {
-            dir.install_settled_pool(root, 2, |pool| {
+            dir.install_settled_pool(root, 2, None, |pool| {
                 let _ = reading.send(());
                 let _ = resume.recv(); // test: held until the admission has looked
                 let (adoption, snapshot) =
@@ -125,7 +125,112 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     assert!(pool.plan_paging(slot, aris).restore, "her first turn after the restart restores, never a cold prefill");
 
     // A second settled install (a racing probe) loses: the published pool and its settlement stand.
-    let second = dir.install_settled_pool(root, 2, |_| SettledPageStore { adoption: Err(NotAdopted::NoLiveLaneRecord), snapshot: None });
+    let second = dir.install_settled_pool(root, 2, None, |_| SettledPageStore { adoption: Err(NotAdopted::NoLiveLaneRecord), snapshot: None });
     assert!(Arc::ptr_eq(&second, &pool), "one pool per root");
     Ok(())
+}
+
+// what this catches: the M5 2026-11-17 04:20Z outage (regression for core 37a354cf2, #6087). An owned spawn
+// publishes its pool at readiness from its launch contract, which carries no minds declaration; discovery then
+// compared that pool's "no minds" to the engine's declared minds and refused EVERY generation (minds_mismatch,
+// ~10 re-probes a second) for the engine's whole life. The pool's minds are a set-once record of the engine's
+// own declaration: a pool with no record takes the first; only a recorded, different declaration mismatches.
+#[test]
+fn a_pool_records_the_engines_declared_minds_once() {
+    use crate::inference::weight_residency::ResidentMinds;
+    let minds = Some(ResidentMinds { lanes: 5, parked_ids: 5, incarnation: 4_077_290_934_432_821_903 });
+    let other = Some(ResidentMinds { lanes: 5, parked_ids: 5, incarnation: 7 });
+
+    let owned = KvSlotPool::new("owned", 5); // as an owned spawn publishes it: no declaration yet
+    assert_eq!(owned.resident_minds(), None, "undeclared reads as no minds, never as a recorded none");
+    assert!(owned.declare_resident_minds(minds), "the first discovery records the engine's declaration");
+    assert_eq!(owned.resident_minds(), minds);
+    assert!(owned.declare_resident_minds(minds), "the same engine's declaration agrees");
+    assert!(!owned.declare_resident_minds(other), "another engine's declaration is the mismatch");
+
+    let discovered = KvSlotPool::new("discovered", 5).with_resident_minds(None); // installed by a /props with no minds
+    assert!(!discovered.declare_resident_minds(minds), "a recorded 'no minds' is a declaration, not a blank");
+}
+
+/// A fake engine declaring resident minds on `/props`, and this core's owned spawn of it: a ready generation
+/// whose pool was published from the launch contract (no minds declaration yet).
+async fn owned_spawn_declaring_minds() -> (String, Arc<KvSlotPool>, tempfile::TempDir, tokio::task::JoinHandle<()>) {
+    // the fork's /props shape for an engine with resident minds, typed (as the engine writes it)
+    #[derive(serde::Serialize, Clone)]
+    struct Minds { enabled: bool, lanes: u64, parked_ids: u64, parked_free: u64, incarnation: u64 }
+    #[derive(serde::Serialize, Clone)]
+    struct Geometry { allocated_tokens: u64, max_tokens_per_sequence: u64, sequence_capacity: u64, resident_minds: Minds }
+    #[derive(serde::Serialize, Clone)]
+    struct Props { total_slots: u32, context_geometry: Geometry }
+    let props = Props {
+        total_slots: 2,
+        context_geometry: Geometry {
+            allocated_tokens: 8192,
+            max_tokens_per_sequence: 4096,
+            sequence_capacity: 4,
+            resident_minds: Minds { enabled: true, lanes: 2, parked_ids: 2, parked_free: 2, incarnation: 42 },
+        },
+    };
+    let app = axum::Router::new()
+        .route("/props", axum::routing::get(move || { let props = props.clone(); async move { axum::Json(props) } }));
+    let namespace = format!("/{}", uuid::Uuid::new_v4()); // a recycled port is not this fixture engine
+    let app = axum::Router::new().nest(&namespace, app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("test: serve") });
+
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let endpoint = directory().endpoint(&root);
+    let contract = KvPageContract {
+        model_id: "fixture".into(),
+        model: "fixture.gguf".into(),
+        adapters: vec![],
+        page_dir: Some(dir.path().to_path_buf()),
+        context: 8192,
+        slots: 2,
+        cache_type: Some("q8_0".into()),
+        flash_attn: Some(true),
+        revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+    };
+    let transition = endpoint.transition().await;
+    let generation = transition.start_generation().expect("test: generation");
+    transition.ready(&root, &generation, contract).expect("test: ready");
+    drop(transition);
+    let owned = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
+    assert_eq!(owned.resident_minds(), None, "the spawn knows its contract, not the engine's declaration");
+    (root, owned, dir, server)
+}
+
+const DECLARED: crate::inference::weight_residency::ResidentMinds =
+    crate::inference::weight_residency::ResidentMinds { lanes: 2, parked_ids: 2, incarnation: 42 };
+
+// what this catches: the M5 2026-11-17 outage end to end (owned spawn -> adapter discovery -> admission). The
+// owned pool must be accepted, record the engine's declaration and be admitted, and the fast path afterwards
+// returns the same DECLARED pool. Before the fix every discovery here returned MindsMismatch.
+#[tokio::test]
+async fn an_owned_spawn_learns_its_engines_minds_at_discovery() {
+    let (root, owned, _dir, server) = owned_spawn_declaring_minds().await;
+    let client = reqwest::Client::new();
+    let pool = directory().discover_pool(&client, &root).await.expect("discovery accepts the owned pool");
+    assert!(Arc::ptr_eq(&pool, &owned), "the owned pool is the one discovered, not a replacement");
+    assert_eq!(pool.resident_minds(), Some(DECLARED), "discovery recorded the engine's own declaration");
+    assert!(directory().page_admission_known(&root), "page admission granted after the declaration");
+    let again = directory().discover_pool(&client, &root).await.expect("the fast path");
+    assert!(Arc::ptr_eq(&again, &owned) && again.resident_minds() == Some(DECLARED), "the fast path returns the declared pool");
+    server.abort();
+}
+
+// what this catches: the lifecycle path granting page admission FIRST (a checkpoint before any adapter request)
+// on an owned pool without the engine's minds declaration; the adapter's discovery then takes the fast path and
+// would read the undeclared pool as core-paged minds (Codex on 5b2f48ae7). The lifecycle grant must declare.
+#[tokio::test]
+async fn a_lifecycle_admission_first_still_declares_the_engines_minds() {
+    let (root, owned, _dir, server) = owned_spawn_declaring_minds().await;
+    let client = reqwest::Client::new();
+    directory().discover_page_admission(&client, &root).await.expect("the lifecycle path grants page admission");
+    assert_eq!(owned.resident_minds(), Some(DECLARED), "the lifecycle grant recorded the engine's declaration");
+    let pool = directory().discover_pool(&client, &root).await.expect("the adapter's fast path");
+    assert!(Arc::ptr_eq(&pool, &owned), "the fast path returned the admitted owned pool");
+    assert_eq!(pool.resident_minds(), Some(DECLARED), "never an undeclared pool read as core-paged minds");
+    server.abort();
 }

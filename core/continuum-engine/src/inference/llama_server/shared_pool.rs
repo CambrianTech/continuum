@@ -22,11 +22,20 @@ const SHARED_POOL_SHORT: &str = "-kvu";
 /// tokens, Aris 20,962 at 38 tok/s, Aiko 62,026), while back-to-back turns reused 28-38k each.
 const KEEP_IDLE_SLOTS: &str = "--no-cache-idle-slots";
 
+/// The engine's resident minds beside its lanes (fork #139): each a parked sequence of the pool, so a
+/// mind switch is a sequence move in milliseconds (parked) or through flash, never a serialization.
+const RESIDENT_MINDS: &str = "--minds";
+
 /// Launch on the shared pool: every sequence draws on all of `-c`, and an idle one keeps what
-/// she holds until the core pages her.
-pub(super) fn on_shared_pool(mut invocation: LaneInvocation) -> LaneInvocation {
+/// she holds until the core pages her. `minds`: parked sequence ids beside the lanes, given only to an engine
+/// that lists `--minds`: the seated minds plus one side sequence for learning (`LlamaServerControl::seat_minds`).
+pub(super) fn on_shared_pool(mut invocation: LaneInvocation, minds: Option<std::num::NonZeroU32>) -> LaneInvocation {
     invocation.args.push(SHARED_POOL.to_string());
     invocation.args.push(KEEP_IDLE_SLOTS.to_string());
+    if let Some(n) = minds {
+        invocation.args.push(RESIDENT_MINDS.to_string());
+        invocation.args.push(n.to_string());
+    }
     invocation
 }
 

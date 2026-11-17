@@ -209,6 +209,7 @@ impl LlamaServerControl for FakeControl {
             allocated_tokens: u64::from(self.served_window.saturating_mul(lanes)),
             max_tokens_per_sequence: u64::from(self.served_window),
             sequence_capacity: u64::from(lanes),
+            resident_minds: None,
         })
     }
     async fn served_lanes(&self) -> Result<u32, LlamaServerError> {
