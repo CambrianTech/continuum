@@ -586,17 +586,10 @@ fn the_request_and_its_clone_carry_her_head_without_copying_it() {
     let view = faculty.prompt_view_within(&ws, 200_000);
     assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
     let head = view.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    let shared = Arc::clone(&head);
     let binding = faculty.binding.load_full();
-    let request = faculty.build_request_within(
-        &binding,
-        view.completion_reserve,
-        view.messages.clone(),
-        Some(Arc::clone(&head)),
-        view.system.clone(),
-        None,
-        Some(ws.room_id),
-        TurnKind::Pass,
-    );
+    let reserve = view.completion_reserve;
+    let request = faculty.build_request_within(&binding, reserve, view.messages, Some(shared), view.system, None, Some(ws.room_id), TurnKind::Pass);
     let template_clone = request.clone();
     let (Some(sent), Some(cloned)) = (request.tools.as_ref(), template_clone.tools.as_ref()) else {
         panic!("the request carries her head"); // JUSTIFIED: test fixture

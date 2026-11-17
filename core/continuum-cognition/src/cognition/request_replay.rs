@@ -144,7 +144,7 @@ fn compare_input(request: &mut TextGenerationRequest, p: &ReplayRequestParams) -
         if replacement.schema_type != "object" || !replacement.properties.is_object() || encoded != change.input_schema {
             return Err(CommandError::Invalid("tool schema must round-trip exactly through the native object schema".into()));
         }
-        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate()
+        let matches: Vec<_> = request.tools.as_deref().unwrap_or_default().iter().enumerate() // unwrap_or_default: a captured request with no tools matches no override
             .filter(|(_, tool)| tool.name == change.tool_name).collect();
         if matches.len() != 1 {
             return Err(CommandError::Invalid(format!("tool schema override must match exactly one captured tool: {}", change.tool_name)));
@@ -577,7 +577,8 @@ mod tests {
         }
         let mut duplicate = request.clone();
         let mut tools = duplicate.tools.as_deref().unwrap().to_vec();
-        tools.push(tools[0].clone());
+        let repeated = tools[0].clone();
+        tools.push(repeated);
         duplicate.tools = Some(tools.into());
         let mut duplicate_params = schema_params.clone();
         duplicate_params.expected_request_sha256 = Some(request_hash(&duplicate).unwrap());
