@@ -130,12 +130,12 @@ pub(super) fn merged_object_variants(schema: &Value) -> VariantsMerge {
     let tag = discriminator(&variants);
     let mut properties = Map::new();
     for name in property_names(&variants) {
-        let declarations: Vec<&Value> = variants.iter().filter_map(|v| v.properties.get(&name)).collect();
-        let merged = match tag.as_deref() == Some(name.as_str()) {
+        let declarations: Vec<&Value> = variants.iter().filter_map(|v| v.properties.get(name)).collect();
+        let merged = match tag.as_deref() == Some(name) {
             true => tag_enum(&declarations),
             false => any_of_distinct(&declarations),
         };
-        properties.insert(name, merged);
+        properties.insert(name.to_owned(), merged);
     }
     let required = first
         .required
@@ -150,11 +150,11 @@ pub(super) fn merged_object_variants(schema: &Value) -> VariantsMerge {
 }
 
 /// Every property any variant declares, in first-seen order.
-fn property_names(variants: &[ObjectVariant]) -> Vec<String> {
-    let mut names: Vec<String> = Vec::new();
+fn property_names(variants: &[ObjectVariant]) -> Vec<&str> {
+    let mut names: Vec<&str> = Vec::new();
     for name in variants.iter().flat_map(|v| v.properties.keys()) {
-        if !names.contains(name) {
-            names.push(name.clone());
+        if !names.contains(&name.as_str()) {
+            names.push(name);
         }
     }
     names
@@ -162,20 +162,18 @@ fn property_names(variants: &[ObjectVariant]) -> Vec<String> {
 
 /// One declaration when every variant declares the property alike; otherwise the `anyOf` of each distinct one.
 fn any_of_distinct(declarations: &[&Value]) -> Value {
-    let mut distinct: Vec<Value> = Vec::new();
+    let mut distinct: Vec<&Value> = Vec::new();
     for declaration in declarations {
         if !distinct.contains(declaration) {
-            distinct.push((*declaration).clone());
+            distinct.push(declaration);
         }
     }
-    match <[Value; 1]>::try_from(distinct) {
-        Ok([only]) => only,
-        Err(distinct) => {
-            let mut any_of = Map::new();
-            any_of.insert(ANY_OF_KEYWORD.into(), Value::Array(distinct));
-            Value::Object(any_of)
-        }
+    if let [only] = distinct.as_slice() {
+        return (*only).clone();
     }
+    let mut any_of = Map::new();
+    any_of.insert(ANY_OF_KEYWORD.into(), Value::Array(distinct.into_iter().cloned().collect()));
+    Value::Object(any_of)
 }
 
 /// The tag's declarations (each the same schema but for its one enum value) as one enum of every value.
@@ -185,7 +183,7 @@ fn tag_enum(declarations: &[&Value]) -> Value {
         return any_of_distinct(declarations);
     };
     let values = merged.values.get_or_insert_with(Vec::new);
-    for value in decoded.flat_map(|d| d.values.unwrap_or_default()) {
+    for value in decoded.flat_map(|d| d.values.into_iter().flatten()) {
         if !values.contains(&value) {
             values.push(value);
         }
