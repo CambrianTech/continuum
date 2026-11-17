@@ -2012,9 +2012,11 @@ Joel, 2026-11-17: "Need reliable service modules. No more patches. Ideal archite
 patchwork. We need a solid architecture that's intentional."
 
 What the M5 showed the same night: a dispatcher patched twice (#6093 and a resize hole) whose design was the defect; a
-grant policy whose own comment ("a ceiling, not an allocation") its admission contradicts; learning adapters written
-and swapped beside serving with no one owning the trade (402 fresh adapters in one engine log); single-stream decode
-at 24% of par with nobody owning throughput. Each piece had a reason; together they had no owner and no shape. This
+grant policy whose own comment ("a ceiling, not an allocation") its admission contradicts; learning work beside
+serving with no one owning the trade; single-stream decode at 24% of par with nobody owning throughput. (Observations,
+not attributions: 402 `common_lora_write_fresh` lines in one engine log are not by themselves 402 destructive swaps,
+since an earlier inspection found durable checkpoint reseating among them; and the 24% read was taken with 5.2 GB of
+swap in use and resident builds, so it names no cause. Per-frame evidence, 4.13 step 1, attributes costs.) Each piece had a reason; together they had no owner and no shape. This
 section is the shape. Every serving concern belongs to exactly one module below, and a concern with no row is not
 built.
 
@@ -2035,6 +2037,12 @@ context): the frame dispatcher (validates and routes, 4.11.3); the resident-mind
 (`memory_mover`, every tier change); the batcher (`update_slots`: decode and learning steps in one schedule, fenced
 per 4.11.6).
 
+**Policy in the core, enforcement in the engine** (Codex on #6092). `ResourceDaemon` issues bounded grants; the
+engine's own allocator reserves each job's physical delta locally inside the grant. There is no core call per token or
+allocation, and no second authoritative ledger: `MemoryOwner` in the core holds the grant and the policy (which tier a
+cold mind goes to, what to prefetch) and reads the engine's reported physical state; `Residency` is a read-only
+projection of that one authority, never a mutable copy.
+
 **Rules every module obeys** (a module that cannot meet one is redesigned, not excepted):
 1. **One owner per state.** Only the owner mutates it; others read its published snapshot (a watch channel in Rust,
    `snapshot_cell` in the engine). No shared mutable state between modules, no lock held across a call.
@@ -2052,10 +2060,8 @@ per 4.11.6).
 7. **Measured on the live node before it is called done.** `ServingObserver`'s numbers before and after, the gate
    of 4.11.9.
 
-**Order:** `ServingObserver` first (measure before changing anything; it also makes tonight's two throughput causes
-visible continuously). Then `EngineLink` (contract slices 1-3). Then `MemoryOwner` with `Residency`, on #139 and
-4.11.8 (Fable). Then `Scheduler` (Codex, goal 9). Then `Learning` duty. Each is one vertical change with its
-deletions and its simulator scenarios.
+**Order:** one order for 4.12 and 4.13, given in 4.13 ("Order"). Each step is one vertical change: the native contract
+frames and every endpoint caller of that step move together, with its deletions and its simulator scenarios.
 
 ### 4.13 One frame loop owns the GPU timeline, so nothing interferes with itself (2026-11-17, design for review)
 
@@ -2078,16 +2084,24 @@ optimizer steps on the genome's layers at a duty share (4.11.6); (5) persistence
   tokens, a prefill chunk, a learning step); nothing else touches the llama context or the device. One timeline, one
   owner: interference has no path.
 - **Each frame (one decode step) is composed by priority against a measured time budget:**
-  1. decode for every active mind, batched, first, always;
+  1. decode for every mind in the ADMITTED active set (bounded by the measured concurrency limit, 4.11.9 point 4),
+     batched, first;
   2. prefill in chunks that fill the rest of the step budget, so no prompt stalls the others' decode;
-  3. learning micro-steps only in the budget left, up to the duty share; when minds are idle the slack is large,
-     and that is when dreaming runs. A learning step commits at the fence of 4.11.6.
+  3. learning micro-steps in the budget left, up to the duty share; when minds are idle the slack is large, and that
+     is when dreaming runs. A learning step commits at the fence of 4.11.6.
+- **Decode-first never starves the rest** (Codex on #6092). Prefill and learning age: each waiting job carries a
+  bounded service guarantee (a minimum share of frames once it has waited past its bound), so saturating decode cannot
+  postpone them forever. When even that cannot be met, the job gets an explicit overload outcome, typed, with its wake
+  event, cancellation and deadline, never a silent wait.
 - **Costs are measured, never constants.** Each frame records what every job actually cost (by job type, batch size,
   context length); the cost curves the next frame is composed from are updated from those records. The engine tunes
   itself to its hardware and model, and the same records are `ServingObserver`'s numbers (4.12).
-- **Memory moves run beside compute**, on the mover's own queue (`memory_mover`): a re-tag within unified memory, an
-  asynchronous copy elsewhere. The scheduler's lookahead (who acts next) drives prefetch, so a switch is never on the
-  critical path.
+- **One dependency and admission authority for the device** (Codex on #6092). Copies, compute and layer writes are all
+  admitted under the frame loop's timeline and completion dependencies. The mover (`memory_mover`) still executes
+  asynchronously on its own queue (a re-tag within unified memory, an asynchronous copy elsewhere) and independent
+  copies are not serialized, but its device work is submitted with the batcher's dependencies, and copy bandwidth and
+  retained bytes are accounted. The scheduler's lookahead (who acts next) drives prefetch, so a switch is OFF the
+  critical path in the planned case; cold misses and transfer failures still cost, and are measured, not assumed away.
 - **Admission is physical and before allocation** (4.11.9 point 2): a job enters a frame only with its memory
   reserved; the coldest mind's resources move down a tier first; with no legal move, the job is deferred, typed, with
   the event that wakes it.
@@ -2095,12 +2109,16 @@ optimizer steps on the genome's layers at a duty share (4.11.6); (5) persistence
   `Learning`, `MemoryOwner`, 4.12) and send it as frames through `EngineLink` (4.11.3); the core never sequences GPU
   work.
 
-**Why it cannot interfere with itself:** one owner per resource and one timeline for the device; priorities written
-down, not emergent; every cost measured; every wait a typed event, never a poll.
+**Why the parts stop interfering by design:** one owner per resource and one dependency authority for the device;
+priorities and their bounds written down, not emergent; every cost measured; every wait a typed event, never a poll.
+This is a design claim, proven only by replaying saturation, cold misses and transfer failures and measuring them,
+not asserted.
 
 **Order, each step proven before the next:**
-1. **Measure.** The engine records per-frame costs (decode, prefill, learning, by batch and context) and
-   `ServingObserver` aggregates them, separating the two throughput causes of 2026-11-17 with data. Changes nothing.
+1. **Measure.** The engine records per-frame costs (decode, prefill, learning, by batch and context) as raw numeric
+   frames in a fixed ring (bounded; its recording overhead measured and dropped frames reported), reusing the typed
+   capture and counter owner, and `ServingObserver` aggregates them, separating the two throughput causes of
+   2026-11-17 with data. JSON only as an external export. Changes no behaviour.
 2. **Contract and `EngineLink`** (4.11, slice 1 drafted: llama.cpp#141, continuum #6094).
 3. **The frame loop in the engine:** the batcher composes decode, chunked prefill and learning by priority against
    the measured budget; learning moves into it (the adapter churn beside serving ends).
