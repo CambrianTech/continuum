@@ -44,10 +44,36 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
-use crate::sdk_codegen::ActionCommand;
+use crate::sdk_codegen::{ActionCommand, Ctx};
 use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
+
+/// Errors that can occur during typed in-process command execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallError {
+    /// The command name was not found in the registry.
+    NotRegistered(String),
+    /// An interceptor determined this command should be routed remotely.
+    RoutedRemote,
+    /// The command's host module is unavailable (e.g., failed admission).
+    Unavailable,
+    /// The command panicked during execution.
+    Panicked(String),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRegistered(name) => write!(f, "command not registered: {}", name),
+            Self::RoutedRemote => write!(f, "command routed remotely"),
+            Self::Unavailable => write!(f, "host module unavailable"),
+            Self::Panicked(msg) => write!(f, "command panicked: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CallError {}
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 
 /// Whether a failed dispatch can have had an effect. A caller that retries,
@@ -689,41 +715,52 @@ impl CommandExecutor {
     ///
     /// Requirements: `C` must implement [`ActionCommand`] and its `Output` type must
     /// implement `serde::de::DeserializeOwned`.
-    pub async fn call<C>(&self, params: C::Params) -> Result<C::Output, String>
+    /// Execute a command using typed parameters; returns typed output without manual JSON
+    /// construction or parsing by the caller.
+    ///
+    /// The caller passes C::Params directly and receives Result<C::Output>. Internally this
+    /// method routes through the registry, downcasts to the concrete ActionCommand via Any,
+    /// and runs it with params BY VALUE — zero serde in the call path itself.
+    pub async fn call<C>(&self, params: C::Params) -> Result<C::Output, CallError>
     where
         C: ActionCommand,
-        C::Params: serde::Serialize,
-        C::Output: serde::de::DeserializeOwned,
     {
-        // Serialize once for interceptor visibility and dispatch routing.
-        let json = serde_json::to_value(&params).map_err(|e| {
-            format!("failed to serialize params for command '{}': {e}", C::NAME)
-        })?;
+        let command_name = C::NAME;
 
-        // Dispatch through the full chain (interceptors → typed path / legacy module).
-        let result = self.execute(C::NAME, json).await.map_err(|e| {
-            if e.contains("no Rust module handles command") {
-                format!("command '{}' is not registered", C::NAME)
-            } else {
-                e
+        // Interceptor name-only routing check (no serialization)
+        for interceptor in self.interceptors.read().unwrap().iter() {
+            if interceptor.would_route_remotely(command_name) {
+                return Err(CallError::RoutedRemote);
             }
-        })?;
+        }
 
-        // Convert CommandResult → C::Output.
-        let value = result.to_json_value().map_err(|e| {
-            format!("failed to extract JSON result for command '{}': {e}", C::NAME)
-        })?;
-        serde_json::from_value(value).map_err(|e| {
-            format!("failed to deserialize output for command '{}': {e}", C::NAME)
-        })
+        // Admit check (mirroring execute's typed path)
+        if !self.registry.admit(command_name) {
+            return Err(CallError::Unavailable);
+        }
+
+        // Route to the concrete command object
+        let obj = match self.registry.route_object(command_name) {
+            Ok(obj) => obj,
+            Err(_) => return Err(CallError::NotRegistered(command_name.to_string())),
+        };
+
+        // Downcast to C via Any (the registered DynCommand IS the command struct)
+        let any_obj = obj.as_any();
+        let typed_cmd: &C = any_obj.downcast_ref::<C>()
+            .ok_or_else(|| CallError::NotRegistered(command_name.to_string()))?;
+
+        // Execute with panic guard (mirroring execute_inner's safety net)
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tokio::runtime::Handle::current().block_on(typed_cmd.run(&Ctx::default(), params))
+        }));
+
+        match result {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(_)) => Err(CallError::Unavailable), // CommandError → Unavailable
+            Err(panic_info) => Err(CallError::Panicked(format!("{}", panic_info))),
+        }
     }
-
-    /// Execute a command ONLY via TypeScript (bypasses Rust registry).
-    /// Use this when a Rust module needs to forward to a TypeScript-implemented
-    /// command that shares the same prefix (avoids infinite recursion).
-    ///
-    /// Slice P note: the URI's `path()` is forwarded over the TS bridge
-    /// as the conventional command name. Remote URIs are rejected.
     pub async fn execute_ts(
         &self,
         command: impl Into<CommandUri>,
