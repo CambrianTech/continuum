@@ -144,11 +144,12 @@ pub(crate) fn sampling(
 
 /// The agent's `tools`, each entry read by the format's `one`. Any entry it cannot read (a
 /// malformed one, or a type this gateway does not serve) refuses the whole call, naming the
-/// entry: a tool the agent declared and the model never sees is a silent wrong answer.
+/// entry: a tool the agent declared and the model never sees is a silent wrong answer. Shared, as
+/// every request's tools are (card 9cf06ade).
 pub(crate) fn tools(
     body: &Value,
     one: impl Fn(&Value) -> Result<NativeToolSpec, String>,
-) -> Result<Option<Vec<NativeToolSpec>>, BadRequest> {
+) -> Result<Option<std::sync::Arc<[NativeToolSpec]>>, BadRequest> {
     let Some(value) = present(body, "tools") else {
         return Ok(None);
     };
@@ -163,7 +164,7 @@ pub(crate) fn tools(
         .enumerate()
         .map(|(at, entry)| one(entry).map_err(|why| BadRequest(format!("`tools[{at}]` {why}"))))
         .collect::<Result<Vec<_>, _>>()
-        .map(Some)
+        .map(|tools| Some(tools.into()))
 }
 
 /// A tool's type, which a format's adapter matches against the types it serves.

@@ -599,21 +599,4 @@ fn the_request_and_its_clone_carry_her_head_without_copying_it() {
     let owned: Vec<NativeToolSpec> = head.to_vec();
     let (shared_wire, owned_wire) = (serde_json::to_string(sent).expect("schemas"), serde_json::to_string(&owned).expect("schemas"));
     assert_eq!(shared_wire, owned_wire, "the wire bytes are the schemas', whoever holds them");
-    // Evidence, printed for the PR (timing is host-dependent, so it is shown, never asserted).
-    let rounds = 1_000;
-    let started = std::time::Instant::now();
-    for _ in 0..rounds {
-        std::hint::black_box(owned.clone());
-    }
-    let copying = started.elapsed();
-    let started = std::time::Instant::now();
-    for _ in 0..rounds {
-        std::hint::black_box(Arc::clone(&head));
-    }
-    let sharing = started.elapsed();
-    println!(
-        "tool head: {} specs, {} wire chars; {rounds} template clones: copying {copying:?}, sharing {sharing:?}",
-        head.len(),
-        owned_wire.len()
-    );
 }
