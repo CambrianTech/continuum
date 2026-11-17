@@ -319,7 +319,8 @@ async fn a_transient_six_gigabytes_on_a_big_card_publishes_what_fits_and_upgrade
     daemon.publish_plan(budget, &candidates, &candidates);
     // Under closeness semantics: a 4B plan IS published because it has
     // positive closeness vs "no plan" at zero.
-    let squeeze_plan = daemon.plan_tx.borrow().plan.as_ref()
+    let plan_guard = daemon.plan_tx.borrow();
+    let squeeze_plan = plan_guard.plan.as_ref()
         .expect("a 6 GB reading on a big card publishes what fits, never stays dark");
     assert_eq!(squeeze_plan.base_model.model_id, "coder-4b",
         "the smallest fitting model serves when budget is tight");
