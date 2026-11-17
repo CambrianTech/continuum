@@ -303,7 +303,8 @@ impl LlmDeliberationFaculty {
             }
         }
         if let Some(memory) = memory {
-            self.keep_custody_with(memory, held.clone());
+            let kept_view = held.clone();
+            self.keep_custody_with(memory, kept_view);
         }
         (Self::render(held.as_ref()), started)
     }
@@ -323,7 +324,8 @@ impl LlmDeliberationFaculty {
         // whole and the caller turns over, shrinking the oldest (goal 7).
         view.readmit(&cost, &sources, budget_tokens, budget_tokens / 2)?;
         if let Some(memory) = memory {
-            self.keep_custody_with(memory, held.clone());
+            let kept_view = held.clone();
+            self.keep_custody_with(memory, kept_view);
         }
         Some(Self::render(held.as_ref()))
     }
@@ -398,7 +400,8 @@ impl LlmDeliberationFaculty {
             "her served tail joined her view as judged: her next prompt extends this one"
         );
         if let Some(memory) = memory {
-            self.keep_custody_with(memory, held.clone());
+            let kept_view = held.clone();
+            self.keep_custody_with(memory, kept_view);
         }
     }
 
@@ -479,7 +482,8 @@ impl LlmDeliberationFaculty {
             }
         }
         if let Some(memory) = memory {
-            self.keep_custody_with(memory, held.clone());
+            let kept_view = held.clone();
+            self.keep_custody_with(memory, kept_view);
         }
         Ok(Self::render(held.as_ref()))
     }

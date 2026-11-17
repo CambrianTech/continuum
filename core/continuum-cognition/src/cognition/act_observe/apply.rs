@@ -266,7 +266,7 @@ pub async fn apply_act(
             fg
         }
         // The batch as gated: a call the contract gate held back is answered only by the gate.
-        None => batch.entries().iter().map(|entry| entry.call().clone()).collect(),
+        None => batch.entries().iter().map(|entry| entry.call()).cloned().collect(),
     };
 
     // #186 compass: the hands are moving — fire the Act axis on the live glass-box the

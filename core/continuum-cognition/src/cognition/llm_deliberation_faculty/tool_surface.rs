@@ -13,7 +13,8 @@ impl LlmDeliberationFaculty {
             self.surface = Arc::new(ToolSurface::default());
             return;
         }
-        self.surface = Arc::new(ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec, |name| {
+        let tools = self.tools.clone();
+        self.surface = Arc::new(ToolSurface::build(persona_tools::native_offers(), tools, crate::ai::tool_dialect::to_wire_spec, |name| {
             // map_or: a verdict verb is the turn's own protocol, no command: its first revision
             crate::sdk_codegen::command_descriptor(name).map_or(continuum_base::tool_contract::ContractRevision::FIRST, |command| command.contract_revision)
         }));

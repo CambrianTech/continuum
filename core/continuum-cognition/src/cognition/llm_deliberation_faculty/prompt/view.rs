@@ -563,7 +563,7 @@ impl LlmDeliberationFaculty {
 
         // A head whose checkpointed custody does not decode refuses the act; its bytes are kept.
         let message_error = all_messages.active_protocol_error();
-        let protocol_error = self.hands_refusal().or_else(|| message_error.clone());
+        let protocol_error = self.hands_refusal().or_else(|| message_error.as_ref().cloned());
         // HER VIEW IS NOT THE FIT'S TO CUT. The allocation sized it once (`fit_view`); the fit
         // sees only the fresh tail and the required input, within their own grants. Handed
         // the view too, it evicted from the front, where the view leads, to make room for a

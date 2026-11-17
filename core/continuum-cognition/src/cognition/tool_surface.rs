@@ -265,7 +265,7 @@ impl ToolSurface {
         authorized.extend(raw.iter().cloned());
         authorized.sort_by(|a, b| a.name.cmp(&b.name));
         let wire = |specs: Vec<NativeToolSpec>| Offer::of(specs.into_iter().map(&to_wire).collect());
-        let authorized_names: Vec<String> = authorized.iter().map(|spec| spec.name.clone()).collect();
+        let authorized_names: Vec<String> = authorized.iter().map(|spec| &spec.name).cloned().collect();
         let authorized = wire(authorized);
         let contracts = authorized_names
             .iter()
@@ -606,7 +606,8 @@ mod tests {
         let native: Vec<_> = REGISTRY.iter().map(offer).collect();
         let mut authorized: Vec<_> = native.iter().map(|o| o.spec.clone()).collect();
         authorized.push(spec("chat/poll"));
-        let surface = ToolSurface::build(native, authorized.clone(), |s| s, |_| continuum_base::tool_contract::ContractRevision::FIRST);
+        let held = authorized.clone();
+        let surface = ToolSurface::build(native, held, |s| s, |_| continuum_base::tool_contract::ContractRevision::FIRST);
         let floor = surface.hands().to_vec();
         let selected = surface.learned(&floor, &[], &["chat/poll".to_string()]);
         assert!(selected.tail.iter().any(|t| t.name == "chat/poll"), "{:?}", selected.tail);
