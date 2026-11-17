@@ -510,22 +510,6 @@ mod tests {
         assert_eq!((recipe.reason, recipe.demand_tokens()), (SurfaceReason::RoomAffordances, recipe.tokens));
     }
 
-    // what this catches (card 9cf06ade): a per-act deep copy of her schemas. Every selection of
-    // the same surface, and the request built from it, must point at the one allocation built
-    // with the surface, so an act costs no copy of ~27k chars of tool schemas.
-    #[test]
-    fn every_act_shares_the_surface_it_was_built_with() {
-        let surface = built(REGISTRY.iter());
-        let (first, second) = (surface.select(&[], &[]), surface.select(&[], &[]));
-        let (Some(first), Some(second)) = (first.specs, second.specs) else {
-            panic!("her core hands are a surface"); // JUSTIFIED: test fixture
-        };
-        assert!(Arc::ptr_eq(&first, &second), "two acts' selections share one allocation");
-        assert!(Arc::ptr_eq(&first, &surface.core.specs), "a selection is the built surface, not a copy");
-        let request = crate::ai::types::TextGenerationRequest { tools: Some(Arc::clone(&first)), ..Default::default() };
-        assert!(request.tools.as_ref().is_some_and(|sent| Arc::ptr_eq(sent, &first)), "the request carries the same schemas");
-    }
-
     // what this catches (Aiko on the M5, 2026-11-07: tools 11,377 + framing 2,795 refused her turn
     // on a 30,566 window): her hands with no level between whole and absent, so a small window
     // refused the turn. Every verb is a consumer whose floor is its pointer, except a verb nothing

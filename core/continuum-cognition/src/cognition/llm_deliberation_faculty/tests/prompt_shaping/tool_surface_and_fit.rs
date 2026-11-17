@@ -574,3 +574,53 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     let next = faculty.prompt_view_within(&moved, 200_000);
     assert_eq!(wire(&next.tools), wire(&adopted), "and holds it");
 }
+
+// what this catches (card 9cf06ade, slice 1): the request and contribute's per-act template clone
+// deep-copying her tool head. A request built from her view carries the view's schemas by pointer,
+// its clone shares them, and its wire JSON is byte-identical to the same schemas as an owned list.
+// Not covered here (slice 2): `retained` and `at_levels` still build a fresh head each act.
+#[test]
+fn the_request_and_its_clone_carry_her_head_without_copying_it() {
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let view = faculty.prompt_view_within(&ws, 200_000);
+    assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+    let head = view.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    let binding = faculty.binding.load_full();
+    let request = faculty.build_request_within(
+        &binding,
+        view.completion_reserve,
+        view.messages.clone(),
+        Some(Arc::clone(&head)),
+        view.system.clone(),
+        None,
+        Some(ws.room_id),
+        TurnKind::Pass,
+    );
+    let template_clone = request.clone();
+    let (Some(sent), Some(cloned)) = (request.tools.as_ref(), template_clone.tools.as_ref()) else {
+        panic!("the request carries her head"); // JUSTIFIED: test fixture
+    };
+    assert!(Arc::ptr_eq(sent, &head), "the request points at the view's schemas");
+    assert!(Arc::ptr_eq(cloned, &head), "the template's per-act clone shares them");
+    let owned: Vec<NativeToolSpec> = head.to_vec();
+    let (shared_wire, owned_wire) = (serde_json::to_string(sent).expect("schemas"), serde_json::to_string(&owned).expect("schemas"));
+    assert_eq!(shared_wire, owned_wire, "the wire bytes are the schemas', whoever holds them");
+    // Evidence, printed for the PR (timing is host-dependent, so it is shown, never asserted).
+    let rounds = 1_000;
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        std::hint::black_box(owned.clone());
+    }
+    let copying = started.elapsed();
+    let started = std::time::Instant::now();
+    for _ in 0..rounds {
+        std::hint::black_box(Arc::clone(&head));
+    }
+    let sharing = started.elapsed();
+    println!(
+        "tool head: {} specs, {} wire chars; {rounds} template clones: copying {copying:?}, sharing {sharing:?}",
+        head.len(),
+        owned_wire.len()
+    );
+}
