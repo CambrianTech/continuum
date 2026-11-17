@@ -12,32 +12,7 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
     // actually asking. A stop that could not save is a failure the shell can see.
     // A stop ends the core; the engine stays for the next core to adopt (the reboot path), so
     // a build costs no model reload and nobody's KV. Only `--engine` reaps it.
-    match stop_with(!options.engine).await? {
-        // Nothing ran, so nothing was lost. Exiting non-zero here would report a data
-        // loss that did not happen, and `stop` is used in scripts that would then treat a
-        // clean no-op as a failure.
-        GracefulStop::Durable(_) | GracefulStop::NothingRunning => Ok(()),
-        GracefulStop::Incomplete(summary) => Err(format!(
-            "the core stopped but its state is not durable: {summary}"
-        )),
-        GracefulStop::NoAnswer(why) => Err(format!(
-            "the core was forced down without saving ({why}) — volatile state since the last              save-on-write is gone"
-        )),
-        // Also a failure, and deliberately so: the operator asked for a stop and did not
-        // get a durable one. It is EXPECTED once, on the upgrade that installs the rail,
-        // and the message says which it is rather than making a rollout look like a fault.
-        GracefulStop::LegacyCore(why) => Err(format!(
-            "the outgoing core could not stop gracefully ({why}); this is the one-time cost              of installing the shutdown rail, and it is still not a durable stop"
-        )),
-        // Fail-closed like a first rollout, but NOT one: this is a fault in a supported core.
-        // The message must say so — an operator seeing "one-time cost of installing the rail"
-        // on every failed checkpoint would learn to ignore it.
-        GracefulStop::CannotAttest(why) => Err(format!(
-            "the core answered system/shutdown with an error and could not attest a final \
-             checkpoint ({why}); this is a fault, not a first rollout — do not reboot until it \
-             is resolved"
-        )),
-    }
+    stop_with(!options.engine).await?.require_durable()
 }
 
 /// Discover receipt-acknowledged exit without beginning shutdown.
