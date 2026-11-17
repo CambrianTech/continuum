@@ -37,13 +37,13 @@ async fn startup_evolves_rust_only_integer_history_before_publication()
     let mut previous = RustOnlyDecision::collection_schema();
     previous.fields.iter_mut().find(|field| field.name == "rejectedAtMs")
         .ok_or("missing declared rejection timestamp")?.field_type = FieldType::String;
-    initial.ensure_schema(previous).await.into_result()?;
+    initial.ensure_schema(&previous).await?;
     for (id, timestamp) in [("rejected", json!("9007199254740993")), ("unreviewed", json!(null))] {
         initial.create(DataRecord {
             id: id.into(), collection: RustOnlyDecision::COLLECTION.into(),
             data: json!({"accepted":false, "rejectedAtMs":timestamp}),
             metadata: Default::default(),
-        }).await.into_result()?;
+        }).await?;
     }
     initial.close().await?;
     let registry = OrmEntityRegistry::new();
@@ -51,10 +51,10 @@ async fn startup_evolves_rust_only_integer_history_before_publication()
     for _ in 0..2 {
         let mut reopened = crate::orm::SeaOrmAdapter::connect(config.clone()).await?;
         crate::data::adapters::ensure_declared_schemas(&reopened, &registry).await?;
-        let result = reopened.query(StorageQuery {
+        let result = reopened.query(&StorageQuery {
             collection: RustOnlyDecision::COLLECTION.into(), limit: Some(2),
             ..Default::default()
-        }).await.into_result()?;
+        }).await?;
         assert_eq!(result.len(), 2);
         for row in result {
             assert_eq!(row.data["accepted"], false);
@@ -81,10 +81,10 @@ async fn rust_only_entity_is_readable_before_any_write_and_after_restart(
             ..Default::default()
         }).await?;
         crate::data::adapters::ensure_declared_schemas(&adapter, &registry).await?;
-        let count = adapter.count(crate::orm::StorageQuery {
+        let count = adapter.count(&crate::orm::StorageQuery {
             collection: RustOnlyDecision::COLLECTION.into(),
             ..Default::default()
-        }).await.into_result()?;
+        }).await?;
         assert_eq!(count, 0);
         adapter.close().await?;
     }
