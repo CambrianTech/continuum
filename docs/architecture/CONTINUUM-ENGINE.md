@@ -2057,6 +2057,59 @@ visible continuously). Then `EngineLink` (contract slices 1-3). Then `MemoryOwne
 4.11.8 (Fable). Then `Scheduler` (Codex, goal 9). Then `Learning` duty. Each is one vertical change with its
 deletions and its simulator scenarios.
 
+### 4.13 One frame loop owns the GPU timeline, so nothing interferes with itself (2026-11-17, design for review)
+
+Joel, 2026-11-17: "Yeah it's got to be smarter and not interfere with itself. Think about what needs to happen and plan
+a good architecture."
+
+**What interferes today (the M5, 2026-11-16/17):** learning writes and swaps adapters between decode steps with no one
+weighing the cost (402 fresh adapters in one engine log); one mind's 50-93k prefill stalls every other mind's decode;
+view-sized grants serialize the minds (4.11.9); checkpoint misses force full re-prefills; the core polls. Each part is
+locally reasonable and none arbitrates, so single-stream decode ran at 24% of par (13.9 vs 56.1 tok/s) and four
+residents never batched.
+
+**What must happen, continuously:** (1) decode, one token per active mind per step, latency-critical, and the source
+of aggregate throughput when several minds batch; (2) prefill, large and bursty, for minds starting or resuming an
+act; (3) memory movement of KV, checkpoints and layers between tiers, and prefetch of the next minds; (4) learning,
+optimizer steps on the genome's layers at a duty share (4.11.6); (5) persistence, durable state for restarts.
+
+**The architecture: one frame loop.**
+- **The engine's batcher is the only submitter of GPU work.** Every other part submits a typed job to it (decode
+  tokens, a prefill chunk, a learning step); nothing else touches the llama context or the device. One timeline, one
+  owner: interference has no path.
+- **Each frame (one decode step) is composed by priority against a measured time budget:**
+  1. decode for every active mind, batched, first, always;
+  2. prefill in chunks that fill the rest of the step budget, so no prompt stalls the others' decode;
+  3. learning micro-steps only in the budget left, up to the duty share; when minds are idle the slack is large,
+     and that is when dreaming runs. A learning step commits at the fence of 4.11.6.
+- **Costs are measured, never constants.** Each frame records what every job actually cost (by job type, batch size,
+  context length); the cost curves the next frame is composed from are updated from those records. The engine tunes
+  itself to its hardware and model, and the same records are `ServingObserver`'s numbers (4.12).
+- **Memory moves run beside compute**, on the mover's own queue (`memory_mover`): a re-tag within unified memory, an
+  asynchronous copy elsewhere. The scheduler's lookahead (who acts next) drives prefetch, so a switch is never on the
+  critical path.
+- **Admission is physical and before allocation** (4.11.9 point 2): a job enters a frame only with its memory
+  reserved; the coldest mind's resources move down a tier first; with no legal move, the job is deferred, typed, with
+  the event that wakes it.
+- **The core declares, the engine composes.** Core modules decide what each mind wants and when (`Scheduler`,
+  `Learning`, `MemoryOwner`, 4.12) and send it as frames through `EngineLink` (4.11.3); the core never sequences GPU
+  work.
+
+**Why it cannot interfere with itself:** one owner per resource and one timeline for the device; priorities written
+down, not emergent; every cost measured; every wait a typed event, never a poll.
+
+**Order, each step proven before the next:**
+1. **Measure.** The engine records per-frame costs (decode, prefill, learning, by batch and context) and
+   `ServingObserver` aggregates them, separating the two throughput causes of 2026-11-17 with data. Changes nothing.
+2. **Contract and `EngineLink`** (4.11, slice 1 drafted: llama.cpp#141, continuum #6094).
+3. **The frame loop in the engine:** the batcher composes decode, chunked prefill and learning by priority against
+   the measured budget; learning moves into it (the adapter churn beside serving ends).
+4. **Residency and `MemoryOwner`** (4.11.8-9): every mind resident, admission by physical reservation, prefetch on
+   lookahead; the grant dispatcher is deleted.
+5. **`Scheduler`** (Codex, goal 9): who is active and how many per frame, from the measured cost curve.
+6. **The gate on the M5:** four residents batched, aggregate decode tok/s against 80, switches in milliseconds,
+   learning within its share without slowing decode beyond it.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
