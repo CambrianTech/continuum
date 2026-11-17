@@ -523,6 +523,17 @@ pub(crate) fn build_base_body(
     if let (true, Some(view_end)) = (cfg.llamacpp_sampling_extensions, view_end) {
         body["view_messages"] = json!(view_end);
     }
+    // Her request names itself, and the request whose response it continues: our fork serves it
+    // from the tokens her slot holds for that response plus only what is new, so her reasoning and
+    // her call are never re-rendered and recomputed (CONTINUUM-ENGINE 4.14).
+    if cfg.llamacpp_sampling_extensions {
+        if let Some(id) = &request.request_id {
+            body["request_id"] = json!(id);
+        }
+        if let Some(continues) = &request.continues {
+            body["continues"] = json!(continues);
+        }
+    }
 
     // max_tokens — the MODEL owns its generation length, enforced server-side
     // by llama.cpp / the cloud provider. We forward a ceiling ONLY
@@ -720,6 +731,23 @@ mod tests {
         let served = build_base_body(&gateway(true), &request, "m", true, true);
         assert_eq!(served["view_messages"], json!(2), "no system prompt: note and the reply");
         assert!(build_base_body(&gateway(false), &request, "m", true, true).get("view_messages").is_none());
+    }
+
+    // what this catches: her request not naming the response it continues, so our fork re-renders
+    // her reasoning and call and recomputes them every act (the M5, 2026-11-17: a 2,048-token
+    // checkpoint gap on every act), or a stock server sent fields it would reject.
+    #[test]
+    fn her_request_names_itself_and_the_response_it_continues() {
+        let request = TextGenerationRequest {
+            messages: vec![ChatMessage::text("user", "next")],
+            request_id: Some("act-2".into()),
+            continues: Some("act-1".into()),
+            ..Default::default()
+        };
+        let ours = build_base_body(&gateway(true), &request, "m", true, true);
+        assert_eq!((ours["request_id"].clone(), ours["continues"].clone()), (json!("act-2"), json!("act-1")));
+        let stock = build_base_body(&gateway(false), &request, "m", true, true);
+        assert!(stock.get("request_id").is_none() && stock.get("continues").is_none());
     }
 
     // what this catches: a tail-loaded verb not reaching a llama.cpp-family server (she could

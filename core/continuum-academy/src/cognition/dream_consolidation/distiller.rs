@@ -343,6 +343,7 @@ impl SemanticDistiller {
             tools: None,
             tail_tools: None,
             view_messages: None,
+            continues: None,
             tool_choice: None,
             response_format: Some(DistilledLesson::format(listed)?),
             active_adapters: None,

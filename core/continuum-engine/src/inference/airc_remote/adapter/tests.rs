@@ -33,6 +33,7 @@ fn req(text: &str) -> TextGenerationRequest {
         tools: None,
         tail_tools: None,
         view_messages: None,
+        continues: None,
         tool_choice: None,
         response_format: None,
         active_adapters: None,
