@@ -1,6 +1,8 @@
 //! The aggregate decode admission of ONE endpoint (card 23069702 part 2): the permit every pooled
-//! admission takes first (`turn_admission::admit`, step 1), sized from that endpoint's own engine
-//! generation (its pool's slot count) and resized when a new generation installs.
+//! admission takes first (`turn_admission::admit`, step 1). Its size is the execution policy, not the
+//! slot count: ONE generation at a time whenever the endpoint serves any slot ([`active_decodes`]),
+//! re-applied when a new engine generation installs. Slots are residency (her KV kept warm); this is
+//! who runs.
 //!
 //! It was each adapter's own semaphore, seeded from the GLOBAL serving snapshot and resized by a
 //! reconciler per adapter: N adapters on one server meant N independent bounds, a learner holding no
@@ -40,7 +42,7 @@ struct Circulation {
 /// How many generations an endpoint runs at once, whatever its resident slots: ONE. Every slot keeps its
 /// persona's KV resident; only one of them is on the engine. Measured on the M5 (2026-11-17, Qwen3.6-35B-A3B,
 /// `--parallel 5`): four minds generating together each decoded at 2.1-2.4 tok/s (the engine's own
-/// `decodeTokensPerSecond`), 4.3 tok/s summed, and every other mind's turn waited behind them
+/// `decodeTokensPerSecond`, captures 20:29-21:29Z), and every other mind's turn waited behind them
 /// (`delib.window.waiting` BehindActs { acting: 3 }); one stream on the same engine is ~80 tok/s. So a mind
 /// takes the engine whole for her turn and the next waits for it, the way a GPU renders one view at a time.
 pub(super) fn active_decodes(slots: u32) -> usize {
