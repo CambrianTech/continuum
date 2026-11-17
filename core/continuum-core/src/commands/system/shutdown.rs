@@ -125,6 +125,27 @@ crate::action_command! {
     }
 }
 
+crate::action_command! {
+    /// Explicitly resume retained custody on this process's existing shutdown.
+    /// Observer timeout never cancels recovery or retries a completed owner.
+    pub struct SystemShutdownRecover;
+    name: "system/shutdown-recover",
+    access: Privileged,
+    params: ShutdownTarget,
+    output: ShutdownResult,
+    run(_this, _ctx, p) => {
+        validate_target(&p, shutdown_target())?;
+        let rx = crate::runtime::recover_shutdown_custody();
+        let receipt = crate::runtime::await_shutdown(rx, std::time::Duration::from_secs(15)).await
+            .ok_or_else(|| crate::sdk_codegen::CommandError::Invalid(
+                "shutdown recovery has no completed receipt; the operation and its owners remain retained".into()
+            ))?;
+        Ok(ShutdownResult {
+            state_is_durable: receipt.state_is_durable(), summary: receipt.summary(), receipt,
+        })
+    }
+}
+
 /// How the core answered a stop request. Carries the receipt so the caller can exit
 /// non-zero and NAME what did not save, rather than reporting a success it never
 /// established.
@@ -215,9 +236,15 @@ mod tests {
             SystemShutdown::ACCESS,
             crate::sdk_codegen::AccessLevel::Privileged
         ));
-        for access in [SystemShutdownTarget::ACCESS, SystemShutdownDrain::ACCESS, SystemShutdownCommit::ACCESS] {
+        for access in [SystemShutdownTarget::ACCESS, SystemShutdownDrain::ACCESS, SystemShutdownCommit::ACCESS, SystemShutdownRecover::ACCESS] {
             assert!(matches!(access, crate::sdk_codegen::AccessLevel::Privileged));
         }
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_a_recycled_process_target_before_touching_owners() {
+        let stale = ShutdownTarget { pid: std::process::id(), instance: "not-this-instance".into() };
+        assert!(SystemShutdownRecover.run(&Ctx::default(), stale).await.is_err());
     }
 
     // A receipt acknowledgment must never exit a replacement process, or exit
