@@ -1992,6 +1992,57 @@ seat publications and grant revisions as admission (`lease/fair.rs` and the rese
 decode (more than one sequence per decode step) observed; aggregate decode tok/s against the 80 tok/s target; switch
 receipts in milliseconds; no mind's act waiting more than one decode step behind a resident with memory free.
 
+### 4.12 The serving modules: one intentional architecture, no patchwork (2026-11-17)
+
+Joel, 2026-11-17: "Need reliable service modules. No more patches. Ideal architecture. We have zero need for shit
+patchwork. We need a solid architecture that's intentional."
+
+What the M5 showed the same night: a dispatcher patched twice (#6093 and a resize hole) whose design was the defect; a
+grant policy whose own comment ("a ceiling, not an allocation") its admission contradicts; learning adapters written
+and swapped beside serving with no one owning the trade (402 fresh adapters in one engine log); single-stream decode
+at 24% of par with nobody owning throughput. Each piece had a reason; together they had no owner and no shape. This
+section is the shape. Every serving concern belongs to exactly one module below, and a concern with no row is not
+built.
+
+**Core modules** (each a kernel `ServiceModule`, `continuum-kernel/src/runtime/service_module.rs`):
+
+| Module | The one thing it owns | Typed verbs (others call) | Replaces, deleted when it lands |
+|---|---|---|---|
+| `EngineLink` | the engine connection: attach, descriptor, instance, in-flight act custody (4.11.3-5) | `act`, `cancel`, `prefetch`, `release`, `genome_set`, `describe` | request building in `stream.rs`, `minds.rs`, `slots/discover.rs`; `/props` parsing; the JSON routes |
+| `MemoryOwner` | every byte the engine holds for a mind, by live cells, under `ResourceDaemon` grants (4.11.8) | `charge`, `make_room`, `page(mind, tier)`, reads: `resident(mind)` | window grants as admission, `lease/fair.rs` dispatch, prompt-cache sizing as its own policy |
+| `Residency` | each mind's place: logically resident always; GPU / RAM / flash tier (4.11.9) | reads only (snapshot); moves are `MemoryOwner`'s | seats, the owed queue, reclaim handoffs, armed yields |
+| `Scheduler` | who decodes next: activity temperature, aging, batch size by the measured cost curve (goal 9) | `ready(mind, act)`, reads: `next_batch` | `BehindActs`, `delib.window.waiting` polling, lane selection |
+| `Learning` | the genome's learning switch and duty: share by wakefulness, learning acts through the same path (4.11.6) | `set_learning(layer, on)`, `duty(share, mode)` | ad hoc fresh-adapter writes and swaps beside serving; `/train*` |
+| `ServingObserver` | the numbers: aggregate decode tok/s, per-mind acts/h, switch ms, waits, memory, learning share | reads only; publishes a snapshot | scattered probes nobody aggregates; it decides nothing |
+
+**Engine modules** (each an engine module, `server-module.h`, all on the one server loop that owns the llama
+context): the frame dispatcher (validates and routes, 4.11.3); the resident-minds table (sequence ids, park/flash,
+#139); each mind's `checkpoint_store` (#140); the layer registry (layers, steps, learning state); the mover
+(`memory_mover`, every tier change); the batcher (`update_slots`: decode and learning steps in one schedule, fenced
+per 4.11.6).
+
+**Rules every module obeys** (a module that cannot meet one is redesigned, not excepted):
+1. **One owner per state.** Only the owner mutates it; others read its published snapshot (a watch channel in Rust,
+   `snapshot_cell` in the engine). No shared mutable state between modules, no lock held across a call.
+2. **Typed verbs, typed outcomes.** Every call returns an enum naming each outcome (done, deferred-with-reason,
+   refused-with-reason). No `String` errors, no `Option` for a state, no default on an unknown tag.
+3. **Nothing waits unbounded or polls.** A wait is a typed deferral naming the event that ends it, and that event
+   wakes the waiter. A 5-second "still waiting" loop (`delib.window.waiting`) is a defect by definition.
+4. **Fail loud, recover by design.** A module's failure is a typed event its supervisor handles: restart from its
+   durable snapshot, or degrade to a declared mode. Never a silent fallback path.
+5. **Simulator first** (section 7.0). Each module's invariants (no mind starved, budget never exceeded, no state
+   lost, a learning step never visible half-done) are simulator assertions before code, and tonight's M5 logs
+   become replay scenarios.
+6. **A module lands with its deletions.** The "Replaces" column is deleted in the same change. A new module beside
+   an old path is patchwork.
+7. **Measured on the live node before it is called done.** `ServingObserver`'s numbers before and after, the gate
+   of 4.11.9.
+
+**Order:** `ServingObserver` first (measure before changing anything; it also makes tonight's two throughput causes
+visible continuously). Then `EngineLink` (contract slices 1-3). Then `MemoryOwner` with `Residency`, on #139 and
+4.11.8 (Fable). Then `Scheduler` (Codex, goal 9). Then `Learning` duty. Each is one vertical change with its
+deletions and its simulator scenarios.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
