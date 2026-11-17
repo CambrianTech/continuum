@@ -619,10 +619,14 @@ fn registry_changing(faculty: &LlmDeliberationFaculty, wire_name: &str) -> crate
     let mut offers = crate::cognition::persona_tools::native_offers();
     let offer = offers
         .iter_mut()
-        .find(|offer| crate::ai::tool_dialect::to_wire_spec(offer.spec.clone()).name == wire_name)
+        .find(|offer| {
+            let spec = offer.spec.clone();
+            crate::ai::tool_dialect::to_wire_spec(spec).name == wire_name
+        })
         .expect("the held verb is a native offer"); // JUSTIFIED: test fixture
     offer.spec.description.push_str(" Its contract changed in this deploy.");
-    crate::cognition::tool_surface::ToolSurface::build(offers, faculty.tools.clone(), crate::ai::tool_dialect::to_wire_spec, |_| continuum_base::tool_contract::ContractRevision::FIRST)
+    let tools = faculty.tools.clone();
+    crate::cognition::tool_surface::ToolSurface::build(offers, tools, crate::ai::tool_dialect::to_wire_spec, |_| continuum_base::tool_contract::ContractRevision::FIRST)
 }
 
 fn schemas(specs: &[NativeToolSpec]) -> String {
@@ -695,18 +699,20 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     let first = before.prompt_view_within(&ws, 200_000);
     assert!(first.protocol_error.is_none(), "{:?}", first.protocol_error);
     let epoch = view_epoch(&before);
-    let saved = serde_json::to_value(wm.snapshot()).expect("a checkpoint encodes");
-    assert!(saved.get("context_hands").is_some(), "her head is checkpointed beside her view");
+    use crate::cognition::hands_custody::{HandsCustody, SupersededPrior};
+    let saved = wm.snapshot();
+    assert!(matches!(saved.context_hands, HandsCustody::Held(_)), "her head is checkpointed beside her view");
+    let unreadable = serde_json::json!({"generation": "not a number"});
 
+    // A record that did not decode (its decode is `hands_custody`'s unit test), restored beside her view.
     let mut corrupt = saved.clone();
-    corrupt["context_hands"] = serde_json::json!({"generation": "not a number"});
+    corrupt.context_hands = HandsCustody::Corrupt { raw: unreadable.clone(), error: "invalid type".to_string() };
     let broken = Arc::new(WorkingMemory::new(8));
-    broken.restore(serde_json::from_value(corrupt).expect("the checkpoint still decodes"));
+    broken.restore(corrupt);
     let repairing = asha_with_hands().with_working_memory(Arc::clone(&broken));
     let refused = repairing.prompt_view_within(&ws, 200_000);
     assert!(refused.protocol_error.as_deref().is_some_and(|error| error.contains("does not decode") && error.contains("persona/hands/adopt")), "{:?}", refused.protocol_error);
-    let rewritten = serde_json::to_value(broken.snapshot()).expect("a checkpoint encodes");
-    assert_eq!(rewritten["context_hands"], serde_json::json!({"generation": "not a number"}), "it is written back as it was");
+    assert!(matches!(&broken.snapshot().context_hands, HandsCustody::Corrupt { raw, .. } if *raw == unreadable), "it is checkpointed as it was");
     broken.request_hands_adoption("operator");
     let repaired = repairing.prompt_view_within(&ws, 200_000);
     assert!(repaired.protocol_error.is_none(), "an explicit adoption lifts it: {:?}", repaired.protocol_error);
@@ -714,13 +720,14 @@ fn a_head_that_cannot_resume_refuses_her_act_keeps_her_view_and_lifts_on_adoptio
     let [replaced] = kept.as_slice() else {
         panic!("one adoption replaced one head: {kept:?}"); // JUSTIFIED: test fixture
     };
-    assert_eq!(replaced.prior, crate::cognition::hands_custody::SupersededPrior::Corrupt(serde_json::json!({"generation": "not a number"})), "the record it replaced is kept, never erased");
+    assert_eq!(replaced.prior, SupersededPrior::Corrupt(unreadable), "the record it replaced is kept, never erased");
     assert_eq!((replaced.by.as_str(), replaced.generation >= 1), ("operator", true), "with who asked and the generation that replaced it");
 
+    // A checkpoint from before heads: its view, and no head beside it.
     let mut legacy = saved;
-    legacy.as_object_mut().expect("a checkpoint is an object").remove("context_hands"); // JUSTIFIED: test fixture
+    legacy.context_hands = HandsCustody::Unrecorded;
     let old = Arc::new(WorkingMemory::new(8));
-    old.restore(serde_json::from_value(legacy).expect("a checkpoint from before heads decodes"));
+    old.restore(legacy);
     let resumed = asha_with_hands().with_working_memory(Arc::clone(&old));
     let waiting = resumed.prompt_view_within(&ws, 200_000);
     assert!(waiting.protocol_error.as_deref().is_some_and(|error| error.contains("no head beside it")), "{:?}", waiting.protocol_error);
