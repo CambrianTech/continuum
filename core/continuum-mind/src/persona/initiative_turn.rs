@@ -93,6 +93,8 @@ pub(crate) async fn drive_initiative_turn(
         );
         return WorkQuestionOutcome::default();
     };
+    // Her genes run on her own time too, composed from what this turn perceives (`turn_genes`).
+    crate::persona::turn_genes::page_turn_genes(cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, INITIATIVE_MOMENT).await;
     // Her own heartbeat caused it, so the cause is Ambient (a lived turn), never Synthetic.
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         room,

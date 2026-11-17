@@ -333,18 +333,7 @@ pub(crate) async fn ask_the_act_question(
                     // the genes whose regions this turn's focused line is inside, weighted by
                     // depth (`genome::composer`), and every receipt names the genes that ran
                     // (`GenerationReceipt::genes`). Unreadable: the genome she has.
-                    let persona_uuid = ctx.identity.peer_id.as_uuid();
-                    let need = crate::cognition::recall_faculty::focused_query(&burst.rendered);
-                    if let Some(phenotype) = crate::genome::composer::compose(persona_uuid, need).await {
-                continuum_base::probe!(
-                    class = "persona.genome.turn_genes",
-                    persona = %ctx.identity.agent_name,
-                    genes = phenotype.genes.len() as u64,
-                    phenotype = %crate::genome::composer::render(&phenotype),
-                    "the phenotype this turn runs with: each gene and its scale"
-                );
-                cycle.page_in(phenotype.genes);
-            }
+                    crate::persona::turn_genes::page_turn_genes(&cycle, ctx.identity.peer_id.as_uuid(), &ctx.identity.agent_name, &burst.rendered).await;
                     // Her credit follows the card she holds through the turn (card 12ddd78f).
                     let mut credit_capture = crate::persona::training_producer::ClaimFollowingCapture::new(
                         selected_credit.as_ref(),

@@ -104,6 +104,7 @@ pub mod seed;
 pub mod self_task_generator;
 pub mod act_question;
 pub mod initiative_turn;
+pub(crate) mod turn_genes;
 pub mod service_loop;
 pub mod wake_backlog;
 /// The durable half of `wake_backlog::PendingInput`: one row per admitted, unfinished turn (card 920619c5).
