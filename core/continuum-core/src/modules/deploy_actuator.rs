@@ -479,7 +479,7 @@ impl DeployActuator {
                         "the consumer was launched this many times for this tip and it is not running — not launching again; a new tip resets this"
                     );
                 }
-                return ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts });
+                return ActuateOutcome::Skipped(ActuateSkipReason::GaveUp { attempts: *attempts });
             }
             Decided::Skip(ActuateSkipReason::AwaitingBound { attempt, elapsed_ms, bound_ms }) => {
                 continuum_base::probe!(
