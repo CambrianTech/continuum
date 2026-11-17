@@ -2262,8 +2262,10 @@ not asserted.
 
 ### 4.14 Personas stream like Nanite: native blocks, descriptor binding, no walks (2026-11-17, design for review)
 
-Builds on 4.9 (the model: a mind is a process, a switch is a context switch) and 4.1b (the numbers: one stream at
-~80 tok/s with the MTP draft; batching minds collapses it). This section is the MECHANISM, replacing #139's (held:
+Builds on 4.9 (the model: a mind is a process, a switch is a context switch) and 4.1b (the numbers on the M5: one
+stream at ~80 tok/s with the MTP draft; batching minds collapses it). The target on every node is that node's OWN
+measured single-mind rate for its model and context (the M5's ~80 is the M5's; the 5090's is unmeasured on the same
+workload): the pipeline preserves it, and aggregate throughput and transfer interference are reported against it. This section is the MECHANISM, replacing #139's (held:
 its switch walks KV cells with `seq_cp`/`seq_rm` and serializes state with `llama_state_seq_get/set_data`).
 
 Joel, 2026-11-17: "It's like we are coding a sophisticated graphics pipeline. Like granite or nanite. And we have to
@@ -2281,16 +2283,26 @@ overlap cannot fit, a typed deferral, never a hidden stall. Transfer overlap is 
 tensor `[n_embd_gqa, kv_size, n_stream]` (`llama-kv-cache.cpp:232`); with unified KV off, `n_stream == n_seq_max`
 and stream `s` is ONE CONTIGUOUS BYTE RANGE per layer, read by attention through a view at offset `s`
 (`get_k`/`get_v`, `sinfo.s0`). So a persona's KV is, per attention layer, two contiguous slices (K, V) plus her
-stream's cell metadata (`v_cells[s]`, positions and sequence bits: a flat array). The hybrid model's recurrent state is
-per-layer row tensors (`r_l`, `s_l`, `llama-memory-recurrent.h:125`), one row per sequence: a row per layer. Her genome
-(LoRA layers) and checkpoints travel with her. The persona's block table names all of these as (tensor, byte offset,
-byte length) per tier.
+stream's cell metadata (`v_cells[s]`: host containers, owned by her and bound by reference, never copied as bytes; see
+below). The hybrid model's recurrent state is per-layer row tensors (`r_l`, `s_l`, `llama-memory-recurrent.h:125`), one
+row per sequence. Her genome (adapter generation) and her learning state (optimizer moments, learning checkpoints) are
+hers too. The persona's block table names her device blocks as (tensor, byte offset, row stride, used rows) per tier.
+
+**What travels on a switch, and what stays put.** One owner does not mean one eager copy. A switch stages only her
+EXECUTION blocks: KV slices, recurrent rows, the adapter generation she decodes with, her draft streams, her sampler.
+Her learning state (optimizer moments, learning checkpoints) stays where it is under owned handles in its tier, and
+its working set is reserved only when learning is scheduled for her. A learning completion publishes her new adapter
+generation as one coherent version, only after the existing completion owner's fence: never weights from one version
+with KV from another, and never freeing a buffer training still holds. The same staging holds across every tier
+(storage -> RAM -> VRAM on a discrete GPU; RAM -> unified memory on the M5): RAM-resident blocks are copied to the
+device directly with no extra staging copy, and storage gets a staging buffer only where the backend requires one.
 
 **Operations, and their cost (no walks anywhere):**
-- *Resident switch* (NEXT already in a stream): rebind the decode lane's stream index and her adapter set: a
-  descriptor bind, no copy, no prefill.
-- *Stream in* (RAM -> a free stream): per attention layer two raw copies (K slice, V slice), per recurrent layer one
-  row copy, the cell-metadata array as one copy; issued in layer order so her first decode can start as early layers
+- *Resident switch* (NEXT already in a stream): rebind her own sequence id to that stream (`seq_to_stream`, which
+  stays a permutation; her cells keep her id, so nothing is retagged) and her adapter generation: a descriptor bind,
+  no copy, no prefill.
+- *Stream in* (RAM -> a free stream): per attention layer two raw copies (K slice, V slice, her used rows), per
+  recurrent layer one row copy, her metadata bound by reference; issued in layer order so her first decode can start as early layers
   land while the rest stream behind compute; fenced by the existing completion owner.
 - *Retire* (a stream -> RAM): the same raw copies outward, asynchronous, after the handoff fence; the stream is free
   only when they complete.
@@ -2306,9 +2318,13 @@ per switch at the measured bandwidth.
 **Codex's review of 32b28f5d9 (layout not yet accepted), folded in:**
 - *Cell metadata is not memcpy-safe.* `llama_kv_cells` owns a `std::set`, vectors and position maps, and the
   recurrent `mem_cell` embeds a `std::set` of sequence ids. So her metadata is never copied as bytes and never rebuilt
-  on a switch: each persona OWNS her host metadata objects, and binding her to a stream exchanges them with the
-  stream's by reference (`std::swap(v_cells[s], persona.cells)`: an O(1) exchange of container internals, no element
-  copied, no container rebuilt), the same for her recurrent cells.
+  on a switch: each persona OWNS her host metadata objects and they are bound by reference. The prototype exchanges
+  them with `std::swap(v_cells[s], persona.cells)`: no container is rebuilt, but `llama_kv_cells` also holds a fixed
+  `seq_pos[LLAMA_MAX_SEQ]` array of maps, so it is not literally one pointer exchange; the target is an owner handle
+  the stream points at. Her cells record HER sequence id, so a stream is bound to her id through `seq_to_stream`, never
+  retagged (the first prototype run, which loaded her cells into stream 1 and read them as sequence 1, failed exactly
+  there: `stream 1 holds her prompt`). `v_heads[s]` is reset on bind; the recurrent `src`/`src0`/`tail`/`rs_idx`
+  rollback references move with her.
 - *Descriptors are prebuilt* when the persona is created (per layer: tensor, byte offset, row stride, her used rows),
   never computed by a per-switch layer walk.
 - *Storage is stride-preserving at her actual length*: her RAM copy keeps the stream's row stride for the rows she
