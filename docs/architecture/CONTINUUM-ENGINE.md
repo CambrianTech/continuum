@@ -2069,8 +2069,11 @@ returns 1 with nothing placed for that piece; pieces before it in the frame are 
   mind out (`flash_coldest`, then an idle lane's mind); else preempt the coldest processing slot that is not pinned,
   learning or fenced: `remove_slot(id, off)`, remap every slot's `i_batch`/`spec_i_batch`, cut its prompt
   bookkeeping back to its placed tokens (`keep_first`), move its whole sequence (target and draft) out through the
-  #139 `flash_out` path into a host-RAM-bounded preempted store, set `SLOT_STATE_PREEMPTED`, re-render, decode the
-  same piece again (the frame changed). The idle-slot purge is deleted, not kept behind parking.
+  #139 `flash_out` path, set `SLOT_STATE_PREEMPTED`, re-render, decode the same piece again (the frame changed).
+  The preempted bytes live in #139's existing store, custody and resource charge (no second byte store or grant
+  ledger; the preempted state references its handles). The idle-slot purge is deleted, not kept behind parking.
+- A preempted or blocked slot keeps its placed prefix and its sampler, RNG, checkpoint and verified-output state
+  under the same cancellation and completion owner; waking never reseeds it or emits accepted output twice.
 - No legal move: the slot whose tokens do not fit is removed from the frame the same way and stays `blocked` with
   its wake sources (pin released, fence passed, host RAM granted); the rest of the frame decodes.
 - `SLOT_STATE_PREEMPTED` is skipped by every batch-construction path; at each frame start the oldest preempted slot
