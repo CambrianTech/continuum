@@ -1,3 +1,5 @@
+#![cfg(test)]
+
 //! Exercise refused commit against real owned work in an isolated process.
 use super::*;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, Runtime, ServiceModule};
