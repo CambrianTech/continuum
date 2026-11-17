@@ -2341,6 +2341,30 @@ engine stop or restart demotes every resident persona's native blocks to flash a
 drops a mind and re-prefills (the 2026-11-17 03:03Z cold read re-prefilled 520,800 tokens that were already computed).
 Only a truly stale or unneeded generation retires, under policy, and a stale generation never presents as current.
 
+**Prototype receipts (fork #147, isolated; serving unchanged).** Raw move of a persona's attention rows and recurrent rows,
+her metadata exchanged, her own sequence bound to any stream; two-phase (check reserves every byte and node, commit
+allocates nothing), fenced by the context. Byte-identical continuation in every case (stories15M; tiny qwen35moe incl.
+4 rollback groups with a pending rollback; allocation-fault injection). On the M5, Qwen3.6-35B-A3B Q4_K_M, KV q4_0, FA:
+| her tokens | state | recompute (prefill) | load (whole fenced call) |
+|---|---|---|---|
+| 4,096 | 89.5 MB | 4,351 ms | 1.40 ms |
+| 16,384 | 160.2 MB | 20,419 ms | 2.64 ms |
+| 32,768 | 254.6 MB | 50,834 ms | 4.09 ms |
+
+**Next slice: the flash tier binds, never rebuilds (direction approved by Codex 2026-11-17; layout not yet accepted).**
+`llama_kv_cells` keeps flat, trivially copyable arrays (pos, ext, shift, seq bits) beside DERIVED indices that are
+STL containers (`used`: a set; `seq_pos`: per-sequence maps of position counts). A RAM move swaps the object; a flash
+copy cannot hold STL internals, and rebuilding them on load is the reconstruction the rule forbids. So her metadata
+gets a native generation: a typed, versioned header (magic, layout version, layout id, OWNER identity = model file
+digest + genome/adapter generation, her sequence, extent sizes), then her flat arrays for her used rows, then her
+derived indices in a native, allocation-relative form (offsets, never pointers), all one generation, published through
+the existing completion/storage owner. Constraints (Codex): no dense histogram indexed by absolute position without a
+proven bound (positions, shifts, holes and shared sequences keep today's semantics; seq x max_pos can explode); the
+occupied index is bounded and updated only when tokens or state actually change. Acceptance: remap across addresses,
+same-process flash round trip, sparse/high/shifted positions, duplicates and shared sequences, deletions and extrema
+changes, corrupt/truncated extents and partial-write custody, memory and scaling; and a cross-model, same-shape restore
+is refused by owner identity.
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
