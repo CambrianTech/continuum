@@ -41,22 +41,49 @@ pub(super) async fn stop(options: StopOptions) -> Result<(), String> {
 }
 
 /// Discover receipt-acknowledged exit without beginning shutdown.
-pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<Option<continuum_core::commands::system::shutdown::ShutdownTarget>, String> {
+/// Why a stop has no single receipt-bound core to drain: each case leaves every core and engine running.
+#[derive(Debug)]
+pub(super) enum NoBoundCore {
+    /// No core answered the capability probe.
+    Unanswered,
+    /// A core answered, but it is not the one core this stop found (none, or several, are running).
+    NotTheOnlyCore,
+    /// The answer did not decode as a process identity.
+    Invalid(String),
+}
+
+impl std::fmt::Display for NoBoundCore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unanswered => f.write_str("no core answered the shutdown capability; every core remains running"),
+            Self::NotTheOnlyCore => f.write_str("the answering core is not the only core running; every core remains running"),
+            Self::Invalid(why) => write!(f, "invalid shutdown capability ({why}); every core remains running"),
+        }
+    }
+}
+
+pub(super) async fn probe_shutdown_target(pids: &[i32]) -> Result<continuum_core::commands::system::shutdown::ShutdownTarget, NoBoundCore> {
     use continuum_core::commands::system::shutdown::ShutdownTarget;
     let conn = connection();
     let cmds = conn.commands();
     let reply = tokio::time::timeout(Duration::from_secs(3), cmds.execute_value("system/shutdown-target", serde_json::json!({}))).await;
-    // Capability discovery does not drain. Missing or ambiguous identity refuses stop.
-    let Ok(Ok(value)) = reply else { return Ok(None) };
+    // Capability discovery does not drain. An unanswered or ambiguous identity refuses the stop.
+    let Ok(Ok(value)) = reply else { return Err(NoBoundCore::Unanswered) };
     let target: ShutdownTarget = serde_json::from_value(value) // Decode the core process identity received over lifecycle IPC.
-        .map_err(|e| format!("invalid shutdown capability: {e}"))?;
+        .map_err(|e| NoBoundCore::Invalid(e.to_string()))?;
     if target.pid > i32::MAX as u32 || target.instance.is_empty() {
-        return Err("invalid shutdown process identity".into());
+        return Err(NoBoundCore::Invalid("process identity out of range or unnamed".into()));
     }
-    Ok((pids == [target.pid as i32]).then_some(target))
+    if pids != [target.pid as i32] {
+        return Err(NoBoundCore::NotTheOnlyCore);
+    }
+    Ok(target)
 }
 
-pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::system::shutdown::ShutdownTarget) -> Result<GracefulStop, String> {
+/// The stop's outcome and what its durable receipt attests saved (the only lanes a teardown may reap).
+pub(super) async fn commit_graceful_shutdown(
+    target: continuum_core::commands::system::shutdown::ShutdownTarget,
+) -> Result<(GracefulStop, continuum_core::inference::lane_registry::Attested), String> {
     use continuum_core::commands::system::shutdown::{ShutdownCommitParams, ShutdownResult};
     let conn = connection();
     let cmds = conn.commands();
@@ -75,6 +102,7 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
         GracefulStop::Incomplete(result.receipt.summary())
     };
     graceful.require_durable()?;
+    let attested = continuum_core::inference::lane_registry::Attested::from_receipt(&result.receipt);
     let pid = target.pid as i32;
     let commit = ShutdownCommitParams {
         target,
@@ -91,7 +119,7 @@ pub(super) async fn commit_graceful_shutdown(target: continuum_core::commands::s
     if !evidence.core_pids.is_empty() {
         return Err("another core is present after acknowledged exit; refusing replacement teardown".into());
     }
-    Ok(graceful)
+    Ok((graceful, attested))
 }
 
 // Every stop preserves unfinished work. Engine teardown is not permission to
@@ -107,10 +135,9 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
         }
         return Ok(GracefulStop::NothingRunning);
     }
-    let target = probe_shutdown_target(&pids).await?
-        .ok_or_else(|| "stop requires one receipt-bound core; missing or ambiguous cores remain running".to_string())?;
+    let target = probe_shutdown_target(&pids).await.map_err(|refusal| refusal.to_string())?;
     let self_exited = target.pid as i32;
-    let graceful = commit_graceful_shutdown(target).await?;
+    let (graceful, attested) = commit_graceful_shutdown(target).await?;
     graceful.require_durable()?;
     let (to_stderr, line) = render_graceful_outcome(&graceful);
     if to_stderr {
@@ -143,7 +170,8 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
         return Ok(graceful);
     }
     let mut unconfirmed_lanes = Vec::new();
-    for outcome in continuum_core::inference::lane_registry::sweep_all(teardown_deadline).await? {
+    let mut retained_lanes = Vec::new();
+    for outcome in continuum_core::inference::lane_registry::sweep_all(&attested, teardown_deadline).await? {
         use continuum_core::inference::lane_registry::SweepOutcome as S;
         match outcome {
             S::ExitUnconfirmed { pid, .. } => unconfirmed_lanes.push(format!("pid={pid}: exit deadline elapsed")),
@@ -162,12 +190,18 @@ pub(super) async fn stop_with(keep_lanes: bool) -> Result<GracefulStop, String> 
             S::RemovedDead { .. } | S::RemovedReused { .. } | S::RemovedUnparseable { .. } => {}
             // Unreachable under Shutdown (every role is reaped) — but matched
             // explicitly so adding a mode can never silently fall through here.
+            S::RetainedUnattested { pid, port, role, persisted } => {
+                retained_lanes.push(format!("pid={pid} port={port} role={role:?} retention_persisted={persisted}"))
+            }
             S::LeftLive { pid } => {
                 println!("  WARNING: serving lane (pid {pid}) left running by a shutdown sweep — report this")
             }
         }
     }
 
+    if !retained_lanes.is_empty() {
+        return Err(format!("lanes retained, still running with their records: the durable receipt does not attest their state saved {retained_lanes:?}; their owner must attest before they may be retired"));
+    }
     if !unconfirmed_lanes.is_empty() {
         return Err(format!("serving lane exit not confirmed for {unconfirmed_lanes:?}; ownership records retained, retry stop after resolving termination authority"));
     }
