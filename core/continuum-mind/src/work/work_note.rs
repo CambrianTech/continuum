@@ -10,9 +10,13 @@ pub struct WorkNote {
 pub struct WorkNoteParams {
     /// Card id (8-char short id accepted).
     pub card_id: String,
-    /// Established facts: `file:range → what it showed`, `test → assertion`.
-    #[serde(default)]
-    pub known: Vec<String>,
+    /// Established facts, at least one: `file:range → what it showed`, `test → assertion`.
+    ///
+    /// The newest note is the card's ledger, so a note that establishes nothing would erase the one before it (M5
+    /// 2026-11-17: a resident posted empty notes over her card's ledger). Only the paragraph above reaches the schema.
+    #[schemars(schema_with = "known_facts_schema")]
+    #[ts(type = "Array<string>")]
+    pub known: continuum_base::non_empty_list::NonEmptyList<continuum_base::non_empty_text::NonEmptyText>,
     /// Competing explanations, each with its settling test.
     #[serde(default)]
     pub hypotheses: Vec<HypothesisParam>,
@@ -25,6 +29,26 @@ pub struct WorkNoteParams {
     /// Decided fix: `file:line` + intent.
     #[serde(default)]
     pub decided_fix: Option<String>,
+}
+
+/// `known`'s schema, the decoder's contract as the model reads it: at least one fact, none empty. (A whitespace-only
+/// fact is refused at the parse; a pattern is not used, so grammar generators that skip patterns still apply it.)
+fn known_facts_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+    use schemars::schema::{ArrayValidation, InstanceType, Schema, SchemaObject, SingleOrVec, StringValidation};
+    let fact = SchemaObject {
+        instance_type: Some(InstanceType::String.into()),
+        string: Some(Box::new(StringValidation { min_length: Some(1), ..Default::default() })),
+        ..Default::default()
+    };
+    Schema::Object(SchemaObject {
+        instance_type: Some(InstanceType::Array.into()),
+        array: Some(Box::new(ArrayValidation {
+            items: Some(SingleOrVec::Single(Box::new(Schema::Object(fact)))),
+            min_items: Some(1),
+            ..Default::default()
+        })),
+        ..Default::default()
+    })
 }
 
 /// A hypothesis as the VERB takes it — snake_case like every other work/* parameter.
@@ -85,7 +109,7 @@ impl ActionCommand for WorkNote {
         };
         let ledger = crate::experience::ledger::CardLedger {
             card_id: card_id.as_uuid(),
-            known: p.known,
+            known: p.known.into_vec().into_iter().map(String::from).collect(),
             hypotheses: p.hypotheses.into_iter().map(Into::into).collect(),
             unknown: p.unknown,
             next_test: p.next_test,

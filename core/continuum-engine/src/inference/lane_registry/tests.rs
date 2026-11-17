@@ -3,6 +3,12 @@
 
 use super::*;
 
+/// `expected`'s record removed under the registry's write lock, as `remove` does for the default directory.
+fn remove_under_lock(dir: &Path, expected: &LaneRecord) -> bool {
+    let _writes = writes();
+    remove_locked(dir, expected)
+}
+
 // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
 // file that does not parse is a lane the lenient read silently drops — and a sweep
 // reading that inventory would delete the page dir of a lane it never saw. The
@@ -51,7 +57,7 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Gpu).expect("restamp"), "the record changed since it was read");
     let replaced = LaneRecord { started_s: 8, ..kept.clone() };
     assert!(!restamp_placement_in(dir.path(), &replaced, LanePlacement::Cpu).expect("restamp"), "another incarnation's read");
-    remove_in(dir.path(), kept.pid);
+    remove_under_lock(dir.path(), &kept);
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"), "a removed record");
     assert_eq!(records_in(dir.path()), vec![other], "a removed record is never recreated");
 }
@@ -59,14 +65,14 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
 /// A unique temp lanes dir per test — NEVER the real `~/.continuum/run/lanes/`,
 /// so a live core's registry is untouched and parallel tests don't collide (#7
 /// isolation rule).
-fn temp_dir(tag: &str) -> PathBuf {
+pub(super) fn temp_dir(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "continuum-lane-registry-test-{tag}-{}",
         std::process::id()
     ))
 }
 
-fn rec(pid: u32, port: u16, role: LaneRole) -> LaneRecord {
+pub(super) fn rec(pid: u32, port: u16, role: LaneRole) -> LaneRecord {
     LaneRecord {
         pid,
         port,
@@ -234,7 +240,7 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
 }
 
 // what this catches: record_in → the file exists and round-trips through JSON;
-// remove_in deletes it and is idempotent. The accounting is useless if a
+// a locked remove deletes it and is idempotent. The accounting is useless if a
 // recorded lane can't be read back or cleaned up.
 #[test]
 fn record_round_trips_and_remove_is_idempotent() {
@@ -247,10 +253,26 @@ fn record_round_trips_and_remove_is_idempotent() {
     let back: LaneRecord = serde_json::from_str(&raw).expect("parse");
     assert_eq!(back, r, "record round-trips through JSON");
 
-    remove_in(&dir, 4242);
+    assert!(remove_under_lock(&dir, &r));
     assert!(!record_path(&dir, 4242).exists(), "removed");
-    remove_in(&dir, 4242); // idempotent — second remove must not panic
+    assert!(!remove_under_lock(&dir, &r), "idempotent: nothing left to remove");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// what this catches: a teardown of the ORIGINAL lane deleting its REPLACEMENT's record, written under the same
+// reused pid (Codex on #6099 6853fa3c8). Removal deletes only the incarnation it was given.
+#[test]
+fn removing_an_original_never_deletes_the_replacement_under_its_reused_pid() {
+    let dir = tempfile::tempdir().expect("test: tempdir");
+    let original = LaneRecord { started_s: 7, ..rec(4243, 58_201, LaneRole::Ephemeral) };
+    let replacement = LaneRecord { started_s: 8, ..original.clone() };
+    record_in(dir.path(), &replacement).expect("test: the replacement's record");
+    write_retained_marker(dir.path(), &replacement).expect("replacement retention");
+    assert!(!remove_under_lock(dir.path(), &original), "the original's teardown finds another incarnation");
+    assert_eq!(records_in(dir.path()), vec![replacement.clone()], "the replacement's record survives");
+    assert!(retained_path(dir.path(), replacement.pid).exists(), "stale teardown preserves replacement retention");
+    assert!(remove_under_lock(dir.path(), &replacement), "its own teardown removes it");
+    assert!(!retained_path(dir.path(), replacement.pid).exists(), "matched teardown removes its retention");
 }
 
 // what this catches: a LIVE lane is singular — recording a new live lane
@@ -378,7 +400,7 @@ fn shutdown_reaps_the_live_lane_that_boot_leaves_alone() {
     let stop_dir = temp_dir("mode-shutdown");
     let _ = std::fs::remove_dir_all(&stop_dir);
     record_in(&stop_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
-    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown(&Attested::default()));
+    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown);
     assert!(
         !matches!(outcomes.as_slice(), [SweepOutcome::LeftLive { .. }]),
         "shutdown must NEVER leave a live lane running, got {outcomes:?}"
@@ -595,7 +617,7 @@ fn an_unattested_running_lane_survives_the_stop_and_the_next_boot() {
             );
         }
         assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the next boot");
-        remove_in(&dir, pid);
+        assert!(remove_under_lock(&dir, &lane));
         assert!(!retained_path(&dir, pid).exists(), "the retention goes with its record");
     }
     child.kill().expect("test: end the fixture process");

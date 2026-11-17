@@ -37,6 +37,10 @@
 //! core (the #7 `$HOME`-pollution class). Public wrappers resolve the one
 //! canonical directory and delegate.
 
+mod live_watch;
+pub use live_watch::{subscribe_live, sync_live};
+use live_watch::{sync_live_locked, LIVE_LANE};
+
 use super::lane_pidfile;
 use super::lane_process;
 use serde::{Deserialize, Serialize};
@@ -309,15 +313,23 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
             "no home dir for lane registry",
         )
     })?;
-    record_in(&dir, rec)
+    record_in(&dir, rec)?;
+    if rec.role == LaneRole::Live {
+        sync_live();
+    }
+    Ok(())
 }
 
-/// Remove a lane's record on graceful teardown. Idempotent — a missing file is
-/// success.
-pub fn remove(pid: u32) {
-    if let Some(dir) = lanes_dir() {
-        remove_in(&dir, pid);
-    }
+/// Remove `expected`'s record on graceful teardown, only while the record on disk is still that incarnation:
+/// a pid reused by a replacement lane names the replacement's record, which is never deleted for the original
+/// (Codex on #6099 6853fa3c8). Idempotent: a missing record is nothing to remove.
+pub fn remove(expected: &LaneRecord) {
+    let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
+        return;
+    };
+    let _writes = writes();
+    remove_locked(&dir, expected);
+    sync_live_locked(&dir, &pidfile, &LIVE_LANE); // in the same lock: no read can interleave with the removal
 }
 
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and
@@ -566,11 +578,17 @@ fn clear_live_records_in(dir: &Path) {
     }
 }
 
-/// Remove `<pid>.lane` under `dir` if present. Idempotent.
-pub(crate) fn remove_in(dir: &Path, pid: u32) {
-    let _writes = writes();
-    let _ = std::fs::remove_file(record_path(dir, pid));
-    remove_retained_marker(dir, pid);
+/// Delete only the expected incarnation while holding the registry write lock.
+/// Its retention marker belongs to that same incarnation and is removed only after its record.
+fn remove_locked(dir: &Path, expected: &LaneRecord) -> bool {
+    let path = record_path(dir, expected.pid);
+    let Ok(body) = std::fs::read_to_string(&path) else { return false };
+    let Ok(found) = serde_json::from_str::<LaneRecord>(&body) else { return false };
+    if found.incarnation() != expected.incarnation() || std::fs::remove_file(&path).is_err() {
+        return false;
+    }
+    remove_retained_marker(dir, expected.pid);
+    true
 }
 
 /// Every lane record on disk, in no particular order.
