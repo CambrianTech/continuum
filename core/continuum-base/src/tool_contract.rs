@@ -5,7 +5,7 @@
 //! declares it and cognition reads it, and neither may import the other.
 //!
 //! Two parts, because they change for different reasons (card 9cf06ade, Codex's review 2026-11-17):
-//! - the exact wire bytes she was sent (a schema or description edit changes them);
+//! - every field of the spec she was sent (a schema or description edit changes them);
 //! - the declared [`ContractRevision`] (a change in what a call DOES under the same schema changes
 //!   only this, so the command must bump it).
 //!
@@ -29,14 +29,14 @@ impl Default for ContractRevision {
     }
 }
 
-/// The identity of one verb as a mind was shown it: SHA-256 over its declared revision and the
-/// exact wire bytes of its native spec. Computed once where a surface is built, never per act.
+/// The identity of one verb as a mind was shown it: SHA-256 over its declared revision and every
+/// field of its native spec as sent. Computed once where a surface is built, never per act.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ContractId(#[serde(with = "hex_bytes")] pub [u8; 32]);
 
 impl ContractId {
-    /// `wire` is the verb's spec exactly as it is sent (the encoder's bytes, not a re-canonicalized
-    /// form), so the identity changes exactly when what she reads changes.
+    /// `wire` is the verb's spec as it is sent, every field, so the identity changes exactly when
+    /// what she reads changes.
     pub fn of(revision: ContractRevision, wire: &[u8]) -> Self {
         let mut hasher = Sha256::new();
         hasher.update(revision.0.to_be_bytes());
@@ -44,9 +44,9 @@ impl ContractId {
         Self(hasher.finalize().into())
     }
 
-    /// The first eight bytes in hex: what a notice or a probe shows.
-    pub fn short(&self) -> String {
-        self.0[..8].iter().map(|b| format!("{b:02x}")).collect()
+    /// The identity in hex: what a notice, a probe and a notice's key show.
+    pub fn hex(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
     }
 }
 

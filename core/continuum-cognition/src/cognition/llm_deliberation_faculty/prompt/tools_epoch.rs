@@ -56,14 +56,14 @@
 //! executor's dispatch by name still reach it. A held verb whose affordance vanished stays in the
 //! set: its command refuses a call that no longer applies.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use continuum_context::allocation::{id, ActPlan, Head};
 
 use super::framing::FramingOffer;
 use super::*;
-use crate::cognition::hands_custody::{HeldHands, LiveContract};
+use crate::cognition::hands_custody::{HeldHands, LiveContract, VerbContract};
 use crate::cognition::tool_surface::{SelectedSurface, ToolSet, ToolsLeveled};
 
 /// This act's hands before the allocation: her surface whole, its verbs as a consumer, and the
@@ -103,6 +103,13 @@ pub(in super::super) struct NextHead {
     levels: Vec<usize>,
     menu: BTreeSet<String>,
     pub(in super::super) growth: usize,
+}
+
+/// What a new epoch of her head is adopted with, beside the surface it sends.
+struct Adoption {
+    levels: Vec<usize>,
+    menu: BTreeSet<String>,
+    moves: Vec<String>,
 }
 
 /// This act's hands after the allocation.
@@ -258,7 +265,8 @@ impl LlmDeliberationFaculty {
         let (sent, menu, hands) = match (next, held) {
             // This act started an epoch of her view that funded her head's next epoch: adopted.
             (Some(next), held) if head_funded => {
-                let hands = self.freeze(&next.surface, next.levels, next.menu.clone(), moves, held.as_ref());
+                let adoption = Adoption { levels: next.levels, menu: next.menu.clone(), moves };
+                let hands = self.freeze(&next.surface, adoption, held.as_ref());
                 (next.surface, next.menu, hands)
             }
             // Her head holds its set: a changed set waits for her head's next epoch (said once);
@@ -276,7 +284,8 @@ impl LlmDeliberationFaculty {
             }
             // No head held (her first act, a rebuilt surface, levels lost): what this act sends.
             (_, held) => {
-                let hands = self.freeze(&sent, levels, menu.clone(), moves, held.as_ref());
+                let adoption = Adoption { levels, menu: menu.clone(), moves };
+                let hands = self.freeze(&sent, adoption, held.as_ref());
                 (sent, menu, hands)
             }
         };
@@ -287,15 +296,16 @@ impl LlmDeliberationFaculty {
 
     /// A new epoch of her head from what `sent` carries: its verbs whole and its payload as sent,
     /// each verb's contract as the live surface has it now, nothing told yet.
-    fn freeze(&self, sent: &SelectedSurface, levels: Vec<usize>, menu: BTreeSet<String>, moves: Vec<String>, previous: Option<&HeldHands>) -> HeldHands {
+    fn freeze(&self, sent: &SelectedSurface, adoption: Adoption, previous: Option<&HeldHands>) -> HeldHands {
+        let Adoption { levels, menu, moves } = adoption;
         let names = self.surface.names_of(sent);
         let none = || Arc::from(Vec::new());
         let whole = self.surface.retained(&names, sent.reason, 0).specs.unwrap_or_else(none); // unwrap_or_else: a surface with no tools freezes none
-        let frozen: BTreeMap<_, _> = names
+        let contracts = names
             .iter()
-            .filter_map(|name| match self.surface.live_contract(name) {
-                LiveContract::Offered { id, .. } => Some((name.clone(), id)),
-                LiveContract::Removed => None,
+            .map(|name| match self.surface.live_contract(name) {
+                LiveContract::Offered { id, .. } => VerbContract::frozen(Some(id)),
+                LiveContract::Removed => VerbContract::frozen(None),
             })
             .collect();
         let hands = HeldHands {
@@ -310,8 +320,7 @@ impl LlmDeliberationFaculty {
             sent: sent.specs.clone().unwrap_or_else(none), // unwrap_or_else: a surface with no tools freezes none
             sent_tokens: sent.tokens,
             demand_tokens: sent.demand_tokens(),
-            frozen,
-            told: BTreeMap::new(),
+            contracts,
         };
         continuum_base::probe!(
             class = "tools.custody.frozen",

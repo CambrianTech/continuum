@@ -268,8 +268,8 @@ impl WorkingMemory {
 
     /// Her held verbs whose live contract she has not been told, as this act found them: what her
     /// view's contract notices render (`context_streams::tool_contracts`).
-    pub(crate) fn set_contract_changes(&self, changes: Vec<crate::cognition::hands_custody::ContractChange>) {
-        self.view.lock().changes = changes;
+    pub(crate) fn set_contract_changes(&self, changes: impl IntoIterator<Item = crate::cognition::hands_custody::ContractChange>) {
+        self.view.lock().changes = changes.into_iter().collect();
     }
 
     pub(crate) fn contract_changes(&self) -> Vec<crate::cognition::hands_custody::ContractChange> {

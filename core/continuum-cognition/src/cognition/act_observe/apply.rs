@@ -186,7 +186,7 @@ pub async fn apply_act(
     // A call on a verb whose contract moved, before a served prompt told her, runs on neither
     // route below: it is answered with what moved (`contract_gate`, card 9cf06ade).
     let contract_held = super::contract_gate::held_back(&batch, &body.working_memory.contract_changes());
-    let batch = batch.without_committed(|committed| contract_held.iter().any(|(call, _)| call.id == committed.call().id));
+    let batch = batch.without_committed(|committed| contract_held.iter().any(|held| held.call.id == committed.call().id));
     let effect_calls: Vec<(String, String)> = batch
         .committed()
         .map(|committed| committed.call())
@@ -439,7 +439,7 @@ pub async fn apply_act(
     // Every requested call needs its own truthful receipt, including background
     // calls in a mixed batch. Native continuation must never omit their IDs.
     append_dispatched_observations(&mut acts, &dispatched_calls);
-    acts.extend(contract_held.iter().map(|(call, change)| super::contract_gate::refused(call, change)));
+    acts.extend(contract_held.iter().map(|held| super::contract_gate::refused(&held.call, &held.change)));
     let call_order: std::collections::HashMap<_, _> = calls.iter()
         .enumerate().map(|(ordinal, call)| (call.id.as_str(), ordinal)).collect();
     acts.sort_by_key(|observation| call_order.get(observation.call.id.as_str()).copied());

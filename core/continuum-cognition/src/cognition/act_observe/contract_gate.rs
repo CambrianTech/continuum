@@ -9,8 +9,14 @@ use super::observation::{extract_paths, ActStatus, Observation, ToolOutput, Tool
 use crate::ai::types::{CallBatch, Disposed, ToolCall, ToolResult};
 use crate::cognition::hands_custody::ContractChange;
 
-/// Each committed call naming a verb whose contract change she has not been told, with that change.
-pub(super) fn held_back(batch: &CallBatch, untold: &[ContractChange]) -> Vec<(ToolCall, ContractChange)> {
+/// A committed call held back, and the contract change she has not been told that holds it.
+pub(super) struct HeldCall {
+    pub(super) call: ToolCall,
+    pub(super) change: ContractChange,
+}
+
+/// Each committed call naming a verb whose contract change she has not been told.
+pub(super) fn held_back(batch: &CallBatch, untold: &[ContractChange]) -> Vec<HeldCall> {
     if untold.is_empty() {
         return Vec::new();
     }
@@ -20,7 +26,7 @@ pub(super) fn held_back(batch: &CallBatch, untold: &[ContractChange]) -> Vec<(To
         .filter_map(|entry| match entry {
             Disposed::Committed(committed) => {
                 let canonical = crate::ai::tool_dialect::resolve_wire_name(&committed.call().name);
-                untold.iter().find(|change| change.name == canonical).map(|change| (committed.call().clone(), change.clone()))
+                untold.iter().find(|change| change.name == canonical).map(|change| HeldCall { call: committed.call().clone(), change: change.clone() })
             }
             _ => None,
         })
@@ -68,8 +74,8 @@ mod tests {
         let origin = crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished);
         let batch = CallBatch::classify([call("a", "work_note"), call("b", "code_read")], origin);
         let held = held_back(&batch, std::slice::from_ref(&change));
-        assert_eq!(held.iter().map(|(call, _)| call.id.as_str()).collect::<Vec<_>>(), ["a"], "only the untold verb's call");
-        let observed = refused(&held[0].0, &held[0].1);
+        assert_eq!(held.iter().map(|held| held.call.id.as_str()).collect::<Vec<_>>(), ["a"], "only the untold verb's call");
+        let observed = refused(&held[0].call, &held[0].change);
         assert_eq!(observed.output.result.is_error, Some(true));
         assert!(observed.output.result.content.starts_with("Not run:"), "{}", observed.output.result.content);
         assert!(held_back(&batch, &[]).is_empty(), "nothing untold holds nothing");

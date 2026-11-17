@@ -519,9 +519,12 @@ pub fn hands_surface(offers: &[OfferedTool]) -> Vec<NativeToolSpec> {
     offers.iter().filter(|offer| offer.disclosure.in_hands()).map(|offer| offer.spec.clone()).collect()
 }
 
-/// A spec exactly as the wire carries it: what a contract identity is computed over.
+/// Every field of a spec as the wire carries it, separated: what a contract identity is computed
+/// over. Built from the fields themselves (a JSON value's text cannot fail), so no error is dropped.
 fn wire_bytes(spec: &NativeToolSpec) -> Vec<u8> {
-    serde_json::to_vec(spec).unwrap_or_default() // boundary: the schema as the request wire carries it; unwrap_or_default: a spec of strings and a JSON value always serializes
+    let schema = &spec.input_schema;
+    let definitions = schema.definitions.as_ref().map_or_else(String::new, ToString::to_string); // map_or_else: a schema with no definitions has none to show
+    format!("{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{:?}\u{1f}{definitions}", spec.name, spec.description, schema.schema_type, schema.properties, schema.required).into_bytes()
 }
 
 /// Serialize and count a tool surface: paid once per [`ToolSurface::build`], never per turn.

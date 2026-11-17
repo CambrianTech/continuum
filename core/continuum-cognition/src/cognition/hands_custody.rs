@@ -13,7 +13,7 @@
 //! moves A -> B and back to A after she was told about B is a change again (restored to A), or
 //! her newest notice would still say B.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use continuum_base::tool_contract::ContractId;
@@ -47,12 +47,46 @@ pub(crate) struct HeldHands {
     pub(crate) sent_tokens: usize,
     /// What her held verbs cost whole: her head's demand, priced once at the freeze.
     pub(crate) demand_tokens: usize,
-    /// Each held verb's contract when frozen.
-    pub(crate) frozen: BTreeMap<String, ContractId>,
-    /// The contract a SUBMITTED prompt last told her for a verb since the freeze; `None` when it
-    /// told her the verb was removed. Marked from the render receipt, never when a notice is made.
+    /// Each held verb's contract, aligned with `names`: as frozen, and as last told.
+    pub(crate) contracts: Vec<VerbContract>,
+}
+
+/// One held verb's contract: as her head froze it, and what a served prompt last told her since.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct VerbContract {
+    /// Its contract when frozen; `None` when the surface no longer offered it then.
+    pub(crate) frozen: Option<ContractId>,
     #[serde(default)]
-    pub(crate) told: BTreeMap<String, Option<ContractId>>,
+    pub(crate) told: Told,
+}
+
+/// What a SUBMITTED prompt last told her about a held verb's contract since her head froze it:
+/// marked from the render receipt, never when a notice is made.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum Told {
+    /// Nothing since the freeze: she knows the frozen contract.
+    #[default]
+    Nothing,
+    /// This contract.
+    Offered(ContractId),
+    /// That the verb was removed.
+    Removed,
+}
+
+impl VerbContract {
+    /// A verb frozen under `frozen`, nothing told yet.
+    pub(crate) fn frozen(frozen: Option<ContractId>) -> Self {
+        Self { frozen, told: Told::Nothing }
+    }
+
+    /// The contract she knows: the newest a submitted prompt told her, else the frozen one.
+    fn known(&self) -> Option<ContractId> {
+        match self.told {
+            Told::Nothing => self.frozen,
+            Told::Offered(id) => Some(id),
+            Told::Removed => None,
+        }
+    }
 }
 
 /// A held verb's contract as the live surface has it now.
@@ -86,25 +120,30 @@ impl ContractChange {
     /// The notice's key: one per transition, so a notice is appended once and a later transition
     /// appends a new one.
     pub(crate) fn key(&self) -> String {
-        let now = self.now.id().map_or_else(|| "removed".to_string(), |id| id.short()); // map_or_else: a removed verb has no contract
+        let now = self.now.id().map_or_else(|| "removed".to_string(), |id| id.hex()); // map_or_else: a removed verb has no contract
         format!("tool-contract/{}/{now}", self.name)
     }
 
     /// What she reads: which verb, that her head still shows the earlier schema until her next
     /// epoch, and the contract a call is now checked against.
     pub(crate) fn text(&self) -> String {
-        let known = self.known.map_or_else(|| "removed".to_string(), |id| id.short()); // map_or_else: she knew it removed
+        let known = self.known.map_or_else(|| "removed".to_string(), |id| id.hex()); // map_or_else: she knew it removed
         match &self.now {
             LiveContract::Removed => format!(
                 "My tool `{}` was removed (contract {known} -> removed). My tool list above still shows it until my head's next epoch; a call to it is refused.",
                 self.name
             ),
-            LiveContract::Offered { id, spec } => format!(
-                "My tool `{}` changed (contract {known} -> {}). My tool list above still shows the earlier schema until my head's next epoch; a call is checked against this one:\n{}",
-                self.name,
-                id.short(),
-                serde_json::to_string(spec).unwrap_or_default() // boundary: the schema as the wire carries it, for her to read; unwrap_or_default: a spec of strings and a JSON value always serializes
-            ),
+            LiveContract::Offered { id, spec } => {
+                let schema = &spec.input_schema;
+                let required = schema.required.as_deref().map_or_else(String::new, |required| required.join(", ")); // map_or_else: a schema that requires nothing names nothing
+                format!(
+                    "My tool `{}` changed (contract {known} -> {}). My tool list above still shows the earlier schema until my head's next epoch; a call is checked against this one:\n{}\nparameters: {}\nrequired: {required}",
+                    self.name,
+                    id.hex(),
+                    spec.description,
+                    schema.properties,
+                )
+            }
         }
     }
 }
@@ -115,23 +154,16 @@ impl HeldHands {
         &self.menu
     }
 
-    /// The contract she knows for `name`: the newest a submitted prompt told her, else the frozen.
-    fn known(&self, name: &str) -> Option<ContractId> {
-        match self.told.get(name) {
-            Some(told) => *told,
-            None => self.frozen.get(name).copied(),
-        }
-    }
-
     /// Every held verb whose live contract (`live`, by canonical name) is not the one she knows,
     /// in sent order. A verb restored to the contract she was frozen with after she was told about
     /// another one is a change again.
     pub(crate) fn changes(&self, live: impl Fn(&str) -> LiveContract) -> Vec<ContractChange> {
         self.names
             .iter()
-            .filter_map(|name| {
+            .zip(&self.contracts)
+            .filter_map(|(name, contract)| {
                 let now = live(name);
-                let known = self.known(name);
+                let known = contract.known();
                 (now.id() != known).then(|| ContractChange { name: name.clone(), known, now })
             })
             .collect()
@@ -139,7 +171,10 @@ impl HeldHands {
 
     /// A submitted prompt showed her `change` whole: she now knows its contract.
     pub(crate) fn tell(&mut self, change: &ContractChange) {
-        self.told.insert(change.name.clone(), change.now.id());
+        let told = change.now.id().map_or(Told::Removed, Told::Offered); // map_or: told no contract is told it removed
+        if let Some(contract) = self.names.iter().position(|name| *name == change.name).and_then(|at| self.contracts.get_mut(at)) {
+            contract.told = told;
+        }
     }
 }
 
@@ -233,8 +268,7 @@ mod tests {
             whole,
             sent_tokens: 10,
             demand_tokens: 10,
-            frozen: BTreeMap::from([(name.to_string(), id(frozen))]),
-            told: BTreeMap::new(),
+            contracts: vec![VerbContract::frozen(Some(id(frozen)))],
         }
     }
 
