@@ -191,6 +191,10 @@ impl LlmDeliberationFaculty {
         newest: Option<PromptCalibration>,
         visual: Option<&ActiveVisualFeedback>,
     ) -> DeliberationPromptView {
+        // Her view and her head resume together before anything is selected (a restart sends the
+        // schemas her engine holds), and any held verb whose contract moved is told this act.
+        self.resume_custody();
+        self.observe_contracts();
         // THE REPLY'S CLAIM ([`reply_claim`]): what she is expected to write, at the
         // priority this turn gives it. It competes in the window's one allocation below;
         // its grant travels with the view into `build_request_within` as `max_tokens`.
@@ -557,7 +561,8 @@ impl LlmDeliberationFaculty {
             "turn demand vs served window"
         );
 
-        let protocol_error = all_messages.active_protocol_error();
+        // A head whose checkpointed custody does not decode refuses the act; its bytes are kept.
+        let protocol_error = self.hands_refusal().or_else(|| all_messages.active_protocol_error());
         // HER VIEW IS NOT THE FIT'S TO CUT. The allocation sized it once (`fit_view`); the fit
         // sees only the fresh tail and the required input, within their own grants. Handed
         // the view too, it evicted from the front, where the view leads, to make room for a

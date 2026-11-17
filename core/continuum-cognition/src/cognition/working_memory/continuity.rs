@@ -200,6 +200,11 @@ impl WorkingMemory {
                 .collect();
             (actions.records().cloned().collect::<Vec<action_log::ActionRecord>>(), recent_results)
         };
+        // Her view and its hands under their ONE lock, taken before the literal (see above).
+        let (context_view, context_hands) = {
+            let custody = self.view.lock();
+            (custody.view.clone(), custody.hands.clone())
+        };
         VolatileSnapshot {
             pending_emissions: self.pending_emissions.lock().clone(),
             entries,
@@ -223,7 +228,8 @@ impl WorkingMemory {
                 .collect(),
             actions: records,
             thoughts: self.thoughts(),
-            context_view: self.view.lock().clone(),
+            context_view,
+            context_hands,
             receipt_children: self.receipt_children.lock().clone(),
             open_views: self.open_views.lock().saved(),
             act_times: self.act_times.lock().clone(),
@@ -238,16 +244,36 @@ impl WorkingMemory {
     /// labels it recorded as pending. It does not establish when an interruption
     /// happened, whether those operations completed, or what side effects they
     /// produced. The persona decides what to do with that uncertainty.
-    /// Keep her context view as this act left it, for the checkpoint.
-    pub(crate) fn keep_view(&self, view: Option<ContextView>) {
+    /// Keep her context view and the hands it is rendered with as her faculty holds them now, as
+    /// one pair under one lock, for the checkpoint (card 9cf06ade).
+    pub(crate) fn keep_custody(&self, view: Option<ContextView>, hands: crate::cognition::hands_custody::HandsCustody) {
         self.touch();
-        *self.view.lock() = view;
+        let mut custody = self.view.lock();
+        custody.view = view;
+        custody.hands = hands;
     }
 
-    /// Her context view as a checkpoint restored it, taken once by the act that resumes it.
-    pub fn take_view(&self) -> Option<ContextView> {
+    /// Her context view and its hands as a checkpoint restored them, taken once, together, by the
+    /// act that resumes them.
+    pub(crate) fn take_custody(&self) -> (Option<ContextView>, crate::cognition::hands_custody::HandsCustody) {
         self.touch();
-        self.view.lock().take()
+        let mut custody = self.view.lock();
+        (custody.view.take(), std::mem::take(&mut custody.hands))
+    }
+
+    /// Drop the view and hands this memory holds, so the next act starts its own.
+    pub fn release_custody(&self) {
+        drop(self.take_custody());
+    }
+
+    /// Her held verbs whose live contract she has not been told, as this act found them: what her
+    /// view's contract notices render (`context_streams::tool_contracts`).
+    pub(crate) fn set_contract_changes(&self, changes: Vec<crate::cognition::hands_custody::ContractChange>) {
+        self.view.lock().changes = changes;
+    }
+
+    pub(crate) fn contract_changes(&self) -> Vec<crate::cognition::hands_custody::ContractChange> {
+        self.view.lock().changes.clone()
     }
 
     pub fn restore(&self, mut snap: VolatileSnapshot) {
@@ -315,7 +341,12 @@ impl WorkingMemory {
         *self.actions.lock() = action_log::ActionLog::from_records(records);
         *self.last_action.lock() = snap.last_action;
         *self.receipt_children.lock() = snap.receipt_children;
-        *self.view.lock() = snap.context_view;
+        {
+            let mut custody = self.view.lock();
+            custody.view = snap.context_view;
+            custody.hands = snap.context_hands;
+            custody.changes.clear();
+        }
         *self.act_times.lock() = snap.act_times;
         *self.open_views.lock() = super::super::open_views::OpenViews::from_saved(snap.open_views);
         // Restored bodies stay resident until the memory owner sheds: neither the window (a

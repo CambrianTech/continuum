@@ -88,6 +88,18 @@ use crate::cognition::tool_executor::tool_output::Reopen;
 pub(crate) type ContextView =
     continuum_context::view::View<crate::cognition::context_streams::ContextMessage>;
 
+/// Her context view and the hands it is rendered with, under ONE lock: a checkpoint captures the
+/// pair as her faculty last left it, never a view from one write with hands from another (card
+/// 9cf06ade, Codex's review: one custody boundary, not just one file).
+#[derive(Debug, Default)]
+pub(crate) struct ViewCustody {
+    pub(crate) view: Option<ContextView>,
+    pub(crate) hands: crate::cognition::hands_custody::HandsCustody,
+    /// Her held verbs whose live contract she has not been told, as this act found them: derived
+    /// each act from `hands` and the live surface, never saved.
+    pub(crate) changes: Vec<crate::cognition::hands_custody::ContractChange>,
+}
+
 
 
 /// Borrowed provenance already carried by the result ring. Displaying a result
@@ -250,7 +262,7 @@ pub struct WorkingMemory {
     /// kept here so it is checkpointed with the rest of her volatile mind: restored after a
     /// restart it renders the same bytes, and the engine's saved page for them still matches,
     /// where a view rebuilt from scratch cost every resident one cold turn per deploy.
-    view: Mutex<Option<ContextView>>,
+    view: Mutex<ViewCustody>,
     /// Each retained receipt's DEPENDENCIES: the per-call results its saved text shows as
     /// pointers, keyed by the receipt ([`receipt_key`]). They belong to the receipt, not to the
     /// entry that carried its acts: while the receipt is in the ring or collapsed to a pointer,
@@ -418,6 +430,16 @@ pub struct VolatileSnapshot {
     /// (`derived::or_none`), her first act after the restore starts a new one.
     #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "derived::or_none")]
     pub(crate) context_view: Option<ContextView>,
+    /// The hands her view is rendered with ([`crate::cognition::hands_custody`]), captured under
+    /// the same lock: absent on a checkpoint written before them; recorded but undecodable is kept
+    /// whole as corrupt, never read as absent.
+    #[serde(
+        default,
+        skip_serializing_if = "crate::cognition::hands_custody::HandsCustody::is_unrecorded",
+        serialize_with = "crate::cognition::hands_custody::serialize",
+        deserialize_with = "crate::cognition::hands_custody::deserialize"
+    )]
+    pub(crate) context_hands: crate::cognition::hands_custody::HandsCustody,
     /// Each retained receipt's per-call dependencies ([`WorkingMemory`]'s `receipt_children`),
     /// so a restart keeps what a restored receipt points at reachable. Empty on snapshots
     /// written before this field.

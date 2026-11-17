@@ -268,6 +268,7 @@ fn volatile_snapshot_round_trips_and_renders_the_interruption() {
         actions: Vec::new(),
         thoughts: Vec::new(),
         context_view: None,
+        context_hands: Default::default(),
         receipt_children: Default::default(),
         open_views: Vec::new(),
         act_times: Default::default(),

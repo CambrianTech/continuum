@@ -18,9 +18,9 @@ pub(super) use self::fit::*;
 mod segments;
 pub(super) mod newest_result; // pub(super): the faculty owns her Reading (newest_result::Reading)
 mod tools_epoch;
+mod hands;
 mod framing;
 pub(super) mod grounding;
-pub(super) use self::tools_epoch::ToolsEpoch;
 #[cfg(test)]
 pub(super) use self::tools_epoch::ToolsChoice;
 pub(super) use self::segments::*;

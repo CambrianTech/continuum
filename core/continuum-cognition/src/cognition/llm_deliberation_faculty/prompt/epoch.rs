@@ -23,7 +23,6 @@ pub(in super::super) use allocation_estimate::AllocationEstimate;
 
 use super::*;
 use crate::cognition::context_streams::{ContextMessage, MemoryStreams};
-use crate::cognition::working_memory::WorkingMemory;
 
 /// The prefix of a view source's claim id in the window's one allocation.
 const VIEW_CLAIM: &str = continuum_context::allocation::id::VIEW;
@@ -261,12 +260,9 @@ impl LlmDeliberationFaculty {
         let memory = self.working_memory.as_deref();
         let memory_streams = memory.map(|memory| MemoryStreams::of(memory, self.persona_id));
         let sources = Self::view_sources(streams, memory_streams.as_ref());
+        // A restart resumed the view her checkpoint kept, with her head, before this act selected
+        // anything (`hands.rs`: `resume_custody`), the same bytes the engine's saved page holds.
         let mut held = self.context_view.lock();
-        // A restart resumes the view her checkpoint kept, the same bytes the engine's saved
-        // page holds, instead of starting a new epoch cold.
-        if held.is_none() {
-            *held = memory.and_then(WorkingMemory::take_view);
-        }
         let started = held.is_none();
         if let Some(view) = held.as_mut() {
             let advance = view.advance(&sources);
@@ -307,7 +303,7 @@ impl LlmDeliberationFaculty {
             }
         }
         if let Some(memory) = memory {
-            memory.keep_view(held.clone());
+            self.keep_custody_with(memory, held.clone());
         }
         (Self::render(held.as_ref()), started)
     }
@@ -327,7 +323,7 @@ impl LlmDeliberationFaculty {
         // whole and the caller turns over, shrinking the oldest (goal 7).
         view.readmit(&cost, &sources, budget_tokens, budget_tokens / 2)?;
         if let Some(memory) = memory {
-            memory.keep_view(held.clone());
+            self.keep_custody_with(memory, held.clone());
         }
         Some(Self::render(held.as_ref()))
     }
@@ -388,6 +384,10 @@ impl LlmDeliberationFaculty {
         };
         let appended = context.append_tail(sent);
         context.sent();
+        // What the served prompt showed her whole is what she now knows (her contract notices).
+        if let Some(receipt) = context.take_submitted() {
+            self.tell_served(&receipt);
+        }
         continuum_base::probe!(
             class = "delib.view.tail_kept",
             persona = %self.persona_name,
@@ -398,7 +398,7 @@ impl LlmDeliberationFaculty {
             "her served tail joined her view as judged: her next prompt extends this one"
         );
         if let Some(memory) = memory {
-            memory.keep_view(held.clone());
+            self.keep_custody_with(memory, held.clone());
         }
     }
 
@@ -479,7 +479,7 @@ impl LlmDeliberationFaculty {
             }
         }
         if let Some(memory) = memory {
-            memory.keep_view(held.clone());
+            self.keep_custody_with(memory, held.clone());
         }
         Ok(Self::render(held.as_ref()))
     }
@@ -534,6 +534,7 @@ impl LlmDeliberationFaculty {
         sources.extend(memory.map(|m| &m.tasks as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.open_views as &dyn Source<ContextMessage>));
         sources.extend(memory.map(|m| &m.notices as &dyn Source<ContextMessage>));
+        sources.extend(memory.map(|m| &m.tool_contracts as &dyn Source<ContextMessage>));
         // What her situation shows now: appended after everything else an act changed, so the
         // facts stand right before this act's tail (the clock, the ask), never ahead of what she
         // already read.

@@ -97,7 +97,7 @@ fn reply_priority_grows_the_reply_not_at_history_or_required_input() {
     };
     let pass_view = fresh(false).prompt_view_within(&pass, window);
     // Working memory keeps her view for her checkpoint; this act starts its own.
-    wm.take_view();
+    wm.release_custody();
     let act_faculty = fresh(true);
     let act_view = act_faculty.prompt_view_within(&act, window);
     for view in [&pass_view, &act_view] {

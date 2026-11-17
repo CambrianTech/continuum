@@ -13,8 +13,10 @@ impl LlmDeliberationFaculty {
             self.surface = ToolSurface::default();
             return;
         }
-        self.surface =
-            ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec);
+        self.surface = ToolSurface::build(persona_tools::native_offers(), self.tools.clone(), crate::ai::tool_dialect::to_wire_spec, |name| {
+            // map_or: a verdict verb is the turn's own protocol, no command: its first revision
+            crate::sdk_codegen::command_descriptor(name).map_or(continuum_base::tool_contract::ContractRevision::FIRST, |command| command.contract_revision)
+        });
         self.share_vocabulary();
     }
 
