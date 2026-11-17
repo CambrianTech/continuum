@@ -2417,6 +2417,29 @@ engine as the gap disappearing for non-reasoning acts); (b) fork: the continuati
 holds her tokens; the server's request names her and carries the delta); (c) core: the request builder sends the delta
 her view already knows (`View::sent` marks the boundary); (d) the validator above, landed with (b).
 
+**The persona is one contiguous structure; a request appends token ids (2026-11-17, Joel: "the llama and
+other kv cache design is inefficient. We do much better... any encoding is a killer. Ideally you operate at
+SIMD and efficient structs... cvmat like contiguous, designed for fast insertions lookup and
+restore/store").** Supersedes the text delta of the slices above (fork #149's stub rendering re-renders and
+re-tokenizes the new messages every act: encoding on the hot path).
+- *Her state is cv::Mat-shaped:* one typed header (owner: model digest and adapter generation; her sequence;
+  lengths and strides; layout version) over contiguous buffers: her token ids (`int32[n]`), her KV rows per
+  attention layer, her recurrent rows, her cell index as flat arrays (#147 already made the index flat).
+  Append writes at the end; lookup is an index; store and restore are memcpy, or a pointer bind while resident.
+  No container walk, no serialization, no rebuild.
+- *Her view's items carry their token ids:* each item is tokenized ONCE, keyed by the item (4.7.11), with the
+  model's turn framing (role start, end of turn) read ONCE per model from its template as token ids. A
+  rendered prompt is a concatenation of id slices, never a template render.
+- *A request is an append:* `continues` (her lineage's response) plus the new token ids, a contiguous `int32`
+  slice passed by reference (no JSON array of numbers on the hot path). The engine's work is
+  `held[0..n_end] ++ delta` (a memcpy), then decode. Nothing is rendered, tokenized or compared; a miss is
+  the typed refusal (`continuation_refused`), and a cold start is the caller's own whole-view send.
+- *The order is the engine's:* the delta's ids are her call's result, then what arrived, then the clock, so her
+  view appends her exchange before it advances its sources (#6110 rework).
+- *Validator:* replay a persona's captured acts as id appends; assert prefilled == appended tokens and
+  recomputed == 0 across three or more acts, freezes and binds; and time the core's per-act CPU (expected:
+  memcpy of the delta, no tokenizer call).
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
