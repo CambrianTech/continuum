@@ -2335,6 +2335,12 @@ per switch at the measured bandwidth.
   not one handoff fence for the whole persona.
 - *Prototype only, isolated*: no serving experiment until the layout is accepted.
 
+**Retention (Joel, 2026-11-17): computed state is never discarded.** VRAM, RAM and flash are residency tiers, not
+validity states; moving a block between them keeps its identity, version and work. Only new values are computed. An
+engine stop or restart demotes every resident persona's native blocks to flash and a start binds them back; it never
+drops a mind and re-prefills (the 2026-11-17 03:03Z cold read re-prefilled 520,800 tokens that were already computed).
+Only a truly stale or unneeded generation retires, under policy, and a stale generation never presents as current.
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
