@@ -2123,6 +2123,30 @@ allocation, and no second authoritative ledger: `MemoryOwner` in the core holds 
 cold mind goes to, what to prefetch) and reads the engine's reported physical state; `Residency` is a read-only
 projection of that one authority, never a mutable copy.
 
+**4.12.1 The engine's owners: every field of `server_context_impl` has exactly one (2026-11-17, for review).** The
+include-file split of llama.cpp#143 is mechanical staging (every piece still shares every field); this table is the
+architecture it stages for. Each owner is a class holding only its fields, behind typed verbs; `server_context_impl`
+holds the owners and wires them, and owns no state of its own. Two custodies are singular (Codex): the memory
+allocator and a turn's completion/cancellation.
+
+| Owner | Owns (fields today) | Typed verbs | The one custody it holds |
+|---|---|---|---|
+| `engine_runtime` | `llama_init`, `model_tgt`, `ctx_tgt`, `model_dft`, `ctx_dft`, `spec_init`, `spec`, `vocab`, `mctx`, `chat_params`, `params_base`, `n_ctx`, `n_swa`, `add_bos_token`, `ctx_*_seq_rm_type`, `model_name`/`model_aliases`/`model_tags`, `sleeping` | `load`, `sleep`, `wake`, reads | the loaded weights and contexts (immutable while serving) |
+| `kv_pool` | the pool's sequence ids and parked ids (`park_free`), `page_io`, `pending_restores`, `page_io_bytes`, `prompt_cache`, checkpoint `host_budget` | `place(frame)` (wraps `llama_decode`, returns placed/no_room per piece), `move(seq, tier)`, `copy`, `remove`, `restore(page)`, host-byte `charge`/`release` | **the allocator**: every KV and host-cache mutation, decode placement included, goes through it |
+| `resident_minds` | `minds`, `mind_clock` | `prefetch`, `switch_in`, `preempt`, `coldest_legal` | which mind lives where (policy; moves are `kv_pool`'s) |
+| `checkpoint_store` (#140) | each slot's checkpoint list | `keep`, `make_room`, `release`, `cut_back_to` | none (its bytes are charged through `kv_pool`) |
+| `slot_registry` | `slots`, `n_busy_slots`, `t_last_busy_us`, `slot_prompt_similarity` | `admit(task)`, `launch`, `release`, `cancel`, `on_token` (today `process_token`) | **a turn's completion and cancellation**: only it ends a slot's task |
+| `frame_batcher` | `batch`, `n_batch_gen`, `n_empty_consecutive`, `t_decode_start`, `t_prompt_start`, `n_prompt_queued`, `t_decode_owed_us`, frame records (#142) | `compose`, `run` (asks `kv_pool.place`; on no_room asks `resident_minds` to make room, else defers through `slot_registry`) | the device timeline (4.13) |
+| `learning` | `trainer`, `learning`, `learning_residencies`, `learning_workspace_residency`, `learn_ledger`, `residency_mirror`, `learn_chunk_us`, `learn_lr`, `ledger_published*` | `begin`, `step`, `release_pin`, duty | a learning step's fence (borrows a slot from `slot_registry` and cells from `kv_pool`) |
+| `responder` | `queue_results` | `send_partial`, `send_final`, `send_error` | none (pure output; `slot_registry` decides when) |
+| `task_dispatch` | `queue_tasks` | `dispatch(task)` (today `process_single_task`) | none (routes each task to its owner) |
+| `observer` | `metrics`, `n_tokens_generated`, `lora_report*`, `trace`, `slots_debug`, `slots_n_diff`, `t_last_load_progress_ms` | reads, snapshot | none (decides nothing) |
+
+Order of extraction (each a separate reviewed change, pure moves plus the verb boundary): `observer` and `responder`
+(no custody), then `kv_pool` (the allocator, so every later owner calls it), then `resident_minds` and
+`checkpoint_store`, then `slot_registry`, then `frame_batcher` (where 4.11.10's admission lands), then `learning`,
+then `task_dispatch`, deleting the include fragments as each owner absorbs them.
+
 **Rules every module obeys** (a module that cannot meet one is redesigned, not excepted):
 1. **One owner per state.** Only the owner mutates it; others read its published snapshot (a watch channel in Rust,
    `snapshot_cell` in the engine). No shared mutable state between modules, no lock held across a call.
