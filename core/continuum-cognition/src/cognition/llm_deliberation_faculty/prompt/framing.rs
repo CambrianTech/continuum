@@ -53,25 +53,6 @@ impl FramingOffer {
 }
 
 impl LlmDeliberationFaculty {
-    /// One menu category's levels. Whether it HAS a collapsed level is decided from its text (the
-    /// collapse estimates fewer tokens than the expansion), never from this act's calibration: a
-    /// ladder whose shape follows a live density loses a level when the density moves, and a held
-    /// level that no longer exists renders the other one, rewriting her system prompt mid-epoch
-    /// (Benchy on the M5, 2026-11-17 22:12Z: density 1 -> 0.899 charged plasticity's 20 and 19
-    /// estimated tokens both 18, the collapse vanished, the menu expanded, and 17,316 tokens of his
-    /// KV re-prefilled). Only the costs are charged; a collapse keeps a cost strictly below its
-    /// expansion and never below what its own text charges.
-    fn category_rungs(line: &MenuLine, charge: &dyn Fn(usize) -> u32) -> Rungs {
-        let line_cost = |text: &str| text.len().div_ceil(GUARD_CHARS_PER_TOKEN);
-        let (expanded, collapsed) = (line_cost(&line.expanded), line_cost(&line.collapsed));
-        let whole = charge(expanded);
-        if collapsed + 1 >= expanded {
-            return Rungs::whole(whole);
-        }
-        let priced = charge(collapsed + 1).min(whole.saturating_sub(1)).max(charge(collapsed));
-        Rungs::kept(whole, (), [(priced, ())]).0
-    }
-
     /// Her framing this act as a consumer: its irreducible blocks whole, then each menu category
     /// at its levels. `sent` is what her native surface sends (canonical names); `held` the menu
     /// categories her head's epoch holds expanded.
@@ -97,7 +78,7 @@ impl LlmDeliberationFaculty {
         importance.sort_by_key(|&i| (u8::from(!covered(&lines[i])), i));
         let mut items = vec![Rungs::whole(charge(rest))];
         for &i in &importance {
-            items.push(Self::category_rungs(&lines[i], charge));
+            items.push(lines[i].levels(charge));
         }
         let mut offer = FramingOffer { lines, importance, leveled: Leveled::new(items), held: None };
         offer.held = held.map(|expanded| offer.rungs_of(expanded));
@@ -162,8 +143,8 @@ mod tests {
         };
         let at = |measured: u64, estimated: u64| move |tokens: usize| (tokens as u64 * measured).div_ceil(estimated) as u32;
         let (raw, measured) = (at(1, 1), at(14_659, 16_305));
-        let before = LlmDeliberationFaculty::category_rungs(&line, &raw);
-        let after = LlmDeliberationFaculty::category_rungs(&line, &measured);
+        let before = line.levels(&raw);
+        let after = line.levels(&measured);
         assert_eq!(before.costs().len(), 2, "its collapse is smaller text: a level");
         assert_eq!(after.costs().len(), before.costs().len(), "a calibration never adds or removes a level");
         let collapsed_text = line.collapsed.len().div_ceil(GUARD_CHARS_PER_TOKEN);
