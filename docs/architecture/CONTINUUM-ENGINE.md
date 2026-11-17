@@ -2455,6 +2455,45 @@ re-tokenizes the new messages every act: encoding on the hot path).
   recomputed == 0 across three or more acts, freezes and binds; and time the core's per-act CPU (expected:
   memcpy of the delta, no tokenizer call).
 
+**The persona engine: our loop on libllama, replacing `llamacpp_scheduler` (2026-11-17; direction agreed by
+Codex 20:57Z, API before integration, no serving switch yet).** llama-server's prompt loop assumes a task holds its
+whole prompt (47 sites: prefix match, checkpoints, batching, context checks), so an append-only persona cannot live
+inside it without rewriting it. `continuum-engine::inference::backends::llamacpp_scheduler` already drives libllama
+in-process, but batches every sequence per decode and `memory_seq_rm`s a sequence on close: the opposite of 4.14. It
+is replaced, not joined by a second scheduler. llama-server remains only the OpenAI adapter for external drivers
+(line 16), calling the same owner. The typed API (Rust over the fork's C seam, bindgen'd through `core/llama`):
+
+```rust
+/// One persona's execution state, owned once: native blocks + token history + receipts (fork #147).
+pub struct Persona { raw: llama::PersonaHandle, id: PersonaId, epoch: Epoch, residency: Residency }
+pub enum Residency { Active { stream: Stream }, Staged { stream: Stream }, Host, Flash }
+
+/// The one engine owner: one context, ONE mind decoding at a time, the next staged beside her.
+pub struct PersonaEngine { ctx: llama::Context, personas: PersonaTable, active: Option<PersonaId>, next: Option<PersonaId> }
+
+pub struct Append<'a> { persona: PersonaId, epoch: Epoch, seq: RequestSeq, frontier: Frontier,
+                        request: RequestId, delta: &'a [llama::Token] }
+pub enum ActOutcome { Generated(Completion), Replayed(Completion), Refused(ActRefusal) }
+
+impl PersonaEngine {
+    /// Reserve her blocks, tokens and receipts under the aggregate admission owner (Codex's), once per epoch.
+    pub fn admit(&mut self, persona: PersonaId, epoch: Epoch, terms: AdmittedCapacity) -> Result<(), AdmitRefusal>;
+    /// Bind her (if staged/host), append the delta, decode ONLY it, sample to her stop; generated ids join her tail.
+    /// A replayed seq returns its recorded Completion and never decodes again.
+    pub fn act(&mut self, append: Append<'_>, terms: GenerationTerms) -> ActStream;
+    /// Stream the next persona's blocks into a free stream while the active one decodes (transfer, not decode).
+    pub fn stage(&mut self, next: PersonaId) -> Result<StageFence, StageRefusal>;
+    /// Raw move of her blocks to host after the handoff fence; her token history moves with them by reference.
+    pub fn retire(&mut self, persona: PersonaId) -> RetireFence;
+    /// Publish every resident persona's native flash generation, then retire: computed state is never dropped.
+    pub fn shutdown(self) -> ShutdownReceipt;
+}
+```
+Ownership and the conditions before production (Codex): a terminal completion retains her state (never
+`seq_rm`); a cancelled observer never frees an active buffer; flash publication precedes retirement on shutdown; the
+draft streams, recurrent rollback, sampler, genome and learning generation and their fences stay with the persona; a
+request sequence's completion is recorded so its replay returns it; the external adapter calls the same owner.
+
 **Open questions (answered by measurement or prototype before code):**
 1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
    engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
