@@ -23,15 +23,10 @@ pub(super) static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync:
 /// delivery stamps it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealDecodeOutcome {
-    /// Tokens reached the citizen: proof of life, and it ends any failure streak.
+    /// Tokens reached the citizen: proof of life.
     ProofOfLife,
-    /// The generation finished CLEANLY and delivered nothing — no content, no reasoning,
-    /// no tool call — and the engine said it STOPPED. This is the latched-backend class
-    /// (a Metal compute context that has gone bad still answers 200 and streams a
-    /// well-formed body with zero deltas), and it is the one wedge the liveness record
-    /// could not previously see: the transport never failed, so nothing stamped a
-    /// failure while every citizen on the lane got an
-    /// empty turn. A relaunch IS the cure, so this counts against the lane.
+    /// Clean EOF with no content, reasoning or tool call and a Stop finish reason.
+    /// Report the empty completion to its caller; it does not establish engine death.
     DeliveredNothing,
     /// Empty, but the engine said the OUTPUT CAP ended it. The lane is healthy — it
     /// generated until the allowance ran out and the whole budget went to a reasoning
