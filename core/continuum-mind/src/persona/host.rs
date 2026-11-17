@@ -816,7 +816,13 @@ pub(crate) struct SlotBackoff {
 /// Doubling from 2 s, capped at 10 min: a refused seat is tried again soon in case the
 /// cause was transient (a daemon mid-restart), then rarely, and never at pass rate.
 pub(crate) fn backoff_delay(attempts: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((2u64 << attempts.saturating_sub(1).min(9)).min(600))
+    // derived-or-floor: preserves this supervisor's existing ten-minute retry
+    // ceiling; it is retry policy, not a resource grant or a work deadline. A
+    // persistently refused seat is retried within ten minutes without retrying
+    // at reconciler pass rate; admitted work is never interrupted by this bound.
+    const RETRY_CEILING_SECS: u64 = 600;
+    let seconds = 2u64.saturating_pow(attempts.max(1)).min(RETRY_CEILING_SECS);
+    std::time::Duration::from_secs(seconds)
 }
 
 /// Pure half of the backoff filter. Plans whose persona is inside its backoff are dropped.

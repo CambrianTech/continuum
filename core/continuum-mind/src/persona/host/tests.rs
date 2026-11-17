@@ -6,10 +6,12 @@
     // expires, or one that does not double and cap.
     #[test]
     fn a_failed_seat_backs_off_doubling_and_capped_and_is_tried_again_after() {
+        assert_eq!(backoff_delay(0).as_secs(), 2);
         assert_eq!(backoff_delay(1).as_secs(), 2);
         assert_eq!(backoff_delay(2).as_secs(), 4);
         assert_eq!(backoff_delay(5).as_secs(), 32);
         assert_eq!(backoff_delay(40).as_secs(), 600, "capped at ten minutes");
+        assert_eq!(backoff_delay(u32::MAX).as_secs(), 600, "saturated attempts cannot overflow");
         let plan = plan_named("Atlas");
         let pid = plan.instance.peer_id.as_uuid();
         let mut map = std::collections::HashMap::new();
