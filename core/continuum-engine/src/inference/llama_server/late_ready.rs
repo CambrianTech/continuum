@@ -153,17 +153,20 @@ impl LlamaServerProcess {
         };
         // Armed through publication: a publish that fails, or is cancelled at any await before
         // the ledger commits, puts the launch back while its engine lives.
-        let published = self.publish_ready(transition, launch).await;
-        match &published {
-            Ok(()) => kept.disarm(),
-            Err(LlamaServerError::ReadinessRefused(reason)) => {
-                if let Some(tail) = kept.tail.take() {
-                    *self.loading.lock() = Some(LoadingLaunch { tail, terminal: Some(reason.clone()) });
-                }
+        match self.publish_ready(transition, launch).await {
+            Ok(()) => {
+                kept.disarm();
+                Ok(())
             }
-            Err(_) => {}
+            Err(error) => {
+                if let LlamaServerError::ReadinessRefused(reason) = &error {
+                    if let Some(tail) = kept.tail.take() {
+                        *self.loading.lock() = Some(LoadingLaunch { tail, terminal: Some(reason.clone()) });
+                    }
+                }
+                Err(error)
+            }
         }
-        published
     }
 
     /// Keep a launch whose engine is alive, so a later launch can finish it. A restore or an
