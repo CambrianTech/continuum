@@ -15,7 +15,8 @@ use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
 use llama::{ContextParams, LoraAdapter, Model};
 use uuid::Uuid;
 
-use super::{sampling, GenerationRequest, SchedulerConfig, TokenEvent};
+use super::geometry::StopsOnExit;
+use super::{sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -86,29 +87,47 @@ struct Driver<'c, 'm> {
     parked: HashMap<PersonaId, Mind>,
 }
 
+/// What the driver thread starts with: the incarnation it serves as, where it publishes what the engine
+/// is, and its one queue.
+pub(super) struct Start {
+    pub(super) incarnation: Incarnation,
+    pub(super) state: tokio::sync::watch::Sender<EngineState>,
+    pub(super) requests: Receiver<GenerationRequest>,
+}
+
 /// Run until every handle is dropped.
-pub(super) fn run(model: &Model, config: &SchedulerConfig, requests: &Receiver<GenerationRequest>) {
+pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
+    let Start { incarnation, state, requests } = start;
+    // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
+    // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
+    let _stops = StopsOnExit { state: &state, incarnation };
+    let refuse = |refused: &StartError| {
+        log.error(&refused.to_string());
+        state.send_replace(EngineState::Refused { incarnation, reason: refused.to_string().into() });
+    };
     let mut ctx = match context(model, config) {
         Ok(ctx) => ctx,
         Err(refused) => {
-            log.error(&refused.to_string());
-            for req in requests {
+            refuse(&refused);
+            for req in &requests {
                 let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
             }
             return;
         }
     };
-    let Some(batch) = usize::try_from(config.n_batch).ok().and_then(NonZeroUsize::new) else {
-        log.error(&StartError::ZeroBatch.to_string());
-        for req in requests {
+    let Some(batch) = usize::try_from(ctx.n_batch()).ok().and_then(NonZeroUsize::new) else {
+        refuse(&StartError::ZeroBatch);
+        for req in &requests {
             let _ = req.response_tx.send(TokenEvent::Error(StartError::ZeroBatch.to_string()));
         }
         return;
     };
-    log.info(&format!("persona scheduler ready (n_ctx={}, streams={STREAMS}, one mind decodes at a time)", config.n_ctx));
+    let geometry = EngineGeometry::applied(incarnation, &ctx, config);
+    log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time)"));
+    state.send_replace(EngineState::Ready(geometry));
     let mut driver = Driver { model, batch, engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)), parked: HashMap::new() };
-    for req in requests {
+    for req in &requests {
         let respond = req.response_tx.clone();
         let event = match driver.serve(req) {
             Ok(done) => done,
