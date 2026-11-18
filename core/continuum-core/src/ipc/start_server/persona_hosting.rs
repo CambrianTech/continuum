@@ -105,29 +105,6 @@ pub(super) fn start_persona_host(
     // budget across slots nobody asked for — 2 personas served through 4
     // slots at a quarter-window each (the 2026-07-10 starvation).
     serving_daemon.set_lane_demand(persona_floor as u32);
-    // The plan is the single grouped source of truth (model + lanes +
-    // host-fit served window). Pass it by reference to the spawner per
-    // [[pass-the-model-struct-no-param-hell]] — no destructured loose
-    // params, no constant clamps re-derived downstream.
-    let serving_plan = serving_daemon.compute_plan();
-    match &serving_plan {
-        Some(p) if p.fits_on_gpu => {
-            tracing::info!(
-                base_model = %p.base_model.model_id,
-                lanes = p.lanes,
-                served_context_window = p.served_context_window,
-                resident = p.resident_models,
-                tier_id,
-                "serving daemon drives persona spawn (model + lanes + served window from ServingPlan)"
-            );
-        }
-        other => {
-            tracing::warn!(
-                plan = ?other,
-                "no GPU-fitting serving plan — spawner falls back to the tier default model, 1 lane, floor window"
-            );
-        }
-    }
     // Persona floor — how many citizens to host. Single source: this one
     // config value drives BOTH the spawner's plan-slot count (via
     // with_population) AND the identity provider's mint floor below, so
@@ -197,7 +174,6 @@ pub(super) fn start_persona_host(
     let supervisor = crate::persona::host::PersonaSpawnSupervisor::new(
         crate::persona::spawner_module::PersonaSpawnerModule::new(hw_cap, tier_cat)
             .with_citizens(resident_roles)
-            .with_serving(serving_plan.as_ref())
             .with_population(persona_floor)
             // The boot draw's bound before any live plan: the last SETTLED lanes
             // this host served (card 7c38ff6f) — handed in once, never re-read.

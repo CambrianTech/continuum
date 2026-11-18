@@ -130,6 +130,7 @@ pub(super) async fn run_persona_host(
     // seats are drawn on that edge, not on the next plan edge.
     let mut alloc_rx = crate::modules::grid_allocator::subscribe();
     let mut alloc_closed = false;
+    let mut serving_rx = crate::inference::llama_server::serving_state_receiver();
     loop {
         pass += 1;
         let plan_ready = serving_plan_rx
@@ -143,10 +144,6 @@ pub(super) async fn run_persona_host(
         // of the local plan. `await_ready_serving` short-circuits to a
         // direct decode-probe of the pinned endpoint (K3, a grid peer).
         let external_lane = crate::inference::llama_server::external_serving_pin().is_some();
-        // The roster follows the LIVE plan's lane count (a pin or tier swap
-        // must never leave more minds than warm lanes — 2026-09-06).
-        let live_plan = serving_plan_rx.borrow().clone();
-        supervisor.refresh_serving(live_plan.as_ref());
         // This node's seats as the grid allocation counts them (seated + open),
         // once the daemon has published; `None` keeps the warm-slot prior.
         let roster_here = alloc_rx.borrow().as_ref().and_then(|p| p.roster_here());
@@ -168,11 +165,11 @@ pub(super) async fn run_persona_host(
                         booted = booted,
                         snapshot_live = snapshot_live,
                         changed = last_pass_row.map(|(a, b, c, d, _)| (a, b, c, d) != pass_state).unwrap_or(true),  // unwrap_or: first row of the boot = a change by definition
-                        "hosting reconciler pass — will enter host body iff (plan_ready || external_lane); a row = a change or one heartbeat per 60 passes"
+                        "hosting reconciler pass — will enter host body on planned, external or already applied serving; a row = a change or one heartbeat per 60 passes"
                     );
             last_pass_row = Some((plan_ready, external_lane, booted, snapshot_live, pass));
         }
-        if plan_ready || external_lane {
+        if plan_ready || external_lane || snapshot_live {
             // `fits_on_gpu` is a RESOURCE decision (the model fits VRAM) — it does
             // NOT prove the lane can DECODE. A lane can fit yet fail EVERY
             // generation with `500 "Compute error."` while `/health` still answers
@@ -186,11 +183,12 @@ pub(super) async fn run_persona_host(
             // the deadline lapses. On timeout we do NOT spawn (a can't-decode lane
             // is a loud, novel failure — never a silent per-turn 500); we park and
             // retry on the next serving edge, self-healing once the lane recovers.
-            let decode_ready = crate::inference::llama_server::await_ready_serving(
+            let applied = crate::inference::llama_server::await_ready_serving(
                 std::time::Duration::from_secs(120),
             )
-            .await
-            .is_some();
+            .await;
+            let verified = applied.as_ref().filter(|state| external_lane || state.ready_verified_at_ms.is_some());
+            let decode_ready = supervisor.refresh_serving(verified);
             let ready_state = (decode_ready, booted);
             let ready_row_due = match last_ready_row {
                 Some((a, b, at)) => {
@@ -300,7 +298,19 @@ pub(super) async fn run_persona_host(
         // sooner on a pressure edge) — or the grid allocation does. The plan
         // watch's `changed()` errs only if the daemon is gone — then there is
         // nothing left to react to.
+        if serving_rx.is_none() {
+            serving_rx = crate::inference::llama_server::serving_state_receiver();
+        }
         let plan_edge = tokio::select! {
+            changed = async {
+                match serving_rx.as_mut() {
+                    Some(state) => state.changed().await,
+                    None => std::future::pending().await,
+                }
+            } => {
+                if changed.is_err() { break; }
+                None
+            }
             changed = serving_plan_rx.changed() => Some(changed),
             changed = alloc_rx.changed(), if !alloc_closed => {
                 if changed.is_err() {

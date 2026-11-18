@@ -8,16 +8,6 @@ impl ServingDaemonModule {
         self.intent.clone()
     }
 
-    /// Compute the current serving plan from the live host snapshot + on-disk
-    /// models, WITHOUT relying on a tick having run. The boot path calls this
-    /// to drive the spawner before the tick loop starts — single source of
-    /// truth for "what model + how many lanes."
-    pub fn compute_plan(&self) -> Option<ServingPlan> {
-        let budget = self.host_budget_snapshot();
-        let mut demand = self.serving_demand();
-        account_training_leases(&mut demand, &budget.leases);
-        plan_serving(&budget.host, &self.live_candidates(), &demand)
-    }
 
     /// Recompute the plan from the live host snapshot + on-disk models, publish
     /// it, and log the decision. Idempotent — safe to call on init and tick.
