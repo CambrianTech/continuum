@@ -106,9 +106,10 @@ pub enum NativeProtocols {
     /// Cloud function-calling: native `tool_use`/`tool_calls` blocks + native
     /// JSON-Schema enforcement. (Anthropic, OpenAI-with-tools.)
     FunctionCalling,
-    /// llama.cpp family: prompt-driven tool JSON + GBNF grammar-constrained
-    /// structured output (the sampler refuses grammar-violating tokens).
-    GrammarConstrained,
+    /// The in-process llama.cpp engine: tools rendered through the model's OWN chat template and
+    /// read back as native tool calls by its own parser (llama.cpp common/chat, the contract
+    /// llama-server's `/v1` had), with GBNF grammar-constrained structured output.
+    ModelTemplate,
 }
 
 impl NativeProtocols {
@@ -118,7 +119,7 @@ impl NativeProtocols {
             Self::None => ToolProtocol::None,
             Self::PromptEmulated => ToolProtocol::None,
             Self::FunctionCalling => ToolProtocol::NativeFunctionCalling,
-            Self::GrammarConstrained => ToolProtocol::JsonInPrompt,
+            Self::ModelTemplate => ToolProtocol::NativeFunctionCalling,
         }
     }
 
@@ -128,7 +129,7 @@ impl NativeProtocols {
             Self::None => StructuredOutputProtocol::None,
             Self::PromptEmulated => StructuredOutputProtocol::PromptOnly,
             Self::FunctionCalling => StructuredOutputProtocol::JsonSchema,
-            Self::GrammarConstrained => StructuredOutputProtocol::GrammarConstrained,
+            Self::ModelTemplate => StructuredOutputProtocol::GrammarConstrained,
         }
     }
 }

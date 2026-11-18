@@ -50,6 +50,7 @@ impl LlamaCppBackend {
             embed_residency: OnceLock::new(),
             caps,
             scheduler: OnceLock::new(),
+            chat: OnceLock::new(),
             mtmd: Mutex::new(None),
             loras: Mutex::new(HashMap::new()),
         })
@@ -453,6 +454,15 @@ impl LlamaCppBackend {
             Ok(scheduler) => Ok(scheduler),
             Err(refused) => Err(refused.to_string()),
         }
+    }
+
+    /// The model's own chat contract, built once: its template rendered with tools, and its native
+    /// tool-call output parsed back. A model llama.cpp cannot build one for is refused by name.
+    pub fn chat_templates(&self) -> Result<&llama::ChatTemplates, String> {
+        self.chat
+            .get_or_init(|| llama::ChatTemplates::for_model(&self.model))
+            .as_ref()
+            .map_err(|refusal| format!("{}: {refusal}", self.model_id))
     }
 
     /// Start the persona scheduler for `allocation` (idempotent) and return its lifecycle.

@@ -257,6 +257,9 @@ pub struct LlamaCppBackend {
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
     pub(super) scheduler: OnceLock<(GenerationAllocation, Result<Scheduler, SchedulerError>)>,
+    /// The model's own chat contract (its jinja template with tools, its native tool-call parse),
+    /// built from the model once at its first tool turn and held for the backend's life.
+    pub(super) chat: OnceLock<Result<llama::ChatTemplates, llama::ChatRefusal>>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests

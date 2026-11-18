@@ -11,9 +11,9 @@
 //! - an adapter whose requests never open a think (the cloud Anthropic adapter, which sends no
 //!   `thinking` block; the heuristic test adapter) keeps any budget trivially and refuses an
 //!   admission it cannot enforce ([`generate_without_thinking`]);
-//! - the in-process llama adapter has no reasoning-budget sampler in our bindings (the fork's
-//!   `common_reasoning_budget_init` is not reached from `llama`), so it refuses a think budget
-//!   typed rather than let a turn think unbounded.
+//! - the in-process llama adapter carries the think budget itself: llama.cpp's
+//!   `common_reasoning_budget_init` sampler (through `llama::SamplerChainBuilder::reasoning_budget`),
+//!   bounded by the model template's own thinking tags, as llama-server enforced it.
 //!
 //! Every generation goes through [`DispatchTermsPolicy::generate_admitted`]: the terms-less paths
 //! (`generate_text`, `generate_stream`, `generate_stream_checked`) take a [`Dispatched`] witness
@@ -101,13 +101,6 @@ pub fn refuse_schema(request: &TextGenerationRequest) -> Result<(), InferenceErr
     }
 }
 
-/// The refusal of a think budget an adapter cannot carry, when the terms carry one.
-pub fn refuse_think_budget(request: &TextGenerationRequest, terms: &DispatchTerms) -> Result<(), InferenceError> {
-    match terms.think {
-        Think::Budget(_) => Err(InferenceError::ThinkUnenforceable { model: model_of(request) }),
-        Think::ModelDefault => Ok(()),
-    }
-}
 
 /// Implement [`DispatchTermsPolicy`] for an adapter whose requests never open a think (a test
 /// fixture, a canned adapter): the one generic contract, [`generate_without_thinking`].
@@ -147,8 +140,9 @@ impl DispatchTermsPolicy for crate::ai::anthropic_adapter::AnthropicAdapter {
     }
 }
 
-/// The in-process llama adapter: no reasoning-budget sampler reaches our bindings, so a think
-/// budget is refused typed (the turn is never sent unbounded); an admission likewise.
+/// The in-process llama adapter: it carries a think budget itself (llama.cpp's reasoning-budget
+/// sampler, bounded by the template's own thinking tags, in `generate_text`), the budget
+/// llama-server enforced; an admission it cannot enforce is refused typed.
 #[async_trait::async_trait]
 impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter {
     async fn generate_admitted(
@@ -157,11 +151,11 @@ impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter
         terms: DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError> {
-        refuse_think_budget(&request, &terms)?;
         // No schema-to-grammar path reaches our bindings: a schema is refused, never degraded to
         // the plain JSON grammar.
         refuse_schema(&request)?;
-        generate_without_thinking(self, request, terms, sink).await
+        refuse_unenforceable_admission(&request, &terms)?;
+        self.generate_stream_checked(request, sink, Dispatched::under(&terms)).await
     }
 }
 
@@ -188,10 +182,8 @@ mod tests {
         assert_eq!(refuse_unenforceable_admission(&request(), &counted), Err(InferenceError::AdmissionUncounted { model: "m".into() }));
     }
 
-    // what this catches: the in-process llama adapter's difference. Its bindings carry no
-    // reasoning budget, so any think budget (zero included) is refused typed, never sent unbounded.
     #[tokio::test]
-    async fn the_in_process_adapter_refuses_a_think_budget_typed() {
+    async fn the_in_process_adapter_refuses_a_schema_it_cannot_enforce() {
         // Never loaded: the refusal comes before any model is touched.
         let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::for_launch(&crate::inference::llamacpp_adapter::LlamaCppLaunch {
             model_id: "m".into(),
@@ -202,11 +194,6 @@ mod tests {
             n_gpu_layers: 0,
         });
         let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        for think in [ThinkBudget(0), ThinkBudget(338)] {
-            let terms = DispatchTerms::thinking(Think::Budget(think));
-            let refused = adapter.generate_admitted(request(), terms, sink.clone()).await;
-            assert_eq!(refused.err(), Some(InferenceError::ThinkUnenforceable { model: "m".into() }), "{think:?}");
-        }
         // what this catches: a JSON schema the in-process path cannot enforce degrading to the plain
         // JSON grammar (or none), so a typed parse downstream gets an unconstrained answer. It is
         // refused before any model is touched, under the model's own think.

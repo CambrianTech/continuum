@@ -81,6 +81,7 @@ fn model_info_with_runtime(
 mod construction;
 pub use construction::LlamaCppLaunch;
 mod engine_start;
+mod native_chat;
 pub use engine_start::{EngineKv, EngineLaunch, EngineLaunchRefusal, Offload};
 mod payload;
 #[cfg(test)]
@@ -226,7 +227,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .local()
             .context_window(max_ctx)
             .max_output_tokens(output_window)
-            .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
+            .protocols(crate::ai::adapter::NativeProtocols::ModelTemplate)
             .build()
     }
 
@@ -318,7 +319,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
-        _dispatched: crate::ai::adapter::Dispatched,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         let allocation = self.allocation()?;
         let backend = self.ensure_loaded()?;
@@ -485,9 +486,21 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // but cumulative across thousands of turns it can shadow real
         // bottlenecks. Bracketing it lets the operator subtract it
         // from `inference.forward.*` cleanly.
-        let prompt = continuum_base::time_sync!("inference.render_chat", {
-            llama::render_chat(template.as_deref(), &messages, true)
-        })?;
+        // A text turn renders through the model's own chat contract (its template with the tools
+        // it is offered, its reply read back by its own parser), the contract a resident had on
+        // llama-server. A media turn keeps the marker-splicing render the projector needs.
+        let think_on = !matches!(dispatched.terms().think.budget(), Some(budget) if budget.0 == 0);
+        let native = if collected_media.is_empty() {
+            Some(native_chat::render(&backend, &request, think_on)?)
+        } else {
+            None
+        };
+        let prompt = match &native {
+            Some(turn) => turn.prompt.prompt.clone(),
+            None => continuum_base::time_sync!("inference.render_chat", {
+                llama::render_chat(template.as_deref(), &messages, true)
+            })?,
+        };
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -497,7 +510,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .max_tokens
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or_else: a caller with no cap decodes to the model's trained context, never a guessed one
-        let sampling = sampling_config_from_request(&request);
+        let mut sampling = sampling_config_from_request(&request);
+        // Her think budget, bounded by the template's own thinking tags (the budget llama-server
+        // enforced). No budget stated is the model's default, as it ran there.
+        sampling.think = match (dispatched.terms().think.budget(), &native) {
+            (Some(budget), Some(turn)) => turn.prompt.think_bound(budget.0),
+            _ => None,
+        };
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -506,6 +525,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // field carries the correct strings (e.g. `<|im_end|>`) that the
         // scheduler matches against streamed output.
         let mut stop_owned: Vec<String> = request.stop_sequences.iter().flatten().cloned().collect();
+        // The template's own extra stops (a tool-call format that ends a turn on a marker).
+        for stop in native.iter().flat_map(|turn| turn.prompt.additional_stops.iter()) {
+            if !stop_owned.contains(stop) {
+                stop_owned.push(stop.clone());
+            }
+        }
         if let Some(model_meta) =
             crate::model_registry::try_global().and_then(|reg| reg.model(backend.model_id()))
         {
@@ -644,7 +669,15 @@ impl AIProviderAdapter for LlamaCppAdapter {
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
-        let (text, tokens) = result?;
+        let (raw_text, tokens) = result?;
+        // Read the reply with the template's own parser: prose, reasoning and tool calls apart.
+        let (text, reasoning, tool_calls) = match &native {
+            Some(turn) => {
+                let reply = turn.read(&raw_text)?;
+                (reply.text, reply.reasoning, reply.tool_calls)
+            }
+            None => (raw_text, None, Vec::new()),
+        };
 
         let elapsed = gen_start.elapsed();
         let tok_per_sec = if elapsed.as_secs_f64() > 0.0 {
@@ -685,7 +718,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
 
         Ok(TextGenerationResponse {
             text,
-            finish_reason: FinishReason::Stop,
+            finish_reason: if tool_calls.is_empty() { FinishReason::Stop } else { FinishReason::ToolUse },
             model: backend.model_id().to_string(),
             provider: LLAMACPP_PROVIDER_ID.to_string(),
             usage: UsageMetrics {
@@ -697,12 +730,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
             response_time_ms: elapsed.as_millis() as u64,
             request_id: format!("llamacpp-{}", continuum_base::time::EpochMs::now().millis()),
             content: None,
-            tool_calls: None,
-            // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
-            // it would emit inline `<think>` in `text` too — apply
-            // `crate::ai::openai_adapter::extract_reasoning` here to separate it.
-            // Not Asha's path today (she routes through the openai adapter).
-            reasoning: None,
+            tool_calls: (!tool_calls.is_empty()).then_some(tool_calls),
+            // The template's parser separates the model's reasoning from its answer.
+            reasoning,
             routing: None,
             error: None,
             timing: None,

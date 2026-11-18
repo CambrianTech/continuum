@@ -28,6 +28,10 @@ pub struct SamplingConfig {
     /// match the grammar. None = unconstrained. Set by adapters when the
     /// caller's request_format demands a structured shape (JsonObject).
     pub grammar: Option<String>,
+    /// The turn's think budget as the model's template bounds it, or `None` when the turn states
+    /// no budget (`Think::ModelDefault`: the model's own default, as llama-server ran it) or the
+    /// template does not think.
+    pub think: Option<llama::ThinkBound>,
 }
 
 impl SamplingConfig {
@@ -39,6 +43,7 @@ impl SamplingConfig {
             top_k: 0,
             top_p: 1.0,
             grammar: None,
+            think: None,
         }
     }
     /// Config for chat: slight creativity, standard repeat penalty.
@@ -49,6 +54,7 @@ impl SamplingConfig {
             top_k: 40,
             top_p: 0.95,
             grammar: None,
+            think: None,
         }
     }
 }

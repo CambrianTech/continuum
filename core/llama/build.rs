@@ -43,6 +43,19 @@ fn main() {
         .include(submodule.join("ggml/include"))
         .file(manifest_dir.join("decode_boundary.cpp"))
         .compile("continuum_decode_boundary");
+    // The model's own chat contract (template with tools, native tool-call parse): llama.cpp's
+    // common/chat, which llama-common already links, behind a C seam (chat_template.cpp).
+    println!("cargo:rerun-if-changed=chat_template.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .include(submodule.join("common"))
+        .include(submodule.join("vendor"))
+        .file(manifest_dir.join("chat_template.cpp"))
+        .compile("continuum_chat_template");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");

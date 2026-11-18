@@ -26,6 +26,9 @@ use crate::runtime;
 pub(super) enum TurnError {
     #[error("her prompt did not tokenize: {0}")]
     Tokenize(String),
+    /// Her turn's sampler could not be built as asked (a think bound llama.cpp refused).
+    #[error("her sampler was refused: {0}")]
+    Sampler(String),
     #[error(transparent)]
     Stage(#[from] StageError),
     #[error(transparent)]
@@ -190,7 +193,7 @@ impl Driver<'_, '_> {
             from
         };
 
-        let mut sampler = sampling::sampler(self.model, &req.sampling);
+        let mut sampler = sampling::sampler(self.model, &req.sampling).map_err(TurnError::Sampler)?;
         let mut pos = i32::try_from(from).map_err(|_| TurnError::TooLong)?;
         // Only her final prompt position is sampled: the sampler accepts what it samples, so sampling
         // an earlier chunk would advance her grammar, penalties and RNG on output that never happened
