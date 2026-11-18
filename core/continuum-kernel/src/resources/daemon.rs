@@ -230,6 +230,7 @@ impl ResourceDaemon {
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
             governor.set_physical_used(src.kind(), src.used_bytes());
+            governor.set_backing(src.kind(), src.backed_by());
         }
         let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
@@ -484,10 +485,10 @@ impl ResourceDaemon {
         // 2. Read every source's fixed ceiling AND live physical usage OFF the
         //    accounting lock (cached monitor reads). Both feed the governor below;
         //    the ceiling is near-constant, the usage moves with external pressure.
-        let scans: Vec<(ResourceKind, u64, u64)> = self
+        let scans: Vec<(ResourceKind, u64, u64, Option<ResourceKind>)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes(), s.backed_by()))
             .collect();
 
         // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
@@ -531,11 +532,12 @@ impl ResourceDaemon {
         //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil, used) in &scans {
+            for (kind, ceil, used, backing) in &scans {
                 g.set_capacity(*kind, *ceil);
                 // The un-inversion ground truth: everything physically resident,
                 // netted against the fixed ceiling to yield `available`.
                 g.set_physical_used(*kind, *used);
+                g.set_backing(*kind, *backing);
             }
             // Feed the self-declared attribution axis: each consumer's freshly-polled
             // residency. Surfaces per-consumer on the board (the WHO); the physical

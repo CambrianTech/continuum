@@ -59,6 +59,14 @@ pub trait CapacitySource: Send + Sync {
     fn used_bytes(&self) -> u64 {
         0
     }
+
+    /// The kind whose physical bytes this one draws on, when the two share one backing (unified
+    /// memory: GPU allocations come out of host RAM). `None` on a discrete device. The ledger then
+    /// commits this kind by OUR residency on it (granted or measured), never by every process's
+    /// host use, and bounds its availability by the backing's.
+    fn backed_by(&self) -> Option<ResourceKind> {
+        None
+    }
 }
 
 /// VRAM source from a [`GpuMonitor`]. Reports the device's fixed usable total
@@ -421,6 +429,17 @@ impl<R: HostMemoryReader> CapacitySource for UnifiedPoolView<R> {
         // THE fix: one measurement, both axes. Reporting these independently is what
         // let VRAM claim headroom RAM knew was gone.
         self.pool.pool_used()
+    }
+
+    fn backed_by(&self) -> Option<ResourceKind> {
+        // The GPU view draws on the host pool: its availability is bounded by the pool's, and its
+        // own commitment is what our consumers hold on the GPU, so a browser or a build on the host
+        // is never charged against the GPU's working set (the M5, 2026-11-18: 59.5 GB of host use
+        // against a 55.66 GB working-set ceiling read 0 free and refused a 4 MB learning step).
+        match self.kind {
+            ResourceKind::Vram => Some(ResourceKind::Ram),
+            _ => None,
+        }
     }
 }
 

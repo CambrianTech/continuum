@@ -121,6 +121,11 @@ impl ResourceGovernor {
         self.ledger.set_physical_used(kind, bytes);
     }
 
+    /// Daemon feeds which kind a kind draws on (unified memory: VRAM on RAM), each tick.
+    pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
+        self.ledger.set_backing(kind, backing);
+    }
+
     /// Total self-declared residency of a kind across all measured consumers.
     pub fn measured(&self, kind: ResourceKind) -> u64 {
         self.ledger.measured(kind)

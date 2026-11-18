@@ -740,3 +740,64 @@
             "active pinned never eligible regardless of policy"
         );
     }
+
+    mod unified_backing {
+        use super::*;
+        use crate::resources::consumer::ConsumerFootprint;
+
+        // The M5, 2026-11-18 01:15Z, as `resources/board` reported it after the deploy of 2606f3b41.
+        const VRAM_CEILING: u64 = 55_662_788_608; // min(host - reserve, Metal working-set hint)
+        const RAM_CEILING: u64 = 60_129_542_144; // host - reserve
+        const HOST_USED: u64 = 59_533_099_008; // every process on the host, ours or not
+        const ENGINE_RESIDENT: u64 = 40_814_580_336; // serving's measured weights + KV on the GPU
+        const OPTIMIZER: u64 = 4_096_000; // the learning step refused 23 times in 15 minutes
+
+        fn the_m5(backed: bool) -> ResourceLeaseLedger {
+            let mut l = ResourceLeaseLedger::new();
+            for (kind, ceiling) in [(ResourceKind::Vram, VRAM_CEILING), (ResourceKind::Ram, RAM_CEILING)] {
+                l.set_capacity(kind, ceiling);
+                l.set_physical_used(kind, HOST_USED);
+            }
+            l.set_measured(
+                "serving",
+                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: ENGINE_RESIDENT, detail: "Qwen3.6-35B weights + KV".into() }],
+            );
+            if backed {
+                l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+            }
+            l
+        }
+
+        // what this catches (the M5, 2026-11-18): on unified memory every process on the host was
+        // charged against the GPU's working-set ceiling (59.5 GB used against 55.66 GB), so the GPU
+        // read 0 free and a 4 MB learning step was refused all night. Backed by the host pool, the
+        // GPU is committed by OUR residency and bounded by the host's free bytes: the step fits,
+        // and the host's own limit still holds.
+        #[test]
+        fn a_unified_gpu_is_charged_for_our_residency_and_bounded_by_the_host() {
+            assert_eq!(the_m5(false).available(ResourceKind::Vram), 0, "fixture: the night's reading");
+            let l = the_m5(true);
+            let host_free = RAM_CEILING - HOST_USED;
+            assert_eq!(l.available(ResourceKind::Vram), host_free, "bounded by the host pool, which is the tighter limit");
+            assert!(l.available_for("learning:her", ResourceKind::Vram) >= OPTIMIZER, "her optimizer fits");
+            assert_eq!(l.available(ResourceKind::Ram), host_free, "the host axis is unchanged");
+        }
+
+        // what this catches: the backing letting the GPU spend bytes it does not have. Our own GPU
+        // residency still bounds it, and a host grant leaves the GPU less, never the same bytes twice.
+        #[test]
+        fn the_backing_never_lets_the_shared_bytes_be_spent_twice() {
+            let mut l = the_m5(true);
+            l.set_physical_used(ResourceKind::Ram, 0);
+            l.set_physical_used(ResourceKind::Vram, 0);
+            assert_eq!(l.available(ResourceKind::Vram), VRAM_CEILING - ENGINE_RESIDENT, "the GPU's own ceiling binds when the host is free");
+            l.set_measured(
+                "serving",
+                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: VRAM_CEILING, detail: "full".into() }],
+            );
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a GPU full of our residency has nothing to give");
+            l.set_backing(ResourceKind::Vram, None);
+            l.set_physical_used(ResourceKind::Vram, HOST_USED);
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a discrete device keeps capacity minus physical use");
+        }
+    }

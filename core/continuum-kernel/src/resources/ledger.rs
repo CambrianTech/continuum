@@ -148,6 +148,11 @@ pub struct ResourceLeaseLedger {
     /// `available = capacity − max(granted, physical_used)`. Absent (no physical
     /// monitor) → 0, and `available` degrades to `capacity − granted`.
     physical_used: BTreeMap<ResourceKind, u64>,
+    /// Kinds that draw on another kind's physical bytes ([`CapacitySource::backed_by`]): on unified
+    /// memory, VRAM on RAM. Absent: the kind has its own physical backing (a discrete device).
+    ///
+    /// [`CapacitySource::backed_by`]: super::capacity::CapacitySource::backed_by
+    backing: BTreeMap<ResourceKind, ResourceKind>,
 }
 
 impl ResourceLeaseLedger {
@@ -191,6 +196,18 @@ impl ResourceLeaseLedger {
         self.physical_used.get(&kind).copied().unwrap_or(0) // unwrap_or: no physical monitor for this kind; its capacity is unscanned too, so nothing is granted against it
     }
 
+    /// Daemon sets which kind `kind` draws on, each tick, from its capacity source.
+    pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
+        match backing {
+            Some(backing) if backing != kind => {
+                self.backing.insert(kind, backing);
+            }
+            _ => {
+                self.backing.remove(&kind);
+            }
+        }
+    }
+
     /// What is REALLY spoken for of this kind: the larger of what we have granted
     /// (promised, possibly not yet allocated) and what is physically resident
     /// (allocated, possibly never leased — serving's model, a game's VRAM). Taking
@@ -205,8 +222,19 @@ impl ResourceLeaseLedger {
     /// remainder the board reports: `capacity − max(granted, physical_used)`.
     /// Never negative (saturating). With no physical monitor (`physical_used == 0`)
     /// this is exactly `capacity − granted`, the pre-un-inversion behavior.
+    ///
+    /// A kind that draws on another's physical bytes (unified memory: VRAM on RAM) is committed by
+    /// OUR residency on it (granted or measured, never every process's host use), and is bounded by
+    /// its backing's availability, so the shared bytes are never spent twice and a process outside
+    /// ours is charged to the host, never to the GPU's working set.
     pub fn available(&self, kind: ResourceKind) -> u64 {
-        self.capacity(kind).saturating_sub(self.committed(kind))
+        match self.backing.get(&kind) {
+            Some(&backing) => {
+                let ours = self.granted(kind).max(self.measured(kind));
+                self.capacity(kind).saturating_sub(ours).min(self.available(backing))
+            }
+            None => self.capacity(kind).saturating_sub(self.committed(kind)),
+        }
     }
 
     /// Bytes of `kind` currently held by one specific consumer.
