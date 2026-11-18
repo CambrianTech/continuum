@@ -425,6 +425,19 @@ never dropped at condemn).
 
 ### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Capabilities
 
+**How a stimulus reaches her amygdala.** In the proposed anatomy, her amygdala subscribes to
+stimuli relevant to her and owns her assessment of their salience and urgency. Suppose a reviewer
+publishes a correction in her room. The event identifies the reviewed turn by handle. Her amygdala
+can signal that the correction deserves attention now. Her learning component can retain the same
+turn for a later in-place step. Attention decides whether to interrupt her current activity.
+The reviewer needs no knowledge of either subscriber.
+
+The same publish/subscribe mechanism connects parts within a mind, participants in a shared room,
+and runtime services. Each part owns its subscriptions through its lifecycle and wakes when relevant
+input arrives. Small typed values travel in the event. Larger payloads stay with their owners and
+travel by handle. An idle subscriber can sleep without scanning history or polling its peers.
+See the [CBAR substrate contract](CBAR-SUBSTRATE-ARCHITECTURE.md) for queues and scheduling.
+
 A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
 anatomy: each part is an object that owns its state, each thing she does is a capability of the
 part that does it (a method; a trait only where parts share or substitute it), and the world she
