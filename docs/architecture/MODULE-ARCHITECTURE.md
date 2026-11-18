@@ -576,6 +576,15 @@ module) but by the wrong parent: the trigger outlives any one engine incarnation
 the fence when its engine died, and its lease outlived its owner. Owned by the incarnation, the
 incarnation's `shutdown` would have joined it or handed it to its completion owner first.
 
+**The tree is the parallel, data-flow schedule.** Siblings with no dependency edge between them run at
+once, and a node runs as soon as its inputs are ready: preparation flows down, results flow up, and
+the scheduler walks edges with no special cases (the swap pipeline overlaps because staging the NEXT
+persona and decoding the ACTIVE one are different subtrees). A SHARED RESOURCE IS A DEPENDENCY TOO:
+the engine's decode is one resource, so the minds' decodes are ordered children of the engine,
+serialized by that edge, never run in parallel because they are siblings (four minds decoding at
+once ran at 2 tok/s each against 39 for one; 2026-11-17). Independent work runs in parallel;
+work that shares a resource is ordered by it.
+
 **Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
 same interface and calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new gene kind
 in her genome, a new memory tier in her residency) is: write it with its own direct answers, attach
