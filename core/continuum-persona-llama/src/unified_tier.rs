@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
-use continuum_persona_engine::residency::{Direction, Fence, FenceTag, Tier, TierRefusal};
-use llama::{Context, PersonaBlocks, PersonaOwner};
+use continuum_persona_engine::residency::{Direction, Fence, FenceTag, Native, Tier, TierRefusal};
+use llama::{Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
 
 /// One of the context's two execution streams, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,11 +97,19 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         let stream = stream_at(slot);
         self.hold(persona, epoch)?;
         let mind = self.minds.get_mut(&persona).ok_or_else(|| refused(persona, "not held here"))?;
-        // a mind never saved has nothing to bind: she starts on an empty stream
         self.last_rebind = None;
-        if let Some(from) = mind.saved_from {
-            mind.blocks.bind(self.ctx, stream.seq()).map_err(|_| refused(persona, "the fork refused her bind"))?;
-            self.last_rebind = Some(if from == stream { Rebind::SameSequence } else { Rebind::OtherSequence });
+        match mind.saved_from {
+            // A mind never saved has nothing to bind: she starts on this stream as it is, so it must
+            // hold nothing (the context may have been in use before this tier wrapped it; Codex on
+            // #6134). The engine's own memory is the evidence, never this tier's bookkeeping.
+            None if self.ctx.memory_seq_pos_max(stream.seq()) >= 0 => {
+                return Err(refused(persona, "her stream already holds another sequence's state"));
+            }
+            None => {}
+            Some(from) => {
+                mind.blocks.bind(self.ctx, stream.seq()).map_err(|e| native(persona, "the fork refused her bind", e))?;
+                self.last_rebind = Some(if from == stream { Rebind::SameSequence } else { Rebind::OtherSequence });
+            }
         }
         self.streams[slot] = Some(persona);
         Ok(())
@@ -114,7 +122,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         if mind.epoch != epoch {
             return Err(refused(persona, "another epoch of her is bound"));
         }
-        mind.blocks.save(self.ctx, stream.seq()).map_err(|_| refused(persona, "the fork refused her save"))?;
+        mind.blocks.save(self.ctx, stream.seq()).map_err(|e| native(persona, "the fork refused her save", e))?;
         mind.saved_from = Some(stream);
         self.streams[slot] = None;
         Ok(())
@@ -165,5 +173,10 @@ fn stream_at(slot: usize) -> Stream {
 }
 
 fn refused(persona: PersonaId, reason: &'static str) -> TierRefusal {
-    TierRefusal { tier: TIER, persona, reason }
+    TierRefusal { tier: TIER, persona, reason, native: Native::NotAsked }
+}
+
+/// The fork refused: keep its status and name in the refusal.
+fn native(persona: PersonaId, reason: &'static str, refusal: PersonaRefusal) -> TierRefusal {
+    TierRefusal { tier: TIER, persona, reason, native: Native::Refused { status: refusal.status, name: refusal.name } }
 }

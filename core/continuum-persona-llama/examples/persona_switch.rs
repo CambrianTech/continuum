@@ -45,6 +45,33 @@ fn arg(args: &[String], i: usize, what: &str) -> Result<usize, String> {
     args.get(i).ok_or(format!("missing {what}"))?.parse().map_err(|e| format!("{what}: {e}"))
 }
 
+/// Codex on #6134: a tier wrapping a context already in use must not report a first bind over the
+/// state another sequence holds there. One token is decoded into sequence 0 before the tier exists; a
+/// new mind's move in must be refused with that state untouched, and succeed once the stream is empty.
+fn adopted_context_is_refused(model: &Model, ctx: &mut llama::Context<'_>) -> Result<(), String> {
+    let token = *model.tokenize("held", true, false)?.first().ok_or("no token for the probe")?;
+    let mut batch = Batch::allocated(1, 1);
+    batch.push(token, 0, &[0], false);
+    ctx.decode(&batch)?;
+    let mind = FenceTag { persona: PersonaId(uuid::Uuid::new_v4()), epoch: Epoch(1), direction: Direction::In };
+    {
+        let mut tier = UnifiedTier::new(ctx);
+        if tier.begin(mind).is_ok() {
+            return Err("adoption: a new mind was bound over sequence 0's state".into());
+        }
+    }
+    if ctx.memory_seq_pos_max(0) != 0 {
+        return Err("adoption: the refused move changed sequence 0's state".into());
+    }
+    ctx.memory_seq_rm(0, -1, -1);
+    if UnifiedTier::new(ctx).begin(mind).is_err() {
+        return Err("adoption: a new mind was refused an empty stream".into());
+    }
+    ctx.memory_seq_rm(0, -1, -1);
+    println!("persona_switch: adoption: a new mind is refused over held state and bound on an empty stream");
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let model_path = args.get(1).ok_or("usage: persona_switch <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>")?;
@@ -57,6 +84,7 @@ fn main() -> Result<(), String> {
     let window = (prompt_tokens + decode_tokens * rounds + 64) as u32;
     let params = ContextParams { n_ctx: window * 2, n_batch: 2048, n_ubatch: 2048, n_seq_max: 2, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
     let mut ctx = model.new_context(params)?;
+    adopted_context_is_refused(&model, &mut ctx)?;
     let mut tier = UnifiedTier::new(&mut ctx);
 
     let mut parked: Vec<Mind> = (0..minds)
