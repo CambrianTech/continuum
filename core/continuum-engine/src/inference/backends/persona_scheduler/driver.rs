@@ -12,7 +12,7 @@ use continuum_persona_engine::pipeline::Identified;
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_engine::turn::{plan, History, Prefill};
 use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
-use llama::{ContextParams, LoraAdapter, Model};
+use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;

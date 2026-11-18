@@ -25,7 +25,7 @@ pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
 
 use std::sync::Arc;
 
-use llama::{FlashAttn, KvCacheType, LoraAdapter, Model};
+use llama::{KvCacheType, LoraAdapter, Model};
 use uuid::Uuid;
 
 use super::SamplingConfig;

@@ -219,7 +219,7 @@ impl LlamaCppAdapter {
 
         // Slow path — load. Take write lock; another thread may have raced
         // here, so check again before constructing.
-        let mut guard = self.backend.write();
+        let guard = self.backend.write();
         if let Some(b) = guard.as_ref() {
             return Ok(b.clone());
         }
