@@ -148,7 +148,9 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const belowMind = crates('continuum-engine', 'continuum-vitals', 'continuum-prompt', 'continuum-engram', 'continuum-capture', 'continuum-embedding', 'continuum-store', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core', 'continuum-gateway');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   // The floor crates (base, host, git) sit below the kernel: a kernel change runs everything above them.
-  assert.deepEqual(scope(['core/continuum-persona-engine/src/persona/unit.rs']), crates('continuum-persona-engine', 'continuum-persona-llama'));
+  // The persona engine sits under serving's engine now (persona_scheduler drives it): a change runs it,
+  // its llama tier, and everything the engine reaches.
+  assert.deepEqual(scope(['core/continuum-persona-engine/src/persona/unit.rs']), crates(...belowMind.crates, 'continuum-persona-engine', 'continuum-persona-llama'));
   const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
