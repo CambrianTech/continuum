@@ -76,7 +76,7 @@ else
 
     # Fetch latest release version
     echo -e "${YELLOW}Fetching latest LiveKit server release...${NC}"
-    LATEST_VERSION=$(curl -sL https://api.github.com/repos/livekit/livekit/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/')
+    LATEST_VERSION=$(curl -sL https://api.github.com/repos/livekit/livekit/releases/latest | grep '"tag_name"' | sed -E 's/.*"v([^"]+)".*/\1/') || true
 
     if [ -z "$LATEST_VERSION" ]; then
         echo -e "${RED}Failed to fetch latest version. Using fallback v1.9.11${NC}"
