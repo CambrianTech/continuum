@@ -397,8 +397,9 @@ model, finds an owner by its folder and never reconstructs it from functions spr
 - Repairing an area moves its state and operations into its owner, migrates every caller, and
   deletes the old path in the same change. Wrapping the same globals in a struct is not an object.
 - A pure directory move (paths only, tests unchanged) and a transfer of ownership (who may change
-  or release state) are separate changes: the move is proven by unchanged tests, the transfer by
-  lifecycle and fault tests (drop mid-operation, relaunch, restart).
+  or release state) are separate changes: the move is proven by diff or syntax-tree equivalence plus
+  a build and the tests, the transfer by lifecycle and fault tests (drop mid-operation, relaunch,
+  restart).
 - Rust gives this without inheritance: structs, methods, traits at real seams, adapters for what
   varies, and `Drop` that hands custody to its completion owner rather than discarding it.
 
@@ -422,11 +423,12 @@ learners, workspace, custody claims, slot KV; retired by the serving lifecycle's
 never dropped at condemn).
 
 
-### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Traits
+### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Capabilities
 
 A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
-anatomy: each part is an object that owns its state, each thing she does is a trait (a verb any
-fitting part implements), and the world she lives in is outside her. The `Persona` is the root
+anatomy: each part is an object that owns its state, each thing she does is a capability of the
+part that does it (a method; a trait only where parts share or substitute it), and the world she
+lives in is outside her. The `Persona` is the root
 object; she moves whole (CONTINUUM-ENGINE 4.14), so everything that is hers is reachable from her.
 
 **Ownership is not location.** She owns her identity, the versions of her state and the authority
@@ -438,7 +440,7 @@ owner and are reclaimed only on its fence or a verified process death; moving he
 tiers never invalidates it. The tree below is LOGICAL composition across the existing crates (the
 placement map, 9.2), not one crate that all of her source moves into.
 
-**Her parts (nouns, objects; one directory each under `persona/`):**
+**Her parts (nouns, objects; a LOGICAL tree: each part lives in the crate the placement map gives it):**
 
 ```
 Persona                    one being: identity, mind, genome, body, residency, learning
@@ -465,7 +467,7 @@ Persona                    one being: identity, mind, genome, body, residency, l
 **Her verbs (capabilities: a method on the part that does it by default; a trait only where parts
 really share or substitute the verb, never one trait per verb, never dynamic dispatch per block):**
 
-| Trait | Meaning | Implemented by |
+| Capability | Meaning | Done by |
 |---|---|---|
 | `Perceive` | take in what happened, as items for her workspace | Senses, her sources |
 | `Attend` | choose what her mind is on, and how urgently | Attention, Amygdala |
@@ -478,6 +480,28 @@ really share or substitute the verb, never one trait per verb, never dynamic dis
 | `Consolidate` | dream: replay, prune, strengthen | Hippocampus, Learning |
 | `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
 | `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
+
+**Lifecycle composes through the tree (the one verb that is a shared trait).** Every part has a
+lifetime, and the parent, not the caller, knows its children, their order and their outstanding
+work:
+
+```rust
+trait Lifecycle {
+    async fn prepare(&mut self) -> Ready;      // stage for use (page in, bind, warm)
+    async fn suspend(&mut self) -> Preserved;  // keep state; finish or hand off outstanding work
+    async fn resume(&mut self) -> Bound;       // bind what was preserved
+    async fn shutdown(&mut self) -> Released;  // children first, then own resources, safely
+}
+```
+
+`persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
+order and combines what each reports. "Swap this persona" is `suspend` on one and `resume` on the
+next; "shut down this engine" is `shutdown` on its incarnation, which coordinates its learners,
+workspace, custody and slots. Each outcome is typed and says what is pending: unfinished work stays
+explicitly pending (handed to its completion owner), never reported done and never dropped. Every
+call is idempotent: a repeated `suspend` on a suspended part reports the same preservation. The
+preservation rules are written once, inside the part that owns the state, and every caller gets
+them for free.
 
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
