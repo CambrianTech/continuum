@@ -2,17 +2,7 @@
 
 use super::{Epoch, PersonaId};
 
-/// Her five parts (4.14 "The object design"): execution blocks, token history, the genome
-/// generation her decode binds, learning custody, decode state (drafts, sampler, rollback).
-/// Generic so each part is the native handle in the engine and a plain value in a contract test.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersonaParts<Blocks, Tokens, Genome, Learning, Decode> {
-    pub blocks: Blocks,
-    pub tokens: Tokens,
-    pub genome: Genome,
-    pub learning: Learning,
-    pub decode: Decode,
-}
+use super::{Lifecycle, PersonaParts};
 
 /// A part was missing from a move: the unit is refused whole, never assembled from pieces.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -76,5 +66,16 @@ impl<B, T, G, L, D> PersonaUnit<B, T, G, L, D> {
     /// Give up the whole unit as its parts (a tier's copy-out takes all of them at once).
     pub fn into_parts(self) -> PersonaParts<B, T, G, L, D> {
         self.parts
+    }
+}
+
+impl<B, T, G, L, D> Lifecycle for PersonaUnit<B, T, G, L, D>
+where
+    PersonaParts<B, T, G, L, D>: Lifecycle + Send,
+{
+    type Suspension = <PersonaParts<B, T, G, L, D> as Lifecycle>::Suspension;
+
+    async fn suspend(&mut self) -> Self::Suspension {
+        self.parts.suspend().await
     }
 }

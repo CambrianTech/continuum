@@ -1,7 +1,12 @@
 //! A persona's execution state, owned once and moved only whole.
 
 mod id;
+mod lifecycle;
 mod unit;
 
 pub use id::{Epoch, PersonaId};
-pub use unit::{PersonaParts, PersonaUnit, PartialMove};
+pub use lifecycle::{Lifecycle, PersonaParts, Preservation, Suspension};
+pub use unit::{PersonaUnit, PartialMove};
+
+#[cfg(test)]
+mod lifecycle_tests;
