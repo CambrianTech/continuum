@@ -28,6 +28,7 @@ members = [
     "core/continuum-core",
     "core/continuum-sentinel",
     "core/continuum-kernel",
+    "core/continuum-persona-engine",
     "core/continuum-store",
     "core/continuum-grid",
     "core/continuum-mind",

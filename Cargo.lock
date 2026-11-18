@@ -3587,6 +3587,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-persona-engine"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-positron"
 version = "0.1.0"
 dependencies = [
