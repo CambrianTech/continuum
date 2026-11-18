@@ -214,8 +214,47 @@ impl ResourceLeaseLedger {
     /// the max is the un-inversion in one line: it protects a freshly-granted
     /// lease that hasn't allocated (granted > physical) AND refuses to hand out
     /// bytes that are physically gone whoever took them (physical > granted).
+    ///
+    /// A pool other kinds draw on (unified memory: RAM, which the GPU's VRAM is backed by) owes its
+    /// bytes to every kind in it at once: physical use plus every grant not yet resident (a consumer's
+    /// grant past its measured residency, on any kind of the pool), and never less than the pool's
+    /// grants together. So each grant, on either axis, spends the shared headroom the moment it is
+    /// made, once, and the next sample takes over as its bytes land (Codex on #6124).
     pub fn committed(&self, kind: ResourceKind) -> u64 {
-        self.granted(kind).max(self.physical_used(kind))
+        let pool = self.pool_kinds(kind);
+        if pool.len() == 1 {
+            return self.granted(kind).max(self.physical_used(kind));
+        }
+        let promised = pool.iter().map(|k| self.granted(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
+        let landing = pool.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
+        promised.max(self.physical_used(kind).saturating_add(landing))
+    }
+
+    /// The pool `kind` draws on: the kind it is backed by, or itself.
+    fn pool_root(&self, kind: ResourceKind) -> ResourceKind {
+        match self.backing.get(&kind) {
+            Some(&backing) => backing,
+            None => kind,
+        }
+    }
+
+    /// Every kind sharing `kind`'s physical pool: the root and each kind backed by it.
+    fn pool_kinds(&self, kind: ResourceKind) -> Vec<ResourceKind> {
+        let root = self.pool_root(kind);
+        std::iter::once(root).chain(self.backing.iter().filter(|(_, b)| **b == root).map(|(k, _)| *k)).collect()
+    }
+
+    /// Bytes granted on `kind` that their holders have not yet measured resident: per consumer, its
+    /// grant past its residency, so one consumer's large residency never hides another's new grant.
+    fn not_yet_resident(&self, kind: ResourceKind) -> u64 {
+        let mut holders: Vec<&str> =
+            self.leases.values().filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()).collect();
+        holders.sort_unstable();
+        holders.dedup();
+        holders
+            .into_iter()
+            .map(|c| self.granted_to(c, kind).saturating_sub(self.measured_by(c, kind)))
+            .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
     /// Free headroom of this kind, ignoring reservations — the honest global
@@ -320,7 +359,7 @@ impl ResourceLeaseLedger {
     fn reserved_headroom_excluding(&self, exclude_consumer: &str, kind: ResourceKind) -> u64 {
         self.reservations
             .iter()
-            .filter(|((k, c), _)| *k == kind && c != exclude_consumer)
+            .filter(|((k, c), _)| self.pool_root(*k) == self.pool_root(kind) && c != exclude_consumer)
             .map(|((k, c), floor)| {
                 floor.saturating_sub(self.granted_to(c, *k).max(self.measured_by(c, *k)))
             })

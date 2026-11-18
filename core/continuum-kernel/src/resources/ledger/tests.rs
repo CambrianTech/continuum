@@ -800,4 +800,50 @@
             l.set_physical_used(ResourceKind::Vram, HOST_USED);
             assert_eq!(l.available(ResourceKind::Vram), 0, "a discrete device keeps capacity minus physical use");
         }
+
+        // what this catches (Codex on #6124): the shared host bytes spent twice between samples. A
+        // GPU grant that has not allocated yet was invisible to the host axis until the next scan
+        // (and any grant was, while physical use exceeded the grants), so a host grant could take the
+        // same bytes; reservations were withheld only on their own axis. Replayed on the 01:15Z board
+        // with no sample between grants: every grant, on either axis, spends the shared headroom once;
+        // shrink and release return exactly what they free; a floor on either axis binds both; the
+        // sample that lands the bytes moves nothing.
+        #[test]
+        fn mixed_grants_spend_the_shared_headroom_once_before_the_next_sample() {
+            const MB: u64 = 1_000_000;
+            let mut l = the_m5(true);
+            let free = RAM_CEILING - HOST_USED;
+            let gpu = l.acquire(&req("learning:her", ResourceKind::Vram, 400 * MB, ReclaimPolicy::Graceful), "gpu".into(), 0).expect("test: fits");
+            assert_eq!(l.available(ResourceKind::Ram), free - 400 * MB, "a GPU grant spends the host bytes now");
+            assert_eq!(l.available(ResourceKind::Vram), free - 400 * MB);
+            let over = free - 400 * MB + 1;
+            assert!(l.acquire(&req("embed", ResourceKind::Ram, over, ReclaimPolicy::Graceful), "over".into(), 0).is_err(), "the host cannot hand out the GPU's bytes");
+            l.acquire(&req("embed", ResourceKind::Ram, free - 400 * MB, ReclaimPolicy::Graceful), "ram".into(), 0).expect("test: the rest fits");
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a host grant spends the GPU's headroom too");
+            assert!(l.acquire(&req("other", ResourceKind::Vram, 1, ReclaimPolicy::Graceful), "gpu2".into(), 0).is_err(), "spent once, on both axes");
+
+            assert_eq!(l.shrink(&gpu.lease_id, 100 * MB).expect("test: shrink"), 300 * MB);
+            assert_eq!(l.available(ResourceKind::Vram), 100 * MB, "a shrink returns what it frees, no more");
+            l.release("ram").expect("test: release");
+            assert_eq!(l.available(ResourceKind::Ram), free - 300 * MB);
+
+            l.reserve("call", ResourceKind::Ram, 50 * MB);
+            assert_eq!(l.available_for("learning:her", ResourceKind::Vram), free - 350 * MB, "a host floor binds the GPU axis");
+            l.reserve("call", ResourceKind::Ram, 0);
+            l.reserve("render", ResourceKind::Vram, 50 * MB);
+            assert_eq!(l.available_for("embed", ResourceKind::Ram), free - 350 * MB, "a GPU floor binds the host axis");
+            l.reserve("render", ResourceKind::Vram, 0);
+
+            // The sample lands her 300 MB: measured and physical rise together, the headroom does not move.
+            let before = l.available(ResourceKind::Ram);
+            l.set_measured(
+                "learning:her",
+                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 300 * MB, detail: "optimizer".into() }],
+            );
+            for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                l.set_physical_used(kind, HOST_USED + 300 * MB);
+            }
+            assert_eq!(l.available(ResourceKind::Ram), before, "landed bytes are counted once, not again");
+            assert_eq!(l.available(ResourceKind::Vram), before);
+        }
     }
