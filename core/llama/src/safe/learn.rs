@@ -1,5 +1,4 @@
-//! Learning on a         let slot = Slot { role: Role::Static, device: BufferType(NonNull::dangling()) };
-        assert!(shadows.get(a).is_some_and(|l| l.admit(slot, 64)));ive sequence of a serving context (IN-PROCESS-LEARNING.md, L1): the fork's
+//! Learning on a live sequence of a serving context (IN-PROCESS-LEARNING.md, L1): the fork's
 //! resumable `llama_opt_learn_*`, with no policy. One reply trains on one sequence. Each step runs
 //! at most one chunk (a gradient chunk or the stable restoration), so other sequences may decode
 //! between steps. Afterwards the reply is restored under her stable gene set, leaving the sequence
