@@ -1,75 +1,18 @@
 use super::*;
 
-/// SAFETY backstop on continuous-batching lanes for a single base model on one
-/// node — NOT the binding constraint. The binding constraint is now the
-/// compute-buffer-aware fit math ([`ModelFootprint::compute_buffer_per_lane`] +
-/// the per-lane floor and window reserve in [`plan_serving`]): the lane count
-/// follows persona DEMAND, capped by how many lanes' (KV + concurrent compute
-/// buffer) actually fit THIS host's budget. That is the #139/#56 "lane-scaled
-/// compute-buffer HEADROOM term so the ceiling derives from model size instead of
-/// a constant" — it makes N-lane serving OOM-safe by construction.
+/// ONE LANE. One mind decodes at a time on a node's engine; the next mind is staged as
+/// data and the previous one retires to RAM, so a switch binds her blocks instead of
+/// re-prefilling them (Joel, 2026-11-18: "We do one lane";
+/// [[one-mind-decodes-at-a-time-parallel-decode-collapses-throughput]]). Concurrent decode
+/// splits one engine's rate across minds: on the M5, 4 minds at once ran ~2 tok/s each,
+/// while one mind runs ~80 (measured 2026-11-17, #6114). That is less total and ~30x
+/// slower per answer, and each extra lane also splits the KV budget into smaller windows.
+/// A node with several minds serves them by switching, not by more lanes.
 ///
-/// History: this was `2`, a flat clamp added 2026-07-14 after four concurrent
-/// prefill compute buffers (a transient ~batch-sized per-slot Metal allocation NOT
-/// in the KV arithmetic) blew the pool during a wake-briefing burst
-/// (`kIOGPUCommandBufferCallbackErrorOutOfMemory`). But `2` was calibrated for a
-/// ~16 GB budget and mis-applied to a 64 GB (≈55 GB Metal working-set) host, where
-/// it left ~29 GB idle and forced 4 personas onto 2 slots — the cross-persona KV
-/// clobber that is #139's whole latency story (each turn re-prefills ~10k cold
-/// because the slot was last written by a different persona's prompt+LoRA). With the
-/// compute buffer now RESERVED in the fit math, giving each persona its own warm
-/// slot is memory-safe. This ceiling stays only to bound pathological demand (a
-/// runaway roster) and llama.cpp `--parallel` practicality; real fit is the fit math.
-///
-/// 2026-07-16 RAISED 2 → 4 — the window-scaled compute term the earlier revert
-/// demanded now EXISTS. History: raised 2→6, reverted 6→2 same day (OOM) because the
-/// `compute_buffer_per_lane` reserve was a window-INDEPENDENT constant, so a 4-lane plan
-/// at a large served window under-provisioned the transient prefill buffer (which scales
-/// `O(ubatch × n_ctx)`) and 4 concurrent large-window prefills blew the Metal pool
-/// (`kIOGPU…OutOfMemory`). The prerequisite named there — "a WINDOW-SCALED compute term
-/// (reserve ∝ n_ctx)" — landed in [`plan_serving`] (commit 0925aa1ac): the served window
-/// now SOLVES THE FIXPOINT, shrinking so `lanes × (KV(C) + compute(C))` fits every lane,
-/// AND reserves co-consumer headroom. So more lanes no longer overcommit — the window
-/// auto-shrinks to pay for them (`served_window_footprint_fits_effective_budget…` pins
-/// the invariant). 4 = the resident-persona count: each mind gets its OWN warm slot, so a
-/// turn reuses ITS prefilled KV instead of re-prefilling ~10k cold after a slot-mate
-/// clobbered it (#139's whole latency story). Still a SANITY backstop, not the binding
-/// constraint — the real cap is the fit math (`kv_lanes`) ∩ DEMAND ∩ perf cores; this
-/// only bounds a pathological roster and llama.cpp `--parallel` practicality. Kept modest
-/// (4, not the 6 that OOM'd) pending a LARGE-prompt 4-lane live-GPU burst — the doc's
-/// acceptance gate. [[verify-real-device-numbers-not-a-clamp-premise]] [[capacity-fabric-live-never-block-sim-as-gym]]
-pub const MAX_LANES: u32 = 8;
+/// This replaces a ceiling that moved 2 -> 4 -> 2 -> 8 between 2026-07 and 2026-08, each
+/// time chasing a per-slot window or warm-slot trade-off that more lanes cannot win.
+pub const MAX_LANES: u32 = 1;
 
-// ⚠️ 2026-07-17 REVERTED 4 → 2. Raising to 4 (warm slot per persona) was OOM-SAFE
-// (the window-scaled fit shrank -c to fit) but STARVED CONTEXT: splitting the budget 4
-// ways dropped the per-slot window to ~6k, and a live persona's assembled prompt is ~9k
-// (identity + tools + workspace-map + recall + memory), so every persona got
-// budget-truncated to fit — the "120k clamped to 3k → all models suck" regression, plus
-// a 145s decode loop on the starved/confused context. Warmth is worthless if the mind
-// can't see. The 4-lane premise was wrong: personas are NOT all concurrently active, so
-// lanes should follow real concurrent DEMAND (usually 1–2), not the resident count —
-// 2 lanes at ~19.8k each beats 4 warm lanes at 6k. Cross-turn clobber (the reason for the
-// raise) is the lesser evil vs a starved window; solve it with idle-warmth/duty-cycling,
-// NOT by cutting everyone's context. [[no-hardcoded-context-numbers-derive-from-the-live-window]]
-//
-// ✅ 2026-08-09 RAISED 2 → 8 (#266). The 2026-07-17 revert diagnosed the failure correctly
-// (a starved per-slot window) but fixed it in the WRONG place: it clamped the lane CEILING,
-// when the real defect was that the lane-COUNT gate below sheds against `MIN_SERVE_CTX`
-// (2048, the "runnable at all" floor) — far below the ~9k a live turn needs — so a raised
-// ceiling let 4 slots @ 6k through. That is now fixed at the true seam: the shed in
-// `plan_serving` requires each slot to clear `BOOTSTRAP_WORKING_SET` (16384 ≈ a full
-// assembled turn + generation headroom), the SAME "one full turn" figure the demand cap
-// uses. With that usable-window floor as the binding constraint, a slot per resident persona
-// is safe BY CONSTRUCTION — the plan only grows lanes toward the resident population while
-// each still gets a full turn, and sheds (surfacing `grid_overflow_lanes` + a probe) the
-// moment the floor would be breached, never below it. The 2026-07-17 "solve clobber with
-// duty-cycling, not lanes" stance was itself the bug this leaves on the table: cross-turn
-// KV clobber IS #266's whole latency story (measured: 96.3% of persona compute is prefill;
-// two of four citizens at 0.0% cache reuse across 10 turns — the LRU eviction of a warm
-// slot the resident count outnumbered). Giving each resident mind its own slot is what
-// keeps its prefilled prefix warm. This constant is once again a pure SANITY backstop
-// (pathological roster + llama.cpp `--parallel` practicality); the binding constraint is
-// the window floor, exactly as the earlier doc always claimed it should be.
 /// Cold-start DEMAND ceiling for the served window — the "B-now" half of the
 /// demand-derived cap (M5 + BigMama, 2026-07-26). Sizing a lane's window to fill
 /// the memory budget instead of to real demand is the cross-node serving-quality
