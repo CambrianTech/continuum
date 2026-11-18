@@ -2587,6 +2587,51 @@ raw slice copies on the M5, measuring copy time per switch against bandwidth, th
 persona with layer-ordered streaming, and byte-identical restore (her next-token logits equal before and after a
 round trip); then the scaling read at 4, 8 and 16 personas.
 
+### 4.15 The engine is an object you submit to; its thread is a frame loop (2026-11-18)
+
+Joel, 2026-11-18: "Shit is usually you using locks and synchronous behavior... You have to design threading like any
+easy to use object or interface so it's no effort."
+
+**What went wrong (the M5, Qwen3.6-35B-A3B, probe `persona.engine.turn`).** Slice 1 put residents on one in-process
+engine and served turns with `for req in &requests { serve(req) }`: each turn ran whole on the engine thread (switch, the
+full prefill, the full decode) before the next was read. The switch itself took 4-21 ms and one cold 11,834-token
+prefill took 16.6 s (~711 tok/s, decode 34 tok/s; build 7b1b957917), yet turns took 300-360 s (build 88074d9300),
+almost all of it waiting behind other minds' whole turns. A turn-sized critical section is a lock by another name.
+
+**The model: bgfx's, applied to minds** (`~/.continuum/reference/bgfx/src`):
+- *Producers never touch the device.* bgfx records draws into encoders (one per thread, `bgfx.cpp:2947`; the only lock
+  allocates an encoder handle, none is held while recording) into the SUBMIT frame while the render thread executes the
+  RENDER frame (`bgfx_p.h:9083-9085`); `swap()` at the frame boundary is the handoff, signalled by two semaphores.
+- *Priority is data.* Every draw carries a 64-bit sort key; the render thread sorts once per frame.
+- *Waits are measured every frame* (`waitSubmit`, `waitRender`).
+
+**The interface (what a caller sees):** `engine.submit(turn)` returns at once with a handle (a token stream and a done
+event; dropping it cancels the turn). The caller holds no lock and no permit, and awaits only its own handle. A mind is
+one serial queue: her turns run in order; different minds' turns interleave.
+
+**The engine thread: one frame loop, the only toucher of the context.** Each frame:
+1. *Swap:* drain new submissions without blocking (block on the queue only when no turn is left: a wake, never a poll).
+2. *Pick:* one turn, by a pure policy (`frame::pick`): the active mind's answer in progress continues (one mind decodes
+   until she stops); otherwise the least prefill left, discounted by its wait (a short tail never waits behind a long
+   prompt; a long prompt ages to the front); ties keep the bound mind.
+3. *Step:* bind her if another mind is bound (the 4.14 switch, milliseconds), then ONE step: a prefill chunk of the
+   batch size, or one token. A turn is a state machine on the mind (Waiting, Prefilling at a position, Decoding); her
+   blocks hold exactly what her turn has computed after each step, so any two steps may have another mind between them.
+4. *Record* the step's cost into the turn's row (wait to first frame, switches, prefill, decode).
+
+**What stays true:** one mind decodes at a time (nothing here batches minds); a switch is the 4.14 bind; the sampler
+samples only a turn's final prompt position.
+
+**Order:**
+1. *Frame loop and the pure policy* (slice 1, `persona_scheduler/{driver,frame}.rs`, cd5bd406d0): whole-turn serving
+   deleted. Gate on the M5: no turn's wait to its first frame exceeds one chunk plus the answers in progress ahead of it.
+2. *Tokenize and render off the engine thread:* the handle's submitter turns the prompt into token ids in its own
+   blocking pool; the engine receives ids only (4.14, "never process twice").
+3. *NEXT prefills while ACTIVE decodes* (4.13 point 2): a step may carry ACTIVE's token and NEXT's prefill chunk, sized
+   so ACTIVE's measured token time holds; this needs the tier to accept work for the staged stream.
+4. *The class key* (4.1c: interactive, work, utility, background) in the submission, so `pick` orders by class before
+   cost; goal 9's scheduler owns `pick` from then on.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
