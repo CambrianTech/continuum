@@ -138,22 +138,13 @@ impl ServingDaemonModule {
             .as_deref()
             .and_then(crate::inference::prefill_knee::knee_for);
         let knee = crate::inference::prefill_knee::tighter_knee(decode_knee, prefill_knee);
-        // +1 SCRATCH LANE: the adapter's traffic-class placement
-        // (`inference/slots`) reserves the HIGHEST slot for sidecar/background/
-        // probe traffic whenever n_slots ≥ 3 — so a plan sized to the resident
-        // count leaves residents−1 warm slots for residents minds, and one
-        // citizen is ALWAYS being LRU-evicted (measured 2026-09-01: interleaved
-        // hit_rate=0.0 turns between 0.55–0.77 ones — the rotation thrash).
-        // Fund the scratch slot HERE, in the demand the fixpoint solves for:
-        // the window shrinks slightly to pay for it (floor-guarded at one full
-        // assembled turn), and every resident keeps her prefilled prefix warm.
-        // residents < 2 keeps the old shape (the adapter reserves nothing
-        // below n_slots 3, so asking for the extra lane would waste it).
-        let lanes = if residents >= 2 {
-            residents + 1
-        } else {
-            residents
-        };
+        // ONE MIND DECODES AT A TIME (Joel, 2026-11-18: "Never run the parallel"). The engine holds
+        // ONE sequence: the active mind. Every other resident is paged out, and the switch moves
+        // her page in; a helper call borrows the one slot through the single-slot save-and-lend
+        // path (`inference/slots`). One slot per resident (the old `residents + 1`) put five minds
+        // in the engine at once on the M5 (`--parallel 5`): each switch's save waited up to 11.6 s
+        // behind another mind's decode (`inference.kv_page.action`, 05:13-05:16Z 2026-11-18).
+        let lanes = residents.min(1);
         // The knee bounds the TOTAL slot count, scratch included: the curve is measured on
         // in-flight model calls, and the scratch slot is one of them (first cut clamped the
         // resident count and the +1 put the plan right back on the collapsed side).
