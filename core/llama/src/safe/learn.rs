@@ -46,16 +46,22 @@ impl OptimizerBuffer<'_> {
     }
 }
 
-/// The memory owner's answer for one reply. Native code asks it before it allocates; it must not
-/// allocate itself.
+/// The memory owner's answer for one reply's shared workspace. Native code asks it before it
+/// allocates; it must not allocate itself.
 pub trait ReplyAdmission: Send {
-    /// Before each optimizer-owned buffer is allocated, with its exact aligned size: an increment.
-    /// false refuses that allocation, and the step fails by name.
-    fn optimizer_buffer(&self, buffer: BufferType, kind: OptimizerBuffer<'_>, bytes: u64) -> bool;
     /// Before the shared workspace grows: checks a lease already held (`held`) against the plan
     /// (`required`). It never takes or consumes a lease, so a repeated measurement is never charged
     /// twice.
     fn workspace(&self, buffer: BufferType, required: u64, held: u64) -> bool;
+}
+
+/// The memory owner's lease for ONE shadow's optimizer. Its buffers are made the first time the
+/// shadow is selected and kept across replies and switches, so the lease lives with the shadow
+/// (never with a reply) until [`Learner::release_shadow`] confirms native code let it go.
+pub trait OptimizerLease: Send {
+    /// Before each optimizer-owned buffer is allocated, with its exact aligned size: an increment.
+    /// false refuses that allocation, and the step fails by name.
+    fn optimizer_buffer(&self, buffer: BufferType, kind: OptimizerBuffer<'_>, bytes: u64) -> bool;
 }
 
 /// The optimizer and its constant parameters for the reply.
@@ -75,8 +81,9 @@ pub struct Walk {
     pub horizon: Option<NonZeroU32>,
 }
 
-/// The shadow adapter she learns into, and how. The adapter is shared: the context keeps it for as
-/// long as an optimizer may reference it.
+/// The shadow adapter she learns into, and how. It must already be retained on the context
+/// ([`Learner::retain_shadow`]), which keeps it, and its optimizer lease, for as long as native code
+/// keeps its optimizer.
 pub struct Shadow {
     pub adapter: Arc<LoraAdapter>,
     pub optimizer: Optimizer,
@@ -156,13 +163,59 @@ pub enum Progress {
 /// optimizer and the context keep these pointers past a reply (the fork's `llama-context-opt.cpp`
 /// :192-193, :275-276, :330-331, :365-366).
 pub(super) struct CallbackHolder {
-    /// The active reply's admission; empty refuses every allocation.
+    /// The active reply's workspace admission; empty refuses every workspace growth.
     admission: Option<Box<dyn ReplyAdmission>>,
     optimizer: sys::ggml_opt_optimizer_params,
-    /// The shadow an optimizer may reference: kept until a release proves it no longer does.
-    shadow: Option<Arc<LoraAdapter>>,
+    /// Every shadow native code may keep an optimizer for (native keeps one per adapter across
+    /// switches), each with its lease, until a confirmed release.
+    shadows: Shadows<Retained>,
+    /// The shadow selected for the current reply: optimizer buffers are charged to its lease.
+    selected: Option<ShadowKey>,
     /// A run whose restoration was not confirmed, and the admission it held.
     quarantine: Option<Quarantine>,
+}
+
+/// A retained shadow: the adapter (kept alive) and its optimizer lease.
+struct Retained {
+    _adapter: Arc<LoraAdapter>,
+    lease: Box<dyn OptimizerLease>,
+}
+
+/// Which adapter a native optimizer is keyed by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ShadowKey(NonNull<sys::llama_adapter_lora>);
+
+impl ShadowKey {
+    fn of(adapter: &LoraAdapter) -> Self {
+        Self(adapter.ptr)
+    }
+}
+
+/// The retained shadows, by native key. Retaining one twice is refused (its first lease stays), and
+/// only a confirmed release takes one out, so a switch or a refused selection never drops one.
+struct Shadows<H>(Vec<(ShadowKey, H)>);
+
+impl<H> Shadows<H> {
+    fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    fn retain(&mut self, key: ShadowKey, held: H) -> Result<(), H> {
+        if self.get(key).is_some() {
+            return Err(held);
+        }
+        self.0.push((key, held));
+        Ok(())
+    }
+
+    fn get(&self, key: ShadowKey) -> Option<&H> {
+        self.0.iter().find(|(held, _)| *held == key).map(|(_, held)| held)
+    }
+
+    fn take(&mut self, key: ShadowKey) -> Option<H> {
+        let index = self.0.iter().position(|(held, _)| *held == key)?;
+        Some(self.0.swap_remove(index).1)
+    }
 }
 
 struct Quarantine {
@@ -174,7 +227,7 @@ struct Quarantine {
 impl CallbackHolder {
     fn empty() -> Self {
         let optimizer = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) };
-        Self { admission: None, optimizer, shadow: None, quarantine: None }
+        Self { admission: None, optimizer, shadows: Shadows::new(), selected: None, quarantine: None }
     }
 }
 
@@ -198,8 +251,38 @@ impl<'c, 'm> Learner<'c, 'm> {
         self.ctx.learn_callbacks.as_ref().and_then(|holder| holder.quarantine.as_ref()).map(|q| &q.refusal)
     }
 
-    /// Prove the failed run's native memory released (the training workspace replaced, and no
-    /// optimizer referencing its shadow), then lift the quarantine and hand back what it held. The
+    /// Retain a shadow before she learns into it: the context keeps the adapter and its optimizer
+    /// lease until [`Learner::release_shadow`]. Retaining one already retained hands the new lease
+    /// back (the first one stays, with whatever it already admitted).
+    pub fn retain_shadow(&mut self, adapter: Arc<LoraAdapter>, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
+        let key = ShadowKey::of(&adapter);
+        self.holder().shadows.retain(key, Retained { _adapter: adapter, lease }).map_err(|refused| refused.lease)
+    }
+
+    /// Release a shadow's optimizer: only when native code confirms no optimizer references the
+    /// adapter any more (`llama_opt_release`) does the context let go of the adapter and hand back
+    /// its lease, whose bytes the owner then releases.
+    pub fn release_shadow(&mut self, adapter: &LoraAdapter) -> Result<Box<dyn OptimizerLease>, LearnRefusal> {
+        let key = ShadowKey::of(adapter);
+        if self.holder().shadows.get(key).is_none() {
+            return Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() });
+        }
+        if !unsafe { sys::llama_opt_release(self.ctx.as_ptr(), key.0.as_ptr()) } {
+            return Err(self.refusal("release_shadow"));
+        }
+        let holder = self.holder();
+        if holder.selected == Some(key) {
+            holder.selected = None;
+        }
+        match holder.shadows.take(key) {
+            Some(retained) => Ok(retained.lease),
+            None => Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() }),
+        }
+    }
+
+    /// Prove the failed run's training workspace released, then lift the quarantine and hand back
+    /// the reply admission it held. Shadows and their optimizer leases stay retained (native code
+    /// keeps their optimizers across replies); each is released by [`Learner::release_shadow`]. The
     /// sequence is untouched: its owner restores it. A release native code refuses keeps the
     /// quarantine.
     pub fn recover(&mut self) -> Result<Option<Recovered>, LearnRefusal> {
@@ -209,15 +292,7 @@ impl<'c, 'm> Learner<'c, 'm> {
         if !unsafe { sys::llama_opt_release_workspace(self.ctx.as_ptr()) } {
             return Err(self.refusal("release_workspace"));
         }
-        let shadow = self.holder().shadow.as_ref().map(|adapter| adapter.ptr.as_ptr());
-        if let Some(shadow) = shadow {
-            if !unsafe { sys::llama_opt_release(self.ctx.as_ptr(), shadow) } {
-                return Err(self.refusal("release_shadow"));
-            }
-        }
-        let holder = self.holder();
-        holder.shadow = None;
-        let Some(quarantine) = holder.quarantine.take() else { return Ok(None) };
+        let Some(quarantine) = self.holder().quarantine.take() else { return Ok(None) };
         let admission = quarantine.admission.unwrap_or_else(|| Box::new(Released)); // unwrap_or_else: a quarantine always holds its run's admission; Released admits nothing
         Ok(Some(Recovered { seq: quarantine.seq, admission }))
     }
@@ -236,6 +311,11 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
             return Err(Refused { refusal, admission });
         };
+        let key = ShadowKey::of(&shadow.adapter);
+        if self.holder().shadows.get(key).is_none() {
+            let refusal = LearnRefusal { step: "select_shadow", message: "the shadow is not retained on this context".into() };
+            return Err(Refused { refusal, admission });
+        }
         let Some(result) = NonNull::new(unsafe { sys::ggml_opt_result_init() }) else {
             return Err(Refused { refusal: LearnRefusal { step: "result", message: "no result".into() }, admission });
         };
@@ -246,7 +326,7 @@ impl<'c, 'm> Learner<'c, 'm> {
             let holder = self.holder();
             holder.optimizer = optimizer_params(shadow.optimizer);
             holder.admission = Some(admission);
-            holder.shadow = Some(Arc::clone(&shadow.adapter));
+            holder.selected = Some(key);
             std::ptr::from_mut(holder).cast::<c_void>()
         };
         let params = shadow_params(shadow, data);
@@ -455,9 +535,6 @@ impl RunState {
 struct Released;
 
 impl ReplyAdmission for Released {
-    fn optimizer_buffer(&self, _: BufferType, _: OptimizerBuffer<'_>, _: u64) -> bool {
-        false
-    }
     fn workspace(&self, _: BufferType, _: u64, _: u64) -> bool {
         false
     }
@@ -527,10 +604,11 @@ unsafe extern "C" fn optimizer_buffer_admitted(
     let (Some(buffer), false) = (NonNull::new(buft), kind.is_null()) else { return false };
     // SAFETY: as above; `kind` is a NUL-terminated name native code owns for the call.
     let (holder, kind) = unsafe { (&*data.cast::<CallbackHolder>(), CStr::from_ptr(kind)) };
-    let Some(admission) = holder.admission.as_deref() else { return false };
+    // Optimizer buffers belong to the selected shadow's lease, never to a reply.
+    let Some(retained) = holder.selected.and_then(|key| holder.shadows.get(key)) else { return false };
     // A panic must never unwind into native code: it refuses the allocation instead.
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        admission.optimizer_buffer(BufferType(buffer), OptimizerBuffer(kind), bytes as u64)
+        retained.lease.optimizer_buffer(BufferType(buffer), OptimizerBuffer(kind), bytes as u64)
     }))
     .unwrap_or(false) // unwrap_or: a panicking admission refuses, never unwinds across the boundary
 }
@@ -568,10 +646,7 @@ mod tests {
     // could grow memory nobody owns.
     #[test]
     fn a_handed_back_admission_admits_nothing() {
-        let kind = CString::new("adamw_m").unwrap_or_default(); // unwrap_or_default: a literal without NUL
-        let buffer = BufferType(NonNull::dangling());
-        assert!(!Released.optimizer_buffer(buffer, OptimizerBuffer(&kind), 1));
-        assert!(!Released.workspace(buffer, 1, 1));
+        assert!(!Released.workspace(BufferType(NonNull::dangling()), 1, 1));
     }
 
     fn refusal() -> LearnRefusal {
@@ -599,35 +674,65 @@ mod tests {
         assert!(!state.is_running());
     }
 
-    /// Counts the bytes it admitted and never releases them by itself: the owner does.
+    /// Counts the optimizer bytes it admitted and never releases them by itself: its owner does.
     struct Counting(std::sync::Arc<std::sync::atomic::AtomicU64>);
 
-    impl ReplyAdmission for Counting {
+    impl OptimizerLease for Counting {
         fn optimizer_buffer(&self, _: BufferType, _: OptimizerBuffer<'_>, bytes: u64) -> bool {
             self.0.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
             true
         }
+    }
+
+    /// Admits every workspace check, so a quarantine test sees only where the admission lives.
+    struct Open;
+
+    impl ReplyAdmission for Open {
         fn workspace(&self, _: BufferType, _: u64, _: u64) -> bool {
             true
         }
     }
 
-    // what this catches (Codex on #6148): a quarantine that let go of the failed run's admission (its
-    // bytes released while native code may still hold them), or that admitted again while held.
+    fn key(n: usize) -> ShadowKey {
+        ShadowKey(NonNull::dangling().map_addr(|addr| addr.saturating_add(n * 64)))
+    }
+
+    // what this catches (Codex on #6148): a quarantine that let go of the failed run's admission, or
+    // a holder that still admitted workspace while quarantined.
     #[test]
     fn a_quarantine_keeps_the_failed_runs_admission_and_admits_nothing() {
-        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let mut holder = CallbackHolder::empty();
-        holder.admission = Some(Box::new(Counting(std::sync::Arc::clone(&admitted))));
-        let kind = CString::new("adamw_m").unwrap_or_default(); // unwrap_or_default: a literal without NUL
-        let buffer = BufferType(NonNull::dangling());
-        assert!(holder.admission.as_deref().is_some_and(|a| a.optimizer_buffer(buffer, OptimizerBuffer(&kind), 64)));
-        // The run fails: its admission moves into the quarantine, and the holder admits nothing.
+        holder.admission = Some(Box::new(Open));
         let admission = holder.admission.take();
         holder.quarantine = Some(Quarantine { refusal: refusal(), seq: 3, admission });
-        assert!(holder.admission.is_none());
+        assert!(holder.admission.is_none(), "an empty holder refuses every workspace growth");
         assert!(holder.quarantine.as_ref().is_some_and(|q| q.admission.is_some() && q.seq == 3));
-        assert_eq!(admitted.load(std::sync::atomic::Ordering::Relaxed), 64, "the bytes stay counted until recovery");
+    }
+
+    // what this catches (Codex on #6148): switching A -> B -> A, or a refused selection of B, dropping
+    // a shadow (its adapter and its optimizer lease) while native code keeps its optimizer, with the
+    // caller's own handles gone.
+    #[test]
+    fn a_switch_or_a_refused_selection_never_drops_a_retained_shadow() {
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let lease = |bytes: &std::sync::Arc<std::sync::atomic::AtomicU64>| -> Box<dyn OptimizerLease> {
+            Box::new(Counting(std::sync::Arc::clone(bytes)))
+        };
+        let mut shadows: Shadows<Box<dyn OptimizerLease>> = Shadows::new();
+        let (a, b) = (key(1), key(2));
+        assert!(shadows.retain(a, lease(&admitted)).is_ok());
+        let kind = CString::new("adamw_m").unwrap_or_default(); // unwrap_or_default: a literal without NUL
+        let buffer = BufferType(NonNull::dangling());
+        assert!(shadows.get(a).is_some_and(|l| l.optimizer_buffer(buffer, OptimizerBuffer(&kind), 64)));
+        // B is retained; a selection of B native code refuses changes nothing retained.
+        assert!(shadows.retain(b, lease(&admitted)).is_ok());
+        // Back to A: retaining it again hands the new lease back; the first, with its bytes, stays.
+        assert!(shadows.retain(a, lease(&admitted)).is_err());
+        assert!(shadows.get(a).is_some() && shadows.get(b).is_some());
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::Relaxed), 64, "A's optimizer bytes stay leased across the switches");
+        // Only a confirmed release takes a shadow out.
+        assert!(shadows.take(b).is_some());
+        assert!(shadows.get(b).is_none() && shadows.get(a).is_some());
     }
 
     // what this catches: the native "whole window" encoding leaking past the boundary, or a real
