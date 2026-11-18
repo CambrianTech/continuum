@@ -7,11 +7,31 @@ use crate::persona::PersonaId;
 
 /// A tier could not take or give a persona's bytes: named, so the engine keeps her where she is.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{tier}: {reason} for persona {persona:?}")]
+#[error("{tier}: {reason} for persona {persona:?}{native}")]
 pub struct TierRefusal {
     pub tier: &'static str,
     pub persona: PersonaId,
     pub reason: &'static str,
+    /// The backend's own refusal, kept rather than erased.
+    pub native: Native,
+}
+
+/// What the backend itself said when the tier refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Native {
+    /// The refusal is the tier's own (a precondition it checked); the backend was not asked.
+    NotAsked,
+    /// The backend refused, by its status and the name it gives that status.
+    Refused { status: i32, name: String },
+}
+
+impl std::fmt::Display for Native {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAsked => Ok(()),
+            Self::Refused { status, name } => write!(f, " (backend status {status}: {name})"),
+        }
+    }
 }
 
 /// A residency tier.

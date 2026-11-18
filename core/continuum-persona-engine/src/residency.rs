@@ -4,4 +4,4 @@ mod fence;
 mod tier;
 
 pub use fence::{Direction, Fence, FenceTag};
-pub use tier::{Tier, TierRefusal};
+pub use tier::{Native, Tier, TierRefusal};
