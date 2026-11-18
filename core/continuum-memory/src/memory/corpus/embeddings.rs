@@ -35,7 +35,7 @@ impl MemoryEmbeddings {
     }
 
     pub(in crate::memory) fn accepts(&self, producer: &str) -> bool {
-        self.counts.get(producer).copied().unwrap_or_default() == self.rows.len()
+        self.rows.is_empty() || (self.counts.len() == 1 && self.counts.contains_key(producer))
     }
 
     pub(in crate::memory) fn get(&self, id: &str) -> Option<&MemoryEmbedding> {
