@@ -1,4 +1,5 @@
-//! Learning on a live sequence of a serving context (IN-PROCESS-LEARNING.md, L1): the fork's
+//! Learning on a         let slot = Slot { role: Role::Static, device: BufferType(NonNull::dangling()) };
+        assert!(shadows.get(a).is_some_and(|l| l.admit(slot, 64)));ive sequence of a serving context (IN-PROCESS-LEARNING.md, L1): the fork's
 //! resumable `llama_opt_learn_*`, with no policy. One reply trains on one sequence. Each step runs
 //! at most one chunk (a gradient chunk or the stable restoration), so other sequences may decode
 //! between steps. Afterwards the reply is restored under her stable gene set, leaving the sequence
@@ -23,26 +24,38 @@ use std::num::{NonZeroU32, NonZeroU64};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
+use super::optimizer_slots::{OptimizerLease, Role, Slot, Slots};
+
 use super::*;
 
-/// One allocator a buffer comes from, as the backend names it at the boundary.
+/// One allocator a buffer comes from: the physical device it lives on, as the backend names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BufferType(NonNull<sys::ggml_backend_buffer_type>);
+pub struct BufferType(pub(super) NonNull<sys::ggml_backend_buffer_type>);
+
+// SAFETY: a ggml buffer type is a backend-owned singleton that lives for the process and is only
+// read through its query functions, so its pointer may cross threads with the slot that names it.
+unsafe impl Send for BufferType {}
+unsafe impl Sync for BufferType {}
 
 impl BufferType {
     /// The backend's own name for this buffer type ("CUDA0", "Metal", "CPU", ...).
     pub fn name(&self) -> Result<&str, std::str::Utf8Error> {
         unsafe { CStr::from_ptr(sys::ggml_backend_buft_name(self.0.as_ptr())) }.to_str()
     }
-}
 
-/// What an optimizer-owned buffer holds, as the optimizer names it.
-#[derive(Debug, Clone, Copy)]
-pub struct OptimizerBuffer<'a>(&'a CStr);
+    /// The device's own name ("CUDA0", "MTL0", "CPU", ...), when the buffer type has a device.
+    pub fn device(&self) -> Option<Result<&str, std::str::Utf8Error>> {
+        let device = unsafe { sys::ggml_backend_buft_get_device(self.0.as_ptr()) };
+        if device.is_null() {
+            return None;
+        }
+        let name = unsafe { sys::ggml_backend_dev_name(device) };
+        (!name.is_null()).then(|| unsafe { CStr::from_ptr(name) }.to_str())
+    }
 
-impl OptimizerBuffer<'_> {
-    pub fn kind(&self) -> Result<&str, std::str::Utf8Error> {
-        self.0.to_str()
+    /// Whether these bytes are host memory (RAM), not device memory.
+    pub fn is_host(&self) -> bool {
+        unsafe { sys::ggml_backend_buft_is_host(self.0.as_ptr()) }
     }
 }
 
@@ -55,14 +68,6 @@ pub trait ReplyAdmission: Send {
     fn workspace(&self, buffer: BufferType, required: u64, held: u64) -> bool;
 }
 
-/// The memory owner's lease for ONE shadow's optimizer. Its buffers are made the first time the
-/// shadow is selected and kept across replies and switches, so the lease lives with the shadow
-/// (never with a reply) until [`Learner::release_shadow`] confirms native code let it go.
-pub trait OptimizerLease: Send {
-    /// Before each optimizer-owned buffer is allocated, with its exact aligned size: an increment.
-    /// false refuses that allocation, and the step fails by name.
-    fn optimizer_buffer(&self, buffer: BufferType, kind: OptimizerBuffer<'_>, bytes: u64) -> bool;
-}
 
 /// The optimizer and its constant parameters for the reply.
 #[derive(Debug, Clone, Copy)]
@@ -183,10 +188,12 @@ pub(super) struct CallbackHolder {
     quarantine: Option<Quarantine>,
 }
 
-/// A retained shadow: the adapter (kept alive) and its optimizer lease.
+/// A retained shadow: the adapter (kept alive), its optimizer lease, and what each of its optimizer
+/// buffers holds now.
 struct Retained {
     _adapter: Arc<LoraAdapter>,
     lease: Box<dyn OptimizerLease>,
+    slots: Slots,
 }
 
 /// Which adapter a native optimizer is keyed by.
@@ -268,7 +275,7 @@ impl<'c, 'm> Learner<'c, 'm> {
     /// back (the first one stays, with whatever it already admitted).
     pub fn retain_shadow(&mut self, adapter: Arc<LoraAdapter>, lease: Box<dyn OptimizerLease>) -> Result<(), Box<dyn OptimizerLease>> {
         let key = ShadowKey::of(&adapter);
-        self.holder().shadows.retain(key, Retained { _adapter: adapter, lease }).map_err(|refused| refused.lease)
+        self.holder().shadows.retain(key, Retained { _adapter: adapter, lease, slots: Slots::default() }).map_err(|refused| refused.lease)
     }
 
     /// Release a shadow's optimizer: only when native code confirms no optimizer references the
@@ -287,7 +294,11 @@ impl<'c, 'm> Learner<'c, 'm> {
             holder.selected = None;
         }
         match holder.shadows.take(key) {
-            Some(retained) => Ok(retained.lease),
+            Some(retained) => {
+                // Native code let the optimizer go: every slot it held is proven free.
+                retained.slots.release_all(&*retained.lease);
+                Ok(retained.lease)
+            }
             None => Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() }),
         }
     }
@@ -353,7 +364,12 @@ impl<'c, 'm> Learner<'c, 'm> {
             std::ptr::from_mut(holder).cast::<c_void>()
         };
         let params = shadow_params(shadow, data);
-        if !unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.ctx.model.as_ptr(), params) } {
+        let selected = unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.ctx.model.as_ptr(), params) };
+        // The init ended: what it asked for stays held (a refusal in it already rolled itself back).
+        if let Some(retained) = self.holder().shadows.get(key) {
+            retained.slots.settle();
+        }
+        if !selected {
             unsafe { sys::ggml_opt_result_free(result.as_ptr()) };
             let refusal = self.refusal("select_shadow");
             return Err(Refused { refusal, admission: self.reclaim() });
@@ -656,11 +672,13 @@ unsafe extern "C" fn optimizer_buffer_admitted(
     let (holder, kind) = unsafe { (&*data.cast::<CallbackHolder>(), CStr::from_ptr(kind)) };
     // Optimizer buffers belong to the selected shadow's lease, never to a reply.
     let Some(retained) = holder.selected.and_then(|key| holder.shadows.get(key)) else { return false };
+    // A buffer this crate cannot name is refused, never charged under a guessed role.
+    let Some(role) = Role::of(kind) else { return false };
+    let Ok(bytes) = u64::try_from(bytes) else { return false };
+    let slot = Slot { role, device: BufferType(buffer) };
     // A panic must never unwind into native code: it refuses the allocation instead.
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        retained.lease.optimizer_buffer(BufferType(buffer), OptimizerBuffer(kind), bytes as u64)
-    }))
-    .unwrap_or(false) // unwrap_or: a panicking admission refuses, never unwinds across the boundary
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| retained.slots.ask(&*retained.lease, slot, bytes)))
+        .unwrap_or(false) // unwrap_or: a panicking admission refuses, never unwinds across the boundary
 }
 
 unsafe extern "C" fn workspace_admitted(
@@ -682,7 +700,6 @@ unsafe extern "C" fn workspace_admitted(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::CString;
 
     // what this catches: an unlabelled token sent as a real token id (training on a row that has no
     // target), or a target rewritten.
@@ -728,9 +745,12 @@ mod tests {
     struct Counting(std::sync::Arc<std::sync::atomic::AtomicU64>);
 
     impl OptimizerLease for Counting {
-        fn optimizer_buffer(&self, _: BufferType, _: OptimizerBuffer<'_>, bytes: u64) -> bool {
+        fn admit(&self, _: Slot, bytes: u64) -> bool {
             self.0.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
             true
+        }
+        fn release(&self, _: Slot, bytes: u64) {
+            self.0.fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -771,9 +791,8 @@ mod tests {
         let mut shadows: Shadows<Box<dyn OptimizerLease>> = Shadows::new();
         let (a, b) = (key(1), key(2));
         assert!(shadows.retain(a, lease(&admitted)).is_ok());
-        let kind = CString::new("adamw_m").unwrap_or_default(); // unwrap_or_default: a literal without NUL
-        let buffer = BufferType(NonNull::dangling());
-        assert!(shadows.get(a).is_some_and(|l| l.optimizer_buffer(buffer, OptimizerBuffer(&kind), 64)));
+        let slot = Slot { role: Role::Static, device: BufferType(NonNull::dangling()) };
+        assert!(shadows.get(a).is_some_and(|l| l.admit(slot, 64)));
         // B is retained; a selection of B native code refuses changes nothing retained.
         assert!(shadows.retain(b, lease(&admitted)).is_ok());
         // Back to A: retaining it again hands the new lease back; the first, with its bytes, stays.

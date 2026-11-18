@@ -16,7 +16,9 @@ pub use expert_eval_cb::*;
 mod chat;
 pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat};
 mod learn;
-pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, OptimizerBuffer, OptimizerLease, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
+mod optimizer_slots;
+pub use optimizer_slots::{OptimizerLease, Role, Slot};
+pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaOwner, PersonaRefusal};
 
