@@ -233,7 +233,7 @@ impl Tier for UnifiedTier<'_, '_> {
 
 /// One step of the bound mind's decode: her tokens from position `from`, with the logits of the last
 /// one if `logits_at_end`. It names no sequence: the tier decodes on the stream she is bound to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Step {
     pub tokens: Vec<i32>,
     pub from: i32,

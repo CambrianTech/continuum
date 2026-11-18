@@ -184,6 +184,9 @@ impl crate::residency::Tier for TestTier {
     fn begin(&mut self, what: FenceTag) -> Result<Transfer, crate::residency::TierRefusal> {
         Ok(Transfer { tag: what, landed: Rc::new(Cell::new(true)), drops: self.drops.clone() })
     }
+    fn release(&mut self, _persona: crate::persona::PersonaId) -> Result<(), crate::residency::TierRefusal> {
+        Ok(())
+    }
 }
 
 // what this catches (Codex on #6130 at 9446c2be7): the copy-out begun for a persona by id alone,

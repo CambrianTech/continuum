@@ -450,7 +450,10 @@ impl LlamaCppBackend {
                 "scheduler allocation changed; release the existing backend before resizing".into(),
             );
         }
-        scheduler.as_ref().map_err(|e| e.clone())
+        match scheduler {
+            Ok(scheduler) => Ok(scheduler),
+            Err(refused) => Err(refused.to_string()),
+        }
     }
 
     /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
@@ -556,7 +559,9 @@ impl LlamaCppBackend {
             persona_id,
         };
 
-        self.scheduler(allocation)?.enqueue(req)?;
+        if let Err(refused) = self.scheduler(allocation)?.enqueue(req) {
+            return Err(refused.to_string());
+        }
 
         // Collect tokens from the channel until Done/Error. We're called
         // synchronously from spawn_blocking by CandleAdapter — block_in_place

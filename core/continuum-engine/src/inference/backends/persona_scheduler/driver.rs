@@ -199,7 +199,8 @@ impl Driver<'_, '_> {
             token = self.engine.tier().sample(&mut sampler, 0);
         }
         self.report_footprint(id, one_off);
-        let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX); // unwrap_or: a turn longer than u64 milliseconds saturates
+        let took = started.elapsed();
+        let elapsed_ms = took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis()));
         Ok(TokenEvent::Done { tokens_generated: generated, elapsed_ms })
     }
 

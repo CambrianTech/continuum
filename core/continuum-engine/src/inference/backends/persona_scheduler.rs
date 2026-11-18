@@ -76,17 +76,26 @@ pub struct Scheduler {
 
 impl Scheduler {
     /// Spawn the driver thread. It runs until the last handle is dropped and its last turn ended.
-    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, String> {
+    pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, SchedulerError> {
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
             .spawn(move || driver::run(&model, &config, &request_rx))
-            .map_err(|e| format!("failed to spawn the persona scheduler thread: {e}"))?;
+            .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
         Ok(Self { request_tx })
     }
 
     /// Enqueue a turn. Refused once the driver thread has exited.
-    pub fn enqueue(&self, req: GenerationRequest) -> Result<(), String> {
-        self.request_tx.send(req).map_err(|e| format!("scheduler closed: {e}"))
+    pub fn enqueue(&self, req: GenerationRequest) -> Result<(), SchedulerError> {
+        self.request_tx.send(req).map_err(|_| SchedulerError::Closed)
     }
+}
+
+/// Why the scheduler could not take a turn.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum SchedulerError {
+    #[error("the persona scheduler thread could not be spawned: {0}")]
+    Spawn(Arc<std::io::Error>),
+    #[error("the persona scheduler has stopped")]
+    Closed,
 }

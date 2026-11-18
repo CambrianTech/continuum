@@ -16,7 +16,7 @@ use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
-use super::persona_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent};
+use super::persona_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, SchedulerError, TokenEvent};
 use super::SamplingConfig;
 use crate::runtime;
 
