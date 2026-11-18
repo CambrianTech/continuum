@@ -174,6 +174,21 @@ impl LlamaServerProcess {
         *self.loading.lock() = Some(LoadingLaunch { tail });
     }
 
+    /// A readiness timeout can outlive the plan that initiated startup. Publish the observed
+    /// engine under its own contract before reconciliation evaluates the next plan.
+    pub(super) async fn publish_retained_engine(&self, current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        let prepared = self.loading.lock().as_ref().map(|kept| kept.tail.prepared.clone());
+        let Some(prepared) = prepared else { return Ok(()) };
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let transition = endpoint.transition_if(&|| current() && self.loading.lock().as_ref()
+            .is_some_and(|kept| Arc::ptr_eq(&prepared, &kept.tail.prepared)))
+            .await.map_err(|()| LlamaServerError::Superseded)?;
+        if let Some(tail) = self.recoverable_loading(&prepared) {
+            self.wait_and_publish(&transition, tail).await?;
+        }
+        Ok(())
+    }
+
     /// The kept launch the request may finish, or `None`. A kept launch whose engine is gone is
     /// dropped; one kept for a different launch stays kept, so the launch it was started for can
     /// still finish it.
@@ -467,7 +482,7 @@ mod tests {
         assert!(process.loading.lock().is_some(), "and the launch stays kept for the one it was started for");
         assert_eq!(owned_pid(&process), pid, "the engine is not killed either");
 
-        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the original launch finishes the late engine");
+        process.finish_pending_readiness(&|| true).await.expect("reconciliation publishes the retained engine independently of the changed request");
         assert!(ledger_published(&root, &generation).await, "after: the SAME generation's ledger is published");
         assert_eq!(owned_pid(&process), pid, "finished, not replaced");
         release(process).await;

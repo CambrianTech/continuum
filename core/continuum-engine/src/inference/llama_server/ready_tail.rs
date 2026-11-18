@@ -39,16 +39,13 @@ impl LlamaServerProcess {
         // Second half of the debug-build gate (see debug_build_watch): the server
         // said so on its own stderr while coming up — refuse the lane, loudly.
         if debug_flag.is_set() {
-            if let Some(pid) = child_pid {
-                continuum_process::kill9(pid);
-            }
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.debug_build_refused",
                 bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
-            return Err(LlamaServerError::Spawn(format!(
+            return Err(LlamaServerError::ReadinessRefused(format!(
                 "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
-                 Rebuild llama-server in release from the canary pin and relaunch.",
+                 A release engine is required for serving.",
                 prepared.engine_program
             )));
         }
@@ -85,8 +82,8 @@ impl LlamaServerProcess {
             // Devstral from system RAM behind `ready:true lanes:3` (the engine
             // said "no usable GPU found" on its own stderr, the pre-spawn device
             // probe had said CUDA0). "Ready" must be a verified observation — same
-            // shape as the debug-build gate above: kill it, name the evidence, and
-            // let the daemon's relaunch/degrade path own what happens next.
+            // shape as the debug-build gate above: record the evidence and
+            // withhold readiness. The system lifecycle owner retains the engine.
             // Joaquin's card 0c4317e1 (serve-time pin-match gap), finder credit.
             // THE CHANNEL FIRST (card 44ddb6fc, Joel: "stdout is never a transport"):
             // the engine's own `/props` says where the weights were ALLOCATED. An
@@ -118,9 +115,6 @@ impl LlamaServerProcess {
             let declined = self.offload.gpu_declined();
             let zero_offload = matches!(self.offload.get(), Some((0, total)) if total > 0);
             if channel_says_cpu || declined || zero_offload {
-                if let Some(pid) = child_pid {
-                    continuum_process::kill9(pid);
-                }
                 let residency_line = residency
                     .as_ref()
                     .map(|r| r.summary())
@@ -141,7 +135,7 @@ impl LlamaServerProcess {
                     "PLACEMENT VIOLATION: a GPU-placement lane came up ON CPU — refused, not served \
                      (ready must be a verified observation, #441 / card 0c4317e1)"
                 );
-                return Err(LlamaServerError::Spawn(format!(
+                return Err(LlamaServerError::ReadinessRefused(format!(
                     "{} was planned on the GPU and came up on the CPU ({evidence}; residency {residency_line}); refused rather \
                      than serve every citizen from system RAM behind a green /health. Check the \
                      backend build (a DL-backend build can list CUDA0 from a shell and still fail \

@@ -13,6 +13,9 @@ pub enum LlamaServerError {
     /// Spawn itself failed (binary missing, bad args, OS refused). Loud.
     #[error("llama-server spawn failed: {0}")]
     Spawn(String),
+    /// The live engine answered, but its observed build or placement cannot serve this target.
+    #[error("live engine readiness refused: {0}")]
+    ReadinessRefused(String),
     /// The model GGUF could not be resolved on disk for the requested id.
     #[error("no local GGUF for model '{0}'")]
     ModelNotFound(String),
@@ -205,6 +208,11 @@ pub trait LlamaServerControl: Send + Sync {
     /// replacement path even when model identity and HTTP health are unchanged.
     fn paging_recovery_required(&self) -> bool {
         false
+    }
+
+    /// Finish the retained engine's readiness before comparing it with current demand.
+    async fn finish_pending_readiness(&self, _current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        Ok(())
     }
 
     /// The model id the running server reports serving, or `None` if nothing is
