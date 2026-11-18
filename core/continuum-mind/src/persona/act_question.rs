@@ -134,9 +134,23 @@ pub(crate) async fn ask_the_act_question(
     // this gate is asking.
     {
         if let Some(citizen) = conversation.stream_citizen() {
-            let claims_result = citizen.active_claims().await;
-            let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
-            let claims = claims_result.unwrap_or_default();
+            // An unanswered board is unknown, never "she holds nothing": this beat neither works
+            // nor takes initiative (an unreadable board may hide a hold), and the next beat asks again.
+            let claims = match citizen.active_claims().await {
+                Ok(claims) => claims,
+                Err(error) => {
+                    continuum_base::probe!(
+                        class = "persona.work.gate",
+                        persona = %ctx.identity.agent_name,
+                        directed = directed,
+                        initiative = ?initiative,
+                        decision = "board_unknown",
+                        error = %error,
+                        "her board did not answer: what she holds is unknown, so this beat waits"
+                    );
+                    return WorkQuestionOutcome::default();
+                }
+            };
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act
@@ -148,11 +162,10 @@ pub(crate) async fn ask_the_act_question(
             // HER INITIATIVE (Joel, 2026-10-23: "They're supposed to be as capable as you so
             // don't constrain them"). Holding nothing used to end her moment here, so she
             // could act only once something had handed her a card. Offered when the board
-            // answered (an unreadable board may hide a hold; the next beat asks again), the
-            // caller's cadence offers it, and she has hands to act with.
+            // answered (an unanswered one returned above), the caller's cadence offers it, and she
+            // has hands to act with.
             let hands = cycle.acting().is_some();
             let initiative_due = held.is_empty()
-                && claims_err.is_none()
                 && hands
                 && initiative == crate::persona::initiative_turn::Initiative::Offered;
             continuum_base::probe!(
@@ -163,7 +176,6 @@ pub(crate) async fn ask_the_act_question(
                 hands = hands,
                 active_claims = claims.len(),
                 held = held.len(),
-                claims_error = claims_err.as_deref().unwrap_or(""),
                 states = claims
                     .iter()
                     .map(|c| format!("{:?}", c.state))
