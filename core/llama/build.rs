@@ -2,7 +2,7 @@
 //!
 //! Cross-platform:
 //!   - macOS: GGML_METAL=ON (Metal framework available)
-//!   - Linux + `cuda` feature: GGML_CUDA=ON (requires CUDA toolkit)
+//!   - Linux and Windows MSVC + `cuda` feature: GGML_CUDA=ON (requires CUDA toolkit)
 //!   - Linux + `vulkan` feature: GGML_VULKAN=ON (routes to host Metal via
 //!     MoltenVK when run under krunkit+Podman on Apple Silicon; gets ~80% of
 //!     native Metal perf. Also viable on Nvidia/AMD Linux hosts with
@@ -12,10 +12,10 @@
 use std::env;
 use std::path::PathBuf;
 
-mod cpu_target;
-mod msvc_cache;
 #[path = "../continuum-cli-lifecycle/src/cargo_cache_custody.rs"]
 mod cargo_cache_custody;
+mod cpu_target;
+mod msvc_cache;
 
 fn main() {
     let producer_out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
@@ -184,8 +184,20 @@ fn main() {
         cfg.define("GGML_CPU_ARM_ARCH", "armv8.2-a+dotprod+fp16");
     }
 
-    // CUDA on Linux
-    if cfg!(feature = "cuda") && target_os == "linux" {
+    let cuda = cfg!(feature = "cuda") && (target_os == "linux" || target_env == "msvc");
+    println!("cargo:rustc-check-cfg=cfg(llama_cuda)");
+    if cuda {
+        println!("cargo:rustc-cfg=llama_cuda");
+        if target_env == "msvc" {
+            let toolkit = PathBuf::from(
+                env::var_os("CUDA_PATH").expect("CUDA_PATH must name the Windows CUDA toolkit"),
+            );
+            cfg.define("CUDAToolkit_ROOT", &toolkit);
+            println!(
+                "cargo:rustc-link-search=native={}",
+                toolkit.join("lib/x64").display()
+            );
+        }
         cfg.define("GGML_CUDA", "ON");
         println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
         if let Ok(targets) = env::var("CMAKE_CUDA_ARCHITECTURES") {
@@ -346,7 +358,7 @@ fn main() {
     if cfg!(feature = "metal") && target_os == "macos" {
         link_static("ggml-metal", true);
     }
-    if cfg!(feature = "cuda") && target_os == "linux" {
+    if cuda {
         link_static("ggml-cuda", true);
     }
     if cfg!(feature = "vulkan") && target_os == "linux" {
@@ -433,7 +445,7 @@ fn main() {
         let metal_header = submodule.join("ggml").join("include").join("ggml-metal.h");
         builder = builder.header(metal_header.to_str().unwrap());
     }
-    if cfg!(feature = "cuda") && target_os == "linux" {
+    if cuda {
         let cuda_header = submodule.join("ggml").join("include").join("ggml-cuda.h");
         builder = builder.header(cuda_header.to_str().unwrap());
     }
