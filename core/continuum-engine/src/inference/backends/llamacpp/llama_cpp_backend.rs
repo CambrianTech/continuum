@@ -43,6 +43,7 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            chat: OnceLock::new(),
             model: Arc::new(model),
             config,
             model_id,
@@ -402,6 +403,28 @@ impl LlamaCppBackend {
     /// (error, default, etc.) instead of a silent fallback.
     pub fn model_chat_template(&self) -> Option<String> {
         self.model.chat_template()
+    }
+
+    /// Render one chat turn through the model's own chat handling (llama.cpp common/chat): the
+    /// OpenAI-shaped `request` (messages, tools, tool_choice) with its tools and reasoning, under
+    /// `override_template` when the GGUF carries none. The templates load once, at the first turn;
+    /// the lock is held for the render alone, so it is released before decode. The returned render
+    /// keeps its parser for every partial and the final parse of this request.
+    pub fn render_chat_turn(
+        &self,
+        request: &str,
+        override_template: Option<&str>,
+        reasoning: llama::ReasoningFormat,
+    ) -> Result<llama::ChatRender, llama::ChatRefusal> {
+        let templates = self
+            .chat
+            .get_or_init(|| llama::ChatTemplates::new(&self.model, override_template).map(Mutex::new))
+            .as_ref()
+            .map_err(Clone::clone)?;
+        // A render reads the templates and never mutates them, so a lock poisoned by a panicking
+        // render leaves them intact.
+        let templates = templates.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a poisoned render lock guards immutable templates
+        templates.render(request, reasoning)
     }
 
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.

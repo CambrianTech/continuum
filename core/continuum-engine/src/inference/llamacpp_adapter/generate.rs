@@ -178,9 +178,31 @@ impl LlamaCppAdapter {
         // but cumulative across thousands of turns it can shadow real
         // bottlenecks. Bracketing it lets the operator subtract it
         // from `inference.forward.*` cleanly.
-        let prompt = continuum_base::time_sync!("inference.render_chat", {
-            llama::render_chat(template.as_deref(), &messages, true)
-        })?;
+        // A text turn renders through the model's own chat handling with her tools (S2b): the same
+        // wire messages and tools serving sends, and one render kept to parse what she writes. The
+        // media path keeps the plain template until mtmd takes a chat render.
+        let chat_render = if collected_media.is_empty() {
+            let rendered = continuum_base::time_sync!("inference.render_chat", {
+                super::chat_turn::chat_request(&request).and_then(|body| {
+                    Ok(backend.render_chat_turn(&body.to_string(), template, llama::ReasoningFormat::Auto)?)
+                })
+            });
+            match rendered {
+                Ok(render) => Some(render),
+                Err(refused) => return Err(refused.to_string()),
+            }
+        } else {
+            None
+        };
+        let prompt = match &chat_render {
+            Some(render) => match super::chat_turn::prompt_of(render) {
+                Ok(prompt) => prompt,
+                Err(refused) => return Err(refused.to_string()),
+            },
+            None => continuum_base::time_sync!("inference.render_chat", {
+                llama::render_chat(template.as_deref(), &messages, true)
+            })?,
+        };
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -337,7 +359,19 @@ impl LlamaCppAdapter {
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
-        let (text, tokens) = result?;
+        let (written, tokens) = result?;
+        // What she wrote, read by the render that produced her prompt: content, reasoning and her
+        // native calls (assembled by the one owner the streamed path uses). A media turn's output
+        // is its text.
+        let (text, reasoning, tool_calls) = match &chat_render {
+            Some(render) => match super::chat_turn::parse_turn(render, &written, super::chat_turn::generation_end(tokens, max_tokens)) {
+                Ok(turn) => (turn.text, turn.reasoning, turn.tool_calls),
+                Err(refused) => return Err(refused.to_string()),
+            },
+            None => (written, None, None),
+        };
+        let content = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
+        let finish_reason = if tool_calls.is_some() { FinishReason::ToolUse } else { FinishReason::Stop };
 
         let elapsed = gen_start.elapsed();
         let tok_per_sec = if elapsed.as_secs_f64() > 0.0 {
@@ -378,7 +412,7 @@ impl LlamaCppAdapter {
 
         Ok(TextGenerationResponse {
             text,
-            finish_reason: FinishReason::Stop,
+            finish_reason,
             model: backend.model_id().to_string(),
             provider: LLAMACPP_PROVIDER_ID.to_string(),
             usage: UsageMetrics {
@@ -389,13 +423,10 @@ impl LlamaCppAdapter {
             },
             response_time_ms: elapsed.as_millis() as u64,
             request_id: format!("llamacpp-{}", continuum_base::time::EpochMs::now().millis()),
-            content: None,
-            tool_calls: None,
-            // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
-            // it would emit inline `<think>` in `text` too — apply
-            // `crate::ai::openai_adapter::extract_reasoning` here to separate it.
-            // Not Asha's path today (she routes through the openai adapter).
-            reasoning: None,
+            content,
+            tool_calls,
+            // Split by the model's own reasoning format (the render's parser), never a tag regex.
+            reasoning,
             routing: None,
             error: None,
             timing: None,

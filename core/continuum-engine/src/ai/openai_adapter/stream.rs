@@ -666,20 +666,7 @@ impl OpenAICompatibleAdapter {
             }
         }
 
-        // Build content blocks
-        let mut content_blocks = Vec::new();
-        if !text.is_empty() {
-            content_blocks.push(ContentPart::Text { text: text.clone() });
-        }
-        if let Some(ref tcs) = tool_calls {
-            for tc in tcs {
-                content_blocks.push(ContentPart::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.input.clone(),
-                });
-            }
-        }
+        let content_blocks = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
 
         // Every request asks for `stream_options.include_usage`; a finished stream without
         // its usage frame broke that contract, and zero tokens would be a count the budget trusts.
@@ -792,11 +779,7 @@ impl OpenAICompatibleAdapter {
             usage,
             response_time_ms,
             request_id,
-            content: if content_blocks.is_empty() {
-                None
-            } else {
-                Some(content_blocks)
-            },
+            content: content_blocks,
             tool_calls,
             reasoning,
             routing: None,

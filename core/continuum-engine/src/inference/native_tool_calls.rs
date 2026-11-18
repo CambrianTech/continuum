@@ -6,6 +6,21 @@
 use continuum_tool_protocol::{GenerationEnd, ToolCall, UnparsedArguments};
 use serde_json::Value;
 
+use crate::ai::types::ContentPart;
+
+/// A response's content blocks: her visible text, then each call as a `ToolUse` part. `None` when
+/// she wrote nothing and called nothing.
+pub(crate) fn content_blocks(text: &str, calls: Option<&[ToolCall]>) -> Option<Vec<ContentPart>> {
+    let mut blocks = Vec::new();
+    if !text.is_empty() {
+        blocks.push(ContentPart::Text { text: text.to_owned() });
+    }
+    for call in calls.into_iter().flatten() {
+        blocks.push(ContentPart::ToolUse { id: call.id.clone(), name: call.name.clone(), input: call.input.clone() });
+    }
+    (!blocks.is_empty()).then_some(blocks)
+}
+
 use super::sse_stream::StreamToolAccum;
 
 /// The calls a generation made, or `None` when it made none. A call with no name is no call. A
