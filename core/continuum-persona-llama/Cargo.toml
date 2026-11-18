@@ -1,0 +1,19 @@
+[package]
+name = "continuum-persona-llama"
+version = "0.1.0"
+edition = "2021"
+description = "The persona engine's residency tier over the fork's native persona blocks (CONTINUUM-ENGINE 4.14): one context, two execution streams (the active mind decodes in one while the next binds into the other), every other mind's blocks in RAM. A switch is a native bind, never a serialize or a re-prefill."
+
+[features]
+metal = ["llama/metal"]
+
+[dependencies]
+continuum-persona-engine = { path = "../continuum-persona-engine" }
+llama = { path = "../llama" }
+thiserror.workspace = true
+uuid.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

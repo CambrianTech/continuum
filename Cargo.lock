@@ -3596,6 +3596,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "continuum-persona-llama"
+version = "0.1.0"
+dependencies = [
+ "continuum-persona-engine",
+ "llama",
+ "thiserror 2.0.18",
+ "uuid",
+]
+
+[[package]]
 name = "continuum-positron"
 version = "0.1.0"
 dependencies = [
@@ -7113,6 +7123,7 @@ dependencies = [
  "cc",
  "cmake",
  "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
