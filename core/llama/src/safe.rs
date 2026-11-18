@@ -13,6 +13,8 @@ mod backend_init;
 pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
+mod chat;
+pub use chat::{parse as chat_parse, ChatRefusal, ChatTemplates};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaOwner, PersonaRefusal};
 
