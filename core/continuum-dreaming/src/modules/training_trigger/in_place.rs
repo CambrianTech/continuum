@@ -159,6 +159,28 @@ impl InPlace {
         Arc::clone(self.engines.entry(engine).or_default().value())
     }
 
+    /// Retire every engine incarnation other than `live` whose process is verifiably dead, and return
+    /// how many. An incarnation's slot owns its learners' and workspace's custody claims; while it
+    /// stays in the map those claims stay live, so custody never sees them orphaned and keeps their
+    /// leases forever (the M5, 2026-11-17: the engine relaunched at 22:09:39Z and Aris's workspace
+    /// lease, 4.88 GB of governed VRAM, stayed pinned; governed VRAM was already exhausted before it,
+    /// and the pinned lease kept those bytes from ever coming back). The
+    /// dropped claims become orphans, which `Custody::settle_orphans` releases on the dead-process
+    /// proof. An incarnation whose liveness is unknown is kept: unreadable is never dead.
+    pub(crate) fn retire_dead(&self, live: EngineIncarnation) -> usize {
+        self.retire_dead_with(live, EngineIncarnation::liveness)
+    }
+
+    /// [`Self::retire_dead`] over a given liveness probe (a test names which incarnation is dead,
+    /// alive or unreadable).
+    fn retire_dead_with(&self, live: EngineIncarnation, liveness: impl Fn(&EngineIncarnation) -> Liveness) -> usize {
+        let dead: Vec<EngineIncarnation> = self.engines.iter().map(|entry| *entry.key()).filter(|incarnation| *incarnation != live && liveness(incarnation) == Liveness::Dead).collect();
+        for incarnation in &dead {
+            self.engines.remove(incarnation);
+        }
+        dead.len()
+    }
+
     /// One step of bucket `key`, holding its gate, its engine and `slot`: seat her learner if needed,
     /// then learn her next pending example on `slot` (or restore her generation before it). A lost
     /// answer's fence runs on its own, holding this engine and the slot until the stop is confirmed.
@@ -703,10 +725,16 @@ fn waits_for_her_act(seated: bool) -> bool {
     !seated
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AdmissionPhase {
+    Prepare,
+    StepRevalidation,
+}
+
 /// Her learning memory was not free: the pass ends holding nothing, and the next pass (the tick or a
 /// serving change) asks again; a wait would hold her pass on memory measured for one moment.
-fn memory_short(key: &BucketKey, wait: &crate::inference::training_admission::TrainingWait) {
-    continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, wait = %wait,
+fn memory_short(key: &BucketKey, phase: AdmissionPhase, wait: &crate::inference::training_admission::TrainingWait) {
+    continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, phase = ?phase, wait = %wait,
         "her learning memory was not free; the pass ends holding nothing and the next pass asks again");
 }
 

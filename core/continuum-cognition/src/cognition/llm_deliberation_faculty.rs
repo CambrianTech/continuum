@@ -103,7 +103,6 @@ mod read_receipt;
 pub use read_receipt::ReadReceipt;
 use self::reply_claim::*;
 mod verdict;
-mod prefill_during_tool;
 mod tool_surface;
 use super::tool_surface::{SelectedSurface, ToolSurface};
 
@@ -239,8 +238,6 @@ pub struct LlmDeliberationFaculty {
     held_blocks: parking_lot::Mutex<std::collections::HashMap<(Uuid, String), crate::cognition::context_streams::blocks::Grounding>>,
     /// A measurement fork's (`fork_eval_cycle`): its turns warm their own page, never hers.
     forked: bool,
-    /// Her prompt, prefilled into her slot while her tool runs (`prefill_during_tool.rs`).
-    prefix_warm: prefill_during_tool::PendingPrefix,
 }
 
 impl LlmDeliberationFaculty {
@@ -275,7 +272,6 @@ impl LlmDeliberationFaculty {
             held_blocks: parking_lot::Mutex::new(std::collections::HashMap::new()),
             reading: Default::default(),
             forked: false,
-            prefix_warm: Default::default(),
         }
     }
 

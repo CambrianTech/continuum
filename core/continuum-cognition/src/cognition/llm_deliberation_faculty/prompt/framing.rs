@@ -27,6 +27,11 @@ pub(in super::super) struct FramingOffer {
     pub(in super::super) leveled: Leveled,
     /// The held levels, one rung per item (the whole item's first), when her head holds them.
     pub(in super::super) held: Option<Vec<usize>>,
+    /// The categories her head holds expanded. A category whose two levels charge the same at this
+    /// act's density has one rung, and that rung renders as she holds it: her choice is semantic, never
+    /// decided by integer costs that happen to round together (Codex on #6118: at density 1/10 the
+    /// plasticity collapse and expansion both charge 2).
+    held_menu: Option<BTreeSet<String>>,
 }
 
 impl FramingOffer {
@@ -35,9 +40,16 @@ impl FramingOffer {
         self.importance
             .iter()
             .zip(rungs.iter().skip(1))
-            .filter(|(_, &rung)| rung == 0)
-            .map(|(&i, _)| self.lines[i].category.clone())
+            .zip(self.leveled.items().iter().skip(1))
+            .filter(|((&i, &rung), item)| rung == 0 && (item.costs().len() > 1 || self.holds_expanded(&self.lines[i].category)))
+            .map(|((&i, _), _)| self.lines[i].category.clone())
             .collect()
+    }
+
+    /// Whether her head holds `category` expanded; with no held menu (an epoch's start) every
+    /// category is.
+    fn holds_expanded(&self, category: &str) -> bool {
+        self.held_menu.as_ref().is_none_or(|held| held.contains(category))
     }
 
     /// The rungs `expanded` is, one per item: what her head holds.
@@ -78,12 +90,9 @@ impl LlmDeliberationFaculty {
         importance.sort_by_key(|&i| (u8::from(!covered(&lines[i])), i));
         let mut items = vec![Rungs::whole(charge(rest))];
         for &i in &importance {
-            let line = &lines[i];
-            let expanded = charge(line_cost(&line.expanded));
-            let (rungs, _) = Rungs::kept(expanded, (), [(charge(line_cost(&line.collapsed) + 1), ())]);
-            items.push(rungs);
+            items.push(lines[i].levels(charge));
         }
-        let mut offer = FramingOffer { lines, importance, leveled: Leveled::new(items), held: None };
+        let mut offer = FramingOffer { lines, importance, leveled: Leveled::new(items), held: None, held_menu: held.cloned() };
         offer.held = held.map(|expanded| offer.rungs_of(expanded));
         offer
     }
@@ -93,13 +102,8 @@ impl LlmDeliberationFaculty {
 mod tests {
     use super::*;
 
-    // what this catches: framing treated as one irreducible block (Aiko on the M5, 2026-11-07:
-    // framing 2,795 tokens among the "irreducible floors" that refused her turn), or a menu whose
-    // chosen levels do not round-trip to the categories rendered. Its menu categories reduce to
-    // their handles, the parts never under-count the system message they render, and the
-    // categories her native surface already covers give up their detail first.
-    #[test]
-    fn the_menu_reduces_by_category_and_its_parts_cover_the_system_message() {
+    /// A faculty whose menu has three categories of eight verbs each.
+    fn faculty() -> LlmDeliberationFaculty {
         let names: Vec<String> = ["code", "work", "chat"].iter().flat_map(|cat| ["read", "edit", "write", "search", "status", "list", "send", "submit"].iter().map(move |verb| format!("{cat}/{verb}"))).collect();
         let tools: Vec<crate::ai::types::NativeToolSpec> = names
             .iter()
@@ -110,7 +114,17 @@ mod tests {
             })
             .collect();
         let adapter: std::sync::Arc<dyn crate::ai::adapter::AIProviderAdapter> = std::sync::Arc::new(crate::ai::heuristic_adapter::HeuristicInferenceAdapter::new());
-        let faculty = LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(tools);
+        LlmDeliberationFaculty::new(uuid::Uuid::new_v4(), "Asha", "You are Asha.", adapter).with_tools(tools)
+    }
+
+    // what this catches: framing treated as one irreducible block (Aiko on the M5, 2026-11-07:
+    // framing 2,795 tokens among the "irreducible floors" that refused her turn), or a menu whose
+    // chosen levels do not round-trip to the categories rendered. Its menu categories reduce to
+    // their handles, the parts never under-count the system message they render, and the
+    // categories her native surface already covers give up their detail first.
+    #[test]
+    fn the_menu_reduces_by_category_and_its_parts_cover_the_system_message() {
+        let faculty = faculty();
         let ws = Workspace::new("what changed on the board?");
         let charge = |tokens: usize| tokens as u32;
         let offer = faculty.framing_offer(&ws, false, &[], None, &charge);
@@ -126,5 +140,48 @@ mod tests {
         assert!(LlmDeliberationFaculty::framing_cost(&system) as u32 <= floor.cost, "the parts never under-count what renders");
         let whole_system = faculty.compose_system_split(&expanded, false, false, None, false).stable;
         assert!(LlmDeliberationFaculty::framing_cost(&whole_system) as u32 <= all.cost);
+    }
+
+    // what this catches (Codex on #6118): a held collapsed category rewritten to expanded because its
+    // two levels charge the same integer at this act's density (1/10 rounds both to the same cost),
+    // which changes her system prompt mid-epoch. Her held menu renders the same at density 1 and 1/10.
+    #[test]
+    fn a_held_menu_survives_levels_that_charge_the_same() {
+        let faculty = faculty();
+        let ws = Workspace::new("what changed on the board?");
+        let held: BTreeSet<String> = BTreeSet::new(); // her head holds every category collapsed
+        for (measured, estimated) in [(1u64, 1u64), (1, 10)] {
+            let charge = move |tokens: usize| (tokens as u64 * measured).div_ceil(estimated) as u32;
+            let offer = faculty.framing_offer(&ws, false, &[], Some(&held), &charge);
+            let rungs = offer.held.clone().expect("test: her head holds a menu");
+            assert_eq!(offer.expanded(&rungs), held, "density {measured}/{estimated}: the held menu renders as held");
+        }
+    }
+
+    // what this catches (Benchy on the M5, 2026-11-17 22:12Z): a menu category whose collapsed level
+    // exists at one calibration and not at the next, so her held menu renders differently mid-epoch
+    // and her whole KV re-prefills. At density 1 and at the measured 0.899 this category keeps its collapse (lower densities may still
+    // coalesce it; a_held_menu_survives_levels_that_charge_the_same covers that case).
+    #[test]
+    fn a_held_menu_renders_the_same_whatever_the_calibration() {
+        let line = crate::cognition::persona_tools::menu_lines(&[crate::ai::types::NativeToolSpec {
+            name: "plasticity/analyze".into(),
+            description: String::new(),
+            input_schema: crate::ai::types::ToolInputSchema { schema_type: "object".into(), properties: serde_json::json!({}), required: None, definitions: None },
+        }])
+        .remove(0);
+        let line = MenuLine {
+            expanded: "plasticity: analyze, compact, compress, pipeline, topology\n".into(),
+            collapsed: "plasticity (5 \u{2014} commands/list --filter plasticity)\n".into(),
+            ..line
+        };
+        let at = |measured: u64, estimated: u64| move |tokens: usize| (tokens as u64 * measured).div_ceil(estimated) as u32;
+        let (raw, measured) = (at(1, 1), at(14_659, 16_305));
+        let before = line.levels(&raw);
+        let after = line.levels(&measured);
+        assert_eq!(before.costs().len(), 2, "its collapse is smaller text: a level");
+        assert_eq!(after.costs().len(), before.costs().len(), "at the measured 0.899 its collapse is still a level");
+        let collapsed_text = line.collapsed.len().div_ceil(GUARD_CHARS_PER_TOKEN);
+        assert!(after.costs()[1] >= measured(collapsed_text), "a collapse never prices below its own text");
     }
 }

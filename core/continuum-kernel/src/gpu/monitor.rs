@@ -103,6 +103,10 @@ pub trait GpuMonitor: Send + Sync {
     /// told directly to the governor. An unreadable sensor is not a full tank.
     fn free_bytes(&self) -> Option<u64>;
 
+    /// The free bytes with the instant the probe that measured them STARTED: a cached reading answers with
+    /// its own frame's instant, never the time it was asked. None until a real reading lands.
+    fn free_reading(&self) -> Option<(u64, crate::resources::Observed)>;
+
     /// Bytes allocated by OUR process specifically. Lets the policy
     /// distinguish "system is tight" from "we are tight" and react
     /// differently (system-tight → spill our slots; we-tight → just
@@ -262,6 +266,11 @@ impl GpuMonitor for MockMonitor {
         // reach for a monitor that models the failure, not a `None` here.
         Some(self.free_bytes.load(std::sync::atomic::Ordering::Relaxed))
     }
+    fn free_reading(&self) -> Option<(u64, crate::resources::Observed)> {
+        // the scenario sets the reading as it happens: observed now, taken before the read
+        let observed = crate::resources::Observed::now();
+        self.free_bytes().map(|free| (free, observed))
+    }
     fn process_bytes(&self) -> u64 {
         self.process_bytes
             .load(std::sync::atomic::Ordering::Relaxed)
@@ -330,39 +339,29 @@ impl GpuMonitor for MockMonitor {
 /// its `free_bytes()` tracks real system headroom — exactly the live
 /// number serving's budget should be capped at.
 pub fn detect() -> Option<Arc<dyn GpuMonitor>> {
-    #[cfg(target_os = "macos")]
-    {
-        if let Some(m) = MetalMonitor::new() {
-            return Some(m as Arc<dyn GpuMonitor>);
-        }
-    }
-    // NVIDIA via `nvidia-smi` — covers CUDA hosts AND NVIDIA-on-Vulkan
-    // hosts with a genuine live free-VRAM signal (not a static lie).
-    // `new()` returns None on non-NVIDIA hosts, so this is safe to try
-    // everywhere; on macOS the Metal branch above already returned.
-    if let Some(m) = super::NvidiaMonitor::new() {
-        return Some(m as Arc<dyn GpuMonitor>);
-    }
-    // Remaining real adapter still to build: a Vulkan live monitor
-    // (AMD/Intel via VK_EXT_memory_budget — needs `ash` FFI). It is
-    // deliberately NOT faked with a static heap size: a stale `free` that
-    // never drops is the exact bug this whole live-monitor layer exists to
-    // kill. On such a host detect() returns None and the governor boot site
-    // fails loud naming the missing adapter — never a silent substitute.
-    //
-    // This adapter is double-duty: besides non-NVIDIA Linux GPUs, Vulkan is
-    // the ONLY shape by which a Linux container on a Mac could ever see the
-    // GPU — a Linux guest cannot call Metal directly, so any Mac-GPU-in-Docker
-    // passthrough surfaces as paravirtualized Metal-through-Vulkan. Because
-    // detect() is a real runtime PROBE (not platform inference), the day that
-    // ships it lights up here with no other change. Today: Mac deploys NATIVE
-    // (the Metal branch above, --features metal); Docker is the Linux/CUDA
-    // artifact (the NvidiaMonitor branch). CUDA-in-Docker is the proven path.
-    None
+    first_monitor(inventory::iter::<GpuBackendFactory>())
 }
 
-#[cfg(target_os = "macos")]
-use super::MetalMonitor;
+/// A compiled GPU backend's way to bring up its live monitor. Each backend registers one from its own
+/// module, which `backends` already compiles only where it can run (Metal on macOS, NVIDIA everywhere), so
+/// detection names no platform: it asks every compiled backend, in a stable preference order, and stops
+/// at the first one that finds a device. A Vulkan or MLX adapter is one more registration, nothing else.
+pub struct GpuBackendFactory {
+    /// Lower is asked first, independent of link order: Metal 0 (a Mac's own GPU), NVIDIA 1.
+    pub preference: u8,
+    pub name: &'static str,
+    /// The backend's monitor, or `None` when this host has no device it can read.
+    pub monitor: fn() -> Option<Arc<dyn GpuMonitor>>,
+}
+
+inventory::collect!(GpuBackendFactory);
+
+/// The first monitor any factory brings up, asking in preference order; later factories are never called.
+fn first_monitor<'a>(factories: impl IntoIterator<Item = &'a GpuBackendFactory>) -> Option<Arc<dyn GpuMonitor>> {
+    let mut ordered: Vec<&GpuBackendFactory> = factories.into_iter().collect();
+    ordered.sort_by_key(|factory| factory.preference);
+    ordered.into_iter().find_map(|factory| (factory.monitor)())
+}
 
 // ─── Tests ─────────────────────────────────────────────────────────────
 
@@ -462,6 +461,32 @@ mod tests {
     /// live monitor is detected it reports real capacity and a known
     /// platform. `#[tokio::test]` because MetalMonitor::new spawns its
     /// sampling daemon on the shared runner, which needs a reactor.
+    // what this catches (#6124, replacing detect()'s cfg(macos) arm): backends asked out of preference
+    // order, a backend asked after one already found a device, or a missing device read as a monitor.
+    #[test]
+    fn the_first_preferred_backend_with_a_device_wins_and_later_ones_are_never_asked() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static LATE_ASKS: AtomicUsize = AtomicUsize::new(0);
+        fn absent() -> Option<Arc<dyn GpuMonitor>> {
+            None
+        }
+        fn found() -> Option<Arc<dyn GpuMonitor>> {
+            Some(Arc::new(MockMonitor::new(7)))
+        }
+        fn late() -> Option<Arc<dyn GpuMonitor>> {
+            LATE_ASKS.fetch_add(1, Ordering::SeqCst);
+            Some(Arc::new(MockMonitor::new(9)))
+        }
+        let late_factory = GpuBackendFactory { preference: 2, name: "late", monitor: late };
+        let found_factory = GpuBackendFactory { preference: 1, name: "found", monitor: found };
+        let absent_factory = GpuBackendFactory { preference: 0, name: "absent", monitor: absent };
+        // registration order is not preference order
+        let chosen = first_monitor([&late_factory, &found_factory, &absent_factory]).map(|m| m.total_bytes());
+        assert_eq!(chosen, Some(7), "the preferred backend with a device answers");
+        assert_eq!(LATE_ASKS.load(Ordering::SeqCst), 0, "a backend after the winner is never asked");
+        assert!(first_monitor([&absent_factory]).is_none(), "no device on any backend is None, never a stand-in");
+    }
+
     #[tokio::test]
     async fn detect_yields_a_sane_monitor_or_honest_none() {
         match detect() {

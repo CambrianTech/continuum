@@ -301,6 +301,27 @@ pub struct MenuLine {
     pub collapsed: String,
 }
 
+impl MenuLine {
+    /// Its levels for a budget: the expansion, and the collapse when its text is smaller. Whether a
+    /// collapse is offered is decided from the text; its cost is charged at this act's density, kept
+    /// below the expansion's where the integers allow and never below its own text's. At a low enough
+    /// density the two still charge the same integer and the ladder has one rung: the framing then
+    /// renders the category as her head holds it (`FramingOffer::expanded`), so her prompt does not
+    /// change mid-epoch (Benchy on the M5, 2026-11-17 22:12Z: density 1 -> 0.899 dropped plasticity's
+    /// collapse, the menu expanded, and 17,316 tokens of his KV re-prefilled).
+    pub fn levels(&self, charge: &dyn Fn(usize) -> u32) -> continuum_context::ladder::Rungs {
+        use continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN;
+        let estimate = |text: &str| text.len().div_ceil(GUARD_CHARS_PER_TOKEN);
+        let (expanded, collapsed) = (estimate(&self.expanded), estimate(&self.collapsed));
+        let whole = charge(expanded);
+        if collapsed + 1 >= expanded {
+            return continuum_context::ladder::Rungs::whole(whole);
+        }
+        let priced = charge(collapsed + 1).min(whole.saturating_sub(1)).max(charge(collapsed));
+        continuum_context::ladder::Rungs::kept(whole, (), [(priced, ())]).0
+    }
+}
+
 /// The menu's categories in its spine order (stable, a byte-stable prefix), each at both levels.
 pub fn menu_lines(tools: &[NativeToolSpec]) -> Vec<MenuLine> {
     let mut by_cat: BTreeMap<&str, Vec<(String, &str)>> = BTreeMap::new();

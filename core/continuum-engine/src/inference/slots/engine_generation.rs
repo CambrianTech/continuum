@@ -610,7 +610,7 @@ impl EndpointTransition {
         // A fresh assignment ledger prevents old Arc holders/pins from affecting
         // the new engine. Copy ONLY saved-page eligibility under an exact contract.
         let pool = Arc::new(KvSlotPool::new(root, contract.slots));
-        self.endpoint.concurrency.retarget(contract.slots as usize);
+        self.endpoint.concurrency.retarget(super::endpoint_concurrency::active_decodes(contract.slots));
         let mut carried = false;
         // Same page format, not the same launch: a relaunch at another window or slot count
         // keeps every page it can restore (the engine refuses, loudly, one that no longer fits).
@@ -800,7 +800,7 @@ impl SlotDirectory {
         let endpoint = self.endpoint(root);
         let mut state = endpoint.state.lock();
         let pool = installed_pool(&mut state, root, born);
-        endpoint.concurrency.retarget(pool.n_slots() as usize);
+        endpoint.concurrency.retarget(super::endpoint_concurrency::active_decodes(pool.n_slots()));
         pool
     }
 }

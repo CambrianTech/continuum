@@ -121,6 +121,21 @@ impl ResourceGovernor {
         self.ledger.set_physical_used(kind, bytes);
     }
 
+    /// Ingest a physical reading; one observed earlier than the held reading never overwrites it.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, sample: super::observed::PhysicalSample) -> bool {
+        self.ledger.set_physical_sample(kind, sample)
+    }
+
+    /// The holder of `lease_id` declares its bytes resident.
+    pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
+        self.ledger.landed(lease_id, from)
+    }
+
+    /// Daemon feeds which kind a kind draws on (unified memory: VRAM on RAM), each tick.
+    pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
+        self.ledger.set_backing(kind, backing);
+    }
+
     /// Total self-declared residency of a kind across all measured consumers.
     pub fn measured(&self, kind: ResourceKind) -> u64 {
         self.ledger.measured(kind)

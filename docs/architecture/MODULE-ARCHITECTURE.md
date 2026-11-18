@@ -372,6 +372,281 @@ Rules:
 4. **Crate cuts follow this table**, not file sizes: rendering and media leave the core first, then
    the serving planner, then the store. Each cut is also a build-time win.
 
+### 9.3 Inside A Crate: One Object, One Directory
+
+The placement map says where a module runs. Inside a crate the unit is the **object**: one owner
+of one kind of state, with private fields, methods that are the only way to change that state, and
+an explicit lifetime (Joel and Codex, 2026-11-17: "who owns these bytes, who may change them, and
+what proves they are safe to release"). The directory tree is the object map: a reader, human or
+model, finds an owner by its folder and never reconstructs it from functions spread across files.
+
+**The rules:**
+- An object is a directory named for it; its struct lives in the directory's `mod.rs` (or the
+  file named for it), and its parts (the state it owns and the policies it applies) are files
+  and subdirectories inside it. A sibling is a peer owner, never a fragment of another.
+- A free function that reaches into a global (a home path, a serving snapshot, a registry) is a
+  missing object: the object holds what it needs, and its constructor (`of`, `at`) is the one
+  place that resolves it.
+- Classify every map keyed by another owner's identity (an engine incarnation, a persona, a slot):
+  an INDEX or a LEASE held by a service is legitimate; STATE that only that owner may change moves
+  to it. Dropping a runtime owner never erases what must outlive it: durable state persists, and
+  asynchronous custody (a learning step, a page in flight) transfers to its completion owner and is
+  reclaimed only on that completion fence or the verified death of the process holding it.
+- An invalid transition is unrepresentable through the interface (a typed outcome, not a checked
+  string); a failure is typed (`StoreUnresolved`, never `Result<_, String>`).
+- Repairing an area moves its state and operations into its owner, migrates every caller, and
+  deletes the old path in the same change. Wrapping the same globals in a struct is not an object.
+- A pure directory move (paths only, tests unchanged) and a transfer of ownership (who may change
+  or release state) are separate changes: the move is proven by diff or syntax-tree equivalence plus
+  a build and the tests, the transfer by lifecycle and fault tests (drop mid-operation, relaunch,
+  restart).
+- Rust gives this without inheritance: structs, methods, traits at real seams, adapters for what
+  varies, and `Drop` that hands custody to its completion owner rather than discarding it.
+
+**The genome, as the first map** (`continuum-genome`; the moves are pure moves, one PR per owner):
+
+| Directory | Object | Owns |
+|---|---|---|
+| `genome/` | `Genome` | one persona's genome; `compose(base, perception)` |
+| `genome/trials/` | `GeneTrials`, `GeneTrial` | her trial store, each gene's standing, `StoreUnresolved` |
+| `genome/signatures/` | `SignatureStore` | where her genes route |
+| `genome/residency/` | `GeneResidency` | which genes sit on the device |
+| `genome/selection/` | `select`, `Need`, `Candidate`, `Phenotype` | choosing a turn's genes (today `composer`) |
+| `genome/manifest/` | the adapter manifest | genes the engine may load |
+| `learner/` | the in-place learner | seat, custody, learning memory |
+| `recall/` | gene recall | scoring and its sources |
+| `fitness/` | fitness and its ledger | competence, training outcomes |
+
+**Next owners, same shape:** `Persona` (blocks, token history, genome, learning, moved whole:
+CONTINUUM-ENGINE 4.14), and `EngineIncarnation` (everything bound to one engine process:
+learners, workspace, custody claims, slot KV; retired by the serving lifecycle's completion owner,
+never dropped at condemn).
+
+
+### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Capabilities
+
+**How a stimulus reaches her amygdala.** In the proposed anatomy, her amygdala subscribes to
+stimuli relevant to her and owns her assessment of their salience and urgency. Suppose a reviewer
+publishes a correction in her room. The event identifies the reviewed turn by handle. Her amygdala
+can signal that the correction deserves attention now. Her learning component can retain the same
+turn for a later in-place step. Attention decides whether to interrupt her current activity.
+The reviewer needs no knowledge of either subscriber.
+
+The same publish/subscribe mechanism connects parts within a mind, participants in a shared room,
+and runtime services. Each part owns its subscriptions through its lifecycle and wakes when relevant
+input arrives. Small typed values travel in the event. Larger payloads stay with their owners and
+travel by handle. An idle subscriber can sleep without scanning history or polling its peers.
+This applies the existing CBAR pattern and the persona's [ordered event stream](MIND-DATAFLOW-OVERHAUL.md).
+For each participating object, document which typed events wake it, which part of its state each
+event changes, what it publishes, and who owns pending deliveries during suspension. The object
+applies a new event once to the state it maintains. Subscribers receive small values or
+[handles to the original content](CONTENT-TRAVELS-BY-HANDLE.md) through the existing delivery owner.
+
+A swap gives this contract a concrete test. Suspend the persona after a correction is accepted
+but before learning consumes it. On resume, the correction must still be owed. Suspend again after
+learning records completion, and the same delivery must leave that completed step alone. Preserve
+the last applied event with its effect at the owner's commit boundary. A wake signal may coalesce
+when the latest state suffices; the correction itself stays available until its owner settles it.
+
+A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
+anatomy: each part is an object that owns its state, each thing she does is a capability of the
+part that does it (a method; a trait only where parts share or substitute it), and the world she
+lives in is outside her. The `Persona` is the root
+object; she moves whole (CONTINUUM-ENGINE 4.14), so everything that is hers is reachable from her.
+
+**Ownership is not location.** She owns her identity, the versions of her state and the authority
+to change it, and holds typed handles; the services that hold the bytes own their physical custody,
+indexes and shared budgets (the engine holds her KV, the store her durable rows, shared residency
+its allocations), with no copy of her policy. Dropping her runtime object never erases her: her
+identity, genome and memories are durable; her blocks still in flight transfer to their completion
+owner and are reclaimed only on its fence or a verified process death; moving her state between
+tiers never invalidates it. The tree below is LOGICAL composition across the existing crates (the
+placement map, 9.2), not one crate that all of her source moves into.
+
+**Her parts (nouns, objects; a LOGICAL tree: each part lives in the crate the placement map gives it):**
+
+```
+Persona                    one being: identity, mind, genome, body, residency, learning
+├── identity/   Identity       who she is: PeerId, name, role, home
+├── mind/       Mind           her cognition
+│   ├── workspace/     Workspace, WorkspaceCycle   the global workspace; one turn at a time
+│   ├── working_memory/ WorkingMemory              what she holds in mind now
+│   ├── hippocampus/   Hippocampus                 her episodic memory: engrams in, recall out
+│   │   └── engram/    Engram                      one memory trace, with its cause and strength
+│   ├── amygdala/      Amygdala                    salience: what matters, how urgently; the instant voice
+│   ├── attention/     Attention                   her focus and its priority (TurnAttention today)
+│   └── faculties/     RecallFaculty, Deliberation the workspace's specialists
+├── genome/     Genome         her genes (§9.3); Phenotype = the layers expressed this turn
+├── body/       Body           what she acts and senses with
+│   ├── hands/         Hands      her tools, as working sets per activity (plan goal 10)
+│   ├── voice/         Voice      speech and publication into a room
+│   ├── senses/        Senses     vision, hearing, the perception sources she reads
+│   └── mobility/      Mobility   where she is: room, activity, node; moving across the grid
+├── residency/  Residency      where her native blocks live (device, host, flash)
+│   └── token_history/ TokenHistory   her token ids, appended once, never re-rendered
+└── learning/   Learning       her journal, learners and credits: corrections become genes
+```
+
+**Her verbs (capabilities: a method on the part that does it by default; a trait only where parts
+really share or substitute the verb, never one trait per verb, never dynamic dispatch per block):**
+
+| Capability | Meaning | Done by |
+|---|---|---|
+| `Perceive` | take in what happened, as items for her workspace | Senses, her sources |
+| `Attend` | choose what her mind is on, and how urgently | Attention, Amygdala |
+| `Recall` | bring back what she knows that bears on it | Hippocampus, RecallFaculty |
+| `Deliberate` | think a turn through | Mind's faculties |
+| `Express` | turn her genome into this turn's phenotype | Genome (`compose`) and her cycle (`adopt_genes`) |
+| `Act` | change the world: a tool call, a reply, a move | Hands, Voice, Mobility |
+| `Remember` | lay down an engram from what she did | Hippocampus |
+| `Learn` | turn a reviewed correction into a gene | Learning |
+| `Consolidate` | dream: replay, prune, strengthen | Hippocampus, Learning |
+| `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
+| `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
+
+**Lifecycle composes through the tree (the one verb that is a shared trait).** Every part has a
+lifetime, and the parent, not the caller, knows its children, their order and their outstanding
+work:
+
+```rust
+trait Lifecycle {
+    async fn prepare(&mut self) -> Ready;      // stage for use: native staging only, never recompute
+    async fn suspend(&mut self) -> Preserved;  // keep state; finish or hand off outstanding work
+    async fn resume(&mut self) -> Bound;       // bind what was preserved
+    async fn shutdown(&mut self) -> Released;  // children first, then own resources, safely
+}
+```
+
+`persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
+order and combines what each reports. "Shut down this engine" is `shutdown` on its incarnation,
+which coordinates its learners, workspace, custody and slots. "Swap personas" is NOT suspend-then-
+resume, which would put every transfer on the critical path: the coordinator `prepare`s the NEXT
+while the ACTIVE decodes, binds NEXT behind a fence, and only then retires the LAST, so staging and
+retirement overlap decoding (the Nanite pipeline, CONTINUUM-ENGINE 4.14). Each outcome is typed
+and distinguishes Ready and Released from Pending and Failed: unfinished work stays explicitly
+pending (handed to its completion owner), never reported done and never dropped. Every
+call is idempotent: a repeated `suspend` on a suspended part reports the same preservation. The
+preservation rules are written once, inside the part that owns the state, and every caller gets
+them for free.
+
+**Capacity composes through the tree too (`Footprint`, the second shared capability).** Every part
+answers for its memory, so admission reads the objects instead of guessing from the whole machine.
+Two things are kept apart, as with ownership and location: **allocation** (a physical allocation,
+identified once by its existing lease or custody claim, held by the service that holds the bytes)
+and **attribution** (which part is charged for it, by reference to that one allocation). Her KV is
+attributed to her and allocated in the engine's KV pool; it is counted once, by its allocation
+identity, never as persona bytes plus pool bytes.
+
+- `held()`: the allocations a part is attributed, per tier, INCLUDING granted reservations and
+  in-flight custody (a claim not yet confirmed released is still held).
+- `needs(step)`: the PEAK concurrent increase the step adds over what is held, per tier, or a typed
+  `Unmeasured`; never a sum of children's sequential peaks, never a zero standing in for unknown.
+- `reclaimable()`: what could be given back: a redundant copy released, or native bytes paged to a
+  backing that holds them; never valid cached state discarded to be recomputed. Prospective until
+  its completion fence passes and its preserved backing is verified.
+
+On unified memory one physical backing serves host and device: every tier's ledger names the
+backing it draws on, so the two totals can never both be spent from the same bytes. Admission is an
+ATOMIC claim through the existing governor (its leases and custody), never "capacity minus a
+snapshot" computed outside it. The host's measurement is a cross-check: drift between it and the
+attributed allocations is published, and it can name an owner only where children report their
+own observations (a child whose allocations the engine's ledger confirms); negative drift is drift,
+never zero external. These are the existing footprint, lease and custody types, adapted where they
+live; nothing here is a second governor.
+
+**Every node that lives has an identity (`Part::id`).** A part with a lifetime, durable state, or
+anything that references it (a persona, an engine incarnation, an allocation or claim, a gene, a
+learning job, a residency, an engram) carries a TYPED id (`AllocationId`, `EngineIncarnationId`,
+`EngramId`; never a bare `Uuid` or string, so one kind is never passed for another). Attribution,
+lifecycle outcomes and drift all speak in these ids ("charged to allocation X", "suspend pending on
+claim Y", "drift under incarnation Z"). Identities minted at runtime are UUIDv7 (time-ordered, so
+logs, probes and drift reports sort by birth). A natural identity is kept where one exists and is
+never shadowed by a second: a persona's durable `PeerId`; an engine incarnation's pid and start
+time (what proves it alive or dead); a gene's or blob's content hash. Pure values (a menu line, a
+computed phenotype) are data, not nodes, and carry none.
+The id is free, as on a base object: a generic `Id<K>` (UUIDv7 inside, a phantom kind outside) and
+a `#[derive(Part)]` that reads `#[part(id)]` and `#[part(child)]` fields generate `Part::id` and
+`Part::children`, so a new organ writes one field and one derive and gets its identity, its place
+in the tree and the default capacity and lifecycle walks (the substrate's base trait, derive macro
+and scaffold generator). In the store, v7 keys arrive in time order, so indexes append rather than
+scatter and records read back in birth order.
+
+**Both capabilities walk the tree (the composite).** Every part exposes its children through the
+same interface, and the default methods fold them, so a part implements only its own direct
+answers. `persona.held()` walks her mind, genome, body, residency and learning; a parent never
+re-measures what a child reports, and an allocation shared by two children is counted once by its
+identity. The shared implementation owns the traversal; each object supplies only its children and its own
+operation. Every method has the same shape, and its DIRECTION FOLLOWS THE DEPENDENCIES: establish
+what the children need before starting them (`prepare`, `resume`: self, then children); finish the
+children before releasing what they depend on (`held`, `suspend`, `shutdown`: children, then self).
+Preparation propagates down; results collect up. `shutdown` first closes the part's admission, so
+no new work arrives while its children stop, then stops the children in reverse dependency order,
+then releases its own resources. Callers see one `shutdown()` or `resume()`; the ordering, the
+pending results and the preservation rules are written once. A partial failure never pretends to
+roll back what cannot be undone (a stopped process stays stopped): the outcome reports each child
+as terminal, preserved or pending, and only the reversible children are resumed.
+Independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
+is a planning-time operation, never per token or per block.
+
+**Concurrency is the same tree (launch and join).** A part LAUNCHES its children's work downward and
+is not done until every child has JOINED upward; cancellation flows down the same edges. The
+runtime already is this tree: a `ServiceModule` carries the lifecycle (`drain`, `save_state`,
+`shutdown`) and the runtime walks the modules, so modules keep using it and a persona's parts follow
+the same contract; this is never a second, parallel lifecycle. Work spawned outside a module is
+still launch and join: every spawn is owned by the part WHOSE LIFETIME IT SHARES, which joins or
+stops it. A stop request, a joined completion and a GPU fence are three different facts, and an
+owner waits for the one it needs. The demonstrated 2026-11-17 failure is ownership, not an
+unjoined task: the learning fence exited on the engine's verified death as written, but the
+training trigger's per-incarnation slot map still held the dead incarnation's slot, whose `Arc`
+kept the learning workspace (and its 4.9 GB lease) alive; nothing removed the slot until #6119
+retired dead incarnations. State kept under another owner's identity outlived that owner.
+
+**The tree is the parallel, data-flow schedule.** Siblings with no dependency edge between them run at
+once, and a node runs as soon as its inputs are ready: preparation flows down, results flow up, and
+the scheduler walks edges with no special cases (the swap pipeline overlaps because staging the NEXT
+persona and decoding the ACTIVE one are different subtrees). A SHARED RESOURCE IS A DEPENDENCY TOO:
+the engine's decode is one resource, so the minds' decodes are ordered children of the engine,
+serialized by that edge, never run in parallel because they are siblings (four minds decoding at
+once ran at 2 tok/s each against 39 for one; 2026-11-17). Independent work runs in parallel;
+work that shares a resource is ordered by it.
+
+**Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
+same interface and calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new gene kind
+in her genome, a new memory tier in her residency) is: write it with its own direct answers, attach
+its allocations to their existing claims, and add it to its parent's children with its place in
+each operation's order. Her capacity, lifecycle, admission and swap then include it, and no caller
+changes, because callers talk only to the parent.
+
+**The first code step.** The capability interfaces are added beside the existing footprint, lease
+and custody types in the crate that owns them (or, if more than one crate must implement them, at
+the lowest crate both already depend on, with that placement justified in the change). `Genome`
+becomes the first node, with its trial store, signatures and residency as children. Each later
+repair adds the next node, and an old owner moves onto the tree in the change that repairs it.
+
+**The acceptance test this architecture must pass (Codex and Joel, 2026-11-18).** The objects earn
+their keep only when these measurements pass together, at 4, 8 and 16 personas with realistic
+context lengths and memory pressure: sustained total throughput near the engine's single-stream
+rate on the M5 (about 80 tok/s) INCLUDING switching overhead, not a short burst; millisecond
+handoffs when the next persona is prefetched, preserving her context, genome, sampler and learning
+state, with no repeated prefill of unchanged history; and learning that actually completes while
+serving continues (a step admitted, a checkpoint written, an evaluation passed, later work
+improved). Throughput, switch latency, time waiting for a turn, memory and learning outcomes are
+measured together. As of 2026-11-18 these do not pass.
+
+**The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
+and the board, tool definitions, other citizens, the engine and its incarnations, the node's
+service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
+every persona: they physically hold her bytes under her handles and own their budgets, but never
+her policy, and she never holds theirs.
+
+**Where today's code stands against this map:** `WorkspaceCycle`, `WorkingMemory`,
+`RecallFaculty`, `Genome`, `GeneResidency` and `Phenotype` exist as objects. The hippocampus is
+one node-wide service module (`HippocampusModule`), not her own organ; the amygdala, the engram,
+the body and the `Persona` root have no owner yet; the substrate's `BrainRegion` trait is how an
+organ is scheduled, and her organs implement it. Each repair moves its area onto this map (§9.3's
+rules), one owner at a time.
+
+
 ## 10. The Recursive Bootstrap
 
 Every operation that today is a script (`npx tsx generator/CommandGenerator.ts`, `cargo test`, `scripts/generate-structure.ts`, `install.sh`'s ad-hoc steps) is a candidate for promotion to a command. The default state going forward is: if it operates on a module, it is itself a command, and that command lives in a module.

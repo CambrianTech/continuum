@@ -230,6 +230,7 @@ impl ResourceDaemon {
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
             governor.set_physical_used(src.kind(), src.used_bytes());
+            governor.set_backing(src.kind(), src.backed_by());
         }
         let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
@@ -309,6 +310,43 @@ impl ResourceDaemon {
             lease_id: lease.lease_id,
             released: false,
         })
+    }
+
+    /// [`Self::acquire_guarded`] decided on what is physically resident NOW: every source is
+    /// measured and ingested first, so an admission between ticks never reads a sample up to a
+    /// tick old (memory another process took since, or a lease granted since that became
+    /// resident). The owners' attributions stay as last polled; physical growth they have not yet
+    /// reported still counts as pending, so the stale side only ever over-counts (refuses), never
+    /// over-grants. For admissions that run long work on the grant (a learning step); the hot
+    /// path keeps the tick's sample.
+    pub fn acquire_measured_now(
+        self: &std::sync::Arc<Self>,
+        req: &LeaseRequest,
+    ) -> Result<LeaseGuard, LeaseError> {
+        // read the sources outside the lock (a slow reader never stalls other allocations), numbered before
+        // reading; then ingest in order and grant under one lock, against the newest accepted sample (this
+        // one, or a newer one a tick took meanwhile) (Codex on #6124)
+        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by())).collect();
+        let now = EpochMs::now().millis();
+        let mut g = self.governor.lock();
+        for (kind, ceiling, sample, backing) in scans {
+            g.set_capacity(kind, ceiling);
+            g.set_physical_sample(kind, sample);
+            g.set_backing(kind, backing);
+        }
+        let lease = g.acquire(req, now)?;
+        self.publish_locked(&g);
+        Ok(LeaseGuard { daemon: std::sync::Arc::clone(self), lease_id: lease.lease_id, released: false })
+    }
+
+    /// The holder of `lease_id` declares its bytes resident (see [`LeaseGuard::landed`]).
+    pub fn landed(&self, lease_id: &str) -> Result<(), LeaseError> {
+        // only a reading observed from here on was taken after the declaration and can show the bytes
+        let from = super::observed::Observed::now();
+        let mut g = self.governor.lock();
+        g.landed(lease_id, from)?;
+        self.publish_locked(&g);
+        Ok(())
     }
 
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
@@ -484,10 +522,10 @@ impl ResourceDaemon {
         // 2. Read every source's fixed ceiling AND live physical usage OFF the
         //    accounting lock (cached monitor reads). Both feed the governor below;
         //    the ceiling is near-constant, the usage moves with external pressure.
-        let scans: Vec<(ResourceKind, u64, u64)> = self
+        let scans: Vec<(ResourceKind, u64, super::observed::PhysicalSample, Option<ResourceKind>)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by()))
             .collect();
 
         // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
@@ -531,11 +569,12 @@ impl ResourceDaemon {
         //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil, used) in &scans {
+            for (kind, ceil, sample, backing) in &scans {
                 g.set_capacity(*kind, *ceil);
                 // The un-inversion ground truth: everything physically resident,
                 // netted against the fixed ceiling to yield `available`.
-                g.set_physical_used(*kind, *used);
+                g.set_physical_sample(*kind, *sample);
+                g.set_backing(*kind, *backing);
             }
             // Feed the self-declared attribution axis: each consumer's freshly-polled
             // residency. Surfaces per-consumer on the board (the WHO); the physical
@@ -721,6 +760,13 @@ impl LeaseGuard {
     /// The board-visible id of the held lease — for evidence/telemetry lines.
     pub fn lease_id(&self) -> &str {
         &self.lease_id
+    }
+
+    /// Declare the held bytes resident: the holder calls it once its allocation has landed (the engine
+    /// confirmed the buffers, the lane reported loaded). Until then the lease is owed on top of physical
+    /// use; a holder that never declares is over-counted, never under-counted.
+    pub fn landed(&self) -> Result<(), LeaseError> {
+        self.daemon.landed(&self.lease_id)
     }
 
     /// The bytes this guard holds, read from the governor itself (0 once the lease

@@ -90,7 +90,7 @@ impl LlamaServerProcess {
         // engine, not replaced (card ea6c9aff): replacing it would ask the replacement checkpoint
         // for a ledger that engine never had. Intent is this transition's own admission.
         if !restoring {
-            if let Some(tail) = self.recoverable_loading(&prepared) {
+            if let Some(tail) = self.recoverable_loading(&prepared)? {
                 return self.wait_and_publish(&transition, tail).await;
             }
         }

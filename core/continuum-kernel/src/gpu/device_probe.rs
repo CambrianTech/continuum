@@ -126,6 +126,10 @@ pub struct MonitoredGpu<P: GpuDeviceProbe> {
     /// representable, and its absence is what let a backend seed a fabricated
     /// full-tank reading at construction.
     free_sampled: AtomicBool,
+    /// When the probe behind `free_bytes` STARTED (nanoseconds, [`crate::resources::Observed`]): written after
+    /// `free_bytes` with Release and read before it with Acquire, so a reader never pairs a newer instant with an
+    /// older reading (Codex on #6124). Kept with the reading when a probe fails.
+    free_observed: AtomicU64,
     process_bytes: AtomicU64,
     /// Utilization × 1000 so it fits an atomic.
     utilization_x1000: AtomicU32,
@@ -151,6 +155,7 @@ impl<P: GpuDeviceProbe> MonitoredGpu<P> {
             probe,
             free_bytes: AtomicU64::new(0),
             free_sampled: AtomicBool::new(false),
+            free_observed: AtomicU64::new(0),
             process_bytes: AtomicU64::new(0),
             utilization_x1000: AtomicU32::new(0),
             temperature_mc: AtomicI32::new(NO_SENSOR),
@@ -168,9 +173,16 @@ impl<P: GpuDeviceProbe> MonitoredGpu<P> {
     /// standing. Split out from `tick` so the retention rule — the thing that was
     /// wrong per-backend — is directly testable without a device.
     pub(crate) fn absorb(&self, sample: GpuSample) {
+        self.absorb_observed(sample, crate::resources::Observed::now());
+    }
+
+    /// Take `sample`, whose probe started at `started`: a free reading and its instant move together; a probe
+    /// that measured nothing leaves both as they were.
+    pub(crate) fn absorb_observed(&self, sample: GpuSample, started: crate::resources::Observed) {
         if let Some(free) = sample.free_bytes {
             self.free_bytes.store(free, Ordering::Relaxed);
             self.free_sampled.store(true, Ordering::Relaxed);
+            self.free_observed.store(started.nanos(), Ordering::Release);
         }
         if let Some(proc_bytes) = sample.process_bytes {
             self.process_bytes.store(proc_bytes, Ordering::Relaxed);
@@ -225,7 +237,8 @@ impl<P: GpuDeviceProbe> Daemon for MonitoredGpu<P> {
     }
 
     async fn tick(&self) {
-        self.absorb(self.probe.sample().await);
+        let started = crate::resources::Observed::now(); // the instant the physical probe begins
+        self.absorb_observed(self.probe.sample().await, started);
         // Only publish when a reading exists — a tick that measured nothing leaves
         // the previous pressure standing rather than republishing a number derived
         // from a substitute.
@@ -256,6 +269,11 @@ impl<P: GpuDeviceProbe> GpuMonitor for MonitoredGpu<P> {
         self.free_sampled
             .load(Ordering::Relaxed)
             .then(|| self.free_bytes.load(Ordering::Relaxed))
+    }
+
+    fn free_reading(&self) -> Option<(u64, crate::resources::Observed)> {
+        let observed = crate::resources::Observed::from_nanos(self.free_observed.load(Ordering::Acquire));
+        self.free_bytes().map(|free| (free, observed))
     }
 
     fn process_bytes(&self) -> u64 {
@@ -338,6 +356,7 @@ mod tests {
             probe: ScriptedProbe::new(total, script),
             free_bytes: AtomicU64::new(0),
             free_sampled: AtomicBool::new(false),
+            free_observed: AtomicU64::new(0),
             process_bytes: AtomicU64::new(0),
             utilization_x1000: AtomicU32::new(0),
             temperature_mc: AtomicI32::new(NO_SENSOR),
@@ -362,6 +381,18 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(m.free_bytes(), Some(16));
+    }
+
+    /// What this catches (Codex on #6124): a cached free reading served with the time it was asked instead of
+    /// the time its probe started, or a failed probe moving the instant without the reading.
+    #[test]
+    fn the_free_reading_carries_its_probe_start_and_a_failed_probe_keeps_both() {
+        let m = monitor_with(64, vec![]);
+        let started = crate::resources::Observed::from_nanos(7);
+        m.absorb_observed(GpuSample { free_bytes: Some(16), ..Default::default() }, started);
+        assert_eq!(m.free_reading(), Some((16, started)));
+        m.absorb_observed(GpuSample::default(), crate::resources::Observed::from_nanos(9));
+        assert_eq!(m.free_reading(), Some((16, started)), "a probe that measured nothing moves neither");
     }
 
     /// What this catches: a failed read overwriting a good reading — the second half

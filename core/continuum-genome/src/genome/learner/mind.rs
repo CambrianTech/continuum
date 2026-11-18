@@ -99,6 +99,7 @@ impl MindLearner {
     ) -> Result<LearnOutcome, LearnFailure> {
         let example = self.example(authority, workspace, messages, tools, slot, learning_rate).await?;
         let outcome = self.seat.engine.learn(&example).await.map_err(LearnFailure::Engine);
+        landed_if_admitted(authority, &example, outcome.as_ref().ok().map(|done| done.refusal.as_str()));
         settle(workspace).await;
         outcome
     }
@@ -117,6 +118,7 @@ impl MindLearner {
     ) -> Result<RestoreOutcome, LearnFailure> {
         let example = self.example(authority, workspace, messages, tools, slot, learning_rate).await?;
         let outcome = self.seat.engine.restore(&self.seat.ledger, &example, checkpoint).await.map_err(LearnFailure::Engine);
+        landed_if_admitted(authority, &example, outcome.as_ref().ok().map(|done| done.refusal.as_str()));
         settle(workspace).await;
         outcome
     }
@@ -219,6 +221,15 @@ impl MindLearner {
 }
 
 /// The step claimed the covering workspace, so the ones it replaced may be released now.
+/// The engine admitted a step inside `example`'s residencies (refusal `none`): it allocated their buffers, so
+/// their leases are declared landed. A refused or failed step proves nothing and declares nothing.
+fn landed_if_admitted(authority: &Authority, example: &LearnExample, refusal: Option<&str>) {
+    if refusal == Some("none") {
+        authority.custody.landed(&example.optimizer_residency);
+        authority.custody.landed(&example.workspace_residency);
+    }
+}
+
 async fn settle(workspace: &mut Option<EngineWorkspace>) {
     if let Some(held) = workspace.as_mut() {
         held.settle().await;
