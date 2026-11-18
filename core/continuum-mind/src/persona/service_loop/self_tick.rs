@@ -42,13 +42,15 @@ pub(super) async fn serve_self_tick(
     // musing tail.
     // Nobody is waiting on a self-cycle: it renders the prompt an unattended
     // turn can afford (card 7496ed9d) — the message path below stays interactive.
-    crate::cognition::audience::with(
+    let cycle = crate::cognition::audience::with(
         crate::inference::prefill_rate::Audience::Unattended,
         run_self_cycle(ctx, conversation, opts, last_burst_fp, wake_room, pending),
     )
     .await;
     beat.next = next_beat_after(
-        if *last_burst_fp != before {
+        if cycle == SelfCycle::Deferred {
+            BeatOutcome::Deferred
+        } else if *last_burst_fp != before {
             BeatOutcome::Engaged
         } else {
             BeatOutcome::NothingNew

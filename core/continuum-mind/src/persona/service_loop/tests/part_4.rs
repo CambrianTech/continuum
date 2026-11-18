@@ -618,3 +618,34 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             assembled.system_message
         );
     }
+
+    // what this catches (Codex on #6122): an unanswered board read as "she holds nothing". The
+    // self-cycle's first board read (her focus room) failed, logged "retry next self-cycle", and
+    // returned as an ordinary run, so the beat rested as if idle. Through the actual caller: an
+    // unanswered board defers the cycle (nothing attended, nothing settled, the beat keeps its
+    // pace) and the recovered board runs it.
+    #[tokio::test]
+    pub(super) async fn an_unanswered_board_defers_her_beat_and_a_recovered_one_runs_it() {
+        let persona = Uuid::new_v4();
+        let hosted = hosted_with_heuristic(persona);
+        let answering = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let citizen: Arc<dyn crate::persona::airc_citizen::AircCitizen> =
+            Arc::new(StubAircCitizen::new(persona).with_claims_answering(Arc::clone(&answering)));
+        let mut conversation = ScriptedConversation::new().with_attachment(citizen);
+        conversation.prime().await.unwrap(); // unwrap: test fixture
+        let opts = ServeOptions { now_ms: fixed_now, ..Default::default() };
+        let mut pending = crate::persona::wake_backlog::PendingInput::for_persona(persona);
+        let mut fingerprint = 0u64;
+
+        let unanswered = run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
+        assert_eq!(unanswered, SelfCycle::Deferred, "an unanswered board defers the cycle");
+        assert_eq!(fingerprint, 0, "nothing was attended");
+        let pace = std::time::Duration::from_millis(SELF_TICK_MS * 3);
+        let engaged = std::time::Duration::from_millis(SELF_TICK_MS);
+        let cap = std::time::Duration::from_millis(SELF_TICK_REST_CAP_MS);
+        assert_eq!(next_beat_after(BeatOutcome::Deferred, pace, engaged, cap), pace, "neither engaged nor resting: the beat keeps its pace");
+
+        answering.store(true, std::sync::atomic::Ordering::Release);
+        let recovered = run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
+        assert_eq!(recovered, SelfCycle::Ran, "the recovered board lets the cycle run");
+    }

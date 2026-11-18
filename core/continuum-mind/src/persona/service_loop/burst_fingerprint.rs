@@ -211,7 +211,7 @@ pub(super) async fn run_self_cycle(
     // and that room counts as perceived. `None` = her held claim's room, else home.
     wake_room: Option<uuid::Uuid>,
     pending: &mut crate::persona::wake_backlog::PendingInput,
-) {
+) -> SelfCycle {
     let now_ms = (opts.now_ms)();
     // A self-cycle IS cognition: the claim-renewal pump reads this pulse, and it
     // was stamped only on message turns — a holder working her card for thirty
@@ -241,7 +241,7 @@ pub(super) async fn run_self_cycle(
                     error = %error,
                     "cannot resolve held work room; preserve work and retry next self-cycle",
                 );
-                return;
+                return SelfCycle::Deferred; // her board did not answer: nothing ran, the next beat asks again
             }
         },
         None => None,
@@ -285,7 +285,7 @@ pub(super) async fn run_self_cycle(
                 error = %refused,
                 "self-cycle has no real room (focus and home both nil); skipped, never run roomless",
             );
-            return;
+            return SelfCycle::Ran;
         }
     };
     // HER INITIATIVE rides this beat (`persona::initiative_turn`): with nothing held, the
@@ -309,6 +309,11 @@ pub(super) async fn run_self_cycle(
         initiative,
     )
     .await;
+    if work.board == crate::persona::act_question::BoardRead::Unknown {
+        // Her board did not answer: what she holds is unknown. Nothing is settled and no
+        // initiative pass is recorded; she does not muse over ambient input in its place.
+        return SelfCycle::Deferred;
+    }
     pending.settle_work(&work);
     pending.note_initiative(&work, now_ms);
     if work.drove {
@@ -323,7 +328,7 @@ pub(super) async fn run_self_cycle(
         if work.engaged {
             *last_burst_fp = last_burst_fp.wrapping_add(1);
         }
-        return;
+        return SelfCycle::Ran;
     }
     let composed = {
         let cognition = &ctx.cognition;
@@ -349,7 +354,7 @@ pub(super) async fn run_self_cycle(
     // heartbeat advances my thread, not just reacts to pokes). See burst_fingerprint.
     let fp = burst_fingerprint(&deliveries, &ctx.identity.peer_id.to_string());
     if fp == *last_burst_fp {
-        return; // nothing NEW to attend to (no external change, no work progress) → sleep
+        return SelfCycle::Ran; // nothing NEW to attend to (no external change, no work progress) → sleep
     }
     *last_burst_fp = fp;
     // Structured turns (own posts attributed as self → assistant, peers → user),
@@ -399,7 +404,7 @@ pub(super) async fn run_self_cycle(
     let Some(cycle) = crate::cognition::persona_workspace::global()
         .cycle_for_room(&ctx.identity.peer_id.as_uuid(), tick_room)
     else {
-        return; // no cycle registered (shouldn't happen) — nothing to run
+        return SelfCycle::Ran; // no cycle registered (shouldn't happen) — nothing to run
     };
     // Addressing PERCEPTION, not a silence directive. The old framing asserted "no one
     // addressed you just now" unconditionally and told her to "stay silent (PASS)" —
@@ -457,7 +462,7 @@ pub(super) async fn run_self_cycle(
                 persona = %ctx.identity.agent_name,
                 "focus state poisoned by a prior panic; self-cycle skipped, never woken on a half-written mute list",
             );
-            return;
+            return SelfCycle::Ran;
         };
         focus.prune_expired(now_ms); // drop lapsed snoozes while we hold it (bounded list)
         focus.wakes_on(ctx.identity.default_room, addressed, now_ms)
@@ -470,7 +475,7 @@ pub(super) async fn run_self_cycle(
             addressed,
             "self-tick wake held by a self-set mute — back to sleep (interrupt floor honored)"
         );
-        return;
+        return SelfCycle::Ran;
     }
     // The self-initiated framing (formerly an `[Self-initiated moment…]` text
     // preamble concatenated onto the burst) now rides `TurnFraming::self_thread`
@@ -565,7 +570,7 @@ pub(super) async fn run_self_cycle(
             "no lane is live — skipping this self-tick rather than deliberating into a \
              guaranteed refusal (serving transition, not a persona fault)"
         );
-        return;
+        return SelfCycle::Ran;
     }
     let forwarder =
         spawn_token_forwarder(tok_rx, None, ctx.identity.agent_name.clone(), None, None);
@@ -602,7 +607,7 @@ pub(super) async fn run_self_cycle(
             // message path has). A decision whose text is just {"tool_call":…} is an
             // un-acted call, not a contribution — stay silent.
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_some() {
-                return;
+                return SelfCycle::Ran;
             }
             // A self-cycle answers no one — the audience is the room the tick
             // ran IN (her claim's focus room when working, else her default) —
@@ -611,7 +616,7 @@ pub(super) async fn run_self_cycle(
                 publish_own_speech(conversation, ctx.identity.peer_id, tick_room, &text).await
             {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
-                return;
+                return SelfCycle::Ran;
             }
             continuum_base::probe!(
                 class = "persona.selftick.spoke",
@@ -649,6 +654,16 @@ pub(super) async fn run_self_cycle(
         // unreachable (live always permits its one act). Passed → sleep.
         _ => {}
     }
+    SelfCycle::Ran
+}
+
+/// How a self-cycle ended. `Deferred`: her board did not answer, so nothing ran and nothing was
+/// settled; the beat keeps its pace and the next beat asks again (never counted as idle or as a
+/// pass, Codex on #6122).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SelfCycle {
+    Ran,
+    Deferred,
 }
 
 /// Helper: pull the next event from the conversation, handling the

@@ -52,9 +52,20 @@ pub fn card_is_held(c: &airc_lib::WorkCard) -> bool {
     crate::persona::work_focus::actionable(c)
 }
 
+/// Whether her board answered this beat's question of what she holds.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum BoardRead {
+    #[default]
+    Answered,
+    /// The board did not answer: what she holds is unknown, so the beat waits and asks again.
+    Unknown,
+}
+
 #[derive(Default)]
 pub(crate) struct WorkQuestionOutcome {
     pub drove: bool,
+    /// `Unknown` when her board did not answer: not a pass, not idle, nothing settled.
+    pub board: BoardRead,
     pub room: Option<uuid::Uuid>,
     pub capacity: Option<crate::cognition::workspace::CapacityRefusal>,
     /// The driven turn was engagement, so her beat stays engaged: always for held work
@@ -148,7 +159,7 @@ pub(crate) async fn ask_the_act_question(
                         error = %error,
                         "her board did not answer: what she holds is unknown, so this beat waits"
                     );
-                    return WorkQuestionOutcome::default();
+                    return WorkQuestionOutcome { board: BoardRead::Unknown, ..WorkQuestionOutcome::default() };
                 }
             };
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
