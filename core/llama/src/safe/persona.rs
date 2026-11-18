@@ -64,10 +64,11 @@ impl PersonaBlocks {
         status(unsafe { sys::llama_persona_save(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
     }
 
-    /// Bind these blocks into the empty `stream` of `ctx` as sequence `seq`.
-    pub fn load(&mut self, ctx: &mut Context<'_>, seq: i32, stream: u32) -> Result<(), PersonaRefusal> {
+    /// Bind these blocks into `ctx` as sequence `seq`, in an empty stream the memory chooses (the
+    /// caller never numbers streams); `no_empty_stream` when none is empty.
+    pub fn bind(&mut self, ctx: &mut Context<'_>, seq: i32) -> Result<(), PersonaRefusal> {
         // SAFETY: both pointers are live; the fork validates before writing and refuses whole.
-        status(unsafe { sys::llama_persona_load(ctx.as_ptr(), seq, stream, self.ptr.as_ptr()) })
+        status(unsafe { sys::llama_persona_bind(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
     }
 
     /// The owner stamped by the last completed save; `None` before one.
