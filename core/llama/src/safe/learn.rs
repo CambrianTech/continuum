@@ -478,9 +478,18 @@ impl LearnRun<'_, '_, '_> {
             return ended;
         }
         let status = unsafe { sys::llama_opt_learn_step(self.learner.ctx.as_ptr()) };
-        // The step's graph build may have asked for optimizer buffers: native code says what survived.
-        self.learner.reconcile();
+        self.reconciled();
         self.observe(status, "learn_step")
+    }
+
+    /// After a native step: its graph build may have asked for optimizer buffers, so native code says
+    /// what survived. If accounting is no longer trusted, no further gradient runs: the reply drains
+    /// and only restores, and it can no longer finish as Learned.
+    fn reconciled(&mut self) {
+        self.learner.reconcile();
+        if self.learner.accounting().is_some() {
+            self.drain();
+        }
     }
 
     /// One indivisible graph node: the finest quantum, for a turn that cannot wait a whole chunk.
@@ -489,7 +498,7 @@ impl LearnRun<'_, '_, '_> {
             return ended;
         }
         let status = unsafe { sys::llama_opt_learn_graph_step(self.learner.ctx.as_ptr()) };
-        self.learner.reconcile();
+        self.reconciled();
         self.observe(status, "learn_graph_step")
     }
 
@@ -512,7 +521,10 @@ impl LearnRun<'_, '_, '_> {
             Ok(()) => {
                 let ctx = self.learner.ctx.as_ptr();
                 let after = unsafe { sys::llama_opt_shadow_steps(ctx, self.shadow.0.as_ptr()) };
-                let uncertain = unsafe { sys::llama_opt_shadow_quarantined(self.shadow.0.as_ptr()) };
+                // Her shadow's effects are uncertain if native code says so, or if what it owns no
+                // longer matches what was admitted: either way the reply is never reported Learned.
+                let quarantined = unsafe { sys::llama_opt_shadow_quarantined(self.shadow.0.as_ptr()) };
+                let uncertain = quarantined || self.learner.accounting().is_some();
                 let committed = committed_steps(self.steps_before, after);
                 let loss = self.loss();
                 restored(self.learner.reclaim(), committed, uncertain, loss)
@@ -709,7 +721,7 @@ impl Resident {
     /// A buffer of an unknown kind, or one owned for a shadow this context does not retain.
     fn unattributed<H>(&self, shadows: &Shadows<H>) -> Option<LearnRefusal> {
         if let Some(kind) = &self.unknown {
-            return Some(LearnRefusal { step: "accounting", message: format!("native code owns an optimizer buffer of unknown kind {kind:?}") });
+            return Some(LearnRefusal { step: "accounting", message: format!("native code owns an optimizer buffer this crate cannot attribute: {kind:?}") });
         }
         self.rows.iter().find(|(key, _, bytes)| *bytes > 0 && shadows.get(*key).is_none()).map(|(_, role, bytes)| LearnRefusal {
             step: "accounting",
@@ -734,10 +746,10 @@ unsafe extern "C" fn visited(
         let (Some(shadow), false) = (NonNull::new(shadow.cast_mut()), kind.is_null()) else { return };
         // SAFETY: `kind` is a NUL-terminated name native code owns for the call.
         let kind = unsafe { CStr::from_ptr(kind) };
-        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX); // unwrap_or: a size past u64 cannot be admitted, so it reads as more than any charge
-        match Role::of(kind) {
-            Some(role) => resident.rows.push((ShadowKey(shadow), role, bytes)),
-            None => resident.unknown = Some(kind.to_string_lossy().into_owned()),
+        match (Role::of(kind), u64::try_from(bytes)) {
+            (Some(role), Ok(bytes)) => resident.rows.push((ShadowKey(shadow), role, bytes)),
+            (Some(_), Err(_)) => resident.unknown = Some(format!("{} with a size past u64", kind.to_string_lossy())),
+            (None, _) => resident.unknown = Some(kind.to_string_lossy().into_owned()),
         }
     }));
 }

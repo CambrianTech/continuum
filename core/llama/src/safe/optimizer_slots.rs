@@ -73,7 +73,8 @@ pub(super) struct Unadmitted {
     pub(super) bytes: u64,
 }
 
-/// One role's slot: the bytes charged for it, and the device they were charged on.
+/// One role's slot: the bytes the lease admitted for it, and the device they were charged on. What
+/// native code owns beyond them was never admitted: each visit reports it, and it is never released.
 #[derive(Debug, Default)]
 struct Charged {
     bytes: Cell<u64>,
@@ -105,25 +106,24 @@ impl Slots {
     }
 
     /// Native code owns `resident` bytes of `role` now (from the owner's visit): release what was
-    /// charged but did not survive. More resident than charged is returned as a defect, and the slot
-    /// then holds what is resident so it is released when native code frees it.
+    /// admitted but did not survive. More resident than admitted is a defect, reported on each visit
+    /// and never added to the charge: it was never granted, so a release never exceeds what was
+    /// admitted.
     pub(super) fn reconcile(&self, lease: &dyn OptimizerLease, role: Role, resident: u64) -> Option<Unadmitted> {
         let charged = &self.0[role.index()];
-        let had = charged.bytes.get();
-        if had > resident {
+        let admitted = charged.bytes.get();
+        if admitted > resident {
             if let Some(device) = charged.device.get() {
-                lease.release(Slot { role, device }, had - resident);
+                lease.release(Slot { role, device }, admitted - resident);
             }
             charged.bytes.set(resident);
-            return None;
         }
-        (resident > had).then(|| {
-            charged.bytes.set(resident);
-            Unadmitted { role, bytes: resident - had }
-        })
+        let excess = resident.saturating_sub(charged.bytes.get());
+        (excess > 0).then_some(Unadmitted { role, bytes: excess })
     }
 
-    /// Native code confirmed no optimizer references the shadow: release every slot.
+    /// Native code confirmed no optimizer references the shadow: release every admitted byte (an
+    /// excess was never granted, so it is dropped, not released).
     pub(super) fn release_all(&self, lease: &dyn OptimizerLease) {
         for role in Role::ALL {
             let charged = &self.0[role.index()];
@@ -252,13 +252,25 @@ mod tests {
         assert_eq!(lease.charged(), 0);
     }
 
-    // what this catches: native code owning optimizer bytes nobody admitted, absorbed quietly.
+    // what this catches (Codex on #6149 at 69c07dd05): native code owning bytes nobody admitted
+    // absorbed quietly, or folded into the charge so a later free releases bytes never granted
+    // (admit 32, observe 64, free to 0 released 64).
     #[test]
-    fn resident_bytes_never_admitted_are_a_defect() {
+    fn resident_bytes_never_admitted_are_a_defect_and_never_released() {
         let lease = Recorded::with(u64::MAX);
         let a = Slots::default();
-        assert_eq!(visited(&lease, &a, (0, 32)), vec![Unadmitted { role: Role::Host, bytes: 32 }]);
-        assert_eq!(a.charged(Role::Host), 32, "held so a later proven free releases it");
+        assert!(a.ask(&lease, on(Role::Host), 32));
+        assert_eq!(visited(&lease, &a, (0, 64)), vec![Unadmitted { role: Role::Host, bytes: 32 }]);
+        assert_eq!(a.charged(Role::Host), 32, "the charge stays what was admitted");
+        assert!(visited(&lease, &a, (0, 0)).is_empty());
+        assert_eq!(lease.charged(), 0, "released exactly the 32 admitted, never the 64 observed");
+
+        // The same through a confirmed release.
+        let b = Slots::default();
+        assert!(b.ask(&lease, on(Role::Host), 32));
+        assert_eq!(visited(&lease, &b, (0, 64)).len(), 1);
+        b.release_all(&lease);
+        assert_eq!(lease.charged(), 0, "a release never exceeds what was admitted");
     }
 
     // what this catches: an optimizer buffer name this crate does not know charged under a guessed
