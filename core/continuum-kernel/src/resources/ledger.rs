@@ -122,7 +122,7 @@ pub struct ResourceLeaseLedger {
     /// absent here has unknown capacity → treated as zero (fail-loud: we refuse
     /// to grant against a resource we have not scanned).
     capacity: BTreeMap<ResourceKind, u64>,
-    leases: BTreeMap<String, ResourceLease>,
+    leases: BTreeMap<String, Held>,
     /// Per-consumer guaranteed floor of a kind. The real-time fairness mechanism
     /// the directive demands: a live video call (bevy/livekit/stt/tts) reserves
     /// bytes that inference can neither grant-into nor reclaim-below. The daemon
@@ -153,10 +153,22 @@ pub struct ResourceLeaseLedger {
     ///
     /// [`CapacitySource::backed_by`]: super::capacity::CapacitySource::backed_by
     backing: BTreeMap<ResourceKind, ResourceKind>,
-    /// Each live lease's owner residency of its kind when it was granted (Codex on #6124): a lease is
-    /// pending until its owner's measured residency has grown past this by its bytes, so a new lease
-    /// beside the same owner's old residency is never hidden inside it. Keyed by lease id.
-    baselines: BTreeMap<String, u64>,
+}
+
+/// A live lease and its owner's residency of its kind when it was granted (Codex on #6124): the lease is
+/// pending until that residency has grown past this by its bytes, so a new lease beside the same owner's
+/// old residency is never hidden inside it.
+#[derive(Debug, Clone)]
+struct Held {
+    lease: ResourceLease,
+    owner_resident_at_grant: u64,
+}
+
+impl Held {
+    /// This lease's bytes not yet landed when its owner measures `resident` of its kind.
+    fn pending(&self, resident: u64) -> u64 {
+        self.lease.bytes.saturating_sub(resident.saturating_sub(self.owner_resident_at_grant))
+    }
 }
 
 impl ResourceLeaseLedger {
@@ -182,6 +194,7 @@ impl ResourceLeaseLedger {
     pub fn granted(&self, kind: ResourceKind) -> u64 {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind)
             .map(|l| l.bytes)
             .fold(0u64, |acc, b| acc.saturating_add(b))
@@ -250,24 +263,27 @@ impl ResourceLeaseLedger {
         std::iter::once(root).chain(self.backing.iter().filter(|(_, b)| **b == root).map(|(k, _)| *k)).collect()
     }
 
-    /// Bytes granted on `kind` that have not yet landed: per owner, its leases' bytes past the growth of
-    /// its measured residency since the earliest of them was granted. Residency the owner held before
-    /// its leases never counts as their landing, so a new grant beside old residency stays pending until
-    /// the owner measures it (Codex on #6124: 18 MB staged beside 31,980 MB resident was invisible).
+    /// Bytes granted on `kind` that have not yet landed: each lease's bytes past the growth of its owner's
+    /// residency since its own grant. Its baseline was the owner's residency plus what the owner's earlier
+    /// leases still had pending then, so growth before a lease, or growth its earlier leases are owed,
+    /// never counts as its landing (Codex on #6124: a grant beside old residency, and a grant after
+    /// unrelated growth, were both hidden).
     fn not_yet_resident(&self, kind: ResourceKind) -> u64 {
-        let mut owners: BTreeMap<&str, (u64, u64)> = BTreeMap::new(); // owner -> (bytes, earliest baseline)
-        for (id, lease) in self.leases.iter().filter(|(_, l)| l.kind == kind) {
-            let baseline = match self.baselines.get(id) {
-                Some(&b) => b,
-                None => self.measured_by(&lease.consumer_id, kind), // granted before baselines existed: its residency now
-            };
-            let entry = owners.entry(lease.consumer_id.as_str()).or_insert((0, baseline));
-            entry.0 = entry.0.saturating_add(lease.bytes);
-            entry.1 = entry.1.min(baseline);
-        }
-        owners
-            .into_iter()
-            .map(|(owner, (bytes, baseline))| bytes.saturating_sub(self.measured_by(owner, kind).saturating_sub(baseline)))
+        self.leases
+            .values()
+            .filter(|held| held.lease.kind == kind)
+            .map(|held| held.pending(self.measured_by(&held.lease.consumer_id, kind)))
+            .fold(0u64, |acc, b| acc.saturating_add(b))
+    }
+
+    /// What `owner`'s leases of `kind` still have pending: the part of its residency a new lease's
+    /// landing must grow past.
+    fn pending_of(&self, owner: &str, kind: ResourceKind) -> u64 {
+        let resident = self.measured_by(owner, kind);
+        self.leases
+            .values()
+            .filter(|held| held.lease.kind == kind && held.lease.consumer_id == owner)
+            .map(|held| held.pending(resident))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
@@ -283,7 +299,8 @@ impl ResourceLeaseLedger {
     pub fn available(&self, kind: ResourceKind) -> u64 {
         match self.backing.get(&kind) {
             Some(&backing) => {
-                let ours = self.granted(kind).max(self.measured(kind));
+                // a grant not yet resident sits on top of our measured residency on the device too (Codex on #6124)
+                let ours = self.granted(kind).max(self.measured(kind).saturating_add(self.not_yet_resident(kind)));
                 self.capacity(kind).saturating_sub(ours).min(self.available(backing))
             }
             None => self.capacity(kind).saturating_sub(self.committed(kind)),
@@ -294,6 +311,7 @@ impl ResourceLeaseLedger {
     pub fn granted_to(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind && l.consumer_id == consumer_id)
             .map(|l| l.bytes)
             .fold(0u64, |acc, b| acc.saturating_add(b))
@@ -459,7 +477,7 @@ impl ResourceLeaseLedger {
             .keys()
             .filter(|(k, _)| *k == kind)
             .map(|(_, c)| c.as_str())
-            .chain(self.leases.values().filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
+            .chain(self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
             .chain(self.measured.iter().filter(|(_, fs)| fs.iter().any(|f| f.kind == kind)).map(|(c, _)| c.as_str()))
             .filter(|c| *c != consumer_id)
             .collect();
@@ -506,8 +524,8 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.baselines.insert(lease_id.clone(), self.measured_by(&req.consumer_id, req.kind));
-        self.leases.insert(lease_id, lease.clone());
+        let owner_resident_at_grant = self.measured_by(&req.consumer_id, req.kind).saturating_add(self.pending_of(&req.consumer_id, req.kind));
+        self.leases.insert(lease_id, Held { lease: lease.clone(), owner_resident_at_grant });
         Ok(lease)
     }
 
@@ -539,9 +557,9 @@ impl ResourceLeaseLedger {
     /// that reduces `granted`. Missing lease is a fail-loud error, never a
     /// silent no-op (a double-release or stale id is a real bug to surface).
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
-        self.baselines.remove(lease_id);
         self.leases
             .remove(lease_id)
+            .map(|held| held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })
@@ -559,6 +577,7 @@ impl ResourceLeaseLedger {
         let lease = self
             .leases
             .get_mut(lease_id)
+            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
@@ -566,7 +585,6 @@ impl ResourceLeaseLedger {
         let remaining = lease.bytes;
         if remaining == 0 {
             self.leases.remove(lease_id);
-            self.baselines.remove(lease_id);
         }
         Ok(remaining)
     }
@@ -577,6 +595,7 @@ impl ResourceLeaseLedger {
     pub fn expire(&self, now_ms: u64) -> Vec<ResourceLease> {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.is_expired(now_ms))
             .cloned()
             .collect()
@@ -663,7 +682,7 @@ impl ResourceLeaseLedger {
     }
 
     pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {
-        self.leases.get(lease_id)
+        self.leases.get(lease_id).map(|held| &held.lease)
     }
 
     /// The published board. Omits a kind only when it is uncapacitied AND
@@ -675,7 +694,7 @@ impl ResourceLeaseLedger {
         let mut kinds = Vec::new();
         for kind in ResourceKind::ALL {
             let capacity_bytes = self.capacity(kind);
-            let lease_count = self.leases.values().filter(|l| l.kind == kind).count() as u32;
+            let lease_count = self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).count() as u32;
             let measured_bytes = self.measured(kind);
             let physical_used_bytes = self.physical_used(kind);
             if capacity_bytes == 0
@@ -699,7 +718,7 @@ impl ResourceLeaseLedger {
                 lease_count,
             });
         }
-        let mut leases: Vec<ResourceLease> = self.leases.values().cloned().collect();
+        let mut leases: Vec<ResourceLease> = self.leases.values().map(|held| held.lease.clone()).collect();
         leases.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
 
         // Flatten every consumer's latest footprint into stable-ordered

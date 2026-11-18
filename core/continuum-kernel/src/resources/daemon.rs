@@ -312,6 +312,29 @@ impl ResourceDaemon {
         })
     }
 
+    /// [`Self::acquire_guarded`] decided on what is physically resident NOW: every source is
+    /// measured and ingested first, so an admission between ticks never reads a sample up to a
+    /// tick old (memory another process took since, or a lease granted since that became
+    /// resident). The owners' attributions stay as last polled; physical growth they have not yet
+    /// reported still counts as pending, so the stale side only ever over-counts (refuses), never
+    /// over-grants. For admissions that run long work on the grant (a learning step); the hot
+    /// path keeps the tick's sample.
+    pub fn acquire_measured_now(
+        self: &std::sync::Arc<Self>,
+        req: &LeaseRequest,
+    ) -> Result<LeaseGuard, LeaseError> {
+        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes(), s.backed_by())).collect();
+        {
+            let mut governor = self.governor.lock();
+            for (kind, ceiling, used, backing) in scans {
+                governor.set_capacity(kind, ceiling);
+                governor.set_physical_used(kind, used);
+                governor.set_backing(kind, backing);
+            }
+        }
+        self.acquire_guarded(req)
+    }
+
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
         let now = EpochMs::now().millis();
         let mut g = self.governor.lock();

@@ -847,23 +847,28 @@
             assert_eq!(l.available(ResourceKind::Vram), before);
         }
 
+        // The ledger's arithmetic holds at any capacity, so each case runs near the limit of several
+        // (none of them is a claim about a machine): what matters is the headroom left beside residency.
+        const MB: u64 = 1_000_000;
+        const CAPACITIES: [u64; 3] = [8_000 * MB, 48_000 * MB, 512_000 * MB];
+
         // what this catches (Codex's replay of cb410506c on #6124): a new lease beside its owner's old
-        // residency hidden inside it. 32,000 MB ceiling, 31,980 MB resident; an 18 MB stage leaves 2 MB, so
-        // a 4.096 MB learning step is refused, on a discrete device and on unified memory, whether serving
-        // or a separate consumer holds the stage. Once the stage measures resident, nothing changes.
+        // residency hidden inside it. 20 MB of headroom; an 18 MB stage leaves 2 MB, so a 4.096 MB learning
+        // step is refused, on a discrete device and on unified memory, whether serving or a separate
+        // consumer holds the stage. Once the stage measures resident, nothing changes.
         #[test]
         fn a_new_lease_beside_old_residency_is_pending_until_measured() {
-            const MB: u64 = 1_000_000;
-            for (unified, stager) in [(false, "serving"), (false, "stage"), (true, "serving"), (true, "stage")] {
+            for (cap, unified, stager) in CAPACITIES.iter().flat_map(|&cap| [(cap, false, "serving"), (cap, false, "stage"), (cap, true, "serving"), (cap, true, "stage")]) {
+                let base = cap - 20 * MB; // resident now: 20 MB of headroom
                 let mut l = ResourceLeaseLedger::new();
                 for kind in [ResourceKind::Vram, ResourceKind::Ram] {
-                    l.set_capacity(kind, 32_000 * MB);
-                    l.set_physical_used(kind, 31_980 * MB);
+                    l.set_capacity(kind, cap);
+                    l.set_physical_used(kind, base);
                 }
                 if unified {
                     l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
                 }
-                let resident = |extra: u64| vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 31_980 * MB + extra, detail: "weights + KV".into() }];
+                let resident = |extra: u64| vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: base + extra, detail: "weights + KV".into() }];
                 l.set_measured("serving", resident(0));
                 assert!(l.acquire(&req(stager, ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "stage".into(), 0).is_ok());
                 assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: the stage is spent now");
@@ -878,9 +883,44 @@
                     l.set_measured(stager, vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 18 * MB, detail: "staged".into() }]);
                 }
                 for kind in [ResourceKind::Vram, ResourceKind::Ram] {
-                    l.set_physical_used(kind, 31_998 * MB);
+                    l.set_physical_used(kind, base + 18 * MB);
                 }
                 assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: landed, still counted once");
+            }
+        }
+
+        // what this catches (Codex's replay of 8a0b59e03 on #6124): growth before a lease credited to it. 50 MB of
+        // headroom; serving takes 10 MB, then measures 30 MB more (its 10 landed, 20 of unrelated KV growth),
+        // then takes 18 MB more. That 18 is still owed (2 MB left), so a 4.096 MB step is refused, on both
+        // topologies; when it lands, it is counted once.
+        #[test]
+        fn a_later_grant_is_never_credited_with_growth_before_it() {
+            for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
+                let base = cap - 50 * MB;
+                let mut l = ResourceLeaseLedger::new();
+                let sample = |l: &mut ResourceLeaseLedger, resident: u64| {
+                    for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                        l.set_physical_used(kind, resident);
+                    }
+                    l.set_measured("serving", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: resident, detail: "weights + KV".into() }]);
+                };
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                sample(&mut l, base);
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 10 * MB, ReclaimPolicy::Graceful), "first".into(), 0).is_ok());
+                sample(&mut l, base + 30 * MB);
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "second".into(), 0).is_ok());
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: the second grant is still owed");
+                assert!(
+                    l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
+                    "unified={unified}: a 4.096 MB step does not fit 2 MB"
+                );
+                sample(&mut l, base + 48 * MB);
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: landed, counted once");
             }
         }
     }
