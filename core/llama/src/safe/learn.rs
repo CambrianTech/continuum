@@ -284,10 +284,10 @@ impl<'c, 'm> Learner<'c, 'm> {
 
     /// Quarantine the context after a run whose restoration was not confirmed: its admission stays in
     /// the holder's quarantine, so no allocation is admitted and no bytes are released.
-    fn quarantine_after(&mut self, refusal: LearnRefusal, seq: i32) {
+    fn quarantine_after(&mut self, refusal: &LearnRefusal, seq: i32) {
         let holder = self.holder();
         let admission = holder.admission.take();
-        holder.quarantine = Some(Quarantine { refusal, seq, admission });
+        holder.quarantine = Some(Quarantine { refusal: refusal.clone(), seq, admission });
     }
 
     fn refusal(&mut self, step: &'static str) -> LearnRefusal {
@@ -353,7 +353,7 @@ impl LearnRun<'_, '_, '_> {
                 Finished::Learned { admission: self.learner.reclaim(), loss }
             }
             Err(refusal) => {
-                self.learner.quarantine_after(refusal.clone(), self.seq);
+                self.learner.quarantine_after(&refusal, self.seq);
                 Finished::Failed { refusal, seq: self.seq }
             }
         }
@@ -397,7 +397,7 @@ impl Drop for LearnRun<'_, '_, '_> {
         if unfinished {
             match self.run_out() {
                 Ok(()) => drop(self.learner.reclaim()),
-                Err(refusal) => self.learner.quarantine_after(refusal, self.seq),
+                Err(refusal) => self.learner.quarantine_after(&refusal, self.seq),
             }
         }
         unsafe { sys::ggml_opt_result_free(self.result.as_ptr()) };
