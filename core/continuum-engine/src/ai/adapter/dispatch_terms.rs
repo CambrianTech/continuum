@@ -155,7 +155,7 @@ impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter
         // the plain JSON grammar.
         refuse_schema(&request)?;
         refuse_unenforceable_admission(&request, &terms)?;
-        self.generate_stream_checked(request, sink, Dispatched::under(&terms)).await
+        super::AIProviderAdapter::generate_stream_checked(self, request, sink, Dispatched::under(&terms)).await
     }
 }
 
