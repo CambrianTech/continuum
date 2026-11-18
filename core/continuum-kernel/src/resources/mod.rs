@@ -189,7 +189,7 @@ pub use broker::{
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
 pub use capacity::{
-    default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
+    CapacitySource, GpuCapacitySource, HostMemoryReader,
     HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,
 };
 pub use ceiling_prior::CeilingEvidence;

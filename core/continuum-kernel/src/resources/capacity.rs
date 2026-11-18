@@ -70,7 +70,7 @@ pub trait CapacitySource: Send + Sync {
 }
 
 /// VRAM source from a [`GpuMonitor`]. Reports the device's fixed usable total
-/// (less a driver/OS safety reserve) as the ceiling, and the live `total − free`
+/// as the ceiling, and the live `total − free`
 /// as physical usage. When a game grabs VRAM, `free` drops and `used_bytes`
 /// rises — the ceiling does NOT move; the oversubscription surfaces as
 /// `physical_used > capacity`, which is exactly what the daemon's reconcile
@@ -79,16 +79,13 @@ pub trait CapacitySource: Send + Sync {
 /// blind to Bevy/LiveKit — it commits against `capacity − everything-resident`.
 pub struct GpuCapacitySource {
     monitor: Arc<dyn GpuMonitor>,
-    /// Bytes held back from the lease pool unconditionally (driver/OS headroom).
-    reserve_bytes: u64,
 }
 
 impl GpuCapacitySource {
-    pub fn new(monitor: Arc<dyn GpuMonitor>, reserve_bytes: u64) -> Self {
-        Self {
-            monitor,
-            reserve_bytes,
-        }
+    /// The ceiling is the device's measured total; the driver's and compositor's bytes are in
+    /// `used_bytes` (total minus measured free), so no guessed reserve is held off the top.
+    pub fn new(monitor: Arc<dyn GpuMonitor>) -> Self {
+        Self { monitor }
     }
 }
 
@@ -98,13 +95,11 @@ impl CapacitySource for GpuCapacitySource {
     }
 
     fn ceiling_bytes(&self) -> u64 {
-        // The FIXED usable ceiling: device total minus the driver/OS reserve. It
+        // The FIXED ceiling: the device total. It
         // does NOT move when a game or another process grabs VRAM — that shows up
         // in `used_bytes`, not here. `total_bytes` is a cached accessor on the
         // monitor (it scans on its own task) — non-blocking.
-        self.monitor
-            .total_bytes()
-            .saturating_sub(self.reserve_bytes)
+        self.monitor.total_bytes()
     }
 
     fn used_bytes(&self) -> u64 {
@@ -243,35 +238,21 @@ impl HostMemoryReader for LiveHostMemory {
 /// "no RAM" — it is "not measured yet" — and reporting it would reproduce the exact defect
 /// above for the first seconds of every boot. Physical RAM does not change, so it is read ONCE
 /// at construction and the ceiling is correct immediately.
+///
+/// # No guessed reserve
+///
+/// The ceiling is the machine's measured RAM. What the OS and other processes hold is in
+/// `used_bytes` (total minus the OS's measured available), so the ledger never grants into it; the
+/// OS's own free target is inside its available figure, and sustained pressure closes the
+/// memory gate. A held-back fraction (an eighth clamped to [1, 8] GiB) was a guess that idled 8 GiB
+/// of the M5 the learning step was refused for (#6124).
 pub struct HostRamCapacitySource<R: HostMemoryReader> {
     reader: R,
-    /// Bytes held back unconditionally so we never lease the host into the OOM killer's reach.
-    reserve_bytes: u64,
-}
-
-/// Bytes held back from the RAM ceiling so leases can never reach the OOM killer.
-///
-/// Proportional with bounds, because neither end works as a constant: a flat 4 GiB is
-/// noise on a 128 GB M5 and HALF the machine on an 8 GB box. An eighth, clamped to
-/// [1 GiB, 8 GiB], keeps the OS and the untracked slack solvent at every tier this
-/// substrate targets. ONE place, so a tier change is one edit.
-pub fn default_ram_reserve_for(total_bytes: u64) -> u64 {
-    const GIB: u64 = 1024 * 1024 * 1024;
-    (total_bytes / 8).clamp(GIB, 8 * GIB)
 }
 
 impl<R: HostMemoryReader> HostRamCapacitySource<R> {
-    pub fn new(reader: R, reserve_bytes: u64) -> Self {
-        Self {
-            reader,
-            reserve_bytes,
-        }
-    }
-
-    /// The production constructor — reserve derived from the machine it is running on.
-    pub fn with_default_reserve(reader: R) -> Self {
-        let reserve = default_ram_reserve_for(reader.total_bytes());
-        Self::new(reader, reserve)
+    pub fn new(reader: R) -> Self {
+        Self { reader }
     }
 }
 
@@ -281,9 +262,7 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
     }
 
     fn ceiling_bytes(&self) -> u64 {
-        self.reader
-            .total_bytes()
-            .saturating_sub(self.reserve_bytes)
+        self.reader.total_bytes()
     }
 
     fn used_bytes(&self) -> u64 {
@@ -325,7 +304,7 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
 ///
 /// # The numbers
 ///
-/// - **Pool ceiling** = host physical RAM − reserve. NOT `recommendedMaxWorkingSetSize`,
+/// - **Pool ceiling** = host physical RAM, measured (no guessed reserve; see [`HostRamCapacitySource`]). NOT `recommendedMaxWorkingSetSize`,
 ///   which is a Metal *hint* about GPU working sets and is smaller than physical memory.
 /// - **VRAM view ceiling** = `min(pool ceiling, GPU working-set hint)`. The hint keeps its
 ///   meaning as a cap on GPU-side allocation without becoming a second pool.
@@ -334,39 +313,23 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
 ///   Unified arm reads exactly this number for `free_bytes`, so using it here is agreeing
 ///   with the GPU monitor, not second-guessing it.
 ///
-/// # Known residual, stated rather than hidden
+/// # One pool, spent once
 ///
-/// Grants are still tracked per kind, so within a single tick two axes could each grant
-/// against the same free bytes. The next tick closes it: a grant becomes residency, and
-/// residency is the shared measurement both views report. That one-tick window is the
-/// same race a single axis already has between `acquire` and the next scan — this does
-/// not widen it, and `committed = max(granted, physical_used)` means the larger of the
-/// two always binds. A cross-kind grant ledger would close it fully and is deferred.
+/// The VRAM view declares itself backed by RAM ([`CapacitySource::backed_by`]), and the ledger
+/// charges every grant on either axis to the shared pool the moment it is made (#6124).
 pub struct UnifiedMemoryPool<R: HostMemoryReader> {
     host: R,
     /// Metal's `recommendedMaxWorkingSetSize` — a soft cap on GPU allocation, not a pool.
     gpu_working_set_hint: u64,
-    reserve_bytes: u64,
 }
 
 impl<R: HostMemoryReader> UnifiedMemoryPool<R> {
-    pub fn new(host: R, gpu_working_set_hint: u64, reserve_bytes: u64) -> Self {
-        Self {
-            host,
-            gpu_working_set_hint,
-            reserve_bytes,
-        }
-    }
-
-    /// Production constructor — reserve derived from the machine, same policy as the
-    /// discrete-host RAM source so a unified box and a discrete box hold back alike.
-    pub fn with_default_reserve(host: R, gpu_working_set_hint: u64) -> Self {
-        let reserve = default_ram_reserve_for(host.total_bytes());
-        Self::new(host, gpu_working_set_hint, reserve)
+    pub fn new(host: R, gpu_working_set_hint: u64) -> Self {
+        Self { host, gpu_working_set_hint }
     }
 
     fn pool_ceiling(&self) -> u64 {
-        self.host.total_bytes().saturating_sub(self.reserve_bytes)
+        self.host.total_bytes()
     }
 
     /// The ONE usage measurement, shared by both views. Unknown (pre-first-poll)
@@ -493,27 +456,26 @@ mod tests {
     use crate::gpu::monitor::MockMonitor;
 
     // what this catches: the un-inversion — the VRAM ceiling is the FIXED device
-    // total minus the reserve and does NOT move when a game grabs memory; the grab
+    // total and does NOT move when a game grabs memory; the grab
     // surfaces on the separate `used_bytes` axis (total − free) instead. If the
     // ceiling still tracked free (the old `free + ours` math), capacity would be a
     // moving remainder and a grid peer could never read a stable "what is this
     // node" number. The daemon reclaims against `used > ceiling`, not a shrinking
     // ceiling.
     #[test]
-    fn gpu_ceiling_is_fixed_total_minus_reserve_while_used_tracks_grabs() {
+    fn gpu_ceiling_is_the_fixed_total_while_used_tracks_grabs() {
         let mon = Arc::new(MockMonitor::new(24_000));
         mon.set_process_bytes(8_000); // our resident
         mon.set_free_bytes(15_000); // 24_000 total − 9_000 used, of which 8_000 ours
-        let src = GpuCapacitySource::new(mon.clone(), 1_000);
-        // ceiling is fixed: total(24_000) − reserve(1_000) = 23_000
-        assert_eq!(src.ceiling_bytes(), 23_000);
+        let src = GpuCapacitySource::new(mon.clone());
+        assert_eq!(src.ceiling_bytes(), 24_000, "the ceiling is the device total");
         // used is everything resident: total(24_000) − free(15_000) = 9_000
         assert_eq!(src.used_bytes(), 9_000);
 
         // a game grabs 6_000: free drops to 9_000 → used rises to 15_000, ceiling
         // UNCHANGED. The oversubscription lives on the used axis now.
         mon.set_free_bytes(9_000);
-        assert_eq!(src.ceiling_bytes(), 23_000, "fixed ceiling does not move");
+        assert_eq!(src.ceiling_bytes(), 24_000, "fixed ceiling does not move");
         assert_eq!(
             src.used_bytes(),
             15_000,
@@ -565,18 +527,12 @@ mod tests {
 
         // what this catches: the RAM axis reporting a ceiling of 0, which is what made
         // `available_for(_, Ram)` return 0 for every consumer for as long as this source
-        // did not exist (#56). A ceiling must be the machine's real RAM less the reserve.
+        // did not exist (#56). A ceiling must be the machine's measured RAM.
         #[test]
-        fn ceiling_is_physical_ram_less_the_reserve() {
-            let src = HostRamCapacitySource::new(
-                FakeHost {
-                    total: 64 * GIB,
-                    available: Some(40 * GIB),
-                },
-                4 * GIB,
-            );
+        fn ceiling_is_the_measured_physical_ram() {
+            let src = HostRamCapacitySource::new(FakeHost { total: 64 * GIB, available: Some(40 * GIB) });
             assert_eq!(src.kind(), ResourceKind::Ram);
-            assert_eq!(src.ceiling_bytes(), 60 * GIB);
+            assert_eq!(src.ceiling_bytes(), 64 * GIB);
             // used is EVERYONE's bytes, ours and the OS's alike — total − available.
             assert_eq!(src.used_bytes(), 24 * GIB);
         }
@@ -591,16 +547,10 @@ mod tests {
         // construction rather than read from the (still-empty) monitor snapshot.
         #[test]
         fn an_unpolled_monitor_does_not_report_the_machine_as_full() {
-            let src = HostRamCapacitySource::new(
-                FakeHost {
-                    total: 64 * GIB,
-                    available: None,
-                },
-                4 * GIB,
-            );
+            let src = HostRamCapacitySource::new(FakeHost { total: 64 * GIB, available: None });
             assert_eq!(
                 src.ceiling_bytes(),
-                60 * GIB,
+                64 * GIB,
                 "the ceiling is a hardware constant and must not wait for a poll"
             );
             assert_eq!(
@@ -608,33 +558,6 @@ mod tests {
                 0,
                 "no reading means UNKNOWN, never 'all of it is spoken for'"
             );
-        }
-
-        // what this catches: a reserve that is right at one hardware tier and absurd at
-        // another. A flat constant is either noise on a 128 GB box or half of an 8 GB one,
-        // and this substrate is claimed to run the same code on both.
-        #[test]
-        fn the_reserve_stays_sane_across_the_whole_hardware_ladder() {
-            // Small box: the proportional eighth would be 1 GiB — the floor holds it there,
-            // and crucially it does NOT eat half the machine.
-            assert_eq!(default_ram_reserve_for(8 * GIB), GIB);
-            let small = HostRamCapacitySource::with_default_reserve(FakeHost {
-                total: 8 * GIB,
-                available: Some(4 * GIB),
-            });
-            assert_eq!(small.ceiling_bytes(), 7 * GIB);
-
-            // Mid box: purely proportional.
-            assert_eq!(default_ram_reserve_for(32 * GIB), 4 * GIB);
-
-            // Big box: the ceiling clamp stops the reserve from growing without bound —
-            // an eighth of 128 GB would idle 16 GB the substrate is meant to be using.
-            assert_eq!(default_ram_reserve_for(128 * GIB), 8 * GIB);
-            let big = HostRamCapacitySource::with_default_reserve(FakeHost {
-                total: 128 * GIB,
-                available: Some(100 * GIB),
-            });
-            assert_eq!(big.ceiling_bytes(), 120 * GIB);
         }
 
         mod unified {
@@ -650,7 +573,7 @@ mod tests {
             const M5_GPU_HINT: u64 = 55_125_917_696;
 
             fn m5_pool() -> Arc<UnifiedMemoryPool<FakeHost>> {
-                Arc::new(UnifiedMemoryPool::with_default_reserve(
+                Arc::new(UnifiedMemoryPool::new(
                     FakeHost {
                         total: M5_TOTAL,
                         available: Some(M5_AVAILABLE),
@@ -686,7 +609,7 @@ mod tests {
                 // with nothing granted that is ceiling − used.
                 let ram_avail = ram.ceiling_bytes().saturating_sub(ram.used_bytes());
                 let vram_avail = vram.ceiling_bytes().saturating_sub(vram.used_bytes());
-                assert_eq!(ram_avail, 0, "RAM was already honest and must stay honest");
+                assert_eq!(ram_avail, M5_AVAILABLE, "RAM offers exactly the host's measured free bytes");
                 assert_eq!(
                     vram_avail, 0,
                     "the 16.9 GB phantom: VRAM must not offer bytes the pool does not have"
@@ -700,11 +623,8 @@ mod tests {
             #[test]
             fn the_gpu_hint_caps_vram_without_shrinking_the_pool() {
                 let views = m5_pool().views();
-                // 64 GiB − 8 GiB reserve. Matches the board's reported ram capacity exactly.
-                assert_eq!(
-                    view_of(&views, ResourceKind::Ram).ceiling_bytes(),
-                    60_129_542_144
-                );
+                // The host's measured physical RAM.
+                assert_eq!(view_of(&views, ResourceKind::Ram).ceiling_bytes(), M5_TOTAL);
                 // min(pool, hint) — and on this box the hint binds, matching the board's vram.
                 assert_eq!(
                     view_of(&views, ResourceKind::Vram).ceiling_bytes(),
@@ -722,10 +642,9 @@ mod tests {
                         available: Some(8 * GIB),
                     },
                     1024 * GIB, // absurd hint
-                    2 * GIB,
                 ));
                 let views = pool.views();
-                let pool_ceiling = 14 * GIB;
+                let pool_ceiling = 16 * GIB;
                 assert_eq!(
                     view_of(&views, ResourceKind::Vram).ceiling_bytes(),
                     pool_ceiling
@@ -742,7 +661,7 @@ mod tests {
             // for the first seconds of every boot.
             #[test]
             fn an_unpolled_monitor_leaves_both_views_usable() {
-                let pool = Arc::new(UnifiedMemoryPool::with_default_reserve(
+                let pool = Arc::new(UnifiedMemoryPool::new(
                     FakeHost {
                         total: 64 * GIB,
                         available: None,
@@ -754,20 +673,6 @@ mod tests {
                     assert!(view.ceiling_bytes() > 0, "the ceiling must not wait on a poll");
                 }
             }
-        }
-
-        // what this catches: a reserve larger than the machine underflowing into a
-        // near-u64::MAX ceiling, which would report a laptop as having exabytes free.
-        #[test]
-        fn an_oversized_reserve_floors_at_zero_rather_than_wrapping() {
-            let src = HostRamCapacitySource::new(
-                FakeHost {
-                    total: 2 * GIB,
-                    available: Some(GIB),
-                },
-                8 * GIB,
-            );
-            assert_eq!(src.ceiling_bytes(), 0);
         }
     }
 }

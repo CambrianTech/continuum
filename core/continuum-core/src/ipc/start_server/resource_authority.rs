@@ -42,11 +42,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
     // The ONE per-machine resource authority (#56). Its VRAM ceiling comes from
     // the LIVE GpuMonitor (`gpu::monitor::detect()` — Metal + every NVIDIA host),
     // so serving leases against capacity net of Bevy/LiveKit + outstanding leases
-    // rather than a fraction of *total* VRAM (the host_budget() OOM bug). Bytes
-    // held off the top so we never lease the last sliver the driver/compositor
-    // needs; the ceiling already nets out external *resident* usage, so this is a
-    // small safety reserve, not a budget for the compositor.
-    const GPU_SAFETY_RESERVE_BYTES: u64 = 512 * 1024 * 1024;
+    // rather than a fraction of *total* VRAM (the host_budget() OOM bug).
     // `gpu::monitor::detect()` (→ `MetalMonitor::new`/`NvidiaMonitor::new`) and
     // `ResourceDaemon::start()` each adopt the canonical Daemon base, which calls
     // `tokio::spawn` from inside the constructor to own its interval task. But
@@ -112,10 +108,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
                     crate::gpu::monitor::MemoryMode::Unified => Some(monitor.total_bytes()),
                     // Discrete: the axes really are separate pools. Unchanged.
                     crate::gpu::monitor::MemoryMode::Discrete => {
-                        capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(
-                            monitor,
-                            GPU_SAFETY_RESERVE_BYTES,
-                        )));
+                        capacity_sources.push(Arc::new(crate::resources::GpuCapacitySource::new(monitor)));
                         None
                     }
                 };
@@ -151,7 +144,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
                 // UMA: ONE pool, two views. Honors the contract in `ResourceKind::Vram`'s
                 // own doc — "the authority's scan layer is responsible for not
                 // double-counting" — which was written, assigned here, and never built.
-                let pool = Arc::new(crate::resources::UnifiedMemoryPool::with_default_reserve(
+                let pool = Arc::new(crate::resources::UnifiedMemoryPool::new(
                     crate::resources::LiveHostMemory::new(),
                     gpu_hint,
                 ));
@@ -162,21 +155,21 @@ pub(super) fn build_model_catalog_and_resource_daemon(
                     "ResourceGovernor: UNIFIED memory — VRAM and RAM are ONE pool, \
                      ceiling {} MB (GPU working-set hint {} MB); both axes report one \
                      measured usage so neither can grant into the other's bytes",
-                    views.iter().map(|v| v.ceiling_bytes()).max().unwrap_or(0) / (1024 * 1024),
+                    views.iter().map(|v| v.ceiling_bytes()).fold(0, u64::max) / (1024 * 1024),
                     gpu_hint / (1024 * 1024)
                 );
                 capacity_sources.extend(views);
             }
             None => {
                 // Discrete (or no GPU): RAM is its own pool, VRAM registered above if present.
-                let host_ram = crate::resources::HostRamCapacitySource::with_default_reserve(
+                let host_ram = crate::resources::HostRamCapacitySource::new(
                     crate::resources::LiveHostMemory::new(),
                 );
                 log_info!(
                     "ipc",
                     "server",
                     "ResourceGovernor: host RAM governed — ceiling {} MB \
-                     (reserve held back for the OS); VRAM is a separate pool",
+                     (measured physical RAM); VRAM is a separate pool",
                     crate::resources::CapacitySource::ceiling_bytes(&host_ram) / (1024 * 1024)
                 );
                 capacity_sources.push(Arc::new(host_ram));
