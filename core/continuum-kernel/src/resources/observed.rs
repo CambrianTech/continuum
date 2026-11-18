@@ -16,8 +16,9 @@ static ORIGIN: OnceLock<Instant> = OnceLock::new();
 impl Observed {
     /// Now, on the process's monotonic clock.
     pub fn now() -> Self {
-        let elapsed = ORIGIN.get_or_init(Instant::now).elapsed().as_nanos();
-        Self(u64::try_from(elapsed).unwrap_or(u64::MAX)) // unwrap_or: 584 years of uptime saturates instead of wrapping
+        let elapsed = ORIGIN.get_or_init(Instant::now).elapsed();
+        // 584 years of uptime saturates at the last representable instant: later is still never earlier
+        Self(elapsed.as_secs().saturating_mul(1_000_000_000).saturating_add(u64::from(elapsed.subsec_nanos())))
     }
 
     /// Before every reading: what a source with no reading yet reports, so it never clears a landing.
