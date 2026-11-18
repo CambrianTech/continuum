@@ -123,7 +123,7 @@ pub(super) fn build_model_catalog_and_resource_daemon(
                 log_error!(
                     "ipc",
                     "server",
-                    "ResourceGovernor: NO live GpuMonitor (nvidia-smi absent and the \
+                    "ResourceGovernor: NO live GpuMonitor (no NVIDIA driver tool and the \
                      non-NVIDIA Vulkan VK_EXT_memory_budget adapter is not built) — \
                      VRAM is UNGOVERNED; serving will refuse until a live monitor exists"
                 );
