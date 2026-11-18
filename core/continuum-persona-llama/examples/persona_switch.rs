@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::pipeline::{Identified, Roles};
 use continuum_persona_engine::residency::{Direction, FenceTag, Tier};
-use continuum_persona_llama::{Landed, UnifiedTier};
+use continuum_persona_llama::{Landed, Rebind, UnifiedTier};
 use llama::{Batch, ContextParams, FlashAttn, Model, ModelParams};
 
 /// One mind in the run: who she is, where her history ends, and her last sampled token.
@@ -69,6 +69,7 @@ fn main() -> Result<(), String> {
         .collect::<Result<_, String>>()?;
 
     let mut roles: Roles<Mind, Landed> = Roles::default();
+    let (mut same_seq, mut other_seq) = (Vec::new(), Vec::new());
     let (mut switches, mut decode_time, mut decoded, mut prefill_time) = (Vec::new(), Duration::ZERO, 0usize, Duration::ZERO);
     let run = Instant::now();
     for turn in 0..minds * rounds {
@@ -76,6 +77,7 @@ fn main() -> Result<(), String> {
         let next = parked.remove(0);
         let t = Instant::now();
         let fence = tier.begin(FenceTag { persona: next.id, epoch: next.epoch, direction: Direction::In }).map_err(|e| e.to_string())?;
+        let rebind = tier.last_rebind();
         roles.stage(next, fence).map_err(|r| format!("{:?}", r.reason))?;
         roles.handoff().map_err(|e| format!("{e:?}"))?;
         if let Some(out) = roles.awaiting_copy_out() {
@@ -86,6 +88,11 @@ fn main() -> Result<(), String> {
         let switched = t.elapsed();
         if turn > 0 {
             switches.push(switched);
+            match rebind {
+                Some(Rebind::SameSequence) => same_seq.push(switched),
+                Some(Rebind::OtherSequence) => other_seq.push(switched),
+                None => {}
+            }
         }
 
         let mind = roles.active_mut().ok_or("no active mind after handoff")?;
@@ -118,9 +125,17 @@ fn main() -> Result<(), String> {
         decoded += decode_tokens;
     }
 
+    // a stale request for an older epoch of a held mind is refused and leaves her blocks: she still binds
+    let probe = parked.first().ok_or("no parked mind to probe")?;
+    let stale = tier.begin(FenceTag { persona: probe.id, epoch: Epoch(0), direction: Direction::In });
+    let kept = tier.begin(FenceTag { persona: probe.id, epoch: probe.epoch, direction: Direction::In }).is_ok();
+    println!("persona_switch: stale epoch refused={} her blocks still bind={kept}", stale.is_err());
     switches.sort();
+    same_seq.sort();
+    other_seq.sort();
     let ms = |d: Duration| d.as_secs_f64() * 1e3;
-    let p = |q: f64| switches.get(((switches.len() as f64 - 1.0) * q) as usize).copied().map(ms).unwrap_or(0.0);
+    let at = |v: &[Duration], q: f64| v.get(((v.len().max(1) as f64 - 1.0) * q) as usize).copied().map(ms).unwrap_or(0.0); // unwrap_or: an empty class prints 0
+    let p = |q: f64| at(&switches, q);
     let decode_tps = decoded as f64 / decode_time.as_secs_f64();
     let switch_total: Duration = switches.iter().sum();
     let sustained = decoded as f64 / (decode_time + switch_total).as_secs_f64();
@@ -132,6 +147,13 @@ fn main() -> Result<(), String> {
         p(1.0),
         prefill_time.as_secs_f64(),
         run.elapsed().as_secs_f64()
+    );
+    println!(
+        "persona_switch: rebinds (binds of a mind saved before) same sequence n={} p50 {:.2} ms | other sequence (cells relabeled over her span) n={} p50 {:.2} ms; stage, handoff and copy-out run serially before her decode, not overlapped",
+        same_seq.len(),
+        at(&same_seq, 0.5),
+        other_seq.len(),
+        at(&other_seq, 0.5)
     );
     Ok(())
 }

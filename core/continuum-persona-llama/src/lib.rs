@@ -6,4 +6,4 @@
 
 mod unified_tier;
 
-pub use unified_tier::{Landed, Stream, UnifiedTier};
+pub use unified_tier::{Landed, Rebind, Stream, UnifiedTier};
