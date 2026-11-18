@@ -153,6 +153,10 @@ pub struct ResourceLeaseLedger {
     ///
     /// [`CapacitySource::backed_by`]: super::capacity::CapacitySource::backed_by
     backing: BTreeMap<ResourceKind, ResourceKind>,
+    /// Each live lease's owner residency of its kind when it was granted (Codex on #6124): a lease is
+    /// pending until its owner's measured residency has grown past this by its bytes, so a new lease
+    /// beside the same owner's old residency is never hidden inside it. Keyed by lease id.
+    baselines: BTreeMap<String, u64>,
 }
 
 impl ResourceLeaseLedger {
@@ -223,7 +227,9 @@ impl ResourceLeaseLedger {
     pub fn committed(&self, kind: ResourceKind) -> u64 {
         let pool = self.pool_kinds(kind);
         if pool.len() == 1 {
-            return self.granted(kind).max(self.physical_used(kind));
+            // A grant not yet resident is on top of what the device shows in use, never hidden in it
+            // (a new lease beside its owner's old residency, Codex on #6124).
+            return self.granted(kind).max(self.physical_used(kind).saturating_add(self.not_yet_resident(kind)));
         }
         let promised = pool.iter().map(|k| self.granted(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
         let landing = pool.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
@@ -244,16 +250,24 @@ impl ResourceLeaseLedger {
         std::iter::once(root).chain(self.backing.iter().filter(|(_, b)| **b == root).map(|(k, _)| *k)).collect()
     }
 
-    /// Bytes granted on `kind` that their holders have not yet measured resident: per consumer, its
-    /// grant past its residency, so one consumer's large residency never hides another's new grant.
+    /// Bytes granted on `kind` that have not yet landed: per owner, its leases' bytes past the growth of
+    /// its measured residency since the earliest of them was granted. Residency the owner held before
+    /// its leases never counts as their landing, so a new grant beside old residency stays pending until
+    /// the owner measures it (Codex on #6124: 18 MB staged beside 31,980 MB resident was invisible).
     fn not_yet_resident(&self, kind: ResourceKind) -> u64 {
-        let mut holders: Vec<&str> =
-            self.leases.values().filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()).collect();
-        holders.sort_unstable();
-        holders.dedup();
-        holders
+        let mut owners: BTreeMap<&str, (u64, u64)> = BTreeMap::new(); // owner -> (bytes, earliest baseline)
+        for (id, lease) in self.leases.iter().filter(|(_, l)| l.kind == kind) {
+            let baseline = match self.baselines.get(id) {
+                Some(&b) => b,
+                None => self.measured_by(&lease.consumer_id, kind), // granted before baselines existed: its residency now
+            };
+            let entry = owners.entry(lease.consumer_id.as_str()).or_insert((0, baseline));
+            entry.0 = entry.0.saturating_add(lease.bytes);
+            entry.1 = entry.1.min(baseline);
+        }
+        owners
             .into_iter()
-            .map(|c| self.granted_to(c, kind).saturating_sub(self.measured_by(c, kind)))
+            .map(|(owner, (bytes, baseline))| bytes.saturating_sub(self.measured_by(owner, kind).saturating_sub(baseline)))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
@@ -492,6 +506,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
+        self.baselines.insert(lease_id.clone(), self.measured_by(&req.consumer_id, req.kind));
         self.leases.insert(lease_id, lease.clone());
         Ok(lease)
     }
@@ -524,6 +539,7 @@ impl ResourceLeaseLedger {
     /// that reduces `granted`. Missing lease is a fail-loud error, never a
     /// silent no-op (a double-release or stale id is a real bug to surface).
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
+        self.baselines.remove(lease_id);
         self.leases
             .remove(lease_id)
             .ok_or_else(|| LeaseError::MissingLease {
@@ -550,6 +566,7 @@ impl ResourceLeaseLedger {
         let remaining = lease.bytes;
         if remaining == 0 {
             self.leases.remove(lease_id);
+            self.baselines.remove(lease_id);
         }
         Ok(remaining)
     }

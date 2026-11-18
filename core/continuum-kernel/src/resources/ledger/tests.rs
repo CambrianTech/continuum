@@ -846,4 +846,41 @@
             assert_eq!(l.available(ResourceKind::Ram), before, "landed bytes are counted once, not again");
             assert_eq!(l.available(ResourceKind::Vram), before);
         }
+
+        // what this catches (Codex's replay of cb410506c on #6124): a new lease beside its owner's old
+        // residency hidden inside it. 32,000 MB ceiling, 31,980 MB resident; an 18 MB stage leaves 2 MB, so
+        // a 4.096 MB learning step is refused, on a discrete device and on unified memory, whether serving
+        // or a separate consumer holds the stage. Once the stage measures resident, nothing changes.
+        #[test]
+        fn a_new_lease_beside_old_residency_is_pending_until_measured() {
+            const MB: u64 = 1_000_000;
+            for (unified, stager) in [(false, "serving"), (false, "stage"), (true, "serving"), (true, "stage")] {
+                let mut l = ResourceLeaseLedger::new();
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, 32_000 * MB);
+                    l.set_physical_used(kind, 31_980 * MB);
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                let resident = |extra: u64| vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 31_980 * MB + extra, detail: "weights + KV".into() }];
+                l.set_measured("serving", resident(0));
+                assert!(l.acquire(&req(stager, ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "stage".into(), 0).is_ok());
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: the stage is spent now");
+                assert!(
+                    l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
+                    "unified={unified} stager={stager}: a 4.096 MB step does not fit 2 MB"
+                );
+                // the stage lands: its owner measures it and the device shows it, counted once
+                if stager == "serving" {
+                    l.set_measured("serving", resident(18 * MB));
+                } else {
+                    l.set_measured(stager, vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 18 * MB, detail: "staged".into() }]);
+                }
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_physical_used(kind, 31_998 * MB);
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: landed, still counted once");
+            }
+        }
     }
