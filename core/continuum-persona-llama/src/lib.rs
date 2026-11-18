@@ -6,4 +6,4 @@
 
 mod unified_tier;
 
-pub use unified_tier::{Decoded, Landed, Rebind, Step, Stream, UnifiedTier};
+pub use unified_tier::{base_genes, Decoded, Genes, Landed, Rebind, Step, Stream, UnifiedTier, STREAMS};

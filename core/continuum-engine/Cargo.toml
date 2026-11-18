@@ -5,6 +5,8 @@ edition = "2021"
 publish = false
 
 [dependencies]
+continuum-persona-engine = { path = "../continuum-persona-engine" }
+continuum-persona-llama = { path = "../continuum-persona-llama" }
 continuum-process = { path = "../continuum-process" }
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { path = "../continuum-kernel" }

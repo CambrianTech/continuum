@@ -1,5 +1,5 @@
-//! The persona engine (CONTINUUM-ENGINE 4.14): our loop over libllama, replacing
-//! `llamacpp_scheduler`. ONE mind decodes at a time. The next is staged as data while she
+//! The persona engine (CONTINUUM-ENGINE 4.14): our loop over libllama, which replaced the
+//! continuous-batching scheduler (continuum-engine `persona_scheduler` drives it). ONE mind decodes at a time. The next is staged as data while she
 //! decodes, the previous retires to the RAM tier after the handoff fence, and a switch binds
 //! her blocks in milliseconds. Nothing here is a launch flag or a slot count: one-at-a-time is
 //! the shape of [`pipeline::Roles`], which cannot hold two active minds.

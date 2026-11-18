@@ -233,14 +233,12 @@ impl ModelCapabilities {
 /// The backend: owns a `Model` plus a continuous-batching `Scheduler`.
 ///
 /// Models are Send+Sync (read-only after load). The scheduler owns the
-/// shared Context (n_seq_max sequences, single OS-thread driver loop)
-/// and is the only place llama.cpp decode happens. Generate calls
-/// enqueue requests and stream tokens back over channels — there's no
-/// per-call context creation, no Rust-side semaphore.
+/// context (two execution streams, one OS-thread driver loop; see `persona_scheduler`) and is the
+/// only place llama.cpp decode happens. Generate calls enqueue turns and stream tokens back over
+/// channels; one mind decodes at a time.
 ///
-/// LoRAs are loaded into `loras` for genome paging, but per-request LoRA
-/// activation is a v2 follow-up — the scheduler currently ignores
-/// `active_loras` (see `llamacpp_scheduler` module docs).
+/// LoRAs are loaded into `loras` for genome paging; a turn's genes are applied for her decodes
+/// when she is bound.
 pub struct LlamaCppBackend {
     /// One temporary embedding context is admitted per loaded model.
     pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
@@ -258,7 +256,7 @@ pub struct LlamaCppBackend {
     pub(super) caps: ModelCapabilities,
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
-    pub(super) scheduler: OnceLock<(GenerationAllocation, Scheduler)>,
+    pub(super) scheduler: OnceLock<(GenerationAllocation, Result<Scheduler, String>)>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests

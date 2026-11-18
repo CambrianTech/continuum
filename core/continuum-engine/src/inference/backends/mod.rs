@@ -3,7 +3,7 @@
 //! `JSON_GRAMMAR`) the adapters share.
 
 pub mod llamacpp;
-pub mod llamacpp_scheduler;
+pub mod persona_scheduler;
 
 // MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
 // builds don't see the module at all. Phase A scaffold — see continuum#897

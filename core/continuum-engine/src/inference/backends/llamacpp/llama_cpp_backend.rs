@@ -418,15 +418,14 @@ impl LlamaCppBackend {
         Ok(())
     }
 
-    /// Lazily spawn (or get) the scheduler. Single instance per backend —
-    /// owns the shared Context and the OS-thread driver loop.
+    /// Lazily spawn (or get) the persona scheduler. Single instance per backend: it owns the context
+    /// and the driver thread. Its window holds `STREAMS` minds' windows (the active mind and the next),
+    /// whatever sequence count the launch carried: one mind decodes at a time.
     pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
-        let per_seq = self.effective_context_length(allocation)?;
-        if self.config.n_seq_max == 0 {
-            return Err("generation requires a nonzero sequence allocation".into());
-        }
-        let total_n_ctx = per_seq
-            .checked_mul(self.config.n_seq_max)
+        let per_mind = self.effective_context_length(allocation)?;
+        let streams = u32::try_from(continuum_persona_llama::STREAMS).map_err(|_| "stream count exceeds native representation")?;
+        let total_n_ctx = per_mind
+            .checked_mul(streams)
             .ok_or("context allocation exceeds native representation")?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
             (
@@ -437,7 +436,6 @@ impl LlamaCppBackend {
                         n_ctx: total_n_ctx,
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,
-                        n_seq_max: self.config.n_seq_max,
                         flash_attn: self.config.flash_attn,
                         fused_gdn_ar: self.config.fused_gdn_ar,
                         fused_gdn_ch: self.config.fused_gdn_ch,
@@ -452,14 +450,12 @@ impl LlamaCppBackend {
                 "scheduler allocation changed; release the existing backend before resizing".into(),
             );
         }
-        Ok(scheduler)
+        scheduler.as_ref().map_err(|e| e.clone())
     }
 
-    /// Generate text. Routes through the continuous-batching scheduler:
-    /// the request becomes one sequence in the shared batch and tokens
-    /// stream back as they're sampled. Multiple concurrent generate()
-    /// calls share the single Context — weights are read once per decode
-    /// step and used to advance every active sequence in parallel.
+    /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
+    /// time, the next waits its turn) and tokens stream back as they are sampled. Concurrent
+    /// generate() calls are served one after another on the one context.
     ///
     /// `active_loras` is `(id, scale)` pairs naming genes previously paged
     /// in via [`ensure_adapter`]. They are resolved to live adapter handles

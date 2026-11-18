@@ -48,4 +48,8 @@ pub trait Tier {
     /// execution stream, layer order behind compute; or out of it into this tier). The fence it
     /// returns carries the same tag, so [`crate::pipeline::Roles`] accepts it only for that unit.
     fn begin(&mut self, what: FenceTag) -> Result<Self::Fence, TierRefusal>;
+
+    /// Give up `persona`'s blocks held in this tier (a mind that will not come back, such as a one-off
+    /// probe). Refused while she is in the execution stream.
+    fn release(&mut self, persona: PersonaId) -> Result<(), TierRefusal>;
 }

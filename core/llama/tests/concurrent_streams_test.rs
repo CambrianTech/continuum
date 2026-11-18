@@ -11,11 +11,8 @@
 //! tokens between streams. That safety property must hold regardless of
 //! which backend the caller chooses.
 //!
-//! The BatchScheduler (`continuum-core::inference::backends::llamacpp_scheduler`)
-//! is where real multi-stream throughput lives — shared context,
-//! n_seq_max sequences, one decode per loop advancing all seqs in
-//! parallel. Its perf contract belongs in a continuum-core-level test,
-//! not here. The `concurrent_streams_match_solo_throughput` test below
+//! Production decodes one mind at a time through continuum-engine's persona scheduler (four
+//! minds at once measured 2 tok/s each on the M5); its contract is tested there, not here. The `concurrent_streams_match_solo_throughput` test below
 //! measures per-call-context behavior only — useful as a regression
 //! floor (it should never drop BELOW 0.25x, which would indicate the
 //! Metal queue is actively deadlocking rather than serializing).

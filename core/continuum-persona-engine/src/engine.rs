@@ -203,6 +203,15 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         self.roles.release_retired()
     }
 
+    /// Give up the blocks of a mind that has left the pipeline (a one-off whose turn ended). Refused
+    /// while she is active, staged or retiring: custody of a present mind is never dropped.
+    pub fn forget(&mut self, persona: PersonaId) -> Result<(), TierRefusal> {
+        if self.present(persona) || self.staged() == Some(persona) {
+            return Err(TierRefusal { tier: self.tier.name(), persona, reason: "she is still in the pipeline", native: Native::NotAsked });
+        }
+        self.tier.release(persona)
+    }
+
     fn present(&self, persona: PersonaId) -> bool {
         self.active() == Some(persona) || self.retiring() == Some(persona)
     }
