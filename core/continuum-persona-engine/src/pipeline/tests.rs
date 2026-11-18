@@ -70,7 +70,7 @@ fn bind(roles: &mut Roles<Unit, Transfer>, n: u128, drops: &Drops) -> Option<Per
     let (fence, landed) = transfer(n, Direction::In, drops);
     assert!(roles.stage(mind(n, drops), fence).is_ok(), "test: stage {n}");
     landed.set(true);
-    roles.handoff().expect("test: handoff")
+    roles.handoff().expect("test: handoff") // expect: the test's own precondition
 }
 
 // what this catches: two minds decoding at once (the M5's --parallel 5, 2026-11-18). A Core holds
@@ -96,7 +96,7 @@ fn a_refused_stage_returns_the_unit_and_its_fence() {
     assert!(roles.stage(mind(1, &drops), fence).is_ok());
 
     let (fence, _l) = transfer(2, Direction::In, &drops);
-    let refused = roles.stage(mind(2, &drops), fence).err().expect("test: next is occupied");
+    let refused = roles.stage(mind(2, &drops), fence).err().expect("test: next is occupied"); // expect: the test's own precondition
     assert_eq!(refused.reason, StageRefusal::NextOccupied { staged: id(1) });
     assert_eq!(drops.count(), 0, "nothing was dropped by the refusal");
     let (unit, fence) = refused.returned;
@@ -106,11 +106,11 @@ fn a_refused_stage_returns_the_unit_and_its_fence() {
 
     let mut empty: Roles<Unit, Transfer> = Roles::default();
     let (wrong, _l) = transfer(9, Direction::In, &drops);
-    let refused = empty.stage(mind(3, &drops), wrong).err().expect("test: another persona's fence");
+    let refused = empty.stage(mind(3, &drops), wrong).err().expect("test: another persona's fence"); // expect: the test's own precondition
     assert!(matches!(refused.reason, StageRefusal::WrongFence { .. }));
     let (out, _l) = transfer(3, Direction::Out, &drops);
     let (unit, _) = refused.returned;
-    let refused = empty.stage(unit, out).err().expect("test: a copy-out is not a copy-in");
+    let refused = empty.stage(unit, out).err().expect("test: a copy-out is not a copy-in"); // expect: the test's own precondition
     assert!(matches!(refused.reason, StageRefusal::WrongFence { .. }));
 }
 
@@ -140,7 +140,7 @@ fn the_copy_out_begins_after_the_bind_and_releases_only_when_landed() {
     assert_eq!(roles.release_retired().err(), Some(RetireRefusal::NotBegun { retiring: id(1) }));
 
     let (wrong, _l) = transfer(2, Direction::Out, &drops);
-    let refused = roles.begin_retire(wrong).err().expect("test: the active mind's copy-out is not hers");
+    let refused = roles.begin_retire(wrong).err().expect("test: the active mind's copy-out is not hers"); // expect: the test's own precondition
     assert!(matches!(refused.reason, RetireRefusal::WrongFence { .. }));
     drop(refused.returned);
 
@@ -156,7 +156,7 @@ fn the_copy_out_begins_after_the_bind_and_releases_only_when_landed() {
     assert_eq!(roles.handoff(), Err(HandoffRefusal::RetireInFlight { retiring: id(1) }));
 
     landed.set(true);
-    let released = roles.release_retired().expect("test: landed");
+    let released = roles.release_retired().expect("test: landed"); // expect: the test's own precondition
     assert_eq!((released.id(), released.parts().tokens.clone()), (id(1), vec![1, 2, 3]), "she travels whole");
     assert_eq!(roles.handoff(), Ok(Some(id(2))));
 }
@@ -168,7 +168,7 @@ fn a_mind_already_in_the_core_is_not_staged_again() {
     let mut roles: Roles<Unit, Transfer> = Roles::default();
     bind(&mut roles, 1, &drops);
     let (fence, _l) = transfer(1, Direction::In, &drops);
-    let refused = roles.stage(mind(1, &drops), fence).err().expect("test: already active");
+    let refused = roles.stage(mind(1, &drops), fence).err().expect("test: already active"); // expect: the test's own precondition
     assert_eq!(refused.reason, StageRefusal::AlreadyPresent { persona: id(1) });
 }
 
@@ -199,14 +199,14 @@ fn the_completion_owner_begins_exactly_the_described_copy_out() {
     bind(&mut roles, 1, &drops);
     bind(&mut roles, 2, &drops);
 
-    let described = roles.awaiting_copy_out().expect("test: she awaits her copy-out");
+    let described = roles.awaiting_copy_out().expect("test: she awaits her copy-out"); // expect: the test's own precondition
     assert_eq!(described, FenceTag { persona: id(1), epoch: Epoch(1), direction: Direction::Out });
 
-    let stale = tier.begin(FenceTag { epoch: Epoch(0), ..described }).expect("test: the tier begins what it is told");
-    let refused = roles.begin_retire(stale).err().expect("test: another generation's copy-out");
+    let stale = tier.begin(FenceTag { epoch: Epoch(0), ..described }).expect("test: the tier begins what it is told"); // expect: the test's own precondition
+    let refused = roles.begin_retire(stale).err().expect("test: another generation's copy-out"); // expect: the test's own precondition
     assert!(matches!(refused.reason, RetireRefusal::WrongFence { .. }));
 
-    let copy_out = tier.begin(described).expect("test: begin the described transfer");
+    let copy_out = tier.begin(described).expect("test: begin the described transfer"); // expect: the test's own precondition
     assert!(roles.begin_retire(copy_out).is_ok());
     assert_eq!(roles.awaiting_copy_out(), None, "begun: no longer awaiting");
     assert_eq!(roles.release_retired().map(|u| u.epoch()), Ok(Epoch(1)));

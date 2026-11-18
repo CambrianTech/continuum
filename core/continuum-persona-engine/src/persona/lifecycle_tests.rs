@@ -1,15 +1,25 @@
 use super::*;
 use futures::executor::block_on;
 
+/// How a test part answers suspension: the three behaviours that exist, named (not two flags).
+#[derive(Clone, Copy)]
+enum Behaviour {
+    Ready,
+    PendingOnce,
+    Fails,
+}
+
 struct Part {
-    release_after_retry: bool,
-    failure: bool,
+    behaviour: Behaviour,
     attempts: usize,
 }
 
 impl Part {
     fn ready() -> Self {
-        Self { release_after_retry: false, failure: false, attempts: 0 }
+        Self::with(Behaviour::Ready)
+    }
+    fn with(behaviour: Behaviour) -> Self {
+        Self { behaviour, attempts: 0 }
     }
 }
 
@@ -18,12 +28,10 @@ impl Lifecycle for Part {
 
     async fn suspend(&mut self) -> Self::Suspension {
         self.attempts += 1;
-        if self.failure {
-            Preservation::Failed("storage unavailable")
-        } else if self.release_after_retry && self.attempts == 1 {
-            Preservation::Pending(17)
-        } else {
-            Preservation::Preserved
+        match self.behaviour {
+            Behaviour::Fails => Preservation::Failed("storage unavailable"),
+            Behaviour::PendingOnce if self.attempts == 1 => Preservation::Pending(17),
+            Behaviour::PendingOnce | Behaviour::Ready => Preservation::Preserved,
         }
     }
 }
@@ -34,10 +42,10 @@ fn root_reports_pending_and_failed_children_and_keeps_custody_for_retry() {
         blocks: Part::ready(),
         tokens: Part::ready(),
         genome: Part::ready(),
-        learning: Part { release_after_retry: true, ..Part::ready() },
+        learning: Part::with(Behaviour::PendingOnce),
         decode: Part::ready(),
     };
-    parts.tokens.failure = true;
+    parts.tokens.behaviour = Behaviour::Fails;
     let mut persona = PersonaUnit::new(PersonaId(uuid::Uuid::nil()), Epoch(1), parts);
     let report = block_on(persona.suspend());
     assert_eq!(report.tokens, Preservation::Failed("storage unavailable"));
