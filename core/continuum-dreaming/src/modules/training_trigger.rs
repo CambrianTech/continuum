@@ -204,8 +204,8 @@ impl TrainingTriggerState {
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]
-            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::at(
-                std::env::temp_dir().join(format!("training-trigger-trials-{}.json", Uuid::new_v4())),
+            test_trials: std::sync::Arc::new(crate::genome::gene_trial::GeneTrials::in_dir(
+                std::env::temp_dir().join(format!("training-trigger-trials-{}", Uuid::new_v4())),
             )),
         }
     }
