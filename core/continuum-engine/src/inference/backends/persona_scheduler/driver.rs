@@ -6,9 +6,9 @@ use std::sync::mpsc::Receiver;
 use std::sync::Arc;
 use std::time::Instant;
 
-use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, StageError};
+use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
 use continuum_persona_engine::persona::{Epoch, PersonaId};
-use continuum_persona_engine::pipeline::{Identified, RetireRefusal};
+use continuum_persona_engine::pipeline::Identified;
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_engine::turn::{plan, History, Prefill};
 use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
@@ -34,7 +34,7 @@ pub(super) enum TurnError {
     #[error(transparent)]
     Tier(#[from] TierRefusal),
     #[error(transparent)]
-    Retire(#[from] RetireRefusal),
+    Retire(#[from] RetireError),
     #[error("no mind is active after the switch")]
     NoneActive,
     #[error("her history is longer than a context position holds")]
@@ -169,17 +169,23 @@ impl Driver<'_, '_> {
 
         let mut sampler = sampling::sampler(self.model, &req.sampling);
         let mut pos = i32::try_from(from).map_err(|_| TurnError::TooLong)?;
-        let mut next = None;
-        for chunk in prompt[from..].chunks(self.batch.get()) {
-            self.engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) })?;
+        // Only her final prompt position is sampled: the sampler accepts what it samples, so sampling
+        // an earlier chunk would advance her grammar, penalties and RNG on output that never happened
+        // (Codex on #6140). Earlier chunks request no logits and are settled, not read.
+        let chunks: Vec<&[i32]> = prompt[from..].chunks(self.batch.get()).collect();
+        let (last_chunk, earlier) = chunks.split_last().ok_or(TurnError::NothingDecoded)?;
+        for chunk in earlier {
+            self.engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: false, genes: Arc::clone(&genes) })?;
             pos += i32::try_from(chunk.len()).map_err(|_| TurnError::TooLong)?;
-            let last = i32::try_from(chunk.len() - 1).map_err(|_| TurnError::TooLong)?;
-            next = Some(self.engine.tier().sample(&mut sampler, last));
+            self.engine.settle()?;
         }
+        self.engine.submit(Step { tokens: last_chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) })?;
+        pos += i32::try_from(last_chunk.len()).map_err(|_| TurnError::TooLong)?;
+        let last = i32::try_from(last_chunk.len() - 1).map_err(|_| TurnError::TooLong)?;
+        let mut token = self.engine.tier().sample(&mut sampler, last);
         self.record(|her| her.held.extend_from_slice(&prompt[from..]))?;
         self.report_footprint(id, one_off);
 
-        let mut token = next.ok_or(TurnError::NothingDecoded)?;
         let mut generated = 0usize;
         let mut output = String::new();
         loop {
@@ -206,7 +212,13 @@ impl Driver<'_, '_> {
 
     /// Make `id` the active mind: her parked state comes back (or a new mind starts), the previous
     /// mind moves out to the RAM tier and is parked, or forgotten if she was a one-off.
+    ///
+    /// A retirement a refused copy-out left behind is finished first, so it is retried rather than
+    /// skipped and the retiring mind is never staged while still in custody (Codex on #6140). A
+    /// copy-out refused during this handoff leaves next bound; it is retried right after, and again
+    /// at the start of the next turn if the tier still refuses.
     fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
+        self.retire_previous()?;
         if self.engine.active() == Some(id) {
             return Ok(());
         }
@@ -219,14 +231,20 @@ impl Driver<'_, '_> {
             return Err(refused.reason.into());
         }
         self.engine.settle()?;
-        self.engine.handoff()?;
-        if self.engine.retiring().is_some() {
-            let previous = self.engine.release_retired()?;
-            if previous.one_off {
-                self.engine.forget(previous.id)?;
-            } else {
-                self.parked.insert(previous.id, previous);
-            }
+        match self.engine.handoff() {
+            Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
+            Err(refused) => return Err(refused.into()),
+        }
+        self.retire_previous()
+    }
+
+    /// Park the mind whose retirement finishes (or forget her if she was a one-off).
+    fn retire_previous(&mut self) -> Result<(), TurnError> {
+        let Some(previous) = self.engine.finish_retirement()? else { return Ok(()) };
+        if previous.one_off {
+            self.engine.forget(previous.id)?;
+        } else {
+            self.parked.insert(previous.id, previous);
         }
         Ok(())
     }

@@ -221,6 +221,33 @@ fn a_refused_copy_out_keeps_her_retiring_until_it_begins() {
     assert_eq!(h.engine.release_retired().map(|unit| unit.id()), Ok(id(1)));
 }
 
+// what this catches (Codex on #6140 at 17c208cf5): a refused copy-out skipped by the next switch, or
+// the retiring mind handed out twice. finish_retirement keeps her retiring while her copy-out is
+// refused or still moving, gives her back exactly once, and an A/B/A switch then holds one of each.
+#[test]
+fn a_refused_copy_out_is_finished_before_the_next_switch_and_given_back_once() {
+    let mut h = with_one_active();
+    assert!(h.engine.stage(mind(2)).is_ok());
+    land_last(&h.moves);
+    h.refuse.set(Some(Direction::Out));
+    assert!(matches!(h.engine.handoff(), Err(HandoffError::CopyOut { .. })));
+
+    assert!(matches!(h.engine.finish_retirement(), Err(RetireError::CopyOut(_))), "still refused");
+    assert_eq!(h.engine.retiring(), Some(id(1)), "she stays in custody");
+    h.refuse.set(None);
+    assert!(matches!(h.engine.finish_retirement(), Err(RetireError::Release(RetireRefusal::NotLanded { .. }))), "begun, not landed");
+    land_last(&h.moves);
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.map(|unit| unit.id())), Ok(Some(id(1))));
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.is_none()), Ok(true), "given back once");
+
+    assert!(h.engine.stage(mind(1)).is_ok(), "A comes back after B");
+    land_last(&h.moves);
+    assert_eq!(h.engine.handoff(), Ok(Some(id(2))));
+    land_last(&h.moves);
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.map(|unit| unit.id())), Ok(Some(id(2))));
+    assert_eq!((h.engine.active(), h.engine.staged(), h.engine.retiring()), (Some(id(1)), None, None));
+}
+
 // what this catches: dropping the blocks of a mind still in custody. A one-off's blocks are given up
 // only once she has left the pipeline; while active or retiring the release is refused and the tier
 // is not asked.
