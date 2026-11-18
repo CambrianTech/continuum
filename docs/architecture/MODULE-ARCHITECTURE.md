@@ -487,7 +487,7 @@ work:
 
 ```rust
 trait Lifecycle {
-    async fn prepare(&mut self) -> Ready;      // stage for use (page in, bind, warm)
+    async fn prepare(&mut self) -> Ready;      // stage for use: native staging only, never recompute
     async fn suspend(&mut self) -> Preserved;  // keep state; finish or hand off outstanding work
     async fn resume(&mut self) -> Bound;       // bind what was preserved
     async fn shutdown(&mut self) -> Released;  // children first, then own resources, safely
@@ -495,10 +495,13 @@ trait Lifecycle {
 ```
 
 `persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
-order and combines what each reports. "Swap this persona" is `suspend` on one and `resume` on the
-next; "shut down this engine" is `shutdown` on its incarnation, which coordinates its learners,
-workspace, custody and slots. Each outcome is typed and says what is pending: unfinished work stays
-explicitly pending (handed to its completion owner), never reported done and never dropped. Every
+order and combines what each reports. "Shut down this engine" is `shutdown` on its incarnation,
+which coordinates its learners, workspace, custody and slots. "Swap personas" is NOT suspend-then-
+resume, which would put every transfer on the critical path: the coordinator `prepare`s the NEXT
+while the ACTIVE decodes, binds NEXT behind a fence, and only then retires the LAST, so staging and
+retirement overlap decoding (the Nanite pipeline, CONTINUUM-ENGINE 4.14). Each outcome is typed
+and distinguishes Ready and Released from Pending and Failed: unfinished work stays explicitly
+pending (handed to its completion owner), never reported done and never dropped. Every
 call is idempotent: a repeated `suspend` on a suspended part reports the same preservation. The
 preservation rules are written once, inside the part that owns the state, and every caller gets
 them for free.
