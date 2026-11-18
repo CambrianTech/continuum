@@ -162,6 +162,7 @@ impl ServingDaemonModule {
             let engine = model
                 .zip(crate::inference::lane_pidfile::read())
                 .map(|(model, pid)| crate::inference::prefill_knee::EngineRead { model, pid });
+            let served = engine.as_ref().map(|e| (e.model.clone(), e.pid));
             if let Some(slots) = server.slots_body().await {
                 crate::inference::prefill_knee::observe_slots(
                     &slots,
@@ -169,6 +170,24 @@ impl ServingDaemonModule {
                     crate::inference::resource_admission::served_lane_count(),
                     engine,
                 );
+                // the decode width (4.10 P5 slice 2): from the plane this model's clean intervals
+                // fitted, at the depths generating now; told to the engine only when it changes
+                if let Some(((model, pid), counts)) = served.zip(crate::inference::prefill_knee::slot_counts_of(&slots)) {
+                    let depths = crate::inference::prefill_knee::generating_depths(&counts);
+                    let width = crate::capacity::decode_width::live::width(&model, &depths);
+                    if crate::capacity::decode_width::live::tell(pid, width) {
+                        let told = server.post_decode_set(width).await;
+                        continuum_base::probe!(
+                            target: "continuum_core::modules::serving_daemon",
+                            class = "serving.decode_width.told",
+                            model = %model,
+                            width = ?width, // None: every generating slot decodes
+                            generating = depths.len(),
+                            refused = ?told.err(),
+                            "the engine was told how many generating sequences decode per step"
+                        );
+                    }
+                }
             }
         }))
     }

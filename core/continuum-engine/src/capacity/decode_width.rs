@@ -16,6 +16,8 @@
 
 use std::num::NonZeroUsize;
 
+pub mod live;
+
 /// Seconds per decode step: `base + per_decoder n + per_kdepth (D / 1000)`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DecodePlane {
@@ -41,6 +43,11 @@ pub struct Fitted {
 }
 
 impl DecodePlane {
+    /// The fit's row for a step of `decoders` over summed depth `depth`: the plane's three terms.
+    pub fn row(decoders: usize, depth: u64) -> [f64; 3] {
+        [1.0, decoders as f64, depth as f64 / 1000.0]
+    }
+
     /// Seconds for one decode step of `decoders` over summed depth `depth`.
     pub fn step_s(&self, decoders: usize, depth: u64) -> f64 {
         match decoders {
@@ -54,7 +61,7 @@ impl DecodePlane {
     pub fn fit(steps: &[(DecodeStep, f64)]) -> Option<Fitted> {
         let rows: Vec<(Vec<f64>, f64, f64)> = steps
             .iter()
-            .map(|(s, w)| (vec![1.0, s.decoders as f64, s.summed_depth as f64 / 1000.0], s.seconds_per_token, *w))
+            .map(|(s, w)| (DecodePlane::row(s.decoders, s.summed_depth).to_vec(), s.seconds_per_token, *w))
             .collect();
         let c = least_squares(&rows)?;
         let plane = DecodePlane { base: c[0], per_decoder: c[1], per_kdepth: c[2] };
@@ -99,19 +106,48 @@ impl DecodePlane {
     }
 }
 
+/// The normal equations of a weighted least-squares fit, accumulated a row at a time: what a fit
+/// needs from its evidence, in memory that does not grow with it (the live width keeps one per model).
+#[derive(Debug, Clone, PartialEq)]
+pub struct NormalEquations {
+    /// `k` rows of `k` coefficients and the right-hand side.
+    m: Vec<Vec<f64>>,
+}
+
+impl NormalEquations {
+    pub fn new(unknowns: usize) -> Self {
+        Self { m: vec![vec![0.0; unknowns + 1]; unknowns] }
+    }
+
+    /// Add one observation `y` at `x` with weight `w`.
+    pub fn add(&mut self, x: &[f64], y: f64, w: f64) {
+        let k = self.m.len();
+        for i in 0..k {
+            for j in 0..k {
+                self.m[i][j] += w * x[i] * x[j];
+            }
+            self.m[i][k] += w * x[i] * y;
+        }
+    }
+
+    /// The unknowns, `None` when the observations do not determine them.
+    pub fn solve(&self) -> Option<Vec<f64>> {
+        solve(self.m.clone())
+    }
+}
+
 /// Least squares by the normal equations (at most a handful of unknowns, a weight per row). `None`
 /// when the rows do not determine the unknowns.
 pub(crate) fn least_squares(rows: &[(Vec<f64>, f64, f64)]) -> Option<Vec<f64>> {
-    let k = rows.first()?.0.len();
-    let mut m = vec![vec![0.0; k + 1]; k];
+    let mut equations = NormalEquations::new(rows.first()?.0.len());
     for (x, y, w) in rows {
-        for i in 0..k {
-            for j in 0..k {
-                m[i][j] += w * x[i] * x[j];
-            }
-            m[i][k] += w * x[i] * y;
-        }
+        equations.add(x, *y, *w);
     }
+    equations.solve()
+}
+
+fn solve(mut m: Vec<Vec<f64>>) -> Option<Vec<f64>> {
+    let k = m.len();
     for i in 0..k {
         let p = (i..k).max_by(|a, b| m[*a][i].abs().total_cmp(&m[*b][i].abs()))?;
         m.swap(i, p);

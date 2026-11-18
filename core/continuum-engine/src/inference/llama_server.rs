@@ -148,7 +148,7 @@ mod prompt_cache_limit;
 pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
-    AdapterChangeRefusal, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
+    AdapterChangeRefusal, DecodeSetRefused, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
     ObservedGeometry, OwnedServingTarget, Reconciling, ServingLifecycleCheck,
 };
 mod prepared_launch;
