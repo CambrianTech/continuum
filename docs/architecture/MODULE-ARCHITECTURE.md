@@ -518,8 +518,9 @@ identity, never as persona bytes plus pool bytes.
   in-flight custody (a claim not yet confirmed released is still held).
 - `needs(step)`: the PEAK concurrent increase the step adds over what is held, per tier, or a typed
   `Unmeasured`; never a sum of children's sequential peaks, never a zero standing in for unknown.
-- `reclaimable()`: what could be given back and at what cost (drop, page out, recompute);
-  prospective until its completion fence passes and its preserved backing is verified.
+- `reclaimable()`: what could be given back: a redundant copy released, or native bytes paged to a
+  backing that holds them; never valid cached state discarded to be recomputed. Prospective until
+  its completion fence passes and its preserved backing is verified.
 
 On unified memory one physical backing serves host and device: every tier's ledger names the
 backing it draws on, so the two totals can never both be spent from the same bytes. Admission is an
@@ -551,8 +552,12 @@ scatter and records read back in birth order.
 same interface, and the default methods fold them, so a part implements only its own direct
 answers. `persona.held()` walks her mind, genome, body, residency and learning; a parent never
 re-measures what a child reports, and an allocation shared by two children is counted once by its
-identity. Ordering is declared PER OPERATION, not once: `prepare` runs in dependency order,
-`suspend` and `shutdown` in reverse, and a partial failure rolls back the children already done.
+identity. Every method has the same shape: call the same method on the children, then do my own part, or
+the reverse, chosen once per method in the trait. Children first, then self: `held`, `suspend`,
+`shutdown` (a parent totals or stops after its parts have). Self first, then children: `prepare`,
+`resume` (a parent stages the context its parts bind into). A partial failure never pretends to
+roll back what cannot be undone (a stopped process stays stopped): the outcome reports each child
+as terminal, preserved or pending, and only the reversible children are resumed.
 Independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
 is a planning-time operation, never per token or per block.
 
