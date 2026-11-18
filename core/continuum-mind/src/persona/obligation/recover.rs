@@ -36,7 +36,9 @@ pub fn notice_key(room: Uuid) -> String {
 pub fn notice(rows: &[&PersonaObligation], now_ms: u64) -> Option<String> {
     let from = |row: &PersonaObligation| crate::persona::roster_slot::provisional_sender_name(row.trigger.peer_id);
     let age = |row: &PersonaObligation| ago(now_ms.saturating_sub(row.admitted_at_ms));
-    let newest = |rows: &[&&PersonaObligation]| rows.iter().copied().max_by_key(|row| row.admitted_at_ms).copied();
+    fn newest<'a>(rows: &[&&'a PersonaObligation]) -> Option<&'a PersonaObligation> {
+        rows.iter().copied().copied().max_by_key(|row| (row.admitted_at_ms, row.id))
+    }
     let (untouched, begun): (Vec<&&PersonaObligation>, Vec<&&PersonaObligation>) = rows.iter().partition(|row| row.effect_at_ms.is_none());
     let mut lines = Vec::new();
     if let Some(row) = newest(&untouched) {
@@ -189,11 +191,8 @@ impl Obligations {
 
     /// Pin `room`'s notice from the rows still pinned in it, or unpin it when none are.
     fn render(&self, room: Uuid) {
-        let Some(body) = crate::cognition::persona_workspace::global()
-            .cycle_for_room(&self.persona_id, room)
-            .as_ref()
-            .and_then(|cycle| cycle.acting())
-        else {
+        let cycle = crate::cognition::persona_workspace::global().cycle_for_room(&self.persona_id, room);
+        let Some(body) = cycle.as_ref().and_then(|cycle| cycle.acting()) else {
             return;
         };
         let pinned = self.pinned.lock();
