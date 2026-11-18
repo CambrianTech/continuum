@@ -8,29 +8,32 @@ use std::{collections::BTreeMap, num::NonZeroUsize};
 
 pub(super) async fn replay(
     store: &RelationalStore,
-    descriptor: &BinaryDescriptor,
-    original: &[u8],
+    payload: &BinaryValue,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // The existing corpus is already cached by the baseline's full scan. Its initial
     // fixture inserts have no revision receipts; this is incremental sync, not bootstrap.
     // Admit the rows participating in this mutation schedule through the real native
     // owner before capturing the cached revision. Unchanged fixture rows stay cached.
+    let original = payload.bytes();
+    let descriptor = payload.descriptor();
     for id in 0..32 {
         store
             .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: Native::COLLECTION, id: &uuid::Uuid::from_u128(id).to_string() }, payloads: BTreeMap::from([(
                     "payload".into(),
-                    BinaryValue::new(descriptor.clone(), original.to_vec())?,
+                    payload.clone(),
                 )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
     let since = store.binary_snapshot(Native::COLLECTION).await?.revision();
     let mut updated = original.to_vec();
     *updated.first_mut().ok_or("fixture payload is empty")? ^= 1;
+    let replacement = BinaryValue::new(descriptor.clone(), updated)?;
+    let updated = replacement.bytes();
     for id in 0..28 {
         store
             .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: Native::COLLECTION, id: &uuid::Uuid::from_u128(id).to_string() }, payloads: BTreeMap::from([(
                     "payload".into(),
-                    BinaryValue::new(descriptor.clone(), updated.clone())?,
+                    replacement.clone(),
                 )]), condition: BinaryWriteCondition::Replace })
             .await?;
     }
@@ -86,7 +89,7 @@ pub(super) async fn replay(
                         } => {
                             assert!(id < 28);
                             assert_eq!(found, descriptor);
-                            assert_eq!(&bytes[range.clone()], updated.as_slice());
+                            assert_eq!(&bytes[range.clone()], updated);
                         }
                         NativeDeltaValue::Remove => assert!((28..32).contains(&id)),
                     }
@@ -133,7 +136,7 @@ pub(super) async fn replay(
                     assert_eq!(
                         row,
                         if id < 28 {
-                            updated.as_slice()
+                            updated
                         } else {
                             original
                         }

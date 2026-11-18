@@ -33,7 +33,7 @@ fn record(collection: &str, id: String, data: serde_json::Value) -> DataRecord {
 
 struct ReplayFixture {
     expected: Vec<f32>,
-    bytes: Vec<u8>,
+    native: BinaryValue,
 }
 
 async fn replay(store: &RelationalStore, native: bool, fixture: &std::sync::Arc<ReplayFixture>) -> Result<(), Box<dyn std::error::Error>> {
@@ -62,7 +62,7 @@ async fn replay(store: &RelationalStore, native: bool, fixture: &std::sync::Arc<
         ).await?
                     .ok_or("missing native descriptor")?;
                 rows = ids.len();
-                let bytes = fixture.bytes.as_slice();
+                let bytes = fixture.native.bytes();
                 if descriptor.byte_len()? != bytes.len() || contiguous.len() != rows * bytes.len() {
                     return Err("native replay shape mismatch".into());
                 }
@@ -114,8 +114,8 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
     let descriptor = BinaryDescriptor { element_type: ElementType::F32,
         byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
         shape: vec![768], producer: "isolated-replay/seed17-mod251".into(), unit: false, scale: None };
-    let json_payload = serde_json::json!({"payload": expected});
-    let payload = BinaryValue::new(descriptor.clone(), bytes.clone())?;
+    let mut baseline = record(JsonBaseline::COLLECTION, String::new(), serde_json::json!({"payload": expected}));
+    let payload = BinaryValue::new(descriptor, bytes)?;
     for first in (0..10003).step_by(100) {
         let mut native_statements = Vec::new();
         let mut json_statements = Vec::new();
@@ -124,7 +124,8 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
                 &record(Native::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), serde_json::json!({})),
                 std::collections::BTreeMap::from([("payload".into(), payload.clone())])
             )?);
-            json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), json_payload.clone()))?);
+            baseline.id = uuid::Uuid::from_u128(n as u128).to_string();
+            json_statements.push(store.insert_statement(&baseline)?);
         }
         store.write(move |_, transaction| Box::pin(async move {
             use sea_orm::ConnectionTrait;
@@ -135,10 +136,10 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         })).await?;
     }
     // Alternate ordering to make cache/order effects visible rather than choose one winning run.
-    let fixture = std::sync::Arc::new(ReplayFixture { expected, bytes });
+    let fixture = std::sync::Arc::new(ReplayFixture { expected, native: payload });
     for native in [false, true, true, false] {
         replay(&store, native, &fixture).await?;
     }
-    delta_load::replay(&store, &descriptor, &fixture.bytes).await?;
+    delta_load::replay(&store, &fixture.native).await?;
     Ok(())
 }

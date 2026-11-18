@@ -377,7 +377,9 @@ async fn native_bytes_and_descriptors_survive_pages_atomic_update_and_restart(
         assert_eq!(store.count(&missing).await?, expected);
         let rows = store.query(&missing).await?;
         assert_eq!(rows.len(), expected.min(2));
-        assert!(rows.iter().all(|row| row.data.get("payload").is_none()));
+        for row in &rows {
+            super::assert_projection(row, Default::default());
+        }
     }
     // Generic scalar writes cannot mutate just the payload of a committed pair.
     assert!(store
@@ -638,8 +640,8 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
             std::collections::BTreeMap::from([("payload".into(), payload()?)]),
         )
         .await?;
-    let key = (NativeRow::COLLECTION.to_owned(), id.clone());
-    let revision = Revisions::find_by_id(key.clone())
+    let find_revision = || Revisions::find_by_id((NativeRow::COLLECTION.to_owned(), id.to_owned()));
+    let revision = find_revision()
         .one(&store.db)
         .await?
         .ok_or("missing revision")?;
@@ -647,11 +649,11 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     assert!(!revision.deleted);
     assert!(
         !store
-            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::IfAbsent })
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::IfAbsent })
             .await?
     );
     assert_eq!(
-        Revisions::find_by_id(key.clone())
+        find_revision()
             .one(&store.db)
             .await?
             .ok_or("missing unchanged revision")?
@@ -660,11 +662,11 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(
-        Revisions::find_by_id(key.clone())
+        find_revision()
             .one(&store.db)
             .await?
             .ok_or("missing updated revision")?
@@ -686,7 +688,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     drop(store);
     let store = open(path).await?;
     assert_eq!(
-        Revisions::find_by_id(key)
+        find_revision()
             .one(&store.db)
             .await?
             .ok_or("missing restarted revision")?
@@ -711,7 +713,7 @@ async fn native_revision_custody_is_transactional_monotonic_and_durable(
     );
     assert!(
         store
-            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id.clone() }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
+            .update_binary(crate::orm::seam::BinaryWrite { row: crate::orm::seam::RowRef { collection: NativeRow::COLLECTION, id: &id }, payloads: std::collections::BTreeMap::from([("payload".into(), payload()?)]), condition: BinaryWriteCondition::Replace })
             .await?
     );
     assert_eq!(

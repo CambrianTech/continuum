@@ -308,7 +308,9 @@ async fn projected_cursor_pages_are_ordered_and_refuse_ambiguous_boundaries(
         first.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
         ["a", "b"]
     );
-    assert!(first.iter().all(|row| row.data.get("body").is_none()));
+    for row in &first {
+        super::assert_projection(row, [("token".into(), json!(row.id))].into_iter().collect());
+    }
     query.cursor = Some(super::query::Cursor {
         field: "id".into(),
         value: json!("b"),

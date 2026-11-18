@@ -315,7 +315,9 @@ async fn declaration_addition_evolves_rows_and_receipt_atomically() -> Result<()
     reopened.ensure(&current).await?;
     let rows = reopened.query(&query()).await?;
     assert_eq!(rows[0].data["status"], "ready");
-    assert!(rows[0].data.get("extra").is_none());
+    let actual: std::collections::BTreeSet<_> =
+        rows[0].data.as_object().ok_or("missing record data")?.keys().collect();
+    assert_eq!(actual, current.fields.iter().map(|field| &field.name).collect());
     Ok(())
 }
 
@@ -511,7 +513,7 @@ fn declaration_decoding_requires_semantic_fields_and_refuses_unknown_metadata(
     });
     let canonical = serde_json::to_value(&schema)?;
     assert_eq!(
-        serde_json::from_value::<CollectionSchema>(canonical.clone())?,
+        CollectionSchema::deserialize(&canonical)?,
         schema
     );
     let fk_index = schema
@@ -570,12 +572,7 @@ fn declaration_decoding_requires_semantic_fields_and_refuses_unknown_metadata(
         for key in ["defaultValue", "maxLength"] {
             object.remove(key);
         }
-        if object
-            .get("foreignKey")
-            .is_some_and(serde_json::Value::is_null)
-        {
-            object.remove("foreignKey");
-        }
+        object.retain(|key, value| key != "foreignKey" || !value.is_null());
     }
     assert_eq!(
         serde_json::from_value::<CollectionSchema>(optional_absent)?,
