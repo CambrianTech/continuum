@@ -546,6 +546,21 @@ independent children run in parallel; a child's Pending or Failed reaches the ro
 is a planning-time operation, never per token or per block, so a dynamic call per child is fine
 there.
 
+**Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
+same interface and simply calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new
+gene kind in her genome, a new memory tier in her residency) is two things: write it with its own
+state (`own_held`, `own_suspend`, and the rest of its own direct answers), and add it to its
+parent's `children()`. Nothing else changes: her capacity includes its bytes, `persona.suspend()`
+preserves it in the declared order, admission counts its needs, leak tracing can walk into it, and
+a swap stages and retires it with the rest of her. No caller changes, because callers only ever
+talk to the parent. The interface is the same at every depth, so the design never has to be
+explained twice: nodes and subnodes, as deep as the being needs, each simple to understand alone.
+
+**The first code step.** `Part`, `Footprint` and `Lifecycle` are defined once in the floor crate
+(`continuum-base`), so every crate can implement them. `Genome` becomes the first real node, with
+its trial store, signatures and residency as its children. Each later repair adds the next node,
+and an old owner is moved onto the tree in the same change that repairs it.
+
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
 service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
