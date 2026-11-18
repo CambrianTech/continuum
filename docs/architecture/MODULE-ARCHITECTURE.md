@@ -674,6 +674,16 @@ command to a module and reads its receipt; it never holds policy, polls, retries
 on its own. A path that must work with the core down is a defect in the core's lifecycle (the
 supervisor keeps the runtime up and drains it), never a second implementation in a client.
 
+**A thread's life is its owner's lifecycle (Joel and Codex, 2026-11-18).** A task or thread is started by
+its owner's `prepare`/`resume` and joined by its `suspend`/`shutdown`, cancellation included; it never
+outlives either, and no completion is dropped (a child that must outlive its operation is handed to
+a named owner explicitly). Between threads, data moves by a small fixed set of strategies the
+substrate provides once, not by a channel chosen per site: a `watch` snapshot for state readers
+sample, a bounded queue with a declared overflow policy for work, a double-buffered handle for
+frames and large results, and an event for a wake. Stages are wired the way CBAR's pipeline is:
+each owns its buffers, passes them by handle, signals the next stage, and neither polls nor spins.
+The `unowned_tasks` ratchet baselines each reviewed spawn and shell site and checks it against this.
+
 **Then memory, the same way.** RAM, VRAM and the unified pool are the next tier: the resource
 ledger (#6124) already spends a shared pool once per grant; its consumers become `Part`s whose
 footprints fold into the same governor shape.
