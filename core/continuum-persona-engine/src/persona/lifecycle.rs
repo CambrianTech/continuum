@@ -2,7 +2,7 @@
 use std::future::Future;
 
 /// Repeated suspension must preserve the same state. The owner retains custody on
-/// cancellation and on refusal. Implementations can return a nested child report.
+/// cancellation and on refusal. A poll must yield promptly while I/O or GPU work is pending. Implementations can return a nested child report.
 pub trait Lifecycle {
     type Suspension: Suspension;
     fn suspend(&mut self) -> impl Future<Output = Self::Suspension> + Send;
@@ -38,7 +38,8 @@ macro_rules! persona_parts {
         {
             type Suspension = PersonaParts<$($part::Suspension),+>;
             async fn suspend(&mut self) -> Self::Suspension {
-                PersonaParts { $($field: self.$field.suspend().await),+ }
+                let ($($field,)+) = futures::join!($(self.$field.suspend()),+);
+                PersonaParts { $($field),+ }
             }
         }
 
