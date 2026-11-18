@@ -19,7 +19,7 @@
 //! her gene set), with F32 A/B tensors; otherwise selection is refused by name.
 
 use std::ffi::{c_char, c_void, CStr};
-use std::num::NonZeroU32;
+use std::num::{NonZeroU32, NonZeroU64};
 use std::ptr::NonNull;
 use std::sync::Arc;
 
@@ -135,10 +135,18 @@ pub struct Refused {
     pub admission: Box<dyn ReplyAdmission>,
 }
 
-/// How a reply ended.
+/// How a reply ended. Every restored variant hands the reply's admission back for its owner to
+/// release; which one it is comes from the shadow's own native step count, never from the status.
 pub enum Finished {
-    /// Restored under her stable set: the admission comes back for its owner to release.
-    Learned { admission: Box<dyn ReplyAdmission>, loss: Option<f64> },
+    /// Restored under her stable set, with optimizer steps committed to her shadow (a drain after a
+    /// commit keeps the steps already committed). The loss is the committed steps' loss.
+    Learned { admission: Box<dyn ReplyAdmission>, steps: NonZeroU64, loss: Option<f64> },
+    /// Restored with nothing committed: drained (or finished) before a gradient step landed.
+    Unchanged { admission: Box<dyn ReplyAdmission> },
+    /// Restored, but native code marks her shadow's effects uncertain: it may hold partial writes
+    /// the committed count does not represent, so the shadow must not be kept or published as
+    /// learned. `steps` is the count native code did commit.
+    Uncertain { admission: Box<dyn ReplyAdmission>, steps: u64 },
     /// Not confirmed restored: the context is quarantined and keeps the admission (its bytes
     /// retained) until [`Learner::recover`] proves the optimizer and workspace released.
     Failed { refusal: LearnRefusal, seq: i32 },
@@ -212,6 +220,10 @@ impl<H> Shadows<H> {
         self.0.iter().find(|(held, _)| *held == key).map(|(_, held)| held)
     }
 
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
     fn take(&mut self, key: ShadowKey) -> Option<H> {
         let index = self.0.iter().position(|(held, _)| *held == key)?;
         Some(self.0.swap_remove(index).1)
@@ -281,13 +293,18 @@ impl<'c, 'm> Learner<'c, 'm> {
     }
 
     /// Prove the failed run's training workspace released, then lift the quarantine and hand back
-    /// the reply admission it held. Shadows and their optimizer leases stay retained (native code
-    /// keeps their optimizers across replies); each is released by [`Learner::release_shadow`]. The
-    /// sequence is untouched: its owner restores it. A release native code refuses keeps the
-    /// quarantine.
+    /// the reply admission it held. The order is native code's: the workspace is released only once
+    /// no optimizer holds the scheduler (`opt_release_workspace` refuses while any shadow keeps one),
+    /// so every retained shadow is released first through [`Learner::release_shadow`], each handing
+    /// back its lease. Until then this refuses and changes nothing: the quarantine, the retained
+    /// shadows and their leases all stay. The sequence is untouched: its owner restores it.
     pub fn recover(&mut self) -> Result<Option<Recovered>, LearnRefusal> {
         if self.quarantine().is_none() {
             return Ok(None);
+        }
+        let retained = self.holder().shadows.len();
+        if retained > 0 {
+            return Err(LearnRefusal { step: "recover", message: format!("{retained} shadow(s) still retained: release each before the workspace") });
         }
         if !unsafe { sys::llama_opt_release_workspace(self.ctx.as_ptr()) } {
             return Err(self.refusal("release_workspace"));
@@ -335,6 +352,8 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = self.refusal("select_shadow");
             return Err(Refused { refusal, admission: self.reclaim() });
         }
+        // Her shadow's own count before the reply: what it committed is measured against this.
+        let steps_before = unsafe { sys::llama_opt_shadow_steps(self.ctx.as_ptr(), key.0.as_ptr()) };
         let begun = unsafe {
             sys::llama_opt_learn_begin(
                 self.ctx.as_ptr(),
@@ -353,7 +372,7 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = self.refusal("learn_begin");
             return Err(Refused { refusal, admission: self.reclaim() });
         }
-        Ok(LearnRun { learner: self, result, seq: reply.seq, state: RunState::Running, _buffers: (tokens, labels, restore) })
+        Ok(LearnRun { learner: self, result, seq: reply.seq, shadow: key, steps_before, state: RunState::Running, _buffers: (tokens, labels, restore) })
     }
 
     /// Take the reply's admission back out of the holder (native state unchanged by the reply):
@@ -387,6 +406,9 @@ pub struct LearnRun<'l, 'c, 'm> {
     learner: &'l mut Learner<'c, 'm>,
     result: NonNull<sys::ggml_opt_result>,
     seq: i32,
+    /// Her shadow, and its native step count when the reply began.
+    shadow: ShadowKey,
+    steps_before: i64,
     state: RunState,
     /// The reply's tokens, labels and restore tail, alive while the reply is.
     _buffers: (Vec<i32>, Vec<i32>, Vec<i32>),
@@ -429,8 +451,12 @@ impl LearnRun<'_, '_, '_> {
     pub fn finish(mut self) -> Finished {
         match self.run_out() {
             Ok(()) => {
+                let ctx = self.learner.ctx.as_ptr();
+                let after = unsafe { sys::llama_opt_shadow_steps(ctx, self.shadow.0.as_ptr()) };
+                let uncertain = unsafe { sys::llama_opt_shadow_quarantined(self.shadow.0.as_ptr()) };
+                let committed = committed_steps(self.steps_before, after);
                 let loss = self.loss();
-                Finished::Learned { admission: self.learner.reclaim(), loss }
+                restored(self.learner.reclaim(), committed, uncertain, loss)
             }
             Err(refusal) => {
                 self.learner.quarantine_after(&refusal, self.seq);
@@ -560,6 +586,24 @@ fn optimizer_params(optimizer: Optimizer) -> sys::ggml_opt_optimizer_params {
 
 /// llama.h encodes "the whole window" as a horizon of 0; a Rust horizon is never 0, so the two meet
 /// only here.
+/// The steps a reply committed to her shadow: its count after, less its count before. A count that
+/// did not rise (or a native count below zero) committed nothing.
+fn committed_steps(before: i64, after: i64) -> u64 {
+    u64::try_from(after.saturating_sub(before)).unwrap_or_default() // unwrap_or_default: a count that fell is no commit
+}
+
+/// What a confirmed restoration was: learned only when steps actually committed, and never when
+/// native code marks the shadow's effects uncertain. A loss is reported only for committed steps.
+fn restored(admission: Box<dyn ReplyAdmission>, committed: u64, uncertain: bool, loss: Option<f64>) -> Finished {
+    if uncertain {
+        return Finished::Uncertain { admission, steps: committed };
+    }
+    match NonZeroU64::new(committed) {
+        Some(steps) => Finished::Learned { admission, steps, loss },
+        None => Finished::Unchanged { admission },
+    }
+}
+
 fn native_horizon(horizon: Option<NonZeroU32>) -> u32 {
     const WHOLE_WINDOW: u32 = 0;
     match horizon {
@@ -733,6 +777,37 @@ mod tests {
         // Only a confirmed release takes a shadow out.
         assert!(shadows.take(b).is_some());
         assert!(shadows.get(b).is_none() && shadows.get(a).is_some());
+    }
+
+    // what this catches (Codex on #6148): a begin then an immediate finish (drained before any
+    // gradient) reported as Learned with zero committed updates; a drain after a commit losing the
+    // steps it kept; a shadow native code marks uncertain read as learned; a loss on no commit.
+    #[test]
+    fn learned_only_when_her_shadows_own_count_rose_and_its_effects_are_certain() {
+        let admission = || -> Box<dyn ReplyAdmission> { Box::new(Open) };
+        assert_eq!(committed_steps(7, 7), 0, "drained before a gradient: nothing committed");
+        assert_eq!(committed_steps(7, 9), 2, "a drain after commits keeps those committed");
+        assert_eq!(committed_steps(9, 7), 0, "a count that fell is no commit");
+        assert!(matches!(restored(admission(), 0, false, Some(1.5)), Finished::Unchanged { .. }));
+        assert!(matches!(restored(admission(), 2, false, Some(1.5)), Finished::Learned { steps, loss: Some(_), .. } if steps.get() == 2));
+        assert!(matches!(restored(admission(), 2, true, Some(1.5)), Finished::Uncertain { steps: 2, .. }));
+        assert!(matches!(restored(admission(), 0, true, None), Finished::Uncertain { steps: 0, .. }));
+    }
+
+    // what this catches (Codex on #6148): recovery calling native code to release the workspace while
+    // a shadow still holds the scheduler (native refuses: opt_configured), or dropping the
+    // quarantine or a retained shadow's lease on the way.
+    #[test]
+    fn recovery_waits_for_every_retained_shadow_and_keeps_them_until_released() {
+        let mut shadows: Shadows<Box<dyn OptimizerLease>> = Shadows::new();
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        assert!(shadows.retain(key(1), Box::new(Counting(std::sync::Arc::clone(&admitted)))).is_ok());
+        assert!(shadows.retain(key(2), Box::new(Counting(admitted))).is_ok());
+        assert_eq!(shadows.len(), 2, "recover refuses before any native call while this is nonzero");
+        assert!(shadows.take(key(1)).is_some());
+        assert_eq!(shadows.len(), 1, "one release leaves the other shadow, and recovery, waiting");
+        assert!(shadows.take(key(2)).is_some());
+        assert_eq!(shadows.len(), 0);
     }
 
     // what this catches: the native "whole window" encoding leaking past the boundary, or a real
