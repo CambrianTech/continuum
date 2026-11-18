@@ -425,6 +425,29 @@ never dropped at condemn).
 
 ### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Capabilities
 
+**How a stimulus reaches her amygdala.** In the proposed anatomy, her amygdala subscribes to
+stimuli relevant to her and owns her assessment of their salience and urgency. Suppose a reviewer
+publishes a correction in her room. The event identifies the reviewed turn by handle. Her amygdala
+can signal that the correction deserves attention now. Her learning component can retain the same
+turn for a later in-place step. Attention decides whether to interrupt her current activity.
+The reviewer needs no knowledge of either subscriber.
+
+The same publish/subscribe mechanism connects parts within a mind, participants in a shared room,
+and runtime services. Each part owns its subscriptions through its lifecycle and wakes when relevant
+input arrives. Small typed values travel in the event. Larger payloads stay with their owners and
+travel by handle. An idle subscriber can sleep without scanning history or polling its peers.
+This applies the existing CBAR pattern and the persona's [ordered event stream](MIND-DATAFLOW-OVERHAUL.md).
+For each participating object, document which typed events wake it, which part of its state each
+event changes, what it publishes, and who owns pending deliveries during suspension. The object
+applies a new event once to the state it maintains. Subscribers receive small values or
+[handles to the original content](CONTENT-TRAVELS-BY-HANDLE.md) through the existing delivery owner.
+
+A swap gives this contract a concrete test. Suspend the persona after a correction is accepted
+but before learning consumes it. On resume, the correction must still be owed. Suspend again after
+learning records completion, and the same delivery must leave that completed step alone. Preserve
+the last applied event with its effect at the owner's commit boundary. A wake signal may coalesce
+when the latest state suffices; the correction itself stays available until its owner settles it.
+
 A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
 anatomy: each part is an object that owns its state, each thing she does is a capability of the
 part that does it (a method; a trait only where parts share or substitute it), and the world she
