@@ -95,6 +95,15 @@ impl NvidiaProbe {
     }
 }
 
+// `new()` is None without `nvidia-smi`, so it is safe to ask on every host; Metal is asked first on a Mac.
+inventory::submit! {
+    crate::gpu::monitor::GpuBackendFactory {
+        preference: 1,
+        name: "nvidia",
+        monitor: || NvidiaMonitor::new().map(|m| m as Arc<dyn crate::gpu::monitor::GpuMonitor>),
+    }
+}
+
 impl NvidiaMonitor {
     /// Detect an NVIDIA device and put it under the shared monitor.
     pub fn new() -> Option<Arc<Self>> {
