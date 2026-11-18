@@ -52,6 +52,78 @@ pub(super) async fn reconcile<C: ConnectionTrait>(
 mod replay {
     use crate::orm::{adapter::AdapterConfig, relational::RelationalStore};
 
+
+    // Reproduce the old writer's catalog independently of the migration descriptors.
+    async fn reopen_legacy_catalog(unexpected: bool) -> Result<(), Box<dyn std::error::Error>> {
+        use crate::orm::{BaseEntity, Entity, OrmEntity};
+        use sea_orm::{ConnectionTrait, DbBackend, Statement};
+        use serde::{Deserialize, Serialize};
+
+        #[derive(Serialize, Deserialize, Entity)]
+        #[entity(collection = "chat_messages")]
+        struct Chat {
+            #[serde(flatten)]
+            base: BaseEntity,
+            room_id: String,
+        }
+
+        #[derive(Serialize, Deserialize, Entity)]
+        #[entity(collection = "memories")]
+        struct Memory {
+            #[serde(flatten)]
+            base: BaseEntity,
+            persona_id: String,
+            timestamp: String,
+            importance: i64,
+        }
+
+        let directory = tempfile::tempdir()?;
+        let file = directory.path().join("catalog.db");
+        let config = AdapterConfig { connection_string: file.to_str().ok_or("test path encoding")?.into(), ..Default::default() };
+        let original = RelationalStore::open(&config).await?;
+        original.ensure(&Chat::collection_schema()).await?;
+        original.ensure(&Memory::collection_schema()).await?;
+        for ddl in [
+            "CREATE INDEX idx_chat_messages_room_id ON chat_messages (room_id)",
+            "CREATE INDEX idx_memories_persona_id ON memories (persona_id)",
+            "CREATE INDEX idx_memories_timestamp ON memories (timestamp)",
+            "CREATE INDEX idx_memories_persona_importance ON memories (persona_id, importance)",
+            "CREATE INDEX idx_memories_persona_timestamp ON memories (persona_id, timestamp)",
+        ] {
+            original.db.execute_unprepared(ddl).await?;
+        }
+        if unexpected {
+            original.db.execute_unprepared("CREATE INDEX unexpected ON memories (importance)").await?;
+        }
+        let reopened = RelationalStore::open(&config).await;
+        if unexpected {
+            assert!(reopened.is_err(), "an undeclared index must refuse the reopen");
+        } else {
+            reopened?.db.close().await?;
+        }
+        let indexes = original.db.query_all(Statement::from_string(DbBackend::Sqlite,
+            "SELECT name FROM sqlite_schema WHERE type='index' AND name IN ('idx_chat_messages_room_id','idx_memories_persona_id','idx_memories_timestamp','idx_memories_persona_importance','idx_memories_persona_timestamp','unexpected') ORDER BY name")).await?;
+        let actual: Vec<String> = indexes.iter().map(|row| row.try_get("", "name")).collect::<Result<_, _>>()?;
+        if unexpected {
+            assert_eq!(actual, ["idx_chat_messages_room_id", "idx_memories_persona_id", "idx_memories_persona_importance",
+                "idx_memories_persona_timestamp", "idx_memories_timestamp", "unexpected"]);
+        } else {
+            assert!(actual.is_empty(), "retired indexes survived reopen: {actual:?}");
+        }
+        original.db.close().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn reopen_drops_only_the_five_retired_indexes() -> Result<(), Box<dyn std::error::Error>> {
+        reopen_legacy_catalog(false).await
+    }
+
+    #[tokio::test]
+    async fn unexpected_index_rolls_back_retired_indexes_across_tables() -> Result<(), Box<dyn std::error::Error>> {
+        reopen_legacy_catalog(true).await
+    }
+
     /// An explicit local replay against a disposable copy of an actual store.
     #[tokio::test]
     #[ignore = "supply a disposable SQLite backup via CONTINUUM_INDEX_REPLAY_COPY"]
