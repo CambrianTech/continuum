@@ -540,6 +540,12 @@ logs, probes and drift reports sort by birth). A natural identity is kept where 
 never shadowed by a second: a persona's durable `PeerId`; an engine incarnation's pid and start
 time (what proves it alive or dead); a gene's or blob's content hash. Pure values (a menu line, a
 computed phenotype) are data, not nodes, and carry none.
+The id is free, as on a base object: a generic `Id<K>` (UUIDv7 inside, a phantom kind outside) and
+a `#[derive(Part)]` that reads `#[part(id)]` and `#[part(child)]` fields generate `Part::id` and
+`Part::children`, so a new organ writes one field and one derive and gets its identity, its place
+in the tree and the default capacity and lifecycle walks (the substrate's base trait, derive macro
+and scaffold generator). In the store, v7 keys arrive in time order, so indexes append rather than
+scatter and records read back in birth order.
 
 **Both capabilities walk the tree (the composite).** Every part exposes its children through the
 same interface, and the default methods fold them, so a part implements only its own direct
