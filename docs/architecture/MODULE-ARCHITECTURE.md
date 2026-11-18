@@ -566,11 +566,15 @@ Independent children run in parallel; a child's Pending or Failed reaches the ro
 is a planning-time operation, never per token or per block.
 
 **Concurrency is the same tree (launch and join).** A part LAUNCHES its children's work downward and
-is not done until every child has JOINED upward; cancellation flows down the same edges; no task
-outlives the part that launched it (a scoped `JoinSet` owned by the parent, never a detached
-spawn). The 2026-11-17 learning lease outlived its engine because its fence ran detached and
-nothing joined it; the incarnation's `shutdown` would have joined it or handed it to its completion
-owner before releasing anything.
+is not done until every child has JOINED upward; cancellation flows down the same edges. The
+runtime already is this tree: a `ServiceModule` carries the lifecycle (`drain`, `save_state`,
+`shutdown`) and the runtime walks the modules, so modules keep using it and a persona's parts follow
+the same contract; this is never a second, parallel lifecycle. Work spawned outside a module is
+still launch and join: every spawn is owned by the part WHOSE LIFETIME IT SHARES, which joins or
+stops it. On 2026-11-17 a learning fence was owned (`spawn_owned`, drained by the training-trigger
+module) but by the wrong parent: the trigger outlives any one engine incarnation, so nothing joined
+the fence when its engine died, and its lease outlived its owner. Owned by the incarnation, the
+incarnation's `shutdown` would have joined it or handed it to its completion owner first.
 
 **Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
 same interface and calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new gene kind
