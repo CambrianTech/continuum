@@ -21,7 +21,7 @@ mod driver;
 mod geometry;
 mod sampling;
 
-pub use geometry::{EngineGeometry, EngineState, Incarnation};
+pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
 
 use std::sync::Arc;
 

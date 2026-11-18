@@ -179,6 +179,16 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_n_ubatch(self.ptr.as_ptr()) }
     }
 
+    /// The window one sequence may use, as the context applied it.
+    pub fn n_ctx_seq(&self) -> u32 {
+        unsafe { sys::llama_n_ctx_seq(self.ptr.as_ptr()) }
+    }
+
+    /// The sequences the context holds.
+    pub fn n_seq_max(&self) -> u32 {
+        unsafe { sys::llama_n_seq_max(self.ptr.as_ptr()) }
+    }
+
     /// Bytes llama.cpp has actually committed to the KV cache for the given
     /// sequence id. The honest source of truth for per-seq KV size — works
     /// across any model architecture (uniform attention, hybrid attention+SSM

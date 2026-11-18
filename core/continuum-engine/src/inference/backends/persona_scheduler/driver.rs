@@ -15,6 +15,7 @@ use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
 use llama::{ContextParams, LoraAdapter, Model};
 use uuid::Uuid;
 
+use super::geometry::StopsOnExit;
 use super::{sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
@@ -98,6 +99,9 @@ pub(super) struct Start {
 pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
     let Start { incarnation, state, requests } = start;
+    // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
+    // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
+    let _stops = StopsOnExit { state: &state, incarnation };
     let refuse = |refused: &StartError| {
         log.error(&refused.to_string());
         state.send_replace(EngineState::Refused { incarnation, reason: refused.to_string().into() });
