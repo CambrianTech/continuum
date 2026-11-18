@@ -181,7 +181,9 @@ impl Driver<'_, '_> {
         let basis = Basis { genes: signature(&req.active_loras) };
         let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
 
+        let switching = Instant::now();
         self.switch_to(id, one_off)?;
+        let switched = switching.elapsed();
         let from = {
             let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
             let from = match plan(History { basis: &her.basis, tokens: &her.held }, History { basis: &basis, tokens: &prompt }) {
@@ -211,6 +213,8 @@ impl Driver<'_, '_> {
         let mut token = self.engine.tier().sample(&mut sampler, last);
         self.record(|her| her.held.extend_from_slice(&prompt[from..]))?;
         self.report_footprint(id, one_off);
+        let prefilled = started.elapsed().saturating_sub(switched);
+        let decoding = Instant::now();
 
         let mut generated = 0usize;
         let mut output = String::new();
@@ -231,6 +235,22 @@ impl Driver<'_, '_> {
             token = self.engine.tier().sample(&mut sampler, 0);
         }
         self.report_footprint(id, one_off);
+        let decoded = decoding.elapsed();
+        // One row per turn: where her seconds went (the switch, the prefill of what her blocks did
+        // not hold, the decode), so the one-mind gate (switch in ms, decode near the chip's rate,
+        // reuse >= 80%) is read from the live node, never inferred.
+        continuum_base::probe!(
+            class = "persona.engine.turn",
+            persona = %id.0,
+            one_off = one_off,
+            prompt_tokens = prompt.len() as u64,
+            reused_tokens = from as u64,
+            switch_ms = switched.as_millis() as u64,
+            prefill_ms = prefilled.as_millis() as u64,
+            decode_ms = decoded.as_millis() as u64,
+            generated = generated as u64,
+            "persona engine turn"
+        );
         let took = started.elapsed();
         let elapsed_ms = took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis()));
         Ok(TokenEvent::Done { tokens_generated: generated, elapsed_ms })
