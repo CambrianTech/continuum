@@ -17,7 +17,7 @@ use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
-use super::{sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
+use super::{frame, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
