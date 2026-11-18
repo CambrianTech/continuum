@@ -20,7 +20,7 @@ pub(super) static BACKEND_INIT: Once = Once::new();
 /// explicit register call from Rust creates a live reference path the
 /// linker can't strip, forcing the Metal backend to load and register
 /// before the first model is read. Same defensive pattern for CUDA on
-/// Linux + Vulkan on Linux when those features are enabled.
+/// Linux and Windows MSVC, and Vulkan on Linux when those features are enabled.
 /// Whether this build of llama offloads to any GPU backend (Metal, CUDA, Vulkan, ROCm): a context
 /// whose model offloads no layer, or a build with none, resides in host memory.
 pub fn supports_gpu_offload() -> bool {
@@ -58,7 +58,7 @@ pub fn backend_init() {
             #[cfg(all(feature = "metal", target_os = "macos"))]
             ensure_backend_registered("Metal", || sys::ggml_backend_metal_reg());
 
-            #[cfg(all(feature = "cuda", target_os = "linux"))]
+            #[cfg(llama_cuda)]
             ensure_backend_registered("CUDA", || sys::ggml_backend_cuda_reg());
 
             #[cfg(all(feature = "vulkan", target_os = "linux"))]
@@ -118,7 +118,7 @@ pub(super) unsafe fn ensure_backend_registered(
 }
 
 /// Walks the registered backend devices and asserts that — if the build
-/// expected a GPU backend (Mac+metal, Linux+cuda, Linux+vulkan) — at least
+/// expected a GPU backend (Mac+metal, Linux/Windows+cuda, Linux+vulkan) — at least
 /// one non-CPU device is present. Panics with an actionable message if not.
 ///
 /// The point is to catch the failure mode we discovered 2026-04-19: a build
@@ -128,7 +128,7 @@ pub(super) unsafe fn ensure_backend_registered(
 pub(super) unsafe fn assert_gpu_backend_registered_when_expected() {
     let expects_gpu = cfg!(any(
         all(feature = "metal", target_os = "macos"),
-        all(feature = "cuda", target_os = "linux"),
+        llama_cuda,
         all(feature = "vulkan", target_os = "linux"),
     ));
     if !expects_gpu {
@@ -164,7 +164,7 @@ pub(super) unsafe fn assert_gpu_backend_registered_when_expected() {
 
     if !found_gpu {
         panic!(
-            "FATAL: build expected a GPU backend (Mac+metal / Linux+cuda / \
+            "FATAL: build expected a GPU backend (Mac+metal / Linux/Windows+cuda / \
              Linux+vulkan) but the ggml backend registry only has CPU \
              devices after init. Refusing to run inference at CPU speeds \
              dressed as GPU. Registered devices: {:?}. Fix: rebuild with \
