@@ -20,6 +20,10 @@ impl LlamaServerControl for LlamaServerProcess {
         super::prompt_cache_limit::post_prompt_cache_limit(&self.client, &self.root, limit_mib).await
     }
 
+    async fn finish_pending_readiness(&self, current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        self.publish_retained_engine(current).await
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         if !crate::inference::slots::directory()
             .endpoint(&self.root)
