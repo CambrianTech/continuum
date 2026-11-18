@@ -659,12 +659,20 @@ Node
 - **Admission goes through it, never around it.** A deploy, a build or a model download asks
   `admit(Need { bytes, owner })` and receives `Granted(lease)`, `Reclaiming(ticket)` (await it: the
   tree frees the bytes) or `Refused(which parts hold the bytes and why none can release)`. No
-  consumer checks the disk itself, and no refusal waits for a person to type a retry. With the core
-  down, the deploy CLI builds the same tree in-process from the same crate.
+  consumer checks the disk itself, and no refusal waits for a person to type a retry.
 - **What it replaces, one owner at a time:** the scattered `ensure_projected_disk_capacity`
   callers, `CitizenWorkspacePool`, `CargoTargetPool` and the broker's disk pools become `Part`s;
   provisioning a workspace by copying a directory becomes `Workspace::prepare` (a shared clone of
   the tracked tree, as `citizen_layer` already does).
+
+**Every daemon, thread and policy lives in a `ServiceModule` (Joel, 2026-11-18: "Daemons and
+threading done consistently inside servicemodule, not some disjoint command somewhere or some
+horrid shell script").** The governor, the deploy (`deploy_actuator`, a module that asks the
+governor for its bytes like any other consumer), relief and eviction are modules on the runtime,
+launched and joined by it, their state in their objects. A CLI verb or a script only sends a
+command to a module and reads its receipt; it never holds policy, polls, retries, sizes or deletes
+on its own. A path that must work with the core down is a defect in the core's lifecycle (the
+supervisor keeps the runtime up and drains it), never a second implementation in a client.
 
 **Then memory, the same way.** RAM, VRAM and the unified pool are the next tier: the resource
 ledger (#6124) already spends a shared pool once per grant; its consumers become `Part`s whose
