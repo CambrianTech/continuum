@@ -169,6 +169,16 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
     }
 
+    /// The logical batch the context was created with (llama.cpp may clamp what was asked).
+    pub fn n_batch(&self) -> u32 {
+        unsafe { sys::llama_n_batch(self.ptr.as_ptr()) }
+    }
+
+    /// The physical micro-batch the context was created with.
+    pub fn n_ubatch(&self) -> u32 {
+        unsafe { sys::llama_n_ubatch(self.ptr.as_ptr()) }
+    }
+
     /// Bytes llama.cpp has actually committed to the KV cache for the given
     /// sequence id. The honest source of truth for per-seq KV size — works
     /// across any model architecture (uniform attention, hybrid attention+SSM

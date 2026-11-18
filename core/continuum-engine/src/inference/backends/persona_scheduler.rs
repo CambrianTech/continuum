@@ -18,7 +18,10 @@
 //! synchronous today), and paging cold minds out of RAM.
 
 mod driver;
+mod geometry;
 mod sampling;
+
+pub use geometry::{EngineGeometry, EngineState, Incarnation};
 
 use std::sync::Arc;
 
@@ -72,17 +75,26 @@ pub struct SchedulerConfig {
 #[derive(Clone)]
 pub struct Scheduler {
     request_tx: std::sync::mpsc::Sender<GenerationRequest>,
+    state: tokio::sync::watch::Receiver<EngineState>,
 }
 
 impl Scheduler {
     /// Spawn the driver thread. It runs until the last handle is dropped and its last turn ended.
     pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, SchedulerError> {
         let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let incarnation = Incarnation::next();
+        let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
-            .spawn(move || driver::run(&model, &config, &request_rx))
+            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx }))
             .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
-        Ok(Self { request_tx })
+        Ok(Self { request_tx, state })
+    }
+
+    /// The engine as it is: starting, the geometry its context applied, or why it was refused. The
+    /// one place serving reads the window, the batch and the KV layout from.
+    pub fn state(&self) -> tokio::sync::watch::Receiver<EngineState> {
+        self.state.clone()
     }
 
     /// Enqueue a turn. Refused once the driver thread has exited.
