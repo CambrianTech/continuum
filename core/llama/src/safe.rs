@@ -13,6 +13,8 @@ mod backend_init;
 pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
+mod persona;
+pub use persona::{PersonaBlocks, PersonaOwner, PersonaRefusal};
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]
