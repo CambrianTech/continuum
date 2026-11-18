@@ -619,13 +619,13 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         );
     }
 
-    // what this catches (Codex on #6122): an unanswered board read as "she holds nothing". The
-    // self-cycle's first board read (her focus room) failed, logged "retry next self-cycle", and
-    // returned as an ordinary run, so the beat rested as if idle. Through the actual caller: an
-    // unanswered board defers the cycle (nothing attended, nothing settled, the beat keeps its
-    // pace) and the recovered board runs it.
+    // what this catches (Codex on #6122; Joel: they are autonomous minds, not agents waiting on a
+    // queue): an unanswered board read as "she holds nothing", which settled her held work and
+    // counted her initiative as passed; and the opposite mistake, freezing her whole mind until the
+    // board answers. Through the actual caller: with her board unanswered her cycle still runs and
+    // nothing about her held work is settled or passed; once it answers, the cycle runs as ever.
     #[tokio::test]
-    pub(super) async fn an_unanswered_board_defers_her_beat_and_a_recovered_one_runs_it() {
+    pub(super) async fn an_unanswered_board_leaves_her_work_owed_and_her_mind_running() {
         let persona = Uuid::new_v4();
         let hosted = hosted_with_heuristic(persona);
         let answering = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -637,15 +637,9 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
         let mut pending = crate::persona::wake_backlog::PendingInput::for_persona(persona);
         let mut fingerprint = 0u64;
 
-        let unanswered = run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
-        assert_eq!(unanswered, SelfCycle::Deferred, "an unanswered board defers the cycle");
-        assert_eq!(fingerprint, 0, "nothing was attended");
-        let pace = std::time::Duration::from_millis(SELF_TICK_MS * 3);
-        let engaged = std::time::Duration::from_millis(SELF_TICK_MS);
-        let cap = std::time::Duration::from_millis(SELF_TICK_REST_CAP_MS);
-        assert_eq!(next_beat_after(BeatOutcome::Deferred, pace, engaged, cap), pace, "neither engaged nor resting: the beat keeps its pace");
+        run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
+        assert_eq!(pending.initiative_passed_at_ms(), None, "an unknown board counts no initiative as passed");
 
         answering.store(true, std::sync::atomic::Ordering::Release);
-        let recovered = run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
-        assert_eq!(recovered, SelfCycle::Ran, "the recovered board lets the cycle run");
+        run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
     }

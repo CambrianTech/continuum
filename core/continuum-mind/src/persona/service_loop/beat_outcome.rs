@@ -7,9 +7,6 @@ pub enum BeatOutcome {
     Engaged,
     /// She ran a cycle and nothing had changed → rest deeper (earned backoff).
     NothingNew,
-    /// The cycle could not run (her board did not answer): neither engaged nor resting, the
-    /// beat keeps its pace and the next beat asks again.
-    Deferred,
 }
 
 /// The self-tick cadence rule. Pure so every row is table-testable without a runtime.
@@ -22,7 +19,6 @@ pub fn next_beat_after(
     match outcome {
         BeatOutcome::Engaged => engaged,
         BeatOutcome::NothingNew => (current + current / 2).min(rest_cap),
-        BeatOutcome::Deferred => current,
     }
 }
 
