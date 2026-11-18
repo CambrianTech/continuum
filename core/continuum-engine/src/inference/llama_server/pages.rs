@@ -189,11 +189,24 @@ impl PageDirState {
         let mut index = 0;
         while index < self.retiring.len() {
             match poll(&mut self.retiring[index].child) {
+<<<<<<< HEAD
                 Ok(Some(_)) => self.release_exited(index),
+=======
+                Ok(Some(_)) => {
+                    let owner = self.retiring.swap_remove(index);
+                    owner.generation.observed_exit();
+                    if let Some(dir) = owner.reserved_dir {
+                        if let Some(i) = self.reservations.iter().position(|d| d == &dir) {
+                            self.reservations.swap_remove(i);
+                        }
+                    }
+                }
+>>>>>>> origin/main
                 Ok(None) | Err(_) => index += 1,
             }
         }
     }
+<<<<<<< HEAD
 
     /// Release what an exited child held (its page dir, resource lease, engine install and
     /// inputs), THEN announce the exit, so a waiter woken by it finds the capacity already back.
@@ -244,6 +257,8 @@ async fn reap(generation: crate::inference::slots::EngineGeneration) {
         () = std::future::poll_fn(|cx| PAGE_DIR_GUARD.lock().poll_reap(&generation, cx)) => {}
         _ = exit.confirmed() => {}
     }
+=======
+>>>>>>> origin/main
 }
 
 
@@ -270,13 +285,18 @@ pub(super) fn retire_page_owner(
     let reserved_dir = reservation.and_then(|mut reservation| reservation.0.take());
     guard.retiring.push(RetiringPageOwner {
         child,
+<<<<<<< HEAD
         generation: generation.clone(),
+=======
+        generation,
+>>>>>>> origin/main
         reserved_dir,
         _resource_reservation: resource_reservation,
         _engine_install: engine_install,
         _local_inputs: local_inputs,
     });
     guard.collect_exited();
+<<<<<<< HEAD
     drop(guard);
     // A tokio child exists only inside a runtime, so the reaper has one whenever the child was
     // spawned by this process; outside one the retained entry stays with the collectors.
@@ -285,6 +305,8 @@ pub(super) fn retire_page_owner(
             runtime.spawn(reap(generation));
         }
     }
+=======
+>>>>>>> origin/main
 }
 
 

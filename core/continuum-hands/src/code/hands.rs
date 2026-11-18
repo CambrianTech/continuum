@@ -62,6 +62,7 @@ impl HandsKey {
     }
 }
 
+<<<<<<< HEAD
 /// WHERE ONE SET OF HANDS STANDS: the absolute checkout every relative path of these hands,
 /// their shell's working directory and every git or gh verb of theirs resolves against (cards
 /// c8546b52, 566e390e). It is read from the one owner of that fact, the hands' file engine
@@ -106,6 +107,8 @@ impl std::fmt::Display for CheckoutRoot {
     }
 }
 
+=======
+>>>>>>> origin/main
 /// Hands admission as a dispatch hook: a caller bound to a context (a card claim's turn, an
 /// eval, a fork) is ADMITTED to its hands for the command's whole life, foreground or
 /// background, and the command runs as that admitted work, so a child process it starts keeps

@@ -648,7 +648,11 @@ pub struct DeliberationPromptView {
     pub allocation: Option<crate::ai::provenance::AllocationReceipt>,
     /// Her hands as the one allocation bought them (`tools_epoch.rs`): the request sends
     /// exactly this, never a second selection.
+<<<<<<< HEAD
     pub tools: crate::cognition::tool_surface::SelectedSurface,
+=======
+    pub tools: crate::cognition::tool_surface::SelectedSurface<'static>,
+>>>>>>> origin/main
     /// The raw tokens the allocation granted her hands: a retry on a server that refuses
     /// `tail_tools` re-selects at this grant, without her learned head.
     pub tools_grant: usize,

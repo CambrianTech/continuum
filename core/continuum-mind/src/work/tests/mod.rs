@@ -445,6 +445,7 @@
         );
     }
 
+<<<<<<< HEAD
     /// what this catches (card e0b2b5b1, the M5 2026-11-07: `work/list` returned 241,460 chars,
     /// ~80,884 tokens, as a summary and a handle): the tool returning every card while her view of
     /// the same board is collapsed navigation. With no filter it returns the board's nav from the
@@ -497,6 +498,8 @@
         }
     }
 
+=======
+>>>>>>> origin/main
     /// what this catches: the self-explaining summary being serialized AFTER `cards`, where
     /// the receipt truncator severs it from every result a citizen actually reads.
     ///
@@ -528,7 +531,10 @@
             awaiting_reviewer: 2,
             unsubmitted_pull_requests: 1,
             note: Some("the board is NOT empty".to_string()),
+<<<<<<< HEAD
             folded: Vec::new(),
+=======
+>>>>>>> origin/main
             cards,
         })
         .expect("WorkListResult serializes");
@@ -626,7 +632,11 @@
                     priority: None,
                 },
             )
+<<<<<<< HEAD
             .await.map(|(made, _)| made)
+=======
+            .await
+>>>>>>> origin/main
             .expect("card created");
             ids.push(WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid")));
         }
@@ -659,6 +669,7 @@
         use crate::cognition::work_preconditions::{names, WorkVerb};
         use super::submission::{WorkReview, WorkSubmission, WorkSubmit};
         for verb in WorkVerb::ALL {
+<<<<<<< HEAD
             let registered = match verb {
                 WorkVerb::Claim => <WorkClaim as ActionCommand>::NAME,
                 WorkVerb::Heartbeat => <WorkHeartbeat as ActionCommand>::NAME,
@@ -673,6 +684,24 @@
             // A move her text names is the name her tool list offers (6c): the command's path,
             // through the one `wire_name` (card d2b6dbce: `work/release` is `work_release`).
             assert_eq!(verb.offered(), crate::sdk_codegen::wire_name(registered), "{verb:?}");
+=======
+            let (registered, aliases) = match verb {
+                WorkVerb::Claim => (<WorkClaim as ActionCommand>::NAME, <WorkClaim as ActionCommand>::ALIASES),
+                WorkVerb::Heartbeat => (<WorkHeartbeat as ActionCommand>::NAME, <WorkHeartbeat as ActionCommand>::ALIASES),
+                WorkVerb::Note => (<WorkNote as ActionCommand>::NAME, <WorkNote as ActionCommand>::ALIASES),
+                WorkVerb::Release => (<WorkRelease as ActionCommand>::NAME, <WorkRelease as ActionCommand>::ALIASES),
+                WorkVerb::Review => (<WorkReview as ActionCommand>::NAME, <WorkReview as ActionCommand>::ALIASES),
+                WorkVerb::State => (<WorkState as ActionCommand>::NAME, <WorkState as ActionCommand>::ALIASES),
+                WorkVerb::Submission => (<WorkSubmission as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::ALIASES),
+                WorkVerb::Submit => (<WorkSubmit as ActionCommand>::NAME, <WorkSubmit as ActionCommand>::ALIASES),
+            };
+            assert_eq!(verb.command(), registered, "{verb:?}");
+            // A move her text names is the name her tool list offers (6c): the verb's aliases are
+            // the command's, so `offered` renders what `wire_name` offers the command under.
+            assert_eq!(verb.aliases(), aliases, "{verb:?}");
+            let offered = crate::sdk_codegen::wire_name(registered, crate::sdk_codegen::primary_alias(aliases), crate::sdk_codegen::offer_style_for(None));
+            assert_eq!(verb.offered(), offered, "{verb:?}");
+>>>>>>> origin/main
             for grant in verb.grants() {
                 let known = [<continuum_hands::commands::code::run::CodeRun as ActionCommand>::NAME, <WorkSubmission as ActionCommand>::NAME];
                 assert!(known.iter().any(|command| names(grant, command)), "{verb:?} grants {grant}, which names no registered command");

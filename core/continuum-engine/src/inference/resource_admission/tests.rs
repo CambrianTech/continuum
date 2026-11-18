@@ -590,6 +590,7 @@ async fn queue_progress_follows_budget_holders_waiting_for_physical_slots() {
     drop(first);
     drop(second);
 }
+<<<<<<< HEAD
 
 // what this catches (timer audit row H3, 2026-11-14): a released lane woke its parked callers
 // from the permit's Drop BODY, which runs before its fields (the permits) drop. A caller woken
@@ -649,3 +650,5 @@ async fn a_release_grants_the_parked_caller_at_the_same_instant() {
     assert_eq!(released_at.elapsed(), Duration::ZERO, "ambient is granted by the release itself, never a timer");
     drop(ambient);
 }
+=======
+>>>>>>> origin/main

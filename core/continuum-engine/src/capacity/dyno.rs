@@ -20,7 +20,11 @@
 //! | # | Failure | Real code | Test |
 //! |---|---|---|---|
 //! | 1 | launch sized from a reading with the old engine still wired | `serving_daemon::launch::launch_pool` | `continuum-serving` `serving_daemon/tests/dyno.rs` |
+<<<<<<< HEAD
 //! | 2 | one censored bound takes the pool | `window_grant::publish_at_the_act` + reservations + handoff receipts, on [`service`]'s virtual clock | `dyno/tests.rs` `grants` |
+=======
+//! | 2 | one censored bound takes the pool | `window_grant::publish_fair_grants` + reservations + handoff receipts, on [`service`]'s virtual clock | `dyno/tests.rs` `grants` |
+>>>>>>> origin/main
 //! | 3 | a turn completes and restarts between grant ticks | as 2 | `dyno/tests.rs` `grants` |
 //! | §4 | feasible service opportunities; late/stale receipts, cancellation per phase, same-URL replacement, all-pinned waits, revocation during quote, seeded schedules | as 2 | `dyno/service/tests.rs` |
 //! | §4b/5d | the engine's batch scheduler as a pluggable decision on the M5's recorded hour (2026-11-06) | the fork's `update_slots`, reproduced from source, calibrated | `dyno/batch/tests.rs` |
@@ -30,10 +34,13 @@
 //! | §5b.1 | the restore-outcome proof list (restart, reclamation, oversize, incompatible, corrupt, concurrent, late receipt, torn ledger) | as 4 | as 4 |
 //! | 6 | an admission hold with no releaser | removed with its cause: the pool-growth relaunch and its quiesce are deleted (it froze the M5 for 2.5 h on 2026-11-10) | none: no hold exists |
 //! | 7 | an overflowing view | not drivable here yet: [`expected::MissingSeam::ViewTurnoverPolicy`] | `dyno/tests.rs` `view` |
+<<<<<<< HEAD
 //! | 8 | idle pool, one mind, censored demand: her grant follows a demand her collapses measured | `LaneRequirement` -> `window_grant::Demand::of` -> `DemandFollowing`, her wish ring as the working set keeps it | `dyno/tests.rs` `censored_demand` |
 //! | 9 | boot during memory settle: a boot that remembered no resident launched at a reading taken while the stopped engine's memory came back (-c 2045, the M5 2026-11-13), and the grown plan was never applied | the boot's remembered residents -> `serving_daemon::launch::launch_pool`, `settle::launch_gate`, `floor_sized::floor_sized` | `continuum-serving` `serving_daemon/tests/dyno.rs` `boot_during_memory_settle` |
 //! | 10 | a leased-in mind sized from a prompt size, not her requirement | not drivable yet: [`expected::MissingSeam::LeasedInRequirement`] (the grid seam) | as 9 |
 //! | 11 | a restart re-prefills every mind (the M5 2026-11-13 23:45Z: the ledger restored nothing, every first act a full prefill), and the page store gave paged-out minds' pages to a volume other classes filled (29 in two hours) | the page store's `ColdPages::under` at the recorded pressure; save and restore costs from the engine's measured rates | `dyno/restart.rs` |
+=======
+>>>>>>> origin/main
 
 pub mod conservation;
 pub mod expected;
@@ -41,7 +48,10 @@ pub mod recorded;
 
 mod batch;
 mod knee;
+<<<<<<< HEAD
 mod restart;
+=======
+>>>>>>> origin/main
 mod service;
 #[cfg(test)]
 mod tests;

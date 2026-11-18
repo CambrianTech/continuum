@@ -92,6 +92,7 @@ fn a_held_lock_refuses_a_second_holder() {
     // between fork and exec (O_CLOEXEC releases it at exec), so "free" is "free once that ends".
     lock_path(&path, true).expect("free again");
 }
+<<<<<<< HEAD
 
 // what this catches: a tool editing her workspace through durable placement stripped what the
 // file was besides its bytes. The replacement keeps the old mode (an executable script stays
@@ -118,3 +119,5 @@ fn write_replace_keeping_keeps_the_mode_and_writes_through_a_link() {
     write_replace_keeping(&fresh, b"first").unwrap();
     assert_eq!(std::fs::read(&fresh).unwrap(), b"first", "a file that does not exist yet is created");
 }
+=======
+>>>>>>> origin/main

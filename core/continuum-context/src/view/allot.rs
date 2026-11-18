@@ -93,6 +93,7 @@ pub fn floor<T: Block>(cost: &dyn Estimate<T>, source: &(impl Source<T> + ?Sized
 /// than the item after it: shrinking is oldest first (goal 7), so an older item is never kept
 /// more whole than a newer one, and the folded items are always the contiguous oldest run.
 ///
+<<<<<<< HEAD
 /// Her work in hand comes first (`Item::in_hand`: the read of the file she is editing, the note
 /// she wrote on what her last change did): each such item keeps its whole while the grant holds it
 /// beside every other item at its floor, the oldest of them given up first when it cannot. It is
@@ -102,14 +103,20 @@ pub fn floor<T: Block>(cost: &dyn Estimate<T>, source: &(impl Source<T> + ?Sized
 /// each). It caps nothing older and is capped by nothing newer: the rest of the source keeps the
 /// rule below.
 ///
+=======
+>>>>>>> origin/main
 /// The arithmetic: `floor(k)` is what the oldest `k` items cost at their floor. With item `i`
 /// still in the run, what it and every older item may cost is `spare + floor(i + 1)`; raising
 /// it to a level of `size` leaves the older run at `floor(i)`, so it is affordable when
 /// `size + floor(i) <= spare + floor(i + 1)`, and leaves that difference as the new spare.
 /// Without a fold `floor(i + 1) - floor(i)` is the item's own pointer, the arithmetic before
 /// folding; with one, the run's block is repriced as it shrinks and refunded whole when the
+<<<<<<< HEAD
 /// last folded item rises. An item her work holds floors at its whole, so the walk passes it
 /// keeping what the older run may still spend. The first item that cannot afford even its pointer stops the walk:
+=======
+/// last folded item rises. The first item that cannot afford even its pointer stops the walk:
+>>>>>>> origin/main
 /// it and everything older stay at their floor.
 ///
 /// One item too large to keep whole takes its summary instead of collapsing every older item
@@ -124,6 +131,7 @@ pub(super) fn allot<T: Block>(
     grant: usize,
     cost: &dyn Estimate<T>,
 ) -> Allotment<T> {
+<<<<<<< HEAD
     let open: Vec<usize> = items.iter().enumerate().filter(|(_, item)| item.in_hand).map(|(index, _)| index).collect();
     // Her work in hand, newest kept longest: the most of it whose floor the grant holds, its oldest
     // given up first; none of it when even her newest alone does not fit.
@@ -208,11 +216,32 @@ fn walk<T: Block, S: Source<T> + ?Sized>(floors: &Floors<'_, T, S>, items: &[Ite
         levels[index] = Level::Full;
     }
     let (mut paid, _) = floors.at(items.len());
+=======
+    let mut pointers = Vec::with_capacity(items.len() + 1);
+    pointers.push(0);
+    for item in items {
+        let below = pointers[pointers.len() - 1];
+        pointers.push(below + item.pointer.as_ref().map_or(0, |pointer| cost.block(pointer))); // map_or: an item that leaves when collapsed costs nothing
+    }
+    let head = standing_head(items);
+    let floor = |count: usize| {
+        if count <= head {
+            return (pointers[count], None);
+        }
+        match fold_of(source, &items[head..count], pointers[count] - pointers[head], cost) {
+            Some(block) => (pointers[head] + cost.block(&block), Some(block)),
+            None => (pointers[count], None),
+        }
+    };
+    let mut levels = vec![Level::Pointer; items.len()];
+    let (mut paid, _) = floor(items.len());
+>>>>>>> origin/main
     let mut spare = grant.saturating_sub(paid);
     let mut ceiling = Level::Full;
     let mut run = items.len();
     while run > 0 {
         let item = &items[run - 1];
+<<<<<<< HEAD
         let (below, _) = floors.at(run - 1);
         let budget = spare + paid;
         if floors.holds(run - 1) {
@@ -223,6 +252,10 @@ fn walk<T: Block, S: Source<T> + ?Sized>(floors: &Floors<'_, T, S>, items: &[Ite
             run -= 1;
             continue;
         }
+=======
+        let (below, _) = floor(run - 1);
+        let budget = spare + paid;
+>>>>>>> origin/main
         let afford = |size: usize| size + below <= budget;
         let full = crate::cost::whole(item, cost);
         let summary = item.summary.as_ref().map(|summary| cost.block(summary));
@@ -256,11 +289,17 @@ fn walk<T: Block, S: Source<T> + ?Sized>(floors: &Floors<'_, T, S>, items: &[Ite
         paid = below;
         run -= 1;
     }
+<<<<<<< HEAD
     let (_, fold) = floors.at(run);
     if fold.is_some() {
         for index in (floors.first..floors.ends[run]).filter(|&index| !floors.holds(index)) {
             levels[index] = Level::Folded;
         }
+=======
+    let (_, fold) = floor(run);
+    if fold.is_some() {
+        levels[head..run].fill(Level::Folded);
+>>>>>>> origin/main
     }
     Allotment { levels, fold }
 }

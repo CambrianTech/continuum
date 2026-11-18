@@ -1,5 +1,8 @@
+<<<<<<< HEAD
 use super::{Armless, Unobservable};
 
+=======
+>>>>>>> origin/main
 /// A zombie still answers `kill(pid, 0)`, but `proc_pidinfo(PROC_PIDTBSDINFO)` fails for it with
 /// `ESRCH`. Both are required: `ESRCH` alone also describes a pid that never existed, and any
 /// other failure (another user's process: `EPERM`) is not proof of exit.
@@ -15,6 +18,7 @@ pub(super) fn exited_unreaped(pid: u32) -> bool {
     let n = unsafe { libc::proc_pidinfo(pid as libc::c_int, libc::PROC_PIDTBSDINFO, 0, std::ptr::addr_of_mut!(info).cast(), size) };
     n <= 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
+<<<<<<< HEAD
 
 /// Closes a descriptor on every path.
 struct Fd(libc::c_int);
@@ -96,3 +100,5 @@ pub(super) fn wait(armed: Armed) -> Result<(), Unobservable> {
 fn refused(pid: u32, error: std::io::Error) -> Unobservable {
     Unobservable::Refused { pid, error: error.to_string() }
 }
+=======
+>>>>>>> origin/main

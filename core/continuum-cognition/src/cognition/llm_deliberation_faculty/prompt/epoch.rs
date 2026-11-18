@@ -107,6 +107,7 @@ impl LlmDeliberationFaculty {
             .collect()
     }
 
+<<<<<<< HEAD
     /// What her live view's collapses took away, at `cost` (the allocation estimate, so in the
     /// allocation's tokens): added to her view as rendered, it is what she holds at full detail
     /// (`View::collapsed_growth`). Her demand is measured from that, never from a render her last
@@ -118,6 +119,8 @@ impl LlmDeliberationFaculty {
         self.context_view.lock().as_ref().map_or(0, |view| view.collapsed_growth(&cost, &sources)) // map_or: no view yet collapsed nothing
     }
 
+=======
+>>>>>>> origin/main
     /// Keep her view within what the window's one allocation granted its sources, plus `room`
     /// (what no claim took beyond the reply's runaway headroom). While the epoch fits that it
     /// only appends. When it outgrows them a new epoch starts, sized by [`start_grants`] to
@@ -295,7 +298,11 @@ impl LlmDeliberationFaculty {
                     if let Some(memory) = memory {
                         memory.reclaim_ended_notices();
                         // What this start folded leaves RAM for her archive.
+<<<<<<< HEAD
                         memory.release_folded(self.persona_id, view);
+=======
+                        memory.release_folded(view);
+>>>>>>> origin/main
                     }
                 }
                 Err(mismatch) => continuum_base::probe!(
@@ -444,7 +451,11 @@ impl LlmDeliberationFaculty {
                     // What this start folded leaves RAM for her archive: her resident log is
                     // bounded by her view's measured fold edge, once per start.
                     if let Some(memory) = memory {
+<<<<<<< HEAD
                         memory.release_folded(self.persona_id, view);
+=======
+                        memory.release_folded(view);
+>>>>>>> origin/main
                     }
                 }
                 continuum_base::probe!(
@@ -484,9 +495,14 @@ impl LlmDeliberationFaculty {
         Ok(Self::render(held.as_ref()))
     }
 
+<<<<<<< HEAD
     /// Every source whole, outside her view's state, folded items included: a test fixture's
     /// uncollapsed history. Never her demand: that is her view as rendered plus what its
     /// collapses took away ([`Self::view_collapsed_growth`]), folded navigation excluded.
+=======
+    /// Every source whole, outside her view's state: what this turn's history would cost with
+    /// no epoch and no collapse, the demand the serving plan sizes her window from.
+>>>>>>> origin/main
     #[cfg(any(test, feature = "test-fixtures"))]
     pub(in super::super) fn whole_view(&self, streams: &Streams) -> Vec<ChatMessage> {
         let memory = self.working_memory.as_deref();

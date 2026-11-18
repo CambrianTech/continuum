@@ -144,6 +144,7 @@ pub enum GateRefusal {
     /// ended by the stop that follows. Waits for the reopen, or for the handoff's owner to die.
     Handoff,
 }
+<<<<<<< HEAD
 /// Who holds the serving gate while an admission reads and leases governed memory.
 #[derive(Clone, Copy)]
 pub enum Admission<'a> {
@@ -153,6 +154,8 @@ pub enum Admission<'a> {
     Within(&'a LifecycleGate, &'a ServingOperation),
 }
 
+=======
+>>>>>>> origin/main
 /// The gate, held while one admission reads and leases; dropping it releases the gate.
 pub struct AdmissionHold {
     _operation: ServingOperation,
@@ -236,6 +239,7 @@ impl LifecycleGate {
             return Err(GateRefusal::Unsettled);
         }
         let operation = self.try_operation().ok_or(GateRefusal::Operation)?;
+<<<<<<< HEAD
         self.open_for_admission()?;
         operation.step(ReconcileStep::TrainingAdmission);
         Ok(AdmissionHold {
@@ -259,6 +263,8 @@ impl LifecycleGate {
 
     /// Whether a core handoff has closed admission, read under a hold on the gate.
     fn open_for_admission(&self) -> Result<(), GateRefusal> {
+=======
+>>>>>>> origin/main
         // read UNDER the gate: a close is set only while holding it, so an admission either
         // decided before the close (and its hold is published) or sees it here
         let mut handoff = self.handoff.lock();
@@ -272,7 +278,14 @@ impl LifecycleGate {
             }
         }
         drop(handoff);
+<<<<<<< HEAD
         Ok(())
+=======
+        operation.step(ReconcileStep::TrainingAdmission);
+        Ok(AdmissionHold {
+            _operation: operation,
+        })
+>>>>>>> origin/main
     }
 
     /// Close training admission for a core handoff owned by `owner` (card 91921d0f). Taken under

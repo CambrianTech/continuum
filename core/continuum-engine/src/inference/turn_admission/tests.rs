@@ -188,12 +188,20 @@
         let b = PageKey::mind(Uuid::from_u128(3)).expect("test: non-nil ids");
         // Exact pre-write admission uses the same HTTP boundary and policy, with
         // supplied volume evidence instead of mutating the process-wide monitor.
+<<<<<<< HEAD
         assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, PageAction::Save, true, |bytes| {
+=======
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+>>>>>>> origin/main
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 900, 1000, bytes)
                 .map_err(|error| error.to_string())
         }).await, PageOutcome::Rejected));
         assert!(saves.lock().unwrap().is_empty(), "capacity refusal must not issue a save");
+<<<<<<< HEAD
         assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, PageAction::Save, true, |bytes| {
+=======
+        assert!(matches!(kv_page_action_with_capacity(&client, &root, 0, &a, "save", true, |bytes| {
+>>>>>>> origin/main
             assert_eq!(bytes, 100);
             crate::paging::pool::ensure_projected_disk_capacity("fixture", 800, 1000, bytes)
                 .map_err(|error| error.to_string())
@@ -897,6 +905,7 @@
                     let saving = checkpointing.checkpoint_residents(&client, &root);
                     tokio::pin!(saving);
                     tokio::time::timeout(std::time::Duration::from_secs(5), async {
+<<<<<<< HEAD
                         // Both saves are issued at once: the cut lands once slot 1's save is held
                         // AND slot 0's answered save is confirmed, so the cut proves what it cuts.
                         let mut held = std::pin::pin!(entered.notified());
@@ -907,6 +916,11 @@
                                 _ = &mut held, if !slot_1_held => slot_1_held = true,
                                 _ = tokio::task::yield_now(), if slot_1_held => {}
                             }
+=======
+                        tokio::select! {
+                            _ = &mut saving => panic!("checkpoint completed before fixture release"),
+                            _ = entered.notified() => {}
+>>>>>>> origin/main
                         }
                     }).await.expect("second save reached fixture");
                     assert!(

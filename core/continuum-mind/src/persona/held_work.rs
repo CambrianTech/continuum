@@ -20,7 +20,11 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use crate::cognition::work_preconditions::Held;
+<<<<<<< HEAD
 use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, Revision, SubmissionChanges, SubmissionVerdict};
+=======
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges, SubmissionVerdict};
+>>>>>>> origin/main
 
 /// Reads THIS persona's currently-claimed work cards from airc. A supertrait of
 /// `AircCitizen` (like `AircRosterReader`): the persona's runtime implements it
@@ -121,7 +125,11 @@ async fn submissions(persona: Uuid, holds: &[Held], boards: &[std::sync::Arc<air
         let airc_work::SubmissionHead::At(head) = &latest.head else { continue };
         let base = latest.base_sha.to_string();
         let head = head.to_string();
+<<<<<<< HEAD
         let (files, revision) = match crate::persona::card_checkout::checkout_path_for(&persona, &held.card) {
+=======
+        let files = match crate::persona::card_checkout::checkout_path_for(&persona, &held.card) {
+>>>>>>> origin/main
             Some(checkout) => {
                 let key: DiffKey = (checkout.clone(), base.clone(), head.clone());
                 let read = match known.get(&key) {
@@ -131,10 +139,16 @@ async fn submissions(persona: Uuid, holds: &[Held], boards: &[std::sync::Arc<air
                 if let Ok(files) = &read {
                     kept.insert(key, files.clone());
                 }
+<<<<<<< HEAD
                 let now = crate::code::git_bridge::run_git(&checkout, &["rev-parse", "HEAD"]).await;
                 (read, revision(now.as_deref().map(str::trim), &head))
             }
             None => (Err(ChangesUnread::NoCheckout), Revision::Unread),
+=======
+                read
+            }
+            None => Err(ChangesUnread::NoCheckout),
+>>>>>>> origin/main
         };
         out.push(SubmissionChanges {
             card: held.card.card_id,
@@ -144,7 +158,10 @@ async fn submissions(persona: Uuid, holds: &[Held], boards: &[std::sync::Arc<air
             head,
             files,
             verdict: verdict(boards, held.card.card_id, latest.submission_id),
+<<<<<<< HEAD
             revision,
+=======
+>>>>>>> origin/main
         });
     }
     let diffs = DIFFS.get_or_init(Default::default);
@@ -152,6 +169,7 @@ async fn submissions(persona: Uuid, holds: &[Held], boards: &[std::sync::Arc<air
     out
 }
 
+<<<<<<< HEAD
 /// PURE: where her checkout's head (`now`, as git read it) stands against the submitted `head`.
 fn revision(now: Result<&str, &String>, submitted: &str) -> Revision {
     match now {
@@ -161,6 +179,8 @@ fn revision(now: Result<&str, &String>, submitted: &str) -> Revision {
     }
 }
 
+=======
+>>>>>>> origin/main
 /// What `head` changes against `base` in `checkout`: two reads of one diff (status and counts),
 /// both NUL-separated so any path reads exactly.
 async fn changed_files(checkout: &std::path::Path, base: &str, head: &str) -> Result<Vec<ChangedFile>, ChangesUnread> {
@@ -511,6 +531,7 @@ mod tests {
         assert_eq!(held.awaiting.iter().map(|item| (item.card, item.reviewed)).collect::<Vec<_>>(), vec![(card.card_id, judged.submission_id)]);
     }
 
+<<<<<<< HEAD
     // what this catches: Benchy on the M5, 2026-11-16, waiting for a verdict on a fix he pushed
     // but never submitted. A checkout past its submission is unsubmitted work; one at it is not;
     // an unread head is said as unread, never as either.
@@ -523,6 +544,8 @@ mod tests {
         assert_eq!(revision(Err(&"not a git repository".to_owned()), &submitted), Revision::Unread);
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: the diff she is shown misreading git's NUL-separated output, so a renamed
     // or binary file shifts every later path onto the wrong counts. Real git -z output for one diff:
     // a root file added, one modified, one renamed, one binary, one deleted.

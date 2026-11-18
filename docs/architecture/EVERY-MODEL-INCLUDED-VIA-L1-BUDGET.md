@@ -277,7 +277,11 @@ took the side of accommodation.
 
 - [`COGNITION-CACHE-HIERARCHY.md`](COGNITION-CACHE-HIERARCHY.md) — the multi-tier cache framework this allocator sits at the top of (L1)
 - [`COGNITION-ALGORITHMS.md`](COGNITION-ALGORITHMS.md) — Algorithm 1 (two-pool recall) + Algorithm 2 (channel-bias scoring) read from these sources
+<<<<<<< HEAD
 - [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) — runtime contract; the context-first pattern here is the cognition-layer analog of CBAR's `&cbarframe`
+=======
+- [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime contract; the context-first pattern here is the cognition-layer analog of CBAR's `&cbarframe`
+>>>>>>> origin/main
 - [`ADAPTER-MARKETPLACE.md`](ADAPTER-MARKETPLACE.md) — LoRA adapter sharing; same model-agnostic pattern at the genome layer
 - Memories: `substrate-is-a-good-citizen-on-the-host`, `RTOS-brain-no-region-on-hot-path`, `optimizing-for-low-end-compounds-on-high-end`, `organization-purity-as-we-migrate`
 - README "One Solution to Continual Learning" + "Pseudo-AI vs true AI" table — the substrate-level thesis this implementation layer underwrites

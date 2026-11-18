@@ -20,7 +20,10 @@ use crate::motion::{fingerprint, Motion};
 use crate::source::{Item, Source};
 
 mod allot;
+<<<<<<< HEAD
 mod held;
+=======
+>>>>>>> origin/main
 mod log;
 mod repeat;
 mod tail;
@@ -44,8 +47,12 @@ pub struct Claim {
     pub floor: usize,
     /// What the source costs in full: its want. A folded item still wants its whole.
     pub full: usize,
+<<<<<<< HEAD
     /// Its newest item in full, with every item her work in hand holds open (`Item::in_hand`): the
     /// newest end a start never collapses when it fits.
+=======
+    /// Its newest item in full: the newest end a start never collapses when it fits.
+>>>>>>> origin/main
     pub newest: usize,
     /// What of its floor her collapsed log already lays down byte for byte.
     pub logged: usize,
@@ -90,7 +97,11 @@ impl std::error::Error for GrantMismatch {}
 pub struct Advance {
     pub items: usize,
     pub chars: usize,
+<<<<<<< HEAD
     /// Arrivals rendered as a repeat of an occurrence held whole (CONTINUUM-ENGINE section 5 invariant 4): the
+=======
+    /// Arrivals rendered as a repeat of an occurrence held whole (MIND-CONTEXT invariant 4): the
+>>>>>>> origin/main
     /// health line's repeats.
     pub repeats: usize,
 }
@@ -229,7 +240,11 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
         priority: source.priority(),
         floor: floor(cost, source, items),
         full: items.iter().map(|item| crate::cost::whole(item, cost)).sum(),
+<<<<<<< HEAD
         newest: newest_end(cost, items),
+=======
+        newest: items.last().map_or(0, |item| crate::cost::whole(item, cost)), // map_or: a source with no items has no newest end
+>>>>>>> origin/main
         logged: 0,
         held: 0,
         instrumented: items.iter().any(|item| item.act().is_some()),
@@ -237,6 +252,7 @@ fn claim<T: Block>(cost: &dyn Estimate<T>, source: &dyn Source<T>, items: &[Item
     }
 }
 
+<<<<<<< HEAD
 /// What a start keeps whole when it fits: the newest item, and every item her work in hand holds
 /// open (`Item::in_hand`), each at its whole.
 fn newest_end<T: Block>(cost: &dyn Estimate<T>, items: &[Item<T>]) -> usize {
@@ -246,6 +262,8 @@ fn newest_end<T: Block>(cost: &dyn Estimate<T>, items: &[Item<T>]) -> usize {
     crate::cost::whole(newest, cost) + older.iter().filter(|item| item.in_hand).map(|item| crate::cost::whole(item, cost)).sum::<usize>()
 }
 
+=======
+>>>>>>> origin/main
 impl Claim {
     /// Its weight in the window's one allocation: its source's priority scaled by how often she
     /// asks again for what it would collapse, `priority x (1 + re-reads per act)`, the sum of her

@@ -1,5 +1,9 @@
 //! Replay a resident's captured prompts through the view and measure what each request
+<<<<<<< HEAD
 //! shares with the one before it: the design gate of CONTINUUM-ENGINE.md
+=======
+//! shares with the one before it: the design gate of MIND-CONTEXT-AND-ENGINE-CONFIG.md
+>>>>>>> origin/main
 //! ("offline replay at >= 90% prefix").
 //!
 //! `cargo run -p continuum-context --example replay -- [--room <id prefix>] [--purpose <suffix>] [--tools <schemas.json>] <prompt-capture.jsonl>...`

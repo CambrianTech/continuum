@@ -28,6 +28,7 @@ pub fn resolve_command_name(command: &str) -> String {
 }
 
 /// Something that must finish before a stop saves (admitted turns, for one), given at most
+<<<<<<< HEAD
 /// `cap`. It returns what it left in custody per process it covers (empty when it covers none),
 /// and the stop's receipt carries that to whoever may end those processes: a log line is not
 /// evidence (CONTINUUM-ENGINE 4.9, I1).
@@ -35,6 +36,13 @@ pub trait SettleBeforeStop: Send + Sync + 'static {
     /// Its description, for logs. Identity is the participant's type.
     fn name(&self) -> &'static str;
     fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::HeldCustody>> + Send + 'static>>;
+=======
+/// `cap`. It reports its own outcome; the kernel only waits for it.
+pub trait SettleBeforeStop: Send + Sync + 'static {
+    /// Its description, for logs. Identity is the participant's type.
+    fn name(&self) -> &'static str;
+    fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
+>>>>>>> origin/main
 }
 
 static SETTLERS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn SettleBeforeStop>)>> =
@@ -54,6 +62,7 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
 /// the ones before it left. The stop's caller waits for `cap` and the save after it, never for
 /// a cap per participant (the M5, 2026-10-27 22:20Z: the turns took the whole 300 s, the page
 /// checkpoint then ran past the CLI's 315 s wait, and the core was killed before it saved).
+<<<<<<< HEAD
 pub async fn settle_before_stop(cap: Duration) -> Vec<super::SettledCustody> {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
     settle_within(&settlers, cap, &SETTLING).await
@@ -89,6 +98,18 @@ async fn settle_within(
     }
     *settling.write() = None;
     custody
+=======
+pub async fn settle_before_stop(cap: Duration) {
+    let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
+    settle_within(&settlers, cap).await;
+}
+
+async fn settle_within(settlers: &[Arc<dyn SettleBeforeStop>], cap: Duration) {
+    let deadline = tokio::time::Instant::now() + cap;
+    for settler in settlers {
+        settler.settle(deadline.saturating_duration_since(tokio::time::Instant::now())).await;
+    }
+>>>>>>> origin/main
 }
 
 #[cfg(test)]
@@ -105,6 +126,7 @@ mod tests {
         fn name(&self) -> &'static str {
             "spends"
         }
+<<<<<<< HEAD
         fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             self.given.lock().push(cap);
             let takes = self.takes.min(cap);
@@ -112,6 +134,12 @@ mod tests {
                 tokio::time::sleep(takes).await;
                 Vec::new()
             })
+=======
+        fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = ()> + Send + 'static>> {
+            self.given.lock().push(cap);
+            let takes = self.takes.min(cap);
+            Box::pin(async move { tokio::time::sleep(takes).await })
+>>>>>>> origin/main
         }
     }
 
@@ -126,13 +154,18 @@ mod tests {
             Arc::new(Spends { takes: Duration::from_secs(250), given: given.clone() }),
         ];
         let started = tokio::time::Instant::now();
+<<<<<<< HEAD
         settle_within(&settlers, Duration::from_secs(300), &parking_lot::RwLock::new(None)).await;
+=======
+        settle_within(&settlers, Duration::from_secs(300)).await;
+>>>>>>> origin/main
         assert!(started.elapsed() <= Duration::from_secs(301), "the whole stop fits its one cap");
         let given = given.lock().clone();
         assert_eq!(given[0], Duration::from_secs(300));
         assert!(given[1] <= Duration::from_secs(50), "the second gets what the first left: {:?}", given[1]);
         assert_eq!(given[2], Duration::ZERO, "nothing left for the third");
     }
+<<<<<<< HEAD
 
     /// A participant that never finishes: the stall a stop's watchdog must name.
     struct Wedged;
@@ -163,6 +196,8 @@ mod tests {
         settle_within(&[], Duration::from_secs(1), &settling).await;
         assert_eq!(*settling.read(), None, "a finished settle names nothing");
     }
+=======
+>>>>>>> origin/main
 }
 
 /// The citizens this node hosts, by id, as the persona layer knows them; `None` when no

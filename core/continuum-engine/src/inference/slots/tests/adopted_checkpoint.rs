@@ -57,13 +57,21 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
         let mut wrong_process = process;
         wrong_process.started_s += 1;
         assert!(transition.checkpoint_adopted_before_replacement(
+<<<<<<< HEAD
             &client, &root, AdoptedCheckpoint { incarnation: wrong_process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
+=======
+            &client, &root, wrong_process, &|| true,
+>>>>>>> origin/main
         ).await.is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 0, "wrong ledger identity sends no save");
         let saved = if behavior == 3 {
             {
                 let save = transition.checkpoint_adopted_before_replacement(
+<<<<<<< HEAD
                     &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
+=======
+                    &client, &root, process, &|| true,
+>>>>>>> origin/main
                 );
                 tokio::pin!(save);
                 tokio::select! {
@@ -75,7 +83,11 @@ async fn adopted_checkpoint_uses_its_ledger_and_classifies_save_completion() -> 
             }
             false
         } else { transition.checkpoint_adopted_before_replacement(
+<<<<<<< HEAD
             &client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true,
+=======
+            &client, &root, process, &|| true,
+>>>>>>> origin/main
         ).await.is_ok() };
         assert_eq!(saved, behavior == 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -106,7 +118,11 @@ async fn a_refused_adopted_replacement_hands_the_endpoint_back_as_found() -> Res
     let process = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 1)
         .ok_or("fixture process identity unavailable")?;
     let refused = transition
+<<<<<<< HEAD
         .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true)
+=======
+        .checkpoint_adopted_before_replacement(&reqwest::Client::new(), &root, process, &|| true)
+>>>>>>> origin/main
         .await;
     // Unprobed, it discovers first; nothing answers this root, so the miss is the refusal's source.
     assert!(
@@ -214,13 +230,18 @@ async fn an_unprobed_adopted_endpoint_discovers_its_pool_before_the_checkpoint()
     let key = PageKey::mind(Uuid::new_v4()).ok_or("fixture mind key unavailable")?;
     pool.plan_paging(0, key);
     let mut transition = directory().endpoint(&root).transition().await;
+<<<<<<< HEAD
     transition.checkpoint_adopted_before_replacement(&client, &root, AdoptedCheckpoint { incarnation: process, intent: AdoptedCheckpointIntent::Replace }, &|| true).await?;
+=======
+    transition.checkpoint_adopted_before_replacement(&client, &root, process, &|| true).await?;
+>>>>>>> origin/main
     assert_eq!(saves.load(Ordering::SeqCst), 1, "the resident was saved before the replacement");
     assert_eq!(props_calls.load(Ordering::SeqCst), 2, "a discovered pool is not probed again");
     drop(transition);
     server.abort();
     Ok(())
 }
+<<<<<<< HEAD
 
 // what this catches (CONTINUUM-ENGINE 4.9, I1; Codex on #6041/#6042): a stop that reopened its
 // adopted endpoint after a refused save, as a replacement does. A typed refusal (the engine's
@@ -321,3 +342,5 @@ async fn a_stop_saves_every_resident_of_an_adopted_engine_and_stays_suspended() 
     server.abort();
     Ok(())
 }
+=======
+>>>>>>> origin/main

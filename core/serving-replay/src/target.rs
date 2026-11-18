@@ -26,7 +26,11 @@ pub struct Message {
 }
 
 /// What a mind submits for one act. The engine renders it with its own template, so
+<<<<<<< HEAD
 /// template fidelity stays the engine's (CONTINUUM-ENGINE.md 4.6, "one renderer").
+=======
+/// template fidelity stays the engine's (SERVING-ENGINE.md §6, "one renderer").
+>>>>>>> origin/main
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ActRequest {
     pub system: Option<String>,

@@ -602,6 +602,7 @@ pub struct ServingPlan {
     /// 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
     /// whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
     pub lanes_bound: LanesBound,
+<<<<<<< HEAD
     /// The demand's window target that this plan was sized against (card 53a8d49b).
     /// Stored alongside `served_context_window` so closeness is computed from
     /// two ground-truth facts — never a copy that can drift.
@@ -622,6 +623,8 @@ impl ServingPlan {
         ((self.served_context_window as u32).saturating_mul(Self::CLOSENESS_MAX_PER_MILLE)
             / self.window_target).min(Self::CLOSENESS_MAX_PER_MILLE) as u16
     }
+=======
+>>>>>>> origin/main
 }
 
 /// What decided a plan's lane count. Each variant is a term the planner evaluated, so a

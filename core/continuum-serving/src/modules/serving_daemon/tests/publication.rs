@@ -511,7 +511,11 @@ fn serving_footprint_fn_resolves_live_catalog_weights() {
             verified: None,
         },
     );
+<<<<<<< HEAD
     let resolve = serving_footprint_fn(&catalog);
+=======
+    let resolve = serving_footprint_fn(catalog.clone());
+>>>>>>> origin/main
 
     // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
     // are the live serving shape; with no weights they resolve to 0 anyway.
@@ -696,6 +700,7 @@ async fn no_plan_published_means_no_launch() {
     assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
 }
 
+<<<<<<< HEAD
 
 // what this catches: a pool step reaching the minds' grants only at serving's next tick (up to a
 // tick late, RTOS rule 10). The grant publisher subscribes to the live pool, so a step alone
@@ -756,3 +761,5 @@ async fn a_demand_move_publishes_the_grants_without_a_tick() {
         .expect("the demand move published an evaluation")
         .expect("the evaluation channel is open");
 }
+=======
+>>>>>>> origin/main

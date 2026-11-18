@@ -371,7 +371,11 @@ fn asha_with_hands() -> LlmDeliberationFaculty {
 }
 
 /// The schemas a surface puts on the wire, as bytes.
+<<<<<<< HEAD
 fn wire(tools: &crate::cognition::tool_surface::SelectedSurface) -> String {
+=======
+fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
+>>>>>>> origin/main
     serde_json::to_string(&tools.specs).expect("schemas")
 }
 
@@ -399,7 +403,11 @@ fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
 
 /// Her hands as the act's one allocation chooses them within `window`, beside her framing alone:
 /// the path `prompt_view` takes, without the rest of a prompt.
+<<<<<<< HEAD
 fn tools_within(faculty: &LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice, continuum_context::allocation::ActPlan) {
+=======
+fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice<'a>, continuum_context::allocation::ActPlan) {
+>>>>>>> origin/main
     use continuum_context::allocation::{allocate, id, ActClaims, Head, Span};
     use continuum_context::ladder::Leveled;
     let charge = |tokens: usize| tokens as u32;
@@ -574,6 +582,7 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     let next = faculty.prompt_view_within(&moved, 200_000);
     assert_eq!(wire(&next.tools), wire(&adopted), "and holds it");
 }
+<<<<<<< HEAD
 
 // what this catches (card 9cf06ade, slice 1): the request and contribute's per-act template clone
 // deep-copying her tool head. A request built from her view carries the view's schemas by pointer,
@@ -600,3 +609,5 @@ fn the_request_and_its_clone_carry_her_head_without_copying_it() {
     let (shared_wire, owned_wire) = (serde_json::to_string(sent).expect("schemas"), serde_json::to_string(&owned).expect("schemas"));
     assert_eq!(shared_wire, owned_wire, "the wire bytes are the schemas', whoever holds them");
 }
+=======
+>>>>>>> origin/main

@@ -16,10 +16,13 @@ impl LlamaServerControl for LlamaServerProcess {
         LlamaServerProcess::launched_prompt_cache_mib(self)
     }
 
+<<<<<<< HEAD
     async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError> {
         super::prompt_cache_limit::post_prompt_cache_limit(&self.client, &self.root, limit_mib).await
     }
 
+=======
+>>>>>>> origin/main
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         if !crate::inference::slots::directory()
             .endpoint(&self.root)
@@ -82,14 +85,21 @@ impl LlamaServerControl for LlamaServerProcess {
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
+<<<<<<< HEAD
         operation: &crate::inference::serving_lifecycle::ServingOperation,
+=======
+>>>>>>> origin/main
     ) -> Result<GenomeInPlace, LlamaServerError> {
         // an unasked binary is asked, never read as no; another binary's answer is not this one's
         let takes = self.engine_takes_train_dir().await?;
         let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
+<<<<<<< HEAD
         self.converge_genome(&dir, target, operation).await
+=======
+        self.converge_genome(&dir, target).await
+>>>>>>> origin/main
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -356,10 +366,13 @@ impl LlamaServerControl for LlamaServerProcess {
         self.follow_served_engine();
     }
 
+<<<<<<< HEAD
     fn publish_served_lane(&self) {
         crate::inference::lane_registry::sync_live();
     }
 
+=======
+>>>>>>> origin/main
     fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
         let (_host, port) = split_host_port(&self.root);
         crate::inference::lane_registry::live_incarnation().filter(|lane| lane.port == port)
@@ -430,6 +443,7 @@ impl LlamaServerControl for LlamaServerProcess {
         })
     }
 
+<<<<<<< HEAD
     fn engine_exit(
         &self,
         receipt: &EngineRetirementReceipt,
@@ -440,6 +454,8 @@ impl LlamaServerControl for LlamaServerProcess {
         Ok(receipt.identity.generation.exit())
     }
 
+=======
+>>>>>>> origin/main
     async fn idle(&self) -> Result<(), LlamaServerError> {
         self.idle_if_current(&|| true).await
     }
@@ -555,7 +571,11 @@ impl LlamaServerControl for LlamaServerProcess {
         let checkpoint = transition
             .checkpoint_residents(&self.client, &self.root)
             .await
+<<<<<<< HEAD
             .map_err(|failure| LlamaServerError::Spawn(failure.to_string()))?;
+=======
+            .map_err(LlamaServerError::Spawn)?;
+>>>>>>> origin/main
         self.validate_owned_launch(&session.original).await?;
         if !current() {
             return Err(LlamaServerError::Superseded);

@@ -52,7 +52,11 @@
             }
         });
 
+<<<<<<< HEAD
         let out = tool_input_schema_from(&schema).expect("test: a plain object schema lifts");
+=======
+        let out = tool_input_schema_from(&schema);
+>>>>>>> origin/main
         let recipe = out.properties["recipe"]["description"].as_str().unwrap();
         assert_eq!(
             recipe, "Which recipe to build from — the EXACT `purpose` key.",
@@ -241,6 +245,7 @@
         );
     }
 
+<<<<<<< HEAD
 
     // what this catches: the lift itself (not only the merge helper) offering a oneOf command with no parameters
     // (Codex on #6101 aa938). A mergeable oneOf lifts to its merged object; one the merge cannot express is a typed
@@ -267,3 +272,5 @@
             "refused by name, never lifted to an empty object"
         );
     }
+=======
+>>>>>>> origin/main

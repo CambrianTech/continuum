@@ -25,6 +25,10 @@ pub struct WorkHeartbeatResult {
 #[async_trait]
 impl ActionCommand for WorkHeartbeat {
     const NAME: &'static str = "work/heartbeat";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Heartbeat.aliases();
+>>>>>>> origin/main
     // core room workflow — STAYING ON IT. Real work outruns the 30-min lease; without
     // this the card is reclaimed out from under a citizen who is still working it, which
     // we watched happen (card 0c69c0f0 through three holders in one evening). (#339)
@@ -47,7 +51,11 @@ impl ActionCommand for WorkHeartbeat {
         let request = HeartbeatWorkClaim {
             card_id,
             claim_id,
+<<<<<<< HEAD
             ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS), // unwrap_or: no lease length named, so the default lease
+=======
+            ttl_ms: p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS),
+>>>>>>> origin/main
         };
         // THE LEASE IS RENEWED WHERE THE CARD LIVES, not where she stands (card e2aea0e6).
         // `resolve_card_id` already found the card across every board she is subscribed

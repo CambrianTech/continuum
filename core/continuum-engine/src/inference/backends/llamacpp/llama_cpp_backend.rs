@@ -46,8 +46,11 @@ impl LlamaCppBackend {
             model: Arc::new(model),
             config,
             model_id,
+<<<<<<< HEAD
             weights_bytes,
             embed_residency: OnceLock::new(),
+=======
+>>>>>>> origin/main
             caps,
             scheduler: OnceLock::new(),
             mtmd: Mutex::new(None),
@@ -69,6 +72,7 @@ impl LlamaCppBackend {
         }
     }
 
+<<<<<<< HEAD
     /// What this backend's embed lane holds while it embeds: its weights, and the context its
     /// window allows, each in the pool it resides in. None for a model with no trained context.
     fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
@@ -89,6 +93,8 @@ impl LlamaCppBackend {
         Some(self.embed_residency.get_or_init(|| crate::inference::embed_lane_memory::EmbedResidency::claim(need)))
     }
 
+=======
+>>>>>>> origin/main
     pub fn capabilities(&self) -> &ModelCapabilities {
         &self.caps
     }

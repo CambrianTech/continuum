@@ -337,7 +337,10 @@ impl WorkingMemory {
                     body: None,
                     received_ms: Some(continuum_base::time::EpochMs::now().millis()),
                     act: act_identity(&acts),
+<<<<<<< HEAD
                     verbs: acts.iter().map(|act| act.output.verb.clone()).collect(),
+=======
+>>>>>>> origin/main
                 },
             );
         }

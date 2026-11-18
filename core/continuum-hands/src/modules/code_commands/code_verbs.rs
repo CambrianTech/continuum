@@ -15,8 +15,13 @@ pub(super) fn reject_placeholder_path(file_path: &str) -> Result<(), CommandErro
         || p.contains("<path");
     if looks_placeholder {
         return Err(CommandError::Invalid(format!(
+<<<<<<< HEAD
             "file_path '{file_path}' is a PLACEHOLDER, not a real path. Use the concrete \
              workspace-relative path you saw in your search or glob results (e.g. \
+=======
+            "code/edit: file_path '{file_path}' is a PLACEHOLDER, not a real path. Use the concrete \
+             workspace-relative path you saw in your code/search or code/glob results (e.g. \
+>>>>>>> origin/main
              'src/flask/blueprints.py'), not a template."
         )));
     }
@@ -130,6 +135,7 @@ impl ActionCommand for CodeList {
 /// swallow; the miss still fails).
 pub(super) fn teach_layout_on_miss(engine: &FileEngine, requested: &str, original: &str) -> CommandError {
     match top_level_dir_names(engine) {
+<<<<<<< HEAD
         // The root is named whole, so a miss in another checkout than she believes is visible
         // in the refusal itself (cards c8546b52, 566e390e).
         Some(dirs) if !dirs.is_empty() => CommandError::Invalid(format!(
@@ -142,6 +148,16 @@ pub(super) fn teach_layout_on_miss(engine: &FileEngine, requested: &str, origina
         Some(_) => CommandError::Invalid(format!(
             "'{requested}' not found and the workspace root {} has no directories ({original})",
             engine.workspace_root().display()
+=======
+        Some(dirs) if !dirs.is_empty() => CommandError::Invalid(format!(
+            "'{requested}' not found in this workspace. Top-level directories here: {}. \
+             Paths are relative to the root — don't assume source lives under `src/`; \
+             pick one of these or drill in with code/list <dir>.",
+            dirs.join(", ")
+        )),
+        Some(_) => CommandError::Invalid(format!(
+            "'{requested}' not found and the workspace root has no directories ({original})"
+>>>>>>> origin/main
         )),
         // Root itself couldn't be listed — never invent a layout, surface the real error.
         None => CommandError::Internal(original.to_string()),
@@ -501,11 +517,18 @@ pub struct CodeShellParams {
 /// Snapshot an execution's current state into the wire response. Used both when a
 /// command COMPLETES within the inline window and when it's still RUNNING (handle
 /// handed back with partial output + `exit_code: None`).
+<<<<<<< HEAD
 pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState, cwd: &std::path::Path) -> ShellExecuteResponse {
     ShellExecuteResponse {
         execution_id: s.id.clone(),
         status: s.status.clone(),
         cwd: cwd.display().to_string(),
+=======
+pub(super) fn shell_response(s: &crate::code::shell_session::ExecutionState) -> ShellExecuteResponse {
+    ShellExecuteResponse {
+        execution_id: s.id.clone(),
+        status: s.status.clone(),
+>>>>>>> origin/main
         stdout: Some(s.stdout_lines.join("\n")),
         stderr: Some(s.stderr_lines.join("\n")),
         exit_code: s.exit_code,
@@ -549,7 +572,11 @@ impl ActionCommand for CodeShell {
         // Start the command while briefly holding the shell entry, then DROP the
         // DashMap ref before awaiting — never hold a lock across `.await` (the
         // bounded wait below blocks the turn, not the shard). [[concurrency-style-guide]]
+<<<<<<< HEAD
         let (state_arc, cwd) = {
+=======
+        let state_arc = {
+>>>>>>> origin/main
             let mut shell = self.state.shell_sessions.get_mut(&who).ok_or_else(|| {
                 CommandError::Internal("shell vanished after provisioning".into())
             })?;
@@ -557,10 +584,16 @@ impl ActionCommand for CodeShell {
             let exec_id = shell
                 .execute_as(&p.cmd, p.kill_after_ms, &self.state.rt_handle, resident)
                 .map_err(CommandError::Internal)?;
+<<<<<<< HEAD
             let execution = shell
                 .get_execution_state(&exec_id)
                 .map_err(CommandError::Internal)?;
             (execution, shell.cwd().to_path_buf())
+=======
+            shell
+                .get_execution_state(&exec_id)
+                .map_err(CommandError::Internal)?
+>>>>>>> origin/main
         };
 
         // BOUNDED inline wait: return the moment it completes, or hand back the
@@ -574,7 +607,11 @@ impl ActionCommand for CodeShell {
                     .lock()
                     .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
                 if s.status != ShellExecutionStatus::Running {
+<<<<<<< HEAD
                     return Ok(shell_response(&s, &cwd)); // completed in-window
+=======
+                    return Ok(shell_response(&s)); // completed in-window
+>>>>>>> origin/main
                 }
                 s.output_notify.clone()
             };
@@ -587,7 +624,11 @@ impl ActionCommand for CodeShell {
                 // dispatch listener folds it into her working memory) instead
                 // of waiting silently to be polled.
                 s.handed_back = true;
+<<<<<<< HEAD
                 return Ok(shell_response(&s, &cwd)); // still running → hand back the handle
+=======
+                return Ok(shell_response(&s)); // still running → hand back the handle
+>>>>>>> origin/main
             }
             // Wake on new output or when the inline window closes, then re-check.
             let _ = tokio::time::timeout(remaining, notify.notified()).await;
@@ -635,16 +676,26 @@ impl ActionCommand for CodeShellPoll {
     ) -> Result<ShellExecuteResponse, CommandError> {
         // The hands these hands reach: a handle from her claim A stays hers after her focus
         // moved to claim B; an isolated eval reaches only itself (Astra on #5026).
+<<<<<<< HEAD
         let (state_arc, cwd) = self
             .state
             .with_execution(&hands_of(&self.state, ctx), &p.execution_id, |s, id| {
                 s.get_execution_state(id).map(|execution| (execution, s.cwd().to_path_buf()))
             })
+=======
+        let state_arc = self
+            .state
+            .with_execution(&hands_of(&self.state, ctx), &p.execution_id, |s, id| s.get_execution_state(id))
+>>>>>>> origin/main
             .map_err(execution_lookup_error)?;
         let s = state_arc
             .lock()
             .map_err(|e| CommandError::Internal(format!("execution lock poisoned: {e}")))?;
+<<<<<<< HEAD
         Ok(shell_response(&s, &cwd))
+=======
+        Ok(shell_response(&s))
+>>>>>>> origin/main
     }
 }
 
@@ -654,11 +705,19 @@ pub(super) fn execution_lookup_error(e: crate::modules::code::ExecutionLookup) -
     use crate::modules::code::ExecutionLookup;
     match e {
         ExecutionLookup::NoSession => CommandError::NotFound(
+<<<<<<< HEAD
             "no shell session for caller: run a shell command first".into(),
         ),
         ExecutionLookup::Unresolved(why) => CommandError::Invalid(format!(
             "{why}. The handle may belong to a finished-and-collected command or be ambiguous; \
              use the full execution_id the shell command returned"
+=======
+            "no shell session for caller: start a command with code/shell first".into(),
+        ),
+        ExecutionLookup::Unresolved(why) => CommandError::Invalid(format!(
+            "{why}. The handle may belong to a finished-and-collected command or be ambiguous; \
+             use the full execution_id from code/shell"
+>>>>>>> origin/main
         )),
         ExecutionLookup::Failed(why) => CommandError::Internal(why),
     }

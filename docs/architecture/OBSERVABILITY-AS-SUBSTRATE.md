@@ -11,7 +11,11 @@
 `RagCaptureSink` family in `core/continuum-core/src/persona/rag_capture.rs`.
 
 **Parents:**
+<<<<<<< HEAD
 - [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md)
+=======
+- [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md)
+>>>>>>> origin/main
 - [`AI-COMMAND-NAMESPACE.md`](AI-COMMAND-NAMESPACE.md)
 
 ---

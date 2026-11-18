@@ -1,5 +1,9 @@
 #![cfg(test)]
+<<<<<<< HEAD
 //! The rules the flow keeps, as a validator that runs in milliseconds (CONTINUUM-ENGINE.md 4.1c).
+=======
+//! The rules the flow keeps, as a validator that runs in milliseconds (SERVING-ENGINE §1c).
+>>>>>>> origin/main
 use super::*;
 use std::time::{Duration, Instant};
 

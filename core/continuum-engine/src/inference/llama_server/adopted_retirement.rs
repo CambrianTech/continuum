@@ -90,9 +90,13 @@ impl LlamaServerProcess {
             Some(endpoint.pending_discard(DiscardReason::PagingUncertain))
         } else {
             transition.checkpoint_adopted_before_replacement(
+<<<<<<< HEAD
                 &self.client, &self.root,
                 crate::inference::slots::AdoptedCheckpoint { incarnation, intent: crate::inference::slots::AdoptedCheckpointIntent::Replace },
                 current,
+=======
+                &self.client, &self.root, incarnation, current,
+>>>>>>> origin/main
             ).await.map_err(|refusal| LlamaServerError::RetirementRefused(refusal.into()))?;
             None
         };
@@ -130,6 +134,7 @@ impl LlamaServerProcess {
         budget: Duration,
     ) -> Result<(), LlamaServerError> {
         // A free port is not proof that the engine released its memory. Retain
+<<<<<<< HEAD
         // the transition until this exact process is positively gone: its EXIT EVENT, the moment
         // the kernel delivers it, never a 100 ms liveness poll (card b5b9bef3). `budget` is only
         // the watchdog that reports an engine that never went.
@@ -150,6 +155,16 @@ impl LlamaServerProcess {
                 continuum_host::process_exit::ExitObserved::Unobservable(why) => Err(
                     LlamaServerError::RetirementPending(format!("adopted engine exit is unobservable: {why}")),
                 ),
+=======
+        // the transition until this exact process is positively gone.
+        let wait = async {
+            loop {
+                match incarnation.liveness() {
+                    Liveness::Dead => return Ok(()),
+                    Liveness::Unknown => return Err(LlamaServerError::RetirementPending("adopted engine exit is unverified".into())),
+                    Liveness::Alive => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+>>>>>>> origin/main
             }
         };
         tokio::time::timeout(budget, wait).await

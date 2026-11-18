@@ -194,16 +194,59 @@ impl SlotDirectory {
         if self.page_discovery_generation(root) != discovery_generation {
             return Err(Miss::Superseded); // props belongs to the superseded process, not its replacement
         }
+<<<<<<< HEAD
         // The directory arbitrates the probe race: only the first writer installs the pool, once
         // per SERVER, and it installs it with its page store already settled. A pool known here
         // was published by that writer, so no caller ever admits against an undecided store.
         let pool = match existing_pool {
             Some(pool) => pool,
             None => self.install_settled_pool(root, n_slots, |pool| settle_adopted_page_store(pool, root)),
+=======
+        // The directory arbitrates the probe race: only the first writer installs
+        // the pool, once per SERVER, not once per caller.
+        let pool = match &existing_pool {
+            Some(pool) => Arc::clone(pool),
+            None => self.ensure_pool(root, n_slots),
+>>>>>>> origin/main
         };
         if pool.n_slots() != n_slots {
             return Err(Miss::GeometryMismatch { installed: pool.n_slots(), props: n_slots }); // they must agree
         }
+<<<<<<< HEAD
+=======
+        // A running engine this core ADOPTED (a deploy kept it) has no launch contract here,
+        // so its confirmed saves come from the ledger it left, when that ledger names this
+        // very process. A spawned engine already attached its own at readiness;
+        // its first capability probe must not pretend it adopted another ledger.
+        let adoption = if existing_pool.is_some() { Err("pool_already_installed") } else { match crate::inference::lane_registry::live_lane() {
+            None => Err("no_live_lane_record"),
+            Some(lane) if lane.root_url() != root.trim_end_matches('/') => Err("live_lane_is_another_root"),
+            Some(lane) if crate::inference::engine_residency::process_start_s(lane.pid) != Some(lane.started_s) => {
+                Err("live_lane_is_another_process")
+            }
+            Some(lane) => {
+                // The live lane IS this process (pid and start time just verified): name it on the
+                // pool, with or without a page dir, so every admission on it is bound to it.
+                pool.mark_incarnation((lane.pid, lane.started_s));
+                match lane.page_dir.as_deref() {
+                None => Err("live_lane_has_no_page_dir"),
+                Some(page_dir) => {
+                    // the adopted engine's page dir is this core's to trim and measure too
+                    // (a spawn records it at launch; an adoption never did)
+                    note_page_dir(page_dir);
+                    adopt_engine_ledger(&pool, page_dir, lane.pid, lane.started_s)
+                        .map_err(AdoptRefusal::as_str)
+                }
+            }},
+        }};
+        continuum_base::probe!(
+            class = "inference.kv_page.ledger_adopted",
+            adopted = adoption.is_ok(),
+            loaded = adoption.unwrap_or(0) as u64, // probe field: 0 when nothing was adopted, `why` names the reason
+            why = adoption.err().unwrap_or("adopted"), // probe field: the refusal, or "adopted" when the ledger was the engine's
+            "an adopted engine's confirmed-save ledger: its saved pages are restorable only when the ledger names this same process"
+        );
+>>>>>>> origin/main
         if !self.negotiate_page_admission(root, &pool, discovery_generation, body.get("slot_save_size_version")).await {
             return Err(Miss::PageAdmissionRefused);
         }
@@ -214,6 +257,7 @@ impl SlotDirectory {
         Ok(pool)
     }
 
+<<<<<<< HEAD
     /// Publish a pool for `root` only with its page store settled. `settle` decides it (the
     /// running engine's ledger, or the typed reason there is none) on a pool no other caller can
     /// see yet, so the decision and the pool become visible in one step.
@@ -247,6 +291,8 @@ impl SlotDirectory {
         pool
     }
 
+=======
+>>>>>>> origin/main
     /// An adopted engine's checkpoint pool ([`EndpointSlots::adopted_checkpoint_pool`]), discovered
     /// first when the endpoint was never probed: a replacement decided before any request (pool
     /// growth 5 s after adoption, the M5 2026-11-04 14:56Z) checkpoints the pool the running engine
@@ -275,6 +321,7 @@ impl SlotDirectory {
         }
     }
 }
+<<<<<<< HEAD
 
 /// A pool's page-store decision, made before the directory publishes it: the adopted ledger's
 /// loaded keys or why none was adopted, and the ledger's first snapshot for the publisher to write.
@@ -338,3 +385,5 @@ fn settle_adopted_page_store(pool: &KvSlotPool, root: &str) -> SettledPageStore 
     let (adoption, snapshot) = settle_engine_ledger(pool, page_dir, lane.pid, lane.started_s);
     SettledPageStore { adoption: adoption.map_err(NotAdopted::Refused), snapshot }
 }
+=======
+>>>>>>> origin/main

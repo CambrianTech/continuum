@@ -33,8 +33,12 @@ impl WorkingMemory {
     /// Her view just started an epoch: every act up to its fold edge leaves RAM for her archive,
     /// and the view forgets their ids (its fold block's bytes stay). Nothing when her view folded
     /// no act or she has no archive.
+<<<<<<< HEAD
     pub(crate) fn release_folded(&self, persona: Uuid, view: &mut ContextView) {
         self.release_folded_thoughts(persona, view);
+=======
+    pub(crate) fn release_folded(&self, view: &mut ContextView) {
+>>>>>>> origin/main
         let actions_source = crate::cognition::context_streams::actions::NAME;
         let Some(edge) = view.fold_edge(actions_source).and_then(|key| key.parse::<u64>().ok()) else {
             return;
@@ -45,6 +49,7 @@ impl WorkingMemory {
         }
     }
 
+<<<<<<< HEAD
     /// Her thoughts up to her view's fold edge whose wholes are saved leave her log (her work in
     /// hand excepted), and the view forgets their ids: her thought log drains like her acts do.
     fn release_folded_thoughts(&self, persona: Uuid, view: &mut ContextView) {
@@ -68,6 +73,12 @@ impl WorkingMemory {
         let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
         let in_hand = self.working_reads().into_iter().min();
         in_flight.into_iter().chain(in_hand.map(|ActSeq(seq)| seq)).fold(edge, |edge, seq| edge.min(seq.saturating_sub(1)))
+=======
+    /// `edge`, never at or past the act in flight: it is newer than anything her view folded.
+    fn release_edge(&self, edge: u64) -> u64 {
+        let in_flight = self.last_action.lock().as_ref().map(|(seq, _)| *seq);
+        in_flight.map_or(edge, |seq| edge.min(seq.saturating_sub(1))) // map_or: nothing in flight leaves the edge as measured
+>>>>>>> origin/main
     }
 
     /// Move every resident act up to `edge` into her archive's outbox (written by the next

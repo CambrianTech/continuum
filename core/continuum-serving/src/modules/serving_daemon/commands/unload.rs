@@ -14,6 +14,7 @@
 //! before returning, so the caller knows the VRAM is free (e.g. before a
 //! `models/remove`).
 //!
+<<<<<<< HEAD
 //! ## The wait ends on an outcome, never a stopwatch
 //!
 //! The daemon's reconcile is the producer: the wait ends when its snapshot shows
@@ -28,13 +29,28 @@
 //! Unknown model id ⇒ [`CommandError::NotFound`] (a typo'd pin that silently does
 //! nothing is a lie). A superseded pin or a gone daemon ⇒ [`CommandError::Internal`]
 //! naming which.
+=======
+//! ## Fail loud
+//!
+//! Unknown model id ⇒ [`CommandError::NotFound`] (a typo'd pin that silently does
+//! nothing is a lie). If the lane was serving the model and does not free within
+//! the convergence window ⇒ [`CommandError::Internal`] naming that the pin is
+//! applied but the daemon did not converge (check `serving/status`) — the pin
+//! stays applied (rolling it back would be a worse, hidden failure).
+>>>>>>> origin/main
 //!
 //! ## Gating
 //!
 //! `Privileged` — it changes what occupies GPU memory on this node.
 
+<<<<<<< HEAD
 use crate::modules::serving_daemon::{ServingIntent, ServingIntentSnapshot};
 use std::sync::Arc;
+=======
+use crate::modules::serving_daemon::ServingIntent;
+use std::sync::Arc;
+use std::time::Duration;
+>>>>>>> origin/main
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -45,6 +61,7 @@ use crate::inference::llama_server::ServingSnapshot;
 use crate::model_registry::live::ModelCatalog;
 use crate::sdk_codegen::CommandError;
 
+<<<<<<< HEAD
 /// How the wait for a pinned-off model's lane ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LaneRelease {
@@ -72,6 +89,14 @@ async fn lane_release(
         }
     }
 }
+=======
+/// How long to wait for a served lane to actually free after pinning the model
+/// off. The daemon recomputes + reconciles on its tick (5s); a relaunch to the
+/// next candidate or a teardown to empty completes within a few ticks. Generous so
+/// a healthy daemon always confirms; a timeout means the daemon is unhealthy, not
+/// that the window was too tight.
+const CONVERGE_TIMEOUT: Duration = Duration::from_secs(20);
+>>>>>>> origin/main
 
 /// Which model's VRAM lane to free.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -125,7 +150,11 @@ crate::action_command! {
         // 1. The model must exist in the live universe — never pin a typo.
         if this.catalog.snapshot().get(&p.model_id).is_none() {
             return Err(CommandError::NotFound(format!(
+<<<<<<< HEAD
                 "unknown model id '{}': it is not in the live model catalog",
+=======
+                "unknown model id '{}' — call models/list to see the live universe",
+>>>>>>> origin/main
                 p.model_id
             )));
         }
@@ -138,6 +167,7 @@ crate::action_command! {
         // 3. Pin it OFF. Idempotent — re-unloading an already-pinned model is fine.
         this.intent.set_suppressed(&p.model_id, true, true).map_err(|error| CommandError::Denied(error.to_string()))?;
 
+<<<<<<< HEAD
         // 4. If it held the lane, wait for the daemon's reconcile to actually free it
         //    before we claim success.
         if was_serving {
@@ -155,6 +185,23 @@ crate::action_command! {
                         p.model_id
                     )))
                 }
+=======
+        // 4. If it held the lane, wait for the daemon's next reconcile to actually
+        //    free it before we claim success.
+        if was_serving {
+            let mut rx = this.serving.clone();
+            let freed = tokio::time::timeout(
+                CONVERGE_TIMEOUT,
+                rx.wait_for(|s| s.active_model.as_deref() != Some(p.model_id.as_str())),
+            )
+            .await;
+            if freed.is_err() {
+                return Err(CommandError::Internal(format!(
+                    "model '{}' pinned off, but the serving lane did not free within {}s — the serving daemon may be unhealthy; the pin remains applied (check serving/status)",
+                    p.model_id,
+                    CONVERGE_TIMEOUT.as_secs()
+                )));
+>>>>>>> origin/main
             }
         }
 
@@ -189,9 +236,12 @@ crate::action_command! {
 mod tests {
     use super::*;
 
+<<<<<<< HEAD
     use futures::FutureExt;
     use std::collections::HashSet;
 
+=======
+>>>>>>> origin/main
     // what this catches: the wire name mirrors the file path — the routing
     // contract that lets the typed registry dispatch `serving/unload` to this
     // command.
@@ -200,6 +250,7 @@ mod tests {
         use crate::sdk_codegen::ActionCommand;
         assert_eq!(ServingUnload::NAME, "serving/unload");
     }
+<<<<<<< HEAD
 
     fn serving(model: Option<&str>) -> ServingSnapshot {
         ServingSnapshot { active_model: model.map(str::to_string), ..ServingSnapshot::empty() }
@@ -244,4 +295,6 @@ mod tests {
         drop(serving_tx);
         assert_eq!(wait.await, LaneRelease::DaemonGone);
     }
+=======
+>>>>>>> origin/main
 }

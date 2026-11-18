@@ -429,6 +429,7 @@
         assert!(level.contains("\"src/module_0/mod.rs\"") && level.contains("\"total\":400"), "{level}");
     }
 
+<<<<<<< HEAD
     // what this catches: an id whose content changes after more acts (IntelMac 0051cdcf, 2026-11-14:
     // her thoughts quoted 59db1a33 as 14 lines, then 121, then 58). An id is its content's address
     // and its file is published once: later saves (her reads of it, receipts quoting it whole) are
@@ -457,6 +458,8 @@
         assert_eq!(read(), first.as_bytes());
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: a result saved through the class writer that does not reopen by its
     // handle to the bytes she saw, or a handle form that changed under the move to the class (every
     // handle already in a checkpoint must still name its file: the content hash's leading 64 bits).

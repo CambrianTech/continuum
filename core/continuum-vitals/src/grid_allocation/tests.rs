@@ -1,6 +1,9 @@
 #![cfg(test)]
     use super::*;
+<<<<<<< HEAD
     use continuum_engine::capacity::window_grant::SeatWindow;
+=======
+>>>>>>> origin/main
 
     // what this catches (Astra, Windows 2026-09-22): this node's row in the allocator
     // coming from its PLAN while every peer's comes from their SERVED beacon. A box
@@ -11,7 +14,10 @@
     #[test]
     fn the_local_row_is_the_served_geometry_the_beacon_publishes_or_nothing() {
         use continuum_engine::inference::llama_server::ServingSnapshot;
+<<<<<<< HEAD
         let seat = |n| SeatWindow::Reported(continuum_engine::inference::planning::window_allocator::Tokens::new(n).expect("test: a nonzero seat")); // expect: every seat here is a positive literal
+=======
+>>>>>>> origin/main
         let served = ServingSnapshot {
             active_model: Some("qwen3.8-27b".into()),
             ready: true,
@@ -19,7 +25,11 @@
             served_context_window: 124_160,
             ..ServingSnapshot::empty()
         };
+<<<<<<< HEAD
         let row = LanePlan::serving(&served, seat(124_160), 9, Some(20.0)).expect("a served lane is a row");
+=======
+        let row = LanePlan::serving(&served, 9, Some(20.0)).expect("a served lane is a row");
+>>>>>>> origin/main
         assert_eq!((row.lanes, row.window), (1, 124_160), "the beacon's numbers, not the plan's");
         assert!(row.holds(&coder().requirement), "a 124k lane seats the 64k role");
 
@@ -32,18 +42,29 @@
             served_context_window: 5_533,
             ..ServingSnapshot::empty()
         };
+<<<<<<< HEAD
         let shrunk = LanePlan::serving(&planned_shrink, seat(5_533), 9, Some(20.0)).expect("still a row");
+=======
+        let shrunk = LanePlan::serving(&planned_shrink, 9, Some(20.0)).expect("still a row");
+>>>>>>> origin/main
         assert!(!shrunk.holds(&coder().requirement), "5,533 below 65,536 is the reading that starved the node");
 
         // Absence, not fabrication: nothing served ⇒ no row, on each of the three ways
         // "nothing" arrives.
+<<<<<<< HEAD
         assert!(LanePlan::serving(&ServingSnapshot::empty(), seat(65_536), 9, None).is_none(), "no model = no row");
+=======
+        assert!(LanePlan::serving(&ServingSnapshot::empty(), 9, None).is_none(), "no model = no row");
+>>>>>>> origin/main
         // MID-RELAUNCH: geometry retained, `ready` false — `serving_consumer` flips the
         // flag and clears nothing. A lane that cannot serve is no seat (Astra's review).
         assert!(
             LanePlan::serving(
                 &ServingSnapshot { active_model: Some("m".into()), ready: false, lanes: 1, served_context_window: 32_768, ..ServingSnapshot::empty() },
+<<<<<<< HEAD
                 seat(32_768),
+=======
+>>>>>>> origin/main
                 9,
                 None
             )
@@ -51,6 +72,7 @@
             "a relaunching lane keeps its numbers and must NOT be announced as capacity"
         );
         assert!(
+<<<<<<< HEAD
             LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, seat(65_536), 9, None).is_none(),
             "zero lanes = no row"
         );
@@ -66,6 +88,15 @@
         assert!(LanePlan::serving(&pooled, SeatWindow::Unreported, 9, None).is_none(), "unreported seat = no row, never the share");
         let row = LanePlan::serving(&pooled, seat(262_144), 9, None).expect("a reported seat is a row");
         assert_eq!((row.lanes, row.window), (5, 262_144), "the seat is what one sequence holds, not 110,387");
+=======
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 0, served_context_window: 65_536, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "zero lanes = no row"
+        );
+        assert!(
+            LanePlan::serving(&ServingSnapshot { active_model: Some("m".into()), ready: true, lanes: 2, served_context_window: 0, ..ServingSnapshot::empty() }, 9, None).is_none(),
+            "unknown window = no row, never a guess"
+        );
+>>>>>>> origin/main
     }
 
     // ---- fixtures: shapes, not Joel's grid. Numbers are illustrative machine classes. ----

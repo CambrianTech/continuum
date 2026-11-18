@@ -94,7 +94,11 @@ async fn a_shadow_is_seated_on_exactly_the_measured_lease() {
 // authority the same seat is granted. Nothing bypasses the authority.
 #[tokio::test]
 async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_capacity_returns() {
+<<<<<<< HEAD
     use crate::inference::training_admission::TrainingWait;
+=======
+    use crate::inference::training_admission::{await_training_change, TrainingWait};
+>>>>>>> origin/main
     let source = Arc::new(crate::resources::MockCapacitySource::new(crate::resources::ResourceKind::Vram, WEIGHTS - 1));
     let resources = crate::resources::ResourceDaemon::start(vec![Arc::clone(&source) as Arc<dyn crate::resources::CapacitySource>], vec![], crate::resources::DaemonConfig::default());
     let authority = Authority { resources, serving: crate::inference::serving_lifecycle::LifecycleGate::unowned(true), custody: crate::genome::learner::custody::Custody::isolated() };
@@ -111,6 +115,7 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
     let free = || authority.resources.available_for("an observer", crate::resources::ResourceKind::Vram);
     assert_eq!(free(), WEIGHTS - 1, "nothing is held while it waits");
     source.set_ceiling(10_000_000);
+<<<<<<< HEAD
     // the learner's next pass, once the authority has published the capacity it needs (#5925)
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while free() < WEIGHTS {
@@ -123,6 +128,22 @@ async fn a_seat_short_of_memory_answers_at_once_holding_nothing_and_seats_once_c
         Ok(seated) => seated,
         Err(other) => panic!("test: seated once capacity returned, got {other}"),
     };
+=======
+    // as the learner does: wait for the authority's next change holding nothing, then try again
+    let seated = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        let mut wait = wait;
+        loop {
+            await_training_change(&authority.resources, &mut changes, &wait).await.expect("test: the authority is open");
+            match seat(&authority, engine.clone(), "learning:her", shadow()).await {
+                Ok(seated) => return seated,
+                Err(SeatRefusal::AwaitingMemory(again)) => wait = again,
+                Err(other) => panic!("test: only memory may keep it waiting, got {other}"),
+            }
+        }
+    })
+    .await
+    .expect("test: seated once capacity returned");
+>>>>>>> origin/main
     assert_eq!((seated.shadow.id, 10_000_000 - free()), (3, WEIGHTS), "exactly the measured bytes, once capacity returned");
     server.abort();
 }

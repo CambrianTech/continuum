@@ -265,6 +265,7 @@ pub(crate) fn run_with_bets(hour: &Hour, costs: &Costs, scheduler: &mut dyn Batc
         let views: Vec<SlotView> = (0..slots).map(|s| {
             let cold = current[s].is_some_and(|(i, _)| hour.tasks[i].cached == 0);
             match phase[s] {
+<<<<<<< HEAD
                 Phase::Prefill { left, depth, ready_s, .. } => SlotView { slot: s, prompt_left: left, depth, cold, generating: false, decode_left: 0.0, streamed: false, ready_s },
                 Phase::Generating { depth, left, .. } => SlotView { slot: s, prompt_left: 0, depth, cold, generating: true, decode_left: left, streamed: false, ready_s: 0.0 },
                 Phase::Gap { start_s, end_s, total, done: d, depth } => SlotView {
@@ -272,21 +273,37 @@ pub(crate) fn run_with_bets(hour: &Hour, costs: &Costs, scheduler: &mut dyn Batc
                     cold: false, generating: false, decode_left: 0.0, streamed: true, ready_s: start_s,
                 },
                 _ => SlotView { slot: s, prompt_left: 0, depth: 0, cold, generating: false, decode_left: 0.0, streamed: false, ready_s: 0.0 },
+=======
+                Phase::Prefill { left, depth, ready_s, .. } => SlotView { slot: s, prompt_left: left, depth, cold, generating: false, streamed: false, ready_s },
+                Phase::Generating { depth, .. } => SlotView { slot: s, prompt_left: 0, depth, cold, generating: true, streamed: false, ready_s: 0.0 },
+                Phase::Gap { start_s, end_s, total, done: d, depth } => SlotView {
+                    slot: s, prompt_left: gap_available(start_s, end_s, total, now).saturating_sub(d), depth: depth + u64::from(d),
+                    cold: false, generating: false, streamed: true, ready_s: start_s,
+                },
+                _ => SlotView { slot: s, prompt_left: 0, depth: 0, cold, generating: false, streamed: false, ready_s: 0.0 },
+>>>>>>> origin/main
             }
         }).collect();
         // Work the device may take now: anything handed to it, plus streamed output. A streamed
         // chunk below a full ubatch is taken only when the device would otherwise idle (it pays the
         // fitted per-chunk cost), or when its gap's output is complete.
         let other = views.iter().any(|v| (v.prompt_left > 0 && !v.streamed) || v.generating);
+<<<<<<< HEAD
+=======
+        let (decoders, decode_depth) = views.iter().filter(|v| v.generating).fold((0usize, 0u64), |(n, d), v| (n + 1, d + v.depth));
+>>>>>>> origin/main
         let mut plan = Plan::default();
         if other || views.iter().any(|v| v.streamed && v.prompt_left > 0) {
             let view = View { slots: &views, n_batch: hour.n_batch, offsets: &hour.checkpoint_offsets };
             plan = scheduler.plan(&view);
             plan.prompt.retain(|(s, _)| !views[*s].streamed || !other || full_or_last(&phase[*s], hour.n_ubatch, now));
         }
+<<<<<<< HEAD
         // the generating slots that decode this step: the policy's set, every one by default
         let decoding = |s: usize| views[s].generating && plan.decode.as_ref().is_none_or(|set| set.contains(&s));
         let (decoders, decode_depth) = (0..slots).filter(|s| decoding(*s)).fold((0usize, 0u64), |(n, d), s| (n + 1, d + views[s].depth));
+=======
+>>>>>>> origin/main
         let mut gap_part = 0.0;
         let mut act_part = 0.0;
         for (s, n) in &plan.prompt {
@@ -377,7 +394,11 @@ pub(crate) fn run_with_bets(hour: &Hour, costs: &Costs, scheduler: &mut dyn Batc
             }
         }
         for s in 0..slots {
+<<<<<<< HEAD
             if !decoding(s) {
+=======
+            if !views[s].generating {
+>>>>>>> origin/main
                 continue;
             }
             if let Phase::Generating { left, depth, since_s, last_s } = phase[s] {

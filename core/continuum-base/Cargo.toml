@@ -7,11 +7,17 @@ description = "The floor of the core: leaf utilities every other crate may depen
 [dependencies]
 chrono.workspace = true
 serde = { workspace = true }
+<<<<<<< HEAD
 sha2.workspace = true # tool_evidence: a check is bound to the exact bytes it read
+=======
+>>>>>>> origin/main
 dirs = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+<<<<<<< HEAD
 serde_json = { workspace = true } # non_empty_list: the empty list is refused at the parse
+=======
+>>>>>>> origin/main
 tempfile = { workspace = true }

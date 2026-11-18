@@ -32,7 +32,11 @@ pub use validate_embedding_model::*;
 mod llama_cpp_backend;
 mod embedding_lane;
 mod embedding_batch;
+<<<<<<< HEAD
 pub(crate) use embedding_batch::{resident_weights, ContextBytes, EmbedWindow, EmbeddingBatch, Placement, NO_TRAINED_CONTEXT};
+=======
+pub(crate) use embedding_batch::{ContextBytes, EmbeddingBatch, Placement};
+>>>>>>> origin/main
 
 #[cfg(test)]
 mod tests;

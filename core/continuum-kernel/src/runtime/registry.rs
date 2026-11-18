@@ -473,7 +473,11 @@ mod tests {
             &self,
             _params: Value,
             _caller: Option<crate::routing::CallerIdentity>,
+<<<<<<< HEAD
         ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
+=======
+        ) -> Result<CommandResult, String> {
+>>>>>>> origin/main
             Ok(CommandResult::Json(serde_json::json!({})))
         }
     }

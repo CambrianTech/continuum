@@ -97,7 +97,11 @@ fn real(
 /// serde's own `missing field` error, never a hand-written presence check. `rest` is every
 /// other field, read by the optional decoders below.
 pub(crate) fn fields<T: serde::de::DeserializeOwned>(body: Value) -> Result<T, BadRequest> {
+<<<<<<< HEAD
     serde_json::from_value(body).map_err(|error| BadRequest(error.to_string())) // boundary: an agent's request body is JSON on the wire, decoded once into its typed fields
+=======
+    serde_json::from_value(body).map_err(|error| BadRequest(error.to_string()))
+>>>>>>> origin/main
 }
 
 /// The sampling fields every format names the same way: temperature (any non-negative value the
@@ -144,12 +148,20 @@ pub(crate) fn sampling(
 
 /// The agent's `tools`, each entry read by the format's `one`. Any entry it cannot read (a
 /// malformed one, or a type this gateway does not serve) refuses the whole call, naming the
+<<<<<<< HEAD
 /// entry: a tool the agent declared and the model never sees is a silent wrong answer. Shared, as
 /// every request's tools are (card 9cf06ade).
 pub(crate) fn tools(
     body: &Value,
     one: impl Fn(&Value) -> Result<NativeToolSpec, String>,
 ) -> Result<Option<std::sync::Arc<[NativeToolSpec]>>, BadRequest> {
+=======
+/// entry: a tool the agent declared and the model never sees is a silent wrong answer.
+pub(crate) fn tools(
+    body: &Value,
+    one: impl Fn(&Value) -> Result<NativeToolSpec, String>,
+) -> Result<Option<Vec<NativeToolSpec>>, BadRequest> {
+>>>>>>> origin/main
     let Some(value) = present(body, "tools") else {
         return Ok(None);
     };
@@ -164,7 +176,11 @@ pub(crate) fn tools(
         .enumerate()
         .map(|(at, entry)| one(entry).map_err(|why| BadRequest(format!("`tools[{at}]` {why}"))))
         .collect::<Result<Vec<_>, _>>()
+<<<<<<< HEAD
         .map(|tools| Some(tools.into()))
+=======
+        .map(Some)
+>>>>>>> origin/main
 }
 
 /// A tool's type, which a format's adapter matches against the types it serves.

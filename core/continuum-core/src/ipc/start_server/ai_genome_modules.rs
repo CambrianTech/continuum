@@ -66,11 +66,16 @@ pub(super) fn register_ai_provider_and_genome_modules(
         // the hippocampus's noteworthy drain, settled cards, operator submits), learned in place
         // by the engine that serves each base, under this core's resource authority, its serving
         // lifecycle gate and the process's lease custody.
+<<<<<<< HEAD
         let authority = || crate::genome::learner::seat::Authority {
+=======
+        let authority = crate::genome::learner::seat::Authority {
+>>>>>>> origin/main
             resources: resource_daemon.clone(),
             serving: serving_daemon.lifecycle_gate(),
             custody: crate::genome::learner::custody::Custody::global(),
         };
+<<<<<<< HEAD
         // The serving engine's gene catalog changes only through the genome's owner of loaded genes,
         // under the same authority and custody as learning (CONTINUUM-ENGINE 4.10 P4a).
         if crate::inference::llama_server::genome_catalog::install(
@@ -81,6 +86,8 @@ pub(super) fn register_ai_provider_and_genome_modules(
             log_info!("ipc", "server", "GeneCatalog: an owner was already installed in this process; it stays");
         }
         let authority = authority();
+=======
+>>>>>>> origin/main
         runtime.register(Arc::new(
             crate::modules::training_trigger::TrainingTriggerModule::new(authority)
                 .with_serving_changes(serving_daemon.subscribe_serving()),

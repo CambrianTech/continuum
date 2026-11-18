@@ -197,10 +197,13 @@ pub struct CallVerdict {
     pub tool_use_id: String,
     pub verdict: ActVerdict,
     pub dispatch_handle: Option<Uuid>,
+<<<<<<< HEAD
     /// The commands a refusal of this call names as her next moves, by canonical name, from the
     /// refusal's typed next calls (never its text): what her tool head loads for her next act.
     #[serde(default)]
     pub next_commands: Vec<String>,
+=======
+>>>>>>> origin/main
 }
 
 /// Output of `parse_response` — tool calls extracted, clean text the

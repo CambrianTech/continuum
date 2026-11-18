@@ -109,7 +109,11 @@ host class?
   unified memory + Intel discrete), Linux NVIDIA, Linux AMD, Linux
   Intel — each has different APIs.
 - **Blocks:** PressureMonitor.
+<<<<<<< HEAD
 - **Existing:** `SubstrateGovernor` (CONTINUUM-ENGINE.md)
+=======
+- **Existing:** `SubstrateGovernor` (CBAR-SUBSTRATE-ARCHITECTURE.md)
+>>>>>>> origin/main
   already polls some signals. Extend or replicate?
 - **Candidates:**
   - SubstrateGovernor publishes a unified pressure bus event;

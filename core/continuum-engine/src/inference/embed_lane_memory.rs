@@ -1,11 +1,16 @@
 //! The embed lane's memory on the resource board: each embedding context's lease, and the lane's
+<<<<<<< HEAD
 //! standing floor, both in the pool the context resides in and both bounded by what the lane needs.
+=======
+//! standing floor, both in the pool the context resides in and both sized from what it embeds.
+>>>>>>> origin/main
 //!
 //! Where a context resides is the backend's placement, never the machine's kind: with any layer
 //! offloaded to a GPU it is device memory, otherwise host memory, even on a node with a dedicated
 //! card (Joel, 2026-11-10: "It depends on where it's resident"). On unified memory both kinds are
 //! views of one pool, so the charge lands on the same bytes either way.
 //!
+<<<<<<< HEAD
 //! The lane's need ([`EmbedNeed`]) is its weights and the context its window allows: a request
 //! larger than that is a typed refusal before anything is reserved. The floor keeps serving's plan
 //! from taking the slice recall uses every turn (#225): it is [`EmbedResidency`], the whole need,
@@ -19,6 +24,16 @@
 
 use std::fmt;
 use std::sync::Arc;
+=======
+//! The floor keeps serving's plan from growing into the slice recall needs every turn (#225: the
+//! grown window left 604 MiB governed-available and embedding went fully dead). It was a fixed
+//! 1,792 MiB VRAM bound for a 2,048-token context, reserved by the resolver, which knows neither
+//! the context's residence nor her texts. It is now the largest context this lane has embedded,
+//! re-stated at each lease in its own pool: the resolver's probe and calibration passes set it
+//! before any turn embeds.
+
+use std::sync::atomic::{AtomicU64, Ordering};
+>>>>>>> origin/main
 
 use crate::inference::backends::llamacpp::ContextBytes;
 use crate::resources::{LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, ResourceDaemon, ResourceKind};
@@ -26,6 +41,7 @@ use crate::resources::{LeaseError, LeaseGuard, LeaseRequest, ReclaimPolicy, Reso
 /// The embed lane's identity on the resource board: the consumer of its leases and its floors.
 pub const EMBED_LANE_CONSUMER_ID: &str = "embed";
 
+<<<<<<< HEAD
 /// What the embed lane holds while it embeds, per pool: its loaded weights, and the context its
 /// window allows (`backends::llamacpp::EmbedWindow`), the largest any request can allocate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +195,32 @@ async fn await_room<T>(changes: &mut tokio::sync::watch::Receiver<T>, mut room: 
 /// One pool's lease. Refused, it waits for the authority's answer ([`await_room`]) and tries once
 /// more only on published room; a still-short board or a closed authority is a typed refusal.
 async fn lease_part(daemon: &Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64, texts: usize) -> Result<LeaseGuard, EmbedLeaseError> {
+=======
+/// The largest context part this process's embed lane has leased, per pool: its standing floors.
+static DEVICE_FLOOR: AtomicU64 = AtomicU64::new(0);
+static HOST_FLOOR: AtomicU64 = AtomicU64::new(0);
+
+/// Lease each pool's part of one embedding context of `texts` texts, after raising that pool's
+/// floor to it. Empty on a node with no resource authority (the backend's own allocation is the
+/// only gate there). The guards hold the bytes until the context is gone.
+pub(crate) async fn lease(bytes: ContextBytes, texts: usize) -> Result<Vec<LeaseGuard>, String> {
+    let Some(daemon) = ResourceDaemon::global() else { return Ok(Vec::new()) };
+    let mut guards = Vec::with_capacity(2);
+    for (pool, part, floor) in [(ResourceKind::Vram, bytes.device, &DEVICE_FLOOR), (ResourceKind::Ram, bytes.host, &HOST_FLOOR)] {
+        if part == 0 {
+            continue;
+        }
+        let floor = floor.fetch_max(part, Ordering::Relaxed).max(part);
+        daemon.reserve(EMBED_LANE_CONSUMER_ID, pool, floor);
+        guards.push(lease_part(&daemon, pool, part, floor, texts).await?);
+    }
+    Ok(guards)
+}
+
+/// One pool's lease, retried once after a governor tick, then refused with the availability it
+/// measured, never an allocation that would decode to degenerate zeros.
+async fn lease_part(daemon: &std::sync::Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64, floor: u64, texts: usize) -> Result<LeaseGuard, String> {
+>>>>>>> origin/main
     // derived-or-floor: a SIGKILL backstop only; the RAII guard frees the bytes on drop, and an
     // embedding finishes in under a second, so the TTL never decides a live lease.
     const LEASE_TTL_MS: u64 = 60_000;
@@ -189,12 +231,15 @@ async fn lease_part(daemon: &Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64
         ttl_ms: LEASE_TTL_MS,
         reclaim_policy: ReclaimPolicy::Pinned,
     };
+<<<<<<< HEAD
     // Subscribed BEFORE the first attempt, so a release between its refusal and the wait below is
     // a change the wait still sees.
     let mut changes = daemon.subscribe();
     // Seen as of now: the authority hands out a clone of its stored receiver, which would count
     // every board since its start as new, and the wait would answer from a stale one.
     drop(changes.borrow_and_update());
+=======
+>>>>>>> origin/main
     let attempt = |attempt: u8| match daemon.acquire_guarded(&request) {
         Ok(guard) => {
             continuum_base::probe!(
@@ -202,6 +247,10 @@ async fn lease_part(daemon: &Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64
                 consumer = EMBED_LANE_CONSUMER_ID,
                 pool = ?pool,
                 bytes = bytes,
+<<<<<<< HEAD
+=======
+                floor = floor,
+>>>>>>> origin/main
                 texts = texts,
                 retried = (attempt > 0),
                 "embedding lane leased its context in the pool it resides in"
@@ -219,6 +268,7 @@ async fn lease_part(daemon: &Arc<ResourceDaemon>, pool: ResourceKind, bytes: u64
             );
             Ok(Err(available))
         }
+<<<<<<< HEAD
         Err(e) => Err(EmbedLeaseError::Ungoverned(e)),
     };
     let refused_at = match attempt(0)? {
@@ -412,4 +462,24 @@ mod tests {
         authority.send_replace(());
         assert_eq!(waiting.await, RoomOutcome::Published { available: 70 }, "the publication with room answers, with its measure");
     }
+=======
+        Err(e) => Err(format!("embed: lease error ({e:?}): refusing to embed ungoverned")),
+    };
+    let leased = match attempt(0)? {
+        Ok(guard) => Ok(guard),
+        Err(_) => {
+            // derived-or-floor: one governor tick, after which a transient over-commit has relief
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            attempt(1)?
+        }
+    };
+    leased.map_err(|available| {
+        format!(
+            "embed: {pool:?} lease refused twice: {} MiB requested, {} MiB governed-available. Refusing to \
+             allocate an embedding context that would decode to degenerate zeros.",
+            bytes / (1024 * 1024),
+            available / (1024 * 1024),
+        )
+    })
+>>>>>>> origin/main
 }

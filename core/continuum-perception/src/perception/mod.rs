@@ -362,7 +362,11 @@ mod tests {
     // in the native tool set beside `interface/screenshot`, so a persona is offered
     // its eyes every turn. A rename, an access-level bump, or dropping it from the
     // native list would silently blind personas (Provided commands fail closed:
+<<<<<<< HEAD
     // an unregistered name is on no tool surface), which this pins loudly.
+=======
+    // spec_for_command drops an unregistered name), which this pins loudly.
+>>>>>>> origin/main
     #[test]
     fn observe_is_an_ai_safe_provided_command_in_the_native_surface() {
         // Registry audit: reads only the perception/* commands this crate declares. The native

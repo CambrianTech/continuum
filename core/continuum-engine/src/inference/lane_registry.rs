@@ -248,6 +248,7 @@ pub fn record(rec: &LaneRecord) -> std::io::Result<()> {
             "no home dir for lane registry",
         )
     })?;
+<<<<<<< HEAD
     record_in(&dir, rec)?;
     if rec.role == LaneRole::Live {
         sync_live();
@@ -484,6 +485,17 @@ fn verified_live_in(dir: &Path, pidfile: &Path) -> Option<super::engine_residenc
         && lane_process::is_llama_server(pid)
         && super::engine_residency::process_start_s(pid) == Some(rec.started_s))
     .then(|| rec.incarnation())
+=======
+    record_in(&dir, rec)
+}
+
+/// Remove a lane's record on graceful teardown. Idempotent — a missing file is
+/// success.
+pub fn remove(pid: u32) {
+    if let Some(dir) = lanes_dir() {
+        remove_in(&dir, pid);
+    }
+>>>>>>> origin/main
 }
 
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and
@@ -677,6 +689,7 @@ fn clear_live_records_in(dir: &Path) {
     }
 }
 
+<<<<<<< HEAD
 /// Delete `expected`'s record, only if the record at its pid is still that incarnation (pid, start time, port).
 /// The caller holds [`writes`]. Whether it was deleted.
 fn remove_locked(dir: &Path, expected: &LaneRecord) -> bool {
@@ -688,6 +701,12 @@ fn remove_locked(dir: &Path, expected: &LaneRecord) -> bool {
         return false; // unparseable: the sweep owns garbage, never a teardown
     };
     found.incarnation() == expected.incarnation() && std::fs::remove_file(&path).is_ok()
+=======
+/// Remove `<pid>.lane` under `dir` if present. Idempotent.
+pub(crate) fn remove_in(dir: &Path, pid: u32) {
+    let _writes = writes();
+    let _ = std::fs::remove_file(record_path(dir, pid));
+>>>>>>> origin/main
 }
 
 /// Every lane record on disk, in no particular order.

@@ -1,6 +1,11 @@
 //! Lane send — POST a generation to the local lane and ride out a mid-relaunch
+<<<<<<< HEAD
 //! (connection refused / 503 loading) by resending on the serving daemon's next live
 //! publish, then classify a rejected status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
+=======
+//! (connection refused / 503 loading) with a bounded retry, then classify a rejected
+//! status at the seam. Carved out of `openai_adapter::generate_stream` (pure code-motion,
+>>>>>>> origin/main
 //! 2026-09-03, the S3b decompose). Behaviour-identical to the inline block.
 
 use std::time::Instant;
@@ -34,6 +39,7 @@ pub const PRE_STREAM_HEADER_TIMEOUT_SECS: u64 = 300;
 /// process). A `connect` error is therefore "the lane is mid-relaunch", not "the lane is
 /// gone": the connection never opened, so nothing was streamed to the sink, and
 /// re-sending the SAME lane/model is idempotent — resilience, NOT a fallback
+<<<<<<< HEAD
 /// ([[fallbacks-are-illegal-fail-loud]]). The resend waits on the event that says the
 /// relaunch landed: the daemon's next LIVE publish after this attempt's POST (a publish
 /// from before it is the lagging claim above, never evidence). It replaced a linear
@@ -118,6 +124,15 @@ async fn await_relaunch(
         Err(_) => RelaunchWait::Lapsed,
     }
 }
+=======
+/// ([[fallbacks-are-illegal-fail-loud]]). Retry the connect with linear backoff
+/// (1s, 2s, … ≈ 21s total) to ride out a relaunch, then fail loud if it never returns.
+/// Scoped to the local resident lane — remote endpoints don't relaunch under us.
+/// Glass-boxed 2026-07-20: one legitimate grow-back relaunch zeroed hard-rs 0/8, every
+/// task `Connection refused (os error 61)` to :58057 mid-eval.
+const LANE_RELAUNCH_CONNECT_RETRIES: u32 = 6;
+const LANE_RELAUNCH_RETRY_BASE: std::time::Duration = std::time::Duration::from_secs(1);
+>>>>>>> origin/main
 
 /// How many quiet checkpoints (no slot counter moved AND no slot processing) a header
 /// wait allows before it calls the lane dead. One, not the page switch's eight: a
@@ -206,6 +221,7 @@ pub(crate) async fn send_with_lane_retry(
     // builder below shares that allocation, including across transport retries.
     let mut request_builder = request_builder.body(body);
     // A CONNECT error to a local resident lane means the lane is mid-relaunch, not
+<<<<<<< HEAD
     // gone (see [`RelaunchWait`]) — the connection never opened so nothing streamed,
     // and re-sending the same lane is idempotent. Resend on the daemon's live publish,
     // then fail loud. The prepared byte body is cloneable; no stream or serializer is
@@ -214,6 +230,16 @@ pub(crate) async fn send_with_lane_retry(
     // the total time this call can spend waiting on a relaunching lane stays bounded.
     let mut relaunch_waits: u32 = 0;
     let mut relaunch_deadline: Option<tokio::time::Instant> = None;
+=======
+    // gone (see LANE_RELAUNCH_CONNECT_RETRIES) — the connection never opened so
+    // nothing streamed, and re-sending the same lane is idempotent. Ride it out with
+    // bounded linear backoff, then fail loud.
+    // The prepared byte body is cloneable; no stream or serializer is replayed.
+    // Shared budget for BOTH mid-relaunch signatures (connection refused = nothing
+    // listening yet; 503 = listening but still loading). One counter, so the total
+    // time this call can spend waiting on a relaunching lane stays bounded.
+    let mut relaunch_retries: u32 = 0;
+>>>>>>> origin/main
     // Prompt counting is pre-stream wire work, governed by the same measured
     // bound as headers. Queue admission and KV paging have already completed;
     // closed-endpoint readiness patience must not debit those waits from a quote
@@ -237,7 +263,11 @@ pub(crate) async fn send_with_lane_retry(
                 header_bound.saturating_sub(quote_started.elapsed()),
             ).await?;
             let count_elapsed_ms = count_started.elapsed().as_millis() as u64;
+<<<<<<< HEAD
             // ONE bound per request (CONTINUUM-ENGINE.md, serving engine: admission (4.8)). An admitted request is bounded
+=======
+            // ONE bound per request (SERVING-ENGINE section 8). An admitted request is bounded
+>>>>>>> origin/main
             // by its grant: admission sized it against the engine's own geometry and holds
             // that much of the pool for this act, which may be more than an equal share. The
             // lane's published share is the bound only for a caller with no grant. Checking an
@@ -266,7 +296,11 @@ pub(crate) async fn send_with_lane_retry(
                 model = fill.model,
                 input_tokens = fill.prompt_tokens as u64,
                 elapsed_ms = count_elapsed_ms,
+<<<<<<< HEAD
                 attempt = relaunch_waits,
+=======
+                attempt = relaunch_retries,
+>>>>>>> origin/main
                 "selected engine counted the finalized prompt"
             );
         }
@@ -299,8 +333,11 @@ pub(crate) async fn send_with_lane_retry(
                 })?;
             }
         }
+<<<<<<< HEAD
         // Marked seen just before the POST: a live publish from here on is this relaunch landing.
         let mut relaunch = if cfg.single_resident_model { relaunch_edge() } else { None };
+=======
+>>>>>>> origin/main
         let send_start = Instant::now();
         let attempt_builder = request_builder
             .try_clone()
@@ -392,6 +429,7 @@ pub(crate) async fn send_with_lane_retry(
             // the body text for "Loading model"
             // ([[a-string-matcher-for-a-semantic-judgement-means-a-channel-is-missing]]:
             // the HTTP status IS the structured channel). Shares the connect
+<<<<<<< HEAD
             // arm's deadline, because both are the same wait for the same
             // lane and the total hold must stay bounded.
             Ok(resp)
@@ -456,6 +494,60 @@ pub(crate) async fn send_with_lane_retry(
                     cfg.name,
                     send_start.elapsed().as_millis(),
                     relaunch_waits,
+=======
+            // arm's retry budget, because both are the same wait for the same
+            // lane and the total hold must stay bounded.
+            Ok(resp)
+                if resp.status() == reqwest::StatusCode::SERVICE_UNAVAILABLE
+                    && cfg.single_resident_model
+                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+            {
+                relaunch_retries += 1;
+                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
+                continuum_base::probe!(
+                    class = "inference.lane_relaunch_retry",
+                    provider = cfg.provider_id.as_str(),
+                    attempt = relaunch_retries,
+                    backoff_ms = backoff.as_millis() as u64,
+                    reason = "503_loading",
+                    "local lane is up but still loading (503, mid-relaunch) — retrying the \
+                     same lane",
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+            Ok(resp) => break resp,
+            Err(e)
+                if e.is_connect()
+                    && cfg.single_resident_model
+                    && relaunch_retries < LANE_RELAUNCH_CONNECT_RETRIES =>
+            {
+                relaunch_retries += 1;
+                let backoff = LANE_RELAUNCH_RETRY_BASE * relaunch_retries;
+                continuum_base::probe!(
+                    class = "inference.lane_relaunch_retry",
+                    provider = cfg.provider_id.as_str(),
+                    attempt = relaunch_retries,
+                    backoff_ms = backoff.as_millis() as u64,
+                    reason = "connect_refused",
+                    "local lane refused the connection (mid-relaunch) — retrying the same lane",
+                );
+                tokio::time::sleep(backoff).await;
+                continue;
+            }
+            Err(e) => {
+                return Err(InferenceError::Unavailable(format!(
+                    "{} POST failed after {}ms{}: {}",
+                    cfg.name,
+                    send_start.elapsed().as_millis(),
+                    if relaunch_retries > 0 {
+                        format!(
+                            " ({relaunch_retries} mid-relaunch retries exhausted — lane never came back)"
+                        )
+                    } else {
+                        String::new()
+                    },
+>>>>>>> origin/main
                     crate::ai::inference_error::transport_diagnostic(&e)
                 )));
             }

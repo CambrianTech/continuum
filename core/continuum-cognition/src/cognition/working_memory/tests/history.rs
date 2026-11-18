@@ -143,6 +143,7 @@ fn an_unbound_memory_keeps_its_log() {
     assert_eq!(wm.release_through(15), 0);
     assert_eq!(wm.resident_acts(), 20);
 }
+<<<<<<< HEAD
 
 // what this catches: her view folding around the read of a file she is editing (her work in hand,
 // `working_memory::in_hand`) while the memory owner archives every act up to the fold edge: the read
@@ -182,3 +183,5 @@ fn her_thoughts_drain_through_her_views_fold_edge() {
     let left: Vec<u64> = wm.thoughts().iter().map(|thought| thought.occurrence).collect();
     assert_eq!(left, vec![occurrences[1], occurrences[4], occurrences[5], occurrences[6]], "past the edge, and unsaved, they stay");
 }
+=======
+>>>>>>> origin/main

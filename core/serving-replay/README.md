@@ -1,6 +1,10 @@
 # serving-replay
 
+<<<<<<< HEAD
 Slice S0 of [CONTINUUM-ENGINE.md, serving engine](../../docs/architecture/CONTINUUM-ENGINE.md), plan line 3b.
+=======
+Slice S0 of [SERVING-ENGINE.md](../../docs/architecture/SERVING-ENGINE.md), plan line 3b.
+>>>>>>> origin/main
 It is the validator every later serving slice proves its gain on before that slice
 reaches a live node.
 
@@ -88,7 +92,11 @@ is derived by the core per lane; pass it after `--` to match a specific lane.
 - **Available reuse** is the share of an act's characters that are unchanged since the
   same mind's previous act. It is the prompt-side ceiling, so a gap between it and the
   achieved reuse belongs to the engine or to paging. For captures it also shows how much
+<<<<<<< HEAD
   the mind's own prompt layout gives away (CONTINUUM-ENGINE.md 4.4, lever 1).
+=======
+  the mind's own prompt layout gives away (SERVING-ENGINE.md §4, lever 1).
+>>>>>>> origin/main
 - Acts run one at a time. The report measures reuse, prefill and paging. Concurrency
   (batched decode, lever 3) is a later extension of the driver.
 - The replay generates `--n-predict` tokens, not her real reply. The next captured
@@ -141,6 +149,10 @@ prompt was unchanged since that mind's previous act:
 
 Inference, not yet probed: a hybrid model cannot roll back a partial match. The page carries
 only the newest 4 checkpoints, so when the prompt diverges before all of them, the engine
+<<<<<<< HEAD
 re-prefills from 0 (CONTINUUM-ENGINE.md 4.0). The synthetic runs never diverge mid-history, so
+=======
+re-prefills from 0 (SERVING-ENGINE.md §0). The synthetic runs never diverge mid-history, so
+>>>>>>> origin/main
 they never hit this case. Where restores did reuse, the cost was 30 ms against 2-40 s of
 re-prefill. Lever 1 (moving [actions] to the tail) attacks the same gap from the mind's side.

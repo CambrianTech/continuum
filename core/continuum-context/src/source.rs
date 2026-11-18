@@ -40,6 +40,7 @@ pub struct Item<T> {
     /// from governed RAM, never from the window).
     pub(crate) stored: Option<StoredWhole>,
     /// What this occurrence asked for and what its tool declares it does, when it is an act
+<<<<<<< HEAD
     /// (CONTINUUM-ENGINE section 5 invariant 4); `None` for an element that is not one (a message, a notice).
     pub(crate) act: Option<Act>,
     /// Her work in hand holds it open (the read of a file she is editing, the note she wrote on
@@ -47,6 +48,10 @@ pub struct Item<T> {
     /// beside the rest at their floor, charged to that grant like any item, and never folds past it
     /// (`view::allot`). Mid-epoch it arrives as any item does.
     pub(crate) in_hand: bool,
+=======
+    /// (MIND-CONTEXT invariant 4); `None` for an element that is not one (a message, a notice).
+    pub(crate) act: Option<Act>,
+>>>>>>> origin/main
 }
 
 /// Where a non-resident whole lives and what it costs, measured when it was stored.
@@ -69,6 +74,7 @@ impl<T: Block> Item<T> {
     /// cannot build an element without saying what it follows from.
     pub fn whole(id: ElementId, cause: Cause, key: impl Into<String>, full: T) -> Self {
         let content = Content::Hashed(ContentHash::of(full.text()));
+<<<<<<< HEAD
         Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
     }
 
@@ -76,6 +82,9 @@ impl<T: Block> Item<T> {
     /// second identity is minted beside the one its producer named.
     pub fn occurrence(id: ElementId, cause: Cause, full: T) -> Self {
         Self::whole(id, cause, id.key(), full)
+=======
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+>>>>>>> origin/main
     }
 
     /// An occurrence whose `full` is a rendering of a whole held elsewhere (a result shown under
@@ -83,7 +92,11 @@ impl<T: Block> Item<T> {
     /// is held, so two equal outcomes compare equal whatever their labels say. `Absent` when the
     /// whole is not held.
     pub fn rendered(id: ElementId, cause: Cause, key: impl Into<String>, full: T, content: Content) -> Self {
+<<<<<<< HEAD
         Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None, in_hand: false }
+=======
+        Self { key: key.into(), id, cause, content, full, summary: None, pointer: None, stored: None, act: None }
+>>>>>>> origin/main
     }
 
     /// Its pointer level: what it costs once collapsed, and how to reopen it. `None` when it
@@ -111,6 +124,7 @@ impl<T: Block> Item<T> {
         self
     }
 
+<<<<<<< HEAD
     /// Her work in hand holds it open (`Item::in_hand`).
     pub fn in_hand(mut self) -> Self {
         self.in_hand = true;
@@ -121,6 +135,8 @@ impl<T: Block> Item<T> {
         self.in_hand
     }
 
+=======
+>>>>>>> origin/main
     pub fn key(&self) -> &str {
         &self.key
     }
@@ -228,7 +244,11 @@ pub trait Source<T: Block> {
     /// act was refused, the M5, 2026-11-09). `None` is a decision a source states and justifies.
     fn fold(&self, folded: &[Item<T>]) -> Option<T>;
 
+<<<<<<< HEAD
     /// The block `item` renders as when the view finds it repeats `ancestor` (CONTINUUM-ENGINE section 5
+=======
+    /// The block `item` renders as when the view finds it repeats `ancestor` (MIND-CONTEXT
+>>>>>>> origin/main
     /// invariant 4: the same request to a tool that only observes, with the same outcome). The
     /// view decides; the source words it, naming the ancestor and how to reopen it even when the
     /// ancestor is folded or paged out, never "as above". The default words none, so its items

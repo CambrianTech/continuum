@@ -311,10 +311,15 @@ async fn retiring_page_owner_requires_observed_child_exit() {
         admissions.fetch_add(1, Ordering::SeqCst);
         true
     };
+<<<<<<< HEAD
     let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
     let operation = gate.try_operation().expect("test: a fresh gate is free");
     assert_eq!(
         ensure_model_serving_if_current(&control, &drifted, false, crate::inference::llama_server::Reconciling { current: &admit, operation: &operation }).await,
+=======
+    assert_eq!(
+        ensure_model_serving_if_current(&control, &drifted, false, &admit).await,
+>>>>>>> origin/main
         EnsureOutcome::AlreadyServing
     );
     assert_eq!(
@@ -640,6 +645,7 @@ async fn retiring_page_owner_requires_observed_child_exit() {
     assert_eq!(held(), 0, "no child exists before OS spawn");
 
 }
+<<<<<<< HEAD
 
 // what this catches: a retired child's exit reached only by polling a collector on a cadence.
 // The reaper waits on the child itself: the exit event resolves with no collector called, and the
@@ -712,3 +718,5 @@ async fn the_reaper_announces_a_retired_childs_exit_after_releasing_its_custody(
         .expect("the reaper announces the exit");
     assert_eq!(held(), 0, "the lease was returned before the exit was announced");
 }
+=======
+>>>>>>> origin/main

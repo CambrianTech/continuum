@@ -1,5 +1,6 @@
 #![cfg(test)]
 
+<<<<<<< HEAD
     // what this catches (cards 0174211f, fa4aaaaa; Aiko passed her own submissions on the M5,
     // 2026-11-14): a room declaring no policy ADMITTED the author's own review. Every outcome of the
     // one policy read is pinned through the command's decision: only a readable `self: true` admits.
@@ -16,6 +17,29 @@
         assert!(!own(PolicyRead::Unavailable("wall unreachable".into())), "an unreadable policy is no permission");
         assert!(!own(PolicyRead::Declared(ReviewPolicy::default())), "declared, self false");
         assert!(own(PolicyRead::Declared(ReviewPolicy { self_review: true, ..ReviewPolicy::default() })), "the room admits it");
+=======
+    // what this catches (Codex root, review of #5017): work/review read the room's policy
+    // twice, so a Declared(self: false) read followed by an Unavailable read published the
+    // author's own review under a policy nobody could verify. The command now reads ONCE and
+    // decides on that snapshot; every outcome of the one read is pinned here.
+    #[test]
+    fn her_own_review_publishes_only_on_a_readable_policy_that_admits_it() {
+        use crate::experience::binding::ReviewPolicy;
+        use crate::persona::work_board::review::PolicyRead;
+        use crate::sdk_codegen::CommandError;
+        let card = airc_work::WorkCardId::new();
+        assert!(super::own_review_publishable(&PolicyRead::Absent, &card).is_ok(), "no policy keeps today's behaviour");
+        let admits = ReviewPolicy { self_review: true, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(admits), &card).is_ok());
+        let refuses = ReviewPolicy { self_review: false, ..ReviewPolicy::default() };
+        assert!(super::own_review_publishable(&PolicyRead::Declared(refuses), &card).is_err());
+        let Err(CommandError::Invalid(why)) =
+            super::own_review_publishable(&PolicyRead::Unavailable("wall unreachable".into()), &card)
+        else {
+            panic!("an unreadable policy must refuse her own review, by name");
+        };
+        assert!(why.contains("could not be read") && why.contains("wall unreachable"), "{why}");
+>>>>>>> origin/main
     }
 
     // what this catches (card d6e1b7a2, BigMama on #4836): a card she HOLDS on a room she is
@@ -275,11 +299,17 @@
     // revise and resubmit, a pass says it fired, and nothing submitted says nothing.
     #[test]
     fn after_a_submit_the_receipt_says_what_happens_next() {
+<<<<<<< HEAD
         use crate::cognition::review_verdict::ReviewState;
         let waiting = ReviewState::Awaiting { passes: 0, required: 1 };
         let passed = ReviewState::Passed { passes: 1 };
         let id = uuid::Uuid::new_v4();
         let bench = super::next_after_submission(Some(id), waiting, true, None, None).expect("submitted");
+=======
+        use airc_work::WorkReviewOutcome::{Failed, Passed, Unknown};
+        let id = uuid::Uuid::new_v4();
+        let bench = super::next_after_submission(Some(id), &[], true, None, None).expect("submitted");
+>>>>>>> origin/main
         assert!(bench.contains(&short8(id)) && bench.contains("test oracle grades it now") && bench.contains("verdict in the room"), "{bench}");
         assert!(bench.contains("marking the card done") && !bench.contains("No state"), "never contradicts the bench card's own text: {bench}");
         assert!(bench.contains("failed grade: revise and work/submit again"), "{bench}");
@@ -290,6 +320,7 @@
             head: airc_work::BranchName::new("e5c80c7f/her-fix").expect("a valid branch"),
             base: airc_work::BranchName::new("canary").expect("a valid branch"),
         };
+<<<<<<< HEAD
         let reviewed = super::next_after_submission(Some(id), waiting, false, handoff, Some(&pr)).expect("submitted");
         assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
         assert!(reviewed.contains("CambrianTech/continuum#5900"), "the pull request carrying it is named: {reviewed}");
@@ -311,6 +342,24 @@
         let graded = super::next_after_submission(Some(id), passed, true, None, None).expect("passed");
         assert!(graded.contains("card is done"), "an oracle-graded card finishes on its grade: {graded}");
         assert_eq!(super::next_after_submission(None, waiting, true, None, None), None, "nothing submitted, nothing to say");
+=======
+        let reviewed = super::next_after_submission(Some(id), &[], false, handoff, Some(&pr)).expect("submitted");
+        assert!(reviewed.contains("Await the review") && reviewed.contains("Do not submit again unless it is sent back"), "{reviewed}");
+        assert!(reviewed.contains("CambrianTech/continuum#5900"), "the pull request carrying it is named: {reviewed}");
+        assert_eq!(super::next_after_submission(Some(id), &[Unknown], false, handoff, Some(&pr)), Some(reviewed.clone()), "an unknown verdict is still waiting");
+        assert!(super::next_after_submission(Some(id), &[], false, None, None).unwrap().contains("no review handoff is recorded"));
+        let back = super::next_after_submission(Some(id), &[Failed], true, None, None).expect("sent back");
+        assert!(back.contains("sent submission") && back.contains("work/submit again"), "{back}");
+        let merging = super::next_after_submission(Some(id), &[Failed, Passed], false, handoff, Some(&pr)).expect("passed");
+        assert!(merging.contains("passed review") && merging.contains("CambrianTech/continuum#5900") && !merging.contains("card is done"), "a pass outranks an earlier send-back, and lands through its merge: {merging}");
+        // what this catches (break 2): a pass with no PR linked told her the card was done while
+        // its patch landed nowhere; it names the move that opens and links the PR instead.
+        let unlanded = super::next_after_submission(Some(id), &[Passed], false, handoff, None).expect("passed");
+        assert!(!unlanded.contains("card is done") && unlanded.contains("no pull request is linked") && unlanded.contains("work/submit"), "{unlanded}");
+        let graded = super::next_after_submission(Some(id), &[Passed], true, None, None).expect("passed");
+        assert!(graded.contains("card is done"), "an oracle-graded card finishes on its grade: {graded}");
+        assert_eq!(super::next_after_submission(None, &[], true, None, None), None, "nothing submitted, nothing to say");
+>>>>>>> origin/main
     }
 
     // what this catches (Kimi, 2026-09-28): the same patch resubmitted on a card minting a
@@ -406,8 +455,12 @@
         let e = super::room_of_card(&airc, None, &whole, "work/submit")
             .await
             .expect_err("a whole id on no readable board and no room: nothing to act in");
+<<<<<<< HEAD
         // the way out without naming a command in the sentence (`commands_in_refusal_text`): name its room
         assert!(e.to_string().contains("room=") && !e.to_string().contains("room/join"), "{e}");
+=======
+        assert!(e.to_string().contains("room/join") && e.to_string().contains("room="), "{e}");
+>>>>>>> origin/main
     }
 
     // what this catches (Kimi's verdict on #4825, 2026-10-06): work/review's card fields were
@@ -722,11 +775,14 @@
         };
         record(&serde_json::to_vec(&evidence).expect("allocation"));
         assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("tracked integration"), upstream);
+<<<<<<< HEAD
         // regression for card f2b90541: another remote branch at her tip (a PR branch fetched into
         // her worktree) is not upstream once the integration branch is known; it would empty her patch.
         assert!(run(&["update-ref", "refs/remotes/origin/fable/a-pr-branch", "HEAD"]).status.success());
         assert_eq!(super::past_upstream(dir.path(), &created, Some(&repo), Some("https://github.com/CambrianTech/continuum")).expect("a foreign branch at her tip"), upstream);
         assert!(run(&["update-ref", "-d", "refs/remotes/origin/fable/a-pr-branch"]).status.success());
+=======
+>>>>>>> origin/main
         let diff = run(&["diff", &upstream, "HEAD", "--", "hers.rs"]);
         assert!(String::from_utf8(diff.stdout).expect("own diff").contains("fn hers()"), "committed own work remains in the candidate");
         for remote in ["https://foreign.example/CambrianTech/continuum.git", "ssh://git@foreign.example/CambrianTech/continuum.git", "git@foreign.example:CambrianTech/continuum.git"] {
@@ -798,9 +854,15 @@
         assert!(add.status.success());
         let card = uuid::Uuid::new_v4();
         // A submission is a commit (card c3504a71: the merge gate needs its head): an uncommitted
+<<<<<<< HEAD
         // change is refused with staging it and committing it as her next moves, typed.
         let uncommitted = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("an uncommitted change is refused");
         assert_eq!(next_commands(&uncommitted), ["code/git/add", "code/git/commit"], "{uncommitted}");
+=======
+        // change is refused by name, naming the commit verb.
+        let uncommitted = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.err().expect("an uncommitted change is refused");
+        assert!(uncommitted.to_string().contains("code/git/commit"), "{uncommitted}");
+>>>>>>> origin/main
         assert!(run(&["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "-m", "solution"]).status.success());
         let clean_base = String::from_utf8(run(&["rev-parse", "HEAD"]).stdout).expect("sha").trim().to_string();
         let derived = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(base.clone()), None, &[]).await.expect("derive without ambient hands");
@@ -830,6 +892,7 @@
         let empty = super::derive_submission(&GitDiffBenchmark, dir.path(), card, None, Some(clean_base), None, &[]).await.err().expect("clean checkout refused");
         assert!(empty.to_string().contains("nothing to submit"));
         // Regression for Aris's loop (2026-10-31, investigation card 3a8a243a): a "no patch"
+<<<<<<< HEAD
         // refusal names the open way forward, so it never sends her back to work/submission. And
         // for Aiko's (the M5, 2026-11-13, review card 149f1391: 8 refused submits while the sentence
         // named `work/note` and `work/state`, offered on her list as `ledger` and `update_task`): the
@@ -841,6 +904,11 @@
             assert!(said.contains(&call.call()), "the call renders as offered: {said}");
             assert!(!said.contains(call.verb().canonical()), "never by its canonical name in prose: {said}");
         }
+=======
+        // refusal names the open way forward, so it never sends her back to work/submission.
+        let said = empty.to_string();
+        assert!(said.contains("work/note") && said.contains("work/state closed"), "{said}");
+>>>>>>> origin/main
         // Regression for 6dd8befa: a valid empty submission is not malformed
         // arguments. The real refusal reaches her without advice to retry its schema.
         let refusal = format!("work/submit: {empty}");
@@ -903,6 +971,7 @@
             publisher: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
             submitted_at_ms: 7,
         };
+<<<<<<< HEAD
         let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), crate::cognition::review_verdict::ReviewState::Awaiting { passes: 0, required: 1 }, false, None);
         assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
         assert!(answer.next.contains("already your submission"), "{}", answer.next);
@@ -915,3 +984,9 @@ fn next_commands(error: &crate::sdk_codegen::CommandError) -> Vec<&'static str> 
         other => panic!("a typed refusal with its next moves, not {other}"),
     }
 }
+=======
+        let answer = super::already_submitted(&existing, uuid::Uuid::from_u128(5), &[], false, None);
+        assert_eq!((answer.outcome, answer.submission_id), (super::SubmitOutcome::AlreadySubmitted, uuid::Uuid::from_u128(1)));
+        assert!(answer.next.contains("already your submission"), "{}", answer.next);
+    }
+>>>>>>> origin/main

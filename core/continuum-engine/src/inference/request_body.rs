@@ -99,7 +99,11 @@ pub(crate) fn finish_body(
     // think: the fork's template wraps the schema in its reasoning rule, so a format composes
     // with any think budget (`apply_think`).
     if let Some(format) = &request.response_format {
+<<<<<<< HEAD
         if let Ok(value) = serde_json::to_value(format) { // boundary: the structured-output format is JSON on the request wire
+=======
+        if let Ok(value) = serde_json::to_value(format) {
+>>>>>>> origin/main
             body["response_format"] = value;
         }
         // The completed body is encoded once at dispatch. Its size and native
@@ -156,7 +160,11 @@ pub(crate) fn finish_body(
         tool_choice = body.get("tool_choice").is_some(),
         stops_n = body.get("stop").and_then(|s| s.as_array()).map_or(0, |a| a.len()),
         msgs_n = body.get("messages").and_then(|m| m.as_array()).map_or(0, |a| a.len()),
+<<<<<<< HEAD
         temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0), // unwrap_or: probe field, -1 = the body carries no temperature
+=======
+        temperature = body.get("temperature").and_then(|t| t.as_f64()).unwrap_or(-1.0),
+>>>>>>> origin/main
         "outbound chat request tool surface"
     );
     let carried_tail = request.tail_tools.as_deref().is_some_and(|tail| !tail.is_empty());
@@ -224,7 +232,11 @@ pub fn close_trailing_assistant(messages: &mut Vec<Value>) {
         .and_then(|m| m.get("role"))
         .and_then(|r| r.as_str())
         .map(|r| r == "assistant")
+<<<<<<< HEAD
         .unwrap_or(false); // unwrap_or: no last message, or one without a role, does not end with her own turn
+=======
+        .unwrap_or(false);
+>>>>>>> origin/main
     if ends_with_assistant {
         messages.push(json!({
             "role": "user",
@@ -411,7 +423,11 @@ pub(crate) fn wire_messages_marking(
                                         "type": "image_url",
                                         "image_url": {
                                             "url": format!("data:{};base64,{}",
+<<<<<<< HEAD
                                                 image.mime_type.as_deref().unwrap_or("image/png"), b64) // unwrap_or: an image that declares no MIME type is labeled image/png, as this path always has
+=======
+                                                image.mime_type.as_deref().unwrap_or("image/png"), b64)
+>>>>>>> origin/main
                                         }
                                     }))
                                 }
@@ -511,7 +527,11 @@ pub(crate) fn build_base_body(
     let mut body = json!({
         "model": model,
         "messages": messages,
+<<<<<<< HEAD
         "temperature": request.temperature.unwrap_or(0.7), // unwrap_or: a request that names no temperature is sent at the serving default; every persona turn names its own
+=======
+        "temperature": request.temperature.unwrap_or(0.7),
+>>>>>>> origin/main
         // Stream tokens the instant they're decoded. `include_usage` makes the
         // backend emit a final usage-only frame so we still get token counts.
         "stream": true,
@@ -738,7 +758,11 @@ mod tests {
             },
         };
         let request = TextGenerationRequest {
+<<<<<<< HEAD
             tools: Some(vec![spec("commands_help")].into()),
+=======
+            tools: Some(vec![spec("commands_help")]),
+>>>>>>> origin/main
             tail_tools: Some(vec![spec("code_git_apply")]),
             ..Default::default()
         };

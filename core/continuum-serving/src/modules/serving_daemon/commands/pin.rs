@@ -118,7 +118,11 @@ crate::action_command! {
         let snap = this.catalog.snapshot();
         let live = snap.get(&p.model_id).ok_or_else(|| {
             CommandError::NotFound(format!(
+<<<<<<< HEAD
                 "unknown model id '{}'; check what's available on this host to find a matching one",
+=======
+                "unknown model id '{}' — call models/list to see the live universe",
+>>>>>>> origin/main
                 p.model_id
             ))
         })?;
@@ -146,8 +150,13 @@ crate::action_command! {
                     "is in the catalog but not downloaded"
                 };
                 return Err(CommandError::Denied(format!(
+<<<<<<< HEAD
                     "model '{}' ({}); obtain its GGUF before attempting to pin",
                     p.model_id, why
+=======
+                    "model '{}' {} — run models/pull '{}' first, then pin it",
+                    p.model_id, why, p.model_id
+>>>>>>> origin/main
                 )));
             }
         };
@@ -218,13 +227,21 @@ mod tests {
                 fixed_per_lane_bytes: 0,
             },
             served_context_window: 8192,
+<<<<<<< HEAD
+=======
+            lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+>>>>>>> origin/main
             lanes: 1,
             grid_overflow_lanes: 0,
             resident_models: 1,
             fits_on_gpu: fits,
+<<<<<<< HEAD
             rationale: String::from("test"),
             lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
             window_target: 0,
+=======
+            rationale: "test".into(),
+>>>>>>> origin/main
         }
     }
 

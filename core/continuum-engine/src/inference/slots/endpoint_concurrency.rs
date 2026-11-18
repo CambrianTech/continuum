@@ -1,8 +1,13 @@
 //! The aggregate decode admission of ONE endpoint (card 23069702 part 2): the permit every pooled
+<<<<<<< HEAD
 //! admission takes first (`turn_admission::admit`, step 1). Its size is the execution policy, not the
 //! slot count: ONE generation at a time whenever the endpoint serves any slot ([`active_decodes`]),
 //! re-applied when a new engine generation installs. Slots are residency (her KV kept warm); this is
 //! who runs.
+=======
+//! admission takes first (`turn_admission::admit`, step 1), sized from that endpoint's own engine
+//! generation (its pool's slot count) and resized when a new generation installs.
+>>>>>>> origin/main
 //!
 //! It was each adapter's own semaphore, seeded from the GLOBAL serving snapshot and resized by a
 //! reconciler per adapter: N adapters on one server meant N independent bounds, a learner holding no
@@ -12,6 +17,7 @@
 //! with nothing to retire.
 
 use parking_lot::Mutex;
+<<<<<<< HEAD
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
@@ -23,6 +29,10 @@ pub type PermitReturn<'a> = std::pin::Pin<Box<tokio::sync::futures::Notified<'a>
 /// semaphore carries no state of its own, so one signal serves them all, and each woken waiter
 /// re-tries its own semaphore. A wake is still one real return, never a spin.
 static ADAPTER_PERMIT_RETURNED: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
+=======
+use std::sync::Arc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
+>>>>>>> origin/main
 
 /// Permits in circulation (held or free) and the size the installed generation asks for.
 struct Counts {
@@ -35,6 +45,7 @@ struct Counts {
 struct Circulation {
     permits: Arc<Semaphore>,
     counts: Mutex<Counts>,
+<<<<<<< HEAD
     /// Raised when a permit returns to circulation or the size grows: what a waiter waits on.
     returned: Arc<Notify>,
 }
@@ -47,6 +58,8 @@ struct Circulation {
 /// takes the engine whole for her turn and the next waits for it, the way a GPU renders one view at a time.
 pub(super) fn active_decodes(slots: u32) -> usize {
     usize::from(slots > 0) // one generation when the endpoint serves any slot, none when it serves none
+=======
+>>>>>>> origin/main
 }
 
 pub struct EndpointConcurrency {
@@ -60,7 +73,10 @@ impl EndpointConcurrency {
             circulation: Arc::new(Circulation {
                 permits: Arc::new(Semaphore::new(0)),
                 counts: Mutex::new(Counts { issued: 0, target: 0 }),
+<<<<<<< HEAD
                 returned: Arc::new(Notify::new()),
+=======
+>>>>>>> origin/main
             }),
         }
     }
@@ -69,7 +85,10 @@ impl EndpointConcurrency {
     pub fn bound(&self) -> DecodeBound {
         DecodeBound {
             permits: Arc::clone(&self.circulation.permits),
+<<<<<<< HEAD
             returned: Arc::clone(&self.circulation.returned),
+=======
+>>>>>>> origin/main
             retire: Some(Arc::clone(&self.circulation)),
         }
     }
@@ -100,8 +119,11 @@ impl EndpointConcurrency {
             continuum_base::probe!(class = "inference.permits.grown", from = counts.issued as u64, to = slots as u64,
                 "the endpoint's decode permits grew to its generation's slot count");
             counts.issued = slots;
+<<<<<<< HEAD
             drop(counts);
             circulation.returned.notify_waiters(); // the boot's waiters had no permit to wait for
+=======
+>>>>>>> origin/main
             return;
         }
         while counts.issued > counts.target {
@@ -120,6 +142,7 @@ impl EndpointConcurrency {
 
 /// Where an admission takes its decode permit: an endpoint's own circulation, or an adapter's
 /// semaphore (cloud and other pool-less endpoints), which never shrinks.
+<<<<<<< HEAD
 ///
 /// NO WAITER IS EVER HANDED A PERMIT (card 6742aad1). A waiter waits for a RETURN and then tries,
 /// never in the semaphore's own queue: Tokio hands a released permit straight to its oldest queued
@@ -133,16 +156,26 @@ impl EndpointConcurrency {
 pub struct DecodeBound {
     permits: Arc<Semaphore>,
     returned: Arc<Notify>,
+=======
+#[derive(Clone)]
+pub struct DecodeBound {
+    permits: Arc<Semaphore>,
+>>>>>>> origin/main
     retire: Option<Arc<Circulation>>,
 }
 
 impl From<&Arc<Semaphore>> for DecodeBound {
     fn from(permits: &Arc<Semaphore>) -> Self {
+<<<<<<< HEAD
         Self { permits: Arc::clone(permits), returned: Arc::clone(&ADAPTER_PERMIT_RETURNED), retire: None }
+=======
+        Self { permits: Arc::clone(permits), retire: None }
+>>>>>>> origin/main
     }
 }
 
 impl DecodeBound {
+<<<<<<< HEAD
     /// A free permit within the endpoint's size, or `NoPermits`.
     pub fn try_acquire(&self) -> Result<DecodePermit, TryAcquireError> {
         let permit = Arc::clone(&self.permits).try_acquire_owned()?;
@@ -179,11 +212,41 @@ pub struct DecodePermit {
 impl Drop for DecodePermit {
     fn drop(&mut self) {
         let Some(permit) = self.permit.take() else { return };
+=======
+    /// A free permit within the endpoint's size, or `NoPermits`. A surplus one found on the way
+    /// (handed back raw by a cancelled waiter) is retired, never admitted.
+    pub fn try_acquire(&self) -> Result<DecodePermit, TryAcquireError> {
+        loop {
+            let permit = Arc::clone(&self.permits).try_acquire_owned()?;
+            if let Some(admitted) = self.within_size(permit) {
+                return Ok(admitted);
+            }
+        }
+    }
+
+    /// Waits for a permit within the endpoint's size. One assigned to this waiter before a shrink
+    /// is rechecked when it arrives: surplus, it retires and the wait goes on.
+    pub async fn acquire(&self) -> DecodePermit {
+        loop {
+            let permit = Arc::clone(&self.permits).acquire_owned().await
+                .expect("decode semaphore never closed"); // expect: no path closes it; it lives as long as its endpoint or adapter
+            if let Some(admitted) = self.within_size(permit) {
+                return admitted;
+            }
+        }
+    }
+
+    /// Every endpoint permit is judged against the size on its way in, because one can reach the
+    /// semaphore without passing [`DecodePermit`]'s drop: Tokio hands a released permit to the
+    /// oldest waiter, and a waiter cancelled before it is polled returns it raw.
+    fn within_size(&self, permit: OwnedSemaphorePermit) -> Option<DecodePermit> {
+>>>>>>> origin/main
         if let Some(circulation) = &self.retire {
             let mut counts = circulation.counts.lock();
             if counts.issued > counts.target {
                 permit.forget();
                 counts.issued -= 1;
+<<<<<<< HEAD
                 continuum_base::probe!(class = "inference.permits.retired", issued = counts.issued as u64, target = counts.target as u64,
                     "a returning decode permit retired toward the endpoint's smaller generation");
                 return;
@@ -193,6 +256,37 @@ impl Drop for DecodePermit {
             drop(permit);
         }
         self.returned.notify_waiters();
+=======
+                continuum_base::probe!(class = "inference.permits.retired_on_arrival", issued = counts.issued as u64, target = counts.target as u64,
+                    "a surplus decode permit reached an admission and retired instead of admitting it");
+                return None;
+            }
+        }
+        Some(DecodePermit { permit: Some(permit), retire: self.retire.clone() })
+    }
+}
+
+/// One decode admission. Dropped while its endpoint is over size, it retires instead of returning.
+pub struct DecodePermit {
+    permit: Option<OwnedSemaphorePermit>,
+    retire: Option<Arc<Circulation>>,
+}
+
+impl Drop for DecodePermit {
+    fn drop(&mut self) {
+        let (Some(circulation), Some(permit)) = (&self.retire, self.permit.take()) else {
+            return; // an adapter's permit returns through its own drop
+        };
+        let mut counts = circulation.counts.lock();
+        if counts.issued > counts.target {
+            permit.forget();
+            counts.issued -= 1;
+            continuum_base::probe!(class = "inference.permits.retired", issued = counts.issued as u64, target = counts.target as u64,
+                "a returning decode permit retired toward the endpoint's smaller generation");
+        } else {
+            drop(permit); // returned under the lock, so a concurrent shrink counts it
+        }
+>>>>>>> origin/main
     }
 }
 
@@ -249,6 +343,7 @@ mod tests {
         assert_eq!(available(&endpoint), 1);
     }
 
+<<<<<<< HEAD
     // what this catches (card 6742aad1): a waiter handed a permit by the semaphore's FIFO queue. Two
     // callers that each waited only to let the permit go passed it between them forever while each
     // one's retry found none (35,000 lane grants a second on the M5). A waiter now waits for a
@@ -284,6 +379,42 @@ mod tests {
         endpoint.retarget(1);
         drop(waiter.await);
         assert_eq!(issued(&endpoint), 1);
+=======
+    // what this catches (Codex on #5902 at 2843d17d5): a permit Tokio assigned to a waiter before a
+    // shrink. Cancelled before it is polled, the waiter hands it back raw, past DecodePermit's drop;
+    // polled, it would have been admitted unchecked. Either way the surplus must retire on arrival.
+    #[tokio::test]
+    async fn a_permit_assigned_before_a_shrink_retires_whether_its_waiter_is_cancelled_or_polled() {
+        for cancelled in [true, false] {
+            let endpoint = EndpointConcurrency::new();
+            endpoint.retarget(3);
+            let bound = endpoint.bound();
+            let mut held: Vec<_> = (0..3).map(|_| bound.try_acquire().expect("test: a free permit")).collect();
+            let mut waiter = Box::pin(bound.acquire());
+            assert!(futures::poll!(&mut waiter).is_pending(), "queued behind three held permits");
+            drop(held.pop()); // within size: returned, and Tokio assigns it to the waiter
+            endpoint.retarget(1); // the assigned permit is neither free nor held: nothing to retire yet
+            assert_eq!(issued(&endpoint), 3);
+            if cancelled {
+                drop(waiter); // the assigned permit goes back raw
+                assert!(bound.try_acquire().is_err(), "the raw surplus retires on arrival, never admits");
+                assert_eq!(issued(&endpoint), 2, "cancelled: retired by the next admission");
+                drop(held.pop());
+                assert_eq!(issued(&endpoint), 1);
+                drop(held.pop());
+                assert_eq!(available(&endpoint), 1, "the last held permit is the one slot");
+            } else {
+                assert!(futures::poll!(&mut waiter).is_pending(), "polled: the assigned surplus retired, the wait goes on");
+                assert_eq!(issued(&endpoint), 2);
+                drop(held.pop());
+                assert!(futures::poll!(&mut waiter).is_pending(), "still over size: retired, not handed on");
+                drop(held.pop());
+                let admitted = waiter.await;
+                assert_eq!(issued(&endpoint), 1, "admitted only by the permit within the size");
+                drop(admitted);
+            }
+        }
+>>>>>>> origin/main
     }
 
     // what this catches: growth that waits for something (an admission right after discovery would
@@ -310,6 +441,7 @@ mod tests {
         drop(bound.try_acquire().expect("test: a free permit"));
         assert_eq!(adapter.available_permits(), 2);
     }
+<<<<<<< HEAD
 
     // what this catches: an adapter's semaphore whose return wakes nobody, so a waiter on a full
     // cloud adapter would wait forever (its signal is shared by every adapter's semaphore).
@@ -325,4 +457,6 @@ mod tests {
         drop(waiter.await);
         assert_eq!(adapter.available_permits(), 1);
     }
+=======
+>>>>>>> origin/main
 }

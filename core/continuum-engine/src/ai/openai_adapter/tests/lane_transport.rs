@@ -2,6 +2,7 @@
 
 use super::*;
 
+<<<<<<< HEAD
 /// The lane's published state, as the serving daemon would publish it.
 fn lane_snapshot(live: bool) -> crate::inference::llama_server::ServingSnapshot {
     let mut snapshot = crate::inference::llama_server::ServingSnapshot::empty();
@@ -18,6 +19,8 @@ fn serving_daemon_fixture() -> std::sync::Arc<tokio::sync::watch::Sender<crate::
     std::sync::Arc::new(daemon)
 }
 
+=======
+>>>>>>> origin/main
 // Exercise the actual quote -> POST -> 503 -> re-quote path. The second quote
 // must restore the original reply ceiling, not inherit the first reduction.
 #[tokio::test]
@@ -30,7 +33,10 @@ async fn measured_reply_transport_retry_uses_each_quote() {
     let quotes = Arc::new(Mutex::new(Vec::<Value>::new()));
     let post_log = posts.clone();
     let quote_log = quotes.clone();
+<<<<<<< HEAD
     let daemon = serving_daemon_fixture();
+=======
+>>>>>>> origin/main
     let app = Router::new()
         .route("/v1/chat/completions/input_tokens", post(move |Json(body): Json<Value>| {
             let log = quote_log.clone();
@@ -42,6 +48,7 @@ async fn measured_reply_transport_retry_uses_each_quote() {
         }))
         .route("/v1/chat/completions", post(move |Json(body): Json<Value>| {
             let log = post_log.clone();
+<<<<<<< HEAD
             let daemon = daemon.clone();
             async move {
                 let mut log = log.lock().expect("fixture posts");
@@ -53,6 +60,12 @@ async fn measured_reply_transport_retry_uses_each_quote() {
                 } else {
                     StatusCode::OK
                 }
+=======
+            async move {
+                let mut log = log.lock().expect("fixture posts");
+                log.push(body);
+                if log.len() == 1 { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::OK }
+>>>>>>> origin/main
             }
         }));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("fixture listener");
@@ -266,10 +279,15 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
     let log = Arc::clone(&received);
     let quotes = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
     let quote_log = Arc::clone(&quotes);
+<<<<<<< HEAD
     let daemon = serving_daemon_fixture();
     let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
         let log = Arc::clone(&log);
         let daemon = Arc::clone(&daemon);
+=======
+    let app = Router::new().route("/v1/chat/completions", post(move |body: axum::body::Bytes| {
+        let log = Arc::clone(&log);
+>>>>>>> origin/main
         async move {
             let attempt = {
                 let mut log = log.lock().expect("fixture request log");
@@ -277,8 +295,11 @@ async fn structured_overflow_survives_adapter_and_prepared_transport_retry() {
                 log.len()
             };
             if attempt == 2 {
+<<<<<<< HEAD
                 // the relaunch lands while the lane still answers loading
                 daemon.send_replace(lane_snapshot(true));
+=======
+>>>>>>> origin/main
                 (StatusCode::SERVICE_UNAVAILABLE, "loading")
             } else {
                 (StatusCode::BAD_REQUEST, r#"{"error":{"type":"exceed_context_size_error","message":"no counts may be inferred from this text","n_prompt_tokens":29722,"n_ctx":29440}}"#)
@@ -769,6 +790,7 @@ fn generation_admission_follows_effective_endpoint_not_provider_label() {
     let adapter = adapter.with_dedicated_lane();
     assert_eq!(adapter.generation_admission_for("http://127.0.0.1:0"), GenerationAdmissionOwner::Adapter);
 }
+<<<<<<< HEAD
 
 // what this catches (timer audit row H4, 2026-11-14): a POST refused mid-relaunch (503 loading)
 // was resent on a linear backoff (1 s, 2 s, ... ~21 s in all), so a relaunch that landed at once
@@ -849,3 +871,5 @@ async fn a_relaunch_refusal_resends_on_the_live_publish_and_never_on_a_timer() {
     assert!(posted.try_recv().is_err(), "it was sent once, never resent");
     server.abort();
 }
+=======
+>>>>>>> origin/main

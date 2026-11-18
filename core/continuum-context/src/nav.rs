@@ -152,9 +152,14 @@ impl<M> Entry<M> {
 pub enum Origin<M> {
     /// One entry of the view, with its provenance.
     Entry(M),
+<<<<<<< HEAD
     /// A group's node, standing for `count` entries, and the command that opens it: typed, so a
     /// consumer that renders it structurally (a tool result, `work/list`) never re-derives it.
     Node { group: &'static str, count: usize, expand: Expand },
+=======
+    /// A group's node, standing for `count` entries.
+    Node { group: &'static str, count: usize },
+>>>>>>> origin/main
 }
 
 /// One unit of a collapsed view: what the context view keys and levels.
@@ -177,7 +182,11 @@ impl<M> Unit<M> {
 
     fn node(group: &Group, count: usize) -> Self {
         let text = Node::new(group.label, count, group.expand.clone()).to_string();
+<<<<<<< HEAD
         Self { key: format!("nav:{}", group.label), full: text.clone(), summary: None, pointer: Some(text), tally: true, origin: Origin::Node { group: group.label, count, expand: group.expand.clone() } }
+=======
+        Self { key: format!("nav:{}", group.label), full: text.clone(), summary: None, pointer: Some(text), tally: true, origin: Origin::Node { group: group.label, count } }
+>>>>>>> origin/main
     }
 }
 
@@ -246,7 +255,11 @@ mod tests {
         let keys: Vec<&str> = units.iter().map(|u| u.key.as_str()).collect();
         assert_eq!(keys, ["nav:open", "open:2", "open:1", "open:0", "nav:merged", "mine:a", "mine:b"]);
         assert_eq!(units[0].full, "▸ open (6) → `work/list state=open`");
+<<<<<<< HEAD
         assert_eq!(units[0].origin, Origin::Node { group: "open", count: 6, expand: live.expand.clone() });
+=======
+        assert_eq!(units[0].origin, Origin::Node { group: "open", count: 6 });
+>>>>>>> origin/main
         assert!(units.iter().filter(|u| u.tally).all(|u| u.key.starts_with("nav:")));
         assert_eq!(units[4].full, "▸ merged (5) → `work/list state=merged`");
     }

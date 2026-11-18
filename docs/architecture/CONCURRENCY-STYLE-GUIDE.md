@@ -3,7 +3,11 @@
 **Status:** canonical. Required first read before adding any monitor, broker, region, pool, pressure source, or other concurrent concern to the Continuum Rust substrate.
 
 **Companion docs:**
+<<<<<<< HEAD
 - [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) — the runtime contract every Rust module inherits (`ServiceModule`, `ModuleConfig`, `SharedCompute`, `MessageBus`).
+=======
+- [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime contract every Rust module inherits (`ServiceModule`, `ModuleConfig`, `SharedCompute`, `MessageBus`).
+>>>>>>> origin/main
 - [`BRAIN-REGIONS-SUBSTRATE.md`](BRAIN-REGIONS-SUBSTRATE.md) — the cognitive-cycle trait (`BrainRegion`, `TickOutcome`, `PressureProfile`).
 - [`RESOURCE-ARCHITECTURE.md`](RESOURCE-ARCHITECTURE.md) — `PagedResourcePool<K, V>` + `PressureBroker` arbitration.
 - [`OBSERVABILITY-AS-SUBSTRATE.md`](OBSERVABILITY-AS-SUBSTRATE.md) — `probe!` / `time_sync!` / `JsonlProbeFileSink` capture pipeline.
@@ -309,7 +313,11 @@ The rules above are not invented; they are the patterns Joel shipped in **cb-mob
 5. `core/continuum-core/src/paging/pool.rs` — `PagedResourcePool<K, V>` + `ResourcePool` trait
 6. `core/continuum-core/src/paging/broker.rs` — `PressureBroker` + arbitration
 7. `core/continuum-core/src/runtime/brain_region.rs` — cognitive tick contract
+<<<<<<< HEAD
 8. `docs/architecture/CONTINUUM-ENGINE.md` — the engineering philosophy
+=======
+8. `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — the engineering philosophy
+>>>>>>> origin/main
 9. `docs/architecture/RESOURCE-ARCHITECTURE.md` — the cross-resource picture
 10. `docs/architecture/OBSERVABILITY-AS-SUBSTRATE.md` — capture as half the substrate
 11. This document — the synthesis

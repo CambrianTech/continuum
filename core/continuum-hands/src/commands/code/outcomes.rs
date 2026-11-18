@@ -9,11 +9,16 @@ use super::git::diff::{CodeGitDiff, GitDiffResult};
 use super::git::fetch::{CodeGitFetch, GitFetchResult};
 use super::git::push::{CodeGitPush, GitPushResult};
 use super::git::status::CodeGitStatus;
+<<<<<<< HEAD
 use super::github::pr_checks::{CodeGithubPrChecks, GithubPrChecksResult};
 use super::github::pr_comment::{CodeGithubPrComment, GithubPrCommentResult};
 use super::github::pr_create::{CodeGithubPrCreate, GithubPrCreateResult};
 use super::github::pr_diff::{CodeGithubPrDiff, GithubPrDiffResult};
 use super::github::pr_merge::{CodeGithubPrMerge, GithubPrMergeResult};
+=======
+use super::github::pr_comment::{CodeGithubPrComment, GithubPrCommentResult};
+use super::github::pr_create::{CodeGithubPrCreate, GithubPrCreateResult};
+>>>>>>> origin/main
 use super::github::pr_view::{CodeGithubPrView, GithubPrViewResult};
 use crate::code::types::GitStatusInfo;
 use crate::sdk_codegen::{ProjectsOutcome, ToolVerdict};
@@ -29,9 +34,12 @@ continuum_kernel::projects_success_on_return! {
     CodeGithubPrComment => GithubPrCommentResult,
     CodeGithubPrCreate => GithubPrCreateResult,
     CodeGithubPrView => GithubPrViewResult,
+<<<<<<< HEAD
     CodeGithubPrChecks => GithubPrChecksResult,
     CodeGithubPrDiff => GithubPrDiffResult,
     CodeGithubPrMerge => GithubPrMergeResult,
+=======
+>>>>>>> origin/main
 }
 
 impl ProjectsOutcome for CodeGitStatus {

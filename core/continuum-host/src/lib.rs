@@ -11,7 +11,10 @@ pub mod core_handoff;
 pub mod core_ipc;
 pub mod durable;
 pub mod file_identity;
+<<<<<<< HEAD
 pub mod host_memory;
+=======
+>>>>>>> origin/main
 pub mod local_stream;
 pub mod output_handoff;
 pub mod own_group;

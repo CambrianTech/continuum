@@ -5,10 +5,13 @@
 //! old path.
 #![deny(clippy::await_holding_lock)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
+<<<<<<< HEAD
 // Production code holds no unwrap, expect or panic (0 under default features, 2026-11-08,
 // campaign 522419e5; the recording fixture is test-fixtures only): a fault is a typed error.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used, clippy::panic))]
 
+=======
+>>>>>>> origin/main
 pub use continuum_engine::*;
 
 pub mod genome;

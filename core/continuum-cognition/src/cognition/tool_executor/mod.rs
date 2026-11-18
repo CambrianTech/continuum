@@ -31,7 +31,10 @@
 pub mod answer;
 mod arguments;
 pub mod command_executor;
+<<<<<<< HEAD
 pub mod output_id;
+=======
+>>>>>>> origin/main
 pub mod result_tap;
 pub mod spill;
 pub mod tool_output;

@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 //! Her act's tail as one source of her view (CONTINUUM-ENGINE section 5, "Revision, 2026-11-11: her act's tail is
+=======
+//! Her act's tail as one source of her view (MIND-CONTEXT, "Revision, 2026-11-11: her act's tail is
+>>>>>>> origin/main
 //! a source"): the room's working context, the act's framing, the ask, her statement, her words and
 //! calls and their results, in the order her prompt sends them. Her view judges its items before
 //! the send (`View::judge_tail`: a repeat of an act whose whole she holds arrives as its repeat
@@ -285,7 +289,11 @@ impl Source<ContextMessage> for Tail {
 
     /// Her newest result when her view finds it repeats an earlier act whose whole she holds: her
     /// actions' repeat line in the tool result it answers, after the run it ends, and its label, so
+<<<<<<< HEAD
     /// the call and result stay one native round (CONTINUUM-ENGINE section 5 invariant 4).
+=======
+    /// the call and result stay one native round (MIND-CONTEXT invariant 4).
+>>>>>>> origin/main
     fn repeat(&self, item: &Item<ContextMessage>, ancestor: &Item<ContextMessage>) -> Option<ContextMessage> {
         let answer = self.answer.as_ref().filter(|_| self.part(item.id()) == Some(Part::Result))?;
         let line = super::actions::repeat_line(&answer.seq.to_string(), item, ancestor)?;

@@ -6,6 +6,7 @@ own comment) returning empty audio while local engines sat provisioned; the Orph
 bring-up attempt then found its adapter expects a token scheme the real model doesn't
 use. Voice has been running on an unproven ladder.*
 
+<<<<<<< HEAD
 ## 2026-10-03: the ruling and the model choice (supersedes the flagship sections below)
 
 Joel: *"We are to offer multimodal models with Lora learned controlled voices, except in
@@ -218,6 +219,9 @@ Sources: [Qwen3-TTS](https://github.com/QwenLM/Qwen3-TTS) ·
 [CPU speed, community](https://github.com/HaujetZhao/Qwen3-TTS-GGUF/blob/main/Qwen3-TTS%20Technical%20Report.md)
 
 ## Where each engine actually stood (verified 2026-09-02)
+=======
+## Where each engine actually stands (verified today)
+>>>>>>> origin/main
 
 | Engine | Reality | Verdict |
 |---|---|---|

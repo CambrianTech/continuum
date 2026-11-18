@@ -30,6 +30,7 @@ pub(crate) async fn root_at_held_card(
 ) -> HeldCardTurn {
     let turn = bind_held_card(cycle, peer_id, conversation).await;
     // A turn bound to no claim's hands acts with her default hands, at home: her
+<<<<<<< HEAD
     // perception follows the same hands the turn acts with, and so does the scope her
     // receipts carry. A scope left at the last card's checkout labelled her home acts with
     // the card's root (Aris's `[action #8136]`, the M5, 2026-11-14; card 566e390e).
@@ -38,6 +39,11 @@ pub(crate) async fn root_at_held_card(
         if let Some(body) = cycle.acting() {
             body.working_memory.set_scope(None);
         }
+=======
+    // perception follows the same hands the turn acts with.
+    if turn.hands.is_none() {
+        set_focus(peer_id, None);
+>>>>>>> origin/main
     }
     turn
 }
@@ -519,6 +525,7 @@ mod tests {
             assert!(line.contains(want), "{want}: {line}");
         }
     }
+<<<<<<< HEAD
 
     // what this catches (cards c8546b52, 566e390e): a live turn driven with no hands bound,
     // which acts in her home workspace while her other turns act in her card's checkout. The
@@ -539,4 +546,6 @@ mod tests {
             }
         }
     }
+=======
+>>>>>>> origin/main
 }

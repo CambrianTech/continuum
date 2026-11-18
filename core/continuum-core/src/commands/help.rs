@@ -113,7 +113,11 @@ impl ActionCommand for CommandsHelp {
             });
         };
 
+<<<<<<< HEAD
         // She may name it as her tool list offers it (`code_list`), by an alias, or by its canonical name.
+=======
+        // She may name it as her tool list offers it (`list_files`) or by its canonical name.
+>>>>>>> origin/main
         let canonical = crate::ai::tool_dialect::resolve_wire_name(name);
         let Some(d) = authorized.iter().find(|d| d.name == canonical) else {
             // Unknown/unauthorized name → don't dead-end; suggest the nearest callable

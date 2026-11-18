@@ -206,7 +206,11 @@ pub async fn advance_card_state_effective(
                         continuum_base::probe!(
                             class = "work.review.awaiting_more",
                             parent = %short8(parent),
+<<<<<<< HEAD
                             state = ?parent_gate.state,
+=======
+                            passed = parent_gate.passed as u64,
+>>>>>>> origin/main
                             required = parent_gate.policy.required,
                             "a review closed, but the room's policy asks for more passing reviews — the parent waits"
                         );
@@ -453,6 +457,7 @@ pub(crate) async fn open_review_card(airc: &Arc<Airc>, parent: WorkCardId) -> Re
     // The review lands on the PARENT's board, named, never through the shared current-room
     // pointer: parallel dones on two boards would otherwise race one join against the other
     // (IntelMac on #4838; the race #4838 removes from work/state).
+<<<<<<< HEAD
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
     review_once(airc, &room, parent, None, req).await
@@ -470,6 +475,13 @@ async fn review_once(
         .await
         .map(|made| made.card.card_id())
         .map_err(|e| e.to_string())
+=======
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    let created = airc.create_work_card_in(&room, req).await.map_err(|e| e.to_string())?;
+    super::board_index::wrote(airc, &room);
+    Ok(created)
+>>>>>>> origin/main
 }
 
 /// Post the review card for a ROOM's own card (not a bench card): titled and described
@@ -497,9 +509,21 @@ pub async fn open_room_review_card(
         card.title
     );
     // on the parent's board, named: never through the shared current-room pointer (#4838)
+<<<<<<< HEAD
     let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1);
     req.body = Some(body);
     review_once(airc, room, parent, submission, req).await
+=======
+    let mut req = CreateWorkCard::new(card.repo.clone(), title, Priority::P1).reviewing(parent);
+    req.body = Some(body);
+    let created = match submission {
+        Some(candidate) => airc.ensure_submission_review_in(room, parent, candidate, req).await,
+        None => airc.create_work_card_in(room, req).await,
+    }
+    .map_err(|e| e.to_string())?;
+    super::board_index::wrote(airc, room);
+    Ok(created)
+>>>>>>> origin/main
 }
 
 /// The card a review card reviews, by airc's native link (`reviews`).

@@ -12,7 +12,11 @@ inference handles + heuristic adapter ship today; namespace
 consolidation under `ai/*` is task #106.
 
 **Parents:**
+<<<<<<< HEAD
 - [`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) — substrate runtime contract
+=======
+- [`CBAR-SUBSTRATE-ARCHITECTURE.md`](CBAR-SUBSTRATE-ARCHITECTURE.md) — substrate runtime contract
+>>>>>>> origin/main
 - [`MODULE-ARCHITECTURE.md`](MODULE-ARCHITECTURE.md) — module + command shape
 - [`EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md`](EVERY-MODEL-INCLUDED-VIA-L1-BUDGET.md) — inclusivity thesis
 

@@ -2746,8 +2746,11 @@ dependencies = [
  "chrono",
  "dirs 5.0.1",
  "serde",
+<<<<<<< HEAD
  "serde_json",
  "sha2",
+=======
+>>>>>>> origin/main
  "tempfile",
  "tracing",
  "uuid",

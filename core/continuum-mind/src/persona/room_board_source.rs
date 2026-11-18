@@ -117,7 +117,10 @@ pub trait RoomBoardReader: Send + Sync {
 /// A board read slower than this is always marked (the pair of durations is the
 /// distribution a stalled tick is measured against); faster reads mark once per room
 /// per minute, enough to notice a hang without flooding the ledger.
+<<<<<<< HEAD
 // derived-or-floor: a diagnostics threshold for marking a read in the ledger, never a wait; it decides only how often a fast read is logged
+=======
+>>>>>>> origin/main
 const SLOW_BOARD_READ_MS: u64 = 100;
 
 fn board_read_mark_due(room: uuid::Uuid) -> bool {
@@ -318,6 +321,7 @@ impl RoomBoardSource {
             review.card_id == card.card_id && review.submission_id == candidate.submission_id
         }).collect();
         let review = reviews.first()?;
+<<<<<<< HEAD
         // Derived, never "some verdict passed" (card 5a94e88e: d89256ed read "passed review" on one
         // verdict while its PR's CI was red). This render holds no wall read, so it counts under the
         // default policy, the floor: one independent pass, no self-review.
@@ -327,6 +331,11 @@ impl RoomBoardSource {
         );
         let next = crate::persona::work_board::submissions::next_after_submission(
             Some(candidate.submission_id.as_uuid()), state,
+=======
+        let outcomes: Vec<_> = reviews.iter().map(|review| review.outcome).collect();
+        let next = crate::persona::work_board::submissions::next_after_submission(
+            Some(candidate.submission_id.as_uuid()), &outcomes,
+>>>>>>> origin/main
             crate::recipe::benchmark_catalog::graded_at_submit(&card.title),
             Some(review.review_card_id),
             card.pull_request.as_ref(),
@@ -509,7 +518,11 @@ impl RoomBoardSource {
             .cards
             .iter()
             .filter(|c| {
+<<<<<<< HEAD
                 c.owner.is_some_and(|o| o.as_uuid() == self.persona_id)
+=======
+                c.owner.map(|o| o.as_uuid() == self.persona_id).unwrap_or(false)
+>>>>>>> origin/main
                     // Only a LIVE lease is "held" (see `claim_is_live`): a lapsed
                     // claim rendered as held contradicts the #156 lost-claim fact
                     // and is the stale-lease loop attractor (2026-08-03).
@@ -684,9 +697,29 @@ impl RoomBoardSource {
         // easily without having to independently manage this at each consumer"). Before, each
         // claim anywhere appended the whole board again (Benchy, the M5, 2026-11-07: 7 snapshots of
         // ~30k chars, 47% of her prompt), and 840 closed cards were 31,185 chars of it (2026-10-31).
+<<<<<<< HEAD
         // The shape is `board_nav`'s, shared with `work/list`, so her tool and her view agree.
         let hers = |card: &airc_work::WorkCard| card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
         let group = |card: &airc_work::WorkCard| super::board_nav::group_of(card, self.persona_id, now_ms).map(super::board_nav::BoardGroup::nav);
+=======
+        use continuum_context::nav::{Expand, Fold, Group};
+        let list = || Expand::verb("work/list");
+        let hers = |card: &airc_work::WorkCard| card.owner.map(|o| o.as_uuid()) == Some(self.persona_id);
+        let group = |card: &airc_work::WorkCard| -> Option<Group> {
+            if matches!(card.state, airc_work::CardState::Merged | airc_work::CardState::Closed) {
+                let label = crate::cognition::card_facts::state_str(&card.state);
+                return Some(Group { label, expand: list().with("state", label), fold: Fold::All });
+            }
+            if hers(card) {
+                return None;
+            }
+            Some(if crate::cognition::card_holder::claimable_now(card, now_ms) {
+                Group { label: "claimable", expand: list().with("claimable", "true"), fold: Fold::Recent }
+            } else {
+                Group { label: "held by others", expand: list(), fold: Fold::Recent }
+            })
+        };
+>>>>>>> origin/main
         let card_entry = |card: &airc_work::WorkCard| {
             let id8 = airc_core::shown_id::shown_form(card.card_id.as_uuid());
             let holder = crate::cognition::card_holder::holder(card, self.persona_id, now_ms, &names);

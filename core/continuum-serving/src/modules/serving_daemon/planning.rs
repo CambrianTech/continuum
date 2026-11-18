@@ -338,6 +338,7 @@ impl ServingDaemonModule {
                 // teardown transient (one low reading while a predecessor dies) clears
                 // in a tick or two; a real shortfall holds for hours. The two are orders
                 // of magnitude apart in duration, so the grace is not delicate.
+<<<<<<< HEAD
                 // THE REQUIREMENT IS A TARGET, NOT A GATE (card 53a8d49b).
                 // The old behavior — refuse any plan below floor when an incumbent exists —
                 // was the trap: a node whose requirement is unreachable (e.g. 176,730 tokens
@@ -395,6 +396,108 @@ impl ServingDaemonModule {
                         self.retain_plan_for_intent(intent_revision, candidates);
                         return PlanOutcome::Decided;
                     }
+=======
+                static BELOW_FLOOR_SINCE: parking_lot::Mutex<Option<std::time::Instant>> =
+                    parking_lot::Mutex::new(None);
+                let below_for = {
+                    let mut since = BELOW_FLOOR_SINCE.lock();
+                    if matches!(verdict, FloorVerdict::Below { .. }) && incumbent.is_none() {
+                        since.get_or_insert_with(std::time::Instant::now).elapsed()
+                    } else {
+                        *since = None;
+                        std::time::Duration::ZERO
+                    }
+                };
+                let refuse = below_floor_refuses(&verdict, incumbent.is_some(), below_for);
+                if let FloorVerdict::Below { floor, wanted } = verdict {
+                    if refuse {
+                        static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
+                            parking_lot::Mutex::new(None);
+                        let key = (floor.clone(), wanted.clone());
+                        if LAST_REFUSED.lock().as_ref() != Some(&key) {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.demotion_refused",
+                                floor = floor.as_str(),
+                                wanted = wanted.as_str(),
+                                incumbent = incumbent.as_deref().unwrap_or("<none>"),
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                physical_usable_gb =
+                                    (self.physical_budget().usable_bytes / 1_000_000_000),
+                                "plan wants a base BELOW what this host's physical capacity \
+                                 serves — refused; the previous plan stands until the budget \
+                                 returns (a host never sinks below its floor)"
+                            );
+                            *LAST_REFUSED.lock() = Some(key);
+                        }
+                        self.retain_plan_for_intent(intent_revision, candidates);
+                        // THE MISSING ARM (card c3c50e0d; Cormac: "no decision cannot compile").
+                        // "The previous plan stands" assumes a previous plan. At boot beside an
+                        // INHERITED engine there is none — plan_tx holds None — so a refused
+                        // demotion published NOTHING, the reconcile had nothing to do, and a
+                        // healthy engine on its port was never adopted (M5 2026-09-26 18:22Z:
+                        // six minutes, sixteen residents dark, cleared only by killing the
+                        // engine). An inherited lane is a past form of ourself: its residency
+                        // is ours to reclaim, so the plan that ADOPTS it is planned against the
+                        // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
+                        if self.plan_tx.borrow().plan.is_none() {
+                            if let Some(inc) = incumbent.as_deref() {
+                                let geometry = crate::inference::served_window_store::load_geometry()
+                                    .filter(|g| g.model_id == inc)
+                                    .and_then(|g| g.cache_geometry());
+                                match incumbent_adoption_plan(
+                                    &self.physical_budget(),
+                                    candidates,
+                                    inc,
+                                    &demand,
+                                    geometry,
+                                ) {
+                                    Some(plan) => {
+                                        continuum_base::probe!(
+                                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
+                                            model = inc,
+                                            lanes = plan.lanes as u64,
+                                            window = plan.served_context_window as u64,
+                                            usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                            physical_usable_gb =
+                                                (self.physical_budget().usable_bytes / 1_000_000_000),
+                                            "a demotion was refused with NO plan to retain: the \
+                                             inherited engine is planned at its own geometry \
+                                             against the physical budget — adopt, never nothing"
+                                        );
+                                        self.publish_plan_snapshot(intent_revision, Some(plan));
+                                    }
+                                    None => continuum_base::probe!(
+                                        target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
+                                        model = inc,
+                                        physical_usable_gb =
+                                            (self.physical_budget().usable_bytes / 1_000_000_000),
+                                        "a demotion was refused with no plan to retain and the \
+                                         inherited engine cannot be planned even against the \
+                                         physical budget — refused, named; the reconcile stays idle"
+                                    ),
+                                }
+                            }
+                        }
+                        return PlanOutcome::Decided;
+                    }
+                    // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
+                    // capability floor it cannot reach. Serve the plan instead of booting dark
+                    // (Cormac's recovery 2026-09-17: pinning the 1.5B — the very plan this gate
+                    // stood in front of — came up ready with all eight citizens hosted). The
+                    // floor's other half — count only models with a VIABLE served window, so
+                    // the 4B whose weights fit but whose window is a dead 2048 stops out-ranking
+                    // a serviceable 1.5B — stays card 48f5438a and is owned with its measurements.
+                    continuum_base::probe!(
+                        target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_boot_below_floor_served",
+                        floor = floor.as_str(),
+                        wanted = wanted.as_str(),
+                        waited_s = below_for.as_secs(),
+                        physical_usable_gb =
+                            (self.physical_budget().usable_bytes / 1_000_000_000),
+                        "no incumbent to preserve and the plan stayed below the capability \
+                         floor past the grace — serving it rather than staying dark (card 48f5438a)"
+                    );
+>>>>>>> origin/main
                 }
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
                 // only shields the incumbent from its OWN residency — an external
@@ -534,9 +637,12 @@ impl ServingDaemonModule {
                         // The shared-window growth decision for training reservations, once per
                         // change (it was a per-call probe of its own, ~4/s).
                         training_growth = ?training_growth,
+<<<<<<< HEAD
                         // The fraction of target met — published per-mille so a reader can
                         // tell whether a node is climbing toward its requirement or stuck.
                         closeness = plan.closeness(),
+=======
+>>>>>>> origin/main
                         "serving plan recomputed",
                     );
                     // Warm-slot oversubscription for the ADOPTED plan (#266) —
@@ -728,7 +834,10 @@ mod training_lease_tests {
             fits_on_gpu: true,
             rationale: String::new(),
             lanes_bound: LanesBound::Demand,
+<<<<<<< HEAD
             window_target: 0,
+=======
+>>>>>>> origin/main
         };
         let key = |growth: &TrainingGrowth| plan_decisions(&plan, 1, None, 2, Some(growth));
         assert_eq!(key(&TrainingGrowth::NoDemand), key(&TrainingGrowth::NoDemand), "unchanged: the probe stays silent");
@@ -738,6 +847,7 @@ mod training_lease_tests {
             "a changed growth decision changes the key, so the plan probe reports it once"
         );
     }
+<<<<<<< HEAD
 
     // what this catches (card 53a8d49b RULE 1): a plan whose closeness to target beats a
     // smaller standing plan MUST be adopted even when its window is below the persona floor.
@@ -822,6 +932,8 @@ mod training_lease_tests {
         // shows the gap that the upgrade gate closes.
         assert!(t3.closeness() < t2.closeness());
     }
+=======
+>>>>>>> origin/main
 }
 
 /// What one planning pass decided: a plan published, retained or refused (`Decided`), or nothing,

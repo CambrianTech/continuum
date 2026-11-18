@@ -58,7 +58,11 @@
         assert_eq!(d.peak_tokens, 176_154);
         assert_eq!(typical_tokens(&d), Some(45_000), "the median of recent turns");
         assert_eq!(requirement_tokens(&d), 45_000);
+<<<<<<< HEAD
         let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None, overflow_tokens: None };
+=======
+        let legacy = PersonaDemand { peak_tokens: 176_154, last_tokens: 29_911, last_seen_ms: 0, prev_seen_ms: 0, turns: 5, sent_peak: 0, recent: [0; RECENT_TURNS], recent_next: 0, need_recent: [NeedSample::default(); RECENT_TURNS], need_next: 0, sent_recent: [0; RECENT_TURNS], sent_next: 0, floor_tokens: None };
+>>>>>>> origin/main
         assert_eq!(requirement_tokens(&legacy), 29_911, "no ring: the last turn, never the peak");
         let ser: PersonaDemand = serde_json::from_str(r#"{"peak_tokens":1,"last_tokens":2,"last_seen_ms":3,"turns":4}"#).expect("legacy json");
         assert_eq!(typical_tokens(&ser), None);
@@ -70,6 +74,7 @@
         assert!(typical_tokens(&d).expect("ring") >= 100_024, "the old small turns aged out");
     }
 
+<<<<<<< HEAD
     // what this catches (Aris on the M5, 2026-11-13, 2b17c41df): a ring her collapses filled
     // (median 35,046 against a full-detail view past her 43,807 grant) kept her requirement low
     // for up to eight more collapses. Her newest demand past the window she was served is her
@@ -92,6 +97,8 @@
         assert!(requirement_tokens(&reg.demand_of(aris).expect("recorded")) < 63_000, "a turn that fits ends the probe");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches (card 70706a9e): the NEED ring learns only from turns the fit
     // HELD. Kimi's wish (untrimmed assembly) ran 99k over a 75,776 seat her turns fitted
     // into every time; gating on the wish × 1.25 read her as "over the grid" at her own
@@ -354,7 +361,11 @@
 
         let persona = p(9);
         let before = WorkingSetRegistry::with_store(class());
+<<<<<<< HEAD
         before.record(persona, 24_126, 32_768, 1_000);
+=======
+        before.record(persona, 24_126, 1_000);
+>>>>>>> origin/main
         let _ = before.record_emission(persona, 321, 200, EmissionStop::Landed, 1_001);
         assert_eq!(before.ceiling(), Some(24_126));
 
@@ -434,7 +445,11 @@
         assert_eq!(reg.ceiling(), None);
         assert_eq!(reg.observed_personas(), 0);
         // A zero-token turn is a defect signal elsewhere, not an observation here.
+<<<<<<< HEAD
         reg.record(p(1), 0, 32_768, 1_000);
+=======
+        reg.record(p(1), 0, 1_000);
+>>>>>>> origin/main
         assert_eq!(
             reg.ceiling(),
             None,
@@ -850,6 +865,7 @@ fn a_stale_target_never_cuts_her_floor_on_the_way_to_admission() {
     assert_eq!(need.within(58_112).get(), 60_000, "past the ceiling her floor stands, and waits");
     assert!(need.within(262_144).get() >= 60_000, "under a roomy ceiling, never below her floor");
 }
+<<<<<<< HEAD
 
 // what this catches (the M5, 2026-11-13 19:36Z, card 8569b03d): a boot that plans for nobody. Before
 // the persona registry exists, the residents are the minds this host served most recently, each with
@@ -872,3 +888,5 @@ fn a_boot_remembers_its_newest_held_residents_and_nobody_else() {
     assert_eq!(reg.remembered_residents(9).len(), 3, "a mind that never held a turn is no resident");
     assert!(requirements_for(&reg.remembered_residents(2), &reg).iter().all(|r| r.measure.target().is_some()), "each remembered resident is a measured requirement");
 }
+=======
+>>>>>>> origin/main

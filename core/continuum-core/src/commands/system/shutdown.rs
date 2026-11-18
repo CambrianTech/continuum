@@ -83,8 +83,14 @@ crate::action_command! {
     params: SystemQuery,
     output: ShutdownTarget,
     run(_this, _ctx, _p) => {
+<<<<<<< HEAD
         let _runtime = crate::runtime::signal_runtime()
             .map_err(|reason| crate::sdk_codegen::CommandError::Internal(reason.to_string()))?;
+=======
+        if crate::runtime::signal_runtime().is_none() {
+            return Err(crate::sdk_codegen::CommandError::Internal("runtime is not installed; shutdown handoff unavailable".into()));
+        }
+>>>>>>> origin/main
         Ok(shutdown_target().clone())
     }
 }
@@ -155,6 +161,7 @@ crate::action_command! {
         // worse than the forced kill this verb exists to replace. `begin_shutdown` runs
         // it in a task no connection owns, and is idempotent, so a signal racing this
         // request joins the same broadcast rather than saving twice over one state.
+<<<<<<< HEAD
         // Carry the installed runtime into the retained operation. Absence cannot
         // start an operation or publish an empty, apparently durable receipt.
         let runtime = crate::runtime::signal_runtime()
@@ -163,6 +170,24 @@ crate::action_command! {
         // measured remaining time and capped by TURN_SETTLE_CAP, before any module saves.
         let settle = crate::cognition::turn_ingress::TURN_SETTLE_CAP;
         let rx = crate::runtime::begin_shutdown(&runtime, settle);
+=======
+        // Refuse BEFORE triggering when no runtime is installed. `begin_shutdown`
+        // publishes an empty receipt in that case so no observer hangs — but an empty
+        // receipt is "all zero modules were durable", which is true and says nothing, and
+        // the caller reads a success here as permission to stop hard-killing. A core in
+        // its boot window has state at stake and no one to save it; that is a refusal,
+        // not a clean stop.
+        if crate::runtime::signal_runtime().is_none() {
+            return Err(crate::sdk_codegen::CommandError::Internal(
+                "no runtime is installed yet — the core cannot stop gracefully, so nothing                  here says its state is durable"
+                    .to_string(),
+            ));
+        }
+        // The settle comes first (card 32fa22ba): admitted turns finish, bounded by their
+        // measured remaining time and capped by TURN_SETTLE_CAP, before any module saves.
+        let settle = crate::cognition::turn_ingress::TURN_SETTLE_CAP;
+        let rx = crate::runtime::begin_shutdown(settle);
+>>>>>>> origin/main
 
         // Bounded so a wedged module cannot hold the connection open forever. A timeout
         // here does NOT cancel the shutdown — it is still running, un-cancelled, in the
@@ -219,7 +244,11 @@ mod tests {
     #[test]
     fn commit_requires_same_instance_and_completed_received_receipt() {
         let current = ShutdownTarget { pid: 42, instance: "first".into() };
+<<<<<<< HEAD
         let receipt = ShutdownReceipt { modules: vec![], total_ms: 19, custody: vec![] };
+=======
+        let receipt = ShutdownReceipt { modules: vec![], total_ms: 19 };
+>>>>>>> origin/main
         let mut params = ShutdownCommitParams { target: current.clone(), receipt_sha256: shutdown_receipt_digest(&receipt).unwrap() };
         assert!(validate_commit(&params, &current, None).is_err());
         assert!(validate_commit(&params, &current, Some(&receipt)).is_ok());
@@ -270,9 +299,15 @@ mod tests {
     #[tokio::test]
     async fn without_a_runtime_it_refuses_rather_than_claiming_a_clean_stop() {
         // `signal_runtime()` is a process-wide OnceLock. In a test binary that has not
+<<<<<<< HEAD
         // installed one this is Err; if another test in the same process installed it,
         // this assertion would be about a live runtime, so it checks the branch it can.
         if crate::runtime::signal_runtime().is_err() {
+=======
+        // installed one this is None; if another test in the same process installed it,
+        // this assertion would be about a live runtime, so it checks the branch it can.
+        if crate::runtime::signal_runtime().is_none() {
+>>>>>>> origin/main
             let err = SystemShutdown
                 .run(&Ctx::default(), SystemQuery {})
                 .await

@@ -376,7 +376,10 @@ impl Inner {
         // symmetric in source AND in rank.
         let local_plan = LanePlan::serving(
             &serving,
+<<<<<<< HEAD
             crate::capacity::window_grant::current_seat(),
+=======
+>>>>>>> origin/main
             rank_of(serving.active_model.as_deref().unwrap_or("")) // unwrap_or: no model = no row anyway; `serving` returns None below
                 .unwrap_or(crate::inference::planning::serving_plan::footprint::UNMEASURED_RANK_CAP), // unwrap_or: an unmeasured model ranks at the proxy cap, exactly as a peer's would
             // The SAME rate this node beacons to its peers (own curve, fresh or stale), so
@@ -940,7 +943,11 @@ mod tests {
         // 99,096 × 1.25 = 123,870 named her at a 75,776 grid her turns were fitting into
         // every time. With a need of 74,000 she is served there; with a need of 80,000
         // she is still named — the need gates in both directions. An exact need above a
+<<<<<<< HEAD
         // stale target raises the target, never the reverse (#5931, CONTINUUM-ENGINE.md, serving engine: admission (4.8)):
+=======
+        // stale target raises the target, never the reverse (#5931, SERVING-ENGINE section 8):
+>>>>>>> origin/main
         // what her turns cannot be sent below is the truth the grid names.
         let kimi = Uuid::new_v4();
         let wish = vec![LaneRequirement::wished(kimi, t(99_096), 1.25)];
@@ -954,6 +961,7 @@ mod tests {
         let bound = vec![LaneRequirement::wished(kimi, t(99_096), 1.25).held(crate::inference::planning::window_allocator::observed::Observed::AtLeast { at_least: t(99_096) })];
         assert!(minds_over_the_grid(&bound, 75_776).is_empty(), "a bound past the widest window is not unservable (Cormac on #5773)");
     }
+<<<<<<< HEAD
 
     // what this catches (the M5, 2026-11-14, `grid.mind.unservable widest_window=132300`): the
     // widest lane read as the pool's equal share. Against the seat the engine holds (262,144 per
@@ -978,4 +986,6 @@ mod tests {
         assert_eq!(minds_over_the_grid(&boot, 110_387).len(), 3, "before: the share stood in at boot");
         assert!(minds_over_the_grid(&boot, 0).is_empty(), "after: no reported seat names nobody");
     }
+=======
+>>>>>>> origin/main
 }

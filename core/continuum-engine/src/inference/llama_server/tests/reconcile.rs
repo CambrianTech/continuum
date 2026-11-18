@@ -289,7 +289,10 @@ async fn new_gene_triggers_relaunch_on_same_model() {
 #[tokio::test]
 async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     for outcome in [GenomeInPlace::Adopted, GenomeInPlace::Busy] {
+<<<<<<< HEAD
         let shown = format!("{outcome:?}");
+=======
+>>>>>>> origin/main
         let ctrl = FakeControl::probe(Ok(Some("coder-14b".into())))
             .with_active_adapters(vec!["/genes/a.gguf".into()])
             .with_in_place(outcome);
@@ -299,8 +302,13 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
             false,
         )
         .await;
+<<<<<<< HEAD
         assert_eq!(got, EnsureOutcome::AlreadyServing, "{shown}");
         assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{shown}: no relaunch");
+=======
+        assert_eq!(got, EnsureOutcome::AlreadyServing, "{outcome:?}");
+        assert_eq!(ctrl.serves.load(Ordering::SeqCst), 0, "{outcome:?}: no relaunch");
+>>>>>>> origin/main
     }
     // The staged name: a bare .gguf the engine's confinement accepts, and two genes
     // sharing a file name in different folders never collide.
@@ -312,6 +320,7 @@ async fn a_new_gene_joins_a_capable_engine_in_place_and_a_busy_retire_waits() {
     assert!(!a.contains('/') && !a.contains("..") && a.len() <= 200);
 }
 
+<<<<<<< HEAD
 // what this catches (4.10 P4a): the catalog's owner refusing (none installed, a replaced engine,
 // memory not granted) must keep the running engine and every resident's KV, never relaunch.
 #[tokio::test]
@@ -350,6 +359,8 @@ async fn failed_genome_mutation_preserves_the_running_engine() {
     }
 }
 
+=======
+>>>>>>> origin/main
 // what this catches (IntelMac 2026-11-07, from=0 to=7): a core adopting a live engine reading
 // its adapter set as empty and relaunching it cold. The engine's own report maps back to genome
 // paths: a gene loaded at launch by its path, one loaded in place by its staged name, matched to

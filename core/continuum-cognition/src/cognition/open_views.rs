@@ -20,10 +20,14 @@
 use crate::ai::types::ResultCustody;
 use crate::cognition::act_observe::{Observation, ToolVerb};
 use crate::cognition::tool_executor::tool_output::TOOL_OUTPUT;
+<<<<<<< HEAD
 use crate::cognition::working_memory::ActSeq;
 use crate::sdk_codegen::VerbRef;
 use continuum_hands::modules::code_commands::{CodeEditParams, CodeWriteParams};
 use serde::Deserialize;
+=======
+use crate::sdk_codegen::VerbRef;
+>>>>>>> origin/main
 
 /// The verb her open views name for paging a file.
 const CODE_READ: VerbRef<continuum_hands::modules::code_commands::CodeRead> = VerbRef::in_hands();
@@ -63,6 +67,7 @@ pub struct OpenView {
     /// in the whole representation; the shared context allocator decides its visibility.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+<<<<<<< HEAD
     /// What her hands have done with it: seen, read, or being edited ([`ViewWork`]).
     #[serde(default, skip_serializing_if = "ViewWork::is_seen")]
     pub work: ViewWork,
@@ -124,6 +129,8 @@ impl KeptRead {
     fn or(self, newer: Self) -> Self {
         if newer.whole || !self.whole { newer } else { self }
     }
+=======
+>>>>>>> origin/main
 }
 
 /// Storage retention in records, not a prompt budget. Cursor and intent costs are measured
@@ -165,9 +172,12 @@ impl OpenViews {
         if act.output.verb == ToolVerb::Read {
             return self.note_file_read(act, seq, scope);
         }
+<<<<<<< HEAD
         if matches!(act.output.verb, ToolVerb::Edit | ToolVerb::Write) {
             return self.note_edit(act, seq, scope);
         }
+=======
+>>>>>>> origin/main
         let name = crate::ai::tool_dialect::resolve_wire_name(&act.call.name);
         if name == TOOL_OUTPUT.canonical() {
             return self.note_output_page(act, seq);
@@ -225,7 +235,10 @@ impl OpenViews {
         // (the M5, 2026-11-10: 20 identical re-reads, 2,876 s; Atlas read one 666-line file 4x).
         // A partial inline read keeps the handle already named: its own covers only its range.
         let whole_file = shown.zip(field_u32("total_lines")).is_some_and(|((start, end), total)| start <= 1 && end >= total);
+<<<<<<< HEAD
         view.work = view.work.read(KeptRead { seq: ActSeq(seq), whole: whole_file });
+=======
+>>>>>>> origin/main
         view.handle = match (&result.custody, whole_file) {
             (ResultCustody::Pointer { handle }, _) => Some(handle.clone()),
             (ResultCustody::Whole { handle }, true) => Some(handle.clone()),
@@ -234,6 +247,7 @@ impl OpenViews {
         true
     }
 
+<<<<<<< HEAD
     /// An edit or write of a file she has open from this checkout: her edit of it is open
     /// ([`ViewWork::Editing`]). Matched by the file, whichever spelling (relative to the
     /// checkout or absolute) the read and the edit used; an edit of a file she never read opens
@@ -288,6 +302,8 @@ impl OpenViews {
         kept.into_values().map(|read| read.seq).collect()
     }
 
+=======
+>>>>>>> origin/main
     /// A `tool/output` line range over a saved output: the requested range, clamped to the
     /// output's size, when the page came back whole. A page of a stored FILE read only
     /// touches that file's view: its line numbers are the saved result's, which open with a
@@ -343,7 +359,10 @@ impl OpenViews {
                 touched_seq: seq,
                 scope: scope.map(str::to_owned),
                 note: None,
+<<<<<<< HEAD
                 work: ViewWork::Seen,
+=======
+>>>>>>> origin/main
             },
         };
         self.views.push(view);
@@ -458,6 +477,7 @@ fn one_spelling(path: &str) -> String {
         .into_owned()
 }
 
+<<<<<<< HEAD
 /// One file under one spelling from where her hands stand: a path relative to the checkout `scope`
 /// joined to it, so `core/x.rs` and `<checkout>/core/x.rs` name the same file (the M5, 2026-11-14:
 /// Aris's open views listed `deploy_actuator.rs` under both).
@@ -469,6 +489,8 @@ fn in_checkout(path: &str, scope: Option<&str>) -> std::path::PathBuf {
     }
 }
 
+=======
+>>>>>>> origin/main
 fn render_cursor(view: &OpenView) -> String {
     let mut line = match &view.subject {
         ViewSubject::File { path } => path.clone(),

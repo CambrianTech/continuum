@@ -47,7 +47,11 @@ pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
         .filter(|d| is_command_authorized(d.name, trust))
+<<<<<<< HEAD
         .filter_map(offerable)
+=======
+        .map(descriptor_to_tool_spec)
+>>>>>>> origin/main
         .collect()
 }
 
@@ -64,7 +68,11 @@ pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
         .filter(|d| d.access_level == AccessLevel::AiSafe)
+<<<<<<< HEAD
         .filter_map(offerable)
+=======
+        .map(descriptor_to_tool_spec)
+>>>>>>> origin/main
         .collect()
 }
 
@@ -73,9 +81,14 @@ pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
 /// schema are best-effort until the descriptor carries richer metadata (see
 /// module docs); this projection is structured so that richness lands here
 /// without changing any caller.
+<<<<<<< HEAD
 pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> Result<NativeToolSpec, ToolExclusion> {
     let input_schema = tool_input_schema_from(&d.params_schema).map_err(|why| ToolExclusion { tool: d.name, reason: why.reason() })?;
     Ok(NativeToolSpec {
+=======
+pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
+    NativeToolSpec {
+>>>>>>> origin/main
         name: d.name.to_string(),
         // The command's own declared DESCRIPTION (headless, compartmentalized) when
         // present; otherwise fall back to a name + param-type handle so the model
@@ -92,6 +105,7 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> Result<NativeToolSpec, 
         // SDK adapts from. Commands not yet on a base trait carry a `Null` schema;
         // those fall back to an open object (the command still validates its typed
         // params). One source, every interface ([[command-organization]]).
+<<<<<<< HEAD
         input_schema,
     })
 }
@@ -117,6 +131,10 @@ fn offerable(d: &CommandDescriptor) -> Option<NativeToolSpec> {
             );
         })
         .ok()
+=======
+        input_schema: tool_input_schema_from(&d.params_schema),
+    }
+>>>>>>> origin/main
 }
 
 // ─────────────────────────── progressive disclosure ──────────────────
@@ -378,7 +396,11 @@ pub fn native_offers() -> Vec<super::tool_surface::OfferedTool> {
     command_registry_live()
         .iter()
         .filter(|d| d.native)
+<<<<<<< HEAD
         .filter_map(|d| offerable(d).map(|spec| super::tool_surface::OfferedTool { spec, disclosure: d.disclosure }))
+=======
+        .map(|d| super::tool_surface::OfferedTool { spec: descriptor_to_tool_spec(d), disclosure: d.disclosure })
+>>>>>>> origin/main
         .chain(verdict_tool_specs().into_iter().map(super::tool_surface::OfferedTool::always))
         .collect()
 }
@@ -455,6 +477,20 @@ pub fn is_yield_turn(name: &str) -> bool {
     name == VERDICT_YIELD_TURN || VERDICT_YIELD_ALIASES.contains(&name)
 }
 
+<<<<<<< HEAD
+=======
+/// Look up one command by name and project it to a full tool spec — the on-demand
+/// half of progressive disclosure (the catalog gives names; this gives the schema).
+/// `None` when no such command is registered (the caller reports that, never
+/// fabricates a schema — [[fallbacks-are-illegal-fail-loud]]).
+pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
+    command_registry_live()
+        .iter()
+        .find(|d| d.name == name)
+        .map(descriptor_to_tool_spec)
+}
+
+>>>>>>> origin/main
 // The on-demand "how do I call this?" tool is the EXISTING `commands/help`
 // ([`CommandsHelp`] in `commands::help`), referenced by [`TOOL_HELP_NAME`].
 // We deliberately do NOT define a parallel describe command here — `commands/help`
@@ -475,14 +511,24 @@ pub fn is_yield_turn(name: &str) -> bool {
 /// Drop the map and llama.cpp rejects the whole turn with a 400 ("definitions not
 /// in {…}") — the bug that kept every tool-enabled persona turn silent until the
 /// command-registry migration exposed the first nested-param tool.
+<<<<<<< HEAD
 fn tool_input_schema_from(schema: &serde_json::Value) -> Result<ToolInputSchema, schema_variants::UnsupportedVariants> {
     if schema.is_null() {
         return Ok(ToolInputSchema {
+=======
+fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
+    if schema.is_null() {
+        return ToolInputSchema {
+>>>>>>> origin/main
             schema_type: "object".to_string(),
             properties: json!({}),
             required: None,
             definitions: None,
+<<<<<<< HEAD
         });
+=======
+        };
+>>>>>>> origin/main
     }
     // llama.cpp's GBNF grammar generator rejects JSON-Schema *boolean* subschemas
     // (`true`/`false`) with "Unrecognized schema: true" — but schemars emits `true`
@@ -496,6 +542,7 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> Result<ToolInputSchema,
     // `{"not": {}}` = no value), leaving keyword booleans (`nullable: true`,
     // `deprecated: true`) untouched.
     let schema = sanitize_schema_booleans(schema.clone());
+<<<<<<< HEAD
     // Carry the nested-type definitions under the key the refs name. schemars
     // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
     let definitions = schema
@@ -518,6 +565,9 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> Result<ToolInputSchema,
         schema_variants::VariantsMerge::NotVariants => {}
     }
     Ok(ToolInputSchema {
+=======
+    ToolInputSchema {
+>>>>>>> origin/main
         schema_type: schema
             .get("type")
             .and_then(|v| v.as_str())
@@ -532,8 +582,18 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> Result<ToolInputSchema,
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect()
         }),
+<<<<<<< HEAD
         definitions,
     })
+=======
+        // Carry the nested-type definitions under the key the refs name. schemars
+        // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
+        definitions: schema
+            .get("definitions")
+            .or_else(|| schema.get("$defs"))
+            .map(|d| lead_paragraph_descriptions(d.clone())),
+    }
+>>>>>>> origin/main
 }
 
 /// Keep only the LEADING PARAGRAPH of every `description` in a schema subtree.
@@ -693,7 +753,10 @@ pub struct ToolSurfaceReport {
     pub excluded: Vec<(String, AccessLevel)>,
 }
 
+<<<<<<< HEAD
 mod schema_variants;
 
+=======
+>>>>>>> origin/main
 #[cfg(test)]
 mod tests;

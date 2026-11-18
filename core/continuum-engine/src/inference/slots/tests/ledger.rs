@@ -282,6 +282,7 @@ fn an_adopted_engine_restores_only_the_ledger_its_own_process_wrote() {
     std::fs::write(empty.path().join(SAVED_LEDGER_FILE), b"not json").expect("test: garbage");
     assert_eq!(adopt_engine_ledger(&KvSlotPool::new("test://adopt", 2), empty.path(), 4242, 1_700_000_000), Err(AdoptRefusal::Unreadable));
 }
+<<<<<<< HEAD
 
 // What this catches (the M5, 2026-11-13 23:45Z: `ledger_attached loaded=0` after a deploy, no
 // reason anywhere, and every mind's first act a full prefill): a restart that restores nothing
@@ -321,3 +322,5 @@ fn a_restart_names_why_its_ledger_restored_nothing() {
     std::fs::write(dir.path().join(SAVED_LEDGER_FILE), b"{not a ledger").expect("test: torn ledger");
     assert_eq!(SavedLedger::in_dir(dir.path(), "any".into()).load().err(), Some(LedgerUnread::Malformed));
 }
+=======
+>>>>>>> origin/main

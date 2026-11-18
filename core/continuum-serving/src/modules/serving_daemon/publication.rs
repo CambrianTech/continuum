@@ -50,7 +50,11 @@ pub(super) fn verified_capture(
 /// still serves every slot it has: that is the residency the board charges and the
 /// ambient budget the citizens get.
 pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
+<<<<<<< HEAD
     served.filter(|n| *n > 0).unwrap_or(target_lanes) // unwrap_or: an engine naming no slots serves the count it was launched with, a fact of its own launch
+=======
+    served.filter(|n| *n > 0).unwrap_or(target_lanes)
+>>>>>>> origin/main
 }
 
 /// PURE: each sequence's window inside the engine's one shared pool, and the sequences. An
@@ -60,11 +64,16 @@ pub fn published_lanes(served: Option<u32>, target_lanes: u32) -> u32 {
 /// fixed at its one launch (the seated minds, those leased in, and the scratch traffic), so
 /// the share never moves with the plan's per-tick lane guess, and the shares never sum past
 /// the pool: a pool every sequence fills at once fails the WHOLE decode batch ("Context size
+<<<<<<< HEAD
 /// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). The share is a KV CHARGE,
 /// never a mind's window or a seat's width: each mind is granted her measured need
 /// (`capacity::window_grant`), and a seat is as wide as one sequence holds
 /// (`window_grant::SeatWindow`; the M5, 2026-11-14: 132,300 read as the widest lane named two minds
 /// unservable on a pool holding 262,144 per sequence).
+=======
+/// has been exceeded", llama.cpp server-context.cpp; Cormac on #5720). Per-mind grants from
+/// measured demand (#5718's contract) replace this equal share.
+>>>>>>> origin/main
 pub fn sequence_share(served_pool: u32, sequences: u32, trained_window: u32) -> (u32, u32) {
     let sequences = sequences.max(1);
     ((served_pool / sequences).min(trained_window), sequences)
@@ -182,7 +191,11 @@ impl ServingDaemonModule {
             crate::inference::llama_server::note_serving_ready();
         }
         if let Some(bus) = bus {
+<<<<<<< HEAD
             if let Ok(payload) = serde_json::to_value(snapshot) { // boundary: the bus spans the grid, so a peer's lease allocator reads this as wire JSON
+=======
+            if let Ok(payload) = serde_json::to_value(snapshot) {
+>>>>>>> origin/main
                 bus.publish_async_only(SERVING_SNAPSHOT_EVENT, payload);
             }
         }

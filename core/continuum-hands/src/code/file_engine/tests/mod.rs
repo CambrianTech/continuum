@@ -171,6 +171,7 @@
         );
     }
 
+<<<<<<< HEAD
     // what this catches (Benchy on the M5, 2026-11-11: ~25 minutes moving one closing brace): a fix
     // that is only valid whole. A test appended after `mod tests`'s closing brace needs that brace
     // moved to the end: removing it alone and adding one alone are each unparseable, so each is
@@ -211,6 +212,8 @@
         assert!(after.trim_end().ends_with('}') && after.contains("fn b() {}"), "the brace now closes after b: {after}");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: repair-forward-on-rubble. flask-4045 run 5 (M5, 2026-08-04): an
     // early edit dropped a guard clause into `super().__init__(`'s argument list; four acts
     // later she worked out the right idiom and applied a CORRECT content-anchored fix — on
@@ -600,12 +603,15 @@
             err.contains("THE FIX: use end_line=9 instead of 7"),
             "the refusal must compute and name the end line that works, got:\n{err}"
         );
+<<<<<<< HEAD
         // what this catches (Aiko, the M5, 2026-11-11): a hint that parses can still delete code
         // she meant to keep, so it shows every line the wider range removes, verbatim.
         assert!(
             err.contains("ALSO REMOVES") && err.contains("(finite number of solutions)") && err.contains("     9 |"),
             "the hint must show the lines it also removes, got:\n{err}"
         );
+=======
+>>>>>>> origin/main
         assert!(
             err.contains("stopped 2 line(s) short"),
             "and quantify how far off she was, got:\n{err}"
@@ -995,4 +1001,7 @@
     }
 
 mod filesystem;
+<<<<<<< HEAD
 mod refusal_hint;
+=======
+>>>>>>> origin/main

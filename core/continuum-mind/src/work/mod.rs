@@ -36,7 +36,10 @@ use crate::persona::PersonaAircRuntimeRegistry;
 use crate::runtime::{CommandResult, ModuleConfig, ModuleContext, ModulePriority, ServiceModule};
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx, DynCommand};
 
+<<<<<<< HEAD
 pub mod card_boards;
+=======
+>>>>>>> origin/main
 pub mod card_staging;
 pub mod submission;
 pub use submission::BenchmarkSubmissionAdapter;
@@ -53,7 +56,11 @@ use crate::cognition::work_preconditions;
 pub(crate) fn refused(refusal: work_preconditions::Refusal) -> CommandError {
     use work_preconditions::Unmet;
     match refusal.unmet {
+<<<<<<< HEAD
         Unmet::HeldBy(_) | Unmet::AuthorCannotReview(_) => CommandError::Denied(refusal.to_string()),
+=======
+        Unmet::HeldBy(_) => CommandError::Denied(refusal.to_string()),
+>>>>>>> origin/main
         Unmet::NotHeld
         | Unmet::Settled(_)
         | Unmet::Ended(_)

@@ -1,9 +1,12 @@
 use super::*;
 
+<<<<<<< HEAD
 /// The process's monitor's published snapshots, for a waiter that cannot hold the monitor's handle
 /// (an engine lane waiting out a pressure spike). Set by the first [`MemoryPressureMonitor::start`].
 static PUBLISHED: std::sync::OnceLock<watch::Receiver<PressureSnapshot>> = std::sync::OnceLock::new();
 
+=======
+>>>>>>> origin/main
 impl MemoryPressureMonitor {
     /// Start the monitor on its own tokio task.
     ///
@@ -40,7 +43,10 @@ impl MemoryPressureMonitor {
                 anomaly_scanned_at: None,
                 started: std::time::Instant::now(),
                 swap_activity: Default::default(),
+<<<<<<< HEAD
                 host_deficit: Default::default(),
+=======
+>>>>>>> origin/main
             }),
         });
 
@@ -53,10 +59,13 @@ impl MemoryPressureMonitor {
         // The shared runner owns the interval + per-tick catch_unwind. We don't
         // hold the returned handle — subscribers reach the channel through us.
         let _ = spawn_daemon(monitor.clone());
+<<<<<<< HEAD
         // First start wins: one monitor per process (main.rs), and a second start is a test's own.
         if PUBLISHED.set(monitor.subscribe()).is_err() {
             clog_info!("🧠 a second MemoryPressureMonitor started; waiters outside the kernel follow the first");
         }
+=======
+>>>>>>> origin/main
         monitor
     }
 
@@ -80,6 +89,7 @@ impl MemoryPressureMonitor {
         self.channel.handle().subscribe()
     }
 
+<<<<<<< HEAD
     /// [`Self::subscribe`] on the process's started monitor, or `None` before one starts. Every
     /// publish comes after the tick has stored the level, the gate and the free bytes, so a waiter
     /// woken by it reads the readings it announces.
@@ -90,6 +100,8 @@ impl MemoryPressureMonitor {
         Some(snapshots)
     }
 
+=======
+>>>>>>> origin/main
     /// Get current RSS (lock-free atomic read, any thread).
     pub fn rss_bytes(&self) -> u64 {
         self.current_rss.load(Ordering::Relaxed)
@@ -164,7 +176,13 @@ impl MemoryPressureMonitor {
         // Sort by priority (highest first), then by utilization (most stressed first)
         consumers.sort_by(|a, b| {
             b.priority.cmp(&a.priority).then(
+<<<<<<< HEAD
                 b.utilization.total_cmp(&a.utilization)
+=======
+                b.utilization
+                    .partial_cmp(&a.utilization)
+                    .unwrap_or(std::cmp::Ordering::Equal),
+>>>>>>> origin/main
             )
         });
 
@@ -197,7 +215,11 @@ impl MemoryPressureMonitor {
         use sysinfo::ProcessesToUpdate;
 
         // --- Phase 1: brief lock — ingest + plan. ---
+<<<<<<< HEAD
         let Ingested { total, available, swap_used, rss, pressure, level, consecutive_at_level, live, compressed, deficit, headroom } = {
+=======
+        let (total, available, swap_used, rss, pressure, level, consecutive_at_level, live) = {
+>>>>>>> origin/main
             let mut st = self.state.lock();
 
             // Drain new reporters (added via add_reporter()).
@@ -235,7 +257,11 @@ impl MemoryPressureMonitor {
             let rss = if let Some(p) = st.pid {
                 st.sys
                     .refresh_processes(ProcessesToUpdate::Some(&[p]), true);
+<<<<<<< HEAD
                 st.sys.process(p).map(|proc| proc.memory()).unwrap_or(0) // unwrap_or: our own pid unreadable this poll reads 0 RSS; the probe prints it and nothing sizes from it
+=======
+                st.sys.process(p).map(|proc| proc.memory()).unwrap_or(0)
+>>>>>>> origin/main
             } else {
                 0
             };
@@ -247,6 +273,7 @@ impl MemoryPressureMonitor {
             } else {
                 0.0
             };
+<<<<<<< HEAD
             // ONE host reading per poll (continuum-host's adapter): the swap counters for the
             // swap axis, and the compressor, free target and reclaimable pages for the deficit.
             let host = continuum_host::host_memory::read();
@@ -263,6 +290,15 @@ impl MemoryPressureMonitor {
                     PressureLevel::from_swap_activity(swap_used, swap_total, swap_rate),
                 ),
                 PressureLevel::from_deficit(deficit),
+=======
+            let swap_rate = st.swap_activity.observe(
+                std::time::Instant::now(),
+                crate::system_resources::swap_activity::read_swap_traffic(),
+            );
+            let level = PressureLevel::worse(
+                PressureLevel::from_pressure(pressure),
+                PressureLevel::from_swap_activity(swap_pct, swap_rate),
+>>>>>>> origin/main
             );
 
             // Atomics + cross-module level — lock-free reads from anywhere.
@@ -312,12 +348,15 @@ impl MemoryPressureMonitor {
                     // -1 = no rate (no counters, or the first poll): occupancy decided.
                     swap_rate_kib_s = swap_rate.map_or(-1, |r| (r / 1024.0) as i64),
                     rss_mb = rss / (1024 * 1024),
+<<<<<<< HEAD
                     // -1 = no host reading this poll.
                     compressed_mb = compressed.map_or(-1, |bytes| (bytes / (1024 * 1024)) as i64),
                     host_available_mb = host.as_ref().map_or(-1, |reading| (reading.available_bytes() / (1024 * 1024)) as i64),
                     free_target_mb = host.as_ref().map_or(-1, |reading| (reading.free_target_bytes / (1024 * 1024)) as i64),
                     os_pressure = ?host.as_ref().and_then(|reading| reading.pressure),
                     deficit_mb = deficit / (1024 * 1024),
+=======
+>>>>>>> origin/main
                     consecutive = consecutive_at_level,
                     "memory pressure as the node reads it — swap is its own axis: a full swap file, or live paging, is pressure even when the page counters read free"
                 );
@@ -398,7 +437,20 @@ impl MemoryPressureMonitor {
                 }
             }
 
+<<<<<<< HEAD
             Ingested { total, available, swap_used, rss, pressure, level, consecutive_at_level, live, compressed, deficit, headroom }
+=======
+            (
+                total,
+                available,
+                swap_used,
+                rss,
+                pressure,
+                level,
+                consecutive_at_level,
+                live,
+            )
+>>>>>>> origin/main
         };
 
         // --- Phase 2: off-lock report fan-out — each reporter on the blocking
@@ -423,7 +475,11 @@ impl MemoryPressureMonitor {
 
         // --- Phase 3: brief lock — fold outcomes into counters, decide the gate,
         // build the snapshot, log, and collect shed targets. ---
+<<<<<<< HEAD
         let (snapshot, shed_targets, take_again_targets) = {
+=======
+        let (snapshot, shed_targets) = {
+>>>>>>> origin/main
             let mut st = self.state.lock();
 
             let mut module_reports = Vec::with_capacity(results.len());
@@ -503,10 +559,22 @@ impl MemoryPressureMonitor {
             }
 
             // Decide whether to notify shedders this tick, and collect the live
+<<<<<<< HEAD
             // can-shed reporters (post-quarantine) to fire OFF the lock (`shed_due`: after
             // two polls at a level, every poll at sustained Critical or while the host has
             // a deficit).
             let should_shed = super::host_deficit::shed_due(level, consecutive_at_level, deficit);
+=======
+            // can-shed reporters (post-quarantine) to fire OFF the lock. First
+            // notification after 2 polls at a level (hysteresis); at Critical,
+            // shed on every poll once sustained.
+            let should_shed = match level {
+                PressureLevel::Critical => consecutive_at_level >= 2,
+                PressureLevel::High => consecutive_at_level == 2,
+                PressureLevel::Warning => consecutive_at_level == 2,
+                PressureLevel::Normal => false,
+            };
+>>>>>>> origin/main
             let shed_targets: Vec<Arc<dyn MemoryReporter>> = if should_shed {
                 st.reporters
                     .iter()
@@ -516,6 +584,7 @@ impl MemoryPressureMonitor {
             } else {
                 Vec::new()
             };
+<<<<<<< HEAD
             // The take-again half: while the OS reads normal with room to spare (`HostDeficitReading::
             // headroom`), every healthy reporter is offered what it may take back.
             // Current shed availability cannot gate recovery: an emptied cache has
@@ -525,6 +594,8 @@ impl MemoryPressureMonitor {
             } else {
                 Vec::new()
             };
+=======
+>>>>>>> origin/main
 
             // Build the snapshot.
             let now_ms = continuum_base::time::EpochMs::now().millis();
@@ -540,8 +611,11 @@ impl MemoryPressureMonitor {
                 held_by_priority,
                 timestamp_ms: now_ms,
                 consecutive_at_level,
+<<<<<<< HEAD
                 compressed_bytes: compressed,
                 deficit_bytes: deficit,
+=======
+>>>>>>> origin/main
             };
 
             // Periodic logging — every 15 polls (30 s) at Normal, louder higher.
@@ -576,7 +650,11 @@ impl MemoryPressureMonitor {
                 );
             }
 
+<<<<<<< HEAD
             (snapshot, shed_targets, take_again_targets)
+=======
+            (snapshot, shed_targets)
+>>>>>>> origin/main
         };
 
         // Publish lock-free. The channel overwrites; readers never block us.
@@ -585,6 +663,7 @@ impl MemoryPressureMonitor {
         // Shed OFF the lock — a slow shedder must never stall the state lock (and
         // thus the next tick's ingest). Synchronous + panic-isolated, fire-and-
         // forget, exactly as before — just hoisted out from under the lock.
+<<<<<<< HEAD
         if !shed_targets.is_empty() {
             continuum_base::probe!(
                 class = "memory.pressure.shed",
@@ -594,11 +673,14 @@ impl MemoryPressureMonitor {
                 "the shedders are asked to give back the host's deficit at their priority; each probes what it freed"
             );
         }
+=======
+>>>>>>> origin/main
         for reporter in shed_targets {
             let _ = std::panic::catch_unwind(AssertUnwindSafe(|| {
                 reporter.shed_load(level);
             }));
         }
+<<<<<<< HEAD
         // The headroom is offered in turn: what one reporter claims is no longer there for the next,
         // so two reporters never take the same bytes back.
         let mut offered = headroom;
@@ -632,6 +714,11 @@ struct Ingested {
     headroom: Option<std::num::NonZeroU64>,
 }
 
+=======
+    }
+}
+
+>>>>>>> origin/main
 #[async_trait]
 impl Daemon for MemoryPressureMonitor {
     type Snapshot = PressureSnapshot;

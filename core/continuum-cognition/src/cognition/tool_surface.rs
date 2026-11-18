@@ -33,7 +33,11 @@
 //! takes fewer abilities: the system prompt's menu lists every category, `commands/help`
 //! gives any verb's call, and the executor dispatches every authorized name.
 
+<<<<<<< HEAD
 use std::sync::Arc;
+=======
+use std::borrow::Cow;
+>>>>>>> origin/main
 
 mod levels;
 pub use levels::{expand_handle, Floor, ToolSet, ToolsLeveled, VerbLevels};
@@ -71,6 +75,7 @@ pub enum SurfaceReason {
     LearnedHead,
 }
 
+<<<<<<< HEAD
 /// One working set as it goes on the wire, priced once when it is built, and shared from then on:
 /// every selection and every act's request points at these schemas, none copies them (card
 /// 9cf06ade).
@@ -90,6 +95,19 @@ impl Offer {
     fn of(specs: Vec<NativeToolSpec>) -> Self {
         let tokens = tool_surface_tokens_of(&specs);
         Self { specs: specs.into(), tokens }
+=======
+/// One working set as it goes on the wire, priced once when it is built.
+#[derive(Debug, Clone, Default)]
+struct Offer {
+    specs: Vec<NativeToolSpec>,
+    tokens: usize,
+}
+
+impl Offer {
+    fn of(specs: Vec<NativeToolSpec>) -> Self {
+        let tokens = tool_surface_tokens_of(&specs);
+        Self { specs, tokens }
+>>>>>>> origin/main
     }
 }
 
@@ -145,15 +163,26 @@ impl ToolSurface {
     /// moves her held cards give her (`held`, command names and subtrees from
     /// `work_preconditions::in_hand`). No grant decides it: which verbs are her hands is this
     /// owner's; how much of each verb she is shown is the act's one allocation's ([`Self::tool_set`]).
+<<<<<<< HEAD
     pub fn select(&self, declared: &[String], held: &[String]) -> SelectedSurface {
         if self.registry.specs.is_empty() {
             return SelectedSurface::none();
+=======
+    pub fn select(&self, declared: &[String], held: &[String]) -> SelectedSurface<'_> {
+        if self.registry.specs.is_empty() {
+            return SelectedSurface::borrowed(&[], 0, SurfaceReason::NoTools, 0);
+>>>>>>> origin/main
         }
         let activity = self.activity(declared, held);
         let tokens = activity.tokens();
         match activity {
+<<<<<<< HEAD
             Activity::Core(core) => SelectedSurface::shared(&core.specs, tokens, SurfaceReason::Hands, tokens),
             Activity::Owned(offer, reason) => SelectedSurface::shared(&offer.specs, tokens, reason, tokens),
+=======
+            Activity::Core(core) => SelectedSurface::borrowed(&core.specs, tokens, SurfaceReason::Hands, tokens),
+            Activity::Owned(offer, reason) => SelectedSurface { specs: Some(Cow::Owned(offer.specs)), tokens, reason, demand: tokens, tail: Vec::new() },
+>>>>>>> origin/main
         }
     }
 
@@ -162,11 +191,19 @@ impl ToolSurface {
     /// discovery pair and verdict verbs, the turn's protocol), then the moves her held cards need
     /// now (`moves`), then the verbs her learned head holds (`head`: her measured use), then the
     /// rest. A verb nothing expands (`Always`) floors at its summary.
+<<<<<<< HEAD
     pub fn tool_set(&self, selected: &SelectedSurface, moves: &[String], head: &[String]) -> ToolSet {
         let finder = self
             .authorized_names
             .iter()
             .zip(self.authorized.specs.iter())
+=======
+    pub fn tool_set(&self, selected: &SelectedSurface<'_>, moves: &[String], head: &[String]) -> ToolSet {
+        let finder = self
+            .authorized_names
+            .iter()
+            .zip(&self.authorized.specs)
+>>>>>>> origin/main
             .find(|(name, _)| name.as_str() == crate::cognition::tool_head::FINDER)
             .map_or(crate::cognition::tool_head::FINDER, |(_, spec)| spec.name.as_str()); // map_or: a surface without the finder names it canonically
         let names = self.names_of(selected);
@@ -207,7 +244,11 @@ impl ToolSurface {
         let extras: Vec<&String> = self
             .hands_names
             .iter()
+<<<<<<< HEAD
             .zip(self.hands.specs.iter())
+=======
+            .zip(&self.hands.specs)
+>>>>>>> origin/main
             .filter(|(name, spec)| held.iter().any(|pattern| declares(pattern, name)) && !base.iter().any(|b| b.name == spec.name))
             .map(|(name, _)| name)
             .collect();
@@ -220,7 +261,11 @@ impl ToolSurface {
         let specs: Vec<NativeToolSpec> = self
             .names
             .iter()
+<<<<<<< HEAD
             .zip(self.registry.specs.iter())
+=======
+            .zip(&self.registry.specs)
+>>>>>>> origin/main
             .filter(|(name, spec)| extras.contains(name) || base.iter().any(|b| b.name == spec.name))
             .map(|(_, spec)| spec.clone())
             .collect();
@@ -310,12 +355,20 @@ impl ToolSurface {
 
     /// The canonical names of what `selected` sends in its head, in the order it sends them:
     /// what an epoch retains so its later acts send the same schemas ([`Self::retained`]).
+<<<<<<< HEAD
     pub fn names_of(&self, selected: &SelectedSurface) -> Vec<String> {
+=======
+    pub fn names_of(&self, selected: &SelectedSurface<'_>) -> Vec<String> {
+>>>>>>> origin/main
         let Some(sent) = selected.specs.as_deref() else {
             return Vec::new();
         };
         sent.iter()
+<<<<<<< HEAD
             .filter_map(|spec| self.authorized_names.iter().zip(self.authorized.specs.iter()).find(|(_, wire)| wire.name == spec.name))
+=======
+            .filter_map(|spec| self.authorized_names.iter().zip(&self.authorized.specs).find(|(_, wire)| wire.name == spec.name))
+>>>>>>> origin/main
             .map(|(name, _)| name.clone())
             .collect()
     }
@@ -323,6 +376,7 @@ impl ToolSurface {
     /// An epoch's retained selection rebuilt from [`Self::names_of`]: the same schemas, in the
     /// same order, charged the level the epoch's start chose. A name this surface no longer
     /// offers (the registry was rebuilt) has no schema to send and is not sent.
+<<<<<<< HEAD
     pub fn retained(&self, names: &[String], reason: SurfaceReason, tokens: usize) -> SelectedSurface {
         let specs: Vec<NativeToolSpec> = names
             .iter()
@@ -331,6 +385,16 @@ impl ToolSurface {
             .collect();
         SelectedSurface {
             specs: (reason != SurfaceReason::NoTools).then(|| specs.into()),
+=======
+    pub fn retained(&self, names: &[String], reason: SurfaceReason, tokens: usize) -> SelectedSurface<'_> {
+        let specs: Vec<NativeToolSpec> = names
+            .iter()
+            .filter_map(|name| self.authorized_names.iter().zip(&self.authorized.specs).find(|(canonical, _)| *canonical == name))
+            .map(|(_, spec)| spec.clone())
+            .collect();
+        SelectedSurface {
+            specs: (reason != SurfaceReason::NoTools).then_some(Cow::Owned(specs)),
+>>>>>>> origin/main
             tokens,
             reason,
             demand: tokens,
@@ -341,7 +405,11 @@ impl ToolSurface {
     /// Her learned head: `floor` (her activity's surface, from [`Self::select`]) as it is, then the
     /// `held` verbs it lacks appended in canonical order, so the floor's bytes lead whatever her
     /// head learns and learning only adds; the `loaded` verbs the head lacks ride the tail.
+<<<<<<< HEAD
     pub fn learned(&self, floor: &[NativeToolSpec], held: &[String], loaded: &[String]) -> SelectedSurface {
+=======
+    pub fn learned(&self, floor: &[NativeToolSpec], held: &[String], loaded: &[String]) -> SelectedSurface<'_> {
+>>>>>>> origin/main
         let mut specs = floor.to_vec();
         let pick = |wanted: &[String], have: &[NativeToolSpec]| -> Vec<NativeToolSpec> {
             self.authorized_names
@@ -356,7 +424,11 @@ impl ToolSurface {
         let tail = pick(loaded, &specs);
         let tokens = tool_surface_tokens_of(&specs);
         SelectedSurface {
+<<<<<<< HEAD
             specs: Some(specs.into()),
+=======
+            specs: Some(Cow::Owned(specs)),
+>>>>>>> origin/main
             tokens,
             reason: SurfaceReason::LearnedHead,
             demand: tokens,
@@ -402,10 +474,17 @@ fn declares(pattern: &str, name: &str) -> bool {
 /// One decision, consulted by both the budget math and the request builder, so the two can
 /// never disagree about what is on the wire (card dec1a7ff).
 #[derive(Debug, Clone)]
+<<<<<<< HEAD
 pub struct SelectedSurface {
     /// Exactly what goes into the request. `None` only when there are no tools. Shared with the
     /// built surfaces, so carrying it to the request copies no schema (card 9cf06ade).
     pub specs: Option<Arc<[NativeToolSpec]>>,
+=======
+pub struct SelectedSurface<'a> {
+    /// Exactly what goes into the request. `None` only when there are no tools. Borrowed
+    /// from the built surfaces, owned only when an activity's declaration selected it.
+    pub specs: Option<Cow<'a, [NativeToolSpec]>>,
+>>>>>>> origin/main
     /// Cost of what is SENT: the number the message budget must use.
     pub tokens: usize,
     pub reason: SurfaceReason,
@@ -414,9 +493,15 @@ pub struct SelectedSurface {
     pub tail: Vec<NativeToolSpec>,
 }
 
+<<<<<<< HEAD
 impl SelectedSurface {
     fn shared(specs: &Arc<[NativeToolSpec]>, tokens: usize, reason: SurfaceReason, demand: usize) -> Self {
         Self { specs: (reason != SurfaceReason::NoTools).then(|| Arc::clone(specs)), tokens, reason, demand, tail: Vec::new() }
+=======
+impl<'a> SelectedSurface<'a> {
+    fn borrowed(specs: &'a [NativeToolSpec], tokens: usize, reason: SurfaceReason, demand: usize) -> Self {
+        Self { specs: (reason != SurfaceReason::NoTools).then_some(Cow::Borrowed(specs)), tokens, reason, demand, tail: Vec::new() }
+>>>>>>> origin/main
     }
 
     /// What an UNTRUNCATED demand measurement prices for this turn.
@@ -428,9 +513,27 @@ impl SelectedSurface {
         self.demand
     }
 
+<<<<<<< HEAD
     /// No surface: a turn refused for capacity before it could be offered one.
     pub fn none() -> Self {
         Self { specs: None, tokens: 0, reason: SurfaceReason::NoTools, demand: 0, tail: Vec::new() }
+=======
+    /// The same selection, owning its schemas: what a prompt view carries to its request, so
+    /// the request sends exactly what the allocation bought (one decision, card dec1a7ff).
+    pub fn into_owned(self) -> SelectedSurface<'static> {
+        SelectedSurface {
+            specs: self.specs.map(|specs| Cow::Owned(specs.into_owned())),
+            tokens: self.tokens,
+            reason: self.reason,
+            demand: self.demand,
+            tail: self.tail,
+        }
+    }
+
+    /// No surface: a turn refused for capacity before it could be offered one.
+    pub fn none() -> Self {
+        Self::borrowed(&[], 0, SurfaceReason::NoTools, 0)
+>>>>>>> origin/main
     }
 
     pub(crate) fn with_demand(mut self, demand: usize) -> Self {
@@ -445,7 +548,11 @@ impl SelectedSurface {
             return self;
         }
         let (specs, tokens) = set.render(levels);
+<<<<<<< HEAD
         self.specs = Some(specs.into());
+=======
+        self.specs = Some(Cow::Owned(specs));
+>>>>>>> origin/main
         self.tokens = tokens;
         self
     }
@@ -485,7 +592,11 @@ pub fn tool_surface_tokens_of(specs: &[NativeToolSpec]) -> usize {
     specs
         .iter()
         .map(|spec| {
+<<<<<<< HEAD
             let serialized = serde_json::to_string(spec).unwrap_or_default(); // boundary: the tool schema as the model's request wire carries it, priced in tokens; unwrap_or_default: a spec of strings and a JSON value always serializes
+=======
+            let serialized = serde_json::to_string(spec).unwrap_or_default();
+>>>>>>> origin/main
             estimate_tool_schema_tokens(&serialized)
         })
         .sum()
@@ -560,6 +671,7 @@ mod tests {
         assert_eq!(surface.vocabulary().expect("vocabulary").len(), authorized.len());
     }
 
+<<<<<<< HEAD
     // what this catches: a refusal telling her to make a call her surface does not offer, so she
     // repeats the refused one (Aiko on the M5, 2026-11-13 22:40-23:26Z: 8 `work/submit` calls refused
     // with a sentence naming `work/note` and `work/state`). The commands a refusal's typed next moves
@@ -586,6 +698,8 @@ mod tests {
         assert_eq!(NextMoves::None(NoMove::NothingMoreExists).commands().count(), 0, "a refusal with no move names none");
     }
 
+=======
+>>>>>>> origin/main
     fn spec(name: &str) -> NativeToolSpec {
         NativeToolSpec {
             name: name.to_string(),
@@ -637,7 +751,11 @@ mod tests {
         assert_eq!(learned.tokens, tool_surface_tokens_of(&[spec("code/read"), spec("mail/send"), spec("code/rare")]));
     }
 
+<<<<<<< HEAD
     fn wire(selected: &SelectedSurface) -> String {
+=======
+    fn wire(selected: &SelectedSurface<'_>) -> String {
+>>>>>>> origin/main
         serde_json::to_string(&selected.specs).expect("specs serialize")
     }
 
@@ -742,7 +860,11 @@ mod tests {
         assert_eq!(hands[..core.len()], core[..], "her core is the head of her hands");
     }
 
+<<<<<<< HEAD
     fn sent_names(selected: &SelectedSurface) -> Vec<&str> {
+=======
+    fn sent_names<'a>(selected: &'a SelectedSurface<'_>) -> Vec<&'a str> {
+>>>>>>> origin/main
         selected.specs.as_deref().into_iter().flatten().map(|s| s.name.as_str()).collect()
     }
 

@@ -60,13 +60,21 @@ pub trait DynCommand: Send + Sync {
     /// authenticated identity the executor already gated on (threaded into [`Ctx`]
     /// so the handler can gate/scope/compose by identity). Internally just
     /// [`dispatch_with_caller`]; the type erasure happens here so the kernel can
+<<<<<<< HEAD
     /// call it without knowing `Params`/`Result`. A refusal keeps its typed next moves
     /// ([`super::CommandFailure`]).
+=======
+    /// call it without knowing `Params`/`Result`.
+>>>>>>> origin/main
     async fn invoke(
         &self,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
+<<<<<<< HEAD
     ) -> Result<CommandResult, super::CommandFailure>;
+=======
+    ) -> Result<CommandResult, String>;
+>>>>>>> origin/main
 }
 
 /// Every [`CommandHandler`] IS a routable command object. This is what lets a
@@ -92,7 +100,11 @@ where
         &self,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
+<<<<<<< HEAD
     ) -> Result<CommandResult, super::CommandFailure> {
+=======
+    ) -> Result<CommandResult, String> {
+>>>>>>> origin/main
         super::dispatch_with_caller(self, params, caller).await
     }
 }
@@ -387,9 +399,13 @@ pub trait ActionCommand: Send + Sync + Sized + 'static {
     /// itself, so a command is fully portable: rename/move it and its aliases
     /// travel with it — no central table to keep in sync. Aggregated into one
     /// generated inverse index ([`crate::ai::tool_dialect`]); a name two
+<<<<<<< HEAD
     /// commands both claim is a build-time panic. Defaults to none. Inbound only: what she is
     /// OFFERED is always [`super::wire_name`] of [`Self::NAME`], so an alias never renames one
     /// member of a family away from its siblings (card d2b6dbce).
+=======
+    /// commands both claim is a build-time panic. Defaults to none.
+>>>>>>> origin/main
     const ALIASES: &'static [&'static str] = &[];
     /// What this command's calls do to the world. See [`CommandSpec::EFFECT`]; defaults to
     /// `Undeclared`.
@@ -591,11 +607,17 @@ mod tests {
             .await
             .expect_err("an object of two keys has no one reading as a string: it must refuse");
         assert!(
+<<<<<<< HEAD
             err.message.starts_with("test/echo-action: [arguments]"),
             "named + categorized: {}",
             err.message
         );
         assert_eq!(err.refusal, None, "an arguments refusal carries its own typed form, not next moves");
+=======
+            err.starts_with("test/echo-action: [arguments]"),
+            "named + categorized: {err}"
+        );
+>>>>>>> origin/main
     }
 
     // what this catches (card 9ed04d88): the check a call passes before dispatch reads it

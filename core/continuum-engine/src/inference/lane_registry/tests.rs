@@ -3,12 +3,15 @@
 
 use super::*;
 
+<<<<<<< HEAD
 /// `expected`'s record removed under the registry's write lock, as `remove` does for the default directory.
 fn remove_under_lock(dir: &Path, expected: &LaneRecord) -> bool {
     let _writes = writes();
     remove_locked(dir, expected)
 }
 
+=======
+>>>>>>> origin/main
 // what this catches (Astra, #4069): a destructive census must fail CLOSED. A `.lane`
 // file that does not parse is a lane the lenient read silently drops — and a sweep
 // reading that inventory would delete the page dir of a lane it never saw. The
@@ -57,7 +60,11 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Gpu).expect("restamp"), "the record changed since it was read");
     let replaced = LaneRecord { started_s: 8, ..kept.clone() };
     assert!(!restamp_placement_in(dir.path(), &replaced, LanePlacement::Cpu).expect("restamp"), "another incarnation's read");
+<<<<<<< HEAD
     remove_under_lock(dir.path(), &kept);
+=======
+    remove_in(dir.path(), kept.pid);
+>>>>>>> origin/main
     assert!(!restamp_placement_in(dir.path(), &kept, LanePlacement::Cpu).expect("restamp"), "a removed record");
     assert_eq!(records_in(dir.path()), vec![other], "a removed record is never recreated");
 }
@@ -240,7 +247,11 @@ async fn shutdown_confirmation_waits_for_exit_and_preserves_replacements() {
 }
 
 // what this catches: record_in → the file exists and round-trips through JSON;
+<<<<<<< HEAD
 // a locked remove deletes it and is idempotent. The accounting is useless if a
+=======
+// remove_in deletes it and is idempotent. The accounting is useless if a
+>>>>>>> origin/main
 // recorded lane can't be read back or cleaned up.
 #[test]
 fn record_round_trips_and_remove_is_idempotent() {
@@ -253,6 +264,7 @@ fn record_round_trips_and_remove_is_idempotent() {
     let back: LaneRecord = serde_json::from_str(&raw).expect("parse");
     assert_eq!(back, r, "record round-trips through JSON");
 
+<<<<<<< HEAD
     assert!(remove_under_lock(&dir, &r));
     assert!(!record_path(&dir, 4242).exists(), "removed");
     assert!(!remove_under_lock(&dir, &r), "idempotent: nothing left to remove");
@@ -272,6 +284,14 @@ fn removing_an_original_never_deletes_the_replacement_under_its_reused_pid() {
     assert!(remove_under_lock(dir.path(), &replacement), "its own teardown removes it");
 }
 
+=======
+    remove_in(&dir, 4242);
+    assert!(!record_path(&dir, 4242).exists(), "removed");
+    remove_in(&dir, 4242); // idempotent — second remove must not panic
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+>>>>>>> origin/main
 // what this catches: a LIVE lane is singular — recording a new live lane
 // SUPERSEDES a prior live record (the reclaimed predecessor), leaving exactly
 // one live record. Without this, a stale live record naming a dead-then-reused
@@ -538,6 +558,7 @@ mod census_for_admission {
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
+<<<<<<< HEAD
 
 // what this catches: the live-lane watch page IO's retained custody waits on (Codex on #6099). A waiter that
 // subscribed while no lane was verified must WAKE when an adopted engine verifies; a recycled pid running another
@@ -708,3 +729,5 @@ async fn an_unobservable_exit_watch_is_armed_once_and_never_trusted() {
     child.wait().expect("test: reap it");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
 }
+=======
+>>>>>>> origin/main

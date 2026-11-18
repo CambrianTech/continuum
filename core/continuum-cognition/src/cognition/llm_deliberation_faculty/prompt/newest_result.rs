@@ -53,6 +53,7 @@ enum Cut {
     Bytes { bytes: usize },
 }
 
+<<<<<<< HEAD
 /// The saved output one slot's page continues in, and how she knows it. A page starts at
 /// `first_line` (1-based), `first_byte` into the whole: line 1 for a first page, further on when she
 /// reopens an output whose earlier page she already has (`continuation`).
@@ -139,6 +140,32 @@ impl Saved<'_> {
         format!(
             "[{}: {chars} chars, about {tokens} tokens, more than your window holds beside the rest, \
              so this is {which}: {shown}. Nothing is lost: read on with {next}]",
+=======
+/// The saved output one slot's page continues in, and how she knows it.
+struct Saved<'a> {
+    label: &'a str,
+    handle: &'a str,
+}
+
+impl Saved<'_> {
+    /// What she reads before the page: how much there is, what the page is, and the call that
+    /// reads on, written as she makes it.
+    fn note(&self, chars: usize, tokens: usize, cut: Cut) -> String {
+        let (shown, next) = match cut {
+            Cut::Lines { shown, total } => (
+                format!("lines 1-{shown} of {total}"),
+                // To the output's own end: a range with no end reads through its last line.
+                Reopen::Lines { output: self.handle, range: crate::cognition::tool_executor::spill::LineRange { start: shown + 1, end: None } }.to_string(),
+            ),
+            Cut::Bytes { bytes } => (
+                format!("its first {bytes} bytes (its first line alone is longer than the room)"),
+                Reopen::Bytes { output: self.handle, offset: bytes as u64 }.to_string(),
+            ),
+        };
+        format!(
+            "[{}: {chars} chars, about {tokens} tokens, more than your window holds beside the rest, \
+             so this is its first page: {shown}. Nothing is lost: read on with {next}]",
+>>>>>>> origin/main
             self.label
         )
     }
@@ -146,6 +173,7 @@ impl Saved<'_> {
     /// `text`'s page holding its first `upto` bytes: whole lines when at least one fits, else
     /// the first line cut at a character boundary.
     fn page_at(&self, text: &str, upto: usize, chars: usize, tokens: usize) -> String {
+<<<<<<< HEAD
         let (end, cut) = Self::cut_at(text, upto);
         format!("{}\n{}", self.note(chars, tokens, cut), &text[..end])
     }
@@ -154,10 +182,13 @@ impl Saved<'_> {
     /// at least one fits, else the first line cut at a character boundary. Decided once, here, so
     /// the page and the record of what she was shown never disagree.
     fn cut_at(text: &str, upto: usize) -> (usize, Cut) {
+=======
+>>>>>>> origin/main
         let upto = text.floor_char_boundary(upto.min(text.len()));
         let first_line = text.find('\n').map_or(text.len(), |end| end + 1); // map_or: a one-line text is its first line
         if upto >= first_line {
             let end = text[..upto].rfind('\n').map_or(first_line, |at| at + 1); // map_or: no line end before upto keeps the first line
+<<<<<<< HEAD
             return (end, Cut::Lines { shown: text[..end].lines().count(), total: text.lines().count() });
         }
         (upto, Cut::Bytes { bytes: upto })
@@ -168,6 +199,20 @@ impl Saved<'_> {
     fn page(&self, text: &str, target: usize, chars: usize, tokens: usize) -> (String, Cut) {
         // The most content whose page fits, and never less than its least page (as much content as
         // its note, so a page is never a bare handle).
+=======
+            let total = text.lines().count();
+            let shown = text[..end].lines().count();
+            return format!("{}\n{}", self.note(chars, tokens, Cut::Lines { shown, total }), &text[..end]);
+        }
+        format!("{}\n{}", self.note(chars, tokens, Cut::Bytes { bytes: upto }), &text[..upto])
+    }
+
+    /// `text`'s first page within `target` tokens: the most content whose page fits, and never
+    /// less than its least page (as much content as its note, so a page is never a bare handle).
+    fn first_page(&self, text: &str, target: usize) -> String {
+        let chars = text.chars().count();
+        let tokens = estimate_guard_tokens(text);
+>>>>>>> origin/main
         // As much content as its note at its longest (either form, with this text's own counts).
         let total = text.lines().count();
         let note = self.note(chars, tokens, Cut::Lines { shown: total, total }).len().max(self.note(chars, tokens, Cut::Bytes { bytes: text.len() }).len());
@@ -181,8 +226,12 @@ impl Saved<'_> {
                 over = mid;
             }
         }
+<<<<<<< HEAD
         let (_, cut) = Self::cut_at(text, fits);
         (self.page_at(text, fits, chars, tokens), cut)
+=======
+        self.page_at(text, fits, chars, tokens)
+>>>>>>> origin/main
     }
 }
 
@@ -287,6 +336,7 @@ impl LlmDeliberationFaculty {
                 break;
             }
             let Some(handle) = handle.as_deref() else { continue };
+<<<<<<< HEAD
             let tokens = estimate_guard_tokens(text);
             let chars = text.chars().count();
             // A LATER act reopening the same output continues where her last page of it ended; the
@@ -302,6 +352,11 @@ impl LlmDeliberationFaculty {
             if let (true, Some(act), Cut::Lines { shown, .. }) = (report, act, cut) {
                 self.reading.record(handle, act, first_line, first_line + shown.saturating_sub(1));
             }
+=======
+            let saved = Saved { label: &label, handle };
+            let tokens = estimate_guard_tokens(text);
+            let page = saved.first_page(text, tokens.saturating_sub(over));
+>>>>>>> origin/main
             cost = cost.saturating_sub(tokens).saturating_add(estimate_guard_tokens(&page));
             **text = page;
         }
@@ -329,7 +384,11 @@ mod tests {
     fn multiline_page_cut_inside_replacement_character_preserves_first_line() {
         let text = format!("ok tool/output(outputId=f68053e3b2bad9c9)\n{}\u{fffd}tail", "x".repeat(1456));
         let Some(at) = text.find('\u{fffd}') else { panic!("fixture must contain the replacement character") };
+<<<<<<< HEAD
         let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
+=======
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+>>>>>>> origin/main
         for split in [at + 1, at + 2] {
             let page = saved.page_at(&text, split, text.chars().count(), estimate_guard_tokens(&text));
             assert!(page.ends_with("ok tool/output(outputId=f68053e3b2bad9c9)\n"));
@@ -339,7 +398,11 @@ mod tests {
     // what this catches: the same Sahar abort across every UTF-8 byte split and page-search budget.
     #[test]
     fn every_byte_cut_keeps_a_prefix_and_exact_continuation() {
+<<<<<<< HEAD
         let saved = Saved { label: "result", handle: "f68053e3b2bad9c9", first_line: 1, first_byte: 0 };
+=======
+        let saved = Saved { label: "result", handle: "f68053e3b2bad9c9" };
+>>>>>>> origin/main
         for text in ["", "ASCII", "é中😀tail", "header\né中😀tail", "é\n中\n😀tail"] {
             for upto in 0..=text.len() + 2 {
                 let page = saved.page_at(text, upto, text.chars().count(), estimate_guard_tokens(text));
@@ -356,12 +419,17 @@ mod tests {
                 }
             }
             for target in 0..=estimate_guard_tokens(text) + 5 {
+<<<<<<< HEAD
                 let (page, _) = saved.page(text, target, text.chars().count(), estimate_guard_tokens(text));
+=======
+                let page = saved.first_page(text, target);
+>>>>>>> origin/main
                 let Some((_, content)) = page.split_once('\n') else { panic!("page must separate note and content") };
                 assert!(text.starts_with(content));
             }
         }
     }
+<<<<<<< HEAD
 
     // what this catches: Eitan on the IntelMac, 2026-11-11 to 11-13: every act reopened one output
     // too large for his room and was shown lines 1-K, for two days. A later act reopening the same
@@ -387,4 +455,6 @@ mod tests {
         assert!(note.contains(&format!("lines 11-{}", 10 + shown)), "{note}");
         assert_eq!(byte_of(&text, 31), None, "past the end: she has read it all");
     }
+=======
+>>>>>>> origin/main
 }

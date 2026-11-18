@@ -98,6 +98,7 @@ caller returning, a forgotten handle, and restart.
 Within one incarnation, overlapping runs publish with a compare-and-set on the input revisions
 they derived from: an older run's result never overwrites state derived from newer input.
 
+<<<<<<< HEAD
 ### Dataflow: artifacts and dependent stages (2026-11-14)
 
 A stage emits what it delivers; whatever needs it subscribes (CONTINUUM-ENGINE.md rule 10). The
@@ -126,6 +127,8 @@ the endpoint-retained page IO's result (outlier B: `inference/turn_admission/pag
 a handoff of the turn's admission that replaced its `oneshot`). Follow-up, owner Fable: the
 `#[derive]` half of the for-free triplet, once a third consumer shows what it should generate.
 
+=======
+>>>>>>> origin/main
 ## 2. Contracts at the three boundaries
 
 - **Task lifetime and delivery (Codex).** A dispatched run's completion goes through the shared

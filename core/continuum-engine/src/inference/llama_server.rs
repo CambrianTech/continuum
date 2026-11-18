@@ -57,9 +57,13 @@ mod convergence_attempt;
 mod reconcile;
 mod shared_pool;
 pub use shared_pool::PoolLaunch;
+<<<<<<< HEAD
 pub use reconcile::ensure_model_serving_if_current;
 #[cfg(test)]
 pub use reconcile::ensure_model_serving;
+=======
+pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
+>>>>>>> origin/main
 
 mod smoke;
 use smoke::{
@@ -81,7 +85,10 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+<<<<<<< HEAD
 pub mod genome_catalog;
+=======
+>>>>>>> origin/main
 mod learn_ledger;
 pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
@@ -144,12 +151,19 @@ pub(crate) use slot_work::slot_work_of;
 mod control;
 mod retirement_refusal;
 pub use retirement_refusal::RetirementRefusal;
+<<<<<<< HEAD
 mod prompt_cache_limit;
 pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
     AdapterChangeRefusal, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
     ObservedGeometry, OwnedServingTarget, Reconciling, ServingLifecycleCheck,
+=======
+pub use control::{
+    EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
+    LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
+    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
+>>>>>>> origin/main
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};

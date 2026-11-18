@@ -191,6 +191,7 @@ pub fn m5_uneven_reading() -> WindowScenario {
     }
 }
 
+<<<<<<< HEAD
 /// The M5 on 2026-11-14 (958ea3056, `-c 661410 --parallel 5`): a 661,504-token pool, 262,144 per
 /// sequence. Benchy's and Atlas's held turns measured 148,818 and 135,619 (`grid.mind.unservable`
 /// 05:28Z); Aiko and Aris at the 143,100 and 105,547 they were granted at 04:33Z. Every need fits the
@@ -213,10 +214,13 @@ pub fn m5_needs_past_the_equal_share() -> WindowScenario {
     }
 }
 
+=======
+>>>>>>> origin/main
 #[cfg(test)]
 mod tests {
     use super::*;
 
+<<<<<<< HEAD
     // what this catches (the M5, 2026-11-14): BEFORE, the pool read as 5 equal lanes of 132,300
     // and Benchy (148,818) and Atlas (135,619) were cut although every need fit the pool. AFTER,
     // each is granted her own need, unequal, the four within the pool.
@@ -236,6 +240,8 @@ mod tests {
         assert!(grants.values().map(|&g| u64::from(g)).sum::<u64>() <= u64::from(scenario.pool_tokens));
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: the equal split the engine runs today passing as adequate. On the M5's
     // own shape it grants Aiko 58,112 of the 70-76k she reads while Atlas idles at 12k of his
     // 58k: squeezed with the pool half empty, the re-read loop.

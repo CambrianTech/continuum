@@ -92,12 +92,17 @@ fn native_surface_is_derived_from_the_per_command_native_flag() {
     // < 52 -> < 53, stated plainly (2026-11-06, the M5): tool/output joined, `Always`, the verb
     // every handle she is shown names; catalog-only, no act could call it while every folded
     // act, saved result and thought named it.
+<<<<<<< HEAD
     // < 53 -> < 56, stated plainly (2026-11-14, Joel: residents "are to be as capable as you are";
     // "Persona can merge and review too"): code/github/pr-checks, code/github/pr-merge and
     // code/git/merge joined, `OnDemand` (one help away, not in her prompt), native because the merge
     // gate's refusals name pr-checks and git/merge as her next call. pr-diff stays catalog-only.
     assert!(
         names.len() < 56,
+=======
+    assert!(
+        names.len() < 53,
+>>>>>>> origin/main
         "native set stayed bounded ({} tools); a full dump would re-mute personas",
         names.len()
     );
@@ -191,7 +196,11 @@ fn projection_preserves_command_name_and_emits_open_schema() {
         // No AiSafe commands compiled into this build — nothing to assert.
         return;
     };
+<<<<<<< HEAD
     let spec = descriptor_to_tool_spec(d).expect("test: a registered command projects to a tool");
+=======
+    let spec = descriptor_to_tool_spec(d);
+>>>>>>> origin/main
     assert_eq!(spec.name, d.name, "tool name is the command name verbatim");
     assert_eq!(spec.input_schema.schema_type, "object");
     assert!(
@@ -217,7 +226,11 @@ fn nested_param_schema_carries_its_definitions() {
     }) else {
         return;
     };
+<<<<<<< HEAD
     let spec = descriptor_to_tool_spec(d).expect("test: a registered command projects to a tool");
+=======
+    let spec = descriptor_to_tool_spec(d);
+>>>>>>> origin/main
     let defs = spec
         .input_schema
         .definitions

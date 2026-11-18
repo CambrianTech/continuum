@@ -244,7 +244,11 @@ fn her_folded_acts_name_their_range_and_count_in_one_line() {
     };
     let run: Vec<_> = (3200..=3330).map(|seq: u64| item(&seq.to_string())).collect();
     let Some(block) = actions.fold(&run) else { panic!("a run with acts folds") };
+<<<<<<< HEAD
     assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one by its #n, e.g. tool_output({\"act\":3200})]");
+=======
+    assert_eq!(block.text, "[actions #3200-#3330: 131 earlier acts folded; reopen one by its #n, e.g. read_output({\"act\":3200})]");
+>>>>>>> origin/main
     assert!(actions.fold(&[item("banner")]).is_none(), "a run that is not acts names nothing");
 }
 
@@ -320,11 +324,19 @@ fn an_older_thought_sheds_to_its_handle_and_is_still_seen_whole() {
     memory.save_unsaved_thoughts(persona);
     memory.evict_resident_results_over(0, &|_, _| true);
     let records = memory.thoughts();
+<<<<<<< HEAD
     assert!(matches!(records[0].body, crate::cognition::working_memory::ThoughtBody::Shed { .. }), "the older thought is shed to its handle");
     assert!(records[1].text().is_some(), "her newest thought stays resident");
     assert_eq!(whole(&memory), resident, "she sees it whole exactly as before the shed");
     let snapshot = memory.snapshot();
     assert!(matches!(snapshot.thoughts[0].body, crate::cognition::working_memory::ThoughtBody::Shed { .. }), "the checkpoint carries its handle, not its body");
+=======
+    assert!(records[0].text.is_none() && records[0].handle.is_some(), "the older thought is shed to its handle");
+    assert!(records[1].text.is_some(), "her newest thought stays resident");
+    assert_eq!(whole(&memory), resident, "she sees it whole exactly as before the shed");
+    let snapshot = memory.snapshot();
+    assert!(snapshot.thoughts[0].text.is_none() && snapshot.thoughts[0].handle.is_some(), "the checkpoint carries its handle, not its body");
+>>>>>>> origin/main
 }
 
 // what this catches: a repeated settlement collapsing into the earlier one because thoughts were
@@ -373,7 +385,11 @@ fn her_unchanged_reread_reaches_her_view_as_a_repeat_and_an_undeclared_act_never
     assert_eq!(view.advance(&[&actions as &dyn Source<_>]).repeats, 1);
     let text = view.render().map(|m: &super::ContextMessage| m.text.clone()).collect::<Vec<_>>().join("\n");
     assert_eq!(text.matches(body.as_str()).count(), 1, "the whole arrives once");
+<<<<<<< HEAD
     assert!(text.contains(r#"repeat of #1, outcome unchanged; reopen with tool_output({"act":1})]"#), "{text}");
+=======
+    assert!(text.contains(r#"repeat of #1, outcome unchanged; reopen with read_output({"act":1})]"#), "{text}");
+>>>>>>> origin/main
 
     let memory = WorkingMemory::new(8);
     let actions = Actions { memory: &memory, persona: uuid::Uuid::nil() };

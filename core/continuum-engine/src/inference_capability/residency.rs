@@ -5,7 +5,11 @@
 //! one level deeper: "will the SELECTED MODEL actually fit with all
 //! layers on that GPU, evidenced not guessed?"
 //!
+<<<<<<< HEAD
 //! The CBAR-SUBSTRATE spec (docs/architecture/CONTINUUM-ENGINE.md
+=======
+//! The CBAR-SUBSTRATE spec (docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md
+>>>>>>> origin/main
 //! §336 piece #5) requires that, before any local-generation turn runs:
 //!
 //! - The selected Qwen model is named explicitly,

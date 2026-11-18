@@ -23,7 +23,11 @@ engineering receipts. [ƒSociety.md, docs/vision/]
 Rust core; own-task + interval + watch-snapshot modules; pressure/lease governance
 (ResourceGovernor); the airc event bus as nervous system (rooms = contexts = content);
 one machine runs many minds + training + serving under arbitration.
+<<<<<<< HEAD
 [CONTINUUM-ENGINE.md, CONCURRENCY-STYLE-GUIDE.md]
+=======
+[CBAR-SUBSTRATE-ARCHITECTURE.md, CONCURRENCY-STYLE-GUIDE.md]
+>>>>>>> origin/main
 
 ## 3. Perception — the room as it is now
 Coalesced wake bursts (WHO/WHEN/WHAT, own posts attributed); STRUCTURAL FACTS as

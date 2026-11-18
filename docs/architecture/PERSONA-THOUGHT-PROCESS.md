@@ -357,6 +357,10 @@ The thought-process surface is "done" when the following are provable on canary,
 
 - [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) — the reactive cognition contract this complements.
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — engram lifecycle; sentinel-AI's role in thought-template refinement.
+<<<<<<< HEAD
 - [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the substrate floor; thought-process is a CBAR-shaped module.
+=======
+- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the substrate floor; thought-process is a CBAR-shaped module.
+>>>>>>> origin/main
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) — the catalog of every concern. Thought-process belongs in the cognition section.
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — Lane D implements the reactive contract; this thought-process surface lands as a Lane D follow-up once reactive is stable.

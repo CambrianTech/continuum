@@ -10,12 +10,18 @@ pub struct WorkNote {
 pub struct WorkNoteParams {
     /// Card id (8-char short id accepted).
     pub card_id: String,
+<<<<<<< HEAD
     // The newest note is the card's ledger, so a note that establishes nothing would erase the one before it (M5
     // 2026-11-17: a resident posted empty notes over her card's ledger). A plain comment: only `///` reaches the schema.
     /// Established facts, at least one: `file:range → what it showed`, `test → assertion`.
     #[schemars(schema_with = "known_facts_schema")]
     #[ts(type = "Array<string>")]
     pub known: continuum_base::non_empty_list::NonEmptyList<continuum_base::non_empty_text::NonEmptyText>,
+=======
+    /// Established facts: `file:range → what it showed`, `test → assertion`.
+    #[serde(default)]
+    pub known: Vec<String>,
+>>>>>>> origin/main
     /// Competing explanations, each with its settling test.
     #[serde(default)]
     pub hypotheses: Vec<HypothesisParam>,
@@ -30,6 +36,7 @@ pub struct WorkNoteParams {
     pub decided_fix: Option<String>,
 }
 
+<<<<<<< HEAD
 /// `known`'s schema, the decoder's contract as the model reads it: at least one fact, none empty. (A whitespace-only
 /// fact is refused at the parse; a pattern is not used, so grammar generators that skip patterns still apply it.)
 fn known_facts_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
@@ -50,6 +57,8 @@ fn known_facts_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schem
     })
 }
 
+=======
+>>>>>>> origin/main
 /// A hypothesis as the VERB takes it — snake_case like every other work/* parameter.
 /// The stored record ([`crate::experience::ledger::LedgerHypothesis`]) is a wire type in
 /// camelCase; this is the adapter between the verb surface and the record, so a caller
@@ -87,6 +96,10 @@ pub struct WorkNoteResult {
 #[async_trait]
 impl ActionCommand for WorkNote {
     const NAME: &'static str = "work/note";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Note.aliases();
+>>>>>>> origin/main
     const NATIVE: bool = true;
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
@@ -108,7 +121,11 @@ impl ActionCommand for WorkNote {
         };
         let ledger = crate::experience::ledger::CardLedger {
             card_id: card_id.as_uuid(),
+<<<<<<< HEAD
             known: p.known.into_vec().into_iter().map(String::from).collect(),
+=======
+            known: p.known,
+>>>>>>> origin/main
             hypotheses: p.hypotheses.into_iter().map(Into::into).collect(),
             unknown: p.unknown,
             next_test: p.next_test,

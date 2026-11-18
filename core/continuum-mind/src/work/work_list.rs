@@ -1,5 +1,8 @@
 use super::*;
+<<<<<<< HEAD
 use crate::persona::board_nav::BoardGroup;
+=======
+>>>>>>> origin/main
 
 // ─────────────────────────── work/list + work/get ─────────────────
 //
@@ -85,6 +88,7 @@ pub struct WorkListParams {
     /// day reporting they had no work, and they were reading their tool correctly.
     #[serde(default)]
     pub claimable: Option<bool>,
+<<<<<<< HEAD
     /// One folded group, exactly as the board folds it (each fold names its own).
     #[serde(default)]
     #[ts(optional)]
@@ -102,6 +106,18 @@ pub struct WorkListFold {
     pub count: usize,
     /// The call that lists this group whole, as she makes it.
     pub open: String,
+=======
+    /// At most this many cards: claimable first, then priority, then newest.
+    // Not a doc comment: this struct's docs are the tool surface a citizen pays tokens for.
+    // No default count. Measured 2026-10-16 on the M5: 776 cards went on as ONE 198k-char
+    // JSON line she could read none of (card ee003c55). A long result now goes on one card per
+    // line (`spill::result_text`) and is saved, and how much of it she sees is her act's one
+    // allocation: whole when the window holds it, else the largest level that fits (its first
+    // and last cards, the counts, and the handle that reopens the rest).
+    #[serde(default)]
+    #[ts(optional)]
+    pub limit: Option<usize>,
+>>>>>>> origin/main
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -208,11 +224,14 @@ pub struct WorkListResult {
     #[ts(optional)]
     pub note: Option<String>,
 
+<<<<<<< HEAD
     /// With no filter, the groups folded off her focus, each one line (`board_nav`). Before
     /// `cards`, so the board's shape survives any cut of the list.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub folded: Vec<WorkListFold>,
 
+=======
+>>>>>>> origin/main
     /// The matched cards. LAST by design — see the field-order note at the top of this
     /// struct. This is the divisible part of the answer, so this is what a truncated
     /// receipt sheds; the counts and the note survive.
@@ -222,7 +241,12 @@ pub struct WorkListResult {
 #[async_trait]
 impl ActionCommand for WorkList {
     const NAME: &'static str = "work/list";
+<<<<<<< HEAD
     const NATIVE: bool = true; // core room workflow — the read half of work/claim; without it the board is write-only
+=======
+    const ALIASES: &'static [&'static str] = &["list_tasks"];
+    const NATIVE: bool = true; // core room workflow — the read half of claim_task; without it the board is write-only
+>>>>>>> origin/main
     const ACCESS: AccessLevel = AccessLevel::AiSafe;
     const DESCRIPTION: &'static str =
         "List the work board's cards (read-only): short id, title, state, owner, and whether it is \
@@ -232,8 +256,12 @@ impl ActionCommand for WorkList {
          full requirements. To find takeable work pass `claimable: true`: filtering \
          `state: \"open\"` (the column) misses held and lapsed cards. The result always reports \
          `total_on_board` and `claimable_now` so an empty list is never mistaken for an empty \
+<<<<<<< HEAD
          board. With no filter, groups beyond your own cards come back folded, each naming the \
          call that lists it whole. Boards are per room (`room`).";
+=======
+         board. Boards are per room (`room`).";
+>>>>>>> origin/main
     type Params = WorkListParams;
     type Output = WorkListResult;
 
@@ -266,6 +294,7 @@ impl ActionCommand for WorkList {
             &owner_peers,
         )
         .await;
+<<<<<<< HEAD
         let reader = airc_core::PeerId::from_uuid(me);
         let judges_her_own = |card: &airc_work::WorkCard| {
             crate::cognition::review_verdict::judged_submission(card, &board.cards)
@@ -275,6 +304,12 @@ impl ActionCommand for WorkList {
         // filter on the rendered facts. Filtering before rendering would put the
         // availability question on the raw column again — the exact split this fixes.
         let rendered: Vec<(WorkListCard, CardState, Option<BoardGroup>, u64)> = board
+=======
+        // Render EVERY card once (holder resolution is the shared projection), then
+        // filter on the rendered facts. Filtering before rendering would put the
+        // availability question on the raw column again — the exact split this fixes.
+        let rendered: Vec<(WorkListCard, CardState)> = board
+>>>>>>> origin/main
             .cards
             .iter()
             .map(|c| {
@@ -288,15 +323,22 @@ impl ActionCommand for WorkList {
                         // unnamed peer" otherwise (its handle in owner_id), `YOU` when hers.
                         owner: holder.owner.map(|_| holder.display.clone()),
                         owner_id: holder.owner.filter(|_| !holder.is_self).map(|o| o.as_uuid()),
+<<<<<<< HEAD
                         // Never offered to the mind whose work it judges (card 0174211f).
                         claimable: holder.claimable() && !judges_her_own(c),
+=======
+                        claimable: holder.claimable(),
+>>>>>>> origin/main
                         lease: holder.lease_word().map(str::to_string),
                         priority: priority_str(c.priority).to_string(),
                         age_hours: now_ms.saturating_sub(c.created_at_ms) / 3_600_000,
                     },
                     c.state,
+<<<<<<< HEAD
                     crate::persona::board_nav::group_of(c, me, now_ms),
                     c.updated_at_ms,
+=======
+>>>>>>> origin/main
                 )
             })
             .collect();
@@ -304,17 +346,50 @@ impl ActionCommand for WorkList {
         let total_on_board = rendered.len();
         let awaiting_reviewer = crate::cognition::review_queue::awaiting_reviewer(&board).count();
         let unsubmitted_pull_requests = crate::cognition::review_queue::unsubmitted_pull_requests(&board).count();
+<<<<<<< HEAD
         let claimable_now = rendered.iter().filter(|(r, ..)| r.claimable).count();
 
         let selector = Selector { state: filter, claimable: p.claimable, group: p.group };
         let (cards, folded) = listed(selector.select(rendered), selector.filters());
+=======
+        let claimable_now = rendered.iter().filter(|(r, _)| r.claimable).count();
+
+        let mut cards: Vec<WorkListCard> = rendered
+            .into_iter()
+            .filter(|(_, state)| filter.map_or(true, |f| *state == f))
+            .filter(|(r, _)| p.claimable.map_or(true, |want| r.claimable == want))
+            .map(|(r, _)| r)
+            .collect();
+        let matched = cards.len();
+        // claimable first, then priority (p0 before p3), then newest: the board's own order
+        // is arrival, the one order a citizen looking for work never wants
+        cards.sort_by(|a, b| {
+            b.claimable
+                .cmp(&a.claimable)
+                .then_with(|| a.priority.cmp(&b.priority))
+                .then_with(|| a.age_hours.cmp(&b.age_hours))
+        });
+        if let Some(limit) = p.limit {
+            cards.truncate(limit.max(1));
+        }
+>>>>>>> origin/main
 
         // A zero that explains itself. `{"cards":[]}` on a full board is the receipt
         // that cost the residents a day: it is indistinguishable from an empty board,
         // and they read it the only way it can be read. The filter's answer stays
         // honest — we do not quietly widen it — but the result says what it left out
         // and which query asks the question she meant. [[observability-as-substrate]]
+<<<<<<< HEAD
         let note = if cards.is_empty() && folded.is_empty() && total_on_board > 0 {
+=======
+        let note = if matched > cards.len() {
+            Some(format!(
+                "{} of the {matched} matching cards are listed (claimable first, then priority, then \
+                 newest) under the limit you passed; raise it or omit it for every match",
+                cards.len()
+            ))
+        } else if cards.is_empty() && total_on_board > 0 {
+>>>>>>> origin/main
             Some(if claimable_now > 0 {
                 format!(
                     "Your filter matched 0 of {total_on_board} cards — the board is NOT empty. \
@@ -340,6 +415,7 @@ impl ActionCommand for WorkList {
             awaiting_reviewer,
             unsubmitted_pull_requests,
             note,
+<<<<<<< HEAD
             folded,
         })
     }
@@ -407,3 +483,8 @@ pub(crate) fn listed(matched: impl IntoIterator<Item = (WorkListCard, Option<Boa
     }
     (cards, folded)
 }
+=======
+        })
+    }
+}
+>>>>>>> origin/main

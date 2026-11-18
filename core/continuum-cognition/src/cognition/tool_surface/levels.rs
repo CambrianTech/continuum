@@ -1,5 +1,9 @@
 //! Each verb's levels of detail, generated from its schema's shape (the context codec's contract,
+<<<<<<< HEAD
 //! CONTINUUM-ENGINE section 5 "one codec for every layer"): her hands are a budget consumer like any other, so a
+=======
+//! MIND-CONTEXT "one codec for every layer"): her hands are a budget consumer like any other, so a
+>>>>>>> origin/main
 //! small window shows a verb smaller instead of refusing the turn.
 //!
 //! - **whole**: the schema as built;

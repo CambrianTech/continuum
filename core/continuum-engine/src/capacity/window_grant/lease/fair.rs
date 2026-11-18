@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 //! Dispatch at the act (CONTINUUM-ENGINE 4.9 P3, I3 and I4): grants follow the minds that are acting.
 //!
 //! - A mind with a request in custody (an act hold, a reservation, an unresolved request) is ACTING:
@@ -16,11 +17,19 @@
 use super::*;
 use crate::capacity::window_grant::{stamp_revisions, DemandFollowing, PoolGrants};
 use std::collections::BTreeSet;
+=======
+//! Receipt-driven grant handoff. Physical claims stay charged until a reclaim proof is
+//! consumed in the same transaction that publishes replacement grants.
+use super::*;
+use crate::capacity::window_grant::{stamp_revisions, DemandFollowing, PoolGrants};
+use std::collections::{BTreeSet, VecDeque};
+>>>>>>> origin/main
 
 #[cfg(test)]
 mod tests;
 mod diagnosis;
 
+<<<<<<< HEAD
 /// Why a ready mind holds less than her need after an evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchWait {
@@ -66,6 +75,33 @@ impl DispatchState {
 /// holder is absent from the publication and its physical claim is fixed separately.
 pub fn publish_at_the_act<R>(
     dispatch: &mut DispatchState,
+=======
+#[derive(Default)]
+pub struct FairGrantState {
+    engine: Option<EngineIncarnation>,
+    baseline: BTreeMap<uuid::Uuid, u64>,
+    waiters: VecDeque<uuid::Uuid>,
+    /// Each mind's receipt revision when her grant last changed: she is settled (her grant may
+    /// shrink toward her share) once a receipt past it says she served on it.
+    changed: BTreeMap<uuid::Uuid, u64>,
+    /// Holders with no request in custody at the last evaluation: one still idle at the next has
+    /// an unused seat, which yields to a waiter whether or not she served since her grant.
+    idle: BTreeSet<uuid::Uuid>,
+    diagnosis: Option<diagnosis::QueueDiagnosis>,
+}
+
+impl FairGrantState {
+    /// Her place in the queue for room (1-based) and the queue's length, read after a publish.
+    pub fn queued(&self, mind: uuid::Uuid) -> Option<(usize, usize)> {
+        self.waiters.iter().position(|m| *m == mind).map(|at| (at + 1, self.waiters.len()))
+    }
+}
+
+/// The callback publishes while the reservation lock is held. Tickets leave only after the
+/// old holder is absent from the publication and its physical claim is fixed separately.
+pub fn publish_fair_grants<R>(
+    fair: &mut FairGrantState,
+>>>>>>> origin/main
     demands: &[Demand<uuid::Uuid>],
     pool: u32,
     ceiling: u32,
@@ -73,6 +109,7 @@ pub fn publish_at_the_act<R>(
     current: impl FnOnce() -> Option<PoolGrants>,
     publish: impl FnOnce(PoolGrants) -> R,
 ) -> (R, Vec<GrantHandoff>) {
+<<<<<<< HEAD
     RESERVATIONS.dispatch_publish(dispatch, Publication { demands, pool, ceiling, engine }, current, publish)
 }
 
@@ -116,11 +153,34 @@ impl Reservations {
         let mut state = self.lock();
         if dispatch.engine != engine {
             *dispatch = DispatchState { engine, ..Default::default() };
+=======
+    RESERVATIONS.fair_publish(fair, demands, pool, ceiling, engine, current, publish)
+}
+
+impl Reservations {
+    pub(super) fn fair_publish<R>(
+        &self,
+        fair: &mut FairGrantState,
+        demands: &[Demand<uuid::Uuid>],
+        pool: u32,
+        ceiling: u32,
+        engine: Option<EngineIncarnation>,
+        current: impl FnOnce() -> Option<PoolGrants>,
+        publish: impl FnOnce(PoolGrants) -> R,
+    ) -> (R, Vec<GrantHandoff>) {
+        let mut state = self.lock();
+        if fair.engine != engine {
+            *fair = FairGrantState {
+                engine,
+                ..Default::default()
+            };
+>>>>>>> origin/main
         }
         for entries in state.entries.values_mut() {
             entries.retain(|entry| entry.engine == engine);
         }
         state.entries.retain(|_, entries| !entries.is_empty());
+<<<<<<< HEAD
         state.receipts.retain(|_, (incarnation, _)| *incarnation == engine);
         state.retiring.retain(|_, lease| lease.engine == engine);
         state.reclaimed.retain(|_, lease| lease.engine == engine);
@@ -136,15 +196,56 @@ impl Reservations {
         dispatch.changed.retain(|mind, _| live.contains(mind));
         // a reclaim stays counted for its beneficiary while its seat is still retiring and she is still ready
         dispatch.reclaiming.retain(|holder, beneficiary| state.retiring.contains_key(holder) && live.contains(beneficiary));
+=======
+        state
+            .receipts
+            .retain(|_, (incarnation, _)| *incarnation == engine);
+        state.retiring.retain(|_, lease| lease.engine == engine);
+        state.reclaimed.retain(|_, lease| lease.engine == engine);
+        state.refused.retain(|_, lease| lease.engine == engine);
+        let current = current();
+        let held = current
+            .as_ref()
+            .filter(|g| g.engine == engine)
+            .map(|g| g.by_mind.clone())
+            .unwrap_or_default(); // no publication on this engine holds no grants
+        let live: BTreeSet<_> = demands.iter().map(|d| d.mind).collect();
+        fair.baseline.retain(|mind, _| live.contains(mind));
+        fair.changed.retain(|mind, _| live.contains(mind));
+        fair.waiters.retain(|mind| demands.iter().any(|d| d.mind == *mind
+            && d.need.get() <= d.ceiling && d.need.get() <= pool));
+        for demand in demands {
+            if demand.need.get() <= demand.ceiling
+                && demand.need.get() <= pool
+                && !held
+                    .get(&demand.mind)
+                    .is_some_and(|tokens| *tokens >= demand.need.get())
+                && !fair.waiters.contains(&demand.mind)
+            {
+                fair.waiters.push_back(demand.mind);
+            }
+        }
+>>>>>>> origin/main
         // Reclaimed capacity is consumed only here, under the publish/reserve transaction.
         let reclaimed: BTreeSet<_> = state
             .reclaimed
             .iter()
+<<<<<<< HEAD
             .filter_map(|(mind, lease)| state.retiring.get(mind).filter(|retired| retired.same_identity(lease)).map(|_| *mind))
+=======
+            .filter_map(|(mind, lease)| {
+                state
+                    .retiring
+                    .get(mind)
+                    .filter(|retired| retired.same_identity(lease))
+                    .map(|_| *mind)
+            })
+>>>>>>> origin/main
             .collect();
         for mind in &reclaimed {
             state.retiring.remove(mind);
             state.reclaimed.remove(mind);
+<<<<<<< HEAD
         }
         let mut held_for_policy = held.clone();
         let restored: BTreeMap<_, _> = state
@@ -152,15 +253,30 @@ impl Reservations {
             .iter()
             .filter_map(|(mind, lease)| state.retiring.get(mind).filter(|retired| retired.same_identity(lease)).map(|_| (*mind, lease.tokens)))
             .collect();
+=======
+            if live.contains(mind) && !fair.waiters.contains(mind) {
+                fair.waiters.push_back(*mind);
+            }
+        }
+        let mut held_for_policy = held.clone();
+        let restored: BTreeMap<_, _> = state.refused.iter().filter_map(|(mind, lease)| {
+            state.retiring.get(mind).filter(|retired| retired.same_identity(lease)).map(|_| (*mind, lease.tokens))
+        }).collect();
+>>>>>>> origin/main
         for (mind, tokens) in &restored {
             state.retiring.remove(mind);
             state.refused.remove(mind);
             held_for_policy.insert(*mind, *tokens);
+<<<<<<< HEAD
             dispatch.refused_at.insert(*mind, state.receipts.get(mind).map(|(_, revision)| *revision));
+=======
+            fair.baseline.insert(*mind, state.receipts.get(mind).map_or(0, |(_, revision)| *revision));
+>>>>>>> origin/main
         }
         for mind in reclaimed.iter().chain(state.retiring.keys()) {
             held_for_policy.remove(mind);
         }
+<<<<<<< HEAD
         for demand in demands.iter().filter(|d| seatable(d, pool)) {
             if !held_for_policy.get(&demand.mind).is_some_and(|tokens| *tokens >= demand.need.get()) {
                 dispatch.owed.entry(demand.mind).or_insert(now);
@@ -169,30 +285,78 @@ impl Reservations {
         // the oldest owed first, then everyone else in the order demand arrived
         let mut ordered = demands.to_vec();
         ordered.sort_by_key(|d| dispatch.owed.get(&d.mind).copied().unwrap_or(u64::MAX)); // unwrap_or: a mind not owed sorts after every owed one
+=======
+        // A seat held idle across two evaluations by a mind that never served on this engine holds
+        // no KV here to reclaim: while anyone waits, it is withdrawn without a physical handoff.
+        if !fair.waiters.is_empty() {
+            for mind in fair.idle.iter().filter(|mind| !state.entries.contains_key(mind) && !state.receipts.contains_key(mind)) {
+                held_for_policy.remove(mind);
+            }
+        }
+        let mut ordered = demands.to_vec();
+        ordered.sort_by_key(|d| fair.waiters.iter().position(|mind| *mind == d.mind));
+        // Option sorts None first; explicitly put queued waiters ahead of non-waiters.
+        ordered.sort_by_key(|d| !fair.waiters.contains(&d.mind));
+>>>>>>> origin/main
         let compute = |state: &ReservationState, held: &BTreeMap<uuid::Uuid, u32>| {
             let mut fixed: BTreeMap<_, _> = state
                 .entries
                 .iter()
+<<<<<<< HEAD
                 .filter_map(|(mind, entries)| entries.iter().map(|entry| entry.tokens).max().map(|tokens| (*mind, tokens)))
+=======
+                .filter_map(|(mind, entries)| {
+                    entries
+                        .iter()
+                        .map(|entry| entry.tokens)
+                        .max()
+                        .map(|tokens| (*mind, tokens))
+                })
+>>>>>>> origin/main
                 .collect();
             for (mind, lease) in &state.retiring {
                 fixed.insert(*mind, lease.tokens);
             }
             fixed.extend(restored.iter().map(|(mind, tokens)| (*mind, *tokens)));
+<<<<<<< HEAD
+=======
+            // Actual dispatch reservations above own in-flight protection. A service-loop
+            // boolean can outlive terminal/erase receipts and must not outrank queued minds.
+>>>>>>> origin/main
             let open: Vec<_> = ordered
                 .iter()
                 .filter(|d| !state.retiring.contains_key(&d.mind))
                 .map(|d| Demand {
                     in_flight: false,
+<<<<<<< HEAD
                     settled: dispatch.changed.get(&d.mind).is_none_or(|at| state.receipts.get(&d.mind).is_some_and(|(_, served)| served > at)),
                     ..*d
                 })
                 .collect();
             let mut grants = grant_with_reservations(&mut DemandFollowing, &open, held, pool, &fixed);
+=======
+                    settled: fair.changed.get(&d.mind).is_none_or(|at| state.receipts.get(&d.mind).is_some_and(|(_, served)| served > at)),
+                    ..*d
+                })
+                .collect();
+            let mut grants =
+                grant_with_reservations(&mut DemandFollowing, &open, held, pool, &fixed);
+            if let Some(first) = fair.waiters.front() {
+                if ordered.iter().any(|d| d.mind == *first
+                    && !grants.get(first).is_some_and(|tokens| *tokens >= d.need.get())) {
+                    // Multiple holders may need reclamation. Do not re-admit a smaller
+                    // queued mind into the first freed cells while the oldest still waits.
+                    // Existing held and unresolved claims remain protected throughout.
+                    let eligible: Vec<_> = open.iter().filter(|d| d.mind == *first || held.contains_key(&d.mind)).copied().collect();
+                    grants = grant_with_reservations(&mut DemandFollowing, &eligible, held, pool, &fixed);
+                }
+            }
+>>>>>>> origin/main
             grants.retain(|mind, _| !state.retiring.contains_key(mind));
             grants
         };
         let mut grants = compute(&state, &held_for_policy);
+<<<<<<< HEAD
         let mut tickets = Vec::new();
         let mut unseated = Vec::new();
         let mut owed: Vec<(uuid::Uuid, u64)> = dispatch.owed.iter().map(|(mind, at)| (*mind, *at)).collect();
@@ -301,6 +465,108 @@ impl Reservations {
             }
         }
         diagnosis::observe(dispatch, &state, &next);
+=======
+        let waiter = fair
+            .waiters
+            .iter()
+            .find(|mind| {
+                demands.iter().any(|d| {
+                    d.mind == **mind && !grants.get(mind).is_some_and(|n| *n >= d.need.get())
+                })
+            })
+            .copied();
+        let mut tickets = Vec::new();
+        if let (Some(waiter), Some(_)) = (waiter, engine) {
+            if state.retiring.is_empty() {
+                let candidate = held.iter().find_map(|(mind, _)| {
+                    if *mind == waiter
+                        || state.entries.contains_key(mind)
+                        || reclaimed.contains(mind)
+                        || restored.contains_key(mind)
+                    {
+                        return None;
+                    }
+                    let (_, revision) = state.receipts.get(mind)?;
+                    // Served since her grant, or idle across two evaluations: an unused seat yields
+                    // too (the M5, 2026-11-10: two residents queued ten minutes behind holders that
+                    // were idle or slow, because only fresh service made a holder a candidate).
+                    let served = *revision > fair.baseline.get(mind).copied().unwrap_or(0); // no grant baseline means no prior completed service
+                    if !served && !fair.idle.contains(mind) {
+                        return None;
+                    }
+                    let lease = current.as_ref()?.lease_for(*mind)?;
+                    Some((*mind, lease, *revision))
+                });
+                if let Some((mind, lease, receipt)) = candidate {
+                    state.retiring.insert(mind, lease);
+                    fair.baseline.insert(mind, receipt);
+                    held_for_policy.remove(&mind);
+                    tickets.push(GrantHandoff {
+                        persona: mind,
+                        lease,
+                        receipt,
+                    });
+                    grants = compute(&state, &held_for_policy);
+                }
+            }
+        }
+        for mind in grants.keys() {
+            if !held.contains_key(mind) || reclaimed.contains(mind) {
+                let revision = state
+                    .receipts
+                    .get(mind)
+                    .map_or(0, |(_, revision)| *revision);
+                fair.baseline.insert(*mind, revision);
+            }
+        }
+        fair.waiters.retain(|mind| {
+            !grants.get(mind).is_some_and(|tokens| {
+                demands
+                    .iter()
+                    .any(|d| d.mind == *mind && *tokens >= d.need.get())
+            })
+        });
+        for d in demands {
+            if grants.get(&d.mind) != held.get(&d.mind) {
+                let served = state.receipts.get(&d.mind).map_or(0, |(_, revision)| *revision); // no receipt yet: she has served nothing on any grant
+                fair.changed.insert(d.mind, served);
+            }
+        }
+        let mut next = PoolGrants {
+            pool_tokens: pool,
+            per_sequence_cap: ceiling,
+            by_mind: grants,
+            engine,
+            revisions: BTreeMap::new(),
+        };
+        stamp_revisions(current.as_ref(), &mut next);
+        // Arm one holder only after its stamped publication is known. Reserve checks this
+        // under the same mutex as terminal settlement, including between publisher ticks.
+        // The holder armed is the one that has served most since her baseline, never the first by id:
+        // arming by id order pinned one holder, and when she was slow or idle no seat ever turned.
+        state.yield_after.clear();
+        if !fair.waiters.is_empty() && state.retiring.is_empty() && engine.is_some() {
+            let served_since = |mind: &uuid::Uuid| {
+                let served = state.receipts.get(mind).map_or(0, |(_, revision)| *revision); // no receipt: no service
+                served.saturating_sub(fair.baseline.get(mind).copied().unwrap_or(0)) // no baseline: every receipt counts
+            };
+            if let Some((mind, lease)) = next
+                .by_mind
+                .keys()
+                .filter(|mind| !fair.waiters.contains(mind))
+                .max_by_key(|mind| served_since(mind))
+                .and_then(|mind| next.lease_for(*mind).map(|lease| (*mind, lease)))
+            {
+                let baseline = fair.baseline.get(&mind).copied().unwrap_or(0); // first grant has no completed service
+                state.yield_after.insert(mind, (lease, baseline));
+            }
+        }
+        // Who held a seat from before this evaluation and still has nothing in custody, for the next
+        // one's unused-seat rule: a seat granted at this evaluation is never idle yet (she is building
+        // her prompt).
+        fair.idle = next.by_mind.keys().filter(|mind| held.contains_key(mind) && !state.entries.contains_key(mind)).copied().collect();
+        diagnosis::observe(fair, &state, &next);
+>>>>>>> origin/main
         (publish(next), tickets)
     }
 }

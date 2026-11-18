@@ -94,8 +94,11 @@ impl Evidence {
 
 mod costs;
 pub(crate) use costs::Costs;
+<<<<<<< HEAD
 mod concurrency;
 pub(crate) use concurrency::MeasuredConcurrency;
+=======
+>>>>>>> origin/main
 
 /// One slot as a scheduler sees it at an iteration boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -108,8 +111,11 @@ pub(crate) struct SlotView {
     /// The task's prompt was not restored from a checkpoint (a cold prefill).
     pub cold: bool,
     pub generating: bool,
+<<<<<<< HEAD
     /// Tokens a generating slot still has to decode (0 when not generating).
     pub decode_left: f64,
+=======
+>>>>>>> origin/main
     /// The prompt tokens are her gap's streamed append-only output (ahead of the go).
     pub streamed: bool,
     /// When this slot's prompt became ready to prefill.
@@ -134,9 +140,12 @@ impl View<'_> {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Plan {
     pub prompt: Vec<(usize, u32)>,
+<<<<<<< HEAD
     /// The generating slots that decode this iteration; `None` is every one (the fork today). A
     /// generating slot left out keeps its KV and waits (CONTINUUM-ENGINE 4.10 P5).
     pub decode: Option<Vec<usize>>,
+=======
+>>>>>>> origin/main
 }
 
 /// The decision under test.

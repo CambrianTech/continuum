@@ -49,7 +49,11 @@ impl Actions<'_> {
     /// Her newest act (the one in flight, which her act's tail carries) as this source's item,
     /// following the act before it in its room: its element, cause, identity and outcome hash are
     /// what her tail's result item carries, so her view judges it on its arrival
+<<<<<<< HEAD
     /// (`tail::Tail`, CONTINUUM-ENGINE section 5 invariant 4). `None` with no act in flight.
+=======
+    /// (`tail::Tail`, MIND-CONTEXT invariant 4). `None` with no act in flight.
+>>>>>>> origin/main
     pub(crate) fn newest(&self) -> Option<Item<ContextMessage>> {
         let act = self.memory.in_flight_rendering()?;
         let (earlier, _) = self.memory.action_renderings();
@@ -131,6 +135,7 @@ impl Source<ContextMessage> for Actions<'_> {
         // Her acts in one room are one chain: each follows the act before it there; the first is
         // where that activity's chain starts.
         let mut last_in_room: std::collections::HashMap<Option<uuid::Uuid>, u64> = std::collections::HashMap::new();
+<<<<<<< HEAD
         // The reads of the files she is editing: whole through a turnover while the edit is open.
         let in_hand = self.memory.in_hand();
         for act in acts {
@@ -138,6 +143,11 @@ impl Source<ContextMessage> for Actions<'_> {
             let held = in_hand.reads.contains(&crate::cognition::working_memory::ActSeq(act.seq));
             let item = self.item(act, cause);
             items.push(if held { item.in_hand() } else { item });
+=======
+        for act in acts {
+            let cause = last_in_room.insert(act.room, act.seq).map_or(Cause::Root(Origin::ActivityStart), |prev| Cause::Of(self.act(prev)));
+            items.push(self.item(act, cause));
+>>>>>>> origin/main
         }
         items
     }
@@ -172,7 +182,11 @@ impl Source<ContextMessage> for Actions<'_> {
 
     /// An act the view found repeats an earlier one whose whole she has in front of her (the same
     /// request to a command that only observes, the same outcome): one line naming it and how to
+<<<<<<< HEAD
     /// reopen it, never a second copy of the whole (CONTINUUM-ENGINE section 5 invariant 4).
+=======
+    /// reopen it, never a second copy of the whole (MIND-CONTEXT invariant 4).
+>>>>>>> origin/main
     /// A repeated reopen (the same saved output reopened again, its whole still in front of her)
     /// names that whole and never invites a further reopen: the reopen was the repeat (IntelMac,
     /// 2026-11-11: one saved output reopened 20+ times, each arriving byte-identical).

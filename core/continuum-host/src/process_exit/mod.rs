@@ -4,6 +4,7 @@
 //! call that can tell: macOS lists no zombie in its process table and only `proc_pidinfo` can
 //! tell (measured 2026-10-28: running -> 136 bytes; zombie -> 0 with ESRCH); Linux keeps zombies
 //! in /proc, where a process table reader already sees their status, so it has nothing to add.
+<<<<<<< HEAD
 //!
 //! And the EXIT ITSELF as the event the kernel delivers, never a liveness poll (card b5b9bef3):
 //! every stop, reboot, kill and engine retirement polled `pid_alive` because nothing could await
@@ -133,6 +134,13 @@ pub async fn exited(pid: u32) -> ExitObserved {
     }
 }
 
+=======
+
+#[cfg_attr(target_os = "macos", path = "macos.rs")]
+#[cfg_attr(not(target_os = "macos"), path = "other.rs")]
+mod os;
+
+>>>>>>> origin/main
 /// True only on positive evidence that `pid` exited and awaits its reaper. Anything short of
 /// that is false: never proof of exit.
 pub fn exited_unreaped(pid: u32) -> bool {
@@ -143,6 +151,7 @@ pub fn exited_unreaped(pid: u32) -> bool {
 mod tests {
     use super::*;
 
+<<<<<<< HEAD
     // what this catches (card b5b9bef3): an exit read from a timer instead of the event. The wait
     // is still pending while the child runs, and resolves on its exit; nothing in the test sleeps.
     #[cfg(unix)]
@@ -194,6 +203,8 @@ mod tests {
         assert_eq!(exited(u32::MAX >> 2).await, ExitObserved::Exited);
     }
 
+=======
+>>>>>>> origin/main
     // what this catches (card e4ef7780): a zombie read as running, so its engine's residency held
     // serving forever. A real child: not exited while it runs, exited once it ends and before it
     // is reaped (macOS: proc_pidinfo's ESRCH; elsewhere the process table reader's job, so false).

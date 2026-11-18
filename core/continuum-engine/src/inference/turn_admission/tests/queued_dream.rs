@@ -56,7 +56,11 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // The inversion Codex named on #5786: a resident holds the adapter permit while it waits for
     // a slot. A dream waiting for the adapter must then hold no slot, or each waits on the other.
     let one = Arc::new(Semaphore::new(1));
+<<<<<<< HEAD
     let resident = DecodeBound::from(&one).try_acquire().expect("test: a resident holds the only adapter permit");
+=======
+    let resident = one.clone().acquire_owned().await.expect("test: a resident holds the only adapter permit");
+>>>>>>> origin/main
     let waiting = admit_turn(&one, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(waiting);
     assert!(futures::poll!(&mut waiting).is_pending(), "the dream waits for the adapter permit");
@@ -155,6 +159,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     assert!(on_scratch_node._lane.is_some(), "a keyed dream holds the ambient lane even where a scratch slot exists");
     drop(on_scratch_node);
     assert_eq!(lanes_free(), before, "and gives it back");
+<<<<<<< HEAD
     // (4) TWO keyed dreams on her ONE busy slot (card 6742aad1: her learning step and a dream
     // consolidation, the M5 2026-11-13). Queued in the slot's semaphore, each was handed the permit
     // only to drop it while the other's retry found it taken: 35,000 lane grants a second, and
@@ -180,4 +185,6 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let taken = crate::inference::resource_admission::serving_lane_grants() - grants;
     assert!(taken <= 5, "each wait is one pass, never a spin: {taken} lane grants");
     assert_eq!(lanes_free(), before, "and every lane comes back");
+=======
+>>>>>>> origin/main
 }

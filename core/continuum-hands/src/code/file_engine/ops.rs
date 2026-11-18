@@ -32,8 +32,13 @@ impl FileEngine {
         let total_lines = content.lines().count() as u32;
         let size_bytes = content.len() as u64;
 
+<<<<<<< HEAD
         let start = start_line.unwrap_or(1).max(1); // unwrap_or: a read with no start line begins at the file's first line
         let end = end_line.unwrap_or(total_lines).min(total_lines); // unwrap_or: a read with no end line runs to the file's last line
+=======
+        let start = start_line.unwrap_or(1).max(1);
+        let end = end_line.unwrap_or(total_lines).min(total_lines);
+>>>>>>> origin/main
 
         // NUMBERED, because `code/edit` addresses lines by NUMBER and this is the only
         // tool that shows the file. Returning bare text asked the caller to count lines by
@@ -101,6 +106,7 @@ impl FileEngine {
             .validate_size(relative_path, content.len() as u64)?;
 
         // Read old content (empty string for new files)
+<<<<<<< HEAD
         // A read that fails is never "empty": that would record the old content as nothing, and
         // an undo of this write would then erase the file. Only a file that is not there is new.
         // A file that is not UTF-8 keeps its bytes as replacement characters in the diff.
@@ -108,6 +114,12 @@ impl FileEngine {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(e) => return Err(e.into()),
+=======
+        let old_content = if abs_path.exists() {
+            fs::read_to_string(&abs_path).unwrap_or_default()
+        } else {
+            String::new()
+>>>>>>> origin/main
         };
 
         let operation = if abs_path.exists() {
@@ -128,7 +140,11 @@ impl FileEngine {
         }
 
         // Write the file
+<<<<<<< HEAD
         continuum_host::durable::write_replace_keeping(&abs_path, content.as_bytes())?;
+=======
+        fs::write(&abs_path, content)?;
+>>>>>>> origin/main
 
         // Record in change graph
         let node = ChangeNode {
@@ -198,6 +214,7 @@ impl FileEngine {
         let old_content = fs::read_to_string(&abs_path)?;
         let new_content = apply_edit(&old_content, edit_mode)?;
 
+<<<<<<< HEAD
         // AN EDIT THAT CHANGES NOTHING SAYS SO, AND WRITES NOTHING (FEEDBACK-PARITY problem 4,
         // invariant 2). Twice on the M5, 2026-11-11, a search_replace whose search and replace
         // were identical answered ok, rewrote the same bytes, and was taken as a fix (Benchy
@@ -223,6 +240,8 @@ impl FileEngine {
             });
         }
 
+=======
+>>>>>>> origin/main
         self.security
             .validate_size(relative_path, new_content.len() as u64)?;
 
@@ -250,6 +269,7 @@ impl FileEngine {
         // gate cannot see it. Refuse the same way, for the same reason: the tool can prove
         // this specific harm. Measured on sympy-21379 — a 2-line edit calling an unimported
         // `clear_cache` reported success and destroyed 14 passing tests.
+<<<<<<< HEAD
         if let Some((names, one)) = introduced_undefined_calls(&abs_path, &old_content, &new_content)
             .and_then(|names| {
                 let one = names.first()?.clone();
@@ -257,6 +277,11 @@ impl FileEngine {
             })
         {
             let list = names.join(", ");
+=======
+        if let Some(names) = introduced_undefined_calls(&abs_path, &old_content, &new_content) {
+            let list = names.join(", ");
+            let one = names.first().cloned().unwrap_or_default();
+>>>>>>> origin/main
             // A refusal is a load-bearing decision and it was INVISIBLE: the run verdict carries
             // acts + filesChanged, so a solve that burns its whole act budget on refused edits
             // looks identical to one that never tried to edit at all (glass-boxed on
@@ -318,7 +343,11 @@ impl FileEngine {
                      is UNCHANGED on disk; nothing was written and there is nothing to undo.\n\
                      {}{}\n{}",
                     scale_note,
+<<<<<<< HEAD
                     syntax_error_detail(&abs_path, &new_content).unwrap_or_default(), // unwrap_or_default: a language with no checker has no detail; the refusal stands on parses_clean
+=======
+                    syntax_error_detail(&abs_path, &new_content).unwrap_or_default(),
+>>>>>>> origin/main
                     // Don't just diagnose — AIM HER. The refusal used to say "widen the range",
                     // which is advice she has to act on blind. The same parser that proved the
                     // edit destructive can find the end line that works, so say the number.
@@ -388,7 +417,11 @@ impl FileEngine {
             compute_bidirectional_diff(&old_content, &new_content, relative_path);
 
         // Write the modified file
+<<<<<<< HEAD
         continuum_host::durable::write_replace_keeping(&abs_path, new_content.as_bytes())?;
+=======
+        fs::write(&abs_path, &new_content)?;
+>>>>>>> origin/main
 
         // Record in change graph
         let node = ChangeNode {
@@ -425,6 +458,7 @@ impl FileEngine {
                 // only when the edit has an anchor line to report from.
                 let mut out = cleaned.note();
                 if let Some(anchor) = edit_anchor_line(edit_mode, &new_content) {
+<<<<<<< HEAD
                     out.extend(syntax_error_after_edit(&abs_path));
                     // A displaced docstring parses clean, so nothing else here would mention it.
                     out.extend(displaced_docstrings(&abs_path, &old_content, &new_content));
@@ -432,6 +466,25 @@ impl FileEngine {
                     out.extend(inert_insertions(&abs_path, &old_content, &new_content));
                     out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
                     out.push_str(&numbered_neighborhood(&new_content, anchor));
+=======
+                    out.push_str(&syntax_error_after_edit(&abs_path).unwrap_or_default());
+                    // A displaced docstring parses clean, so nothing else here would mention it.
+                    out.push_str(
+                        &displaced_docstrings(&abs_path, &old_content, &new_content)
+                            .unwrap_or_default(),
+                    );
+                    // Neither does code written INTO a literal — the quietest failure of all (#317).
+                    out.push_str(
+                        &inert_insertions(&abs_path, &old_content, &new_content)
+                            .unwrap_or_default(),
+                    );
+                    out.push_str(&line_shift_notice(&old_content, &new_content, anchor));
+                    out.push_str(&numbered_neighborhood(
+                        &new_content,
+                        anchor,
+                        APPLIED_CONTEXT_RADIUS,
+                    ));
+>>>>>>> origin/main
                 }
                 (!out.is_empty()).then_some(out)
             },
@@ -566,7 +619,25 @@ impl FileEngine {
         // we do a best-effort: if the change was the latest for this file, apply the
         // reverse content directly; otherwise, warn about conflicts.
         let latest = self.graph.latest_for_file(&file_path);
+<<<<<<< HEAD
         let is_latest = latest.as_ref().is_some_and(|n| n.id == undo_node.id);
+=======
+        let is_latest = latest
+            .as_ref()
+            .map(|n| n.id == undo_node.id)
+            .unwrap_or(false);
+
+        // Apply the reverse diff content — use the unified diff text
+        // For now, use a simple heuristic: if we can identify the old content,
+        // reconstruct it from the diff hunks.
+        let _restored_content = if !reverse_diff.unified.is_empty() {
+            // The reverse diff exists, attempt to apply
+            apply_reverse_simple(&current_content, &reverse_diff)
+                .unwrap_or_else(|| current_content.clone())
+        } else {
+            current_content.clone()
+        };
+>>>>>>> origin/main
 
         // Write the restored content
         if original_node.operation == FileOperation::Create {
@@ -583,11 +654,20 @@ impl FileEngine {
                     fs::create_dir_all(parent)?;
                 }
             }
+<<<<<<< HEAD
             continuum_host::durable::write_replace_keeping(&abs_path, content.as_bytes())?;
         } else {
             // Undoing a write/edit = apply reverse diff
             let restored = apply_reverse_simple(&current_content, &reverse_diff);
             continuum_host::durable::write_replace_keeping(&abs_path, restored.as_bytes())?;
+=======
+            fs::write(&abs_path, content)?;
+        } else {
+            // Undoing a write/edit = apply reverse diff
+            let restored = apply_reverse_simple(&current_content, &reverse_diff)
+                .unwrap_or_else(|| current_content.clone());
+            fs::write(&abs_path, &restored)?;
+>>>>>>> origin/main
         }
         // Every undo arm rewrote (or removed) the one restored file. `undo_last` folds
         // through here, so each of its undos announces itself too.

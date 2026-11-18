@@ -620,7 +620,11 @@ async fn verdict_records_reasoning_into_working_memory() {
     }
     // …and the reasoning was captured into working memory for next turn.
     assert_eq!(
+<<<<<<< HEAD
         wm.thoughts().into_iter().filter_map(|record| record.text().map(str::to_owned)).collect::<Vec<_>>(),
+=======
+        wm.thoughts().into_iter().filter_map(|record| record.text).collect::<Vec<_>>(),
+>>>>>>> origin/main
         vec!["Weighed the risk; the fix is small and tested."],
         "the verdict's reasoning is recorded into her thought log"
     );
@@ -667,6 +671,7 @@ async fn empty_prose_with_no_tools_is_a_pass() {
         .expect("verdict");
     assert_eq!(c.decision, Some(Decision::pass()));
 }
+<<<<<<< HEAD
 
 // what this catches: a one-token "warm" request sent between her act and her next generation (the
 // deleted prefill_during_tool). It re-sent the prompt she was served, so the engine truncated her
@@ -693,3 +698,5 @@ async fn her_act_and_her_next_generation_are_the_only_requests_on_her_slot() {
     assert_eq!(seen.len(), 2, "her act, then her next generation: nothing between them on her slot");
     assert!(seen.iter().all(|request| request.max_tokens != Some(1)), "no one-token pass truncates what she generated");
 }
+=======
+>>>>>>> origin/main

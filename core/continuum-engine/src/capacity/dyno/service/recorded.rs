@@ -81,6 +81,7 @@ pub(crate) fn replay(day: &Recorded, restart: Restart, reclaim_after_ms: u64) ->
     };
     start(&mut world, &mut clock, &mut wants_turn, holder);
     let mut replay = Replay { world, first_served_after_turns: BTreeMap::new(), holder, holder_turns: 0 };
+<<<<<<< HEAD
     // The replay is the recorded window and ends with it. Where every mind is served, each turn's end
     // starts the next (`Restart::BetweenTicks`), so the turns alone never run out: past the window's
     // last publication there is nothing recorded left to compare against.
@@ -89,6 +90,9 @@ pub(crate) fn replay(day: &Recorded, restart: Restart, reclaim_after_ms: u64) ->
         if clock.virtual_ms() > window_ms {
             break;
         }
+=======
+    while let Some(event) = clock.next() {
+>>>>>>> origin/main
         let world = &mut replay.world;
         match event {
             Event::Publish => {

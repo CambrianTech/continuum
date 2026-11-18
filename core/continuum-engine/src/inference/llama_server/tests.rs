@@ -41,7 +41,10 @@ struct FakeControl {
     /// What an in-place genome change comes to. Defaults to `Unsupported`, the
     /// engine every pre-S1 test modelled: a genome change relaunches.
     in_place: GenomeInPlace,
+<<<<<<< HEAD
     in_place_error: Option<&'static str>,
+=======
+>>>>>>> origin/main
     /// How many times the reconcile asked this lane to record its observed placement.
     placements_recorded: AtomicUsize,
     /// `serve` refuses to retire the incumbent and signals nothing (card 931cfd22).
@@ -66,7 +69,10 @@ impl FakeControl {
             served_lanes: 0,
             served_window: 32768,
             in_place: GenomeInPlace::Unsupported,
+<<<<<<< HEAD
             in_place_error: None,
+=======
+>>>>>>> origin/main
             placements_recorded: AtomicUsize::new(0),
             retirement_refused: false,
             adapters_unreadable: false,
@@ -164,10 +170,13 @@ impl LlamaServerControl for FakeControl {
             Err(m) => Err(LlamaServerError::Unreachable(m.to_string())),
         }
     }
+<<<<<<< HEAD
     async fn set_prompt_cache_limit(&self, _limit_mib: std::num::NonZeroU64) -> Result<PromptCacheLimit, LlamaServerError> {
         // The reconcile never resizes the cache: the fake is an engine without the route.
         Err(LlamaServerError::PromptCacheRefused(PromptCacheRefusal::RouteMissing))
     }
+=======
+>>>>>>> origin/main
     async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         if self.adapters_unreadable {
             return Err(LlamaServerError::Unreachable("adapter set unreadable".into()));
@@ -177,12 +186,17 @@ impl LlamaServerControl for FakeControl {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+<<<<<<< HEAD
         _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         if let Some(reason) = self.in_place_error {
             return Err(LlamaServerError::Unreachable(reason.into()));
         }
         Ok(self.in_place.clone())
+=======
+    ) -> Result<GenomeInPlace, LlamaServerError> {
+        Ok(self.in_place)
+>>>>>>> origin/main
     }
     async fn serve(&self, _target: &ServingTarget) -> Result<(), LlamaServerError> {
         self.serves.fetch_add(1, Ordering::SeqCst);
@@ -270,7 +284,10 @@ mod readiness;
 mod configuration;
 mod reconcile;
 mod pages;
+<<<<<<< HEAD
 mod native_checkpoints;
+=======
+>>>>>>> origin/main
 
 use super::configuration::{DEFAULT_HOST, DEFAULT_PORT, chosen_port};
 

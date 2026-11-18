@@ -9,6 +9,7 @@ use super::{note_lane_held_ms, InflightModelCall, LanePriority};
 pub struct ServingLanePermit {
     pub(super) gate: &'static super::LaneAdmission,
     pub(super) expected_occupancy: Option<std::time::Duration>,
+<<<<<<< HEAD
     // Fields drop in declaration order: the permits return FIRST, and only then do the wakes
     // fire (the budget permit's own, then the progress guard's), so a caller woken on another
     // worker always finds what this release freed.
@@ -45,6 +46,21 @@ impl Drop for WakeOnDrop {
     fn drop(&mut self) {
         self.0.notify_waiters();
     }
+=======
+    pub(super) _progress: super::progress::ProgressGuard,
+    pub(super) _lane: tokio::sync::OwnedSemaphorePermit,
+    pub(super) _nondirected: Option<tokio::sync::OwnedSemaphorePermit>,
+    pub(super) _inflight: InflightModelCall,
+    /// Ledger tag for grant/release probes (2026-08-29 leak hunt) — permits
+    /// vanished with no probe naming the taker, so the permit itself speaks.
+    pub(super) granted_at: std::time::Instant,
+    pub(super) directed: bool,
+    pub(super) priority: LanePriority,
+    /// Attribution survives until release; None is genuinely unowned background work.
+    pub(super) persona: Option<uuid::Uuid>,
+    /// The gate this permit came from — its release wakes parked ambient callers.
+    pub(super) released: &'static tokio::sync::Notify,
+>>>>>>> origin/main
 }
 
 impl std::fmt::Debug for ServingLanePermit {
@@ -76,9 +92,23 @@ impl Drop for ServingLanePermit {
         // The measured turn time the NEXT mind's wait is bounded by (`lane_wait_bound`).
         // One ring push per release, on a path that already probes.
         note_lane_held_ms(held_ms);
+<<<<<<< HEAD
         // Counted, never a row per release: a hot path flooded the ledger with them (card 6742aad1).
         self.gate.tally.released(held_ms);
         // No wake here: this body runs BEFORE the fields drop, so the permits are still held.
         // The wakes ride the fields themselves (`BudgetPermit`, `ProgressGuard`), after them.
+=======
+        continuum_base::probe!(
+            class = "admission.lane.released",
+            persona = ?self.persona,
+            directed = self.directed,
+            priority = ?self.priority,
+            held_ms = held_ms,
+            "serving-lane permit released"
+        );
+        // Permits drop AFTER this body (field order), so wake on the next poll: the
+        // parked caller's try_acquire runs after the semaphore permit has returned.
+        self.released.notify_waiters();
+>>>>>>> origin/main
     }
 }

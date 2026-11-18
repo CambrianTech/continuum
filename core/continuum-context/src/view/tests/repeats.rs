@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 //! CONTINUUM-ENGINE section 5 invariant 4: an unchanged observation arrives as a repeat only while the whole it
+=======
+//! MIND-CONTEXT invariant 4: an unchanged observation arrives as a repeat only while the whole it
+>>>>>>> origin/main
 //! repeats is in front of her.
 use super::*;
 use crate::cause::{Act, ContentHash, Fingerprint, ToolEffect};

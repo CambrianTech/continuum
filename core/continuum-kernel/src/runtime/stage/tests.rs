@@ -383,6 +383,7 @@ async fn an_inline_panic_is_caught_and_counts_toward_the_quarantine() {
     );
     assert_eq!(runner.latest(), None, "nothing was ever published");
 }
+<<<<<<< HEAD
 
 /// The act graph's dataflow: produced-once artifacts and the stage that runs on them.
 mod dataflow {
@@ -483,3 +484,5 @@ mod dataflow {
         assert!(matches!(joined.settled().await.settled, Settled::Ready(v) if *v == 40));
     }
 }
+=======
+>>>>>>> origin/main

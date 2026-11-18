@@ -18,10 +18,16 @@
 //! content-addressed and live-protected while a record names it, so the proof holds. Only
 //! proven bodies are planned and moved; an unproven one counts as pinned.
 //!
+<<<<<<< HEAD
 //! The shed target is this reporter's share of the host's memory deficit at its priority
 //! (`PressureSnapshot::deficit_at`): the RAM overrun past its gate, or what the OS has compressed
 //! and swapped since it was last clean once lower priorities have given back all they hold. A
 //! compressing, swapping host with RAM "used" under the gate sheds here (the M5, 2026-11-13).
+=======
+//! NOT FULL GOVERNOR COVERAGE: the shed target is the host's RAM overrun past this priority's
+//! gate (`PressureSnapshot::over_gate`). Pressure raised by swap activity alone, with RAM use
+//! under the gate, makes that overrun 0 and sheds nothing here.
+>>>>>>> origin/main
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -293,9 +299,12 @@ pub struct MindResultsReporter {
     pressure: watch::Receiver<PressureSnapshot>,
     /// Saved copies proven at shed time; `budget()` reads only this.
     proven: Mutex<ProvenCopies>,
+<<<<<<< HEAD
     /// The resident bytes at which a shed last moved nothing (CONTINUUM-ENGINE 4.9.9 G4): until new
     /// results change them it has nothing to give, says so before it is asked, and is not asked.
     exhausted: Mutex<Option<u64>>,
+=======
+>>>>>>> origin/main
 }
 
 impl MindResultsReporter {
@@ -307,7 +316,10 @@ impl MindResultsReporter {
             registry,
             pressure,
             proven: Mutex::new(ProvenCopies::default()),
+<<<<<<< HEAD
             exhausted: Mutex::new(None),
+=======
+>>>>>>> origin/main
         }
     }
 }
@@ -343,22 +355,33 @@ impl MemoryReporter for MindResultsReporter {
         PRIORITY
     }
 
+<<<<<<< HEAD
     /// Whether a shed could move anything: not while the resident bodies are exactly those a shed
     /// last found nothing to move in.
     fn can_shed(&self) -> bool {
         let resident = resident_bytes(&self.registry.resident_working_memories());
         *self.exhausted.lock() != Some(resident)
+=======
+    fn can_shed(&self) -> bool {
+        true
+>>>>>>> origin/main
     }
 
     fn shed_load(&self, level: PressureLevel) {
         let minds = self.registry.resident_working_memories();
         let before = resident_bytes(&minds);
+<<<<<<< HEAD
         // Its share of its priority's deficit, as every shedder computes it (Cormac on #5697).
         let over = self.pressure.borrow().share_of_deficit(PRIORITY, before);
+=======
+        // Its share of its priority's overrun, as every shedder computes it (Cormac on #5697).
+        let over = self.pressure.borrow().share_of_overrun(PRIORITY, before);
+>>>>>>> origin/main
         if over == 0 {
             return;
         }
         shed_to(&minds, before.saturating_sub(over), &self.proven);
+<<<<<<< HEAD
         let after = resident_bytes(&minds);
         if after == before {
             *self.exhausted.lock() = Some(before);
@@ -378,6 +401,14 @@ impl MemoryReporter for MindResultsReporter {
             deficit_share = %over,
             before = %before,
             after = %after,
+=======
+        continuum_base::probe!(
+            class = "wm.results.shed",
+            level = %level,
+            over_gate = %over,
+            before = %before,
+            after = %resident_bytes(&minds),
+>>>>>>> origin/main
             "the memory owner moved the oldest resident results to their handles"
         );
     }

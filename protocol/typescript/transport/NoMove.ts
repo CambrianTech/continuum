@@ -3,4 +3,8 @@
 /**
  * Why a refusal has no call that would make progress.
  */
+<<<<<<< HEAD
 export type NoMove = "nothing_more_exists" | "nothing_saved" | "awaits_another";
+=======
+export type NoMove = "nothing_more_exists" | "nothing_saved";
+>>>>>>> origin/main

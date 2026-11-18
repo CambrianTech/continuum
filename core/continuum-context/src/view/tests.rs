@@ -110,6 +110,7 @@ fn a_collapsed_item_stays_collapsed_and_a_new_one_arrives_in_full() -> Result<()
     Ok(())
 }
 
+<<<<<<< HEAD
 // what this catches (Aris on the M5, 2026-11-13, 2b17c41df): her demand measured from a collapsed
 // render, so each grant sized from it collapsed more and the window fell 109,745 -> 43,807 on an
 // idle pool. What her view holds at full detail is the render plus what its collapses took away;
@@ -132,6 +133,8 @@ fn a_collapsed_view_says_what_it_holds_at_full_detail() -> Result<(), GrantMisma
     Ok(())
 }
 
+=======
+>>>>>>> origin/main
 // what this catches: a grant spent on the oldest items (she reads stale results in full and
 // her latest ones as pointers), or a grant overspent past what the allocator gave.
 #[test]
@@ -865,8 +868,11 @@ mod absent_source;
 mod depth;
 /// A source a start shed waits for a start that funds it.
 mod shed;
+<<<<<<< HEAD
 /// Her work in hand stays whole through a start; the rest collapses oldest first.
 mod in_hand;
+=======
+>>>>>>> origin/main
 
 // what this catches: her sources splitting the window by flat constants, so her acts (whose reads
 // she keeps asking for again) got the same share as a 300k-token conversation she does not (the

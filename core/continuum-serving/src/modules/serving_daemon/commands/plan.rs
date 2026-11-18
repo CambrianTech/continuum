@@ -106,7 +106,10 @@ mod tests {
             resident_models: 1,
             fits_on_gpu: true,
             rationale: "fits one lane on the budget".into(),
+<<<<<<< HEAD
             window_target: 0,
+=======
+>>>>>>> origin/main
         };
         let out = cmd(Some(plan.clone()))
             .run(&Ctx::default(), ServingPlanParams::default())

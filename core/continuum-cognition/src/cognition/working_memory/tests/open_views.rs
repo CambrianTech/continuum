@@ -221,7 +221,11 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     view.turn_over(&continuum_context::cost::Chars, Vec::new(), sources, floor).expect("matching grants");
     let reduced = text(&view);
     assert!(reduced.contains(PATH) && reduced.contains("read 1-498 (all of it)"), "{reduced}");
+<<<<<<< HEAD
     assert!(reduced.contains("code_read") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
+=======
+    assert!(reduced.contains("read_file") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
+>>>>>>> origin/main
     assert!(!reduced.contains("I need to inspect"), "pre-read planning must yield: {reduced}");
     assert_eq!(claims(&continuum_context::cost::Chars, sources), demand, "allocation does not rewrite stored wants");
 
@@ -232,6 +236,7 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     view.turn_over(&continuum_context::cost::Chars, Vec::new(), &[&restored_source], whole).expect("matching grants");
     assert!(text(&view).contains(intent.trim()), "the allocation never deleted the note");
 }
+<<<<<<< HEAD
 
 /// Her whole read of the file, then an applied edit of it: the edit she has in hand (for the
 /// history tests, which bound what leaves RAM by it).
@@ -382,3 +387,5 @@ fn a_turnover_with_an_open_edit_keeps_the_file_and_her_note_on_it_whole() {
     wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
     assert!(!start(&wm).contains(file), "after her commit the file is an older act and collapses");
 }
+=======
+>>>>>>> origin/main

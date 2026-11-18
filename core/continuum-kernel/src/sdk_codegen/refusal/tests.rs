@@ -42,7 +42,11 @@ impl RefusalCause for UnknownAct {
 
 // what this catches: a refusal she reads without a next call, or one naming the verb by a name
 // her tool list does not offer, or arguments that are not the verb's own params. The call is
+<<<<<<< HEAD
 // rendered as offered (its path, never its alias), its arguments decode as the verb's params, the cause
+=======
+// rendered as offered (its first alias), its arguments decode as the verb's params, the cause
+>>>>>>> origin/main
 // chain is kept, and the category is the cause's own.
 #[test]
 fn a_refusal_renders_its_cause_chain_and_a_next_call_she_can_make() {
@@ -56,7 +60,11 @@ fn a_refusal_renders_its_cause_chain_and_a_next_call_she_can_make() {
     assert_eq!(refusal.category(), Category::NotFound);
     assert_eq!(
         refusal.to_string(),
+<<<<<<< HEAD
         "act #9 is not on your record: because the record ends at #3. Next: fixture_refusal-reopen({\"act\":3}): your latest act;"
+=======
+        "act #9 is not on your record: because the record ends at #3. Next: reopen_fixture({\"act\":3}): your latest act;"
+>>>>>>> origin/main
     );
     let Some(call) = refusal.next().calls().next() else { panic!("one next call") };
     assert_eq!(call.verb().canonical(), "fixture/refusal-reopen");
@@ -97,6 +105,7 @@ fn a_refusal_crosses_a_seam_with_its_chain_and_next_call() {
     let Ok(text) = serde_json::to_value(&wire) else { panic!("a refusal serializes") }; // boundary: the grid wire a refusal crosses, round-tripped
     assert!(matches!(serde_json::from_value::<continuum_airc_protocol::CommandRefusal>(text), Ok(back) if back == wire));
 }
+<<<<<<< HEAD
 
 /// A command whose handler refuses with a next call: never registered, dispatched directly.
 struct RefusingSpec;
@@ -142,3 +151,5 @@ async fn a_refusal_leaves_dispatch_with_its_next_moves_typed() {
     let plain = crate::sdk_codegen::dispatch_with_caller(&Refusing, serde_json::json!({ "act": "nine" }), None).await;
     assert!(matches!(plain, Err(crate::sdk_codegen::CommandFailure { refusal: None, .. })), "a refusal without next moves carries none");
 }
+=======
+>>>>>>> origin/main

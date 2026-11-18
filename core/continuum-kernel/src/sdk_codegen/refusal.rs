@@ -13,7 +13,11 @@ use std::sync::Arc;
 
 use serde::Serialize;
 
+<<<<<<< HEAD
 use super::{wire_name, CallForm, CommandSpec, VerbRef};
+=======
+use super::{offered_name_of, CallForm, CommandSpec, VerbRef};
+>>>>>>> origin/main
 use continuum_base::tool_disclosure::Disclosure;
 pub use continuum_airc_protocol::refusal::{Category, NoMove};
 use continuum_airc_protocol::refusal as wire;
@@ -24,17 +28,30 @@ pub trait RefusalCause: std::error::Error + Send + Sync + 'static {
     fn category(&self) -> Category;
 }
 
+<<<<<<< HEAD
 /// A command by identity: its canonical name, taken from its [`VerbRef`], so it renders exactly
 /// as her tool list offers it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct CommandId {
     name: &'static str,
+=======
+/// A command by identity: its canonical name and the aliases it declared, taken from its
+/// [`VerbRef`], so it renders exactly as her tool list offers it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommandId {
+    name: &'static str,
+    aliases: &'static [&'static str],
+>>>>>>> origin/main
     disclosure: Disclosure,
 }
 
 impl CommandId {
     fn of<C: CommandSpec>(_verb: VerbRef<C>) -> Self {
+<<<<<<< HEAD
         Self { name: C::NAME, disclosure: C::DISCLOSURE }
+=======
+        Self { name: C::NAME, aliases: C::ALIASES, disclosure: C::DISCLOSURE }
+>>>>>>> origin/main
     }
 
     /// The canonical command name, for matching a resolved call; never for her text.
@@ -47,9 +64,15 @@ impl CommandId {
         self.disclosure
     }
 
+<<<<<<< HEAD
     /// The name her tool list offers it under ([`wire_name`]).
     pub fn offered(self) -> String {
         wire_name(self.name)
+=======
+    /// The name her tool list offers it under ([`offered_name_of`]).
+    pub fn offered(self) -> String {
+        offered_name_of(self.name, self.aliases)
+>>>>>>> origin/main
     }
 }
 

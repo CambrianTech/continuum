@@ -16,6 +16,7 @@ pub(super) struct ReconcileLaunch {
     pub(super) desired_adapter_paths: Vec<String>,
 }
 
+<<<<<<< HEAD
 /// The engine's one pool as the launch lays it out: `-c` is `per_sequence x sequences`, and `fit`
 /// says how the host's room bounded the minds' demand (`host_fit`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +32,8 @@ impl EnginePool {
     }
 }
 
+=======
+>>>>>>> origin/main
 impl ServingDaemonModule {
     /// The engine's one KV pool, sized ONCE when the engine starts and never by a relaunch, as
     /// `(per-sequence tokens, sequences)` so `-c` is the pool and `--parallel` the ceiling.
@@ -42,16 +45,22 @@ impl ServingDaemonModule {
     /// The size is [`launch_pool`] at the published plan's LIVE budget: what memory holds now, beside
     /// everything else on the node. Never the host's physical total (590df4bc3 sized the M5 at
     /// 5 x 262,144 from it: memory pressure 91%, 5.6 GB available, no resident hosted; rolled back)
+<<<<<<< HEAD
     /// and never a cold boot's first-tick fallback plan, which planning no longer publishes. That
     /// demand is then fitted to the host's own reading (`host_fit`): the pool is what the host holds
     /// beside `host_cache_bytes` of prompt cache, never more than the demand.
     pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32, host_cache_bytes: u64) -> EnginePool {
+=======
+    /// and never a cold boot's first-tick fallback plan, which planning no longer publishes.
+    pub(super) fn engine_pool(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> (u32, u32) {
+>>>>>>> origin/main
         let leased_in = LAST_LEASED_IN_PEAK.load(Ordering::Relaxed);
         let sequences = self.seated().saturating_add(1).saturating_add(leased_in).max(lanes).max(1);
         // Each lock is taken and released in its own statement: a guard made inside a call's
         // argument list lives to the end of the statement, so reading the budget there while
         // `seated_for` locks it again deadlocked the reconcile and wedged the core's boot (the M5,
         // 2026-11-07 19:11Z: no module past grid-capacity initialized, the IPC socket never bound).
+<<<<<<< HEAD
         let planned = *self.planned_budget.lock();
         let usable = planned.map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
         let seated = self.seated_for(model);
@@ -88,6 +97,14 @@ impl ServingDaemonModule {
     pub(super) fn launch_prompt_cache(&self, model: &crate::model_registry::types::Model, served_ctx: u32, lanes: u32) -> PromptCacheGrant {
         let memory = self.system.memory();
         derived_prompt_cache_mib(&model.id, footprint_for(model).as_ref(), served_ctx, lanes, memory.total_bytes, memory.available_bytes, self.system.gpu_memory_mode())
+=======
+        let usable = self.planned_budget.lock().map_or(0, |b| b.usable_bytes); // map_or: no plan computed yet is no sampled budget, which launch_pool reads as 0 exactly as before
+        let seated = self.seated_for(model);
+        let pool = launch_pool(footprint_for(model).as_ref(), usable, served_ctx, lanes, sequences, model.context_window, seated);
+        // `-c` is the CLI's `slots x per-slot`: the pool carried in that shape, not anyone's window.
+        let per_slot = u32::try_from(pool / u64::from(sequences)).unwrap_or(u32::MAX); // unwrap_or: a pool over u32 x sequences is no real engine; the CLI caps it
+        (per_slot, sequences)
+>>>>>>> origin/main
     }
 
     pub(super) fn launch_reconciled_plan(&self, launch: ReconcileLaunch) -> Option<JoinHandle<()>> {
@@ -179,11 +196,24 @@ impl ServingDaemonModule {
         // the value changes at relaunch boundaries, never mid-serve, so there
         // is zero flap surface (Law 2 — capacity follows measurement, structure
         // does not).
+<<<<<<< HEAD
         let prompt_cache = self.launch_prompt_cache(&model, served_ctx, lanes);
+=======
+        let prompt_cache = derived_prompt_cache_mib(
+            &model.id,
+            footprint_for(&model).as_ref(),
+            served_ctx,
+            lanes,
+            self.system.memory().total_bytes,
+            self.system.memory().available_bytes,
+            self.system.gpu_memory_mode(),
+        );
+>>>>>>> origin/main
         // Kept beside the grant for the divergence receipt below: the predicate that
         // separates "a bit small" from "structurally cannot cache anything".
         let one_conversation_mib = prompt_cache.one_conversation_mib;
         let host_prompt_cache_mib = prompt_cache.mib;
+<<<<<<< HEAD
         let engine_pool = self.engine_pool(&model, served_ctx, lanes, u64::from(host_prompt_cache_mib) << 20);
         let EnginePool { per_sequence, sequences, fit } = engine_pool;
         if let host_fit::PoolFit::Bounded { by, .. } = fit {
@@ -219,6 +249,9 @@ impl ServingDaemonModule {
                 return None;
             }
         }
+=======
+        let (per_sequence, sequences) = self.engine_pool(&model, served_ctx, lanes);
+>>>>>>> origin/main
         let target = ServingTarget {
             host_prompt_cache_mib,
             model,
@@ -334,7 +367,11 @@ impl ServingDaemonModule {
                 server.as_ref(),
                 &target,
                 force_probe.pending,
+<<<<<<< HEAD
                 crate::inference::llama_server::Reconciling { current: &admit, operation: &operation },
+=======
+                &admit,
+>>>>>>> origin/main
             )
             .await;
             if matches!(outcome, EnsureOutcome::Superseded)
@@ -403,8 +440,13 @@ impl ServingDaemonModule {
                 }
                 EnsureOutcome::Degraded { .. } | EnsureOutcome::Superseded => 0,
             };
+<<<<<<< HEAD
             // The engine's own geometry, read the same way under either launch (CONTINUUM-ENGINE.md,
             // serving engine: admission (4.8)): the pool and the most one sequence may hold. The grants read both from
+=======
+            // The engine's own geometry, read the same way under either launch (SERVING-ENGINE
+            // section 8): the pool and the most one sequence may hold. The grants read both from
+>>>>>>> origin/main
             // here, never from argv. What sequences are PUBLISHED as their share still differs by
             // launch: on the shared pool each is a share of the pool the engine reports (never the
             // slot's `n_ctx`, which the fork caps at the trained window, halving the IntelMac's
@@ -845,6 +887,7 @@ impl ServingDaemonModule {
     /// The launch floor for `model`: the seated minds' needs (the working set keeps them across an
     /// engine exit), and while the budget is a gap reading, the largest pool this model ran at.
     pub(super) fn seated_for(&self, model: &crate::model_registry::types::Model) -> Seated {
+<<<<<<< HEAD
         let need = self.seated_needs(model).iter().sum();
         let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
         let proven = match steady {
@@ -874,6 +917,11 @@ impl ServingDaemonModule {
     pub(super) fn seated_needs(&self, model: &crate::model_registry::types::Model) -> Vec<u64> {
         let trained = u64::from(model.context_window);
         self.serving_demand()
+=======
+        let trained = u64::from(model.context_window);
+        let need = self
+            .serving_demand()
+>>>>>>> origin/main
             .requirements
             .iter()
             .filter_map(|requirement| match requirement.measure {
@@ -882,6 +930,16 @@ impl ServingDaemonModule {
                 Measure::Held { need, .. } => Some(u64::from(need.value().get()).min(trained)),
                 Measure::Unmeasured | Measure::Wished { .. } | Measure::Declared { .. } => None,
             })
+<<<<<<< HEAD
             .collect()
+=======
+            .sum();
+        let steady = matches!(*self.planned_budget.lock(), Some(PlannedBudget { credit: OwnCredit::Included { .. }, .. }));
+        let proven = match steady {
+            true => None,
+            false => crate::inference::proven_pool::proven(&model.id),
+        };
+        Seated { need, proven }
+>>>>>>> origin/main
     }
 }

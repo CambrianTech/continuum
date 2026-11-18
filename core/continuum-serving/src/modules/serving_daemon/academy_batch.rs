@@ -4,14 +4,21 @@
 use super::*;
 use crate::cognition::eval::{PrivateTeacherLane, TeacherBatchRequest};
 use crate::genome::teach::RemediationCorpus;
+<<<<<<< HEAD
 use crate::inference::llama_server::OwnedRestoreSession;
+=======
+use crate::inference::llama_server::{EngineRetirementStatus, OwnedRestoreSession};
+>>>>>>> origin/main
 use crate::sdk_codegen::CommandError;
 use futures::FutureExt;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::{oneshot, Mutex};
 
+<<<<<<< HEAD
 mod capacity;
 
+=======
+>>>>>>> origin/main
 /// The serving daemon behind the academy's [`TeacherServing`](crate::cognition::eval::TeacherServing)
 /// seam: `genome/teach` reaches the exclusive teacher window through it, never by naming this
 /// module (card dc3e9f6f). The batch takes the daemon by `Arc`, so the seam wraps one.
@@ -190,7 +197,11 @@ impl ServingDaemonModule {
                     let outcome = batch
                         .outcome
                         .take()
+<<<<<<< HEAD
                         .unwrap_or_else(|| Err(failure("teacher batch interrupted"))); // unwrap_or_else: no recorded outcome means cleanup ran without an execution, an interruption
+=======
+                        .unwrap_or_else(|| Err(failure("teacher batch interrupted")));
+>>>>>>> origin/main
                     if let Some(response) = batch.response.take() {
                         let _ = response.send(outcome);
                     }
@@ -343,6 +354,7 @@ impl ServingDaemonModule {
             batch.phase = Phase::Retired;
             self.wait_teacher_exit(&receipt).await?;
             self.publish_teacher_unavailable("incumbent exited for explicit teacher batch");
+<<<<<<< HEAD
             // Subscribed after the exit: the next reading is the first to see its memory freed.
             let memory = crate::system_resources::MemoryPressureMonitor::subscribe_published();
             let mut board = self.resource_daemon.subscribe();
@@ -353,6 +365,33 @@ impl ServingDaemonModule {
             )
             .await?
             .granted()?
+=======
+            let mut board = self.resource_daemon.subscribe();
+            let admission = async {
+                loop {
+                    if *batch.cancellation.borrow() {
+                        return Err(failure("teacher batch cancelled during admission"));
+                    }
+                    if self.intent.snapshot().revision != capture.intent_revision {
+                        return Err(failure("serving intent changed during admission"));
+                    }
+                    if let Some(lane) =
+                        PrivateTeacherLane::prepare(&base, &self.resource_daemon).await?
+                    {
+                        return Ok(lane);
+                    }
+                    board
+                        .changed()
+                        .await
+                        .map_err(|_| failure("resource authority ended"))?;
+                }
+            };
+            tokio::select! {
+                result = tokio::time::timeout(Duration::from_secs(30), admission) => result
+                    .map_err(|_| failure("teacher capacity did not become available"))??,
+                _ = cancellation.changed() => return Err(failure("teacher cancelled while awaiting capacity")),
+            }
+>>>>>>> origin/main
         };
         batch.phase = Phase::Borrowing;
         let borrower = batch.borrower.insert(lane);
@@ -367,23 +406,61 @@ impl ServingDaemonModule {
         }
     }
 
+<<<<<<< HEAD
     /// The retired engine's exit event. No stopwatch: until the child reports exit its custody
     /// stays owned, and shutdown or a cancelled caller does not shorten that.
+=======
+>>>>>>> origin/main
     async fn wait_teacher_exit(
         &self,
         receipt: &crate::inference::llama_server::EngineRetirementReceipt,
     ) -> Result<(), CommandError> {
+<<<<<<< HEAD
         self.server
             .engine_exit(receipt)
             .map_err(|e| failure(e.to_string()))?
             .confirmed()
             .await
             .map_err(|e| failure(e.to_string()))
+=======
+        let wait = async {
+            let mut tick = tokio::time::interval(Duration::from_millis(100));
+            loop {
+                tick.tick().await;
+                match self
+                    .server
+                    .observe_engine_retirement(receipt)
+                    .map_err(|e| failure(e.to_string()))?
+                {
+                    EngineRetirementStatus::Exited => return Ok(()),
+                    EngineRetirementStatus::Pending => {}
+                }
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait)
+            .await
+            .map_err(|_| failure("actual child exit remains unconfirmed"))?
+>>>>>>> origin/main
     }
 
     async fn cleanup_teacher_batch(&self, batch: &mut BatchState) -> Result<(), CommandError> {
         if let Some(borrower) = batch.borrower.as_mut() {
+<<<<<<< HEAD
             borrower.finished().await?;
+=======
+            let finish = async {
+                let mut tick = tokio::time::interval(Duration::from_millis(100));
+                loop {
+                    tick.tick().await;
+                    if borrower.finish().await? == EngineRetirementStatus::Exited {
+                        return Ok::<_, CommandError>(());
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(10), finish)
+                .await
+                .map_err(|_| failure("private teacher exit remains unconfirmed"))??;
+>>>>>>> origin/main
             batch.borrower.take();
         }
         let Some(Restoring { session, capture, bytes }) = batch.restoring.as_ref() else {
@@ -434,9 +511,18 @@ impl ServingDaemonModule {
         self.publish_teacher_unavailable("restoring original owned launch after teacher batch");
         let mut board = self.resource_daemon.subscribe();
         let grant = async {
+<<<<<<< HEAD
             // The borrower's exit was announced after its lease returned to the board, so the
             // board already carries it: ask now, then on each publication. Never subtract
             // captured residency or treat Exited as a grant.
+=======
+            // Require a subsequent authority publication after borrower exit;
+            // never subtract captured residency or treat Exited as a grant.
+            board
+                .changed()
+                .await
+                .map_err(|_| failure("resource authority ended"))?;
+>>>>>>> origin/main
             loop {
                 if !current() {
                     return Err(failure("serving intent changed before restoration"));
@@ -462,9 +548,15 @@ impl ServingDaemonModule {
                 }
             }
         };
+<<<<<<< HEAD
         // Restoring the minds' engine waits on the authority's publications for as long as the
         // capacity takes; the incumbent's restoration is never abandoned on a timer.
         let grant = grant.await?;
+=======
+        let grant = tokio::time::timeout(Duration::from_secs(30), grant)
+            .await
+            .map_err(|_| failure("restore capacity remains unavailable"))??;
+>>>>>>> origin/main
         self.server
             .restore_owned_session(session, Some(grant), &current)
             .await

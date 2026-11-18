@@ -14,7 +14,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+<<<<<<< HEAD
 use crate::cognition::tool_executor::output_id::OutputId;
+=======
+>>>>>>> origin/main
 use crate::cognition::tool_executor::spill;
 use crate::cognition::working_memory::{ActOutputRefusal, ActRef};
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
@@ -83,10 +86,15 @@ pub struct ToolOutputParams {
     // spill-recovery hint told every citizen to make could not be made (card ea28d2f6).
     #[serde(rename = "outputId")]
     #[ts(optional)]
+<<<<<<< HEAD
     #[ts(type = "string")]
     #[schemars(with = "Option<String>")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub handle: Option<OutputId>,
+=======
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub handle: Option<String>,
+>>>>>>> origin/main
     /// Or an act number (#n): its saved output.
     #[ts(optional)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -143,8 +151,12 @@ pub struct ToolOutputParams {
 pub struct ToolOutputResult {
     /// Echo of the output id read.
     #[serde(rename = "outputId")]
+<<<<<<< HEAD
     #[ts(type = "string")]
     pub handle: OutputId,
+=======
+    pub handle: String,
+>>>>>>> origin/main
     /// Total lines in the full spilled output; null for an exact byte page.
     #[ts(type = "number | null")]
     pub total_lines: Option<usize>,
@@ -182,10 +194,23 @@ impl ActionCommand for ToolOutput {
     const NAME: &'static str = "tool/output";
     // THE RECOVERY VERB MUST BE IN HER VOCABULARY. Measured 2026-08-28: the
     // elision marker tells her to "jump straight to what broke" with
+<<<<<<< HEAD
     // `tool/output`, and across every log on this box it had been called exactly
     // ZERO times. The aliases below are the names a model reaches for; inbound
     // resolution (`from_wire_name`) accepts them, so they only widen what she can
     // say. She is offered it as `tool_output` (its path, `wire_name`), like every verb.
+=======
+    // `tool/output`, and this command declared NO aliases — so under
+    // `OfferStyle::TrainedReflex` (which offers each command's PRIMARY alias,
+    // `code/read` → `read_file`) it never landed on the menu in a name her
+    // training reaches for, and across every log on this box it had been called
+    // exactly ZERO times. The substrate was handing her a handle and naming a
+    // verb she did not hold: the tail of every flood-sized error — which is
+    // usually the actual failure — was unreadable to her.
+    //
+    // Inbound resolution accepts every style (`from_wire_name`), so adding
+    // aliases can only widen what she can say, never narrow it.
+>>>>>>> origin/main
     //
     // Aliases were not enough: it was not NATIVE, so a native-call model could not emit it at
     // all (measured 2026-11-06 on the M5: no act called it, while every folded act, saved result
@@ -234,7 +259,11 @@ impl ActionCommand for ToolOutput {
         let handle = tokio::task::spawn_blocking(move || named_output(named, act, act_handle))
             .await
             .map_err(|e| CommandError::Internal(format!("reopening an act failed: {e}")))??;
+<<<<<<< HEAD
         let path = spill::resolve_output(persona_id, &handle)
+=======
+        let path = spill::resolve(persona_id, &handle)
+>>>>>>> origin/main
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let range = line_range(params.start_line, params.end_line);
 
@@ -265,8 +294,13 @@ impl ActionCommand for ToolOutput {
 crate::register_stateless_command!(ToolOutput);
 continuum_kernel::register_outcome!(ToolOutput);
 
+<<<<<<< HEAD
 /// The verb every handle she is shown names: it renders as her tool list offers it
 /// (`tool_output`, its path), and it only builds while `tool/output` is native and in every
+=======
+/// The verb every handle she is shown names: it renders as her tool list offers it (today
+/// `read_output`, its first alias), and it only builds while `tool/output` is native and in every
+>>>>>>> origin/main
 /// surface. Text that reopens something renders a [`Reopen`], which carries it.
 pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 
@@ -274,7 +308,11 @@ pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 /// params, serialized), rendered once. Every handle she is shown (a folded act, a repeat, a saved
 /// result, a shed thought, a collapsed receipt, a too-large result) names its way back with this,
 /// so there is one form to learn and it is always a call she can make as written:
+<<<<<<< HEAD
 /// `tool_output({"act":3})`, `tool_output({"outputId":"deadbeef"})`.
+=======
+/// `read_output({"act":3})`, `read_output({"outputId":"deadbeef"})`.
+>>>>>>> origin/main
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reopen<'a> {
     /// One of her act numbers.
@@ -288,6 +326,7 @@ pub enum Reopen<'a> {
     Bytes { output: &'a str, offset: u64 },
 }
 
+<<<<<<< HEAD
 /// A reopen's arguments as her call carries them: [`ToolOutputParams`]' own wire names, borrowed,
 /// so rendering a handle never parses it (every handle she is shown was minted by the spill) and
 /// never fails. `a_reopen_is_one_call_she_can_make_as_written` parses each back as the command's
@@ -315,14 +354,30 @@ impl<'a> Reopen<'a> {
             Reopen::Output(output) => ReopenArgs { output: Some(output), ..none },
             Reopen::Lines { output, range } => ReopenArgs { output: Some(output), start_line: Some(range.start), end_line: range.end, ..none },
             Reopen::Bytes { output, offset } => ReopenArgs { output: Some(output), byte_offset: Some(offset), ..none },
+=======
+impl Reopen<'_> {
+    fn params(self) -> ToolOutputParams {
+        match self {
+            Reopen::Act(act) => ToolOutputParams { act: Some(act), ..Default::default() },
+            Reopen::Output(handle) => ToolOutputParams { handle: Some(handle.to_owned()), ..Default::default() },
+            Reopen::Lines { output, range } => {
+                ToolOutputParams { handle: Some(output.to_owned()), start_line: Some(range.start), end_line: range.end, ..Default::default() }
+            }
+            Reopen::Bytes { output, offset } => ToolOutputParams { handle: Some(output.to_owned()), byte_offset: Some(offset), ..Default::default() },
+>>>>>>> origin/main
         }
     }
 }
 
 impl std::fmt::Display for Reopen<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+<<<<<<< HEAD
         // A struct of strings and numbers always serializes; an error is a formatter error.
         let args = serde_json::to_string(&self.args()).map_err(|_| std::fmt::Error)?; // boundary: her tool-call wire, the arguments she reads and sends back as written
+=======
+        // A params struct of strings and numbers always serializes; an error is a formatter error.
+        let args = serde_json::to_string(&self.params()).map_err(|_| std::fmt::Error)?; // boundary: her tool-call wire, the arguments she reads and sends back as written
+>>>>>>> origin/main
         write!(f, "{TOOL_OUTPUT}({args})")
     }
 }
@@ -336,7 +391,31 @@ pub(crate) fn reopened_source(canonical: &str, value: &serde_json::Value) -> Opt
     if crate::sdk_codegen::ext::effect_of(canonical) != continuum_base::tool_effect::ToolEffect::Reopens {
         return None;
     }
+<<<<<<< HEAD
     ToolOutputResult::deserialize(value).ok().map(|result| result.handle.into())
+=======
+    ToolOutputResult::deserialize(value).ok().map(|result| result.handle)
+}
+
+/// The one saved output an act's receipt is a view of: every call reopened it (each call's name
+/// as she made it, resolved through the dispatch seam, and its custody). `None` when any call did
+/// anything else or the calls reopened different outputs: that receipt is its own text, saved.
+pub(crate) fn reopened_by_every_call<'a>(
+    calls: impl IntoIterator<Item = (&'a str, &'a crate::ai::types::ResultCustody)>,
+) -> Option<String> {
+    let mut source: Option<&str> = None;
+    for (name, custody) in calls {
+        let canonical = crate::ai::tool_dialect::resolve_wire_name(name);
+        let reopened = custody.handle().filter(|_| {
+            crate::sdk_codegen::ext::effect_of(&canonical) == continuum_base::tool_effect::ToolEffect::Reopens
+        })?;
+        if source.is_some_and(|first| first != reopened) {
+            return None;
+        }
+        source = Some(reopened);
+    }
+    source.map(str::to_owned)
+>>>>>>> origin/main
 }
 
 /// A read that brought nothing back is a failure she sees as one, like `grep` exiting 1: a
@@ -362,6 +441,7 @@ fn line_range(start: Option<usize>, end: Option<usize>) -> Option<spill::LineRan
 /// newest saved output when she named neither. Refused only when what she named reopens nothing
 /// or names two different outputs, each a typed refusal with its next move, never another output.
 fn named_output(
+<<<<<<< HEAD
     handle: Option<OutputId>,
     act: Option<u64>,
     act_handle: impl FnOnce(ActRef) -> Result<Result<String, ActOutputRefusal>, CommandError>,
@@ -374,6 +454,18 @@ fn named_output(
         (None, None) => recorded(act_handle(ActRef::NewestSaved)?.map_err(act_refused)?),
         (Some(output), Some(act)) => match act_handle(ActRef::Numbered(act))? {
             Ok(same) if output.as_str() == same => Ok(output),
+=======
+    handle: Option<String>,
+    act: Option<u64>,
+    act_handle: impl FnOnce(ActRef) -> Result<Result<String, ActOutputRefusal>, CommandError>,
+) -> Result<String, CommandError> {
+    match (handle, act) {
+        (Some(handle), None) => Ok(handle),
+        (None, Some(act)) => act_handle(ActRef::Numbered(act))?.map_err(act_refused),
+        (None, None) => act_handle(ActRef::NewestSaved)?.map_err(act_refused),
+        (Some(output), Some(act)) => match act_handle(ActRef::Numbered(act))? {
+            Ok(same) if same == output => Ok(output),
+>>>>>>> origin/main
             act_output => Err(act_refused(ActOutputRefusal::Disagree { act, output, act_output: act_output.ok() })),
         },
     }
@@ -383,11 +475,18 @@ fn named_output(
 /// each name alone when she named two outputs, or why there is none.
 fn act_refused(refusal: ActOutputRefusal) -> CommandError {
     use crate::sdk_codegen::{NextCall, NextMoves, NoMove, Refusal};
+<<<<<<< HEAD
     let call = |params: ToolOutputParams, why| NextCall::new(TOOL_OUTPUT, &params, why);
     let by_act = |act: u64| ToolOutputParams { act: Some(act), ..Default::default() };
     let next = match &refusal {
         ActOutputRefusal::Unknown { newest_saved: Some(act), .. } => {
             call(by_act(*act), "your newest act with a saved output").map(NextMoves::call)
+=======
+    let call = |reopen: Reopen<'_>, why| NextCall::new(TOOL_OUTPUT, &reopen.params(), why);
+    let next = match &refusal {
+        ActOutputRefusal::Unknown { newest_saved: Some(act), .. } => {
+            call(Reopen::Act(*act), "your newest act with a saved output").map(NextMoves::call)
+>>>>>>> origin/main
         }
         ActOutputRefusal::Unknown { newest_saved: None, .. } | ActOutputRefusal::NothingSaved => {
             Ok(NextMoves::None(NoMove::NothingSaved))
@@ -397,10 +496,16 @@ fn act_refused(refusal: ActOutputRefusal) -> CommandError {
         | ActOutputRefusal::Retired { .. }
         | ActOutputRefusal::Unreadable { .. } => Ok(NextMoves::None(NoMove::NothingMoreExists)),
         ActOutputRefusal::Disagree { act, output, act_output } => {
+<<<<<<< HEAD
             let by_id = ToolOutputParams { handle: Some(output.clone()), ..Default::default() };
             call(by_id, "the output you named by id").and_then(|first| {
                 let more = match act_output {
                     Some(_) => vec![call(by_act(*act), "the output of the act you named")?],
+=======
+            call(Reopen::Output(output), "the output you named by id").and_then(|first| {
+                let more = match act_output {
+                    Some(_) => vec![call(Reopen::Act(*act), "the output of the act you named")?],
+>>>>>>> origin/main
                     None => Vec::new(),
                 };
                 Ok(NextMoves::Calls { first, more })
@@ -415,7 +520,11 @@ fn act_refused(refusal: ActOutputRefusal) -> CommandError {
 
 fn read_saved(
     path: &std::path::Path,
+<<<<<<< HEAD
     handle: OutputId,
+=======
+    handle: String,
+>>>>>>> origin/main
     params: ToolOutputParams,
     range: Option<spill::LineRange>,
     allowance: spill::Allowance,
@@ -466,6 +575,7 @@ fn read_saved(
 mod tests {
     use super::*;
 
+<<<<<<< HEAD
     /// An output id from a literal the test spells as one.
     fn id(given: &str) -> OutputId {
         match OutputId::parse(given) {
@@ -474,6 +584,8 @@ mod tests {
         }
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: the recovery verb every handle names off her native surface or out of a
     // room's narrowed one (2026-11-06, the M5: not native, so no act could call it), and a read
     // that brought nothing back rendering as a success.
@@ -488,7 +600,11 @@ mod tests {
             "a native tool projects its outcome (ONE-ACT 6b)"
         );
         let read = |content: &str| ToolOutputResult {
+<<<<<<< HEAD
             handle: id("ab"),
+=======
+            handle: "h".into(),
+>>>>>>> origin/main
             total_lines: Some(3),
             total_bytes: 30,
             total_matches: Some(0),
@@ -513,7 +629,11 @@ mod tests {
         let path = dir.path().join("whole");
         let body: String = (1..=500).map(|n| format!("line {n} error\n")).collect();
         assert!(std::fs::write(&path, &body).is_ok());
+<<<<<<< HEAD
         let read = |params| read_saved(&path, id("ab"), params, None, spill::Allowance::Whole);
+=======
+        let read = |params| read_saved(&path, "h".into(), params, None, spill::Allowance::Whole);
+>>>>>>> origin/main
         let Ok(whole) = read(ToolOutputParams::default()) else { panic!("the whole reads back") };
         assert!(whole.content.contains("line 1 error") && whole.content.contains("line 500 error"), "{}", whole.content);
         assert!(!whole.truncated);
@@ -529,10 +649,21 @@ mod tests {
     #[test]
     fn a_reopen_is_one_call_she_can_make_as_written() {
         use crate::sdk_codegen::wire_name;
+<<<<<<< HEAD
         let offered = wire_name(<ToolOutput as ActionCommand>::NAME);
         assert_eq!(offered, "tool_output", "her list offers the verb by its path, never an alias");
         assert_eq!(Reopen::Act(3).to_string(), r#"tool_output({"act":3})"#);
         assert_eq!(Reopen::Output("deadbeef").to_string(), r#"tool_output({"outputId":"deadbeef"})"#);
+=======
+        let offered = wire_name(
+            <ToolOutput as ActionCommand>::NAME,
+            crate::sdk_codegen::primary_alias(<ToolOutput as ActionCommand>::ALIASES),
+            crate::sdk_codegen::offer_style_for(None),
+        );
+        assert_eq!(offered, "read_output", "her list offers the trained reflex, its first alias");
+        assert_eq!(Reopen::Act(3).to_string(), r#"read_output({"act":3})"#);
+        assert_eq!(Reopen::Output("deadbeef").to_string(), r#"read_output({"outputId":"deadbeef"})"#);
+>>>>>>> origin/main
         // A page's reading on (`prompt/newest_result.rs`) is the same call with its selection.
         for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
             let shown = reopen.to_string();
@@ -542,7 +673,11 @@ mod tests {
             let Ok(parsed) = serde_json::from_str::<ToolOutputParams>(args) else {
                 panic!("{args} does not parse as the command's params")
             };
+<<<<<<< HEAD
             let selection = (parsed.act, parsed.handle.as_ref().map(OutputId::as_str), parsed.start_line, parsed.end_line, parsed.byte_offset);
+=======
+            let selection = (parsed.act, parsed.handle.as_deref(), parsed.start_line, parsed.end_line, parsed.byte_offset);
+>>>>>>> origin/main
             assert_eq!(selection, match reopen {
                 Reopen::Act(n) => (Some(n), None, None, None, None),
                 Reopen::Output(h) => (None, Some(h), None, None, None),
@@ -609,7 +744,11 @@ mod tests {
             .run(
                 &Ctx::default(),
                 ToolOutputParams {
+<<<<<<< HEAD
                     handle: Some(id("deadbeefcafe0001")),
+=======
+                    handle: Some("deadbeefcafe0001".into()),
+>>>>>>> origin/main
                     ..Default::default()
                 },
             )
@@ -632,25 +771,41 @@ mod tests {
             "saved result",
             None,
             ResultCustody::Whole {
+<<<<<<< HEAD
                 handle: "a1".into(),
+=======
+                handle: "h1".into(),
+>>>>>>> origin/main
             },
         );
         memory.record_receipt_typed(&[], "unsaved result", None, ResultCustody::Unsaved);
         let Ok(dir) = tempfile::tempdir() else {
             panic!("a temp dir for the saved output")
         };
+<<<<<<< HEAD
         let path = dir.path().join("a1");
+=======
+        let path = dir.path().join("h1");
+>>>>>>> origin/main
         assert!(std::fs::write(&path, "line one\nerror here\nline three\n").is_ok());
         let Ok(by_act) = named_output(None, Some(1), |act| Ok(memory.reopened_handle(act))) else {
             panic!("act #1 was saved")
         };
+<<<<<<< HEAD
         let Ok(by_handle) = named_output(Some(id("a1")), None, |act| Ok(memory.reopened_handle(act)))
+=======
+        let Ok(by_handle) = named_output(Some("h1".into()), None, |act| Ok(memory.reopened_handle(act)))
+>>>>>>> origin/main
         else {
             panic!("a handle names itself")
         };
         assert_eq!(by_act, by_handle);
         let read =
+<<<<<<< HEAD
             |handle: OutputId| read_saved(&path, handle, ToolOutputParams::default(), None, spill::Allowance::Whole);
+=======
+            |handle: String| read_saved(&path, handle, ToolOutputParams::default(), None, spill::Allowance::Whole);
+>>>>>>> origin/main
         let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
             panic!("the saved output reads back")
         };
@@ -685,6 +840,7 @@ mod tests {
         use crate::cognition::working_memory::WorkingMemory;
         use crate::sdk_codegen::{NextMoves, NoMove};
         let memory = WorkingMemory::new(8);
+<<<<<<< HEAD
         let name = |handle: Option<&str>, act| named_output(handle.map(id), act, |act| Ok(memory.reopened_handle(act)));
         let Err(CommandError::Refused(empty)) = name(None, None) else { panic!("nothing saved yet: refused") };
         assert_eq!(empty.next(), &NextMoves::None(NoMove::NothingSaved));
@@ -694,30 +850,58 @@ mod tests {
         memory.record_receipt_typed(&[], "unsaved result", None, ResultCustody::Unsaved);
         assert_eq!(name(None, None).ok().as_ref().map(OutputId::as_str), Some("a2"), "neither: her newest saved output, past the unsaved #3");
         assert_eq!(name(Some("a1"), Some(1)).ok().as_ref().map(OutputId::as_str), Some("a1"), "both, agreeing");
+=======
+        let name = |handle: Option<&str>, act| named_output(handle.map(str::to_owned), act, |act| Ok(memory.reopened_handle(act)));
+        let Err(CommandError::Refused(empty)) = name(None, None) else { panic!("nothing saved yet: refused") };
+        assert_eq!(empty.next(), &NextMoves::None(NoMove::NothingSaved));
+        for handle in ["h1", "h2"] {
+            memory.record_receipt_typed(&[], "saved result", None, ResultCustody::Whole { handle: handle.into() });
+        }
+        memory.record_receipt_typed(&[], "unsaved result", None, ResultCustody::Unsaved);
+        assert_eq!(name(None, None).ok().as_deref(), Some("h2"), "neither: her newest saved output, past the unsaved #3");
+        assert_eq!(name(Some("h1"), Some(1)).ok().as_deref(), Some("h1"), "both, agreeing");
+>>>>>>> origin/main
         let next_of = |handle, act| match name(Some(handle), Some(act)) {
             Err(CommandError::Refused(refusal)) => {
                 refusal.next().calls().map(|call| serde_json::Value::Object(call.args().clone())).collect::<Vec<_>>()
             }
             other => panic!("{handle} and #{act} disagree: refused, got {other:?}"),
         };
+<<<<<<< HEAD
         assert_eq!(next_of("a1", 2), [serde_json::json!({"outputId": "a1"}), serde_json::json!({"act": 2})]);
         assert_eq!(next_of("a1", 99), [serde_json::json!({"outputId": "a1"})], "an act naming nothing offers only the id");
+=======
+        assert_eq!(next_of("h1", 2), [serde_json::json!({"outputId": "h1"}), serde_json::json!({"act": 2})]);
+        assert_eq!(next_of("h1", 99), [serde_json::json!({"outputId": "h1"})], "an act naming nothing offers only the id");
+>>>>>>> origin/main
     }
 
     // what this catches: a reopen saved as a new output (Codex's 5090 capture, windows-df8): she
     // searched a handle for FAILED, got her selection under a fresh handle, searched THAT, and
     // matched her own earlier search instead of the log. A reopen's custody is its source, so the
+<<<<<<< HEAD
     // second search reads the original output and returns its failure line again (an act's
     // receipt: `act_observe::receipt_output`).
     #[test]
     fn a_reopen_is_a_view_of_its_source_and_never_a_new_output() {
+=======
+    // second search reads the original output and returns its failure line again, and an act that
+    // only reopened one output names that output; any other call, or two sources, saves its own.
+    #[test]
+    fn a_reopen_is_a_view_of_its_source_and_never_a_new_output() {
+        use crate::ai::types::ResultCustody;
+>>>>>>> origin/main
         let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
         let source = "deadbeefcafe0001";
         let path = dir.path().join(source);
         assert!(std::fs::write(&path, "   Compiling foo\ntest it_works ... FAILED\ntest result: ok\n").is_ok());
         let search = |handle: &str| {
             let params = ToolOutputParams { pattern: Some("FAILED".into()), ..Default::default() };
+<<<<<<< HEAD
             let Ok(result) = read_saved(&path, id(handle), params, None, spill::Allowance::Whole) else {
+=======
+            let Ok(result) = read_saved(&path, handle.to_owned(), params, None, spill::Allowance::Whole) else {
+>>>>>>> origin/main
                 panic!("the search reads back")
             };
             let Ok(value) = serde_json::to_value(&result) else { panic!("a result serializes") };
@@ -730,12 +914,25 @@ mod tests {
         assert_eq!((second.as_str(), again.as_deref()), (first.as_str(), Some(source)));
         assert!(first.contains("it_works ... FAILED"), "{first}");
         let Ok(value) = serde_json::to_value(ToolOutputResult {
+<<<<<<< HEAD
             handle: id(source), total_lines: None, total_bytes: 0, total_matches: None, content: "x".into(),
+=======
+            handle: source.into(), total_lines: None, total_bytes: 0, total_matches: None, content: "x".into(),
+>>>>>>> origin/main
             truncated: false, encoding: "utf8".into(), byte_start: None, byte_end: None, next_byte_offset: None,
         }) else {
             panic!("a result serializes")
         };
         assert_eq!(reopened_source("code/read", &value), None, "only a reopen's result is a view");
+<<<<<<< HEAD
+=======
+        let whole = |handle: &str| ResultCustody::Whole { handle: handle.into() };
+        let (h, other) = (whole(source), whole("0123456789abcdef"));
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("tool/output", &h)]).as_deref(), Some(source));
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("read_output", &other)]), None, "two sources");
+        assert_eq!(reopened_by_every_call([("read_output", &h), ("code/read", &other)]), None, "another command");
+        assert_eq!(reopened_by_every_call([("read_output", &ResultCustody::Unsaved)]), None);
+>>>>>>> origin/main
     }
 
     // what this catches: a half range refused ("give BOTH startLine and endLine"): endLine alone
@@ -746,7 +943,11 @@ mod tests {
         let path = dir.path().join("lines");
         assert!(std::fs::write(&path, "one\ntwo\nthree\nfour\n").is_ok());
         let read = |start, end| {
+<<<<<<< HEAD
             match read_saved(&path, id("ab"), ToolOutputParams::default(), line_range(start, end), spill::Allowance::Whole) {
+=======
+            match read_saved(&path, "h".into(), ToolOutputParams::default(), line_range(start, end), spill::Allowance::Whole) {
+>>>>>>> origin/main
                 Ok(read) => read.content.lines().map(|line| line.split_whitespace().last().unwrap_or_default().to_owned()).collect::<Vec<_>>(), // unwrap_or_default: a blank row has no word
                 Err(e) => panic!("{start:?}..{end:?}: {e}"),
             }
@@ -771,7 +972,11 @@ mod tests {
         loop {
             let result = read_saved(
                 &path,
+<<<<<<< HEAD
                 id("ab"),
+=======
+                "id".into(),
+>>>>>>> origin/main
                 ToolOutputParams {
                     byte_offset: Some(offset),
                     byte_length: Some(2),
@@ -805,7 +1010,11 @@ mod tests {
         assert_eq!(actual, body.as_bytes());
         let result = read_saved(
             &path,
+<<<<<<< HEAD
             id("ab"),
+=======
+            "id".into(),
+>>>>>>> origin/main
             ToolOutputParams {
                 pattern: Some("error".into()),
                 context_lines: Some(0),
@@ -828,7 +1037,11 @@ mod tests {
         std::fs::write(&path, "x".repeat(257)).unwrap();
         let error = read_saved(
             &path,
+<<<<<<< HEAD
             id("ab"),
+=======
+            "id".into(),
+>>>>>>> origin/main
             ToolOutputParams {
                 pattern: Some("never".into()),
                 ..Default::default()

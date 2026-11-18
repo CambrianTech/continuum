@@ -1,6 +1,10 @@
 //! Transient slot admission: save and detach a resident before operator traffic borrows its slot.
 
+<<<<<<< HEAD
 use super::{KvSlotPool, PageAction, PageIn, SlotPermit, TurnAdmission};
+=======
+use super::{KvSlotPool, PageIn, SlotPermit, TurnAdmission};
+>>>>>>> origin/main
 use std::sync::Arc;
 
 impl TurnAdmission {
@@ -35,7 +39,11 @@ impl TurnAdmission {
                 let _page_io = page_io;
                 pool.note_page_lost(&previous);
                 let saved;
+<<<<<<< HEAD
                 (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, PageAction::Save).await?;
+=======
+                (admission, saved) = admission.page_action(&client, &paging_root, slot, &previous, "save").await?;
+>>>>>>> origin/main
                 if saved {
                     pool.note_saved(previous);
                     admission.saved_evictee = true;

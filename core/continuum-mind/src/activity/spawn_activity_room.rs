@@ -697,6 +697,10 @@ pub struct ActivityStateResult {
 #[async_trait]
 impl ActionCommand for ActivityState {
     const NAME: &'static str = "activity/state";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = &["activity_state"];
+>>>>>>> origin/main
     // NOT native: a read of the bundle is a resume-time/operator verb, not a per-turn
     // act — offering it to every persona would grow the agentic tool surface past
     // its ceiling (llm_deliberation_faculty: shrink first, #333). Discoverable via

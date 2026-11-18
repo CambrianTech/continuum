@@ -5,4 +5,7 @@ pub use continuum_engine::{serving_pin_store, serving_tier_down};
 
 pub mod serving_consumer;
 pub mod serving_daemon;
+<<<<<<< HEAD
 pub mod serving_prompt_cache;
+=======
+>>>>>>> origin/main

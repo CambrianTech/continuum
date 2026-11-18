@@ -91,11 +91,32 @@ impl WorkVerb {
         }
     }
 
+<<<<<<< HEAD
     /// The name her tool list offers the verb under (`sdk_codegen::wire_name`, the one function
     /// her function list is named by: `work/release` → `work_release`), so a move her text names
     /// is one she can call, and every work verb shares one scheme (card d2b6dbce).
     pub fn offered(self) -> String {
         continuum_kernel::sdk_codegen::wire_name(self.command())
+=======
+    /// The verb's declared aliases, the first being the name her tool list offers it under. The
+    /// mind's work commands declare `ALIASES` from this, so the alias has one owner.
+    pub const fn aliases(self) -> &'static [&'static str] {
+        match self {
+            WorkVerb::Claim => &["claim_task"],
+            WorkVerb::Heartbeat => &["heartbeat_task", "extend_claim"],
+            WorkVerb::Note => &["ledger", "note_task"],
+            WorkVerb::Release => &["release_task"],
+            WorkVerb::State => &["update_task", "close_task"],
+            WorkVerb::Review | WorkVerb::Submission | WorkVerb::Submit => &[],
+        }
+    }
+
+    /// The name her tool list offers the verb under (`sdk_codegen::wire_name`, the one function
+    /// her function list is named by), so a move her text names is one she can call.
+    pub fn offered(self) -> String {
+        use continuum_kernel::sdk_codegen::{offer_style_for, primary_alias, wire_name};
+        wire_name(self.command(), primary_alias(self.aliases()), offer_style_for(None))
+>>>>>>> origin/main
     }
 
     /// What holding this verb's precondition entitles her to besides the verb itself, as command
@@ -148,9 +169,12 @@ pub enum Unmet {
     StaleClaim { current: Option<ClaimId> },
     /// The card changed since the revision she acted from (`current` is its revision now).
     StaleRevision { current: u64 },
+<<<<<<< HEAD
     /// Her mind published the submission under review, and the room does not admit self-review
     /// (`review_verdict::author_may_review`).
     AuthorCannotReview(crate::review_verdict::AuthorCannotReview),
+=======
+>>>>>>> origin/main
 }
 
 impl std::fmt::Display for Unmet {
@@ -176,7 +200,10 @@ impl std::fmt::Display for Unmet {
             ),
             Unmet::StaleClaim { current: None } => write!(f, "the claim you named has ended: the card has no claim now"),
             Unmet::StaleRevision { current } => write!(f, "the card changed since you read it (revision {current}): read it again"),
+<<<<<<< HEAD
             Unmet::AuthorCannotReview(refused) => std::fmt::Display::fmt(refused, f),
+=======
+>>>>>>> origin/main
             Unmet::OpenByHolder => write!(
                 f,
                 "you HOLD this card: `open` from its holder would drop your claim and leave your diff behind \
@@ -195,9 +222,12 @@ pub enum StateRoute {
     ThroughClaim,
     /// Her own live review returns to in_progress for a revision, under the same claim.
     ResumeReview,
+<<<<<<< HEAD
     /// She published the newest submission on a reviewed card nobody else holds: the card reopens
     /// to in_progress (airc reopens settled work by its state, never a claim), then she claims it.
     ReviseOwnSubmission,
+=======
+>>>>>>> origin/main
     /// Another's claim stands on the card (`from`). Anyone may take any card at any time (Joel,
     /// 2026-10-06), and the takeover is on the record: her claim releases theirs, naming whom it was
     /// taken from (airc's `ClaimReleased { taken_over_from }`), then the column moves.
@@ -344,7 +374,10 @@ pub fn state(card: &WorkCard, actor: PeerId, requested: CardState, now_ms: u64) 
     match requested {
         CardState::Open if holds => Err(Unmet::OpenByHolder),
         CardState::InProgress if resumes_held_review(card, actor, now_ms) => Ok(StateRoute::ResumeReview),
+<<<<<<< HEAD
         CardState::InProgress if revises_own_submission(card, actor, now_ms) => Ok(StateRoute::ReviseOwnSubmission),
+=======
+>>>>>>> origin/main
         CardState::Claimed | CardState::InProgress => claim(card, actor, now_ms).map(|_| StateRoute::ThroughClaim),
         CardState::Open | CardState::Blocked | CardState::Review | CardState::Merged | CardState::Closed => {
             Ok(match holder_on_record(card, now_ms).filter(|holder| *holder != actor) {
@@ -364,6 +397,7 @@ pub fn resumes_held_review(card: &WorkCard, actor: PeerId, now_ms: u64) -> bool 
         && crate::card_holder::hold_of(card, now_ms) == crate::card_holder::Hold::Held
 }
 
+<<<<<<< HEAD
 /// The author of a reviewed card's newest submission, returning to revise it while nobody else
 /// holds it. Without this a verdict that asked for changes locked its author out of her own work:
 /// claiming refuses Review and the state verb asked for a live hold (Aiko on the M5, 2026-11-16:
@@ -374,6 +408,8 @@ pub fn revises_own_submission(card: &WorkCard, actor: PeerId, now_ms: u64) -> bo
         && crate::card_holder::hold_of(card, now_ms) != crate::card_holder::Hold::Held
 }
 
+=======
+>>>>>>> origin/main
 /// Whether `verb` can execute on `card` for `actor` with some argument: the question the surface
 /// and a refusal's next moves ask. For `work/state`, a holder always has a lifecycle move; for
 /// `work/review`, the review is her own (no stated claim, no named parent).
@@ -649,6 +685,7 @@ mod tests {
         assert_eq!(refusal.next, vec![WorkVerb::Claim, WorkVerb::Note, WorkVerb::State], "on another's card she can take it over, write its ledger, or move it");
     }
 
+<<<<<<< HEAD
     // what this catches: Aiko on the M5, 2026-11-16, locked out of her own card. d2856ec5 sat in
     // Review with no owner after a verdict asked for changes; claiming refused Review and the state
     // verb wanted a live hold, so her intact worktree was unreachable and she began to redo the work
@@ -670,6 +707,8 @@ mod tests {
         assert!(available(&unowned, her(), NOW).contains(&WorkVerb::State), "her surface offers the way back");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches (Cormac on #5782): work/state executing for a non-holder on another's card
     // while the surface refused it, two owners of one decision. Anyone may take any card at any
     // time (Joel, 2026-10-06), attributed: the route names whom it is taken from. The surface

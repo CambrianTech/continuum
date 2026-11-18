@@ -164,7 +164,11 @@ impl ResourceLeaseLedger {
     }
 
     pub fn capacity(&self, kind: ResourceKind) -> u64 {
+<<<<<<< HEAD
         self.capacity.get(&kind).copied().unwrap_or(0) // unwrap_or: an unscanned kind grants nothing (fail-closed: no grant against a resource not scanned)
+=======
+        self.capacity.get(&kind).copied().unwrap_or(0)
+>>>>>>> origin/main
     }
 
     /// Bytes currently spoken for of this kind — sums ALL leases, expired
@@ -188,7 +192,11 @@ impl ResourceLeaseLedger {
     /// Bytes of this kind physically resident across everyone, as last scanned.
     /// Absent → 0 (no physical monitor for this kind yet).
     pub fn physical_used(&self, kind: ResourceKind) -> u64 {
+<<<<<<< HEAD
         self.physical_used.get(&kind).copied().unwrap_or(0) // unwrap_or: no physical monitor for this kind; its capacity is unscanned too, so nothing is granted against it
+=======
+        self.physical_used.get(&kind).copied().unwrap_or(0)
+>>>>>>> origin/main
     }
 
     /// What is REALLY spoken for of this kind: the larger of what we have granted
@@ -234,7 +242,11 @@ impl ResourceLeaseLedger {
         self.reservations
             .get(&(kind, consumer_id.to_string()))
             .copied()
+<<<<<<< HEAD
             .unwrap_or(0) // unwrap_or: no floor reserved is a floor of 0 bytes, a fact, not an unknown
+=======
+            .unwrap_or(0)
+>>>>>>> origin/main
     }
 
     // ---- measurement axis (monitored residency, never reserved) ------------
@@ -360,6 +372,7 @@ impl ResourceLeaseLedger {
             .min(self.capacity(kind))
     }
 
+<<<<<<< HEAD
     /// The room `consumer_id` may size a successor into when it holds nothing on the board yet:
     /// the pool's capacity less every OTHER consumer's claim, the largest of its reserved floor, its
     /// grant and its measured residency. Computed from claims alone, never from `physical_used`, so
@@ -391,6 +404,8 @@ impl ResourceLeaseLedger {
         self.capacity(kind).saturating_sub(claimed)
     }
 
+=======
+>>>>>>> origin/main
     /// THE over-commit guard. Grant `req.bytes` of `req.kind` only if they fit
     /// in what is *actually* free (capacity minus what others already hold).
     /// Refuses with the exact numbers a caller needs to back off. This is the
@@ -546,8 +561,15 @@ impl ResourceLeaseLedger {
         candidates.sort_by(|a, b| {
             let sa = arbiter.reclaim_score(a, &ctx);
             let sb = arbiter.reclaim_score(b, &ctx);
+<<<<<<< HEAD
             // Highest score reclaimed first; a total order (NaN included); lease_id breaks ties.
             sb.total_cmp(&sa).then_with(|| a.lease_id.cmp(&b.lease_id))
+=======
+            // Highest score reclaimed first; NaN-safe; lease_id breaks ties.
+            sb.partial_cmp(&sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.lease_id.cmp(&b.lease_id))
+>>>>>>> origin/main
         });
 
         // Track each consumer's remaining held bytes as we choose victims, so a

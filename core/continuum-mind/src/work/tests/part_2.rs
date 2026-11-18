@@ -26,7 +26,11 @@ use super::*;
                 priority: Some(CardPriority::P1),
             },
         )
+<<<<<<< HEAD
         .await.map(|(made, _)| made)
+=======
+        .await
+>>>>>>> origin/main
         .expect("card created");
 
         let id = WorkCardId::from_uuid(Uuid::parse_str(&made.card_id).expect("card_id is a uuid"));
@@ -52,7 +56,11 @@ use super::*;
                 priority: None,
             },
         )
+<<<<<<< HEAD
         .await.map(|(made, _)| made);
+=======
+        .await;
+>>>>>>> origin/main
         assert!(matches!(blank, Err(CommandError::Invalid(_))), "{blank:?}");
 
         // A blank repo is refused, never inferred.
@@ -66,7 +74,11 @@ use super::*;
                 priority: None,
             },
         )
+<<<<<<< HEAD
         .await.map(|(made, _)| made);
+=======
+        .await;
+>>>>>>> origin/main
         assert!(
             matches!(&blank_repo, Err(CommandError::Invalid(m)) if m.contains("repo is blank")),
             "{blank_repo:?}"
@@ -83,7 +95,11 @@ use super::*;
                 priority: None,
             },
         )
+<<<<<<< HEAD
         .await.map(|(made, _)| made);
+=======
+        .await;
+>>>>>>> origin/main
         assert!(
             matches!(&unnamed, Err(CommandError::Invalid(m)) if m.starts_with("work/create: add repo to this call")),
             "the refusal leads with HER action: {unnamed:?}"
@@ -112,7 +128,11 @@ use super::*;
                 priority: None,
             },
         )
+<<<<<<< HEAD
         .await.map(|(made, _)| made)
+=======
+        .await
+>>>>>>> origin/main
         .expect("a held card supplies the repo");
         let slice_id = WorkCardId::from_uuid(Uuid::parse_str(&slice.card_id).expect("uuid"));
         let horizon = board_horizon(&airc).await.expect("boards");

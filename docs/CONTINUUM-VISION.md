@@ -5,7 +5,11 @@
 > "Describe your experience. We'll bring it to life."
 
 > **Technical companion:** [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) — implementation shape, engines, IPC.
+<<<<<<< HEAD
 > **Substrate contract:** [CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md) — RTOS-style runtime every Rust concern inherits.
+=======
+> **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — RTOS-style runtime every Rust concern inherits.
+>>>>>>> origin/main
 > **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — current state of Lanes A–G.
 
 ---
@@ -708,7 +712,11 @@ Continuum runs in Docker. Deploy anywhere:
 **Technical truth docs (read these alongside this vision):**
 
 - [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) — implementation shape, engines, IPC.
+<<<<<<< HEAD
 - [CONTINUUM-ENGINE.md](architecture/CONTINUUM-ENGINE.md) — runtime/RTOS substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
+=======
+- [CBAR-SUBSTRATE-ARCHITECTURE.md](architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime/RTOS substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
+>>>>>>> origin/main
 - [ALPHA-GAP-ANALYSIS.md](planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap, current state of Lanes A–G, owners, merge gates.
 
 **Supporting:**

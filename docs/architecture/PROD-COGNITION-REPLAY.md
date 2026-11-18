@@ -4,7 +4,11 @@
 >
 > **Status.** Spec for the prod-validation loop. Implementation lands per ALPHA-GAP Lane D + the next-tier cognition modules (persona-cognition, inference-llm, composer, speculator).
 >
+<<<<<<< HEAD
 > **Companion to** [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (defines `TurnReplayRecord`), [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) (the trace bus this record rides on), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (sentinel-AI consumes these records for attribution), and [PERFORMANCE-HARNESS-FRAMEWORK.md](PERFORMANCE-HARNESS-FRAMEWORK.md) (replay harnesses are a category there).
+=======
+> **Companion to** [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) (defines `TurnReplayRecord`), [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) (the trace bus this record rides on), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (sentinel-AI consumes these records for attribution), and [PERFORMANCE-HARNESS-FRAMEWORK.md](PERFORMANCE-HARNESS-FRAMEWORK.md) (replay harnesses are a category there).
+>>>>>>> origin/main
 
 ## Why This Doc Exists
 
@@ -280,7 +284,11 @@ This is what 100% Rust cognition + proof it works looks like as substrate, not a
 ## See Also
 
 - [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) §"TurnReplayRecord" — the record shape this document operates on.
+<<<<<<< HEAD
 - [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) §"Standard VDD Record" — adjacent record format for performance evidence.
+=======
+- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) §"Standard VDD Record" — adjacent record format for performance evidence.
+>>>>>>> origin/main
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) §6 — sentinel-AI consumes records from this archive.
 - [PERFORMANCE-HARNESS-FRAMEWORK.md](PERFORMANCE-HARNESS-FRAMEWORK.md) — `prod-replay-harness` is added to its Tier 1 catalog.
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) — `persona-cognition` (Section I #1) is the producer; `replay-archive` (a new substrate-service module) is the persister.

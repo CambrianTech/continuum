@@ -26,7 +26,10 @@
 //! │  │   - available_bytes          │               │
 //! │  │   - pressure: 0.0-1.0       │               │
 //! │  │   - per_module breakdown    │               │
+<<<<<<< HEAD
 //! │  │   - deficit_bytes (host)    │               │
+=======
+>>>>>>> origin/main
 //! │  └──────────────────────────────┘               │
 //! │         │                                       │
 //! │         ▼                                       │
@@ -80,8 +83,11 @@ pub use poll_interval::*;
 mod shed_lru;
 pub use shed_lru::{ByteSized, ShedLru};
 mod memory_pressure_monitor;
+<<<<<<< HEAD
 mod host_deficit;
 pub use host_deficit::{HostDeficit, HostDeficitReading};
+=======
+>>>>>>> origin/main
 
 // =============================================================================
 // Tests

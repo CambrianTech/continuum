@@ -7,7 +7,11 @@
 > integrating them into one coherent act, governed only by resources, realized on
 > modern hardware via Rust.
 
+<<<<<<< HEAD
 Companions (precedence-winning on their topics): [CONTINUUM-ENGINE](CONTINUUM-ENGINE.md),
+=======
+Companions (precedence-winning on their topics): [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SUBSTRATE-ARCHITECTURE.md),
+>>>>>>> origin/main
 [BRAIN-REGIONS-SUBSTRATE](BRAIN-REGIONS-SUBSTRATE.md), [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md),
 [PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md), [PERSONA-DEBUGGING-SYSTEM](PERSONA-DEBUGGING-SYSTEM.md).
 

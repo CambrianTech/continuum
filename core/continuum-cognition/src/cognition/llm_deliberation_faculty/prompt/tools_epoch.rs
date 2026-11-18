@@ -81,8 +81,13 @@ impl ToolsEpoch {
 
 /// This act's hands before the allocation: her surface whole, its verbs as a consumer, and the
 /// levels her head holds.
+<<<<<<< HEAD
 pub(in super::super) struct ToolsOffer {
     surface: SelectedSurface,
+=======
+pub(in super::super) struct ToolsOffer<'a> {
+    surface: SelectedSurface<'a>,
+>>>>>>> origin/main
     set: ToolSet,
     leveled: ToolsLeveled,
     /// The held levels as rungs of `leveled`, when her head holds this set.
@@ -90,10 +95,17 @@ pub(in super::super) struct ToolsOffer {
     kept: bool,
     moves: Vec<String>,
     /// The set her changed moves select, adopted at her head's next epoch.
+<<<<<<< HEAD
     adopt: Option<SelectedSurface>,
 }
 
 impl ToolsOffer {
+=======
+    adopt: Option<SelectedSurface<'a>>,
+}
+
+impl ToolsOffer<'_> {
+>>>>>>> origin/main
     /// Her hands as the allocation's head part: what she acts through, so a price choice never shows
     /// a verb below its summary (`continuum_context::ladder::Consumer::Actionable`).
     pub(in super::super) fn head(&self) -> Head {
@@ -109,31 +121,50 @@ impl ToolsOffer {
 /// The head's next epoch: the surface and menu it adopts, and what it adds to the head (in the
 /// allocation's unit, measured from the rendered heads), which a start of her view must fund before
 /// it is adopted.
+<<<<<<< HEAD
 pub(in super::super) struct NextHead {
     surface: SelectedSurface,
+=======
+pub(in super::super) struct NextHead<'a> {
+    surface: SelectedSurface<'a>,
+>>>>>>> origin/main
     levels: Vec<usize>,
     menu: BTreeSet<String>,
     pub(in super::super) growth: usize,
 }
 
 /// This act's hands after the allocation.
+<<<<<<< HEAD
 pub(in super::super) struct ToolsChoice {
     /// What the budget charges and the request sends.
     pub(in super::super) sent: SelectedSurface,
+=======
+pub(in super::super) struct ToolsChoice<'a> {
+    /// What the budget charges and the request sends.
+    pub(in super::super) sent: SelectedSurface<'a>,
+>>>>>>> origin/main
     levels: Vec<usize>,
     kept: bool,
     moves: Vec<String>,
     /// Her menu's expanded categories this act.
     pub(in super::super) menu: BTreeSet<String>,
     /// What her head adopts at its next epoch: her changed moves' set, or her held levels risen.
+<<<<<<< HEAD
     pub(in super::super) next: Option<NextHead>,
+=======
+    pub(in super::super) next: Option<NextHead<'a>>,
+>>>>>>> origin/main
 }
 
 impl LlmDeliberationFaculty {
     /// This act's hands as a consumer: her held set while her head holds one (the verbs her new
     /// moves add ride the tail until her head's next epoch), else this act's selection. Demand
     /// never depends on a grant.
+<<<<<<< HEAD
     pub(in super::super) fn tools_offer(&self, ws: &Workspace, charge: &dyn Fn(usize) -> u32) -> ToolsOffer {
+=======
+    pub(in super::super) fn tools_offer(&self, ws: &Workspace, charge: &dyn Fn(usize) -> u32) -> ToolsOffer<'_> {
+>>>>>>> origin/main
         let held = self.tools_epoch.lock().clone();
         let moves = ws.held.move_commands();
         let fresh = self.select_tool_surface(ws);
@@ -156,7 +187,11 @@ impl LlmDeliberationFaculty {
                     // The verbs her new moves add that the held head lacks ride the tail now.
                     let head = self.surface.names_of(&sent);
                     let added = self.surface.names_of(&fresh).into_iter().filter(|name| !head.contains(name)).collect::<Vec<_>>();
+<<<<<<< HEAD
                     let riding = self.surface.retained(&added, fresh.reason, 0).specs.as_deref().map(<[_]>::to_vec).unwrap_or_default(); // unwrap_or_default: a surface with no tools adds no verbs
+=======
+                    let riding = self.surface.retained(&added, fresh.reason, 0).specs.map(std::borrow::Cow::into_owned).unwrap_or_default(); // unwrap_or_default: a surface with no tools adds no verbs
+>>>>>>> origin/main
                     let riding: Vec<_> = riding.into_iter().filter(|spec| !sent.tail.iter().any(|loaded| loaded.name == spec.name)).collect();
                     sent.tail.extend(riding);
                     adopt = Some(fresh);
@@ -172,14 +207,22 @@ impl LlmDeliberationFaculty {
     }
 
     /// `surface` as a consumer, its verbs ranked by her held cards' moves and her learned head.
+<<<<<<< HEAD
     fn tool_set_of(&self, surface: &SelectedSurface, moves: &[String]) -> ToolSet {
+=======
+    fn tool_set_of(&self, surface: &SelectedSurface<'_>, moves: &[String]) -> ToolSet {
+>>>>>>> origin/main
         let head = self.working_memory.as_ref().and_then(|wm| wm.tool_head().held()).unwrap_or_default(); // unwrap_or_default: no learned head ranks no verb by use
         self.surface.tool_set(surface, moves, &head)
     }
 
     /// The surface the allocation's levels buy, and what her head adopts at its next epoch. A
     /// window that could no longer hold her held levels re-chose them, and says so.
+<<<<<<< HEAD
     pub(in super::super) fn granted_tools(&self, ws: &Workspace, offer: ToolsOffer, framing: &FramingOffer, act: &ActPlan, charge: &dyn Fn(usize) -> u32) -> ToolsChoice {
+=======
+    pub(in super::super) fn granted_tools<'a>(&'a self, ws: &Workspace, offer: ToolsOffer<'a>, framing: &FramingOffer, act: &ActPlan, charge: &dyn Fn(usize) -> u32) -> ToolsChoice<'a> {
+>>>>>>> origin/main
         let ToolsOffer { surface, set, leveled, held, kept, moves, adopt } = offer;
         let rungs = act.chosen(id::TOOLS).map_or_else(|| leveled.leveled.at_limit().rungs, |choice| choice.rungs.clone()); // map_or_else: an unchosen part sits at its hard limit
         let levels = set.levels_of(&leveled, &rungs);
@@ -230,7 +273,11 @@ impl LlmDeliberationFaculty {
     }
 
     /// What her head costs as it renders: the system message at `menu` and the tool `surface`.
+<<<<<<< HEAD
     fn head_tokens(&self, ws: &Workspace, menu: &BTreeSet<String>, surface: &SelectedSurface) -> usize {
+=======
+    fn head_tokens(&self, ws: &Workspace, menu: &BTreeSet<String>, surface: &SelectedSurface<'_>) -> usize {
+>>>>>>> origin/main
         let system = self.compose_system_split(menu, ws.directed_at_self(), ws.self_initiated, ws.now_ms, Self::holds_live_work(ws)).stable;
         Self::framing_cost(&system).saturating_add(surface.tokens)
     }
@@ -240,7 +287,11 @@ impl LlmDeliberationFaculty {
     /// (`head_funded`): then the next head (her changed moves' set, or her levels risen) is adopted
     /// and held. An act with no held set (the first, or one whose levels were re-chosen) holds what
     /// it sends.
+<<<<<<< HEAD
     pub(in super::super) fn retain_tools(&self, choice: ToolsChoice, refused: bool, head_funded: bool) -> (SelectedSurface, BTreeSet<String>) {
+=======
+    pub(in super::super) fn retain_tools<'a>(&'a self, choice: ToolsChoice<'a>, refused: bool, head_funded: bool) -> (SelectedSurface<'a>, BTreeSet<String>) {
+>>>>>>> origin/main
         let ToolsChoice { sent, levels, kept, moves, menu, next } = choice;
         if refused {
             return (sent, menu); // a refused turn sent no surface

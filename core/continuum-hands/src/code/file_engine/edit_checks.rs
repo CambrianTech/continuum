@@ -1,6 +1,7 @@
 //! What an edit is checked for and told about: parse, landing site, notices, repair hints.
 use super::*;
 
+<<<<<<< HEAD
 /// The construct a line belongs to, measured from the content itself: from the line that
 /// opens its block (the line itself when the next line is deeper, else the nearest line above
 /// with less indent) down to the last line before the indent returns to the opener's level,
@@ -48,6 +49,14 @@ pub(super) fn construct_span(content: &str, line: u32) -> Option<std::ops::Range
     }
     Some(start..=end)
 }
+=======
+/// How many lines on each side of an edit the receipt shows. Enough to see whether the
+/// insert landed inside a signature, a parameter list, or a docstring — the misplacements
+/// actually observed — without turning every edit receipt into a file dump that crowds a
+/// small working-memory window.
+// context-budget-exempt: lines of surrounding source shown around an applied edit so she can SEE what landed — a diff display shape in lines, not a size budget
+pub(super) const APPLIED_CONTEXT_RADIUS: u32 = 6;
+>>>>>>> origin/main
 
 /// A file's own language checker, if this file type has a cheap one. `None` means "no
 /// opinion" — most extensions, and that is correct: silence must be the default so the
@@ -103,7 +112,13 @@ pub(super) fn syntax_error_after_edit(abs_path: &std::path::Path) -> Option<Stri
 /// uses this only to decide WHICH true statement to make, and "we could not verify" must
 /// never masquerade as "it was already broken".
 pub(super) fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
+<<<<<<< HEAD
     matches!(probe_parse(abs_path, content), Ok(None))
+=======
+    probe_parse(abs_path, content)
+        .map(|o| o.is_none())
+        .unwrap_or(false)
+>>>>>>> origin/main
 }
 
 /// A `search_replace` whose text isn't in the file — reported as a LEAD, not a dead end.
@@ -118,6 +133,15 @@ pub(super) fn parses_clean(abs_path: &std::path::Path, content: &str) -> bool {
 /// quoted string. So when the trimmed forms match, SAY that, and give the exact line with its
 /// indent spelled out.
 pub(super) fn search_miss_report(content: &str, search: &str) -> String {
+<<<<<<< HEAD
+=======
+    let head: String = if search.len() > 60 {
+        format!("{}…", &search[..60])
+    } else {
+        search.to_string()
+    };
+
+>>>>>>> origin/main
     // Single-line searches are the common case and the one we can localise precisely.
     let needle = search.trim();
     if !needle.is_empty() && !needle.contains('\n') {
@@ -151,7 +175,11 @@ pub(super) fn search_miss_report(content: &str, search: &str) -> String {
     }
 
     format!(
+<<<<<<< HEAD
         "SEARCH TEXT NOT FOUND: '{search}'. Nothing in this file resembles it. Re-read the region \
+=======
+        "SEARCH TEXT NOT FOUND: '{head}'. Nothing in this file resembles it. Re-read the region \
+>>>>>>> origin/main
          with `code/read` and copy the anchor verbatim, or address the lines by number with a \
          line_range edit."
     )
@@ -208,27 +236,47 @@ pub(super) fn indent_tolerant_replace(
                         .collect::<String>()
                 })
                 .min_by_key(String::len)
+<<<<<<< HEAD
                 .unwrap_or_default(); // unwrap_or_default: an all-blank replacement shares no indent, and an empty baseline strips nothing
+=======
+                .unwrap_or_default();
+>>>>>>> origin/main
             // A baseline only counts if every non-empty line actually starts with it
             // (mixed tab/space prefixes can produce a "shortest prefix" nothing shares).
             // An EMPTY baseline is fine: stripping it is a no-op and each line's own
             // indent IS its relative indent.
+<<<<<<< HEAD
             let relative: Option<Vec<&str>> = replace_lines
                 .iter()
                 .map(|l| if l.trim().is_empty() { Some("") } else { l.strip_prefix(baseline.as_str()) })
                 .collect();
+=======
+            let has_common = replace_lines
+                .iter()
+                .filter(|l| !l.trim().is_empty())
+                .all(|l| l.starts_with(baseline.as_str()));
+>>>>>>> origin/main
 
             let mut result = String::new();
             for line in &file_lines[..start] {
                 result.push_str(line);
                 result.push('\n');
             }
+<<<<<<< HEAD
             for (i, line) in replace_lines.iter().enumerate() {
                 if line.trim().is_empty() {
                     // Blank replacement lines stay blank — trailing indent is noise.
                 } else if let Some(relative) = &relative {
                     result.push_str(&file_indent);
                     result.push_str(relative[i]);
+=======
+            for line in &replace_lines {
+                if line.trim().is_empty() {
+                    // Blank replacement lines stay blank — trailing indent is noise.
+                } else if has_common {
+                    result.push_str(&file_indent);
+                    result.push_str(line.strip_prefix(baseline.as_str()).unwrap_or(line));
+>>>>>>> origin/main
                 } else {
                     // No shared prefix — flatten to the file indent. Cruder (relative
                     // structure is lost) but never ambiguous about WHERE.
@@ -249,6 +297,10 @@ pub(super) fn indent_tolerant_replace(
         n => {
             let sites: Vec<String> = matches
                 .iter()
+<<<<<<< HEAD
+=======
+                .take(5)
+>>>>>>> origin/main
                 .map(|s| (s + 1).to_string())
                 .collect();
             Err(FileEngineError::EditFailed(format!(
@@ -277,7 +329,11 @@ pub(super) fn nearest_line(content: &str, needle: &str) -> Option<(usize, String
         if hits == 0 {
             continue;
         }
+<<<<<<< HEAD
         if !matches!(&best, Some((h, _, _)) if *h >= hits) {
+=======
+        if best.as_ref().map(|(h, _, _)| hits > *h).unwrap_or(true) {
+>>>>>>> origin/main
             best = Some((hits, i + 1, line.to_string()));
         }
     }
@@ -286,6 +342,17 @@ pub(super) fn nearest_line(content: &str, needle: &str) -> Option<(usize, String
         .map(|(_, n, line)| (n, line))
 }
 
+<<<<<<< HEAD
+=======
+/// How far past a mis-bounded `end_line` to look for the line that closes the construct.
+///
+/// Sized for real code, not for search: a triple-quoted docstring, an argument list, a nested
+/// literal — the shapes that actually swallow an edit — close within a couple of dozen lines.
+/// A wider window would mostly buy the ability to "repair" a range so wrong that widening it
+/// silently eats unrelated code, which is worse than saying nothing.
+pub(super) const REPAIR_SEARCH_LINES: u32 = 40;
+
+>>>>>>> origin/main
 /// Given a refused edit, find the concrete change that would have worked — and say it.
 ///
 /// Glass-boxed on sympy-22005: she asked for `line_range` 240..247 when the block ends at 249,
@@ -310,6 +377,7 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         new_content,
     } = edit_mode
     else {
+<<<<<<< HEAD
         return fault_in_her_content(abs_path, old_content, edit_mode).unwrap_or_else(|| GENERAL.to_string()); // unwrap_or_else: a fault outside what she sent gets the general guidance
     };
 
@@ -321,6 +389,13 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         return fault_in_her_content(abs_path, old_content, edit_mode).unwrap_or_else(|| GENERAL.to_string()); // unwrap_or_else: a fault outside what she sent gets the general guidance
     };
     for candidate in (end_line + 1)..=*span.end() {
+=======
+        return GENERAL.to_string();
+    };
+
+    let total = old_content.lines().count() as u32;
+    for candidate in (end_line + 1)..=(end_line + REPAIR_SEARCH_LINES).min(total) {
+>>>>>>> origin/main
         let widened = EditMode::LineRange {
             start_line: *start_line,
             end_line: candidate,
@@ -331,6 +406,7 @@ pub(super) fn repair_hint(abs_path: &std::path::Path, old_content: &str, edit_mo
         };
         if parses_clean(abs_path, &text) {
             let extra = candidate - end_line;
+<<<<<<< HEAD
             // A parse can not tell a dropped tail from destroyed code, so the hint SHOWS what the
             // wider range also removes, verbatim, and she decides. On the M5, 2026-11-11, a hint
             // that parsed would have deleted a `for` loop's header (Aiko, not_speech.rs 259-260).
@@ -389,6 +465,19 @@ fn fault_in_her_content(abs_path: &std::path::Path, old_content: &str, edit_mode
         index + 1,
         sent_lines[index]
     ))
+=======
+            return format!(
+                "THE FIX: use end_line={candidate} instead of {end_line}. Your range stopped \
+                 {extra} line(s) short — lines {}..{candidate} are the tail of a construct your \
+                 replacement re-opens and closes itself, so the original's tail survived after \
+                 it. The SAME new_content with end_line={candidate} parses clean; re-issue the \
+                 edit with that one number changed.",
+                end_line + 1
+            );
+        }
+    }
+    GENERAL.to_string()
+>>>>>>> origin/main
 }
 
 /// The syntax error `content` WOULD produce at this path's language, formatted for a persona.
@@ -396,6 +485,10 @@ fn fault_in_her_content(abs_path: &std::path::Path, old_content: &str, edit_mode
 /// `parses_clean` pair, so an unavailable detail costs an explanation, never a wrong verdict.
 pub(super) fn syntax_error_detail(abs_path: &std::path::Path, content: &str) -> Option<String> {
     let detail = probe_parse(abs_path, content).ok()??;
+<<<<<<< HEAD
+=======
+    let head = detail.lines().take(6).collect::<Vec<_>>().join("\n");
+>>>>>>> origin/main
     // The checker names the temp probe it actually read. Handing a persona a path that does
     // not exist sends her to look for a file she cannot find — say the real one.
     let real = abs_path.file_name()?.to_str()?;
@@ -404,7 +497,11 @@ pub(super) fn syntax_error_detail(abs_path: &std::path::Path, content: &str) -> 
         abs_path.file_stem()?.to_str()?,
         abs_path.extension()?.to_str()?
     );
+<<<<<<< HEAD
     Some(detail.replace(&probe, real))
+=======
+    Some(head.replace(&probe, real))
+>>>>>>> origin/main
 }
 
 /// Run the language's syntax checker over `content` WITHOUT touching what is on disk.
@@ -608,7 +705,15 @@ pub(super) fn overwrite_magnitude(old_content: &str, new_content: &str) -> Optio
         );
     }
     out.push_str("The file now reads:\n");
+<<<<<<< HEAD
     out.push_str(&numbered_neighborhood(new_content, 1));
+=======
+    out.push_str(&numbered_neighborhood(
+        new_content,
+        1,
+        APPLIED_CONTEXT_RADIUS * 2,
+    ));
+>>>>>>> origin/main
     Some(out)
 }
 
@@ -738,7 +843,11 @@ pub(super) fn edit_anchor_line(edit_mode: &EditMode, new_content: &str) -> Optio
         // first is the honest representative, and the caller asked for a sweep so the
         // count is not the surprise — placement is.
         EditMode::SearchReplace { replace, .. } => {
+<<<<<<< HEAD
             line_of_first_occurrence(new_content, replace.lines().next().unwrap_or(replace)) // unwrap_or: an empty replacement has no lines, and its first line is itself
+=======
+            line_of_first_occurrence(new_content, replace.lines().next().unwrap_or(replace))
+>>>>>>> origin/main
         }
         // An append always lands at the end; showing the tail proves it joined the file
         // cleanly rather than fusing onto a last line that had no trailing newline.
@@ -746,8 +855,11 @@ pub(super) fn edit_anchor_line(edit_mode: &EditMode, new_content: &str) -> Optio
             let total = new_content.lines().count() as u32;
             (total > 0).then_some(total)
         }
+<<<<<<< HEAD
         // A batch lands where its first edit does.
         EditMode::Batch { edits } => edits.first().and_then(|first| edit_anchor_line(first, new_content)),
+=======
+>>>>>>> origin/main
     }
 }
 
@@ -766,20 +878,32 @@ pub(super) fn line_of_first_occurrence(content: &str, needle: &str) -> Option<u3
 /// Numbered lines around `anchor` in `content` — the same shape `code/read` returns, so a
 /// persona reads one surface for "what is in this file", never two. 1-indexed, clamped to
 /// the file, and marked with `>` on the anchor line so the landing site is unmissable.
+<<<<<<< HEAD
 pub(super) fn numbered_neighborhood(content: &str, anchor: u32) -> String {
+=======
+pub(super) fn numbered_neighborhood(content: &str, anchor: u32, radius: u32) -> String {
+>>>>>>> origin/main
     let lines: Vec<&str> = content.lines().collect();
     let total = lines.len() as u32;
     if total == 0 {
         return "(file is now empty)".to_string();
     }
     let anchor = anchor.clamp(1, total);
+<<<<<<< HEAD
     let mut out = String::new();
     for n in construct_span(content, anchor).into_iter().flatten() {
+=======
+    let first = anchor.saturating_sub(radius).max(1);
+    let last = (anchor + radius).min(total);
+    let mut out = String::new();
+    for n in first..=last {
+>>>>>>> origin/main
         let marker = if n == anchor { '>' } else { ' ' };
         out.push_str(&format!("{marker}{n:>5} | {}\n", lines[(n - 1) as usize]));
     }
     out
 }
+<<<<<<< HEAD
 
 #[cfg(test)]
 mod construct_span_tests {
@@ -796,3 +920,5 @@ mod construct_span_tests {
         assert_eq!(construct_span("fn f() {\n    run();\n}\n", 2), Some(1..=3));
     }
 }
+=======
+>>>>>>> origin/main

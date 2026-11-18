@@ -275,6 +275,7 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
+<<<<<<< HEAD
 /// A marker comment has to say something after it: a marker with nothing behind it is the
 /// SHAPE of a reason, which is worse than no marker because it silences the guard. Same bar as
 /// the unwrap ratchet's.
@@ -303,6 +304,8 @@ pub fn marker_with_reason(lines: &[&str], index: usize, marker: &str) -> bool {
         .any(|l| reason_on(l))
 }
 
+=======
+>>>>>>> origin/main
 /// The byte length of a char (or byte) literal starting at `i`, if one does: `'x'` (any
 /// single byte, `'"'` and `'{'` included) or an escaped `'\x'` (`'\''`, `'\"'`). A lifetime
 /// (`'a`) never has a closing `'` two bytes on, so it is never mistaken for one (Cormac,

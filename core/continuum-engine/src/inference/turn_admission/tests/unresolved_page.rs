@@ -86,11 +86,16 @@ async fn delayed_engine() -> DelayedEngine {
                 }
             }
         }));
+<<<<<<< HEAD
     // Keep fixture identity distinct even when the OS reuses a former port.
     let namespace = format!("/{}", Uuid::new_v4());
     let app = Router::new().nest(&namespace, app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}{namespace}", listener.local_addr().expect("test: address"));
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: address"));
+>>>>>>> origin/main
     let server = tokio::spawn(async move { axum::serve(listener, app).await });
     DelayedEngine { root, release, landed, drops_reply, entered, cut, server }
 }
@@ -124,7 +129,11 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, patience()).await;
     assert!(turn.is_err(), "an unresolved switch admits no generation");
     assert_eq!(engine.landed.load(Ordering::SeqCst), 0, "the engine has not answered yet");
+<<<<<<< HEAD
     assert_eq!(sem.available_permits(), 2, "physical custody holds no decode permit");
+=======
+    assert_eq!(sem.available_permits(), 1, "the held custody keeps its lane");
+>>>>>>> origin/main
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
 
     // Same-slot reuse waits for the receipt, and gets the slot once the engine has answered.
@@ -179,7 +188,11 @@ async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
     // The restore is IN the engine, held: wait on the engine's own event, never a virtual
     // timeout, which can pass before the request's bytes arrive.
     engine_event(&engine.entered, "the restore never reached the engine").await;
+<<<<<<< HEAD
     assert_eq!(sem.available_permits(), 2, "unresolved custody retains the slot, not decode capacity");
+=======
+    assert_eq!(sem.available_permits(), 1, "unresolved, not uncertain: the held custody keeps its lane");
+>>>>>>> origin/main
     assert!(!directory.endpoint(&engine.root).paging_recovery_required(), "unresolved alone never quarantines");
     let mut reuse = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(next), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()));
     assert!(tokio::time::timeout(ABSENT_FOR, &mut reuse).await.is_err(), "no turn takes a held slot");
@@ -228,6 +241,7 @@ async fn a_checkpoint_left_unresolved_quarantines_the_endpoint() {
     engine.release.notify_one();
     engine.server.abort();
 }
+<<<<<<< HEAD
 // An unresolved restore owns one physical slot, not the decode capacity of the
 // endpoint. Another resident must use a different slot before the late receipt.
 #[tokio::test]
@@ -271,3 +285,5 @@ async fn an_unresolved_page_releases_decode_capacity_but_keeps_physical_custody(
     engine.server.abort();
     Ok(())
 }
+=======
+>>>>>>> origin/main

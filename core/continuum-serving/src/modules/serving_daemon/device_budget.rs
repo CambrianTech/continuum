@@ -66,7 +66,11 @@ pub(super) fn vram_physical_used(resource_daemon: &ResourceDaemon) -> u64 {
         .iter()
         .find(|k| k.kind == ResourceKind::Vram)
         .map(|k| k.physical_used_bytes)
+<<<<<<< HEAD
         .unwrap_or(0) // unwrap_or: no Vram row means no device on the board; nothing of it is in use
+=======
+        .unwrap_or(0)
+>>>>>>> origin/main
 }
 
 /// The serving engine's `/props`. Bounded: a localhost read of cached meta, taken only on the
@@ -128,6 +132,7 @@ pub(super) fn governed_vram_ceiling(resource_daemon: &ResourceDaemon) -> Option<
     governed_pool_ceiling(resource_daemon, serving_pool_kind())
 }
 
+<<<<<<< HEAD
 /// The device room a launch sizes into while the board does not hold serving's own bytes yet (a
 /// boot, or the gap after an engine exit): the serving pool's capacity less every other
 /// consumer's floor, grant or residency, computed from their claims
@@ -147,6 +152,8 @@ pub(super) fn boot_device_room(resource_daemon: &ResourceDaemon) -> Option<u64> 
         .map(|_| resource_daemon.room_beside_others(SERVING_CONSUMER_ID, kind))
 }
 
+=======
+>>>>>>> origin/main
 /// [`governed_vram_ceiling`] for a named pool — the row the lane's placement puts its
 /// bytes in (see [`serving_pool_kind`]). Split so the arithmetic is assertable against
 /// a Ram row without a config decision in the test.

@@ -42,6 +42,7 @@ pub(super) struct ProgressGuard {
     id: u64,
 }
 impl ProgressGuard {
+<<<<<<< HEAD
     /// Leaves the budget queue. A ticket it still held (a work call lent the reserved lane after
     /// taking one) may have been the head, so the next in line is woken to re-check.
     pub(super) fn physical(&self, budget: bool) {
@@ -55,6 +56,13 @@ impl ProgressGuard {
         };
         if gave_up_ticket {
             self.gate.released.notify_waiters();
+=======
+    pub(super) fn physical(&self, budget: bool) {
+        if let Some(entry) = self.gate.progress.lock().entries.get_mut(&self.id) {
+            entry.phase = Phase::Physical;
+            entry.budget = budget;
+            entry.ticket = None;
+>>>>>>> origin/main
         }
     }
     pub(super) fn granted(&self) {
@@ -73,9 +81,12 @@ impl ProgressGuard {
         ledger.physical_grants = ledger.physical_grants.wrapping_add(1);
         if budget {
             ledger.budget_grants = ledger.budget_grants.wrapping_add(1);
+<<<<<<< HEAD
             drop(ledger);
             // A budget grant is what ages a parked ambient caller (`ambient_aged`).
             self.gate.released.notify_waiters();
+=======
+>>>>>>> origin/main
         }
     }
 }

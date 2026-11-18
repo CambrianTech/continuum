@@ -8,7 +8,11 @@
 use super::*;
 use crate::capacity::window_grant::PoolGrants;
 use crate::inference::slots::grant_handoff::{ReclaimedGrant, RefusedGrant};
+<<<<<<< HEAD
 use super::fair::DispatchState;
+=======
+use super::fair::FairGrantState;
+>>>>>>> origin/main
 
 /// One grant owner of the dyno's own.
 pub(crate) struct OwnerUnderTest {
@@ -25,8 +29,11 @@ pub(crate) struct Observation {
     pub live: BTreeMap<uuid::Uuid, usize>,
     /// Requests whose caller let go before a terminal receipt (held until a fence).
     pub unresolved: BTreeMap<uuid::Uuid, usize>,
+<<<<<<< HEAD
     /// Acts rendered against their grant and not yet ended ([`ActHold`]).
     pub rendered: BTreeMap<uuid::Uuid, usize>,
+=======
+>>>>>>> origin/main
     /// Minds whose publication is being handed off (charged until physical proof or fence).
     pub retiring: BTreeMap<uuid::Uuid, GrantLease>,
 }
@@ -36,18 +43,30 @@ impl OwnerUnderTest {
         Self { owner: Box::leak(Box::new(Reservations::new())) }
     }
 
+<<<<<<< HEAD
     /// One daemon publication (`publish_at_the_act` on this owner): the grants it publishes and
     /// the handoff tickets it issues.
     pub(crate) fn publish(
         &self,
         fair: &mut DispatchState,
+=======
+    /// One daemon publication (`publish_fair_grants` on this owner): the grants it publishes and
+    /// the handoff tickets it issues.
+    pub(crate) fn publish(
+        &self,
+        fair: &mut FairGrantState,
+>>>>>>> origin/main
         demands: &[Demand<uuid::Uuid>],
         pool: u32,
         ceiling: u32,
         engine: Option<EngineIncarnation>,
         current: Option<PoolGrants>,
     ) -> (PoolGrants, Vec<GrantHandoff>) {
+<<<<<<< HEAD
         self.owner.dispatch_publish(fair, super::fair::Publication { demands, pool, ceiling, engine }, || current, |next| next)
+=======
+        self.owner.fair_publish(fair, demands, pool, ceiling, engine, || current, |next| next)
+>>>>>>> origin/main
     }
 
     /// One dispatch attempt's reservation (`reserve_attempt` on this owner) against `current`, her
@@ -63,11 +82,14 @@ impl OwnerUnderTest {
         reserve_attempt_with(self.owner, slot_for, persona, leased, needed, || current)
     }
 
+<<<<<<< HEAD
     /// Her act rendered against `current`, her lease as published at that instant (`hold_for_act`).
     pub(crate) fn hold(&self, persona: uuid::Uuid, current: Option<GrantLease>) -> Option<ActHold> {
         self.owner.hold_act(persona, || current)
     }
 
+=======
+>>>>>>> origin/main
     /// The engine's physical save-then-erase receipt for a handoff.
     pub(crate) fn reclaimed(&self, ticket: GrantHandoff) -> Result<(), String> {
         self.owner.record_reclaimed(ReclaimedGrant::scripted(ticket))
@@ -89,7 +111,10 @@ impl OwnerUnderTest {
                 let count = match entry.custody {
                     Custody::Live => seen.live.entry(*mind).or_insert(0),
                     Custody::Unresolved => seen.unresolved.entry(*mind).or_insert(0),
+<<<<<<< HEAD
                     Custody::Rendered => seen.rendered.entry(*mind).or_insert(0),
+=======
+>>>>>>> origin/main
                 };
                 *count += 1;
             }

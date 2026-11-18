@@ -40,8 +40,12 @@ use super::*;
 /// by the consumer beside the window and lanes it reads from the same snapshot. The first
 /// cut read a daemon cell the target derivation rewrote; that cell moved under a running
 /// engine (2026-09-20 07:52Z) and the board credited a grant no process held.
+<<<<<<< HEAD
 pub(super) fn serving_footprint_fn(catalog: &Arc<ModelCatalog>) -> FootprintFn {
     let catalog = Arc::clone(catalog);
+=======
+pub(super) fn serving_footprint_fn(catalog: Arc<ModelCatalog>) -> FootprintFn {
+>>>>>>> origin/main
     Arc::new(
         move |id: &str, served_window: u32, lanes: u32, grant_mib: u32| {
             catalog
@@ -55,7 +59,11 @@ pub(super) fn serving_footprint_fn(catalog: &Arc<ModelCatalog>) -> FootprintFn {
                         grant_mib,
                     )
                 })
+<<<<<<< HEAD
                 .unwrap_or(0) // unwrap_or: a model the catalog does not know, or one with no local weights, holds nothing to attribute
+=======
+                .unwrap_or(0)
+>>>>>>> origin/main
         },
     )
 }
@@ -69,6 +77,7 @@ pub fn attribute_serving(peak_resident_bytes: u64, lanes: u32, granted_cache_mib
     peak_resident_bytes.saturating_add((granted_cache_mib as u64).saturating_mul(1024 * 1024))
 }
 
+<<<<<<< HEAD
 /// The serving engine's host prompt cache, driven through this daemon's control: the first holder
 /// to give host RAM back under the host's memory deficit (card 0f631c46). The launch grant it
 /// lowers from and takes back to is the one on the serving snapshot (the spawn fact, or
@@ -103,6 +112,9 @@ impl ServingDaemonModule {
         );
     }
 
+=======
+impl ServingDaemonModule {
+>>>>>>> origin/main
     /// The current lane demand (≥ 1).
     /// Register serving's autonomic PLANNER to run on the memory authority's tick
     /// (MEMORY-AUTHORITY-DAEMON slice 1b). The lane plan — which model, how many lanes,
@@ -213,7 +225,11 @@ impl ServingDaemonModule {
         let consumer = ServingConsumer::new(
             self.subscribe_serving(),
             self.intent.clone(),
+<<<<<<< HEAD
             serving_footprint_fn(&self.catalog),
+=======
+            serving_footprint_fn(self.catalog.clone()),
+>>>>>>> origin/main
             serving_pool_kind(),
             // #56: under a VRAM reclaim (a game grabbed the GPU, a peer needs the bytes),
             // shrink to the most-capable smaller model that frees enough — "take our own

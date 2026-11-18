@@ -2,6 +2,57 @@
 
 use super::*;
 
+<<<<<<< HEAD
+=======
+// what this catches (card c3c50e0d): a refused demotion with NO previous plan must
+// still produce a plan for the inherited engine — the incumbent alone, at its running
+// geometry, against the physical budget — never nothing. An incumbent that is not a
+// candidate, or cannot fit one lane physically, is a named None.
+#[test]
+fn a_refused_demotion_with_no_plan_adopts_the_inherited_engine_at_its_geometry() {
+    use super::incumbent_adoption_plan;
+    use crate::inference::planning::serving_plan::{HostBudget, ModelFootprint, ServingDemand};
+    const GB: u64 = 1_000_000_000;
+    let qwen27b = ModelFootprint {
+        model_id: "ggml-org/Qwen3.8-27B-GGUF".into(),
+        weights_bytes: 17 * GB,
+        kv_per_token: 55_000,
+        context_window: 131_072,
+        capability_rank: 18,
+        fixed_per_lane_bytes: 0,
+    };
+    let small = ModelFootprint {
+        model_id: "continuum-ai/qwen2.5-coder-14b-instruct-GGUF".into(),
+        weights_bytes: 9 * GB,
+        kv_per_token: 30_000,
+        context_window: 32_768,
+        capability_rank: 11,
+        fixed_per_lane_bytes: 0,
+    };
+    let physical = HostBudget {
+        usable_bytes: 44 * GB,
+        perf_cores: 12,
+    };
+    let demand = ServingDemand::new(2, Some(30_000));
+    let plan = incumbent_adoption_plan(
+        &physical,
+        &[small.clone(), qwen27b.clone()],
+        &qwen27b.model_id,
+        &demand,
+        Some((41_728, 2)),
+    )
+    .expect("the incumbent fits physically");
+    assert_eq!(
+        plan.base_model.model_id, qwen27b.model_id,
+        "the incumbent, never the smaller candidate"
+    );
+    assert!(plan.lanes >= 1 && plan.served_context_window >= 8_192);
+    assert!(
+        incumbent_adoption_plan(&physical, &[small], &qwen27b.model_id, &demand, None).is_none(),
+        "an incumbent that is not a candidate is a named None"
+    );
+}
+>>>>>>> origin/main
 
 // what this catches: a pin SWAPS — serve() kills the incumbent llama-server
 // child, THEN launches the candidate (never co-resident) — so the fit-check must
@@ -140,6 +191,53 @@ fn serving_ludicrous_hold_is_refcounted_and_raii() {
     );
 }
 
+<<<<<<< HEAD
+=======
+// what this catches (card 48f5438a): a below-floor plan is refused ONLY when there
+// is an incumbent to preserve. A COLD BOOT (no incumbent) must SERVE the plan rather
+// than refuse into a gap and boot the node DARK — measured on the Intel tier
+// 2026-09-17: #4169 without #4174 sized a CPU host below its capability floor, the
+// gate refused into "the previous plan stands" with no previous plan, and the node
+// reported resident 0 / active_model None while a servable 1.5B sat on disk. The
+// floor guards SINKING from an incumbent; on a cold boot there is nothing to sink
+// from. Against the pre-fix unconditional refuse the cold-boot assert fails.
+#[test]
+fn a_cold_boot_below_the_floor_serves_rather_than_booting_dark() {
+    let below = FloorVerdict::Below {
+        floor: "qwen2.5-coder-4b".to_string(),
+        wanted: "qwen2.5-coder-1.5b".to_string(),
+    };
+    use std::time::Duration;
+    let grace = COLD_BOOT_BELOW_FLOOR_GRACE;
+    // Below the floor WITH an incumbent → refuse, however long (a host never sinks).
+    assert!(
+        below_floor_refuses(&below, true, Duration::ZERO),
+        "with an incumbent, hold the floor"
+    );
+    assert!(
+        below_floor_refuses(&below, true, grace * 10),
+        "…for as long as it takes"
+    );
+    // Below the floor with NO incumbent: a fresh reading is a teardown transient →
+    // refuse (the 5090's 53 GB card must not latch a 4B on one 6 GB reading)…
+    assert!(
+        below_floor_refuses(&below, false, Duration::ZERO),
+        "a first below-floor reading with nothing serving is a transient, not a shortfall"
+    );
+    // …and a shortfall that has outlived the grace → SERVE, never stay dark.
+    assert!(
+        !below_floor_refuses(&below, false, grace),
+        "a cold boot held below the floor past the grace serves the viable plan (48f5438a)"
+    );
+    // At or above the floor never refuses, incumbent or not.
+    assert!(!below_floor_refuses(
+        &FloorVerdict::AtOrAbove,
+        true,
+        Duration::ZERO
+    ));
+    assert!(!below_floor_refuses(&FloorVerdict::AtOrAbove, false, grace));
+}
+>>>>>>> origin/main
 
 // what this catches: regression #4146 on the Intel tier — a CPU-placed host
 // (`--n-gpu-layers 0`) sized against its decorative GPU instead of the system RAM
@@ -304,6 +402,7 @@ async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift
     );
 }
 
+<<<<<<< HEAD
 // what this catches (card 53a8d49b): the same 6 GB reading on a 53 GB card is a
 // TRANSIENT, but with closeness-based semantics there's nothing to refuse —
 // publish whatever fits so the node isn't dark while budget fluctuates. The 4B
@@ -311,12 +410,24 @@ async fn without_a_past_form_of_ourself_a_six_gigabyte_box_really_does_downshift
 // the 27B's higher closeness replaces it.
 #[tokio::test]
 async fn a_transient_six_gigabytes_on_a_big_card_publishes_what_fits_and_upgrades() {
+=======
+// what this catches (2026-09-16): the same 6 GB reading on a 53 GB card is a
+// TRANSIENT, and with no incumbent to defend (a fresh boot, an unload that
+// suppressed the 27B) every other guard is disarmed. The host floor is not: the
+// card's physical capacity serves the 27B, so a plan naming the 4B is refused and
+// NOTHING is published — the host waits for its budget rather than sinking. This is
+// the crash-restart demotion of #438 and the unload demotion of #4145, closed at
+// the layer both share.
+#[tokio::test]
+async fn a_transient_six_gigabytes_on_a_big_card_refuses_to_sink_below_the_floor() {
+>>>>>>> origin/main
     let daemon = daemon_with(Arc::new(FakeServer::healthy(
         Arc::new(AtomicUsize::new(0)),
         true,
     )));
     let (budget, candidates) = boot_squeeze();
     daemon.publish_plan(budget, &candidates, &candidates);
+<<<<<<< HEAD
     // Under closeness semantics: a 4B plan IS published because it has
     // positive closeness vs "no plan" at zero.
     let plan_guard = daemon.plan_tx.borrow();
@@ -325,6 +436,13 @@ async fn a_transient_six_gigabytes_on_a_big_card_publishes_what_fits_and_upgrade
     assert_eq!(squeeze_plan.base_model.model_id, "coder-4b",
         "the smallest fitting model serves when budget is tight");
     // And when the budget comes back, the 27B replaces it (higher closeness).
+=======
+    assert!(
+        daemon.plan_tx.borrow().plan.is_none(),
+        "a 53 GB card whose floor is the 27B must not publish a 4B plan on a 6 GB reading"
+    );
+    // And when the budget comes back, the 27B is adopted at once.
+>>>>>>> origin/main
     let recovered = HostBudget {
         usable_bytes: 40 * GB,
         perf_cores: budget.perf_cores,
@@ -388,7 +506,10 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
         fits_on_gpu: true,
         rationale: String::new(),
         lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+<<<<<<< HEAD
         window_target: 0,
+=======
+>>>>>>> origin/main
     };
     // The 5090: 32 GB × 0.80 physical. The floor is the 27B — even though the
     // plan that asked was computed over a candidate list the unload had emptied
@@ -438,6 +559,67 @@ fn a_host_never_sinks_below_what_its_physical_capacity_serves() {
     assert_eq!(floor_gate(&plan_for(&tiny), None), FloorVerdict::AtOrAbove);
 }
 
+<<<<<<< HEAD
+=======
+// what this catches (#368, 2nd occurrence): a ONE-tick budget collapse must
+// classify as a Downshift (so publish_plan HOLDS the incumbent plan until
+// the squeeze proves sustained) — while same-model, upshift, and
+// incumbent-gone cases adopt immediately. The live failure: usable_gb hit 0
+// for ~6 seconds at solve launch, the fresh plan named the 0.5B, and the
+// reconcile re-brained every citizen onto it before the dip had even passed.
+#[test]
+fn downshift_gate_classifies_the_transient_lobotomy() {
+    let footprint = |id: &str, weights_gb: u64, rank: u8| ModelFootprint {
+        model_id: id.into(),
+        weights_bytes: weights_gb * GB,
+        kv_per_token: 100_000,
+        context_window: 32768,
+        capability_rank: rank,
+        fixed_per_lane_bytes: 0,
+    };
+    let devstral = footprint("devstral-24b", 14, 8);
+    let tiny = footprint("qwen-0.5b", 1, 1);
+    let plan_for = |id: &str| ServingPlan {
+        base_model: footprint(id, 1, 1),
+        served_context_window: 2048,
+        lanes: 1,
+        grid_overflow_lanes: 0,
+        resident_models: 1,
+        fits_on_gpu: true,
+        rationale: String::new(),
+        lanes_bound: crate::inference::planning::serving_plan::LanesBound::Demand,
+    };
+    let both = vec![devstral.clone(), tiny.clone()];
+
+    // The incident shape: incumbent Devstral, fresh wants the 0.5B → HOLD.
+    assert_eq!(
+        downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &both),
+        DownshiftVerdict::Downshift,
+    );
+    // Same model → nothing to debounce.
+    assert_eq!(
+        downshift_gate(&plan_for("devstral-24b"), Some("devstral-24b"), &both),
+        DownshiftVerdict::NotADownshift,
+    );
+    // UPSHIFT (0.5B incumbent, fresh wants Devstral) must adopt immediately —
+    // holding it would have kept the citizens lobotomized on purpose.
+    assert_eq!(
+        downshift_gate(&plan_for("devstral-24b"), Some("qwen-0.5b"), &both),
+        DownshiftVerdict::NotADownshift,
+    );
+    // Incumbent vanished from disk → holding a plan naming a ghost is worse
+    // than any downshift; adopt what is actually present.
+    assert_eq!(
+        downshift_gate(&plan_for("qwen-0.5b"), Some("devstral-24b"), &[tiny]),
+        DownshiftVerdict::NotADownshift,
+    );
+    // No incumbent (boot) → plain adoption.
+    assert_eq!(
+        downshift_gate(&plan_for("qwen-0.5b"), None, &both),
+        DownshiftVerdict::NotADownshift,
+    );
+}
+>>>>>>> origin/main
 
 // what this catches (#225, Joel 2026-08-08 "the budgeter just has all its
 // parts figure it out"): serving's plan budget (`governed_vram_ceiling`)

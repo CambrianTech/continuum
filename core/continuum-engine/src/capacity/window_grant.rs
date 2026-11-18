@@ -23,7 +23,11 @@ pub(crate) use lease::{record_reclaimed_grant, record_refused_grant};
 pub use lease::is_grant_retiring;
 #[cfg(test)]
 pub(crate) use lease::dyno_seam;
+<<<<<<< HEAD
 pub use lease::{hold_for_act, ActHold, publish_at_the_act, DispatchState, DispatchWait, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+=======
+pub use lease::{publish_fair_grants, FairGrantState, begin_grant_handoff, GrantHandoff, HandoffRefused, grant_with_reservations, honoring_reservations, honoring_reservations_and_receipts, reserve_attempt, settle, GrantReservation, ReserveRefused, TerminalReceipt};
+>>>>>>> origin/main
 
 /// One publication of one mind's grant: monotonic and never reused in this process. A grant that
 /// moves, or a new engine incarnation, takes a new revision, so a lease priced at an old one fails
@@ -159,6 +163,7 @@ pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
 }
 
+<<<<<<< HEAD
 /// How wide one seat on this node's engine is: the most ONE mind may be granted, as the grant owner
 /// reads it off the engine (one slot on fixed slots, the pool capped at the trained window on a shared
 /// one). Never the snapshot's equal share of the pool (`sequence_share`, a KV charge): an unreported
@@ -204,6 +209,8 @@ pub fn current_seat() -> SeatWindow {
     }
 }
 
+=======
+>>>>>>> origin/main
 /// Why one grants evaluation granted nobody: every way `grant_inputs` has nothing to grant from,
 /// typed (card 5e79e1c1; Codex: "type those truthfully").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -262,6 +269,7 @@ pub enum Waiting {
     NeedAbovePool { need: u32, pool: u32 },
     /// Her own grant is being reclaimed: she is regranted after its receipt.
     Reclaiming,
+<<<<<<< HEAD
     /// Cells are being reclaimed for her from holders that are not acting: she is granted after the
     /// engine's reclaim receipt (CONTINUUM-ENGINE 4.9 P3).
     ForReclaim,
@@ -269,6 +277,12 @@ pub enum Waiting {
     BehindActs { acting: usize },
     /// Seatable, owed nothing and not granted: the publisher left her out, which it should never
     /// do. Named, so a live read shows the defect instead of a reason it does not have.
+=======
+    /// Queued for room behind others (1-based `position` of `of`): a holder must yield first.
+    Queued { position: usize, of: usize },
+    /// Seatable, not reclaiming, and in no queue: the fair publisher left her out, which it should
+    /// never do. Named, so a live read shows the defect instead of a reason it does not have.
+>>>>>>> origin/main
     Unplaced,
 }
 
@@ -301,6 +315,7 @@ pub enum Ungranted {
 }
 
 impl Ungranted {
+<<<<<<< HEAD
     /// Her turn comes once room opens: cells are being reclaimed for her, every holder is mid-act,
     /// or the engine is relaunching.
     /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
@@ -312,6 +327,17 @@ impl Ungranted {
     /// and agency?"). Every other reason names a defect.
     pub fn awaits_room(&self) -> bool {
         matches!(self, Self::Waiting(Waiting::ForReclaim | Waiting::Reclaiming | Waiting::BehindActs { .. }) | Self::Nobody(NoGrants::NotReady))
+=======
+    /// Her turn comes once room opens: she is queued behind others, or the engine is relaunching.
+    /// She waits for a later evaluation, never fails her turn (Joel, 2026-11-09: "get what it needs
+    /// and wait its turn"). A grant being RECLAIMED is not waited out inside her turn: the reclaim
+    /// takes her mind's turn lock (`MindTurn::reclaim`), so a turn waiting on it waits on itself
+    /// (the M5, d0abbddd1, 2026-11-10: Aris parked to the 1,500 s tick deadline, five times, while
+    /// her seat never came back). Her turn ends, the reclaim proceeds, and she is regranted.
+    /// Every other reason names a defect.
+    pub fn awaits_room(&self) -> bool {
+        matches!(self, Self::Waiting(Waiting::Queued { .. }) | Self::Nobody(NoGrants::NotReady))
+>>>>>>> origin/main
     }
 }
 
@@ -339,6 +365,7 @@ pub fn evaluations_receiver() -> Option<tokio::sync::watch::Receiver<Option<Gran
     EVALUATIONS.get().cloned()
 }
 
+<<<<<<< HEAD
 static DEMAND_MOVED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 /// A mind became ready without a grant, or an act ended and its cells came free: the grants
@@ -354,6 +381,8 @@ pub async fn demand_moves() {
     DEMAND_MOVED.notified().await;
 }
 
+=======
+>>>>>>> origin/main
 /// One measured mind's current demand on the pool: her floor and target, and whether a turn of hers
 /// is in flight now. A mind not measured yet has no `Demand`: there is no number to grant her
 /// (`Measure::Unmeasured`), and her first view measures her.
@@ -376,6 +405,7 @@ pub struct Demand<K> {
     pub ceiling: u32,
 }
 
+<<<<<<< HEAD
 impl Demand<uuid::Uuid> {
     /// Her requirement as a demand on a pool whose one sequence holds `ceiling`, on a model trained
     /// to `trained`, or why it is none. `in_flight`: a turn of hers runs now.
@@ -424,6 +454,8 @@ impl Demand<uuid::Uuid> {
     }
 }
 
+=======
+>>>>>>> origin/main
 /// Grants every mind a window from the pool, given every mind's current demand and the grants
 /// they hold now.
 pub trait WindowPolicy<K> {
@@ -631,6 +663,7 @@ mod tests {
         assert!(too_big.is_empty(), "a need above what one sequence holds now waits, never trimmed: {too_big:?}");
     }
 
+<<<<<<< HEAD
     // what this catches (the M5, 2026-11-14: `grid.mind.unservable widest_window=132300` on 958ea3056,
     // then `widest_window=110387` at boot on 7f875ccfd): a seat read as the pool's equal share, first
     // always, then as a stand-in until the grant owner reported. The seat is the grant owner's
@@ -645,6 +678,8 @@ mod tests {
         assert_eq!(SeatWindow::Unreported.wire_tokens(), 0, "the wire's own unknown");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches (the M5, 2026-11-03, 2bbfa56c9): a grant below need. The 2,048-token launch
     // pool was shared in proportion, binding every resident to 409-819 tokens. A mind gets her whole
     // need or no grant (she keeps her binding and waits for room), never a fraction.
@@ -899,6 +934,7 @@ mod tests {
     }
 
 
+<<<<<<< HEAD
     // what this catches (Aris on the M5, 2026-11-13, 2b17c41df: alone on a 247,040-token pool,
     // granted 43,807 = 1.25 x her collapsed-render wish of 35,046 while her priced need read at least
     // 56-99k): a target below what her view holds at full detail, so her settled grant was released
@@ -922,6 +958,8 @@ mod tests {
         assert!(fresh[&aris] >= full_detail.get(), "granted her whole view at once: {fresh:?}");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: a floored need crossing a JSON boundary (requirements to the serving
     // daemon) read back as a bare bound with its floor dropped, because untagged reads try variants
     // in order and ignore unknown fields; and a bare bound or exact size no longer reading as before.

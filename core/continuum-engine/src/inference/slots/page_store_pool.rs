@@ -17,6 +17,7 @@
 //!    from before a restart that never re-confirmed): a restore would refuse them anyway;
 //! 3. only then confirmed pages of minds not resident in a slot, coldest (file mtime) first,
 //!    each FORGOTTEN through its owner first (`note_page_lost`) so the ledger never confirms a
+<<<<<<< HEAD
 //!    page that is gone: her next return re-prefills once. This rung answers only pressure the
 //!    store itself causes (its own budget) or a volume about to run out ([`ColdPages`]): a
 //!    confirmed page is a mind's warm context, and a volume other classes filled is theirs to
@@ -24,6 +25,9 @@
 //!    the store held ~3 GB of a 99 GB budget, and the broker's High-tier request took 29 minds'
 //!    pages (one each time a mind left her slot): at the 23:45Z deploy no mind had a page, and
 //!    every first act after it was a full prefill (`cold_turn cause="no_page"`).
+=======
+//!    page that is gone: her next return re-prefills once.
+>>>>>>> origin/main
 //!
 //! What it never removes: `saved-ledger.json` (only `a-*.bin` pages and their sidecars are
 //! candidates), a resident mind's page, and any served page while page IO is in flight, the
@@ -40,7 +44,10 @@ use std::time::SystemTime;
 
 use super::citizen_slots::{pages_in, PAGE_DIR, PAGE_SIDECARS};
 use super::{page_filename, KvSlotPool, PageKey, Probed};
+<<<<<<< HEAD
 use crate::paging::broker::PressureTier;
+=======
+>>>>>>> origin/main
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 use crate::runtime::admission_gate::AdmissionGate;
 use crate::system_resources::disk_eviction::{
@@ -54,14 +61,18 @@ use crate::system_resources::{DiskPressureMonitor, TrackedDir};
 pub struct KvPageStorePool {
     tracked: Arc<TrackedDir>,
     tier: String,
+<<<<<<< HEAD
     /// The last pass's decline: a pass that frees nothing for the same reason as the one before
     /// is not news (the broker asks every tick while the volume stays hot).
     last_decline: parking_lot::Mutex<Option<Decline>>,
+=======
+>>>>>>> origin/main
 }
 
 impl KvPageStorePool {
     pub fn new(tracked: Arc<TrackedDir>) -> Self {
         let tier = format!("disk-{}", tracked.name());
+<<<<<<< HEAD
         Self { tracked, tier, last_decline: parking_lot::Mutex::new(None) }
     }
 
@@ -125,6 +136,9 @@ impl ColdPages {
             (Some(_), Some(_)) => Self::Keep,
             (None, _) | (_, None) => Self::Yield,
         }
+=======
+        Self { tracked, tier }
+>>>>>>> origin/main
     }
 }
 
@@ -155,25 +169,39 @@ impl ResourcePool for KvPageStorePool {
     /// cannot see a volume other classes filled. An unsampled volume adds no pressure of its
     /// own; the class's budget pressure still counts.
     fn pressure(&self) -> f64 {
+<<<<<<< HEAD
         match self.pressures() {
             StorePressure { own: Some(own), volume: Some(volume) } => cache_pool_pressure(own.0, volume.0),
             StorePressure { own: Some(known), volume: None } | StorePressure { own: None, volume: Some(known) } => known.0,
             // Neither its budget nor its volume read: no measured pressure brings the broker here.
             StorePressure { own: None, volume: None } => 0.0,
         }
+=======
+        let volume = DiskPressureMonitor::volume_for(self.tracked.path());
+        let own = self.tracked.bytes() as f64 / budget_bytes(volume.as_ref()).max(1) as f64;
+        let volume = volume
+            .filter(|volume| volume.total_bytes > 0)
+            .map_or(0.0, |volume| volume.total_bytes.saturating_sub(volume.available_bytes) as f64 / volume.total_bytes as f64);
+        cache_pool_pressure(own, volume)
+>>>>>>> origin/main
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         let gate = super::page_io::gate();
+<<<<<<< HEAD
         let pressure = self.pressures();
         let cold_pages = ColdPages::under(pressure);
         let evicted = evict_page_store(self.tracked.path(), &StoreView::now(), gate, want_bytes, cold_pages);
+=======
+        let evicted = evict_page_store(self.tracked.path(), &StoreView::now(), gate, want_bytes);
+>>>>>>> origin/main
         let freed = evicted.freed();
         if freed > 0 {
             // The scanner walks every few minutes and the broker ticks every 5 s: without this
             // the pool reads its pre-eviction size and is asked again for bytes already gone.
             self.tracked.record_freed(freed);
         }
+<<<<<<< HEAD
         let repeated = std::mem::replace(&mut *self.last_decline.lock(), evicted.declined) == evicted.declined;
         if freed > 0 || (evicted.declined.is_some() && !repeated) {
             continuum_base::probe!(
@@ -182,14 +210,26 @@ impl ResourcePool for KvPageStorePool {
                 own_pressure = ?pressure.own,
                 volume_pressure = ?pressure.volume,
                 cold_pages = ?cold_pages,
+=======
+        if freed > 0 || evicted.declined.is_some() {
+            continuum_base::probe!(
+                class = "inference.kv_page.store_evicted",
+                want_bytes,
+>>>>>>> origin/main
                 unserved_bytes = evicted.unserved,
                 unconfirmed_bytes = evicted.unconfirmed,
                 cold_bytes = evicted.cold,
                 cold_minds_forgotten = evicted.forgotten as u64,
+<<<<<<< HEAD
                 declined = ?evicted.declined,
                 "the KV page store gave bytes back in value order: unserved model dirs, then pages no \
                  ledger confirms, then (only under its own pressure or a critical volume) the coldest \
                  non-resident confirmed pages, each forgotten first"
+=======
+                declined = evicted.declined.map_or("", Decline::as_str),
+                "the KV page store gave bytes back in value order: unserved model dirs, then pages no \
+                 ledger confirms, then the coldest non-resident confirmed pages (each forgotten first)"
+>>>>>>> origin/main
             );
         }
         freed
@@ -317,11 +357,25 @@ pub(super) enum Decline {
     /// Page IO in flight, the node stopping or an endpoint mid-transition: no served page is
     /// settled enough to judge.
     PageIoBusy,
+<<<<<<< HEAD
     /// What is left is confirmed minds' pages, and the pressure is not theirs to answer
     /// ([`ColdPages::Keep`]).
     MindsPagesKept,
 }
 
+=======
+}
+
+impl Decline {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unreadable => "unreadable",
+            Self::Unproven => "unproven",
+            Self::PageIoBusy => "page_io_busy",
+        }
+    }
+}
+>>>>>>> origin/main
 
 /// What one pass freed, by rung.
 #[derive(Debug, Default)]
@@ -347,9 +401,15 @@ struct Page {
     bytes: u64,
 }
 
+<<<<<<< HEAD
 /// Free at least `want` bytes from the store under `root`, in value order (module doc); confirmed
 /// minds' pages only when `cold_pages` yields. Bytes reported are bytes actually removed.
 pub(super) fn evict_page_store(root: &Path, view: &StoreView, gate: &AdmissionGate, want: u64, cold_pages: ColdPages) -> Evicted {
+=======
+/// Free at least `want` bytes from the store under `root`, in value order (module doc). Bytes
+/// reported are bytes actually removed.
+pub(super) fn evict_page_store(root: &Path, view: &StoreView, gate: &AdmissionGate, want: u64) -> Evicted {
+>>>>>>> origin/main
     let mut out = Evicted::default();
     let dirs = match page_dirs(root) {
         Ok(dirs) => dirs,
@@ -417,12 +477,15 @@ pub(super) fn evict_page_store(root: &Path, view: &StoreView, gate: &AdmissionGa
         }
         out.unconfirmed = out.unconfirmed.saturating_add(remove_page(&page));
     }
+<<<<<<< HEAD
     if cold_pages == ColdPages::Keep {
         if !cold.is_empty() && out.freed() < want {
             out.declined = Some(Decline::MindsPagesKept);
         }
         return out;
     }
+=======
+>>>>>>> origin/main
     cold.sort_by_key(|(_, page, _)| page.mtime);
     for (index, page, key) in cold {
         if out.freed() >= want {
@@ -594,22 +657,38 @@ mod tests {
         let view = f.view();
         let one_page = 110;
 
+<<<<<<< HEAD
         let first = evict_page_store(&f.root, &view, &GATE, 1, ColdPages::Yield);
+=======
+        let first = evict_page_store(&f.root, &view, &GATE, 1);
+>>>>>>> origin/main
         assert_eq!((first.unserved, first.unconfirmed, first.cold), (one_page, 0, 0), "another model's page goes first");
         assert!(!f.exists(&f.other, &f.cold), "the unserved dir's page is gone");
         assert!(f.exists(&f.served, &f.orphan), "nothing served is touched while unserved bytes remain");
 
+<<<<<<< HEAD
         let second = evict_page_store(&f.root, &view, &GATE, 1, ColdPages::Yield);
+=======
+        let second = evict_page_store(&f.root, &view, &GATE, 1);
+>>>>>>> origin/main
         assert_eq!((second.unserved, second.unconfirmed, second.cold), (0, one_page, 0), "then the unconfirmed page");
         assert!(!f.exists(&f.served, &f.orphan));
         assert!(f.pool.confirms(&f.cold), "a confirmed page outlives every unconfirmed one");
 
+<<<<<<< HEAD
         let third = evict_page_store(&f.root, &view, &GATE, 1, ColdPages::Yield);
+=======
+        let third = evict_page_store(&f.root, &view, &GATE, 1);
+>>>>>>> origin/main
         assert_eq!((third.unserved, third.unconfirmed, third.cold, third.forgotten), (0, 0, one_page, 1));
         assert!(!f.exists(&f.served, &f.cold), "then the cold confirmed page");
         assert!(!f.pool.confirms(&f.cold), "and its ledger entry is forgotten with it");
 
+<<<<<<< HEAD
         let everything = evict_page_store(&f.root, &view, &GATE, u64::MAX, ColdPages::Yield);
+=======
+        let everything = evict_page_store(&f.root, &view, &GATE, u64::MAX);
+>>>>>>> origin/main
         assert_eq!(everything.freed(), 0, "nothing else is the pool's to give");
         assert!(f.exists(&f.served, &f.resident), "a resident's page is never removed");
         assert!(f.pool.confirms(&f.resident));
@@ -624,7 +703,11 @@ mod tests {
         static GATE: AdmissionGate = AdmissionGate::new();
         let f = fixture();
         let permit = GATE.admit().expect("test: an open gate admits");
+<<<<<<< HEAD
         let busy = evict_page_store(&f.root, &f.view(), &GATE, u64::MAX, ColdPages::Yield);
+=======
+        let busy = evict_page_store(&f.root, &f.view(), &GATE, u64::MAX);
+>>>>>>> origin/main
         assert_eq!(busy.declined, Some(Decline::PageIoBusy));
         assert_eq!((busy.unconfirmed, busy.cold), (0, 0), "no served page while page IO is in flight");
         assert!(f.exists(&f.served, &f.orphan) && f.exists(&f.served, &f.cold));
@@ -633,18 +716,27 @@ mod tests {
 
         page(&f.other, &page_filename(&f.cold), 4_000);
         let launching = StoreView { unproven: true, ..f.view() };
+<<<<<<< HEAD
         let held = evict_page_store(&f.root, &launching, &GATE, 1, ColdPages::Yield);
+=======
+        let held = evict_page_store(&f.root, &launching, &GATE, 1);
+>>>>>>> origin/main
         assert_eq!(held.declined, Some(Decline::Unproven));
         assert!(f.exists(&f.other, &f.cold), "no dir is proven unserved while an engine launches");
 
         assert!(!f.exists(&f.served, &f.orphan), "a launch leaves the served dirs' value order as it was");
 
         let transition = StoreView { busy: true, ..f.view() };
+<<<<<<< HEAD
         let kept = evict_page_store(&f.root, &transition, &GATE, u64::MAX, ColdPages::Yield);
+=======
+        let kept = evict_page_store(&f.root, &transition, &GATE, u64::MAX);
+>>>>>>> origin/main
         assert_eq!(kept.declined, Some(Decline::PageIoBusy));
         assert!(f.exists(&f.served, &f.cold), "a transition's checkpoint saves run outside the gate");
         assert!(f.pool.confirms(&f.cold));
     }
+<<<<<<< HEAD
 
     // what this catches (the M5, 2026-11-13 22:40Z-00:50Z: volume 0.85, the store ~3 GB of a
     // 99 GB budget, 29 minds' confirmed pages taken; at the 23:45Z deploy every first act was a
@@ -679,4 +771,6 @@ mod tests {
         let unread = StorePressure { own: Ratio::of(3, 100), volume: Ratio::of(1, 0) };
         assert_eq!(ColdPages::under(unread), ColdPages::Yield, "an unread volume is unknown, never calm");
     }
+=======
+>>>>>>> origin/main
 }

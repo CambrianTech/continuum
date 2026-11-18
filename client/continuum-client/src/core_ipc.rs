@@ -218,7 +218,10 @@ impl Transport for CoreIpcTransport {
                 command: command.to_string(),
                 reason: resp.error.unwrap_or_else(|| "command failed".to_string()),
                 outcome: resp.result,
+<<<<<<< HEAD
                 refusal: None,
+=======
+>>>>>>> origin/main
             })
         }
     }
@@ -436,7 +439,11 @@ mod tests {
             .await
             .expect_err("server refuses this command");
         match err {
+<<<<<<< HEAD
             ClientError::Refused { command, reason, outcome, .. } => {
+=======
+            ClientError::Refused { command, reason, outcome } => {
+>>>>>>> origin/main
                 // what this catches (card f4d2fa49): the typed outcome the IPC server
                 // sends beside `error` on an inner failure used to be dropped here, so
                 // HistoryIncomplete/HistoryCorrupt lost their continuation offset and

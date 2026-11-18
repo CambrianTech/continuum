@@ -187,6 +187,32 @@ pub(super) fn read_system_free_bytes() -> Option<u64> {
     Some(pages.saturating_mul(page_size))
 }
 
+/// Cumulative bytes swapped in and out since boot (`swapins` / `swapouts` × page size),
+/// the counters `vm_stat` prints. The memory-pressure monitor turns their rate into the
+/// swap axis: occupancy alone never drains on macOS, so inert swap read as live pressure
+/// for hours (card f26d6568). None on a Mach error.
+pub(crate) fn read_swap_traffic_bytes() -> Option<(u64, u64)> {
+    let mut info = vm_statistics64::default();
+    let mut count = HOST_VM_INFO64_COUNT;
+    #[allow(deprecated)]
+    let kr = unsafe {
+        libc::host_statistics64(
+            libc::mach_host_self(),
+            HOST_VM_INFO64,
+            &mut info as *mut vm_statistics64 as *mut integer_t,
+            &mut count,
+        )
+    };
+    if kr != KERN_SUCCESS {
+        return None;
+    }
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as u64;
+    Some((
+        info.swapins.saturating_mul(page_size),
+        info.swapouts.saturating_mul(page_size),
+    ))
+}
+
 /// This process's `phys_footprint` — the same number macOS uses for its
 /// memory-pressure computations and what `top` / Activity Monitor show
 /// in the "Memory" column. Includes unified-memory Metal buffers mapped

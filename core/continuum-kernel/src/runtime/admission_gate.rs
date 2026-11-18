@@ -28,9 +28,12 @@ const CLOSED: u64 = 1 << 63;
 /// Admission state for one resource: open/closed plus the in-flight count, in one word.
 pub struct AdmissionGate {
     word: AtomicU64,
+<<<<<<< HEAD
     /// Published when the gate becomes closed AND empty: the event a stop subscribes to
     /// ([`drained`](Self::drained)), never a poll of the count (card b5b9bef3).
     emptied: tokio::sync::Notify,
+=======
+>>>>>>> origin/main
 }
 
 impl AdmissionGate {
@@ -39,6 +42,7 @@ impl AdmissionGate {
     pub const fn new() -> Self {
         Self {
             word: AtomicU64::new(0),
+<<<<<<< HEAD
             emptied: tokio::sync::Notify::const_new(),
         }
     }
@@ -62,6 +66,8 @@ impl AdmissionGate {
     fn publish_if_drained(&self, left: u64) {
         if left == CLOSED {
             self.emptied.notify_waiters();
+=======
+>>>>>>> origin/main
         }
     }
 
@@ -144,7 +150,11 @@ impl AdmissionGate {
     /// Saturating, so a double release cannot wrap the count into the closed bit and
     /// reopen a shut gate. A double release is still a bug; this only bounds the damage.
     pub fn release_one(&self) {
+<<<<<<< HEAD
         let released = self
+=======
+        let _ = self
+>>>>>>> origin/main
             .word
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |cur| {
                 let count = cur & !CLOSED;
@@ -156,9 +166,12 @@ impl AdmissionGate {
                     Some((cur & CLOSED) | (count - 1))
                 }
             });
+<<<<<<< HEAD
         if let Ok(before) = released {
             self.publish_if_drained(before - 1);
         }
+=======
+>>>>>>> origin/main
     }
 
     /// Shut the gate. Returns whether THIS call closed it, so a second caller — a signal
@@ -168,9 +181,13 @@ impl AdmissionGate {
     /// One-way by design: the only caller is a stop, and a reopen would exist to be called
     /// by mistake. A gate is re-opened by constructing a new one.
     pub fn close(&self) -> bool {
+<<<<<<< HEAD
         let before = self.word.fetch_or(CLOSED, Ordering::AcqRel);
         self.publish_if_drained(before | CLOSED);
         before & CLOSED == 0
+=======
+        self.word.fetch_or(CLOSED, Ordering::AcqRel) & CLOSED == 0
+>>>>>>> origin/main
     }
 }
 
@@ -190,8 +207,12 @@ impl Drop for Permit<'_> {
     fn drop(&mut self) {
         // Subtracting 1 from the whole word decrements the low-bit count and cannot reach
         // the closed bit, because a permit only exists when the count was at least 1.
+<<<<<<< HEAD
         let before = self.gate.word.fetch_sub(1, Ordering::AcqRel);
         self.gate.publish_if_drained(before - 1);
+=======
+        self.gate.word.fetch_sub(1, Ordering::AcqRel);
+>>>>>>> origin/main
     }
 }
 
@@ -357,6 +378,7 @@ mod tests {
         assert_eq!(gate.in_flight(), 0);
     }
 
+<<<<<<< HEAD
     // what this catches: a stop that polls the count instead of hearing the last release
     // (card b5b9bef3). `drained` waits while work is in flight or the gate is open, and resolves
     // on the release that empties a closed gate, without anyone checking the count.
@@ -384,6 +406,8 @@ mod tests {
         gate.drained().await;
     }
 
+=======
+>>>>>>> origin/main
     // what this catches: a gate defaulting CLOSED, which would make every producer in a
     // normally-booted core refuse — a total, silent outage that no test of the shutdown
     // path would exercise.

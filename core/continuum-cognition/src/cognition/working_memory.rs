@@ -234,7 +234,11 @@ pub struct WorkingMemory {
     /// Fingerprints (tool name + args) of her recent ACTIONS, the `capacity`-deep window the
     /// verb tally reads ([`action_verb_tally`](Self::action_verb_tally)): the shape of her recent
     /// investigation. An act repeating one whose whole she holds is her view's to name
+<<<<<<< HEAD
     /// (CONTINUUM-ENGINE section 5 invariant 4, `continuum_context::view` `repeat`), her newest act included.
+=======
+    /// (MIND-CONTEXT invariant 4, `continuum_context::view` `repeat`), her newest act included.
+>>>>>>> origin/main
     action_fps: Mutex<VecDeque<String>>,
     /// Her actions, one record each ([`action_log`]): the ledger line every act leaves
     /// (#414: act history must survive the chatty `entries` ring, measured 2026-08-14 when
@@ -412,7 +416,11 @@ pub struct VolatileSnapshot {
     pub(crate) actions: Vec<action_log::ActionRecord>,
     /// Her thoughts, whole ([`thought_log`]). A checkpoint from before them carries her thoughts
     /// as `entries` of kind `Thought`; a restore moves those into the log.
+<<<<<<< HEAD
     #[serde(default, skip_serializing_if = "Vec::is_empty", deserialize_with = "thought_log::readable")]
+=======
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+>>>>>>> origin/main
     pub thoughts: Vec<ThoughtRecord>,
     /// Her context view ([`WorkingMemory`]'s `view`), derived: absent, or no longer decodable
     /// (`derived::or_none`), her first act after the restore starts a new one.
@@ -480,7 +488,11 @@ impl VolatileSnapshot {
     pub(crate) fn reachable_handles(&self) -> HashSet<String> {
         let log = action_log::ActionLog::from_records(self.action_records());
         let mut handles = reachable_handles(log.receipt_keys(), &self.receipt_children, &self.open_views);
+<<<<<<< HEAD
         handles.extend(self.thoughts.iter().filter_map(|thought| thought.saved_handle().map(str::to_owned)));
+=======
+        handles.extend(self.thoughts.iter().filter_map(|thought| thought.handle.clone()));
+>>>>>>> origin/main
         handles
     }
 
@@ -603,8 +615,11 @@ mod derived;
 mod action_log;
 mod archive;
 mod history;
+<<<<<<< HEAD
 mod in_hand;
 pub use in_hand::{ActSeq, ThoughtOccurrence};
+=======
+>>>>>>> origin/main
 pub mod act_times;
 mod collapsed_receipt;
 pub(crate) use collapsed_receipt::CollapsedReceipt;
@@ -622,7 +637,11 @@ pub use archive::{ArchiveTick, SpanSummary};
 #[cfg(test)]
 pub(crate) use ledger::operation_level;
 pub(crate) use residency::{RecordId, ResidentResults, ShedCandidate};
+<<<<<<< HEAD
 pub use thought_log::{ThoughtBody, ThoughtRecord};
+=======
+pub use thought_log::ThoughtRecord;
+>>>>>>> origin/main
 
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.

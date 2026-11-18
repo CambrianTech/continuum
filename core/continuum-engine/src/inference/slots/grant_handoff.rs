@@ -2,7 +2,11 @@
 //! receipt can produce ReclaimedGrant. Caller cancellation does not cancel endpoint-owned IO.
 use super::{directory, page_io, EndpointAdmission, KvSlotPool, PageKey, SlotPermit, SlotPin};
 use crate::capacity::window_grant::GrantHandoff;
+<<<<<<< HEAD
 use crate::inference::turn_admission::{kv_page_action, PageAction, PageOutcome, PageResolution};
+=======
+use crate::inference::turn_admission::{kv_page_action, PageOutcome, PageResolution};
+>>>>>>> origin/main
 use std::sync::Arc;
 
 /// Constructed only after a confirmed save followed by the engine's erase receipt.
@@ -117,7 +121,11 @@ async fn reclaim(
     // An interrupted overwrite must not leave an older save marked valid.
     pool.note_page_lost(&key);
     custody.pending = true;
+<<<<<<< HEAD
     let (returned, saved) = resolve(kv_page_action(client, root, slot, &key, PageAction::Save).await, custody).await?;
+=======
+    let (returned, saved) = resolve(kv_page_action(client, root, slot, &key, "save").await, custody).await?;
+>>>>>>> origin/main
     custody = returned;
     if !saved {
         let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
@@ -129,7 +137,11 @@ async fn reclaim(
     pool.forget_resident(slot, key);
     pool.note_overwritten(slot);
     custody.pending = true;
+<<<<<<< HEAD
     let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, PageAction::Erase).await, custody).await?;
+=======
+    let (mut custody, erased) = resolve(kv_page_action(client, root, slot, &key, "erase").await, custody).await?;
+>>>>>>> origin/main
     if !erased {
         let ticket = custody.ticket.take().ok_or_else(|| "handoff ticket already consumed".to_string())?;
         return return_refused(ticket, "handoff erase refused; holder claim will be restored".into());

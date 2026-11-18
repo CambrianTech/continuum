@@ -3,6 +3,10 @@ use super::*;
 #[async_trait]
 impl ActionCommand for WorkClaim {
     const NAME: &'static str = "work/claim";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Claim.aliases();
+>>>>>>> origin/main
     const NATIVE: bool = true; // core room workflow — claiming shared-board work as yourself
                                // AiSafe since 2026-07-10: claiming/working a card AS YOURSELF is the
                                // self-scoped cooperative act the shared board exists for. It was
@@ -48,7 +52,11 @@ impl ActionCommand for WorkClaim {
                         "claim refused: this box cannot grade the instance"
                     );
                     return Err(CommandError::Invalid(format!(
+<<<<<<< HEAD
                         "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card, one the board lists as claimable.",
+=======
+                        "card {} names {instance}, which this box cannot grade ({}). It is                          withheld from claims until the environment changes (benchmark/validate                          re-checks it); take another card — work/list with claimable=true.",
+>>>>>>> origin/main
                         short8(card_id.as_uuid()),
                         reason.trim_end_matches('.')
                     )));
@@ -59,6 +67,7 @@ impl ActionCommand for WorkClaim {
                 // claim (ClaimReleased naming them, then hers). Refused, she gets the card now and
                 // her moves on it, and the rejection stays in her perception past the receipt.
                 let now_ms = EpochMs::now().millis();
+<<<<<<< HEAD
                 // A REVIEW CARD IS NEVER CLAIMED BY THE MIND WHOSE WORK IT JUDGES (card 0174211f),
                 // unless her room declares `self: true`: compared as minds, never as raw ids.
                 let judged = crate::cognition::review_verdict::judged_submission(card, &board.cards)
@@ -75,6 +84,8 @@ impl ActionCommand for WorkClaim {
                         return Err(super::refused(refusal));
                     }
                 }
+=======
+>>>>>>> origin/main
                 match work_preconditions::decide(work_preconditions::claim(card, airc.peer_id(), now_ms), card, airc.peer_id(), now_ms) {
                     Ok(work_preconditions::ClaimRoute::Takeover { from }) => continuum_base::probe!(
                         class = "work.claim.taken_over",
@@ -90,7 +101,11 @@ impl ActionCommand for WorkClaim {
                 }
             }
         }
+<<<<<<< HEAD
         let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS); // unwrap_or: an omitted ttl_ms is the declared default lease, the param's documented meaning
+=======
+        let ttl_ms = p.ttl_ms.unwrap_or(DEFAULT_CLAIM_TTL_MS);
+>>>>>>> origin/main
         let origin = p.origin.into();
         let mut claim_attempt = airc
             .claim_work_card_with_origin(ClaimWorkCard { card_id, ttl_ms }, origin)
@@ -131,7 +146,11 @@ impl ActionCommand for WorkClaim {
                     .caller
                     .as_ref()
                     .map(|c| short8(c.peer_id.as_uuid()))
+<<<<<<< HEAD
                     .unwrap_or_else(|| "-".to_string()); // unwrap_or_else: a log label for an anonymous caller, never a decision
+=======
+                    .unwrap_or_else(|| "-".to_string());
+>>>>>>> origin/main
                 if let Ok(board) = airc
                     .work_board_complete(airc_lib::WORK_BOARD_PROJECTION_PAGE_SIZE)
                     .await

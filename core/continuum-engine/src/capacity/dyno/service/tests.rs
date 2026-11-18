@@ -120,7 +120,11 @@ mod interleavings {
     // waited since the first publication behind A's unresolved custody; the engine is replaced,
     // the fence frees the pool, and the next publication's feasible opportunity is B's (the oldest
     // waiter, and the pool now holds her need). The owner's fair state resets on a new incarnation
+<<<<<<< HEAD
     // (`DispatchState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
+=======
+    // (`FairGrantState` is rebuilt when `fair.engine != engine`), so admission restarts in demand
+>>>>>>> origin/main
     // order and A is granted first.
     #[test]
     #[ignore = "ONE-ACT 4: an engine replacement keeps the oldest waiter's place (fair state resets on a new incarnation)"]
@@ -134,6 +138,7 @@ mod interleavings {
         assert_clean(&world);
     }
 
+<<<<<<< HEAD
     // what this catches: an act rendered against a grant that is owed to a waiter. A's turn ends
     // with B waiting; her next act takes no hold on the grant she owes (it waits for a grant, nothing
     // is rendered against it), so the handoff begins at that act boundary and B is served.
@@ -146,10 +151,26 @@ mod interleavings {
         assert_eq!(world.phase(0), Phase::Idle, "her next act waits for a grant, holding none");
         let applied = world.apply(Step::Publish);
         assert_eq!(applied.tickets, vec![0], "the handoff begins at her act boundary");
+=======
+    // what this catches: a grant revoked between the quote and the reserve still dispatching. A's
+    // turn ends with B waiting; A renders her next act against the grant still published; the
+    // publication hands her grant off; her reserve is refused typed and nothing is sent.
+    #[test]
+    fn a_grant_revoked_during_the_quote_refuses_the_reserve() {
+        let mut world = two_on_a_small_pool();
+        run(&mut world, &[Step::Publish]);
+        run(&mut world, &turn(0));
+        run(&mut world, &[Step::Terminal(0), Step::Quote(0), Step::Publish]);
+        assert_eq!(world.published(0), 0, "her publication is retiring");
+        let applied = world.apply(Step::Reserve(0));
+        assert!(matches!(applied.refused, Some(ReserveRefused::Changed { current: None, .. } | ReserveRefused::Retiring { .. })), "{:?}", applied.refused);
+        assert_eq!(world.phase(0), Phase::Idle);
+>>>>>>> origin/main
         run(&mut world, &[Step::Reclaimed(0), Step::Publish]);
         assert_eq!(world.published(1), 60, "the waiter is served once the cells are physically reclaimed");
         assert_clean(&world);
     }
+<<<<<<< HEAD
 
     // what this catches (the M5, d6c0dd892, 2026-11-14 09:38:36Z): Atlas served a turn, rendered her
     // next act against her grant and waited for a lane; the next publication handed that grant off
@@ -221,6 +242,8 @@ mod simultaneous {
         assert_eq!(world.published(1), 60, "B, ready, takes the cells A is not using\n{}", world.log.join("\n"));
         assert_clean(&world);
     }
+=======
+>>>>>>> origin/main
 }
 
 mod generated {
@@ -280,9 +303,13 @@ mod generated {
     #[test]
     fn seeded_schedules_keep_every_invariant_on_one_engine() {
         if let Some((seed, steps, found)) = shortest_failure(0..300, false) {
+<<<<<<< HEAD
             let mut world = World::new(100, 100, &[("A", 60), ("B", 40), ("C", 30)]);
             run(&mut world, &steps);
             panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}\n{}", world.log.join("\n"));
+=======
+            panic!("seed {seed}: shortest failing schedule {steps:?}\nviolations {found:?}");
+>>>>>>> origin/main
         }
     }
 

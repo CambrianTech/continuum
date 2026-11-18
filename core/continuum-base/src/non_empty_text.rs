@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+<<<<<<< HEAD
 /// Non-blank text: at least one character that is not whitespace. Serialized as the text itself, borrowed (never
 /// copied to serialize); validated where it is parsed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Deserialize)]
@@ -18,6 +19,13 @@ impl Serialize for NonEmptyText {
     }
 }
 
+=======
+/// Non-blank text: at least one character that is not whitespace. Serialized as the text itself.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct NonEmptyText(String);
+
+>>>>>>> origin/main
 /// The text was empty or only whitespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlankText;

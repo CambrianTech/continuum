@@ -20,7 +20,11 @@ fn saved(handle: &str) -> crate::ai::types::ResultCustody {
 /// Record `text` as a saved receipt with no typed acts: the shape a settlement collapse
 /// acts on. An unsaved receipt never collapses.
 fn record_saved(wm: &WorkingMemory, text: &str) {
+<<<<<<< HEAD
     wm.record_receipt_typed(&[], text, None, saved("a1b2c3d4e5f60718"));
+=======
+    wm.record_receipt_typed(&[], text, None, saved("ring-test"));
+>>>>>>> origin/main
 }
 
 /// A test body's size in bytes: big enough that a shed below a few of them is visible. The

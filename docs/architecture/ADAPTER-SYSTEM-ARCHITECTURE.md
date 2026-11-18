@@ -5,7 +5,11 @@
 **Companion to:**
 - [MODULE-ARCHITECTURE.md](MODULE-ARCHITECTURE.md) — everything is a module, everything to a module is a command; §9 (Pure-Rust built-ins vs WASM shipped modules) is the distribution half of this story.
 - [../UNIVERSAL-PRIMITIVES.md](../UNIVERSAL-PRIMITIVES.md) — `Commands.execute` / `Events` — the two primitives every modality calls by name.
+<<<<<<< HEAD
 - [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the RTOS-style core every Rust module inherits.
+=======
+- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the RTOS-style core every Rust module inherits.
+>>>>>>> origin/main
 - [ADAPTER-MARKETPLACE.md](ADAPTER-MARKETPLACE.md) / [CHANNEL-ADAPTER-INTEGRATION.md](CHANNEL-ADAPTER-INTEGRATION.md) — adapters as *shipped artifacts* and adapters *inside* cognition, respectively. This doc is the boundary/SDK doctrine that sits under both.
 
 **Audience.** Any human or AI agent authoring an SDK, a client, a language binding, a modality, or proposing a new boundary. Read this first; do not hand-roll a parallel boundary.

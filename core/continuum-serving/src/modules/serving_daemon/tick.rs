@@ -64,7 +64,10 @@ impl ServiceModule for ServingDaemonModule {
         // than waiting a full tick interval. The reconcile runs detached.
         self.recompute();
         self.seed_reconcile_pages().await;
+<<<<<<< HEAD
         self.observe_host_settle().await;
+=======
+>>>>>>> origin/main
         let _ = self.reconcile_to_plan();
         Ok(())
     }
@@ -83,7 +86,10 @@ impl ServiceModule for ServingDaemonModule {
         // full tick behind the very guard it exists to defeat.
         self.take_reported_wedge();
         self.seed_reconcile_pages().await;
+<<<<<<< HEAD
         self.observe_host_settle().await;
+=======
+>>>>>>> origin/main
         let _ = self.reconcile_to_plan();
         self.publish_grants();
         // Liveness heartbeat (#175 self-heal): on a slow cadence, re-verify that the lane

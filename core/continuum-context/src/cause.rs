@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 //! What each element she perceives follows from (CONTINUUM-ENGINE.md, "causality is
+=======
+//! What each element she perceives follows from (MIND-CONTEXT-AND-ENGINE-CONFIG.md, "causality is
+>>>>>>> origin/main
 //! in the type"). Every element is one occurrence in a causal chain: an act and its result, a
 //! message and its reply, a move and the position after it. The view keeps chains whole at their
 //! heads, folds a chain without breaking it, and renders an element only with its cause
@@ -21,12 +25,15 @@ impl ElementId {
         self.0
     }
 
+<<<<<<< HEAD
     /// The id as an item's key ([`crate::source::Item::occurrence`]): one rendering, so an item
     /// about nothing but its own occurrence carries no second identity beside it.
     pub fn key(self) -> String {
         format!("{:032x}", self.0)
     }
 
+=======
+>>>>>>> origin/main
     /// The id named by a producer's stable identity, given as its parts (whose, which producer,
     /// the producer's own id for it): the first 128 bits of their SHA-256. One derivation, so two
     /// producers never disagree about how an identity becomes an id. Each part is length-prefixed,
@@ -52,7 +59,11 @@ fn length_prefixed_digest<'a>(parts: impl IntoIterator<Item = &'a [u8]>) -> [u8;
     hasher.finalize().into()
 }
 
+<<<<<<< HEAD
 /// What an act asked for (CONTINUUM-ENGINE section 5 invariant 4): its calls in order, each the verb and its
+=======
+/// What an act asked for (MIND-CONTEXT invariant 4): its calls in order, each the verb and its
+>>>>>>> origin/main
 /// arguments as the tool saw them (`ToolCall::canonical_input`). No argument is excluded here;
 /// an exclusion is named only by the tool's own schema. Two acts with equal fingerprints asked
 /// the same thing; whether the outcome was unchanged is the producer's evidence, never this.

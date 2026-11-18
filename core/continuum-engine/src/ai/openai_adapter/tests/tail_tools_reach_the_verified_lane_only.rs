@@ -78,7 +78,11 @@ fn a_route_that_moves_between_selection_and_send_refuses_the_tail_never_drops_it
         },
     };
     let request = TextGenerationRequest {
+<<<<<<< HEAD
         tools: Some(vec![spec("commands_help")].into()),
+=======
+        tools: Some(vec![spec("commands_help")]),
+>>>>>>> origin/main
         tail_tools: Some(vec![spec("code_git_apply")]),
         ..Default::default()
     };

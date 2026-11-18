@@ -45,6 +45,7 @@ pub struct SubmissionChanges {
     /// rather than shown nothing.
     pub files: Result<Vec<ChangedFile>, ChangesUnread>,
     pub verdict: Option<SubmissionVerdict>,
+<<<<<<< HEAD
     /// Where her card's checkout stands against this submission.
     pub revision: Revision,
 }
@@ -60,6 +61,8 @@ pub enum Revision {
     Unsubmitted { head: String },
     /// Her checkout's head could not be read (no checkout on this node, or git refused).
     Unread,
+=======
+>>>>>>> origin/main
 }
 
 /// One file a submission changes. `added`/`deleted` are `None` for a binary file.

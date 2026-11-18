@@ -24,16 +24,22 @@ pub enum ClientError {
     /// `genome/job-status`'s HistoryIncomplete/HistoryCorrupt lost their continuation
     /// offset and malformed count at this boundary and arrived as prose). `None` when
     /// the refusal was a transport or gate string with nothing structured behind it.
+<<<<<<< HEAD
     ///
     /// `refusal` is the command's refusal with its next moves, typed, when it built one: the
     /// commands a caller (a mind's hands) admits for her next call, never read out of `reason`.
     /// `None` from a transport that does not carry it yet (the grid's `AircCommandResponse`).
+=======
+>>>>>>> origin/main
     #[error("substrate refused command `{command}`: {reason}")]
     Refused {
         command: String,
         reason: String,
         outcome: Option<serde_json::Value>,
+<<<<<<< HEAD
         refusal: Option<Box<continuum_airc_protocol::CommandRefusal>>,
+=======
+>>>>>>> origin/main
     },
 
     /// Serialization or deserialization of params/result failed at the

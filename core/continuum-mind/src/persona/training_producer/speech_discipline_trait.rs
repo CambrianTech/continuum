@@ -151,7 +151,11 @@ pub(super) async fn submit_plan(
                 domain = %plan.trait_kind,
                 quality = plan.quality as f64,
                 provenance = provenance,
+<<<<<<< HEAD
                 outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"), // unwrap_or: a probe field; a receipt without an outcome is logged as unspecified
+=======
+                outcome = %receipt.outcome.as_deref().unwrap_or("unspecified"),
+>>>>>>> origin/main
                 // THE JOIN KEY, not a count. Without it this probe says an example
                 // was accepted but not WHICH submission it became, so a room turn
                 // cannot be joined to `training_trigger_submissions` or to dispatch
@@ -379,7 +383,11 @@ pub(super) async fn read_lived(
             (calls, true)
         }
         _ => {
+<<<<<<< HEAD
             let reason = missing.unwrap_or_else(|| "the turn has no served call".into()); // unwrap_or_else: no missing piece named means the turn served no call at all
+=======
+            let reason = missing.unwrap_or_else(|| "the turn has no served call".into());
+>>>>>>> origin/main
             continuum_base::probe!(
                 class = "training.credit.lived_unavailable",
                 persona = %persona_name,
@@ -503,7 +511,10 @@ pub fn storage_ok(
     Err(ClientError::Refused {
         command: command.to_string(),
         outcome: None,
+<<<<<<< HEAD
         refusal: None,
+=======
+>>>>>>> origin/main
         reason: format!(
             "`{collection}`: {}",
             decoded
@@ -511,7 +522,11 @@ pub fn storage_ok(
                 .as_deref()
                 // An unsuccessful result with no message is still a failure. Saying so
                 // beats inventing a reason or, worse, reading the silence as success.
+<<<<<<< HEAD
                 .unwrap_or("reported success=false with no error message"), // unwrap_or: the failure stands with or without its message
+=======
+                .unwrap_or("reported success=false with no error message"),
+>>>>>>> origin/main
         ),
     })
 }

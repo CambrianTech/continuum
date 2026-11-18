@@ -2,14 +2,22 @@ use super::*;
 
 impl WorkCreate {
     /// The card lands on the NAMED room's board under the caller's own airc identity.
+<<<<<<< HEAD
     /// A repeat of a card she already filed returns that card (`create_once`), never a second.
     pub(super) async fn create(airc: &Airc, p: WorkCreateParams) -> Result<(WorkCreateResult, super::work_create_command::Filed), CommandError> {
+=======
+    pub(super) async fn create(airc: &Airc, p: WorkCreateParams) -> Result<WorkCreateResult, CommandError> {
+>>>>>>> origin/main
         // A blank room would reach resolve_room as "unnamed" and land in the current room,
         // the very default this field exists to refuse (Codex on #4550). Resolved FIRST:
         // the room is the second thing that can say which repo (below).
         if p.room.trim().is_empty() {
             return Err(CommandError::Invalid(
+<<<<<<< HEAD
                 "room is required: name the activity room whose board gets the card"
+=======
+                "work/create: room is required: name the activity room whose board gets the card"
+>>>>>>> origin/main
                     .into(),
             ));
         }
@@ -23,7 +31,11 @@ impl WorkCreate {
         let repo = match p.repo.as_deref().map(str::trim) {
             Some("") => {
                 return Err(CommandError::Invalid(
+<<<<<<< HEAD
                     "repo is blank: name it (owner/name) or omit it to use the \
+=======
+                    "work/create: repo is blank: name it (owner/name) or omit it to use the \
+>>>>>>> origin/main
                      card you hold or the room's declared repo"
                         .into(),
                 ))
@@ -52,6 +64,7 @@ impl WorkCreate {
             Priority::from(p.priority.unwrap_or(CardPriority::P2)), // unwrap_or: the documented default
         );
         req.body = p.body;
+<<<<<<< HEAD
         let text = super::work_similar::title_and_body(&req.title, req.body.as_deref());
         let made = crate::persona::work_board::create_once::create_once(airc, &room, crate::persona::work_board::create_once::NewCard::Filed(req))
             .await
@@ -64,6 +77,16 @@ impl WorkCreate {
             WorkCreateResult { card_id: card_id.as_uuid().to_string(), outcome, similar: Vec::new() },
             super::work_create_command::Filed { text, board: made.board },
         ))
+=======
+        let card_id = airc
+            .create_work_card_in(&room, req)
+            .await
+            .map_err(|e| CommandError::Internal(e.to_string()))?;
+        crate::persona::work_board::board_index::wrote(&airc, &room);
+        Ok(WorkCreateResult {
+            card_id: card_id.as_uuid().to_string(),
+        })
+>>>>>>> origin/main
     }
 }
 
@@ -92,6 +115,10 @@ pub struct WorkReleaseResult {
 #[async_trait]
 impl ActionCommand for WorkRelease {
     const NAME: &'static str = "work/release";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::Release.aliases();
+>>>>>>> origin/main
     // core room workflow — HANDING BACK. Without it a citizen who realizes a card is
     // not hers has only one exit: hold it until the lease lapses. (#339)
     const NATIVE: bool = true;
@@ -181,6 +208,10 @@ pub struct WorkStateResult {
 #[async_trait]
 impl ActionCommand for WorkState {
     const NAME: &'static str = "work/state";
+<<<<<<< HEAD
+=======
+    const ALIASES: &'static [&'static str] = crate::cognition::work_preconditions::WorkVerb::State.aliases();
+>>>>>>> origin/main
     // core room workflow — SAYING DONE. This is the missing half of #339: citizens were
     // offered claim/list/get and NOTHING that writes a card's lifecycle back, so every
     // claim could only end in a lapsed lease and a completed card was indistinguishable
@@ -240,6 +271,7 @@ impl ActionCommand for WorkState {
                 "another's card taken over on the record before its column moved"
             );
         }
+<<<<<<< HEAD
         if route == work_preconditions::StateRoute::ReviseOwnSubmission {
             // Her own reviewed work, nobody holding it: reopened by its state first (airc reopens
             // settled work by a transition, never a claim), then held through the one claim path,
@@ -259,6 +291,8 @@ impl ActionCommand for WorkState {
             );
             return Ok(WorkStateResult { card_id: p.card_id, state: state_str(&CardState::InProgress).to_string() });
         }
+=======
+>>>>>>> origin/main
         if route == work_preconditions::StateRoute::ThroughClaim {
             let claim = WorkClaim {
                 registry: self.registry.clone(),

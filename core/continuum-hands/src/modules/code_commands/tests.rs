@@ -131,6 +131,7 @@
     use crate::sdk_codegen::{AccessLevel, Ctx};
     use dashmap::DashMap;
 
+<<<<<<< HEAD
     // what this catches (cards c8546b52, 566e390e): her shell, her file verbs and her git standing
     // in different checkouts. Atlas's shell stood in her card's worktree while read_file read her
     // home workspace, and Aris's relative edit and code/list missed a file she had just read in
@@ -214,6 +215,8 @@
     }
 
 
+=======
+>>>>>>> origin/main
     fn edit_call(v: serde_json::Value) -> Result<CodeEditParams, crate::sdk_codegen::ArgumentsRefusal> {
         crate::runtime::CommandRequest::<CodeEditParams>::decode(&v).map(|req| req.params)
     }
@@ -332,7 +335,10 @@
                     (None, Some("string")) => serde_json::json!("x"),
                     (None, Some("integer")) => serde_json::json!(1),
                     (None, Some("boolean")) => serde_json::json!(false),
+<<<<<<< HEAD
                     (None, Some("array")) => serde_json::json!([]), // Batch's `edits`: an empty batch parses
+=======
+>>>>>>> origin/main
                     other => panic!("an edit field of a type this test does not build: {other:?}"),
                 };
                 op.insert(field.to_string(), value);

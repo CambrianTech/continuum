@@ -518,9 +518,12 @@ impl AIProviderAdapter for PlacementSwitch {
     fn warm_ahead(&self, page: crate::inference::slots::PageKey) {
         self.current().warm_ahead(page)
     }
+<<<<<<< HEAD
     fn prompt_cache(&self) -> crate::ai::adapter::PromptCache {
         self.current().prompt_cache()
     }
+=======
+>>>>>>> origin/main
     fn capacity_changed(
         &self,
         observed: Option<u32>,

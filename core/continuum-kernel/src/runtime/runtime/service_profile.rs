@@ -166,6 +166,7 @@ pub struct ShutdownReceipt {
     pub modules: Vec<ModuleStop>,
     #[ts(type = "number")]
     pub total_ms: u64,
+<<<<<<< HEAD
     // What each stop-settle participant left in custody, per process it covers.
     pub custody: Vec<SettledCustody>,
 }
@@ -257,6 +258,11 @@ impl ShutdownReceipt {
             .reduce(CustodyState::combine)
     }
 
+=======
+}
+
+impl ShutdownReceipt {
+>>>>>>> origin/main
     /// Modules whose durable state did NOT reach disk intact. Empty is the only value
     /// that justifies reporting a clean stop.
     pub fn unsaved(&self) -> Vec<&ModuleStop> {
@@ -268,6 +274,7 @@ impl ShutdownReceipt {
 
     /// Every module drained, saved, and completed its final shutdown flush.
     pub fn state_is_durable(&self) -> bool {
+<<<<<<< HEAD
         self.unsaved().is_empty() && self.retained().is_empty()
     }
 
@@ -275,19 +282,27 @@ impl ShutdownReceipt {
     /// that only the live process still holds (CONTINUUM-ENGINE 4.9, I1; Codex on #6042).
     pub fn retained(&self) -> Vec<&SettledCustody> {
         self.custody.iter().filter(|c| !c.state.ends_safely()).collect()
+=======
+        self.unsaved().is_empty()
+>>>>>>> origin/main
     }
 
     /// One line a human can act on, without reading the process's log after it exited.
     pub fn summary(&self) -> String {
         let unsaved = self.unsaved();
+<<<<<<< HEAD
         let retained = self.retained();
         if unsaved.is_empty() && retained.is_empty() {
+=======
+        if unsaved.is_empty() {
+>>>>>>> origin/main
             return format!(
                 "{} modules stopped, all state durable, {}ms",
                 self.modules.len(),
                 self.total_ms
             );
         }
+<<<<<<< HEAD
         let mut lines: Vec<String> = Vec::new();
         if !unsaved.is_empty() {
             let names: Vec<String> = unsaved
@@ -307,6 +322,18 @@ impl ShutdownReceipt {
             lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
         }
         lines.join("; ")
+=======
+        let names: Vec<String> = unsaved
+            .iter()
+            .map(|m| format!("{} (drain {:?}, save {:?})", m.module, m.drain, m.outcome))
+            .collect();
+        format!(
+            "{} of {} modules did NOT save: {}",
+            unsaved.len(),
+            self.modules.len(),
+            names.join(", ")
+        )
+>>>>>>> origin/main
     }
 }
 
@@ -346,6 +373,7 @@ impl ShutdownOperation {
     /// FIRST caller's settle applies, as only its broadcast runs.
     pub(super) fn begin(
         &self,
+<<<<<<< HEAD
         rt: &Arc<Runtime>,
         settle: std::time::Duration,
     ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
@@ -374,6 +402,46 @@ impl ShutdownOperation {
                 // changes.
                 let _ = tx.send_replace(Some(receipt));
             });
+=======
+        rt: Option<Arc<Runtime>>,
+        settle: std::time::Duration,
+    ) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+        if !self.started.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            match rt {
+                Some(rt) => {
+                    let tx = self.result.clone();
+                    // Detached ON PURPOSE: this is the task whose whole point is that no
+                    // connection owns it. A socket handler is cancelled when its client
+                    // goes away, and a shutdown cancelled after ingress closed leaves the
+                    // node refusing work with nothing saved.
+                    tokio::spawn(async move {
+                        // In THIS task, never a connection's: the settle closes the turn
+                        // door, and a door closed by a handler whose client went away
+                        // would leave every citizen refusing work with no stop behind it.
+                        if !settle.is_zero() {
+                            crate::runtime::extensions::settle_before_stop(settle).await;
+                        }
+                        let receipt = rt.shutdown().await;
+                        // send_replace, NEVER send: `send` returns Err and DROPS the value
+                        // when the last receiver has gone — and the receiver that goes
+                        // away is the disconnecting CLI, so `send` loses the terminal
+                        // receipt in precisely the case this design exists for. A later
+                        // subscriber would then wait forever on a `None` that never
+                        // changes.
+                        let _ = tx.send_replace(Some(receipt));
+                    });
+                }
+                None => {
+                    // No runtime: nothing to save AND nothing that could have saved.
+                    // Publishing an empty receipt says exactly that, rather than leaving
+                    // every observer waiting on a broadcast that will never run.
+                    let _ = self.result.send_replace(Some(ShutdownReceipt {
+                        modules: Vec::new(),
+                        total_ms: 0,
+                    }));
+                }
+            }
+>>>>>>> origin/main
         }
         self.result.subscribe()
     }
@@ -396,8 +464,13 @@ pub(super) fn process_shutdown() -> &'static ShutdownOperation {
 ///
 /// Delegates to the process's single [`ShutdownOperation`]. See that type for why the
 /// operation is owned rather than free-standing.
+<<<<<<< HEAD
 pub fn begin_shutdown(rt: &Arc<Runtime>, settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
     process_shutdown().begin(rt, settle)
+=======
+pub fn begin_shutdown(settle: std::time::Duration) -> tokio::sync::watch::Receiver<Option<ShutdownReceipt>> {
+    process_shutdown().begin(signal_runtime(), settle)
+>>>>>>> origin/main
 }
 
 /// Observe the retained terminal receipt without starting a shutdown.
@@ -438,6 +511,7 @@ pub async fn await_shutdown(
     }
 }
 
+<<<<<<< HEAD
 /// Shutdown cannot begin before the process has installed its runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("runtime is not installed; shutdown cannot establish durable state")]
@@ -447,6 +521,13 @@ pub struct ShutdownUnavailable;
 /// either caller can start the retained operation. Absence creates no receipt.
 pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
     SIGNAL_RUNTIME.get().cloned().ok_or(ShutdownUnavailable)
+=======
+/// The runtime the signal handlers stop, for callers that need the SAME one — the
+/// resident `system/shutdown` verb runs the identical broadcast, so it must not reach
+/// for a second registry. One runtime, one stop path, two triggers.
+pub fn signal_runtime() -> Option<Arc<Runtime>> {
+    SIGNAL_RUNTIME.get().cloned()
+>>>>>>> origin/main
 }
 
 pub async fn run_signal_shutdown() {
@@ -456,6 +537,7 @@ pub async fn run_signal_shutdown() {
     // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
     // and a tighter cap here would cut off the save phase on any node slow enough to
     // need it.
+<<<<<<< HEAD
     // No time for turns: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
     // console close), not ours to spend waiting on them. The settle participants still run
     // (`ShutdownOperation::begin`): the page checkpoint ends on its own events.
@@ -467,6 +549,11 @@ pub async fn run_signal_shutdown() {
         }
     };
     let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
+=======
+    // No settle: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
+    // console close), not ours to spend waiting on turns.
+    let rx = begin_shutdown(std::time::Duration::ZERO);
+>>>>>>> origin/main
     match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
         Some(receipt) => {
             // A signal handler cannot return an exit code to anyone, so the receipt's only
@@ -480,6 +567,7 @@ pub async fn run_signal_shutdown() {
             }
         }
         None => {
+<<<<<<< HEAD
             // Name the step that never completed (card b5b9bef3): a SIGTERM that joins a stop
             // already stalled in a settle participant (the M5's page checkpoint, 2026-11-14) must
             // say so, not only that the save is unknown.
@@ -489,6 +577,10 @@ pub async fn run_signal_shutdown() {
             };
             eprintln!(
                 "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
+=======
+            eprintln!(
+                "[continuum-core] shutdown did not finish within 8s — state durability is UNKNOWN"
+>>>>>>> origin/main
             );
         }
     }

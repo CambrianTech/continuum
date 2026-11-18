@@ -140,7 +140,11 @@ impl ActionCommand for WorkSubmit {
             // nothing behind it published a submission no reviewer could read (card e1babb61).
             crate::media::artifact::read_text_blob(&artifact).map_err(|why| {
                 CommandError::Invalid(format!(
+<<<<<<< HEAD
                     "the artifact you typed has no retained bytes ({why}); submit again without `artifact`: the patch is derived from your checkout and kept"
+=======
+                    "the artifact you typed has no retained bytes ({why}); omit `artifact` and work/submit derives the patch from your checkout and keeps it"
+>>>>>>> origin/main
                 ))
             })?;
         }
@@ -178,14 +182,22 @@ impl ActionCommand for WorkSubmit {
             // information (Benchy, the M5 2026-11-04: 5 refused submits). A changed patch, or the
             // same patch on a new base, is a new submission and publishes below.
             if let Some(existing) = same_submission(earlier, &this).and_then(|id| card.submissions.iter().find(|s| s.submission_id.as_uuid() == id)) {
+<<<<<<< HEAD
                 let state = review_state(&board, existing, &crate::persona::work_board::review::room_policy(airc, &room).await.counted());
+=======
+                let outcomes: Vec<_> = board.submission_reviews_for(existing.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
+>>>>>>> origin/main
                 // The same patch again is how she retries a pull request that did not go up: it is
                 // ensured here too, at the submitted head.
                 let landing = super::card_pull_request::land_submission(airc, &room, card, super::card_pull_request::Submitted {
                     checkout: checkout.as_deref(), head: &existing.head, submission: existing.submission_id.as_uuid(), patch_hash: existing.artifact.hash.to_string(),
                 }, bench, ctx).await;
                 let linked = landing.as_ref().and_then(|l| l.as_ref().ok()).map(|e| e.pull_request.clone()).or_else(|| card.pull_request.clone());
+<<<<<<< HEAD
                 let mut result = already_submitted(existing, room.channel.as_uuid(), state, bench, linked.as_ref());
+=======
+                let mut result = already_submitted(existing, room.channel.as_uuid(), &outcomes, bench, linked.as_ref());
+>>>>>>> origin/main
                 result.next = super::card_pull_request::with_pull_request(result.next, landing.as_ref());
                 return Ok(result);
             }
@@ -327,9 +339,13 @@ impl ActionCommand for WorkSubmit {
         });
         // Guidance reflects this command's board snapshot. A concurrently
         // arriving verdict appears on the next work/get or work/submission read.
+<<<<<<< HEAD
         // A retry under the same id publishes the submission the board already holds, verdicts and
         // all: its state is derived like every other read's.
         let state = review_state(&board, &published, &crate::persona::work_board::review::room_policy(airc, &room).await.counted());
+=======
+        let outcomes: Vec<_> = board.submission_reviews_for(published.submission_id).filter(|review| review.card_id == card_id).map(|review| review.outcome).collect();
+>>>>>>> origin/main
         Ok(WorkSubmitResult {
             outcome: SubmitOutcome::Published,
             submission_id: published.submission_id.as_uuid(),
@@ -338,14 +354,21 @@ impl ActionCommand for WorkSubmit {
             publisher: published.publisher.as_uuid(),
             claim_id: published.claim_id.as_uuid(),
             base_sha: published.base_sha.to_string(),
+<<<<<<< HEAD
             head: published.head.commit().map(ToString::to_string),
+=======
+>>>>>>> origin/main
             instance: published.instance.clone(),
             artifact: (&published.artifact).into(),
             submitted_at_ms: published.submitted_at_ms,
             bound_staged_revision_id,
             next: match handoff {
                 Ok(review) => super::card_pull_request::with_pull_request(
+<<<<<<< HEAD
                     next_after_submission(Some(published.submission_id.as_uuid()), state, bench, review, linked.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+=======
+                    next_after_submission(Some(published.submission_id.as_uuid()), &outcomes, bench, review, linked.as_ref()).unwrap_or_default(), // unwrap_or_default: Some(..) in, so always Some
+>>>>>>> origin/main
                     landing.as_ref(),
                 ),
                 Err(error) => format!("Submission {} is retained, but review handoff failed: {error}. Retry work/submit with this same submission_id; do not create a new candidate to retry handoff.", published.submission_id),
@@ -443,10 +466,13 @@ pub struct WorkReviewParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub evidence: Option<WorkArtifactReference>,
+<<<<<<< HEAD
     /// Required to pass: the commit you ran the checks at; must be the submission's head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub verified_head: Option<String>,
+=======
+>>>>>>> origin/main
 }
 
 #[derive(Debug, Clone, Serialize, TS)]
@@ -572,6 +598,7 @@ impl ActionCommand for WorkReview {
                 return Err(submission_refused(SubmissionRefusal::Unread(unread), &p.submission_id, review_card.card_id, review_card, airc.peer_id(), now_ms))
             }
         };
+<<<<<<< HEAD
         // THE AUTHOR'S MIND NEVER JUDGES HER OWN WORK unless the room declares `self: true`
         // (cards fa4aaaaa, 0174211f): compared as minds through the identity owner, never as raw
         // ids. A room declaring no policy admitted it, and Aiko passed her own submissions twice
@@ -598,10 +625,21 @@ impl ActionCommand for WorkReview {
             ),
             ReviewOutcome::Failed | ReviewOutcome::Unknown => None,
         };
+=======
+        // SELF-REVIEW IS THE ROOM'S CALL (card fa4aaaaa). The author reviewing her own
+        // submission is admitted only where the room's policy says `self`; a room that
+        // declares no policy keeps today's behaviour. Refused up front, by name, rather
+        // than counted as nothing after the fact.
+        if submission.publisher == airc.peer_id() {
+            let policy = crate::persona::work_board::review::room_policy(airc, &room).await;
+            own_review_publishable(&policy, &card_id)?;
+        }
+>>>>>>> origin/main
         let artifact = match p.artifact.clone() {
             Some(a) => a.into_artifact()?,
             None => submission.artifact.clone(),
         };
+<<<<<<< HEAD
         // The verified head leads her evidence words, rendered from the typed value, so every reader
         // of the signed record sees which commit the pass covers.
         let evidence_text = match (&verified, p.evidence_text.as_deref()) {
@@ -609,6 +647,9 @@ impl ActionCommand for WorkReview {
             (_, text) => text.map(str::to_string),
         };
         let evidence = match (p.evidence.clone(), evidence_text.as_deref()) {
+=======
+        let evidence = match (p.evidence.clone(), p.evidence_text.as_deref()) {
+>>>>>>> origin/main
             (Some(e), _) => e.into_artifact()?,
             (None, Some(text)) if !text.trim().is_empty() => artifact_of_text(text).into_artifact()?,
             _ => {
@@ -645,7 +686,11 @@ impl ActionCommand for WorkReview {
                     review_claim_id,
                     outcome: p.outcome.into(),
                     evidence,
+<<<<<<< HEAD
                     evidence_text,
+=======
+                    evidence_text: p.evidence_text.clone(),
+>>>>>>> origin/main
                 },
             )
             .await
@@ -692,6 +737,33 @@ enum CreditSelection<'p> {
     Revision(Uuid),
 }
 
+<<<<<<< HEAD
+=======
+/// May the author PUBLISH a review of her own submission, given the ONE policy read the
+/// command took? A declared `self: false` refuses; a policy that could not be read refuses
+/// (it was admitted on a read failure); a room that declares none keeps today's behaviour.
+/// Whether that review then earns credit is the exact path's `SelfReview`, a different question.
+pub(super) fn own_review_publishable(
+    policy: &crate::persona::work_board::review::PolicyRead,
+    card_id: &WorkCardId,
+) -> Result<(), CommandError> {
+    use crate::persona::work_board::review::PolicyRead;
+    match policy {
+        PolicyRead::Absent => Ok(()),
+        PolicyRead::Declared(policy) if policy.self_review => Ok(()),
+        PolicyRead::Declared(_) => Err(CommandError::Invalid(format!(
+            "this room's review policy does not admit the author's own review (review.self is false): \
+             a member other than you reviews card {card_id}. A room can allow it: \
+             activity/spawn --params '{{\"review\":{{\"self\":true}}}}'."
+        ))),
+        PolicyRead::Unavailable(why) => Err(CommandError::Invalid(format!(
+            "this room's review policy could not be read ({why}), so your own review of card {card_id} \
+             cannot be admitted now: retry, or have a member other than you review it."
+        ))),
+    }
+}
+
+>>>>>>> origin/main
 pub struct WorkSubmission {
     pub registry: PersonaAircRuntimeRegistry,
     pub executor_slot: Arc<LateBound<CommandExecutor>>,

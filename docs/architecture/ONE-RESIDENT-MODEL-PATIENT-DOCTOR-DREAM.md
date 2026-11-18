@@ -68,7 +68,11 @@ Two facts of the engine that decide the design below:
 - **Patient** = base + her *stable* adapter set, on her slot.
 - **Doctor** = base + the teacher set (or base alone), on the doctor's slot. Same weights, so the doctor's numerics ARE the patient's numerics: what the doctor demonstrates is exactly reproducible by her.
 - **Coursework** = turns in a room where the doctor and the patient alternate on their own slots: a lesson is the doctor demonstrating and the patient attempting; an exam is the patient attempting and the world grading (tests). No adapter flips on a slot, so no prefix is lost.
+<<<<<<< HEAD
 - **Dream** = the DREAM stage runs optimizer steps on her **shadow** adapter (a small trainable layer over her frozen stable stack, never a copy of it; see §9.6 P3) against batches drawn from her ledger, the coursework transcript, and shared lessons — on the same loaded base, in the idle gaps the governor grants. Her stable set keeps serving. When the adoption gate passes, shadow and stable swap pointers between two decode steps.
+=======
+- **Dream** = the DREAM stage runs optimizer steps on her **shadow** adapter (a copy of her stable set) against batches drawn from her ledger, the coursework transcript, and shared lessons — on the same loaded base, in the idle gaps the governor grants. Her stable set keeps serving. When the adoption gate passes, shadow and stable swap pointers between two decode steps.
+>>>>>>> origin/main
 - **Drift** = the governor changing the stage mix (serve-only ⇄ serve+dream ⇄ dream-heavy) and the room changing what is in the batch. Entering dream costs one decode step; leaving it costs one decode step. There is no gap, so there is nothing to wake from.
 
 ### 2.1 Why shadow + stable (the two-adapter rule)
@@ -227,7 +231,11 @@ This revision follows Codex's and Cormac's reviews of the first draft (#4500): d
 |---|---|---|
 | **Owner** | Exactly one node holds a mind's learning for a `(persona, base)`: a claim that names the node. A non-owner never opens; arrivals route to the owner over airc. | grid claims / leases (the seat claim shape) |
 | **Session state** (per mind, small) | shadow adapter, optimizer moments and accumulator, RNG, step count, arrival and replay cursors. Bound to `(base revision + quant, stable adapter identity, rank/alpha/targets/top_layers)`: an `open` with different bindings refuses, or runs an explicit transition that starts from her stable gene. It never silently reuses state. | the job-dir layout, versioned |
+<<<<<<< HEAD
 | **Step context** | There is none, and there is no training slot. Training and inference are ONE batch through ONE graph (Joel, 2026-10-13: "You can't see training and inference as separate slots or it fails"). A sequence that is learning is a sequence in the serving ubatch whose tokens carry labels; it reads its slot's cached K/V like any serving row; the graph adds a loss and a backward over the labelled rows while the other rows produce their logits in the same pass. The optimizer update to the trainable top layer is a weight write between graphs. A separate slot, a scratch sequence, a step scheduled between decode batches, or a second context each fail the same way: one context runs one graph at a time, so a side step stalls every resident and repeats the forward serving already ran. (The 2026-09-28 draft said "one training context per lane"; corrected.) | the server's batch and `llama_batch`; the walk (`llama-walk.{h,cpp}`) as the planner of which chunk rides which ubatch |
+=======
+| **Step context** (per lane, large) | ONE training context per lane at the lane's served per-slot window, measured once and leased once (graph plus KV plus workspace). Each mind's state is swapped in for its step, the way a slot's KV is. N learning minds do not mean N graphs. | the resource ledger lease; `engine-footprints.json` keyed by the served window |
+>>>>>>> origin/main
 | **Arrival** | The served turn as served (messages, tools, `train:false` history), with a **durable experience id** and provenance (room, card, scenario/branch). It is accepted into the existing training-trigger acceptance journal: the ack is the journal cursor, so a retry after a lost response never trains twice. | the trigger journal (kept, never replaced by a volatile queue) |
 | **Step** | In the server loop, under the governor's budget: one micro-step for one mind, arrivals plus a recency-weighted replay draw. The window is the served window, and the COMPUTE is scheduled separately: a step is split into chunks whose measured worst-case non-preemptible time fits the latency line, with yields between chunks. No experience is dropped to meet the budget. The probe is `engine.dream.step {persona, step, loss, ms, max_chunk_ms, arrival_sources}`. | #28 pause/resume, holds (`hold_training_on`) |
 | **Snapshot** | At an optimizer boundary, an **immutable** GGUF-lora of the shadow, while the live shadow keeps stepping. A candidate gene is not a checkpoint. Its manifest records the arrival ids and source counts it consumed. | `adapter_manifest::register`, then `GeneTrials::open` (#4473-4476) |
@@ -250,6 +258,7 @@ Engine surface (fork): load or save a mind's session state into the lane's step 
 - The trigger bucket's dispatch threshold becomes the accumulation window of §8.1.
 - No window or sequence-length setting reaches the dream path.
 
+<<<<<<< HEAD
 ### 9.5 Status, measured 2026-10-13
 
 - The exact walk is exact on dense and hybrid models: cosine 1.0000 against one graph on qwen3.5-4b (hybrid) and qwen2.5-0.5b, M5 Metal (fork 4da182d9a, 2026-10-11T23:58Z; the GPU-race fix). CUDA is unmeasured: the 5090 run of the same test at 2394a4ca7 vs 4da182d9a is still owed (BigMama).
@@ -297,6 +306,14 @@ Each step lands with its gate measured on the fleet, with a build SHA and a time
 | optimizer moments m, v | F32, two per parameter (`ggml-opt.cpp:677-678`) | 8-bit |
 
 Known gaps, carded with owners rather than hidden: Ornith-1.5-35B and every MoE base cannot train (no `MUL_MAT_ID` backward in `ggml_compute_backward`, so no gradient crosses an expert layer; Fable takes CPU + Metal, CUDA proposed to BigMama); mamba-family bases cannot train (no `SSM_SCAN` backward in ggml); `llama-kv-cache-dsv4.cpp` carries a fifth rollback implementation outside `rs_keep`; per-sequence adapter lists in one decode batch (SGMV-style) are needed before many personas on one base share throughput.
+=======
+### 9.5 Gates (in order)
+
+1. On the 5090, the lane's step context opens at the served window (~61k) on Qwen3.8-27B with top_layers 8, its measured graph plus KV plus workspace fits the lease, and the worst chunk is measured. If it does not fit, the answer is depth, recompute, or smaller chunks, never a smaller window.
+2. Two minds' states swap through the one context while residents keep turning, and the directed wait stays flat.
+3. A snapshot opens a gene trial with no relaunch, and her next cards draw arms.
+4. A deploy seam: checkpoints are written, the next core resumes them at their step counts, and a format mismatch opens from the stable gene.
+>>>>>>> origin/main
 
 ## 10. Coursework is a room, not a runner (mapped 2026-09-28)
 

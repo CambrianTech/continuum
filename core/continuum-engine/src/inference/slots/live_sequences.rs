@@ -37,6 +37,7 @@ pub enum SequenceBasis {
     Cold,
 }
 
+<<<<<<< HEAD
 /// A mind's sequence in a slot, as [`LiveSequences::held`] reports it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum HeldSequence {
@@ -46,6 +47,8 @@ pub(super) enum HeldSequence {
     Unconfirmed,
 }
 
+=======
+>>>>>>> origin/main
 /// What a slot holds, as far as a receipt confirms it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Held {
@@ -117,6 +120,7 @@ impl LiveSequences {
         self.pages.insert(key, captured.flatten());
     }
 
+<<<<<<< HEAD
     /// The slots holding a sequence of a mind, with whether a receipt confirmed it and, when it
     /// did, how new it is: the record that outlives a cut act's dropped attribution.
     pub(super) fn held(&self) -> impl Iterator<Item = (u32, PageKey, HeldSequence)> + '_ {
@@ -129,6 +133,8 @@ impl LiveSequences {
         })
     }
 
+=======
+>>>>>>> origin/main
     fn page(&self, key: &PageKey) -> Generation {
         self.pages.get(key).copied().flatten()
     }

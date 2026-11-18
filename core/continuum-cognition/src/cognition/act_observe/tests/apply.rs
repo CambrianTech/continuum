@@ -252,7 +252,10 @@ impl ToolExecutor for FoldedRunningExecutor {
                         crate::sdk_codegen::ToolVerdict::Running,
                     ),
                     dispatch_handle: Some(self.handle),
+<<<<<<< HEAD
                     next_commands: Vec::new(),
+=======
+>>>>>>> origin/main
                 })
                 .collect(),
         })
@@ -344,6 +347,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
     );
 }
 
+<<<<<<< HEAD
 /// A hand that refuses every call with typed next moves naming `next`, as the live executor
 /// carries them from a command's refusal.
 struct RefusingExecutor {
@@ -418,6 +422,8 @@ async fn a_refusals_next_moves_load_into_her_tool_head() {
     assert_eq!(wm.tool_head().loaded(), ["work/note", "work/state"], "every move the refusal names is loaded");
 }
 
+=======
+>>>>>>> origin/main
 // what this catches: with no hands (no ActingBody on the cycle), the driver
 // ABSTAINS rather than fabricating a result — the no-hands path that used to
 // live in the faculty now lives here (the faculty only emits the Act verdict).

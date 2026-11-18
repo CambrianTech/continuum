@@ -94,8 +94,11 @@ impl Runtime {
         let receipt = ShutdownReceipt {
             modules: futures::future::join_all(futs).await,
             total_ms: started.elapsed().as_millis() as u64,
+<<<<<<< HEAD
             // The settle's custody is the caller's (`ShutdownOperation::begin` runs the settle).
             custody: Vec::new(),
+=======
+>>>>>>> origin/main
         };
         info!("{}", receipt.summary());
         receipt
@@ -393,12 +396,20 @@ pub(crate) async fn dispatch_with_panic_guard(
 /// under the same `catch_unwind` guard the module path uses. Persona tool calls
 /// flow through here; a panicking handler converts to a typed `Err` instead of
 /// poisoning the caller's task. The object owns its deps + knows its name, so the
+<<<<<<< HEAD
 /// guard needs nothing but the object and the params. A refusal keeps its typed next moves.
+=======
+/// guard needs nothing but the object and the params.
+>>>>>>> origin/main
 pub(crate) async fn dispatch_object_with_panic_guard(
     cmd: Arc<dyn crate::sdk_codegen::DynCommand>,
     params: serde_json::Value,
     caller: Option<crate::routing::CallerIdentity>,
+<<<<<<< HEAD
 ) -> Result<CommandResult, crate::sdk_codegen::CommandFailure> {
+=======
+) -> Result<CommandResult, String> {
+>>>>>>> origin/main
     let name = cmd.name();
     let result = AssertUnwindSafe(cmd.invoke(params, caller))
         .catch_unwind()
@@ -416,7 +427,11 @@ pub(crate) async fn dispatch_object_with_panic_guard(
                 command = name,
                 reason = %panic_msg
             );
+<<<<<<< HEAD
             Err(format!("command '{name}' panicked: {panic_msg}").into())
+=======
+            Err(format!("command '{name}' panicked: {panic_msg}"))
+>>>>>>> origin/main
         }
     }
 }

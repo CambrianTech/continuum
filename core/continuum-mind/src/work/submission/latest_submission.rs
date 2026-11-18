@@ -43,7 +43,11 @@ impl WorkArtifactReference {
         if looks_like_git_sha(&self.hash) {
             return Err(CommandError::Invalid(format!(
                 "artifact hash '{}' looks like a git commit sha, not the patch's SHA-256. Omit artifact: \
+<<<<<<< HEAD
                  the submit computes it from your card checkout.",
+=======
+                 work/submit computes it from your card checkout.",
+>>>>>>> origin/main
                 self.hash.trim()
             )));
         }
@@ -52,7 +56,11 @@ impl WorkArtifactReference {
         >::new(self.hash))
         .map_err(|e| {
             CommandError::Invalid(format!(
+<<<<<<< HEAD
                 "artifact hash: {e}. Omit artifact and the submit computes it from your checkout."
+=======
+                "artifact hash: {e}. Omit artifact and work/submit computes it from your checkout."
+>>>>>>> origin/main
             ))
         })?;
         Ok(airc_work::SubmissionArtifact {
@@ -222,7 +230,11 @@ pub(super) async fn room_of_card(
                 None if !horizon.unreadable.is_empty() => Err(horizon.not_found("card", raw_card)),
                 None => Err(CommandError::Invalid(format!(
                     "{verb}: the card you named is on no board of a room you are in, so it cannot say its room: \
+<<<<<<< HEAD
                      name its room with room=..., or join that room first"
+=======
+                     join the card's room (room/join) or name it with room=..."
+>>>>>>> origin/main
                 ))),
             }
         }
@@ -254,6 +266,7 @@ pub(super) fn followed_room(recorded: &[crate::persona::held_claims::HeldClaim],
     recorded.iter().find(|h| h.card_id == id).map(|h| h.room.clone())
 }
 
+<<<<<<< HEAD
 /// Why `work/submit` refused to publish: the typed cause her refusal carries.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SubmitRefusal {
@@ -338,6 +351,15 @@ pub(super) fn submit_refused(cause: SubmitRefusal, card_id: Uuid) -> CommandErro
         Err(unwritable) => CommandError::Internal(unwritable.to_string()),
     }
 }
+=======
+/// How a card concludes when its result is not a patch (an investigation, a question answered):
+/// the one way forward both "no patch" refusals name, so `work/submit` ("nothing to submit") and
+/// `work/submission` ("no submissions yet") never send her to each other. Aris on the M5,
+/// 2026-10-31 11:13-13:22Z: 14 refusals alternating between the two on investigation card
+/// 3a8a243a, whose worktree rightly had no changes.
+pub(super) const CONCLUDE_WITHOUT_A_PATCH: &str =
+    "if this card's result is what you found rather than a change, record it with work/note (known: what you established) and close the card with work/state closed";
+>>>>>>> origin/main
 
 /// PURE: `e` with the where-it-is hint appended, keeping its error class.
 pub(super) fn with_hint(e: CommandError, hint: Option<String>) -> CommandError {
@@ -617,6 +639,7 @@ pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Opt
         if ours || (!tracked.is_empty() && short == tracked && !tracked_integration) || name.ends_with("/HEAD") {
             continue;
         }
+<<<<<<< HEAD
         // Upstream is the repository's integration branch, never any ref that happens to hold her
         // commits: a teammate's branch or a PR branch fetched into her worktree at HEAD would win as
         // "furthest past" and empty her patch (card f2b90541, 2026-11-14).
@@ -627,6 +650,8 @@ pub(super) fn past_upstream(checkout: &std::path::Path, created: &str, repo: Opt
                 continue;
             }
         }
+=======
+>>>>>>> origin/main
         let Some(mb) = git(&["merge-base", "HEAD", r]) else { continue };
         if git(&["merge-base", "--is-ancestor", created, &mb]).is_none() {
             continue; // this remote does not descend from where her work began
@@ -709,7 +734,11 @@ fn commit_patch(checkout: &std::path::Path, base: &str, head: &str) -> Result<St
     let unpublished: Vec<String> = names(&[])?.into_iter().filter(|path| !published.contains(path)).collect();
     if !unpublished.is_empty() {
         return Err(CommandError::Invalid(format!(
+<<<<<<< HEAD
             "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then submit again",
+=======
+            "your commit {head} carries {} path(s) a submission never publishes ({}): substrate or build byproducts. Remove them from the commit, then work/submit",
+>>>>>>> origin/main
             unpublished.len(),
             unpublished.join(", ")
         )));
@@ -771,10 +800,22 @@ pub(super) async fn derive_submission(
     // The commit the patch ends at, and the patch is exactly base..head: the gate merges that commit,
     // so a patch that dropped any of it would land the rest unreviewed (Fable on #5824; airc's CLI
     // submit enforces the same).
+<<<<<<< HEAD
     let head = committed_head(checkout, card_id)?;
     let patch = commit_patch(checkout, base.as_str(), &head)?;
     if patch.trim().is_empty() {
         return Err(submit_refused(SubmitRefusal::NoChanges { checkout: checkout.to_path_buf(), base: base_sha }, card_id));
+=======
+    let head = committed_head(checkout)?;
+    let patch = commit_patch(checkout, base.as_str(), &head)?;
+    if patch.trim().is_empty() {
+        return Err(CommandError::Invalid(format!(
+            "nothing to submit: {} has no changes since {} (substrate paths excluded). A submit publishes a \
+             patch: make the change there first, or, {CONCLUDE_WITHOUT_A_PATCH}",
+            checkout.display(),
+            base_sha
+        )));
+>>>>>>> origin/main
     }
     // Retain the exact candidate before publishing its identity: the checkout can
     // change after this call, so a later git diff is not the submitted artifact.
@@ -791,14 +832,21 @@ pub(super) async fn derive_submission(
 /// Her checkout's committed HEAD, the commit a submission records so a verdict covers exactly it
 /// (the merge gate refuses a submission without one: airc #1660). While she holds changes the
 /// commit does not carry (tracked or untracked, outside the substrate paths the patch excludes), it
+<<<<<<< HEAD
 /// is refused with the stage and commit calls as her next moves: a submission is a commit, never her
 /// working tree, and the substrate never commits for her.
 fn committed_head(checkout: &std::path::Path, card_id: Uuid) -> Result<String, CommandError> {
+=======
+/// is refused, naming the commit verb: a submission is a commit, never her working tree, and the
+/// substrate never commits for her.
+fn committed_head(checkout: &std::path::Path) -> Result<String, CommandError> {
+>>>>>>> origin/main
     let git = |args: &[&str]| git_in(checkout, args).map_err(CommandError::Internal);
     let mut status = vec!["status", "--porcelain", "--untracked-files=normal", "--", "."];
     status.extend_from_slice(crate::persona::staged_workspace::SOLUTION_PATH_EXCLUDES);
     let pending = git(&status)?;
     if !pending.trim().is_empty() {
+<<<<<<< HEAD
         // `git status --porcelain`: two status columns and a space, then the path (`old -> new` for a rename).
         let paths: Vec<String> = pending
             .lines()
@@ -807,6 +855,13 @@ fn committed_head(checkout: &std::path::Path, card_id: Uuid) -> Result<String, C
             .collect();
         let cause = SubmitRefusal::Uncommitted { count: pending.lines().count(), checkout: checkout.to_path_buf(), paths };
         return Err(submit_refused(cause, card_id));
+=======
+        return Err(CommandError::Invalid(format!(
+            "{} change(s) in {} are not committed. A submission is a commit: commit them (code/git/commit), then work/submit publishes that commit",
+            pending.lines().count(),
+            checkout.display()
+        )));
+>>>>>>> origin/main
     }
     Ok(git(&["rev-parse", "HEAD"])?.trim().to_string())
 }
@@ -857,9 +912,15 @@ pub enum SubmitOutcome {
 
 /// The answer to a submit of a submission the card already holds: that submission, as success,
 /// with what became of it so far.
+<<<<<<< HEAD
 pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, state: ReviewState, bench: bool, pull_request: Option<&airc_work::PullRequestRef>) -> WorkSubmitResult {
     let id = existing.submission_id.as_uuid();
     let verdict = next_after_submission(Some(id), state, bench, None, pull_request).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+=======
+pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: Uuid, outcomes: &[airc_work::WorkReviewOutcome], bench: bool, pull_request: Option<&airc_work::PullRequestRef>) -> WorkSubmitResult {
+    let id = existing.submission_id.as_uuid();
+    let verdict = next_after_submission(Some(id), outcomes, bench, None, pull_request).unwrap_or_default(); // unwrap_or_default: Some(..) in, so always Some
+>>>>>>> origin/main
     WorkSubmitResult {
         outcome: SubmitOutcome::AlreadySubmitted,
         submission_id: id,
@@ -868,7 +929,10 @@ pub(super) fn already_submitted(existing: &airc_work::WorkSubmission, room_id: U
         publisher: existing.publisher.as_uuid(),
         claim_id: existing.claim_id.as_uuid(),
         base_sha: existing.base_sha.to_string(),
+<<<<<<< HEAD
         head: existing.head.commit().map(ToString::to_string),
+=======
+>>>>>>> origin/main
         instance: existing.instance.clone(),
         artifact: (&existing.artifact).into(),
         submitted_at_ms: existing.submitted_at_ms,
@@ -903,9 +967,12 @@ pub struct WorkSubmitResult {
     pub claim_id: Uuid,
     /// The artifact is a patch against this base in this activity instance.
     pub base_sha: String,
+<<<<<<< HEAD
     /// The commit the patch ends at: what a passing review names as verified_head.
     #[ts(type = "string | null")]
     pub head: Option<String>,
+=======
+>>>>>>> origin/main
     pub instance: String,
     pub artifact: WorkArtifactReference,
     #[ts(type = "number")]

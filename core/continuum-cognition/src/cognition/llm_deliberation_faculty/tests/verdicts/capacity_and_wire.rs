@@ -596,7 +596,11 @@ async fn a_refused_tail_rebuilds_her_request_without_it_once() {
         assert_eq!(seen.len(), 2, "one refusal, one rebuilt send: never a third ({refusals} refusals)");
         let rebuilt = &seen[1];
         assert!(rebuilt.tail_tools.is_none(), "the rebuilt request carries no tail");
+<<<<<<< HEAD
         let offered: Vec<&str> = rebuilt.tools.as_deref().into_iter().flatten().map(|tool| tool.name.as_str()).collect();
+=======
+        let offered: Vec<&str> = rebuilt.tools.iter().flatten().map(|tool| tool.name.as_str()).collect();
+>>>>>>> origin/main
         let activity = faculty.tool_surface().select(&ws.room_affordances, &ws.held.move_commands());
         let expected: Vec<&str> = activity.specs.iter().flat_map(|specs| specs.iter()).map(|tool| tool.name.as_str()).collect();
         assert!(!offered.is_empty() && offered == expected, "she is offered exactly her activity's surface: {offered:?}");

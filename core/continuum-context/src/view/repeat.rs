@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 //! CONTINUUM-ENGINE section 5 invariant 4: a cycle cannot be presented as progress.
+=======
+//! MIND-CONTEXT invariant 4: a cycle cannot be presented as progress.
+>>>>>>> origin/main
 //!
 //! An act that asks a tool which only observes for exactly what an earlier act in its chain asked
 //! (equal [`Fingerprint`](crate::cause::Fingerprint)), and gets the same outcome (equal content

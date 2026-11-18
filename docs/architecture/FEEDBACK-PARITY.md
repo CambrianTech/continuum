@@ -66,6 +66,7 @@ that day was one of three problems; each card is an adapter of one mechanism, ne
    use ends; caches are always reclaimable, justified by predicted reuse; one reclaim path for every
    holder. Each resource kind (KV, prompt cache, learner shadow, lock) is an adapter for how its
    bytes go back and come back.
+<<<<<<< HEAD
 4. **A result says what it verified, and nothing more.** Glass-boxed on the M5 (2026-11-11,
    16:20-16:52Z), three resident submissions failed review for one reason: every tool checks FORM and
    nothing checks MEANING. Aiko's edit removed an `if` header and the file still parsed, so the edit
@@ -165,3 +166,5 @@ outliers' tests before any migration):
 
 **What it deletes:** per-tool success/failure prose, the edit gate's own wording, `ToolOutcome`'s
 `success: bool` + strings, and hand delivery of reviews. Card 3fafcc2c (owner Fable).
+=======
+>>>>>>> origin/main

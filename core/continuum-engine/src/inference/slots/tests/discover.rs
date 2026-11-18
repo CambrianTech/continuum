@@ -1,4 +1,7 @@
+<<<<<<< HEAD
 #![cfg(test)]
+=======
+>>>>>>> origin/main
 //! Pool discovery: which `/props` verdicts may latch the directory (moved with the discovery from
 //! the OpenAI adapter).
 
@@ -10,7 +13,11 @@ use crate::inference::slots::discover::props_status_proves_endpoint_absent;
 // both read `None`, and the adopted checkpoint refused "requires a known pool" instead of
 // discovering it. Each engine state answers its own `Probed` variant, owned launches included.
 #[tokio::test]
+<<<<<<< HEAD
 async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), Box<dyn std::error::Error>> {
+=======
+async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), String> {
+>>>>>>> origin/main
     let dir = SlotDirectory { endpoints: dashmap::DashMap::new() };
     assert!(matches!(dir.get("unprobed"), Probed::NotAsked), "never probed asks, never reads as absent");
     dir.latch_unsupported("latched");
@@ -25,7 +32,11 @@ async fn each_engine_state_answers_its_own_probed_variant() -> Result<(), Box<dy
         let generation = transition.start_generation()?;
         match (dir.get(root), before) {
             (Probed::NotAsked, "not asked") | (Probed::Absent(PropsAbsent), "absent") => {}
+<<<<<<< HEAD
             (_, before) => return Err(format!("an unready launch over a {before} pool changed its answer").into()),
+=======
+            (_, before) => return Err(format!("an unready launch over a {before} pool changed its answer")),
+>>>>>>> origin/main
         }
         let contract = KvPageContract {
             model_id: "fixture".into(),
@@ -73,6 +84,7 @@ fn a_loading_lane_must_not_latch_slot_affinity_off() {
         );
     }
 }
+<<<<<<< HEAD
 
 // what this catches: the M5 2026-11-14 11:21:51Z warm-restart race. The first capability probe
 // published the adopted engine's pool and only then read its ledger (~20 ms); a second discovery
@@ -129,3 +141,5 @@ async fn an_admission_racing_the_ledger_adoption_restores_her_page() -> Result<(
     assert!(Arc::ptr_eq(&second, &pool), "one pool per root");
     Ok(())
 }
+=======
+>>>>>>> origin/main

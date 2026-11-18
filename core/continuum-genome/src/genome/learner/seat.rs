@@ -19,7 +19,10 @@ use crate::inference::llama_server::{
     CoveringLease, FreshShadow, LeaseKind, LearningEngine, LedgerAnswer, LedgerEngine, LoadedAdapter, ResidencyId,
     ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind,
 };
+<<<<<<< HEAD
 use crate::inference::serving_lifecycle::Admission;
+=======
+>>>>>>> origin/main
 use crate::resources::{LeaseGuard, ResourceKind};
 
 /// A shadow seated in an engine, with the claim on the residency that pays for its weights.
@@ -47,8 +50,11 @@ pub enum SeatRefusal {
     /// The engine did not load the shadow inside its residency. Released when the engine confirmed
     /// it, otherwise left in custody as an orphan the owner settles.
     Unloaded(String),
+<<<<<<< HEAD
     /// The engine measuring the load is not the one the caller bound the change to.
     EngineReplaced,
+=======
+>>>>>>> origin/main
 }
 
 impl std::fmt::Display for SeatRefusal {
@@ -60,7 +66,10 @@ impl std::fmt::Display for SeatRefusal {
             SeatRefusal::AwaitingMemory(wait) => write!(f, "waiting for memory, holding nothing: {wait}"),
             SeatRefusal::Unmirrored(why) => write!(f, "the engine refused the residency: {why:?}"),
             SeatRefusal::Unloaded(why) => write!(f, "the shadow was not loaded: {why}"),
+<<<<<<< HEAD
             SeatRefusal::EngineReplaced => write!(f, "the engine was replaced after the change was bound to it"),
+=======
+>>>>>>> origin/main
         }
     }
 }
@@ -96,6 +105,7 @@ pub async fn seat(authority: &Authority, engine: LearningEngine, consumer: &str,
         Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
     };
     let rows: Vec<ResidencyRow> = plan.weights.into_iter().map(|row| ResidencyRow::of(row, RowKind::Weights)).collect();
+<<<<<<< HEAD
     let leases = lease_rows(authority, Admission::Free(&authority.serving), consumer, &rows).await?;
     let claim = register(authority, &engine, &plan.engine, ResidencySubject::Fresh(shadow.clone()), rows, leases).await?;
     let loaded = engine.seat_fresh(&shadow, claim.residency()).await;
@@ -136,6 +146,12 @@ pub async fn seat_gene(authority: &Authority, load: GeneLoad<'_>) -> Result<Seat
 async fn seated(engine: LearningEngine, ledger: LedgerEngine, claim: Claim, loaded: Result<LoadedAdapter, crate::inference::llama_server::LlamaServerError>) -> Result<Seat, SeatRefusal> {
     match loaded {
         Ok(loaded) => Ok(Seat { engine, ledger, claim, shadow: loaded }),
+=======
+    let leases = lease_rows(authority, consumer, &rows).await?;
+    let claim = register(authority, &engine, &plan.engine, ResidencySubject::Fresh(shadow.clone()), rows, leases).await?;
+    match engine.seat_fresh(&shadow, claim.residency()).await {
+        Ok(loaded) => Ok(Seat { engine, ledger: plan.engine, claim, shadow: loaded }),
+>>>>>>> origin/main
         // a lost reply is not proof that nothing loaded: settle unloads whatever the ledger shows bound
         Err(error) => match claim.release().await {
             Ok(()) => Err(SeatRefusal::Unloaded(error.to_string())),
@@ -187,14 +203,22 @@ pub(super) async fn register(
 /// authority, under the serving lifecycle gate, in ONE attempt: a learner's step may hold her serving
 /// resources, so it never waits here (Codex on #5905). A shortfall answers `AwaitingMemory`, and the
 /// leases this call already took drop with it.
+<<<<<<< HEAD
 pub(super) async fn lease_rows(authority: &Authority, admission: Admission<'_>, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+=======
+pub(super) async fn lease_rows(authority: &Authority, consumer: &str, rows: &[ResidencyRow]) -> Result<Vec<(LeaseKind, u64, LeaseGuard)>, SeatRefusal> {
+>>>>>>> origin/main
     let mut leases = Vec::new();
     for (kind, resource, host) in [(LeaseKind::Vram, ResourceKind::Vram, false), (LeaseKind::Ram, ResourceKind::Ram, true)] {
         let bytes: u64 = rows.iter().filter(|row| row.host == host).map(|row| row.bytes).sum();
         if bytes == 0 {
             continue;
         }
+<<<<<<< HEAD
         let guard = crate::inference::training_admission::try_training_memory(&authority.resources, admission, consumer, resource, bytes)
+=======
+        let guard = crate::inference::training_admission::try_training_memory(&authority.resources, &authority.serving, consumer, resource, bytes)
+>>>>>>> origin/main
             .map_err(SeatRefusal::Unleased)?
             .map_err(SeatRefusal::AwaitingMemory)?;
         leases.push((kind, bytes, guard));
@@ -205,8 +229,13 @@ pub(super) async fn lease_rows(authority: &Authority, admission: Admission<'_>, 
 impl Seat {
     /// Unload the shadow (the engine releases its optimizer first). Its residency stays until
     /// released.
+<<<<<<< HEAD
     pub async fn unload(&self) -> Result<(), crate::inference::llama_server::LlamaServerError> {
         self.engine.unseat(&self.ledger, self.shadow.id).await.map(|_| ())
+=======
+    pub async fn unload(&self) -> Result<(), String> {
+        self.engine.unseat(&self.ledger, self.shadow.id).await.map(|_| ()).map_err(|error| format!("unload refused: {error}"))
+>>>>>>> origin/main
     }
 
     /// Release the weight residency of an unloaded shadow; its leases leave custody when the engine

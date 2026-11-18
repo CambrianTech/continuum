@@ -93,8 +93,15 @@ impl Rig {
 
     /// Stop the way the M5 went down between engines: the stop's checkpoint saves every resident.
     async fn checkpoint_and_stop(self, client: &reqwest::Client) {
+<<<<<<< HEAD
         let stopped = crate::inference::slots::page_io::checkpoint_endpoint(client, &self.root, &self.endpoint, || {}).await;
         assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves every resident: {stopped:?}");
+=======
+        let stopped = crate::inference::slots::page_io::checkpoint_endpoint(client, &self.root, &self.endpoint, crate::inference::turn_admission::kv_page_wedge_bound(0))
+            .await
+            .expect("test: an engine was launched here");
+        stopped.expect("test: the stop saves every resident");
+>>>>>>> origin/main
         self.server.abort();
     }
 

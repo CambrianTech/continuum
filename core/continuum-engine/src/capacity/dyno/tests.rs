@@ -223,6 +223,7 @@ mod view {
         );
     }
 }
+<<<<<<< HEAD
 
 mod censored_demand {
     //! Idle pool, one mind, censored demand (Aris on the M5, 2026-11-13, canary 2b17c41df): alone on
@@ -339,3 +340,5 @@ mod censored_demand {
         assert!(grants[0] >= FULL_DETAIL, "the next publish holds what overflowed: {grants:?}");
     }
 }
+=======
+>>>>>>> origin/main

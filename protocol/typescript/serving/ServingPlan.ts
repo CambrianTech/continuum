@@ -74,6 +74,7 @@ rationale: string,
  * 5090 (2026-10-12, build 6160: `demand_lanes=2`, `fits_on_gpu=true`) could not say
  * whether the GPU, the per-lane floor or a cold boot's memory chose one lane.
  */
+<<<<<<< HEAD
 lanesBound: LanesBound, 
 /**
  * The demand's window target that this plan was sized against (card 53a8d49b).
@@ -81,3 +82,6 @@ lanesBound: LanesBound,
  * two ground-truth facts — never a copy that can drift.
  */
 windowTarget: number, };
+=======
+lanesBound: LanesBound, };
+>>>>>>> origin/main

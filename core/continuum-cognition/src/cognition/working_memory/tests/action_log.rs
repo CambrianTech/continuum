@@ -16,7 +16,11 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     // A short first line per result: that line is the ledger's, the body the ring's.
+<<<<<<< HEAD
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("f1a5ed0000000001"));
+=======
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), None, saved("first-handle"));
+>>>>>>> origin/main
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -25,7 +29,11 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
     let lines: Vec<String> = ledger(&wm).into_iter().map(|(_, head)| head).collect();
     assert!(lines.first().is_some_and(|head| head.starts_with("[action #1]")), "{lines:?}");
     let ring = wm.recent_results_messages().join("\n");
+<<<<<<< HEAD
     assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: tool_output({\"outputId\":\"f1a5ed0000000001\"}) — collapsed]"), "{ring}");
+=======
+    assert!(ring.contains("[result #1; room unrecorded; operation unrecorded; saved: read_output({\"outputId\":\"first-handle\"}) — collapsed]"), "{ring}");
+>>>>>>> origin/main
     assert!(!ring.contains(&"a".repeat(cap / 2)), "its whole result left the ring");
 }
 
@@ -38,7 +46,11 @@ fn an_act_is_one_record_that_collapses_but_keeps_its_ledger_line() {
 fn every_collapsed_line_she_is_shown_reads_back_and_nothing_else_does() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
+<<<<<<< HEAD
     wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("f1a5ed0000000001"));
+=======
+    wm.record_receipt_typed(&[], &"a".repeat(cap / 2), None, saved("first-handle"));
+>>>>>>> origin/main
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -70,9 +82,15 @@ fn a_restart_keeps_every_act_as_she_read_it() {
     let room = Uuid::new_v4();
     let cap = 2 * BODY;
     wm.record("the parser drops the index");
+<<<<<<< HEAD
     wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("f1a5ed0000000001"));
     for act in 2..=12 {
         wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("a1b2c3d4e5f60718"));
+=======
+    wm.record_receipt_typed(&[], &format!("first\n{}", "a".repeat(cap / 2)), Some(room), saved("first-handle"));
+    for act in 2..=12 {
+        wm.record_receipt_typed(&[], &format!("act {act}\n{}", "s".repeat(cap / 2)), Some(room), saved("ring-test"));
+>>>>>>> origin/main
     }
     wm.record("so the fix is at checks.py:118");
     wm.record_settlement("done", None);
@@ -163,7 +181,10 @@ fn the_write_less_stretch_counts_this_rooms_acts_since_the_hold_and_resets_on_a_
         run: None,
         body: None,
         received_ms: Some(at),
+<<<<<<< HEAD
         verbs: Vec::new(),
+=======
+>>>>>>> origin/main
         act: Some(continuum_context::cause::Act { fingerprint: continuum_context::cause::Fingerprint::of([("x", seq.to_be_bytes().as_slice())]), effect }),
     };
     let log = super::super::action_log::ActionLog::from_records(vec![
@@ -189,7 +210,11 @@ fn an_evicted_read_keeps_the_outcome_hash_it_had_resident() {
     let wm = WorkingMemory::new(8);
     let cap = 2 * BODY;
     let body = format!("first\n{}", "a".repeat(cap / 2));
+<<<<<<< HEAD
     wm.record_receipt_typed(&[], &body, None, saved("f1a5ed0000000001"));
+=======
+    wm.record_receipt_typed(&[], &body, None, saved("first-handle"));
+>>>>>>> origin/main
     for act in 2..=5 {
         record_saved(&wm, &format!("act {act}\n{}", "s".repeat(cap / 2)));
     }
@@ -232,7 +257,10 @@ fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
         run: None,
         body: None,
         received_ms: Some(seq),
+<<<<<<< HEAD
         verbs: Vec::new(),
+=======
+>>>>>>> origin/main
         act: Some(continuum_context::cause::Act {
             fingerprint: continuum_context::cause::Fingerprint::of([("outputId", b"59db1a33".as_slice())]),
             effect: ToolEffect::Reopens,
@@ -252,6 +280,7 @@ fn a_run_survives_her_view_folding_the_earlier_repeats_out_of_ram() {
     log.push(read(5, room, "a different output"));
     assert_eq!(log.repeat_run(5), None, "a changed outcome ends it");
 }
+<<<<<<< HEAD
 
 // what this catches: a checkpointed thought naming neither its text nor a saved whole with its
 // length (three `Option`s allowed it, and her view rendered it as an empty message) failing her
@@ -271,3 +300,5 @@ fn an_unreadable_checkpointed_thought_is_dropped_and_the_rest_restore() {
     restored.restore(snapshot);
     assert_eq!(restored.thoughts(), wm.thoughts(), "the readable thought restores; the unreadable one is gone");
 }
+=======
+>>>>>>> origin/main

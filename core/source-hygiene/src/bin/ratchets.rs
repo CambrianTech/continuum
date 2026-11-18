@@ -84,7 +84,10 @@ fn print_by_crate(rows: Vec<source_hygiene::ratchet::CrateMovement>) {
     if by_rule.is_empty() {
         return;
     }
+<<<<<<< HEAD
     print_every_crate(&by_rule);
+=======
+>>>>>>> origin/main
     eprintln!("by crate (moved first, then largest)  base     head");
     for (rule, mut crates) in by_rule {
         crates.sort_by_key(|row| (row.before == Some(row.after), std::cmp::Reverse(row.after)));
@@ -96,6 +99,7 @@ fn print_by_crate(rows: Vec<source_hygiene::ratchet::CrateMovement>) {
     }
 }
 
+<<<<<<< HEAD
 /// Every crate of every ratchet as `ratchet@crate base head`, folded in the CI log: the full
 /// per-crate baseline a floor-up sweep reads (the table above names only the largest). Printed
 /// only under GitHub Actions, where the group folds; a local run keeps its short receipt.
@@ -113,6 +117,8 @@ fn print_every_crate(by_rule: &std::collections::BTreeMap<String, Vec<source_hyg
     println!("::endgroup::");
 }
 
+=======
+>>>>>>> origin/main
 /// How many crates the receipt names per ratchet: the owners a sweep starts with, not a list.
 const LARGEST_CRATES_SHOWN: usize = 6;
 

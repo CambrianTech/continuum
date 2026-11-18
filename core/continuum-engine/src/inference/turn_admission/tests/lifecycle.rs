@@ -100,12 +100,17 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         .route("/props", axum::routing::get(|| async { Json(json!({"total_slots": 2})) }))
         .route("/slots/{slot}", post(page))
         .with_state((dir, slots.clone(), hold.clone()));
+<<<<<<< HEAD
     // The endpoint directory outlives this server; a recycled TCP port is not
     // the same fixture engine and must not inherit its retirement state.
     let namespace = format!("/{}", Uuid::new_v4());
     let app = Router::new().nest(&namespace, app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
     let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
+=======
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+>>>>>>> origin/main
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -171,8 +176,15 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
         act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
     }
     // Mind 3 was paged out at 300; minds 1 and 2 are resident at 150 and 250.
+<<<<<<< HEAD
     let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
     assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves every resident: {stopped:?}");
+=======
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, std::time::Duration::from_secs(10))
+        .await
+        .expect("test: an engine was launched here");
+    stopped.expect("test: the stop saves every resident");
+>>>>>>> origin/main
     server_a.abort();
 
     // Core B: a new engine, an empty slot set, the same page directory.
@@ -192,6 +204,7 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
     server_b.abort();
 }
 
+<<<<<<< HEAD
 // what this catches (the M5, 2026-11-14 07:48:28Z, #5987 deployed as 7f875ccfd): the stop condemns
 // acts in flight (#5988) and a cut act drops her attribution, so the stop's checkpoint saved only
 // the one resident that was idle; the new engine (new fork pin b5534b531) and core came up with one
@@ -241,6 +254,8 @@ async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
     server_b.abort();
 }
 
+=======
+>>>>>>> origin/main
 /// Two minds resident on a fresh two-slot engine (no scratch slot), so a transient
 /// borrow must detach and save one: mind 1, the cheaper page at 100 tokens.
 async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, Arc<KvSlotPool>, Arc<Semaphore>, tokio::task::JoinHandle<()>) {
@@ -305,7 +320,11 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
     hold.arrived.notified().await; // mind 1's save is at the engine
     hold.held.store(false, std::sync::atomic::Ordering::Release);
 
+<<<<<<< HEAD
     let settling = crate::inference::slots::page_io::settle(gate);
+=======
+    let settling = crate::inference::slots::page_io::settle(gate, std::time::Duration::from_secs(10));
+>>>>>>> origin/main
     tokio::pin!(settling);
     assert!(futures::poll!(&mut settling).is_pending(), "the stop waits for the started save");
     assert_eq!(gate.in_flight(), 1, "the save holds its page permit");
@@ -313,7 +332,11 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
 
     hold.release.notify_one();
     let settled = settling.await;
+<<<<<<< HEAD
     assert_eq!(settled.in_flight_at_close, 1, "the stop waited for the one started save");
+=======
+    assert_eq!((settled.in_flight_at_close, settled.cut), (1, 0), "the stop cut nothing");
+>>>>>>> origin/main
     let borrowed = borrow
         .await
         .expect("test: borrow task")

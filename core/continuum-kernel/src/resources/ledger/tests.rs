@@ -341,6 +341,7 @@
         assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
     }
 
+<<<<<<< HEAD
     // what this catches (the M5, 2026-11-14 03:35Z, canary 958ea3056): a boot sizing that takes the
     // embed lane's floor. At a gap the predecessor engine's bytes are still physically used and
     // serving's own are not attributed, so the replace-myself budget reads 0 (a pool sized from it
@@ -362,6 +363,8 @@
         assert_eq!(ledger.room_beside_others("serving", ResourceKind::Vram), capacity - 2 * embed_floor, "its own bytes never count against it");
     }
 
+=======
+>>>>>>> origin/main
     #[test]
     fn reservation_floor_blocks_grant_and_reclaim_below_it() {
         let mut ledger = ResourceLeaseLedger::new();

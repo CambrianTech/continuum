@@ -400,8 +400,14 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         .iter()
         .map(|s| s.name.as_str())
         .collect();
+<<<<<<< HEAD
     // Names on the wire are each command's path, charset-legal (tool_dialect::wire_name).
     for must in ["commands_list", "commands_help", "code_edit", "code_shell", "code_search"] {
+=======
+    // Names on the wire ride the DIALECT (tool_dialect): the conventional,
+    // charset-legal aliases tool-trained models actually saw in training.
+    for must in ["list_commands", "help", "edit_file", "bash", "grep"] {
+>>>>>>> origin/main
         assert!(
             native.contains(&must),
             "tight window must NOT amputate the native surface — {must} missing: {native:?}"
@@ -431,9 +437,15 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
         .with_tools(persona_tools::native_tool_specs());
         f.tool_surface().registry().iter().map(|s| s.name.clone()).collect()
     };
+<<<<<<< HEAD
     // Wire names are each command's path, charset-legal (tool_dialect::wire_name), never
     // our slashes and never an alias (card d2b6dbce: one scheme per family).
     for must in ["code_search", "code_read", "code_edit", "code_shell"] {
+=======
+    // Wire names are the DIALECT aliases (tool_dialect) — the coding arc
+    // rides under the names the model was trained on, never our slashes.
+    for must in ["grep", "read_file", "edit_file", "bash"] {
+>>>>>>> origin/main
         assert!(
             roomy_native.iter().any(|n| n == must),
             "roomy window ⇒ {must} offered natively: {roomy_native:?}"
@@ -757,6 +769,7 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // an id, so the schema carries the value she means; its pattern was dropped and its docs cut.
     // Both verbs now declare `OnDemand`, so neither schema rides her prompt unless a held card puts
     // it in hand: this registry total grows, her act's surface shrinks. Measured locally at 17986.
+<<<<<<< HEAD
     // 17986 -> 18162 (#5945, 2026-11-11): code/edit's EditMode gains `batch` (several edits
     // checked once, on their combined result: a fix valid only whole). Two refused repairs in one
     // hour on the M5 were each valid only together (Aiko, not_speech.rs). Measured in CI.
@@ -795,6 +808,9 @@ fn tool_surface_is_a_category_index_plus_discovery_pair() {
     // +7 measured alone in CI at bd44951a6 (job 133883093369), stacked on #6101's +86; then +5 for each fact's
     // minLength 1 (the model is told a fact cannot be empty). 18881 measured in CI at 354709612 (job 133901816976).
     const AGENTIC_SURFACE_CEILING: u32 = 18881;
+=======
+    const AGENTIC_SURFACE_CEILING: u32 = 17986;
+>>>>>>> origin/main
     let surface = faculty.describe_tool_tokens() as u32 + faculty.framing_floor_tokens();
     println!("agentic surface: {surface} guard tokens; ceiling {AGENTIC_SURFACE_CEILING}");
     assert!(

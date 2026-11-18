@@ -60,7 +60,10 @@ impl KvSlotPool {
                 .map(|_| Arc::new(tokio::sync::Semaphore::new(1)))
                 .collect(),
             released: Arc::new(tokio::sync::Notify::new()),
+<<<<<<< HEAD
             scratch_released: Arc::new(tokio::sync::Notify::new()),
+=======
+>>>>>>> origin/main
             ledger: std::sync::OnceLock::new(),
             incarnation: std::sync::OnceLock::new(),
             ledger_generation: AtomicU64::new(0),
@@ -72,6 +75,7 @@ impl KvSlotPool {
     /// ledger's own keys (same fingerprint, page file present) become restorable first:
     /// a new core restoring the pages the last one saved. Returns the keys loaded.
     pub(crate) fn attach_ledger(&self, ledger: SavedLedger, load: bool) -> usize {
+<<<<<<< HEAD
         let (count, snapshot) = self.settle_ledger(ledger, load);
         self.persist_ledger(snapshot);
         count
@@ -89,6 +93,12 @@ impl KvSlotPool {
         let count = loaded.keys.len();
         if self.ledger.set(ledger).is_err() {
             return (0, None);
+=======
+        let loaded = if load { ledger.load() } else { LoadedLedger::default() };
+        let count = loaded.keys.len();
+        if self.ledger.set(ledger).is_err() {
+            return 0;
+>>>>>>> origin/main
         }
         let snapshot = {
             let mut saved = self.saved.lock();
@@ -103,7 +113,12 @@ impl KvSlotPool {
             }
             self.ledger_snapshot(&saved, &holders)
         };
+<<<<<<< HEAD
         (count, snapshot)
+=======
+        self.persist_ledger(snapshot);
+        count
+>>>>>>> origin/main
     }
 
     /// Stamp the engine process into this pool's ledger and rewrite it, so a core that
@@ -306,6 +321,7 @@ impl KvSlotPool {
         Some(self.operation_permit(slot, permit))
     }
 
+<<<<<<< HEAD
     /// The wait for a busy slot's next release, or `None` when it is free now (the caller tries
     /// again at once). Registered before the check, so a release between them is never missed;
     /// the caller lets go of everything first (an admission's dropped pin announces a release,
@@ -328,6 +344,15 @@ impl KvSlotPool {
 
     fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
         SlotPermit { _permit: permit, released: Arc::clone(self.release_signal(slot)) }
+=======
+    /// A scratch release wakes only its physical semaphore, never citizen admission:
+    /// scratch is excluded from the citizen free list and cannot satisfy those waiters.
+    fn operation_permit(&self, slot: u32, permit: tokio::sync::OwnedSemaphorePermit) -> SlotPermit {
+        SlotPermit {
+            _permit: permit,
+            released: (Some(slot) != self.scratch).then(|| Arc::clone(&self.released)),
+        }
+>>>>>>> origin/main
     }
 
     /// The signal a slot release raises; see [`Self::released`] on the struct.
@@ -350,6 +375,7 @@ impl KvSlotPool {
         SlotPaging::judged(slot, prev.filter(|p| *p != key), basis)
     }
 
+<<<<<<< HEAD
     /// Whom a stop saves: every attributed resident, and every slot still holding a sequence of a
     /// mind no slot is attributed to. The stop condemns acts in flight, and a cut act drops her
     /// attribution (`TurnAdmission`'s drop), so without this the stop saved only the minds that
@@ -384,6 +410,8 @@ impl KvSlotPool {
         residents
     }
 
+=======
+>>>>>>> origin/main
     /// `key`'s generation completed in `slot`: the slot holds her newest sequence.
     pub(crate) fn note_generated(&self, slot: u32, key: PageKey) {
         self.sequences.lock().completed(slot, key);
@@ -831,6 +859,7 @@ impl ResidentCheckpoint<'_> {
     }
 }
 
+<<<<<<< HEAD
 /// Travels with the actual owned Child, including after retirement. The exit bit
 /// belongs to this generation even when the endpoint already has a newer child, and is a
 /// `watch` so a waiter subscribes to the exit ([`EngineGeneration::exit`]) instead of polling it.
@@ -838,5 +867,28 @@ impl ResidentCheckpoint<'_> {
 pub struct EngineGeneration {
     pub(super) id: Uuid,
     pub(super) exited: Arc<tokio::sync::watch::Sender<bool>>,
+=======
+// A backend request can outlive its cancelled Rust future. Quarantine while the
+// writer is still held, matching TurnAdmission's existing read-lease rule.
+pub(super) struct CheckpointSave {
+    pub(super) endpoint: Arc<EndpointSlots>,
+    pub(super) pending: bool,
+}
+
+impl Drop for CheckpointSave {
+    fn drop(&mut self) {
+        if self.pending {
+            self.endpoint.quarantine_paging();
+        }
+    }
+}
+
+/// Travels with the actual owned Child, including after retirement. The exit bit
+/// belongs to this generation even when the endpoint already has a newer child.
+#[derive(Clone)]
+pub struct EngineGeneration {
+    pub(super) id: Uuid,
+    pub(super) exited: Arc<std::sync::atomic::AtomicBool>,
+>>>>>>> origin/main
     pub(super) endpoint: std::sync::Weak<EndpointSlots>,
 }

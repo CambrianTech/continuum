@@ -69,6 +69,7 @@ fn the_launch_never_sizes_below_the_residents_pages() {
         first.max(second),
     );
 }
+<<<<<<< HEAD
 
 // Dyno 9: boot during memory settle (the M5, 2026-11-13, card 8569b03d). 19:36Z: the boot plan read
 // usable 16 GB while the stopped engine's memory was still being returned, launched -c 2045, and 15 s
@@ -480,3 +481,5 @@ mod take_again_flap {
 fn a_leased_in_mind_is_sized_from_her_requirement_never_a_prompt_size() {
     panic!("{}", MissingSeam::LeasedInRequirement.describe());
 }
+=======
+>>>>>>> origin/main

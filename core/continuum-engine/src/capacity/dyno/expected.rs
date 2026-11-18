@@ -61,11 +61,14 @@ pub enum MissingSeam {
     /// other seven's prompt sizes, slot assignment and the engine's per-batch order are not in it,
     /// so no service model can be checked against the hour's starvation.
     LiveHourPrompts,
+<<<<<<< HEAD
     /// Scenario 10 (card 8569b03d step 3): a mind this seat serves for another node reaches it as a
     /// prompt (`resource_admission::leased_in_sent_samples`, a size a window bounds), never as her
     /// `LaneRequirement`: the generate wire carries none. Needed: the typed requirement on the grid
     /// seam (Codex owns grid), read by the seat's demand beside its residents'.
     LeasedInRequirement,
+=======
+>>>>>>> origin/main
 }
 
 impl MissingSeam {
@@ -75,7 +78,10 @@ impl MissingSeam {
             Self::LaunchKnowsResidentPages => "the launch pool is sized without the residents' page sizes (launch_pool has no such input; the ledger has no page token count)",
             Self::LateReceiptCustody => "no custody record receives a late terminal receipt after an Uncertain page switch",
             Self::LiveHourPrompts => "the IntelMac hour's capture lacks the seven unserved residents' prompt sizes, slots and the engine's batch order (per-request-rows.log carries only the completed turn's split)",
+<<<<<<< HEAD
             Self::LeasedInRequirement => "a leased-in mind reaches this seat as a prompt size, never her LaneRequirement: the grid's generate wire carries none (Codex owns the seam)",
+=======
+>>>>>>> origin/main
         }
     }
 }

@@ -111,6 +111,7 @@ impl LlamaServerControl for FakeServer {
             None => Err(LlamaServerError::Unreachable("test: nothing up".into())),
         }
     }
+<<<<<<< HEAD
     async fn set_prompt_cache_limit(
         &self,
         _limit_mib: std::num::NonZeroU64,
@@ -120,6 +121,8 @@ impl LlamaServerControl for FakeServer {
             crate::inference::llama_server::PromptCacheRefusal::RouteMissing,
         ))
     }
+=======
+>>>>>>> origin/main
     async fn active_adapters(&self, _target: &ServingTarget) -> Result<Vec<String>, LlamaServerError> {
         Ok(Vec::new())
     }

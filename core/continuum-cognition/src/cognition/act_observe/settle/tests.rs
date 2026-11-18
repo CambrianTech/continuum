@@ -243,6 +243,7 @@
         assert_eq!(quick, Ok(42));
     }
 
+<<<<<<< HEAD
     // what this catches: an act whose generation is still advancing killed by elapsed time. The
     // ceiling this replaces (two extensions) dropped Eitan's generation on enrico 2026-10-26 at
     // its third bound while slot 1 was still decoding. A moving act extends at every checkpoint, for
@@ -266,6 +267,8 @@
         assert!(!super::extends(true, previous, at(99_999)), "a condemned engine ends it even while moving");
     }
 
+=======
+>>>>>>> origin/main
     // what this catches (card 843d5570): a generation the deadline drops in flight read as a
     // lane wait. enrico, 2026-10-26 (core 839f70216): Eitan's generation ran on slot 1, was
     // extended at 20:43:18 and 21:08:18, and ended at the ceiling at 21:33:18; the drop left

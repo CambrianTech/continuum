@@ -152,17 +152,24 @@ pub enum ResultCustody {
     Whole { handle: String },
     /// `content` is a pointer; the whole result is saved under `handle`.
     Pointer { handle: String },
+<<<<<<< HEAD
     /// Nothing ran (a refused call, a reported cut): `content` is the refusal, which reaches her
     /// in her act's result and nowhere else. No output exists, so no id names one: an id she could
     /// reopen would hand her a refusal as if it were a result (IntelMac 0051cdcf, 2026-11-14).
     Refused,
+=======
+>>>>>>> origin/main
 }
 
 impl ResultCustody {
     /// The handle the whole result is saved under, if it was saved.
     pub fn handle(&self) -> Option<&str> {
         match self {
+<<<<<<< HEAD
             ResultCustody::Unsaved | ResultCustody::Refused => None,
+=======
+            ResultCustody::Unsaved => None,
+>>>>>>> origin/main
             ResultCustody::Whole { handle } | ResultCustody::Pointer { handle } => Some(handle),
         }
     }
@@ -261,11 +268,18 @@ pub struct TextGenerationRequest {
     #[ts(optional)]
     pub stop_sequences: Option<Vec<String>>,
 
+<<<<<<< HEAD
     // Tool calling (native JSON format). Shared, never copied: a mind's surface is built once and
     // every act's request points at the same schemas (card 9cf06ade). Encoded only on the wire.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional, type = "Array<NativeToolSpec>")]
     pub tools: Option<std::sync::Arc<[NativeToolSpec]>>,
+=======
+    // Tool calling (native JSON format)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tools: Option<Vec<NativeToolSpec>>,
+>>>>>>> origin/main
     /// Verbs she loaded into the TAIL this epoch: callable natively (the engine's parser and
     /// grammar accept them) but never rendered in the head, so the cached prefix is unchanged
     /// (goal 10, card ecd5dff3). Their schemas ride the conversation, after the cache point.
@@ -846,7 +860,14 @@ impl TextGenerationResponse {
 
     /// Check if response has tool calls
     pub fn has_tool_calls(&self) -> bool {
+<<<<<<< HEAD
         self.tool_calls.as_ref().is_some_and(|tc| !tc.is_empty())
+=======
+        self.tool_calls
+            .as_ref()
+            .map(|tc| !tc.is_empty())
+            .unwrap_or(false)
+>>>>>>> origin/main
     }
 }
 
