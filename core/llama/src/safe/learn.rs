@@ -4,22 +4,24 @@
 //! between steps. Afterwards the reply is restored under her stable gene set, leaving the sequence
 //! as serving left it.
 //!
-//! Ownership, so native code never calls into something gone:
-//! - every native callback reaches ONE holder the context owns (native code keeps those pointers
-//!   past a reply, so nothing shorter-lived may hold them). A reply places its admission there and
-//!   takes it back at a confirmed restoration ([`LearnRun::finish`]) or a refusal; an empty holder
-//!   refuses every allocation, so no callback ever reaches freed memory;
-//! - the run owns the reply's buffers and the native result for as long as the reply is active;
-//! - finishing is explicit and fallible, and a failure is never read as learned. A run whose
-//!   restoration was not confirmed blocks its [`Learner`] (keeping a dropped run's admission, its
-//!   bytes retained) until [`Learner::fence`] clears the sequence.
+//! Ownership lives on the CONTEXT, because native code keeps its pointers past a reply and past any
+//! one [`Learner`]:
+//! - every native callback reaches ONE holder the context owns (freed after `llama_free`). A reply
+//!   places its admission there; an empty holder refuses every allocation;
+//! - the trained shadow adapter is shared into that holder for as long as an optimizer may reference
+//!   it, and the model is the context's own;
+//! - a run whose restoration was not confirmed QUARANTINES the context: its admission (bytes still
+//!   retained) stays in the holder, and every later reply on that context is refused, whoever asks,
+//!   until [`Learner::recover`] proves the optimizer and its workspace released. The sequence itself
+//!   is left as native code left it, for its owner to restore from its own preserved state.
 //!
-//! The shadow adapter must already be attached to the context at a non-zero scale (the caller
-//! binds her gene set), with F32 A/B tensors; otherwise selection is refused by name.
+//! The shadow adapter must already be attached to the context at a non-zero scale (the caller binds
+//! her gene set), with F32 A/B tensors; otherwise selection is refused by name.
 
 use std::ffi::{c_char, c_void, CStr};
 use std::num::NonZeroU32;
 use std::ptr::NonNull;
+use std::sync::Arc;
 
 use super::*;
 
@@ -73,9 +75,10 @@ pub struct Walk {
     pub horizon: Option<NonZeroU32>,
 }
 
-/// The shadow adapter she learns into, and how.
-pub struct Shadow<'a> {
-    pub adapter: &'a LoraAdapter,
+/// The shadow adapter she learns into, and how. The adapter is shared: the context keeps it for as
+/// long as an optimizer may reference it.
+pub struct Shadow {
+    pub adapter: Arc<LoraAdapter>,
     pub optimizer: Optimizer,
     /// Recompute each layer's intermediates in the backward pass instead of keeping them all.
     pub recompute: bool,
@@ -119,16 +122,27 @@ pub struct LearnRefusal {
     pub message: String,
 }
 
-/// A reply refused before it began: its admission comes back to its owner.
+/// A reply refused before native state changed: its admission comes back to its owner.
 pub struct Refused {
     pub refusal: LearnRefusal,
     pub admission: Box<dyn ReplyAdmission>,
 }
 
-/// How a reply ended. Either way its admission comes back, so its owner releases it.
+/// How a reply ended.
 pub enum Finished {
+    /// Restored under her stable set: the admission comes back for its owner to release.
     Learned { admission: Box<dyn ReplyAdmission>, loss: Option<f64> },
-    Failed { admission: Box<dyn ReplyAdmission>, refusal: LearnRefusal },
+    /// Not confirmed restored: the context is quarantined and keeps the admission (its bytes
+    /// retained) until [`Learner::recover`] proves the optimizer and workspace released.
+    Failed { refusal: LearnRefusal, seq: i32 },
+}
+
+/// What a verified recovery hands back.
+pub struct Recovered {
+    /// The sequence the failed run left: its owner restores it from its own preserved state.
+    pub seq: i32,
+    /// The admission the failed run held, now safe to release.
+    pub admission: Box<dyn ReplyAdmission>,
 }
 
 /// After one step.
@@ -140,61 +154,78 @@ pub enum Progress {
 
 /// The callbacks' one holder, owned by the context so it outlives every native reference to it: the
 /// optimizer and the context keep these pointers past a reply (the fork's `llama-context-opt.cpp`
-/// :192-193, :275-276, :330-331, :365-366). A reply places its admission here and takes it back;
-/// while it is empty every allocation is refused.
+/// :192-193, :275-276, :330-331, :365-366).
 pub(super) struct CallbackHolder {
+    /// The active reply's admission; empty refuses every allocation.
     admission: Option<Box<dyn ReplyAdmission>>,
     optimizer: sys::ggml_opt_optimizer_params,
+    /// The shadow an optimizer may reference: kept until a release proves it no longer does.
+    shadow: Option<Arc<LoraAdapter>>,
+    /// A run whose restoration was not confirmed, and the admission it held.
+    quarantine: Option<Quarantine>,
+}
+
+struct Quarantine {
+    refusal: LearnRefusal,
+    seq: i32,
+    admission: Option<Box<dyn ReplyAdmission>>,
 }
 
 impl CallbackHolder {
     fn empty() -> Self {
-        Self { admission: None, optimizer: unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) } }
+        let optimizer = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) };
+        Self { admission: None, optimizer, shadow: None, quarantine: None }
     }
 }
 
-/// Learning over one serving context.
+/// Learning over one serving context. Holds no state of its own: the context does.
 pub struct Learner<'c, 'm> {
     ctx: &'c mut Context<'m>,
-    model: &'m Model,
-    /// A run whose restoration was not confirmed, until it is fenced.
-    lost: Option<Lost>,
 }
 
 impl<'c, 'm> Learner<'c, 'm> {
-    pub fn new(ctx: &'c mut Context<'m>, model: &'m Model) -> Self {
-        Self { ctx, model, lost: None }
+    pub fn new(ctx: &'c mut Context<'m>) -> Self {
+        Self { ctx }
     }
 
-    /// Why the learner refuses replies: a run whose restoration was not confirmed. Reading it never
-    /// clears it; only [`Learner::fence`] does.
-    pub fn lost_custody(&self) -> Option<&LearnRefusal> {
-        self.lost.as_ref().map(|lost| &lost.refusal)
+    fn holder(&mut self) -> &mut CallbackHolder {
+        self.ctx.learn_callbacks.get_or_insert_with(|| Box::new(CallbackHolder::empty()))
     }
 
-    /// Fence the sequence an unconfirmed run left: remove every cell it holds, so nothing of the
-    /// interrupted reply can be read as her served state. Returns the admission the run still held
-    /// (its bytes stay retained until its owner releases them), and clears the block.
-    pub fn fence(&mut self) -> Result<Option<Fenced>, LearnRefusal> {
-        let Some(lost) = self.lost.take() else { return Ok(None) };
-        // -1, -1: llama.h's whole range of the sequence.
-        if !self.ctx.memory_seq_rm(lost.seq, -1, -1) {
-            let refusal = LearnRefusal { step: "fence", message: format!("sequence {} could not be cleared", lost.seq) };
-            self.lost = Some(lost);
-            return Err(refusal);
+    /// Why the context refuses replies: a run whose restoration was not confirmed. Reading it never
+    /// clears it.
+    pub fn quarantine(&self) -> Option<&LearnRefusal> {
+        self.ctx.learn_callbacks.as_ref().and_then(|holder| holder.quarantine.as_ref()).map(|q| &q.refusal)
+    }
+
+    /// Prove the failed run's native memory released (the training workspace replaced, and no
+    /// optimizer referencing its shadow), then lift the quarantine and hand back what it held. The
+    /// sequence is untouched: its owner restores it. A release native code refuses keeps the
+    /// quarantine.
+    pub fn recover(&mut self) -> Result<Option<Recovered>, LearnRefusal> {
+        if self.quarantine().is_none() {
+            return Ok(None);
         }
-        Ok(Some(Fenced { seq: lost.seq, admission: lost.admission }))
+        if !unsafe { sys::llama_opt_release_workspace(self.ctx.as_ptr()) } {
+            return Err(self.refusal("release_workspace"));
+        }
+        let shadow = self.holder().shadow.as_ref().map(|adapter| adapter.ptr.as_ptr());
+        if let Some(shadow) = shadow {
+            if !unsafe { sys::llama_opt_release(self.ctx.as_ptr(), shadow) } {
+                return Err(self.refusal("release_shadow"));
+            }
+        }
+        let holder = self.holder();
+        holder.shadow = None;
+        let Some(quarantine) = holder.quarantine.take() else { return Ok(None) };
+        let admission = quarantine.admission.unwrap_or_else(|| Box::new(Released)); // unwrap_or_else: a quarantine always holds its run's admission; Released admits nothing
+        Ok(Some(Recovered { seq: quarantine.seq, admission }))
     }
 
     /// Select her shadow under this reply's admission and begin the reply.
-    pub fn begin<'l>(
-        &'l mut self,
-        shadow: &Shadow<'_>,
-        admission: Box<dyn ReplyAdmission>,
-        reply: &Reply<'_>,
-    ) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
-        if let Some(lost) = self.lost.as_ref() {
-            return Err(Refused { refusal: lost.refusal.clone(), admission });
+    pub fn begin<'l>(&'l mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>, reply: &Reply<'_>) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
+        if let Some(quarantine) = self.quarantine() {
+            return Err(Refused { refusal: quarantine.clone(), admission });
         }
         // Everything that can refuse without native state is checked before the shadow is selected.
         if reply.labels.len() != reply.tokens.len() {
@@ -212,12 +243,14 @@ impl<'c, 'm> Learner<'c, 'm> {
         let labels: Vec<i32> = reply.labels.iter().map(|label| label.native()).collect();
         let restore = reply.restore.to_vec();
         let data = {
-            let holder = self.ctx.learn_callbacks.get_or_insert_with(|| Box::new(CallbackHolder::empty()));
+            let holder = self.holder();
             holder.optimizer = optimizer_params(shadow.optimizer);
             holder.admission = Some(admission);
-            std::ptr::from_mut(&mut **holder).cast::<c_void>()
+            holder.shadow = Some(Arc::clone(&shadow.adapter));
+            std::ptr::from_mut(holder).cast::<c_void>()
         };
-        if !unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.model.as_ptr(), shadow_params(shadow, data)) } {
+        let params = shadow_params(shadow, data);
+        if !unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.ctx.model.as_ptr(), params) } {
             unsafe { sys::ggml_opt_result_free(result.as_ptr()) };
             let refusal = self.refusal("select_shadow");
             return Err(Refused { refusal, admission: self.reclaim() });
@@ -243,21 +276,18 @@ impl<'c, 'm> Learner<'c, 'm> {
         Ok(LearnRun { learner: self, result, seq: reply.seq, state: RunState::Running, _buffers: (tokens, labels, restore) })
     }
 
-    /// Whether a reply's admission is in the holder (a run not yet finished or refused).
-    fn holds_admission(&self) -> bool {
-        self.ctx.learn_callbacks.as_ref().is_some_and(|holder| holder.admission.is_some())
-    }
-
-    /// Take the reply's admission back out of the holder: native callbacks reaching the holder from
-    /// here on find it empty and refuse.
-    fn reclaim_admission(&mut self) -> Option<Box<dyn ReplyAdmission>> {
-        self.ctx.learn_callbacks.as_mut().and_then(|holder| holder.admission.take())
-    }
-
-    /// As [`Self::reclaim_admission`], for the paths that placed one themselves: the holder is filled
-    /// by `begin` before any of them, so `Released` stands only for an admission already handed back.
+    /// Take the reply's admission back out of the holder (native state unchanged by the reply):
+    /// callbacks reaching the holder from here on find it empty and refuse.
     fn reclaim(&mut self) -> Box<dyn ReplyAdmission> {
-        self.reclaim_admission().unwrap_or_else(|| Box::new(Released)) // unwrap_or_else: begin filled the holder; Released admits nothing
+        self.holder().admission.take().unwrap_or_else(|| Box::new(Released)) // unwrap_or_else: begin filled the holder; Released admits nothing
+    }
+
+    /// Quarantine the context after a run whose restoration was not confirmed: its admission stays in
+    /// the holder's quarantine, so no allocation is admitted and no bytes are released.
+    fn quarantine_after(&mut self, refusal: LearnRefusal, seq: i32) {
+        let holder = self.holder();
+        let admission = holder.admission.take();
+        holder.quarantine = Some(Quarantine { refusal, seq, admission });
     }
 
     fn refusal(&mut self, step: &'static str) -> LearnRefusal {
@@ -272,7 +302,7 @@ impl<'c, 'm> Learner<'c, 'm> {
 }
 
 /// One reply in progress. Holds the context until it finishes.
-#[must_use = "a run is finished explicitly: dropping it drains and records a custody loss"]
+#[must_use = "a run is finished explicitly: dropping it drains, and an unconfirmed restoration quarantines the context"]
 pub struct LearnRun<'l, 'c, 'm> {
     learner: &'l mut Learner<'c, 'm>,
     result: NonNull<sys::ggml_opt_result>,
@@ -313,18 +343,18 @@ impl LearnRun<'_, '_, '_> {
         unsafe { sys::llama_opt_learn_drain(self.learner.ctx.as_ptr()) };
     }
 
-    /// Run to the end: drain, then step until the restoration is confirmed or refused. Hands the
-    /// admission back either way. A run that failed (now or at an earlier step) is `Failed`, never
-    /// `Learned`, and its unconfirmed restoration blocks the learner until it is fenced. Consuming
-    /// `self` makes a second finish unrepresentable.
+    /// Run to the end: drain, then step until the restoration is confirmed or refused. A confirmed
+    /// restoration hands the admission back; anything else quarantines the context. Consuming `self`
+    /// makes a second finish unrepresentable.
     pub fn finish(mut self) -> Finished {
-        let outcome = self.run_out();
-        let admission = self.learner.reclaim();
-        match outcome {
-            Ok(()) => Finished::Learned { admission, loss: self.loss() },
+        match self.run_out() {
+            Ok(()) => {
+                let loss = self.loss();
+                Finished::Learned { admission: self.learner.reclaim(), loss }
+            }
             Err(refusal) => {
-                self.learner.lost = Some(Lost { refusal: refusal.clone(), seq: self.seq, admission: None });
-                Finished::Failed { admission, refusal }
+                self.learner.quarantine_after(refusal.clone(), self.seq);
+                Finished::Failed { refusal, seq: self.seq }
             }
         }
     }
@@ -358,34 +388,20 @@ impl LearnRun<'_, '_, '_> {
         unsafe { sys::ggml_opt_result_loss(self.result.as_ptr(), &mut loss, &mut uncertainty) };
         loss.is_finite().then_some(loss)
     }
-
 }
 
 impl Drop for LearnRun<'_, '_, '_> {
     fn drop(&mut self) {
-        if self.learner.holds_admission() {
-            if let Err(refusal) = self.run_out() {
-                // Nobody took the admission: the learner keeps it (its bytes retained) with the block.
-                let admission = self.learner.reclaim_admission();
-                self.learner.lost = Some(Lost { refusal, seq: self.seq, admission });
+        // finish() already reclaimed or quarantined; an unfinished run is run out here.
+        let unfinished = self.learner.ctx.learn_callbacks.as_ref().is_some_and(|holder| holder.admission.is_some());
+        if unfinished {
+            match self.run_out() {
+                Ok(()) => drop(self.learner.reclaim()),
+                Err(refusal) => self.learner.quarantine_after(refusal, self.seq),
             }
         }
         unsafe { sys::ggml_opt_result_free(self.result.as_ptr()) };
     }
-}
-
-/// A run whose restoration was not confirmed: the learner refuses replies until it is fenced.
-struct Lost {
-    refusal: LearnRefusal,
-    seq: i32,
-    /// The admission nobody took (a dropped run): retained until the fence hands it back.
-    admission: Option<Box<dyn ReplyAdmission>>,
-}
-
-/// A fenced sequence, and the admission a dropped run still held.
-pub struct Fenced {
-    pub seq: i32,
-    pub admission: Option<Box<dyn ReplyAdmission>>,
 }
 
 /// What native code said after one step.
@@ -435,7 +451,7 @@ impl RunState {
     }
 }
 
-/// The admission of a run already handed back: it admits nothing.
+/// An admission already handed back: it admits nothing.
 struct Released;
 
 impl ReplyAdmission for Released {
@@ -475,7 +491,7 @@ fn native_horizon(horizon: Option<NonZeroU32>) -> u32 {
     }
 }
 
-fn shadow_params(shadow: &Shadow<'_>, data: *mut c_void) -> sys::llama_opt_params {
+fn shadow_params(shadow: &Shadow, data: *mut c_void) -> sys::llama_opt_params {
     sys::llama_opt_params {
         n_ctx_train: 0,
         param_filter: Some(sys::llama_opt_param_filter_all),
@@ -563,16 +579,14 @@ mod tests {
     }
 
     // what this catches (Codex on #6148): a native refusal marked as done, so a later finish
-    // returned Learned and a drop recorded no lost custody for a run that failed.
+    // returned Learned for a run that failed.
     #[test]
     fn a_failure_after_a_step_stays_failed_through_later_steps_and_finish() {
         let mut state = RunState::Running;
         assert!(matches!(state.observe(Status::More, refusal), Ok(Progress::More)));
         assert!(matches!(state.observe(Status::Failed, refusal), Err(r) if r.message == "device lost"));
         assert!(!state.is_running());
-        // A later step and the finish see the failure, never a confirmed restoration.
         assert!(matches!(state.ended(), Some(Err(r)) if r.step == "learn_step"));
-        assert!(!matches!(state.ended(), Some(Ok(Progress::Done))));
     }
 
     // what this catches: a confirmed restoration overwritten by a later status, or read as running
@@ -583,6 +597,37 @@ mod tests {
         assert!(matches!(state.observe(Status::Done, refusal), Ok(Progress::Done)));
         assert!(matches!(state.ended(), Some(Ok(Progress::Done))));
         assert!(!state.is_running());
+    }
+
+    /// Counts the bytes it admitted and never releases them by itself: the owner does.
+    struct Counting(std::sync::Arc<std::sync::atomic::AtomicU64>);
+
+    impl ReplyAdmission for Counting {
+        fn optimizer_buffer(&self, _: BufferType, _: OptimizerBuffer<'_>, bytes: u64) -> bool {
+            self.0.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
+            true
+        }
+        fn workspace(&self, _: BufferType, _: u64, _: u64) -> bool {
+            true
+        }
+    }
+
+    // what this catches (Codex on #6148): a quarantine that let go of the failed run's admission (its
+    // bytes released while native code may still hold them), or that admitted again while held.
+    #[test]
+    fn a_quarantine_keeps_the_failed_runs_admission_and_admits_nothing() {
+        let admitted = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let mut holder = CallbackHolder::empty();
+        holder.admission = Some(Box::new(Counting(std::sync::Arc::clone(&admitted))));
+        let kind = CString::new("adamw_m").unwrap_or_default(); // unwrap_or_default: a literal without NUL
+        let buffer = BufferType(NonNull::dangling());
+        assert!(holder.admission.as_deref().is_some_and(|a| a.optimizer_buffer(buffer, OptimizerBuffer(&kind), 64)));
+        // The run fails: its admission moves into the quarantine, and the holder admits nothing.
+        let admission = holder.admission.take();
+        holder.quarantine = Some(Quarantine { refusal: refusal(), seq: 3, admission });
+        assert!(holder.admission.is_none());
+        assert!(holder.quarantine.as_ref().is_some_and(|q| q.admission.is_some() && q.seq == 3));
+        assert_eq!(admitted.load(std::sync::atomic::Ordering::Relaxed), 64, "the bytes stay counted until recovery");
     }
 
     // what this catches: the native "whole window" encoding leaking past the boundary, or a real
