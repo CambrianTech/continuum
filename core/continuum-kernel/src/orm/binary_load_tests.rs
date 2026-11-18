@@ -31,7 +31,12 @@ fn record(collection: &str, id: String, data: serde_json::Value) -> DataRecord {
     DataRecord { id, collection: collection.into(), data, metadata: RecordMetadata::default() }
 }
 
-async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes: Vec<u8>) -> Result<(), Box<dyn std::error::Error>> {
+struct ReplayFixture {
+    expected: Vec<f32>,
+    bytes: Vec<u8>,
+}
+
+async fn replay(store: &RelationalStore, native: bool, fixture: &std::sync::Arc<ReplayFixture>) -> Result<(), Box<dyn std::error::Error>> {
     let collection = if native { Native::COLLECTION } else { JsonBaseline::COLLECTION };
     let start = Instant::now();
     let mut operations = tokio::task::JoinSet::new();
@@ -42,8 +47,7 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
     for sequence in 0..128_u32 {
         let scheduled = arrivals.tick().await.into_std();
         let store = store.clone();
-        let expected = expected.clone();
-        let bytes = bytes.clone();
+        let fixture = std::sync::Arc::clone(fixture);
         operations.spawn(async move {
             let execution_start = Instant::now();
             let cursor = uuid::Uuid::from_u128((u128::from(sequence) * 73) % 9900);
@@ -58,19 +62,21 @@ async fn replay(store: RelationalStore, native: bool, expected: Vec<f32>, bytes:
         ).await?
                     .ok_or("missing native descriptor")?;
                 rows = ids.len();
+                let bytes = fixture.bytes.as_slice();
                 if descriptor.byte_len()? != bytes.len() || contiguous.len() != rows * bytes.len() {
                     return Err("native replay shape mismatch".into());
                 }
                 for row in contiguous.chunks_exact(bytes.len()) {
                     if row != bytes { return Err("native replay byte mismatch".into()); }
-                }            } else {
+                }
+            } else {
                 let query = QueryBuilder::new(collection).filter("id", QueryOperator::Gt(cursor.to_string().into())).limit(32).build();
                 let page = store.query(&query).await?;
                 rows = page.len();
                 for mut row in page {
                     // Reproduce the former corpus consumer's numeric materialization.
                     let values: Vec<f32> = serde_json::from_value(row.data["payload"].take())?;
-                    if values != expected { return Err("JSON replay value mismatch".into()); }
+                    if values != fixture.expected { return Err("JSON replay value mismatch".into()); }
                 }
             }
             if rows != 32 { return Err("replay page cardinality mismatch".into()); }
@@ -109,13 +115,14 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         byte_order: if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big },
         shape: vec![768], producer: "isolated-replay/seed17-mod251".into(), unit: false, scale: None };
     let json_payload = serde_json::json!({"payload": expected});
+    let payload = BinaryValue::new(descriptor.clone(), bytes.clone())?;
     for first in (0..10003).step_by(100) {
         let mut native_statements = Vec::new();
         let mut json_statements = Vec::new();
         for n in first..(first + 100).min(10003) {
             native_statements.push(store.insert_statement_with_binary(
                 &record(Native::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), serde_json::json!({})),
-                std::collections::BTreeMap::from([("payload".into(), BinaryValue::new(descriptor.clone(), bytes.clone())?)])
+                std::collections::BTreeMap::from([("payload".into(), payload.clone())])
             )?);
             json_statements.push(store.insert_statement(&record(JsonBaseline::COLLECTION, uuid::Uuid::from_u128(n as u128).to_string(), json_payload.clone()))?);
         }
@@ -128,9 +135,10 @@ async fn native_vs_json_storage_replay() -> Result<(), Box<dyn std::error::Error
         })).await?;
     }
     // Alternate ordering to make cache/order effects visible rather than choose one winning run.
+    let fixture = std::sync::Arc::new(ReplayFixture { expected, bytes });
     for native in [false, true, true, false] {
-        replay(store.clone(), native, expected.clone(), bytes.clone()).await?;
+        replay(&store, native, &fixture).await?;
     }
-    delta_load::replay(&store, &descriptor, &bytes).await?;
+    delta_load::replay(&store, &descriptor, &fixture.bytes).await?;
     Ok(())
 }

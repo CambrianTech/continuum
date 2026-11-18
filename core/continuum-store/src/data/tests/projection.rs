@@ -1,4 +1,12 @@
 use super::*;
+use serde::Deserialize;
+
+#[derive(Deserialize)]
+pub(super) struct ProjectedRecord {
+    pub(super) id: String,
+    pub(super) data: Value,
+    pub(super) metadata: RecordMetadata,
+}
 
 // A metadata lookup must not transport the historical payload, must still report
 // the full match count, and must reject SQL expressions in the selected fields.
@@ -21,12 +29,13 @@ async fn list_projects_in_storage_and_preserves_count_and_identity() -> Result<(
     let result = module.state.list(params).await?;
     assert_eq!(result.total, 3);
     assert_eq!(result.items.len(), 1);
-    let record = &result.items[0]; // The length assertion above proves this fixture returned one row.
-    assert!(record.get("id").and_then(Value::as_str).is_some_and(|id| id.starts_with("row-")));
-    let data = &record["data"];
-    assert!(data.get("state").is_some());
-    assert!(data.get("payload").is_none());
-    assert!(data.get("cardId").is_none());
+    let record = ProjectedRecord::deserialize(&result.items[0])?;
+    assert_eq!(record.id, "row-0");
+    assert_eq!(record.data, json!({
+        "id": record.id, "createdAt": record.metadata.created_at,
+        "updatedAt": record.metadata.updated_at, "version": record.metadata.version,
+        "state": 0
+    }));
     let invalid = DataListParams {
         collection: "projection".into(), handle: Some(path),
         filter: None, select: Some(vec!["(select payload from projection)".into()]),

@@ -240,8 +240,12 @@ use super::*;
             assert_eq!(page["data"]["hasMore"], more);
             assert_eq!(page["data"]["totalCount"], 5);
             for item in items {
-                assert!(item["data"]["id"].is_string());
-                assert!(item["data"].get("name").is_none(), "unselected field was materialized");
+                let record = <super::projection::ProjectedRecord as serde::Deserialize>::deserialize(item)
+                    .expect("test: projected cursor record");
+                assert_eq!(record.data, json!({
+                    "id": record.id, "createdAt": record.metadata.created_at,
+                    "updatedAt": record.metadata.updated_at, "version": record.metadata.version
+                }));
             }
         }
     }

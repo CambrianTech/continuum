@@ -6,7 +6,7 @@ use super::{
     types::{CollectionSchema, FieldType},
 };
 use sea_orm::sea_query::{Alias, Expr, Order, Query};
-use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, EntityTrait, TransactionTrait};
+use sea_orm::{ConnectionTrait, DatabaseTransaction, DbBackend, TransactionTrait};
 use std::sync::Arc;
 
 
@@ -21,12 +21,7 @@ impl super::relational::RelationalStore {
         let schema = self.schema(collection)?;
         let transaction = self.db.begin().await?;
         // This read pins SQLite's snapshot even when the collection has no native commits.
-        let head = super::relational_sequence::Entity::find_by_id((
-            "native".to_owned(),
-            collection.to_owned(),
-        ))
-        .one(&transaction)
-        .await?;
+        let head = super::relational_sequence::Domain::Native.head(&transaction, collection).await?;
         let revision = match head {
             Some(head) => u64::try_from(head.high).map_err(|_| StorageError::Corrupt { what: "a native revision is negative" })?,
             None => 0,

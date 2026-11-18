@@ -70,10 +70,7 @@ impl super::relational::RelationalStore {
                 seq.try_into().map_err(|_| StorageError::Corrupt { what: "a stored sequence is negative" })?,
             ));
         }
-        let seed = match Entity::find_by_id(("append".to_owned(), table_name.clone()))
-            .one(connection)
-            .await?
-        {
+        let seed = match Domain::Append.head(connection, &table_name).await? {
             Some(head) => head.high.checked_add(1).ok_or_else(|| StorageError::SequenceExhausted { collection: record.collection.clone().into() })?,
             None => {
                 let max = Query::select()
@@ -113,17 +110,13 @@ pub(super) async fn next_on<C: ConnectionTrait>(
     seed: i64,
 ) -> Result<i64, StorageError> {
     use sea_orm::sea_query::{Expr, OnConflict, Query};
-    let domain = match domain {
-        Domain::Append => "append",
-        Domain::Native => "native",
-    };
     if seed <= 0 {
         return Err(StorageError::Corrupt { what: "a sequence seed is not positive" });
     }
     let statement = Query::insert()
         .into_table(Entity)
         .columns([Column::Domain, Column::Collection, Column::High])
-        .values([domain.into(), key.into(), seed.into()])?
+        .values([domain.as_str().into(), key.into(), seed.into()])?
         .on_conflict(
             OnConflict::columns([Column::Domain, Column::Collection])
                 .value(Column::High, Expr::col(Column::High).add(1))
@@ -146,4 +139,17 @@ pub(super) async fn next_on<C: ConnectionTrait>(
 pub(super) enum Domain {
     Append,
     Native,
+}
+
+impl Domain {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Native => "native",
+        }
+    }
+
+    pub(super) async fn head<C: ConnectionTrait>(self, connection: &C, collection: &str) -> Result<Option<Model>, DbErr> {
+        Entity::find_by_id((self.as_str().to_owned(), collection.to_owned())).one(connection).await
+    }
 }
