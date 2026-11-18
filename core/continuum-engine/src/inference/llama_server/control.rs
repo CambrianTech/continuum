@@ -14,8 +14,10 @@ pub enum LlamaServerError {
     #[error("llama-server spawn failed: {0}")]
     Spawn(String),
     /// The live engine answered, but its observed build or placement cannot serve this target.
-    #[error("live engine readiness refused: {0}")]
-    ReadinessRefused(String),
+    #[error("live engine readiness refused: the engine reported a debug build")]
+    DebugBuild,
+    #[error("live engine readiness refused: the GPU target is resident on CPU")]
+    CpuPlacement,
     /// The model GGUF could not be resolved on disk for the requested id.
     #[error("no local GGUF for model '{0}'")]
     ModelNotFound(String),

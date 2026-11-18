@@ -43,11 +43,7 @@ impl LlamaServerProcess {
                 bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
-            return Err(LlamaServerError::ReadinessRefused(format!(
-                "{} announced itself a DEBUG build on startup (asserts enabled; its speed is not valid). \
-                 A release engine is required for serving.",
-                prepared.engine_program
-            )));
+            return Err(LlamaServerError::DebugBuild);
         }
         // READY AND ACCEPTED: this lane owns its page dir. Before the ledger attaches
         // (`transition.ready` below), move the newest legacy per-window dir's pages into it,
@@ -135,14 +131,7 @@ impl LlamaServerProcess {
                     "PLACEMENT VIOLATION: a GPU-placement lane came up ON CPU — refused, not served \
                      (ready must be a verified observation, #441 / card 0c4317e1)"
                 );
-                return Err(LlamaServerError::ReadinessRefused(format!(
-                    "{} was planned on the GPU and came up on the CPU ({evidence}; residency {residency_line}); refused rather \
-                     than serve every citizen from system RAM behind a green /health. Check the \
-                     backend build (a DL-backend build can list CUDA0 from a shell and still fail \
-                     to load it under the core) — last stderr:\n{}",
-                    prepared.engine_program,
-                    self.stderr_log_tail()
-                )));
+                return Err(LlamaServerError::CpuPlacement);
             }
             if let Some(r) = residency.as_ref() {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.measured",
