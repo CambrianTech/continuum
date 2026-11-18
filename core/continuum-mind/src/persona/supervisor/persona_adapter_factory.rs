@@ -1,9 +1,9 @@
 use super::*;
 
 /// Polymorphism rail for "given a profile, produce an adapter".
-/// Production wiring uses [`LlamaCppPersonaAdapterFactory`]; future
-/// slices add `AircRemoteFactory` for grid-routed personas, and
-/// `SharedBaseFactory` (#122) for multiple personas riding one base.
+/// Production wiring uses [`SharedEnginePersonaAdapterFactory`] (every
+/// resident on the node's one engine), wrapped by the remote-lane factory
+/// for minds leased from other nodes.
 ///
 /// Tests substitute a stub factory so adapter materialization is
 /// exercisable without loading a real GGUF.
@@ -19,114 +19,6 @@ pub trait PersonaAdapterFactory: Send + Sync {
         &self,
         profile: &PersonaInferenceProfile,
     ) -> Result<Arc<dyn AIProviderAdapter>, String>;
-}
-
-/// Production factory: resolves every profile to its launch and hands it to
-/// `LlamaCppAdapter::for_launch`. Stateless — safe to share via
-/// `Arc` across the supervisor's persona materialization loop.
-pub struct LlamaCppPersonaAdapterFactory;
-
-#[async_trait]
-impl PersonaAdapterFactory for LlamaCppPersonaAdapterFactory {
-    async fn build_adapter(
-        &self,
-        profile: &PersonaInferenceProfile,
-    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        let launch = profile
-            .llamacpp_launch()
-            .map_err(|e| format!("LlamaCppAdapter launch failed: {e}"))?;
-        Ok(Arc::new(crate::inference::llamacpp_adapter::LlamaCppAdapter::for_launch(&launch)))
-    }
-}
-
-/// Routes a persona's reasoning through whatever model the **serving daemon**
-/// has live, read off its published [`ServingSnapshot`] (the `watch` seam in
-/// [`crate::inference::llama_server`]). The transport underneath is still the
-/// OpenAI-compatible `/v1` adapter — chosen 2026-06-21 (Joel) because it does
-/// **native function calling for free** (sends `tools`, parses `tool_calls` →
-/// `FinishReason::ToolUse`), so the persona's HANDS actually fire instead of the
-/// model narrating fake tool use.
-///
-/// The factory does NOT probe `/v1/models` itself: it reads the daemon's snapshot
-/// (one source of truth for "what is served"), so every upstart binds to the same
-/// model the serving plan reconciled — no drift between what this picks and what
-/// the daemon actually loaded. All personas share the one served model
-/// ([[seamless-persona-failover-model-and-genome]]: the lease contracts on
-/// (base_model, genome), re-homable across grid nodes via this same snapshot).
-///
-/// Fail LOUD if the daemon brought up nothing: a persona cannot upstart without a
-/// model, and we never fall back to a stand-in ([[fallbacks-are-illegal-fail-loud]]).
-pub struct ServedModelPersonaAdapterFactory;
-
-#[async_trait]
-impl PersonaAdapterFactory for ServedModelPersonaAdapterFactory {
-    async fn build_adapter(
-        &self,
-        profile: &PersonaInferenceProfile,
-    ) -> Result<Arc<dyn AIProviderAdapter>, String> {
-        // Read the serving daemon's own readiness signal — the same `watch` it
-        // publishes — and wait (bounded) for the first reconcile so an upstart
-        // that races boot still binds correctly. No HTTP probe of our own; the
-        // daemon is the single source of truth for "what is served".
-        let snap = crate::inference::llama_server::await_ready_serving(
-            crate::inference::llama_server::DEFAULT_SERVING_WAIT,
-        )
-        .await
-        .ok_or_else(|| {
-            "serving daemon brought up NO ready model — a persona cannot upstart without one \
-             (no servable GGUF on disk, or it failed to become ready; no local fallback)"
-                .to_string()
-        })?;
-        let model = snap.active_model.clone().ok_or_else(|| {
-            "serving daemon reports ready but no active model (daemon invariant violated)"
-                .to_string()
-        })?;
-        continuum_base::probe!(
-            class = "persona.upstart.bind",
-            persona = %profile.persona_name,
-            persona_id = %profile.persona_id,
-            model = %model,
-            base = %snap.base_url,
-            "persona inference bound to the live served model"
-        );
-        build_served_adapter(&snap).await
-    }
-}
-
-/// Build the shared served-model adapter from a serving snapshot — the ONE site
-/// that turns "what the daemon serves" into an OpenAI-compatible adapter pointed
-/// at the live server. Used by the persona upstart factory ABOVE (first bind) AND
-/// by the served-model re-home reconciler (`ipc/mod.rs`, live rebind), so an
-/// upstart and a grid-driven re-home construct the adapter through IDENTICAL code
-/// — no drift between the boot binding and the swap.
-///
-/// The `llama-server` catalog key names the OpenAI-compatible provider entry
-/// (header shape + capabilities); the runtime `base_url` + `active_model` come from
-/// the snapshot, overriding the catalog default (which can drift from what's
-/// loaded). One adapter is shared by every persona on this node
-/// (INFERENCE-LANES-REALISTIC: one base model, N persona lanes), so this HTTP init
-/// runs once per served-model edge, not per persona.
-///
-/// Fails LOUD if the snapshot carries no active model — the caller must pass a
-/// `ready` snapshot ([[fallbacks-are-illegal-fail-loud]]).
-pub async fn build_served_adapter(
-    snap: &crate::inference::llama_server::ServingSnapshot,
-) -> Result<Arc<dyn AIProviderAdapter>, String> {
-    let model = snap.active_model.clone().ok_or_else(|| {
-        "serving snapshot has no active model — build_served_adapter needs a ready snapshot \
-         (no local fallback)"
-            .to_string()
-    })?;
-    let mut adapter = crate::ai::openai_adapter::OpenAICompatibleAdapter::from_registry(
-        crate::inference::llama_server::PROVIDER_ID,
-    )
-    .with_runtime_base_url(snap.base_url.clone())
-    .with_default_model(model);
-    adapter
-        .initialize()
-        .await
-        .map_err(|e| format!("persona adapter initialize failed: {e}"))?;
-    Ok(Arc::new(adapter))
 }
 
 /// One row of the supervisor's roster — and the substrate's

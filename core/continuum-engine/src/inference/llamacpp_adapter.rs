@@ -80,6 +80,7 @@ fn model_info_with_runtime(
 
 mod construction;
 pub use construction::LlamaCppLaunch;
+mod engine_start;
 mod payload;
 #[cfg(test)]
 mod tests;
@@ -315,12 +316,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         request: TextGenerationRequest,
         _dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        let allocation = match self.generation {
-            GenerationSupport::EmbeddingOnly => return Err("embedding-only adapter does not support text generation".into()),
-            GenerationSupport::Enabled { context } => GenerationAllocation::new(
-                std::num::NonZeroU32::new(context).ok_or("invalid zero generation allocation")?
-            ),
-        };
+        let allocation = self.allocation()?;
         let backend = self.ensure_loaded()?;
 
         // Use the model's OWN chat template (from GGUF metadata) via

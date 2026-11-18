@@ -456,6 +456,14 @@ impl LlamaCppBackend {
         }
     }
 
+    /// Start the persona scheduler for `allocation` (idempotent) and return its lifecycle.
+    pub fn start_scheduler(
+        &self,
+        allocation: GenerationAllocation,
+    ) -> Result<tokio::sync::watch::Receiver<super::super::persona_scheduler::EngineState>, String> {
+        Ok(self.scheduler(allocation)?.state())
+    }
+
     /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
     /// time, the next waits its turn) and tokens stream back as they are sampled. Concurrent
     /// generate() calls are served one after another on the one context.

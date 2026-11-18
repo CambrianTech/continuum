@@ -37,13 +37,23 @@ impl AIProviderModule {
                 if snap.ready {
                     let want = (snap.base_url.clone(), snap.active_model.clone());
                     if synced.as_ref() != Some(&want) {
-                        match build_gateway_adapter(want.0.clone(), want.1.as_deref()).await {
+                        // The node's in-process engine, when serving runs one, IS the served model:
+                        // register that one handle (the gateway and every local caller reach the same
+                        // weights), never an HTTP client to a server nothing launched.
+                        let built = match crate::inference::in_process_engine::node_engine().and_then(|e| e.adapter()) {
+                            Some(engine) => Ok(engine),
+                            None => build_gateway_adapter(want.0.clone(), want.1.as_deref())
+                                .await
+                                .map(|a| Arc::new(a) as Arc<dyn crate::ai::adapter::AIProviderAdapter>),
+                        };
+                        match built {
                             Ok(a) => {
                                 let mut reg = registry_arc.write().await;
                                 // Replace, never append: deregister sweeps the
                                 // base key AND any #N collision duplicates.
                                 reg.deregister(crate::inference::llama_server::PROVIDER_ID);
-                                reg.register(Arc::new(a), 9);
+                                reg.deregister(a.provider_id());
+                                reg.register(a, 9);
                                 drop(reg);
                                 let short = want
                                     .1
