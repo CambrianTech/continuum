@@ -533,6 +533,19 @@ reports what moved between tiers, and a swap retires by `reclaimable` cost.
 against the GPU's working-set cap, read 0 bytes free, and refused a 4 MB optimizer while the GPU
 had about 13 GB of its working set left. A `Footprint` tree would have admitted it.)
 
+**Both traits walk the tree for free (the composite).** Every part exposes its children through
+the same interface (`Part::children`, in dependency order), and the traits' default methods recurse:
+a part implements only its own direct state (`own_held`, `own_suspend`), and `held`, `needs`,
+`reclaimable`, `suspend` and `shutdown` fold its children's answers into its own. So
+`persona.held()` walks her mind, genome, body, residency and learning, each walking its own parts;
+`node.held()` walks its engines and personas. One traversal answers every question: admission sums
+`needs` along the path a step touches; drift is attributed by descending to the child whose `held`
+diverges from what the host measures (a leak is found by walking to its owner); shutdown and swap
+follow the order the parent declared once. A parent never re-measures what a child reports;
+independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
+is a planning-time operation, never per token or per block, so a dynamic call per child is fine
+there.
+
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
 service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
