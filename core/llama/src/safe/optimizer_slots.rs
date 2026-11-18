@@ -1,15 +1,17 @@
-//! One shadow's optimizer buffers as native code sizes them: a slot per role, holding the bytes its
-//! buffer is. Native code never reports an increment. `ggml_opt_static_allocation_allowed`
-//! (ggml-opt.cpp:558-565 at the pin) passes the WHOLE size of the buffer it is about to allocate, so
-//! a request means "this slot is about to be N bytes": the growth is admitted before native
-//! allocates, a shrink is released, and a revisit at the same size charges nothing new.
+//! One shadow's optimizer buffers as native code sizes them: a slot per role, holding what the memory
+//! owner has charged for it. Native code never reports an increment.
+//! `ggml_opt_static_allocation_allowed` (ggml-opt.cpp:558-565 at the pin) passes the WHOLE size of the
+//! buffer it is about to allocate, so a request means "this slot is about to be N bytes": only the
+//! growth past what is charged is admitted, and a revisit at the same size charges nothing new.
 //!
-//! The two roles differ in one fact. `optimizer_static` (gradient accumulators, AdamW moments) is
-//! asked only while it does not exist yet (:906) and persists across replies. `optimizer_host` is
-//! freed (:627) before it is asked for again on every init (:908), so a refused host request still
-//! leaves that slot empty. Every request in one init precedes every allocation in it (:906-908, then
-//! :912/:921), so a refusal later in the same init proves the earlier requests were never allocated,
-//! and they are rolled back.
+//! A charge is held until native code proves what survived. Requests come from `llama_opt_init` and
+//! from the graph builds inside learn steps; a refusal can leave earlier requests of the same group
+//! unallocated, and `optimizer_host` is freed (:627) before it is asked for again (:908). So nothing
+//! is released on inference: after each optimizer operation the context's owner visits the buffers
+//! native code actually owns (`llama_opt_visit_memory`, from `ggml_opt_visit_owned_buffers`
+//! :1021-1026, which names only `optimizer_static` and `optimizer_host`), and each slot is
+//! reconciled to that. Charged but not resident is released; resident but never charged is a loud
+//! defect.
 
 use std::cell::Cell;
 use std::ffi::CStr;
@@ -35,18 +37,13 @@ impl Role {
         }
     }
 
-    const ALL: [Self; 2] = [Self::Static, Self::Host];
+    pub(super) const ALL: [Self; 2] = [Self::Static, Self::Host];
 
     fn index(self) -> usize {
         match self {
             Self::Static => 0,
             Self::Host => 1,
         }
-    }
-
-    /// Native code frees this role's buffer before it asks for it again.
-    fn freed_before_asked(self) -> bool {
-        matches!(self, Self::Host)
     }
 }
 
@@ -68,83 +65,73 @@ pub trait OptimizerLease: Send {
     fn release(&self, slot: Slot, bytes: u64);
 }
 
-/// One role's slot: the bytes it holds, the device they are on, and what it held before the init in
-/// progress asked for it.
+/// Native code owns more of a role than was ever admitted for it: accounting is wrong, never quietly
+/// absorbed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Unadmitted {
+    pub(super) role: Role,
+    pub(super) bytes: u64,
+}
+
+/// One role's slot: the bytes charged for it, and the device they were charged on.
 #[derive(Debug, Default)]
-struct Held {
+struct Charged {
     bytes: Cell<u64>,
     device: Cell<Option<BufferType>>,
-    before: Cell<Option<u64>>,
 }
 
 /// One shadow's slots.
 #[derive(Debug, Default)]
-pub(super) struct Slots([Held; 2]);
+pub(super) struct Slots([Charged; 2]);
 
 impl Slots {
-    pub(super) fn held(&self, role: Role) -> u64 {
+    pub(super) fn charged(&self, role: Role) -> u64 {
         self.0[role.index()].bytes.get()
     }
 
-    /// Native code asks for `slot` to be `bytes`. true: admitted and recorded.
+    /// Native code asks for `slot` to be `bytes`: admit only the growth past what is charged. true:
+    /// admitted (or nothing new to admit). A smaller request releases nothing yet: the visit proves it.
     pub(super) fn ask(&self, lease: &dyn OptimizerLease, slot: Slot, bytes: u64) -> bool {
-        let held = &self.0[slot.role.index()];
-        let had = held.bytes.get();
-        let grow = bytes.saturating_sub(had);
-        if grow > 0 && !lease.admit(slot, grow) {
-            if slot.role.freed_before_asked() && had > 0 {
-                // Its old buffer is already gone: release it, so a refused request holds nothing.
-                lease.release(Slot { role: slot.role, device: held.device.get().unwrap_or(slot.device) }, had); // unwrap_or: a slot holding bytes always recorded its device
-                held.bytes.set(0);
+        let charged = &self.0[slot.role.index()];
+        let grow = bytes.saturating_sub(charged.bytes.get());
+        if grow > 0 {
+            if !lease.admit(slot, grow) {
+                return false;
             }
-            self.refused(lease);
-            return false;
+            charged.bytes.set(bytes);
         }
-        let shrink = had.saturating_sub(bytes);
-        if shrink > 0 {
-            lease.release(Slot { role: slot.role, device: held.device.get().unwrap_or(slot.device) }, shrink); // unwrap_or: as above
-        }
-        if held.before.get().is_none() {
-            held.before.set(Some(had));
-        }
-        held.bytes.set(bytes);
-        held.device.set(Some(slot.device));
+        charged.device.set(Some(slot.device));
         true
     }
 
-    /// The init ended (allocated, or failed for a reason other than a refusal here): what it asked
-    /// for stays held until a proven free.
-    pub(super) fn settle(&self) {
-        for held in &self.0 {
-            held.before.set(None);
-        }
-    }
-
-    /// A request in this init was refused, so nothing this init asked for was allocated: undo it.
-    fn refused(&self, lease: &dyn OptimizerLease) {
-        for role in Role::ALL {
-            let held = &self.0[role.index()];
-            let Some(before) = held.before.take() else { continue };
-            // A role freed before it is asked holds nothing now; any other holds what it held before.
-            let now = if role.freed_before_asked() { 0 } else { before };
-            let had = held.bytes.get();
-            if let (true, Some(device)) = (had > now, held.device.get()) {
-                lease.release(Slot { role, device }, had - now);
+    /// Native code owns `resident` bytes of `role` now (from the owner's visit): release what was
+    /// charged but did not survive. More resident than charged is returned as a defect, and the slot
+    /// then holds what is resident so it is released when native code frees it.
+    pub(super) fn reconcile(&self, lease: &dyn OptimizerLease, role: Role, resident: u64) -> Option<Unadmitted> {
+        let charged = &self.0[role.index()];
+        let had = charged.bytes.get();
+        if had > resident {
+            if let Some(device) = charged.device.get() {
+                lease.release(Slot { role, device }, had - resident);
             }
-            held.bytes.set(now);
+            charged.bytes.set(resident);
+            return None;
         }
+        (resident > had).then(|| {
+            charged.bytes.set(resident);
+            Unadmitted { role, bytes: resident - had }
+        })
     }
 
     /// Native code confirmed no optimizer references the shadow: release every slot.
     pub(super) fn release_all(&self, lease: &dyn OptimizerLease) {
         for role in Role::ALL {
-            let held = &self.0[role.index()];
-            let had = held.bytes.replace(0);
-            if let (true, Some(device)) = (had > 0, held.device.get()) {
+            let charged = &self.0[role.index()];
+            let had = charged.bytes.replace(0);
+            if let (true, Some(device)) = (had > 0, charged.device.get()) {
                 lease.release(Slot { role, device }, had);
             }
         }
-        self.settle();
     }
 }
 
@@ -197,6 +184,14 @@ mod tests {
         Slot { role, device: BufferType(NonNull::dangling()) }
     }
 
+    /// What the owner's visit found resident: (static, host).
+    fn visited(lease: &Recorded, slots: &Slots, resident: (u64, u64)) -> Vec<Unadmitted> {
+        [(Role::Static, resident.0), (Role::Host, resident.1)]
+            .into_iter()
+            .filter_map(|(role, bytes)| slots.reconcile(lease, role, bytes))
+            .collect()
+    }
+
     // what this catches (Codex's A/B/A trace on #6148 at 56115572a): a revisit asking for the
     // 32-byte host buffer again (native freed it at :627 and makes it at :921) charged as a new 32
     // bytes on top of the old, so a shadow switched back to many times grows a lease for memory that
@@ -206,25 +201,26 @@ mod tests {
         let lease = Recorded::with(u64::MAX);
         let a = Slots::default();
         assert!(a.ask(&lease, on(Role::Static), 270_368) && a.ask(&lease, on(Role::Host), 32));
-        a.settle();
+        assert!(visited(&lease, &a, (270_368, 32)).is_empty());
         // The revisit: static exists (not asked, :906); host freed and asked again at the same size.
         assert!(a.ask(&lease, on(Role::Host), 32));
-        a.settle();
+        assert!(visited(&lease, &a, (270_368, 32)).is_empty());
         assert_eq!(lease.charged(), 270_400, "exactly the two buffers, once");
         assert_eq!(lease.entries(), 2, "the revisit admitted and released nothing");
     }
 
-    // what this catches: a device preflight then a host refusal in one init leaving the static
-    // charge in place for a buffer native code never allocated (every request precedes every
-    // allocation, :906-908 then :912/:921).
+    // what this catches: a device preflight then a host refusal in one group leaving the static
+    // charge in place for a buffer native code never allocated, or releasing it before native code
+    // proved it absent.
     #[test]
-    fn a_host_refusal_rolls_back_the_static_charge_of_the_same_init() {
+    fn a_refused_group_is_released_only_when_the_visit_proves_nothing_survived() {
         let lease = Recorded::with(270_368);
         let a = Slots::default();
         assert!(a.ask(&lease, on(Role::Static), 270_368));
         assert!(!a.ask(&lease, on(Role::Host), 32), "over budget");
-        assert_eq!((a.held(Role::Static), a.held(Role::Host)), (0, 0));
-        assert_eq!(lease.charged(), 0, "nothing was allocated, so nothing stays charged");
+        assert_eq!(lease.charged(), 270_368, "held until native code proves what survived");
+        assert!(visited(&lease, &a, (0, 0)).is_empty());
+        assert_eq!((a.charged(Role::Static), a.charged(Role::Host), lease.charged()), (0, 0, 0));
     }
 
     // what this catches: a refused host request on a revisit keeping the old host bytes charged,
@@ -235,25 +231,34 @@ mod tests {
         let lease = Recorded::with(270_400);
         let a = Slots::default();
         assert!(a.ask(&lease, on(Role::Static), 270_368) && a.ask(&lease, on(Role::Host), 32));
-        a.settle();
+        assert!(visited(&lease, &a, (270_368, 32)).is_empty());
         assert!(!a.ask(&lease, on(Role::Host), 64), "the revisit needs 32 more than the budget holds");
-        assert_eq!((a.held(Role::Static), a.held(Role::Host)), (270_368, 0));
-        assert_eq!(lease.charged(), 270_368);
+        assert!(visited(&lease, &a, (270_368, 0)).is_empty());
+        assert_eq!((a.charged(Role::Static), a.charged(Role::Host), lease.charged()), (270_368, 0, 270_368));
     }
 
-    // what this catches: a smaller buffer on a revisit keeping the larger charge, or a confirmed
-    // release leaving any slot charged.
+    // what this catches: a smaller buffer keeping the larger charge after native code proved it
+    // smaller, or a confirmed release leaving any slot charged.
     #[test]
-    fn a_shrink_releases_the_difference_and_a_release_frees_every_slot() {
+    fn a_proven_shrink_releases_the_difference_and_a_release_frees_every_slot() {
         let lease = Recorded::with(u64::MAX);
         let a = Slots::default();
         assert!(a.ask(&lease, on(Role::Static), 1_000) && a.ask(&lease, on(Role::Host), 64));
-        a.settle();
-        assert!(a.ask(&lease, on(Role::Host), 16));
-        a.settle();
+        assert!(a.ask(&lease, on(Role::Host), 16), "a smaller request releases nothing yet");
+        assert_eq!(lease.charged(), 1_064);
+        assert!(visited(&lease, &a, (1_000, 16)).is_empty());
         assert_eq!(lease.charged(), 1_016);
         a.release_all(&lease);
         assert_eq!(lease.charged(), 0);
+    }
+
+    // what this catches: native code owning optimizer bytes nobody admitted, absorbed quietly.
+    #[test]
+    fn resident_bytes_never_admitted_are_a_defect() {
+        let lease = Recorded::with(u64::MAX);
+        let a = Slots::default();
+        assert_eq!(visited(&lease, &a, (0, 32)), vec![Unadmitted { role: Role::Host, bytes: 32 }]);
+        assert_eq!(a.charged(Role::Host), 32, "held so a later proven free releases it");
     }
 
     // what this catches: an optimizer buffer name this crate does not know charged under a guessed

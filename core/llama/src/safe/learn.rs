@@ -185,6 +185,9 @@ pub(super) struct CallbackHolder {
     selected: Option<ShadowKey>,
     /// A run whose restoration was not confirmed, and the admission it held.
     quarantine: Option<Quarantine>,
+    /// Native code owned optimizer memory nobody admitted: accounting is wrong, so no reply begins
+    /// until an owner looks.
+    accounting: Option<LearnRefusal>,
 }
 
 /// A retained shadow: the adapter (kept alive), its optimizer lease, and what each of its optimizer
@@ -230,6 +233,10 @@ impl<H> Shadows<H> {
         self.0.len()
     }
 
+    fn iter(&self) -> impl Iterator<Item = &(ShadowKey, H)> {
+        self.0.iter()
+    }
+
     fn take(&mut self, key: ShadowKey) -> Option<H> {
         let index = self.0.iter().position(|(held, _)| *held == key)?;
         Some(self.0.swap_remove(index).1)
@@ -245,7 +252,7 @@ struct Quarantine {
 impl CallbackHolder {
     fn empty() -> Self {
         let optimizer = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) };
-        Self { admission: None, optimizer, shadows: Shadows::new(), selected: None, quarantine: None }
+        Self { admission: None, optimizer, shadows: Shadows::new(), selected: None, quarantine: None, accounting: None }
     }
 }
 
@@ -267,6 +274,36 @@ impl<'c, 'm> Learner<'c, 'm> {
     /// clears it.
     pub fn quarantine(&self) -> Option<&LearnRefusal> {
         self.ctx.learn_callbacks.as_ref().and_then(|holder| holder.quarantine.as_ref()).map(|q| &q.refusal)
+    }
+
+    /// Why accounting is not trusted: native code owned optimizer memory nobody admitted. No reply
+    /// begins while this is set.
+    pub fn accounting(&self) -> Option<&LearnRefusal> {
+        self.ctx.learn_callbacks.as_ref().and_then(|holder| holder.accounting.as_ref())
+    }
+
+    /// After an optimizer operation (never on ordinary decode), on the context's owner: visit the
+    /// optimizer buffers native code owns and reconcile every retained shadow's slots to them.
+    /// Charged but not resident is released; resident but not admitted, or not attributable to a
+    /// retained shadow and a known role, is recorded as an accounting defect.
+    fn reconcile(&mut self) {
+        let mut resident = Resident::default();
+        unsafe { sys::llama_opt_visit_memory(self.ctx.as_ptr(), Some(visited), std::ptr::from_mut(&mut resident).cast()) };
+        let holder = self.holder();
+        let mut defect = resident.unattributed(&holder.shadows);
+        for (key, retained) in holder.shadows.iter() {
+            for role in Role::ALL {
+                if let Some(unadmitted) = retained.slots.reconcile(&*retained.lease, role, resident.bytes(*key, role)) {
+                    defect.get_or_insert(LearnRefusal {
+                        step: "accounting",
+                        message: format!("{} resident {:?} optimizer bytes were never admitted", unadmitted.bytes, unadmitted.role),
+                    });
+                }
+            }
+        }
+        if defect.is_some() {
+            holder.accounting = defect;
+        }
     }
 
     /// Retain a shadow before she learns into it: the context keeps the adapter and its optimizer
@@ -292,14 +329,14 @@ impl<'c, 'm> Learner<'c, 'm> {
         if holder.selected == Some(key) {
             holder.selected = None;
         }
-        match holder.shadows.take(key) {
-            Some(retained) => {
-                // Native code let the optimizer go: every slot it held is proven free.
-                retained.slots.release_all(&*retained.lease);
-                Ok(retained.lease)
-            }
-            None => Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() }),
-        }
+        let Some(retained) = holder.shadows.take(key) else {
+            return Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() });
+        };
+        // Native code let the optimizer go: every slot it held is proven free. The visit then checks
+        // nothing is left behind for it.
+        retained.slots.release_all(&*retained.lease);
+        self.reconcile();
+        Ok(retained.lease)
     }
 
     /// Prove the failed run's training workspace released, then lift the quarantine and hand back
@@ -326,8 +363,8 @@ impl<'c, 'm> Learner<'c, 'm> {
 
     /// Select her shadow under this reply's admission and begin the reply.
     pub fn begin<'l>(&'l mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>, reply: &Reply<'_>) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
-        if let Some(quarantine) = self.quarantine() {
-            return Err(Refused { refusal: quarantine.clone(), admission });
+        if let Some(refusal) = self.quarantine().or(self.accounting()) {
+            return Err(Refused { refusal: refusal.clone(), admission });
         }
         // Everything that can refuse without native state is checked before the shadow is selected.
         if reply.labels.len() != reply.tokens.len() {
@@ -364,10 +401,8 @@ impl<'c, 'm> Learner<'c, 'm> {
         };
         let params = shadow_params(shadow, data);
         let selected = unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.ctx.model.as_ptr(), params) };
-        // The init ended: what it asked for stays held (a refusal in it already rolled itself back).
-        if let Some(retained) = self.holder().shadows.get(key) {
-            retained.slots.settle();
-        }
+        // The init ended, admitted or refused: native code's own buffers say what survived.
+        self.reconcile();
         if !selected {
             unsafe { sys::ggml_opt_result_free(result.as_ptr()) };
             let refusal = self.refusal("select_shadow");
@@ -443,6 +478,8 @@ impl LearnRun<'_, '_, '_> {
             return ended;
         }
         let status = unsafe { sys::llama_opt_learn_step(self.learner.ctx.as_ptr()) };
+        // The step's graph build may have asked for optimizer buffers: native code says what survived.
+        self.learner.reconcile();
         self.observe(status, "learn_step")
     }
 
@@ -452,6 +489,7 @@ impl LearnRun<'_, '_, '_> {
             return ended;
         }
         let status = unsafe { sys::llama_opt_learn_graph_step(self.learner.ctx.as_ptr()) };
+        self.learner.reconcile();
         self.observe(status, "learn_graph_step")
     }
 
@@ -655,6 +693,55 @@ fn shadow_params(shadow: &Shadow, data: *mut c_void) -> sys::llama_opt_params {
     }
 }
 
+/// What one visit found native code owning: bytes per shadow and role, and any buffer it could not
+/// attribute (an unknown kind).
+#[derive(Debug, Default)]
+struct Resident {
+    rows: Vec<(ShadowKey, Role, u64)>,
+    unknown: Option<String>,
+}
+
+impl Resident {
+    fn bytes(&self, key: ShadowKey, role: Role) -> u64 {
+        self.rows.iter().filter(|(k, r, _)| *k == key && *r == role).map(|(_, _, bytes)| *bytes).sum()
+    }
+
+    /// A buffer of an unknown kind, or one owned for a shadow this context does not retain.
+    fn unattributed<H>(&self, shadows: &Shadows<H>) -> Option<LearnRefusal> {
+        if let Some(kind) = &self.unknown {
+            return Some(LearnRefusal { step: "accounting", message: format!("native code owns an optimizer buffer of unknown kind {kind:?}") });
+        }
+        self.rows.iter().find(|(key, _, bytes)| *bytes > 0 && shadows.get(*key).is_none()).map(|(_, role, bytes)| LearnRefusal {
+            step: "accounting",
+            message: format!("native code owns {bytes} {role:?} optimizer bytes for a shadow this context does not retain"),
+        })
+    }
+}
+
+unsafe extern "C" fn visited(
+    shadow: *const sys::llama_adapter_lora,
+    _device: *const c_char,
+    _buffer_type: *const c_char,
+    kind: *const c_char,
+    bytes: usize,
+    _host: bool,
+    data: *mut c_void,
+) {
+    // A panic must never unwind into native code.
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: `data` is the Resident `reconcile` passed for this synchronous visit.
+        let resident = unsafe { &mut *data.cast::<Resident>() };
+        let (Some(shadow), false) = (NonNull::new(shadow.cast_mut()), kind.is_null()) else { return };
+        // SAFETY: `kind` is a NUL-terminated name native code owns for the call.
+        let kind = unsafe { CStr::from_ptr(kind) };
+        let bytes = u64::try_from(bytes).unwrap_or(u64::MAX); // unwrap_or: a size past u64 cannot be admitted, so it reads as more than any charge
+        match Role::of(kind) {
+            Some(role) => resident.rows.push((ShadowKey(shadow), role, bytes)),
+            None => resident.unknown = Some(kind.to_string_lossy().into_owned()),
+        }
+    }));
+}
+
 unsafe extern "C" fn constant_optimizer(data: *mut c_void) -> sys::ggml_opt_optimizer_params {
     // SAFETY: `data` is the context's boxed CallbackHolder, freed only after the context itself.
     unsafe { (*data.cast::<CallbackHolder>()).optimizer }
@@ -832,6 +919,22 @@ mod tests {
         assert_eq!(shadows.len(), 1, "one release leaves the other shadow, and recovery, waiting");
         assert!(shadows.take(key(2)).is_some());
         assert_eq!(shadows.len(), 0);
+    }
+
+    // what this catches (Codex on #6149): a visit's buffer of an unknown kind, or owned for a shadow
+    // this context does not retain, absorbed quietly instead of an accounting defect; and one
+    // shadow's roles summed into another's.
+    #[test]
+    fn a_visit_attributes_bytes_by_shadow_and_role_or_names_the_defect() {
+        let mut shadows: Shadows<()> = Shadows::new();
+        assert!(shadows.retain(key(1), ()).is_ok());
+        let resident = Resident { rows: vec![(key(1), Role::Static, 270_368), (key(1), Role::Host, 32)], unknown: None };
+        assert_eq!((resident.bytes(key(1), Role::Static), resident.bytes(key(1), Role::Host)), (270_368, 32));
+        assert!(resident.unattributed(&shadows).is_none());
+        let stray = Resident { rows: vec![(key(2), Role::Host, 32)], unknown: None };
+        assert!(stray.unattributed(&shadows).is_some_and(|r| r.step == "accounting"));
+        let unknown = Resident { rows: Vec::new(), unknown: Some("optimizer_moments".into()) };
+        assert!(unknown.unattributed(&shadows).is_some_and(|r| r.message.contains("optimizer_moments")));
     }
 
     // what this catches: the native "whole window" encoding leaking past the boundary, or a real
