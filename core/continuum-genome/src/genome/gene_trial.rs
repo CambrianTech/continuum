@@ -341,14 +341,12 @@ impl continuum_saved_state::SavedState for Trials {
 /// The trial file.
 pub struct GeneTrials {
     store: continuum_saved_state::Store<Trials>,
-    dir: PathBuf,
 }
 
 impl GeneTrials {
     /// The trials kept in genome directory `dir` (`<dir>/trials.json`).
     pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
-        let dir = dir.into();
-        Self { store: continuum_saved_state::Store::at(dir.clone()), dir }
+        Self { store: continuum_saved_state::Store::at(dir.into()) }
     }
 
     /// `~/.continuum/genome/trials.json`; `None` without a home directory.
@@ -356,9 +354,9 @@ impl GeneTrials {
         crate::paths::ContinuumLayout::home().ok().map(|layout| Self::in_dir(layout.genome()))
     }
 
-    /// The genome directory the trials are kept in.
-    pub fn dir(&self) -> &Path {
-        &self.dir
+    /// The trials file (`<genome>/trials.json`).
+    pub fn file(&self) -> Option<PathBuf> {
+        self.store.path(&continuum_saved_state::Singleton)
     }
 
     /// Every trial. A missing file is no trials; an unreadable one is an error the caller
@@ -367,7 +365,7 @@ impl GeneTrials {
         match self.store.load(&continuum_saved_state::Singleton, &()).matched() {
             Ok(all) => Ok(all),
             Err(continuum_saved_state::Loaded::Absent) => Ok(Vec::new()),
-            Err(found) => Err(format!("gene trials in {}: {found}", self.dir.display())),
+            Err(found) => Err(format!("gene trials {:?}: {found}", self.file())),
         }
     }
 
@@ -381,7 +379,7 @@ impl GeneTrials {
     fn save(&self, all: &[GeneTrial]) -> Result<(), String> {
         match self.store.save(&continuum_saved_state::Singleton, &(), &all.to_vec()) {
             Ok(_saved) => Ok(()),
-            Err(error) => Err(format!("gene trials in {}: {error}", self.dir.display())),
+            Err(error) => Err(format!("gene trials {:?}: {error}", self.file())),
         }
     }
 
@@ -522,7 +520,9 @@ mod tests {
         assert!(store.decide(t.id, TrialState::Promoted, verdict, 60).unwrap().is_none(), "a retired gene stays retired");
         assert!(her_genes(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
 
-        // A row the deleted card gate wrote still reads, its arms carried into the new names.
+        // A row the deleted card gate wrote still reads, its arms carried into the new names: a
+        // pre-envelope bare array on disk, met by a fresh store as a restarted node meets it.
+        let old = tempfile::tempdir().expect("test: dir");
         let legacy = serde_json::json!([{
             "id": Uuid::from_u128(1), "persona_id": kimi, "alias": "g", "path": "/g.gguf",
             "base_model_id": "b", "share_milli": 500, "opened_at_ms": 1, "state": "promoted",
@@ -530,8 +530,8 @@ mod tests {
             "candidate": {"settled": 10, "passed": 9}, "stable": {"settled": 10, "passed": 2},
             "credited_cards": [], "looked": 1
         }]);
-        std::fs::write(store.dir().join("trials.json"), legacy.to_string()).expect("test: legacy row");
-        let rows = store.load().expect("a legacy trial file reads");
+        std::fs::write(old.path().join("trials.json"), legacy.to_string()).expect("test: legacy row");
+        let rows = GeneTrials::in_dir(old.path()).load().expect("a legacy trial file reads");
         assert_eq!(rows[0].verdict.as_ref().map(|v| v.with_gene.passed), Some(9));
         assert_eq!(rows[0].trained_from, None);
     }
