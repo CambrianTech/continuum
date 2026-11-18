@@ -143,7 +143,7 @@ impl TrainingTriggerState {
                     break;
                 }
                 Prepared::MemoryShort(wait) => {
-                    memory_short(&key, &wait);
+                    memory_short(&key, AdmissionPhase::Prepare, &wait);
                     pass.deferred = true;
                     break;
                 }
@@ -209,7 +209,7 @@ impl TrainingTriggerState {
                 Next::Stop => break,
                 Next::Fenced => return Ok(pass),
                 Next::MemoryShort(wait) => {
-                    memory_short(&key, &wait);
+                    memory_short(&key, AdmissionPhase::StepRevalidation, &wait);
                     pass.deferred = true;
                     break;
                 }
