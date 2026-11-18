@@ -530,6 +530,17 @@ own observations (a child whose allocations the engine's ledger confirms); negat
 never zero external. These are the existing footprint, lease and custody types, adapted where they
 live; nothing here is a second governor.
 
+**Every node that lives has an identity (`Part::id`).** A part with a lifetime, durable state, or
+anything that references it (a persona, an engine incarnation, an allocation or claim, a gene, a
+learning job, a residency, an engram) carries a TYPED id (`AllocationId`, `EngineIncarnationId`,
+`EngramId`; never a bare `Uuid` or string, so one kind is never passed for another). Attribution,
+lifecycle outcomes and drift all speak in these ids ("charged to allocation X", "suspend pending on
+claim Y", "drift under incarnation Z"). Identities minted at runtime are UUIDv7 (time-ordered, so
+logs, probes and drift reports sort by birth). A natural identity is kept where one exists and is
+never shadowed by a second: a persona's durable `PeerId`; an engine incarnation's pid and start
+time (what proves it alive or dead); a gene's or blob's content hash. Pure values (a menu line, a
+computed phenotype) are data, not nodes, and carry none.
+
 **Both capabilities walk the tree (the composite).** Every part exposes its children through the
 same interface, and the default methods fold them, so a part implements only its own direct
 answers. `persona.held()` walks her mind, genome, body, residency and learning; a parent never
