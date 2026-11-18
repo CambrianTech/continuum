@@ -8,6 +8,7 @@
 //! `llama_state_seq_*` over `core/llama`): never a llama-server process configured by launch
 //! flags. Each [`residency::Tier`] adapter wraps those calls; the pipeline decides when they run.
 
+pub mod engine;
 pub mod persona;
 pub mod pipeline;
 pub mod residency;

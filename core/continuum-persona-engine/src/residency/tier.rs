@@ -23,6 +23,8 @@ pub enum Native {
     NotAsked,
     /// The backend refused, by its status and the name it gives that status.
     Refused { status: i32, name: String },
+    /// The backend refused with a message and no status.
+    Reported(String),
 }
 
 impl std::fmt::Display for Native {
@@ -30,6 +32,7 @@ impl std::fmt::Display for Native {
         match self {
             Self::NotAsked => Ok(()),
             Self::Refused { status, name } => write!(f, " (backend status {status}: {name})"),
+            Self::Reported(message) => write!(f, " (backend: {message})"),
         }
     }
 }

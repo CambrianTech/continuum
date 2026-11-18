@@ -6,6 +6,13 @@ description = "The persona engine's residency tier over the fork's native person
 
 [features]
 metal = ["llama/metal"]
+# The raw-context accessor custody replays need to put foreign state on a stream. Never on the
+# production path.
+test-fixtures = []
+
+[[example]]
+name = "persona_switch"
+required-features = ["test-fixtures"]
 
 [dependencies]
 continuum-persona-engine = { path = "../continuum-persona-engine" }

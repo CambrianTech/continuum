@@ -1,16 +1,18 @@
-//! The persona engine on a real model: N minds take turns through `Roles` and the `UnifiedTier`, one
-//! decoding at a time. Each turn stages the next mind (her copy-in), hands off, retires the previous
-//! mind (her copy-out to RAM), then decodes. Reports the switch (handoff + copy-out + copy-in) and the
-//! decode rate, separately and together.
+//! The persona engine on a real model: N minds take turns through `PersonaEngine` over the
+//! `UnifiedTier`, one decoding at a time. Each turn stages the next mind (her copy-in), hands off
+//! (after the active mind's decode landed), releases the previous mind (her copy-out to RAM), then
+//! submits the new mind's steps. Reports the switch (stage + handoff + release) and the decode rate,
+//! separately and together.
 //!
-//! cargo run --release --features metal --example persona_switch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>
+//! cargo run --release --features metal,test-fixtures --example persona_switch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>
 
 use std::time::{Duration, Instant};
 
+use continuum_persona_engine::engine::PersonaEngine;
 use continuum_persona_engine::persona::{Epoch, PersonaId};
-use continuum_persona_engine::pipeline::{Identified, Roles};
-use continuum_persona_engine::residency::{Direction, FenceTag, Tier};
-use continuum_persona_llama::{Landed, Rebind, UnifiedTier};
+use continuum_persona_engine::pipeline::Identified;
+use continuum_persona_engine::residency::{Direction, Execute, FenceTag, Tier};
+use continuum_persona_llama::{Rebind, Step, UnifiedTier};
 use llama::{Batch, ContextParams, FlashAttn, Model, ModelParams};
 
 /// One mind in the run: who she is, where her history ends, and her last sampled token.
@@ -73,9 +75,10 @@ fn adopted_context_is_refused(model: &Model, ctx: &mut llama::Context<'_>) -> Re
 }
 
 /// Codex on #6134 (de0e34a97): a refused move must not cost her the blocks she had. Epoch 1 decodes and
-/// parks in RAM; another sequence's state lands on her stream; epoch 2's move in is refused there; once
-/// the stream is clear epoch 1 binds back at the position she left (her byte-identical continuation
-/// after a bind is the fork's own test, test-persona-blocks).
+/// parks in RAM; another sequence's state lands on her stream (through the raw context, as an adopted
+/// context would); epoch 2's move in is refused there; once the stream is clear epoch 1 binds back at
+/// the position she left (her byte-identical continuation after a bind is the fork's own test,
+/// test-persona-blocks).
 fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama::Context<'_>) -> Result<(), String> {
     let tokens = model.tokenize("She keeps her own notes.", true, false)?;
     let her = PersonaId(uuid::Uuid::new_v4());
@@ -83,25 +86,22 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     let mut tier = UnifiedTier::new(ctx);
     tier.begin(tag(1, Direction::In)).map_err(|e| e.to_string())?;
     let seq = tier.stream_of(her).ok_or("replay: she is not bound")?.seq();
-    let mut batch = Batch::allocated(tokens.len() as i32, 1);
-    for (i, &t) in tokens.iter().enumerate() {
-        batch.push(t, i as i32, &[seq], false);
-    }
-    tier.context().decode(&batch)?;
-    let held_to = tier.context().memory_seq_pos_max(seq);
+    tier.submit(her, Epoch(1), Step { tokens: tokens.clone(), from: 0, logits_at_end: false }).map_err(|e| e.to_string())?;
+    tier.settle().map_err(|e| e.to_string())?;
+    let held_to = tier.position_of(her).ok_or("replay: she is not bound after her decode")?;
     tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
     let first = *tokens.first().ok_or("replay: no tokens")?;
     let mut other = Batch::allocated(1, 1);
     other.push(first, 0, &[seq], false);
-    tier.context().decode(&other)?;
+    tier.raw_context().decode(&other)?;
     if tier.begin(tag(2, Direction::In)).is_ok() {
         return Err("replay: epoch 2 was bound over another sequence's state".into());
     }
-    tier.context().memory_seq_rm(seq, -1, -1);
+    tier.raw_context().memory_seq_rm(seq, -1, -1);
     tier.begin(tag(1, Direction::In)).map_err(|e| format!("replay: her parked epoch 1 was lost: {e}"))?;
-    let back = tier.stream_of(her).ok_or("replay: she is not bound again")?.seq();
-    if tier.context().memory_seq_pos_max(back) != held_to {
-        return Err(format!("replay: epoch 1 came back holding {} instead of {held_to}", tier.context().memory_seq_pos_max(back)));
+    let back = tier.position_of(her).ok_or("replay: she is not bound again")?;
+    if back != held_to {
+        return Err(format!("replay: epoch 1 came back holding {back} instead of {held_to}"));
     }
     tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
     println!("persona_switch: replay: a refused newer epoch kept her parked epoch 1, which bound back at position {held_to}");
@@ -122,7 +122,7 @@ fn main() -> Result<(), String> {
     let mut ctx = model.new_context(params)?;
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
-    let mut tier = UnifiedTier::new(&mut ctx);
+    let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx));
 
     let mut parked: Vec<Mind> = (0..minds)
         .map(|i| {
@@ -133,7 +133,6 @@ fn main() -> Result<(), String> {
         })
         .collect::<Result<_, String>>()?;
 
-    let mut roles: Roles<Mind, Landed> = Roles::default();
     let (mut same_seq, mut other_seq) = (Vec::new(), Vec::new());
     let (mut switches, mut decode_time, mut decoded, mut prefill_time) = (Vec::new(), Duration::ZERO, 0usize, Duration::ZERO);
     let run = Instant::now();
@@ -141,14 +140,11 @@ fn main() -> Result<(), String> {
         // the next mind in turn order (the scheduler's choice in the engine; round-robin here)
         let next = parked.remove(0);
         let t = Instant::now();
-        let fence = tier.begin(FenceTag { persona: next.id, epoch: next.epoch, direction: Direction::In }).map_err(|e| e.to_string())?;
-        let rebind = tier.last_rebind();
-        roles.stage(next, fence).map_err(|r| format!("{:?}", r.reason))?;
-        roles.handoff().map_err(|e| format!("{e:?}"))?;
-        if let Some(out) = roles.awaiting_copy_out() {
-            let fence = tier.begin(out).map_err(|e| e.to_string())?;
-            roles.begin_retire(fence).map_err(|r| format!("{:?}", r.reason))?;
-            parked.push(roles.release_retired().map_err(|e| format!("{e:?}"))?);
+        engine.stage(next).map_err(|r| r.reason.to_string())?;
+        let rebind = engine.tier().last_rebind();
+        engine.handoff().map_err(|e| e.to_string())?;
+        if engine.retiring().is_some() {
+            parked.push(engine.release_retired().map_err(|e| format!("{e:?}"))?);
         }
         let switched = t.elapsed();
         if turn > 0 {
@@ -160,41 +156,40 @@ fn main() -> Result<(), String> {
             }
         }
 
-        let mind = roles.active_mut().ok_or("no active mind after handoff")?;
-        let seq = tier.stream_of(mind.id).ok_or("the active mind is not bound")?.seq();
-        let ctx = tier.context();
-        if mind.pos == 0 {
+        let (pos, prompt) = {
+            let mind = engine.active_mut().ok_or("no active mind after handoff")?;
+            (mind.pos, if mind.pos == 0 { mind.prompt.clone() } else { Vec::new() })
+        };
+        let mut pos = pos;
+        let mut last = engine.active_mut().map(|mind| mind.last).ok_or("no active mind")?;
+        if !prompt.is_empty() {
             let t = Instant::now();
-            let mut last_index = 0;
-            for chunk in mind.prompt.chunks(2048) {
-                let mut batch = Batch::allocated(chunk.len() as i32, 1);
-                for (j, &tok) in chunk.iter().enumerate() {
-                    batch.push(tok, mind.pos + j as i32, &[seq], j + 1 == chunk.len());
-                }
-                ctx.decode(&batch)?;
-                mind.pos += chunk.len() as i32;
-                last_index = chunk.len() as i32 - 1;
+            for chunk in prompt.chunks(2048) {
+                engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true }).map_err(|e| e.to_string())?;
+                pos += chunk.len() as i32;
+                last = argmax(engine.tier().logits_ith(chunk.len() as i32 - 1));
             }
-            mind.last = argmax(ctx.logits_ith(last_index));
             prefill_time += t.elapsed();
         }
         let t = Instant::now();
         for _ in 0..decode_tokens {
-            let mut batch = Batch::allocated(1, 1);
-            batch.push(mind.last, mind.pos, &[seq], true);
-            ctx.decode(&batch)?;
-            mind.pos += 1;
-            mind.last = argmax(ctx.logits_ith(0));
+            engine.submit(Step { tokens: vec![last], from: pos, logits_at_end: true }).map_err(|e| e.to_string())?;
+            pos += 1;
+            last = argmax(engine.tier().logits_ith(0));
         }
         decode_time += t.elapsed();
         decoded += decode_tokens;
+        let mind = engine.active_mut().ok_or("no active mind after her decode")?;
+        mind.pos = pos;
+        mind.last = last;
     }
 
     // a stale request for an older epoch of a held mind is refused and leaves her blocks: she still binds
     let probe = parked.first().ok_or("no parked mind to probe")?;
-    let stale = tier.begin(FenceTag { persona: probe.id, epoch: Epoch(0), direction: Direction::In });
-    let kept = tier.begin(FenceTag { persona: probe.id, epoch: probe.epoch, direction: Direction::In }).is_ok();
-    println!("persona_switch: stale epoch refused={} her blocks still bind={kept}", stale.is_err());
+    let stale = Mind { id: probe.id, epoch: Epoch(0), prompt: Vec::new(), pos: 0, last: 0 };
+    let refused = engine.stage(stale).is_err();
+    let kept = engine.stage(parked.remove(0)).is_ok();
+    println!("persona_switch: stale epoch refused={refused} her blocks still bind={kept}");
     switches.sort();
     same_seq.sort();
     other_seq.sort();
@@ -214,7 +209,7 @@ fn main() -> Result<(), String> {
         run.elapsed().as_secs_f64()
     );
     println!(
-        "persona_switch: rebinds (binds of a mind saved before) same sequence n={} p50 {:.2} ms | other sequence (cells relabeled over her span) n={} p50 {:.2} ms; stage, handoff and copy-out run serially before her decode, not overlapped",
+        "persona_switch: rebinds (binds of a mind saved before) same sequence n={} p50 {:.2} ms | other sequence (cells relabeled over her span) n={} p50 {:.2} ms; stage, handoff and release run serially before her decode, not overlapped",
         same_seq.len(),
         at(&same_seq, 0.5),
         other_seq.len(),
