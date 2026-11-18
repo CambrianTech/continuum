@@ -136,8 +136,7 @@ pub(super) async fn run_persona_host(
         let plan_ready = serving_plan_rx
             .borrow()
             .as_ref()
-            .map(|p| p.fits_on_gpu)
-            .unwrap_or(false);
+            .is_some_and(|p| p.fits_on_gpu);
         // Lane-source-agnostic hosting (misfit / grid design): when the
         // operator pinned an EXTERNAL OpenAI-compatible endpoint, there is
         // no local lane to "fit on GPU" — enter the ready-check regardless

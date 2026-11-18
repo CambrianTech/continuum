@@ -76,10 +76,7 @@ pub struct DesiredRole {
     /// the serving daemon's ServingPlan. Defaults to 1 from `plan_for_tier`;
     /// `PersonaSpawnerModule::set_serving` overrides it from the live plan.
     pub lanes: u32,
-    /// Host-fit served context window (tokens) the gateway llama-server was
-    /// launched with — the planner's single source of truth, NOT a constant.
-    /// Defaults to `MIN_SERVE_CTX` from `plan_for_tier` (runnable floor when no
-    /// plan is published); `set_serving` overrides it from the live plan.
+    /// Verified context capacity in tokens. An unbound role has zero capacity.
     pub served_context_window: u32,
 }
 
@@ -148,10 +145,9 @@ pub fn plan_for_roles(
             // real, honest, GPU-residency-aware pick.
             model_id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".to_string(),
             // Default single lane; set_serving overrides from the live plan.
-            lanes: 1,
-            // Runnable floor until the serving daemon publishes a host-fit
-            // window.
-            served_context_window: crate::inference::planning::MIN_SERVE_CTX,
+            lanes: 0,
+            // Geometry is unbound until the serving owner verifies it.
+            served_context_window: 0,
         })
         .collect()
     // TODO #133 slice 14: host every declared role after RoleAwareProvider +
@@ -208,8 +204,7 @@ pub struct PersonaSpawnerModule {
     /// actually spawns — single source of truth, not a hardcode.
     serving_base_model: Option<String>,
     serving_lanes: u32,
-    /// Host-fit served context window from the live ServingPlan. Defaults to
-    /// `MIN_SERVE_CTX` (runnable floor); `set_serving` sets the real value.
+    /// Context capacity last verified by the serving owner.
     serving_context_window: u32,
     /// How many citizens of the tier's (homogeneous) role template to host.
     /// Default 1. Driven by `CONTINUUM_PERSONA_FLOOR` at boot — the SAME
@@ -268,9 +263,9 @@ impl PersonaSpawnerModule {
             hw_capability,
             tier_category,
             serving_base_model: None,
-            serving_lanes: 1,
+            serving_lanes: 0,
             remembered_lanes: None,
-            serving_context_window: crate::inference::planning::MIN_SERVE_CTX,
+            serving_context_window: 0,
             population: 1,
             citizens: vec![RoleId::Helper],
             grid_roster: None,
@@ -351,6 +346,7 @@ impl PersonaSpawnerModule {
         } else {
             self.serving_base_model = None;
             self.serving_lanes = 0;
+            self.serving_context_window = 0;
             false
         }
     }

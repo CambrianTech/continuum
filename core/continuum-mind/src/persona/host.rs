@@ -418,13 +418,13 @@ impl PersonaSpawnSupervisor {
     ) -> Vec<crate::persona::spawner_module::MaterializedPersonaPlan> {
         // A pre-1970 clock reads 0 here: every backoff reads as expired: a retry, never a stuck seat.
         let now = EpochMs::now().millis();
-        let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner()); // Preserve the recorded retry deadlines after lock poisoning.
         filter_by_backoff_with(now, &map, plans)
     }
 
     fn note_slot_failure(&self, persona_id: Uuid, reason: &str) {
         let now = EpochMs::now().millis();
-        let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner());
+        let mut map = self.slot_backoff.lock().unwrap_or_else(|e| e.into_inner()); // Preserve the recorded retry deadlines after lock poisoning.
         let entry = map.entry(persona_id).or_insert(SlotBackoff { attempts: 0, until_ms: 0 });
         entry.attempts = entry.attempts.saturating_add(1);
         let delay = backoff_delay(entry.attempts);
@@ -681,7 +681,7 @@ impl PersonaSpawnSupervisor {
                         self.note_slot_failure(pid, &format!("{err}"));
                     }
                     summary.failures.push(BootSlotFailure {
-                        slot_index: slot_index.unwrap_or(slot_idx),
+                        slot_index: slot_index.unwrap_or(slot_idx), // Before slot assignment the roster ordinal identifies the failed request.
                         role: Some(role),
                         persona_id,
                         reason: format!("{err}"),
@@ -731,7 +731,7 @@ impl PersonaSpawnSupervisor {
         let quiesced = self
             .registry
             .quiesced_flag(persona_id)
-            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)));
+            .unwrap_or_else(|| std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))); // An unregistered service starts with a clear quiescence flag.
         // Her obligation store (card 920619c5), on the same wired executor her hands use.
         let obligations = crate::persona::obligation::Obligations::new(executor, persona_id, &agent_name);
         let handle = match spawn_persona_service(
@@ -815,7 +815,10 @@ pub(crate) struct SlotBackoff {
 /// Doubling from 2 s, capped at 10 min: a refused seat is tried again soon in case the
 /// cause was transient (a daemon mid-restart), then rarely, and never at pass rate.
 pub(crate) fn backoff_delay(attempts: u32) -> std::time::Duration {
-    std::time::Duration::from_secs((2u64 << attempts.saturating_sub(1).min(9)).min(600))
+    // derived-or-floor: cap retries at the existing ten-minute service backoff even after repeated failures.
+    const MAX_RETRY_DELAY_SECS: u64 = 600;
+    let seconds = if attempts > 9 { MAX_RETRY_DELAY_SECS } else { 2u64 << attempts.saturating_sub(1) };
+    std::time::Duration::from_secs(seconds)
 }
 
 /// Pure half of the backoff filter. Plans whose persona is inside its backoff are dropped.
