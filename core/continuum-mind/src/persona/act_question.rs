@@ -549,6 +549,7 @@ pub(crate) async fn ask_the_act_question(
                     // a self-tick can skip the redundant musing cycle.
                     return WorkQuestionOutcome {
                         drove: true,
+                        board: BoardRead::Answered,
                         room: Some(turn_room),
                         capacity,
                         engaged: true,

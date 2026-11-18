@@ -96,7 +96,8 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+            context_window: 65_536,
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
@@ -195,7 +196,8 @@ use super::*;
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::inference::planning::MIN_SERVE_CTX,
+                // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+                context_window: 65_536,
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,

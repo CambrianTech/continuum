@@ -170,6 +170,7 @@ pub(crate) async fn drive_initiative_turn(
     }
     WorkQuestionOutcome {
         drove: true,
+        board: crate::persona::act_question::BoardRead::Answered,
         room: Some(turn_room),
         capacity,
         engaged,
