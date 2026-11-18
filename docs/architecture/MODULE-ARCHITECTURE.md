@@ -416,6 +416,68 @@ learners, workspace, custody claims, slot KV; retired by the serving lifecycle's
 never dropped at condemn).
 
 
+### 9.4 The Persona As A Being: Her Parts Are Objects, Her Verbs Are Traits
+
+A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
+anatomy: each part is an object that owns its state, each thing she does is a trait (a verb any
+fitting part implements), and the world she lives in is outside her. The `Persona` is the root
+object; she moves whole (CONTINUUM-ENGINE 4.14), so everything that is hers is reachable from her
+and released with her.
+
+**Her parts (nouns, objects; one directory each under `persona/`):**
+
+```
+Persona                    one being: identity, mind, genome, body, residency, learning
+├── identity/   Identity       who she is: PeerId, name, role, home
+├── mind/       Mind           her cognition
+│   ├── workspace/     Workspace, WorkspaceCycle   the global workspace; one turn at a time
+│   ├── working_memory/ WorkingMemory              what she holds in mind now
+│   ├── hippocampus/   Hippocampus                 her episodic memory: engrams in, recall out
+│   │   └── engram/    Engram                      one memory trace, with its cause and strength
+│   ├── amygdala/      Amygdala                    salience: what matters, how urgently; the instant voice
+│   ├── attention/     Attention                   her focus and its priority (TurnAttention today)
+│   └── faculties/     RecallFaculty, Deliberation the workspace's specialists
+├── genome/     Genome         her genes (§9.3); Phenotype = the layers expressed this turn
+├── body/       Body           what she acts and senses with
+│   ├── hands/         Hands      her tools, as working sets per activity (plan goal 10)
+│   ├── voice/         Voice      speech and publication into a room
+│   ├── senses/        Senses     vision, hearing, the perception sources she reads
+│   └── mobility/      Mobility   where she is: room, activity, node; moving across the grid
+├── residency/  Residency      where her native blocks live (device, host, flash)
+│   └── token_history/ TokenHistory   her token ids, appended once, never re-rendered
+└── learning/   Learning       her journal, learners and credits: corrections become genes
+```
+
+**Her verbs (traits; a part implements the ones it can do):**
+
+| Trait | Meaning | Implemented by |
+|---|---|---|
+| `Perceive` | take in what happened, as items for her workspace | Senses, her sources |
+| `Attend` | choose what her mind is on, and how urgently | Attention, Amygdala |
+| `Recall` | bring back what she knows that bears on it | Hippocampus, RecallFaculty |
+| `Deliberate` | think a turn through | Mind's faculties |
+| `Express` | turn her genome into this turn's phenotype | Genome (`compose`) and her cycle (`adopt_genes`) |
+| `Act` | change the world: a tool call, a reply, a move | Hands, Voice, Mobility |
+| `Remember` | lay down an engram from what she did | Hippocampus |
+| `Learn` | turn a reviewed correction into a gene | Learning |
+| `Consolidate` | dream: replay, prune, strengthen | Hippocampus, Learning |
+| `Swap` | stage, bind and retire her state between tiers in milliseconds | Residency, TokenHistory |
+| `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
+
+**The world (outside her; she reaches it only through traits):** rooms and activities, cards
+and the board, tool definitions, other citizens, the engine and its incarnations, the node's
+service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
+every persona through their interfaces; none of them holds a persona's state, and no persona
+holds theirs.
+
+**Where today's code stands against this map:** `WorkspaceCycle`, `WorkingMemory`,
+`RecallFaculty`, `Genome`, `GeneResidency` and `Phenotype` exist as objects. The hippocampus is
+one node-wide service module (`HippocampusModule`), not her own organ; the amygdala, the engram,
+the body and the `Persona` root have no owner yet; the substrate's `BrainRegion` trait is how an
+organ is scheduled, and her organs implement it. Each repair moves its area onto this map (§9.3's
+rules), one owner at a time.
+
+
 ## 10. The Recursive Bootstrap
 
 Every operation that today is a script (`npx tsx generator/CommandGenerator.ts`, `cargo test`, `scripts/generate-structure.ts`, `install.sh`'s ad-hoc steps) is a candidate for promotion to a command. The default state going forward is: if it operates on a module, it is itself a command, and that command lives in a module.
