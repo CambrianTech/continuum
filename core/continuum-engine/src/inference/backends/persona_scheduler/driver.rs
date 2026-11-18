@@ -1,4 +1,5 @@
-//! The driver thread: serves turns one after another on one context, through the persona engine.
+//! The driver thread: a frame loop over one context (CONTINUUM-ENGINE 4.15). Each frame advances one
+//! turn by one step, so no mind waits behind another's whole prompt; one mind decodes at a time.
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -130,17 +131,77 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time)"));
     state.send_replace(EngineState::Ready(geometry));
     let mut driver = Driver { model, batch, engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)), parked: HashMap::new() };
-    for req in &requests {
-        let respond = req.response_tx.clone();
-        let event = match driver.serve(req) {
-            Ok(done) => done,
+    // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
+    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. It
+    // blocks only when no turn is left, on the queue itself: a wake, never a poll.
+    let mut turns: Vec<Turn> = Vec::new();
+    loop {
+        if turns.is_empty() {
+            match requests.recv() {
+                Ok(req) => driver.admit(req, &mut turns),
+                Err(_) => return,
+            }
+        }
+        while let Ok(req) = requests.try_recv() {
+            driver.admit(req, &mut turns);
+        }
+        let Some(index) = driver.pick(&turns) else { continue };
+        match driver.step(&mut turns[index]) {
+            Ok(Advanced::Continues) => {}
+            Ok(Advanced::Done(done)) => {
+                let turn = turns.remove(index);
+                let _ = turn.req.response_tx.send(done);
+            }
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
-                TokenEvent::Error(refused.to_string())
+                let turn = turns.remove(index);
+                let _ = turn.req.response_tx.send(TokenEvent::Error(refused.to_string()));
             }
-        };
-        let _ = respond.send(event);
+        }
     }
+}
+
+/// A turn in flight: what she asked, its token ids, and how far it has come. The frame loop
+/// advances it a step at a time; between steps another mind may be bound, and her blocks hold
+/// exactly what her turn has computed so far.
+struct Turn {
+    req: GenerationRequest,
+    id: PersonaId,
+    one_off: bool,
+    prompt: Vec<i32>,
+    basis: Basis,
+    genes: Genes,
+    sampler: llama::Sampler,
+    phase: Phase,
+    submitted: Instant,
+    spent: Spent,
+}
+
+/// Where a turn stands.
+enum Phase {
+    /// Not bound yet: what her prefill starts from is decided against her blocks when she is.
+    Waiting,
+    /// Her prompt from `pos` is still to prefill.
+    Prefilling { pos: usize },
+    /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
+    Decoding { token: i32, pos: i32, generated: usize, output: String },
+}
+
+/// Where a turn's time went, for its one probe row.
+#[derive(Default)]
+struct Spent {
+    reused: usize,
+    first_step: Option<std::time::Duration>,
+    switch: std::time::Duration,
+    prefill: std::time::Duration,
+    decode: std::time::Duration,
+    switches: u64,
+}
+
+/// What a step did to its turn.
+enum Advanced {
+    Continues,
+    Done(TokenEvent),
 }
 
 /// The one context: `STREAMS` sequences (the active mind's and the next one's).
@@ -169,91 +230,173 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
 }
 
 impl Driver<'_, '_> {
-    /// One turn: switch to her, prefill what her blocks do not hold, decode until she stops.
-    fn serve(&mut self, req: GenerationRequest) -> Result<TokenEvent, TurnError> {
-        let started = Instant::now();
+    /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
+    /// or sampler that cannot be built is refused at once, before it waits for a frame.
+    fn admit(&self, req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
         };
         // special=true so chat-template markers tokenize as the model's own special tokens
-        let prompt = self.model.tokenize(&req.prompt, true, true).map_err(TurnError::Tokenize)?;
-        let basis = Basis { genes: signature(&req.active_loras) };
-        let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
+        let built = self
+            .model
+            .tokenize(&req.prompt, true, true)
+            .map_err(TurnError::Tokenize)
+            .and_then(|prompt| sampling::sampler(self.model, &req.sampling).map(|sampler| (prompt, sampler)).map_err(TurnError::Sampler));
+        match built {
+            Ok((prompt, sampler)) => {
+                let basis = Basis { genes: signature(&req.active_loras) };
+                let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default() });
+            }
+            Err(refused) => {
+                let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
+            }
+        }
+    }
 
-        let switching = Instant::now();
-        self.switch_to(id, one_off)?;
-        let switched = switching.elapsed();
-        let from = {
+    /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
+    /// candidate; among candidates, `frame::pick` decides.
+    fn pick(&self, turns: &[Turn]) -> Option<usize> {
+        let mut seen = std::collections::HashSet::new();
+        let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
+        let active = self.engine.active();
+        let candidates: Vec<frame::Candidate> = eligible
+            .iter()
+            .map(|&index| {
+                let turn = &turns[index];
+                let (decoding, remaining) = match &turn.phase {
+                    Phase::Waiting => (false, turn.prompt.len()),
+                    Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
+                    Phase::Decoding { .. } => (true, 0),
+                };
+                let waited_ms = u64::try_from(turn.submitted.elapsed().as_millis()).unwrap_or(u64::MAX); // unwrap_or: a wait past u64 ms is the oldest
+                frame::Candidate { active: active == Some(turn.id), decoding, remaining, waited_ms }
+            })
+            .collect();
+        frame::pick(&candidates).map(|chosen| eligible[chosen])
+    }
+
+    /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
+    /// one token).
+    fn step(&mut self, turn: &mut Turn) -> Result<Advanced, TurnError> {
+        if turn.spent.first_step.is_none() {
+            turn.spent.first_step = Some(turn.submitted.elapsed());
+        }
+        if self.engine.active() != Some(turn.id) {
+            let switching = Instant::now();
+            self.switch_to(turn.id, turn.one_off)?;
+            turn.spent.switch += switching.elapsed();
+            turn.spent.switches += 1;
+        }
+        if matches!(turn.phase, Phase::Waiting) {
+            let basis = turn.basis.clone();
+            let prompt = &turn.prompt;
             let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-            let from = match plan(History { basis: &her.basis, tokens: &her.held }, History { basis: &basis, tokens: &prompt }) {
+            let from = match plan(History { basis: &her.basis, tokens: &her.held }, History { basis: &basis, tokens: prompt }) {
                 Prefill::Append { from } => from,
                 Prefill::Restart => 0,
             };
             her.held.truncate(from);
             her.basis = basis;
-            from
+            turn.spent.reused = from;
+            if from >= turn.prompt.len() {
+                return Err(TurnError::NothingDecoded);
+            }
+            turn.phase = Phase::Prefilling { pos: from };
+        }
+        let stepping = Instant::now();
+        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
+            Phase::Waiting => (Err(TurnError::NothingDecoded), false),
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
+            Phase::Decoding { token, pos, generated, output } => (self.decode_token(turn, token, pos, generated, output), true),
         };
+        let took = stepping.elapsed();
+        if decoding {
+            turn.spent.decode += took;
+        } else {
+            turn.spent.prefill += took;
+        }
+        if let Ok(Advanced::Done(TokenEvent::Done { tokens_generated, .. })) = &advanced {
+            self.report_footprint(turn.id, turn.one_off);
+            self.probe(turn, *tokens_generated);
+        }
+        advanced
+    }
 
-        let mut sampler = sampling::sampler(self.model, &req.sampling).map_err(TurnError::Sampler)?;
-        let mut pos = i32::try_from(from).map_err(|_| TurnError::TooLong)?;
-        // Only her final prompt position is sampled: the sampler accepts what it samples, so sampling
-        // an earlier chunk would advance her grammar, penalties and RNG on output that never happened
-        // (Codex on #6140). Earlier chunks request no logits and are settled, not read.
-        let chunks: Vec<&[i32]> = prompt[from..].chunks(self.batch.get()).collect();
-        let (last_chunk, earlier) = chunks.split_last().ok_or(TurnError::NothingDecoded)?;
-        for chunk in earlier {
-            self.engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: false, genes: Arc::clone(&genes) })?;
-            pos += i32::try_from(chunk.len()).map_err(|_| TurnError::TooLong)?;
+    /// One chunk of her prompt from `pos`. The last chunk asks for logits and samples her first
+    /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
+    fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
+        let end = (pos + self.batch.get()).min(turn.prompt.len());
+        let chunk = turn.prompt[pos..end].to_vec();
+        let last = end == turn.prompt.len();
+        let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
+        let len = chunk.len();
+        self.engine.submit(Step { tokens: chunk.clone(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        if !last {
             self.engine.settle()?;
+            self.record(|her| her.held.extend_from_slice(&chunk))?;
+            turn.phase = Phase::Prefilling { pos: end };
+            return Ok(());
         }
-        self.engine.submit(Step { tokens: last_chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) })?;
-        pos += i32::try_from(last_chunk.len()).map_err(|_| TurnError::TooLong)?;
-        let last = i32::try_from(last_chunk.len() - 1).map_err(|_| TurnError::TooLong)?;
-        let mut token = self.engine.tier().sample(&mut sampler, last);
-        self.record(|her| her.held.extend_from_slice(&prompt[from..]))?;
-        self.report_footprint(id, one_off);
-        let prefilled = started.elapsed().saturating_sub(switched);
-        let decoding = Instant::now();
+        let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
+        let token = self.engine.tier().sample(&mut turn.sampler, at);
+        self.record(|her| her.held.extend_from_slice(&chunk))?;
+        self.report_footprint(turn.id, turn.one_off);
+        let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
+        turn.phase = Phase::Decoding { token, pos, generated: 0, output: String::new() };
+        Ok(())
+    }
 
-        let mut generated = 0usize;
-        let mut output = String::new();
-        loop {
-            if self.model.is_eog_token(token) {
-                break;
-            }
-            let piece = self.model.token_to_piece(token);
-            output.push_str(&piece);
-            let _ = req.response_tx.send(TokenEvent::Token(piece));
-            generated += 1;
-            if generated >= req.max_tokens || req.stop_sequences.iter().any(|stop| output.ends_with(stop)) {
-                break;
-            }
-            self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&genes) })?;
-            pos += 1;
-            self.record(|her| her.held.push(token))?;
-            token = self.engine.tier().sample(&mut sampler, 0);
+    /// Emit her sampled token and, unless she stopped, decode it and sample the next.
+    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize, mut output: String) -> Result<Advanced, TurnError> {
+        let done = |turn: &Turn, generated: usize| {
+            let took = turn.submitted.elapsed();
+            Advanced::Done(TokenEvent::Done {
+                tokens_generated: generated,
+                elapsed_ms: took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis())),
+            })
+        };
+        if self.model.is_eog_token(token) {
+            return Ok(done(turn, generated));
         }
-        self.report_footprint(id, one_off);
-        let decoded = decoding.elapsed();
-        // One row per turn: where her seconds went (the switch, the prefill of what her blocks did
-        // not hold, the decode), so the one-mind gate (switch in ms, decode near the chip's rate,
-        // reuse >= 80%) is read from the live node, never inferred.
+        let piece = self.model.token_to_piece(token);
+        output.push_str(&piece);
+        // A caller that hung up has cancelled her turn: what her blocks computed stays hers.
+        if turn.req.response_tx.send(TokenEvent::Token(piece)).is_err() {
+            return Ok(done(turn, generated));
+        }
+        let generated = generated + 1;
+        if generated >= turn.req.max_tokens || turn.req.stop_sequences.iter().any(|stop| output.ends_with(stop)) {
+            return Ok(done(turn, generated));
+        }
+        self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
+        self.record(|her| her.held.push(token))?;
+        let next = self.engine.tier().sample(&mut turn.sampler, 0);
+        turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated, output };
+        Ok(Advanced::Continues)
+    }
+
+    /// One row per turn: where her seconds went (waiting for her first frame, switches, prefill of
+    /// what her blocks did not hold, decode), so the one-mind gate (switch in ms, decode near the
+    /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live.
+    fn probe(&self, turn: &Turn, generated: usize) {
+        let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX); // unwrap_or: past u64 ms reads as the most
         continuum_base::probe!(
             class = "persona.engine.turn",
-            persona = %id.0,
-            one_off = one_off,
-            prompt_tokens = prompt.len() as u64,
-            reused_tokens = from as u64,
-            switch_ms = switched.as_millis() as u64,
-            prefill_ms = prefilled.as_millis() as u64,
-            decode_ms = decoded.as_millis() as u64,
+            persona = %turn.id.0,
+            one_off = turn.one_off,
+            prompt_tokens = turn.prompt.len() as u64,
+            reused_tokens = turn.spent.reused as u64,
+            wait_ms = turn.spent.first_step.map_or(0, ms),
+            switches = turn.spent.switches,
+            switch_ms = ms(turn.spent.switch),
+            prefill_ms = ms(turn.spent.prefill),
+            decode_ms = ms(turn.spent.decode),
             generated = generated as u64,
+            total_ms = ms(turn.submitted.elapsed()),
             "persona engine turn"
         );
-        let took = started.elapsed();
-        let elapsed_ms = took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis()));
-        Ok(TokenEvent::Done { tokens_generated: generated, elapsed_ms })
     }
 
     /// Make `id` the active mind: her parked state comes back (or a new mind starts), the previous

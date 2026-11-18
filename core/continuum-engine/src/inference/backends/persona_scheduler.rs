@@ -18,6 +18,7 @@
 //! synchronous today), and paging cold minds out of RAM.
 
 mod driver;
+mod frame;
 mod geometry;
 mod sampling;
 
