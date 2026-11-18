@@ -1,52 +1,72 @@
-//! [`Roles`]: three places, one mind each. Exactly one mind is active, so one decodes at a time
-//! by construction: there is no count to configure and no way to hold a second active mind.
+//! [`Roles`]: one Core's three places, one mind each. Exactly one mind is active, so one decodes
+//! at a time on this Core by construction (the engine owns the list of Cores and the measured
+//! admission of another, CONTINUUM-ENGINE 4.14).
 //!
-//! - **next** is staged as data while the active mind decodes (a transfer, never a decode);
-//! - **handoff** binds next as active only once her stage fence completes, and moves the
-//!   previous active to retiring under the retire fence it is given;
-//! - **retiring** is released to its tier only after that fence completes.
+//! - **next** is staged as data under her copy-in fence while the active mind decodes;
+//! - **handoff** binds next once her fence lands and leaves the previous mind *awaiting copy-out*:
+//!   no read of her blocks starts before she has stopped being active;
+//! - **begin_retire** attaches the copy-out the completion owner started after the bind;
+//! - **release_retired** gives her back to her tier once that copy-out lands.
+//!
+//! Every refusal that receives owned values returns them ([`Refused`]): nothing is dropped.
 
-use crate::persona::{PersonaId, PersonaUnit};
-use crate::residency::Fence;
+use crate::persona::{Epoch, PersonaId, PersonaUnit};
+use crate::residency::{Direction, Fence, FenceTag};
 
-/// What the pipeline needs to know of a unit: whose it is.
+/// What the pipeline needs to know of a unit: whose it is and which generation.
 pub trait Identified {
     fn persona(&self) -> PersonaId;
+    fn epoch(&self) -> Epoch;
 }
 
 impl<B, T, G, L, D> Identified for PersonaUnit<B, T, G, L, D> {
     fn persona(&self) -> PersonaId {
         self.id()
     }
+    fn epoch(&self) -> Epoch {
+        PersonaUnit::epoch(self)
+    }
 }
 
-/// Staging refused: the next place is taken (one staged mind at a time), or she is already here.
+/// A refusal that hands back everything it was given.
+#[derive(Debug)]
+pub struct Refused<R, V> {
+    pub reason: R,
+    pub returned: V,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum StageRefusal {
     #[error("{staged:?} is already staged next")]
     NextOccupied { staged: PersonaId },
-    #[error("{persona:?} is already in the pipeline")]
+    #[error("{persona:?} is already in this Core")]
     AlreadyPresent { persona: PersonaId },
+    #[error("the fence moves {got:?}, not this unit's copy-in")]
+    WrongFence { got: FenceTag },
 }
 
-/// Handoff refused, with the reason the active mind keeps decoding.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum HandoffRefusal {
     #[error("nobody is staged")]
     NothingStaged,
-    #[error("{staged:?} is staged but her transfer has not completed")]
+    #[error("{staged:?} is staged but her copy-in has not landed")]
     NotReady { staged: PersonaId },
-    #[error("{retiring:?} is still retiring; the previous move must land first")]
+    #[error("{retiring:?} is still retiring; her copy-out must land first")]
     RetireInFlight { retiring: PersonaId },
 }
 
-/// Release refused: nobody retiring, or her move out has not landed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum RetireRefusal {
     #[error("nobody is retiring")]
     NothingRetiring,
+    #[error("{retiring:?}'s copy-out was already begun")]
+    AlreadyMoving { retiring: PersonaId },
+    #[error("{retiring:?} awaits a copy-out that has not begun")]
+    NotBegun { retiring: PersonaId },
     #[error("{retiring:?} is still moving out")]
     NotLanded { retiring: PersonaId },
+    #[error("the fence moves {got:?}, not this unit's copy-out")]
+    WrongFence { got: FenceTag },
 }
 
 struct InFlight<U, F> {
@@ -54,17 +74,36 @@ struct InFlight<U, F> {
     fence: F,
 }
 
-/// The pipeline's three places.
+enum Retiring<U, F> {
+    /// Bound out of active; no read of her blocks has begun.
+    AwaitingCopyOut(U),
+    Moving(InFlight<U, F>),
+}
+
+impl<U: Identified, F> Retiring<U, F> {
+    fn persona(&self) -> PersonaId {
+        match self {
+            Self::AwaitingCopyOut(unit) => unit.persona(),
+            Self::Moving(moving) => moving.unit.persona(),
+        }
+    }
+}
+
+/// One Core's three places.
 pub struct Roles<U, F> {
     active: Option<U>,
     next: Option<InFlight<U, F>>,
-    retiring: Option<InFlight<U, F>>,
+    retiring: Option<Retiring<U, F>>,
 }
 
 impl<U, F> Default for Roles<U, F> {
     fn default() -> Self {
         Self { active: None, next: None, retiring: None }
     }
+}
+
+fn expects<U: Identified>(unit: &U, direction: Direction) -> FenceTag {
+    FenceTag { persona: unit.persona(), epoch: unit.epoch(), direction }
 }
 
 impl<U: Identified, F: Fence> Roles<U, F> {
@@ -83,7 +122,7 @@ impl<U: Identified, F: Fence> Roles<U, F> {
     }
 
     pub fn retiring(&self) -> Option<PersonaId> {
-        self.retiring.as_ref().map(|r| r.unit.persona())
+        self.retiring.as_ref().map(Retiring::persona)
     }
 
     fn present(&self, persona: PersonaId) -> bool {
@@ -92,55 +131,88 @@ impl<U: Identified, F: Fence> Roles<U, F> {
             || self.retiring() == Some(persona)
     }
 
-    /// Stage `unit` as next while the active mind decodes; `fence` is her copy-in.
-    pub fn stage(&mut self, unit: U, fence: F) -> Result<(), StageRefusal> {
-        if let Some(staged) = self.staged() {
-            return Err(StageRefusal::NextOccupied { staged });
+    /// Stage `unit` as next under `fence`, her copy-in. A refusal returns both.
+    pub fn stage(&mut self, unit: U, fence: F) -> Result<(), Refused<StageRefusal, (U, F)>> {
+        let reason = if let Some(staged) = self.staged() {
+            Some(StageRefusal::NextOccupied { staged })
+        } else if self.present(unit.persona()) {
+            Some(StageRefusal::AlreadyPresent { persona: unit.persona() })
+        } else if fence.tag() != expects(&unit, Direction::In) {
+            Some(StageRefusal::WrongFence { got: fence.tag() })
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => Err(Refused { reason, returned: (unit, fence) }),
+            None => {
+                self.next = Some(InFlight { unit, fence });
+                Ok(())
+            }
         }
-        if self.present(unit.persona()) {
-            return Err(StageRefusal::AlreadyPresent { persona: unit.persona() });
-        }
-        self.next = Some(InFlight { unit, fence });
-        Ok(())
     }
 
-    /// Bind the staged mind as active. The previous active (if any) moves to retiring under
-    /// `retire_fence`, her copy-out. Refused, changing nothing, until next has landed and the
-    /// previous retirement has been released.
-    pub fn handoff(&mut self, retire_fence: F) -> Result<Option<PersonaId>, HandoffRefusal> {
-        let Some(next) = self.next.as_ref() else {
-            return Err(HandoffRefusal::NothingStaged);
-        };
-        if !next.fence.complete() {
-            return Err(HandoffRefusal::NotReady { staged: next.unit.persona() });
-        }
+    /// Bind the staged mind as active once her copy-in has landed. The previous active mind (if
+    /// any) moves to retiring, awaiting the copy-out the completion owner begins after this
+    /// returns. Refused, changing nothing, until next has landed and the previous retirement is
+    /// released.
+    pub fn handoff(&mut self) -> Result<Option<PersonaId>, HandoffRefusal> {
         if let Some(retiring) = self.retiring() {
-            if self.active.is_some() {
-                return Err(HandoffRefusal::RetireInFlight { retiring });
+            return Err(HandoffRefusal::RetireInFlight { retiring });
+        }
+        match self.next.as_ref() {
+            None => return Err(HandoffRefusal::NothingStaged),
+            Some(next) if !next.fence.complete() => {
+                return Err(HandoffRefusal::NotReady { staged: next.unit.persona() })
             }
+            Some(_) => {}
         }
         let Some(next) = self.next.take() else {
             return Err(HandoffRefusal::NothingStaged);
         };
         let previous = self.active.replace(next.unit);
         let retired = previous.as_ref().map(Identified::persona);
-        if let Some(unit) = previous {
-            self.retiring = Some(InFlight { unit, fence: retire_fence });
-        }
+        self.retiring = previous.map(Retiring::AwaitingCopyOut);
         Ok(retired)
     }
 
-    /// Give the retired mind back to her tier once her move out has landed.
-    pub fn release_retired(&mut self) -> Result<U, RetireRefusal> {
-        let Some(retiring) = self.retiring.as_ref() else {
-            return Err(RetireRefusal::NothingRetiring);
+    /// Attach the copy-out begun after the handoff. A refusal returns the fence.
+    pub fn begin_retire(&mut self, fence: F) -> Result<(), Refused<RetireRefusal, F>> {
+        let check = match self.retiring.as_ref() {
+            None => Err(RetireRefusal::NothingRetiring),
+            Some(Retiring::Moving(moving)) => Err(RetireRefusal::AlreadyMoving { retiring: moving.unit.persona() }),
+            Some(Retiring::AwaitingCopyOut(unit)) if fence.tag() != expects(unit, Direction::Out) => {
+                Err(RetireRefusal::WrongFence { got: fence.tag() })
+            }
+            Some(Retiring::AwaitingCopyOut(_)) => Ok(()),
         };
-        if !retiring.fence.complete() {
-            return Err(RetireRefusal::NotLanded { retiring: retiring.unit.persona() });
+        if let Err(reason) = check {
+            return Err(Refused { reason, returned: fence });
         }
         match self.retiring.take() {
-            Some(done) => Ok(done.unit),
-            None => Err(RetireRefusal::NothingRetiring),
+            Some(Retiring::AwaitingCopyOut(unit)) => {
+                self.retiring = Some(Retiring::Moving(InFlight { unit, fence }));
+                Ok(())
+            }
+            other => {
+                self.retiring = other;
+                Err(Refused { reason: RetireRefusal::NothingRetiring, returned: fence })
+            }
+        }
+    }
+
+    /// Give the retired mind back to her tier once her copy-out has landed.
+    pub fn release_retired(&mut self) -> Result<U, RetireRefusal> {
+        match self.retiring.as_ref() {
+            None => return Err(RetireRefusal::NothingRetiring),
+            Some(Retiring::AwaitingCopyOut(unit)) => return Err(RetireRefusal::NotBegun { retiring: unit.persona() }),
+            Some(Retiring::Moving(moving)) if !moving.fence.complete() => {
+                return Err(RetireRefusal::NotLanded { retiring: moving.unit.persona() })
+            }
+            Some(Retiring::Moving(_)) => {}
+        }
+        match self.retiring.take() {
+            Some(Retiring::Moving(done)) => Ok(done.unit),
+            _ => Err(RetireRefusal::NothingRetiring),
         }
     }
 }

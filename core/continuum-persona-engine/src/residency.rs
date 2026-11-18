@@ -3,5 +3,5 @@
 mod fence;
 mod tier;
 
-pub use fence::Fence;
+pub use fence::{Direction, Fence, FenceTag};
 pub use tier::{Tier, TierRefusal};
