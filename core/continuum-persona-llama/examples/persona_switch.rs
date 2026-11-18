@@ -72,6 +72,42 @@ fn adopted_context_is_refused(model: &Model, ctx: &mut llama::Context<'_>) -> Re
     Ok(())
 }
 
+/// Codex on #6134 (de0e34a97): a refused move must not cost her the blocks she had. Epoch 1 decodes and
+/// parks in RAM; another sequence's state lands on her stream; epoch 2's move in is refused there; once
+/// the stream is clear epoch 1 binds back at the position she left (her byte-identical continuation
+/// after a bind is the fork's own test, test-persona-blocks).
+fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama::Context<'_>) -> Result<(), String> {
+    let tokens = model.tokenize("She keeps her own notes.", true, false)?;
+    let her = PersonaId(uuid::Uuid::new_v4());
+    let tag = |epoch, direction| FenceTag { persona: her, epoch: Epoch(epoch), direction };
+    let mut tier = UnifiedTier::new(ctx);
+    tier.begin(tag(1, Direction::In)).map_err(|e| e.to_string())?;
+    let seq = tier.stream_of(her).ok_or("replay: she is not bound")?.seq();
+    let mut batch = Batch::allocated(tokens.len() as i32, 1);
+    for (i, &t) in tokens.iter().enumerate() {
+        batch.push(t, i as i32, &[seq], false);
+    }
+    tier.context().decode(&batch)?;
+    let held_to = tier.context().memory_seq_pos_max(seq);
+    tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
+    let first = *tokens.first().ok_or("replay: no tokens")?;
+    let mut other = Batch::allocated(1, 1);
+    other.push(first, 0, &[seq], false);
+    tier.context().decode(&other)?;
+    if tier.begin(tag(2, Direction::In)).is_ok() {
+        return Err("replay: epoch 2 was bound over another sequence's state".into());
+    }
+    tier.context().memory_seq_rm(seq, -1, -1);
+    tier.begin(tag(1, Direction::In)).map_err(|e| format!("replay: her parked epoch 1 was lost: {e}"))?;
+    let back = tier.stream_of(her).ok_or("replay: she is not bound again")?.seq();
+    if tier.context().memory_seq_pos_max(back) != held_to {
+        return Err(format!("replay: epoch 1 came back holding {} instead of {held_to}", tier.context().memory_seq_pos_max(back)));
+    }
+    tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
+    println!("persona_switch: replay: a refused newer epoch kept her parked epoch 1, which bound back at position {held_to}");
+    Ok(())
+}
+
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     let model_path = args.get(1).ok_or("usage: persona_switch <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>")?;
@@ -85,6 +121,7 @@ fn main() -> Result<(), String> {
     let params = ContextParams { n_ctx: window * 2, n_batch: 2048, n_ubatch: 2048, n_seq_max: 2, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
     let mut ctx = model.new_context(params)?;
     adopted_context_is_refused(&model, &mut ctx)?;
+    a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
     let mut tier = UnifiedTier::new(&mut ctx);
 
     let mut parked: Vec<Mind> = (0..minds)

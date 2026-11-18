@@ -1,4 +1,4 @@
-//! [`Tier`]: o#[error("{tier}: {reason} for persona {persona:?}{native}")]e contract for every residency tier (device VRAM, pinned host RAM, the unified
+//! [`Tier`]: one contract for every residency tier (device VRAM, pinned host RAM, the unified
 //! pool, flash). An adapter holds only the calls that differ; the pipeline never branches on
 //! which tier it has.
 

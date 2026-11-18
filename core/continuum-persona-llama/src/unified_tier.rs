@@ -9,7 +9,7 @@ use std::collections::HashMap;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::residency::{Direction, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
+use llama::{BindRefusal, Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
 
 /// One of the context's two execution streams, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,24 +95,36 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         }
         let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(persona, "both streams are bound"))?;
         let stream = stream_at(slot);
+        // Every check runs before anything changes (Codex on #6134): a newer epoch replaces her older
+        // blocks only once the move is known to succeed, so a refusal keeps the blocks she had.
+        let rebind_from = match self.minds.get(&persona) {
+            Some(held) if epoch < held.epoch => return Err(refused(persona, "a stale epoch: her newer blocks are kept")),
+            Some(held) if epoch == held.epoch => held.saved_from,
+            // a mind never seen, or a newer epoch of her, starts over on this stream
+            _ => None,
+        };
+        // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
+        // context may have been in use before this tier wrapped it). The engine's own memory is the
+        // evidence, never this tier's bookkeeping.
+        if rebind_from.is_none() && self.ctx.memory_seq_pos_max(stream.seq()) >= 0 {
+            return Err(refused(persona, "her stream already holds another sequence's state"));
+        }
         self.hold(persona, epoch)?;
+        let owner = self.owner_of(persona, epoch)?;
         let mind = self.minds.get_mut(&persona).ok_or_else(|| refused(persona, "not held here"))?;
         self.last_rebind = None;
-        match mind.saved_from {
-            // A mind never saved has nothing to bind: she starts on this stream as it is, so it must
-            // hold nothing (the context may have been in use before this tier wrapped it; Codex on
-            // #6134). The engine's own memory is the evidence, never this tier's bookkeeping.
-            None if self.ctx.memory_seq_pos_max(stream.seq()) >= 0 => {
-                return Err(refused(persona, "her stream already holds another sequence's state"));
-            }
-            None => {}
-            Some(from) => {
-                mind.blocks.bind(self.ctx, stream.seq()).map_err(|e| native(persona, "the fork refused her bind", e))?;
-                self.last_rebind = Some(if from == stream { Rebind::SameSequence } else { Rebind::OtherSequence });
-            }
+        if let Some(from) = rebind_from {
+            mind.blocks.bind(self.ctx, stream.seq(), owner).map_err(|e| bind_refused(persona, e))?;
+            self.last_rebind = Some(if from == stream { Rebind::SameSequence } else { Rebind::OtherSequence });
         }
         self.streams[slot] = Some(persona);
         Ok(())
+    }
+
+    /// The owner stamp issued to `persona`, at `epoch`: what her blocks must carry to bind.
+    fn owner_of(&self, persona: PersonaId, epoch: Epoch) -> Result<PersonaOwner, TierRefusal> {
+        let handle = *self.handles.get(&persona).ok_or_else(|| refused(persona, "no owner stamp issued to her"))?;
+        Ok(PersonaOwner { persona: handle, epoch: epoch.0 })
     }
 
     fn move_out(&mut self, persona: PersonaId, epoch: Epoch) -> Result<(), TierRefusal> {
@@ -179,4 +191,12 @@ fn refused(persona: PersonaId, reason: &'static str) -> TierRefusal {
 /// The fork refused: keep its status and name in the refusal.
 fn native(persona: PersonaId, reason: &'static str, refusal: PersonaRefusal) -> TierRefusal {
     TierRefusal { tier: TIER, persona, reason, native: Native::Refused { status: refusal.status, name: refusal.name } }
+}
+
+/// A refused bind, by who refused: her blocks' stamp (another owner or a stale epoch) or the fork.
+fn bind_refused(persona: PersonaId, refusal: BindRefusal) -> TierRefusal {
+    match refusal {
+        BindRefusal::WrongOwner { .. } => refused(persona, "her blocks are stamped for another owner or epoch"),
+        BindRefusal::Native(native_refusal) => native(persona, "the fork refused her bind", native_refusal),
+    }
 }
