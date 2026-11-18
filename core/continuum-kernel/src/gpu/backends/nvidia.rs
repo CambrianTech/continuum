@@ -57,7 +57,8 @@ use std::sync::Arc;
 struct SmiReading {
     free_bytes: u64,
     total_bytes: u64,
-    utilization: f32,
+    /// GPU busy fraction; `None` when nvidia-smi gave no number (unknown, never idle).
+    utilization: Option<f32>,
     temperature_c: Option<f32>,
     power_watts: Option<f32>,
 }
@@ -142,7 +143,7 @@ impl GpuDeviceProbe for NvidiaProbe {
         GpuSample {
             free_bytes: gpu.as_ref().map(|r| r.free_bytes),
             process_bytes: query_process_bytes().await,
-            utilization: gpu.as_ref().map(|r| r.utilization),
+            utilization: gpu.as_ref().and_then(|r| r.utilization),
             temperature_c: gpu.as_ref().and_then(|r| r.temperature_c),
             power_watts: gpu.as_ref().and_then(|r| r.power_watts),
         }
@@ -175,8 +176,7 @@ fn parse_gpu_csv_line(line: &str) -> Option<SmiReading> {
     let utilization = cols[2]
         .parse::<f32>()
         .ok()
-        .map(|p| p / 100.0)
-        .unwrap_or(0.0);
+        .map(|p| p / 100.0);
     let temperature_c = cols[3].parse::<f32>().ok();
     let power_watts = cols[4].parse::<f32>().ok();
     Some(SmiReading {
@@ -364,7 +364,7 @@ mod tests {
         let s = parse_gpu_csv_line("8192, 24564, 37, 52, 210.5").expect("parses");
         assert_eq!(s.free_bytes, 8192 * 1024 * 1024);
         assert_eq!(s.total_bytes, 24564 * 1024 * 1024);
-        assert!((s.utilization - 0.37).abs() < 1e-6, "util 37% → 0.37");
+        assert!(s.utilization.is_some_and(|u| (u - 0.37).abs() < 1e-6), "util 37% → 0.37");
         assert_eq!(s.temperature_c, Some(52.0));
         assert_eq!(s.power_watts, Some(210.5));
     }
@@ -377,7 +377,7 @@ mod tests {
         let s = parse_gpu_csv_line("1000, 2000, [N/A], [N/A], [N/A]").expect("parses");
         assert_eq!(s.free_bytes, 1000 * 1024 * 1024);
         assert_eq!(s.total_bytes, 2000 * 1024 * 1024);
-        assert_eq!(s.utilization, 0.0, "unparseable util → 0.0");
+        assert_eq!(s.utilization, None, "unparseable util is unknown, never idle");
         assert_eq!(s.temperature_c, None);
         assert_eq!(s.power_watts, None);
 
