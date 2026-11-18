@@ -29,8 +29,36 @@ pub(super) enum ChatTurnError {
     #[error("the chat render describes no prompt")]
     NoPrompt,
     /// The model's own tool-choice parser takes a mode; a named tool is not forced through it yet.
-    #[error("tool_choice naming {name:?} is not supported in-process yet")]
-    SpecificToolChoice { name: String },
+    /// Carries the choice she asked for, as she asked it.
+    #[error("tool_choice {choice:?} is not supported in-process yet")]
+    SpecificToolChoice { choice: ToolChoice },
+}
+
+/// What the render describes, read as a type: the prompt the engine decodes from.
+#[derive(serde::Deserialize)]
+struct Described {
+    prompt: Option<String>,
+}
+
+/// The message her render parses from what the model wrote (common/chat's OpenAI-compatible
+/// message): content, reasoning, and native calls, each absent or null when she wrote none.
+#[derive(serde::Deserialize)]
+struct ParsedMessage {
+    content: Option<String>,
+    reasoning_content: Option<String>,
+    tool_calls: Option<Vec<ParsedCall>>,
+}
+
+#[derive(serde::Deserialize)]
+struct ParsedCall {
+    id: Option<String>,
+    function: ParsedFunction,
+}
+
+#[derive(serde::Deserialize)]
+struct ParsedFunction {
+    name: Option<String>,
+    arguments: Option<String>,
 }
 
 /// The OpenAI-shaped request her template renders: her wire messages, and her tools when she has
@@ -44,7 +72,7 @@ pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, Cha
         body["tools"] = json!(openai_tools(tools));
         match &request.tool_choice {
             Some(ToolChoice::Mode(mode)) => body["tool_choice"] = json!(mode),
-            Some(ToolChoice::Specific { name }) => return Err(ChatTurnError::SpecificToolChoice { name: name.clone() }),
+            Some(choice @ ToolChoice::Specific { .. }) => return Err(ChatTurnError::SpecificToolChoice { choice: choice.clone() }),
             None => {}
         }
     }
@@ -53,8 +81,8 @@ pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, Cha
 
 /// The prompt the render describes, which the engine decodes from.
 pub(super) fn prompt_of(render: &llama::ChatRender) -> Result<String, ChatTurnError> {
-    let described: Value = serde_json::from_str(&render.describe()?)?;
-    described.get("prompt").and_then(Value::as_str).map(str::to_owned).ok_or(ChatTurnError::NoPrompt)
+    let described: Described = serde_json::from_str(&render.describe()?)?;
+    described.prompt.ok_or(ChatTurnError::NoPrompt)
 }
 
 /// What the model wrote, read by her render: the visible text, her reasoning, and her native calls.
@@ -67,20 +95,18 @@ pub(super) struct ParsedTurn {
 /// Parse the finished output with the render that produced its prompt. `end` is why the generation
 /// stopped, so a call the output limit cut is typed as cut, never as bad JSON.
 pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: GenerationEnd) -> Result<ParsedTurn, ChatTurnError> {
-    let message: Value = serde_json::from_str(&render.parse(written, false)?)?;
-    let text_of = |field: &str| message.get(field).and_then(Value::as_str).filter(|text| !text.is_empty()).map(str::to_owned);
-    let raw: Vec<StreamToolAccum> = message
-        .get("tool_calls")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .map(|call| StreamToolAccum {
-            id: call.get("id").and_then(Value::as_str).map(str::to_owned).unwrap_or_default(), // unwrap_or_default: a call the template gave no id is still her call; the assembler keys on its name
-            name: call.pointer("/function/name").and_then(Value::as_str).map(str::to_owned).unwrap_or_default(), // unwrap_or_default: a nameless call is dropped by the assembler, never run
-            arguments: call.pointer("/function/arguments").and_then(Value::as_str).map(str::to_owned).unwrap_or_default(), // unwrap_or_default: no arguments parse as no JSON and are typed by the assembler
-        })
-        .collect();
-    Ok(ParsedTurn { text: text_of("content").unwrap_or_default(), reasoning: text_of("reasoning_content"), tool_calls: native_tool_calls::assemble(raw, end) }) // unwrap_or_default: a turn that only called a tool has no visible text
+    let message: ParsedMessage = serde_json::from_str(&render.parse(written, false)?)?;
+    let written_text = |text: Option<String>| text.filter(|text| !text.is_empty());
+    let raw = message.tool_calls.into_iter().flatten().map(|call| StreamToolAccum {
+        id: call.id.unwrap_or_default(), // unwrap_or_default: a call the template gave no id is still her call; the assembler keys on its name
+        name: call.function.name.unwrap_or_default(), // unwrap_or_default: a nameless call is dropped by the assembler, never run
+        arguments: call.function.arguments.unwrap_or_default(), // unwrap_or_default: no arguments parse as no JSON and are typed by the assembler
+    });
+    Ok(ParsedTurn {
+        text: written_text(message.content).unwrap_or_default(), // unwrap_or_default: a turn that only called a tool has no visible text
+        reasoning: written_text(message.reasoning_content),
+        tool_calls: native_tool_calls::assemble(raw, end),
+    })
 }
 
 /// Whether her turn carries media (an image, audio, or a video the media path refuses): only then
@@ -161,7 +187,10 @@ mod tests {
             tool_choice: Some(ToolChoice::Specific { name: "code_read".into() }),
             ..Default::default()
         };
-        assert!(matches!(chat_request(&request), Err(ChatTurnError::SpecificToolChoice { name }) if name == "code_read"));
+        assert!(matches!(
+            chat_request(&request),
+            Err(ChatTurnError::SpecificToolChoice { choice: ToolChoice::Specific { name } }) if name == "code_read"
+        ));
     }
 
     // what this catches: a call the output limit cut read as bad JSON (a retry that re-cuts the

@@ -29,7 +29,7 @@ use super::sse_stream::StreamToolAccum;
 /// re-cuts) or she wrote bad JSON (a retry). The fate is typed in the call, so no reader infers it
 /// from a JSON EOF (`continuum_tool_protocol::call_ending`, ONE-ACT 6b). The old wrap of the text as
 /// `{"_raw": …}` had no reader and destroyed the cause (#334).
-pub(crate) fn assemble(raw: Vec<StreamToolAccum>, end: GenerationEnd) -> Option<Vec<ToolCall>> {
+pub(crate) fn assemble(raw: impl IntoIterator<Item = StreamToolAccum>, end: GenerationEnd) -> Option<Vec<ToolCall>> {
     let calls: Vec<ToolCall> = raw
         .into_iter()
         .filter(|call| !call.name.is_empty())
