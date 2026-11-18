@@ -450,7 +450,9 @@ impl Model {
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,
+            model: self.ptr,
             _observer: observer_bridge,
+            learn_callbacks: None,
         })
     }
 
