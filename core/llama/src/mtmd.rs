@@ -41,6 +41,15 @@ pub enum MediaKind {
     Audio,
 }
 
+/// One media input: the prompt text carrying the marker, the media bytes, and what the caller says
+/// they are. They travel together into one evaluation.
+#[derive(Debug, Clone, Copy)]
+struct Media<'a> {
+    text: &'a str,
+    bytes: &'a [u8],
+    kind: MediaKind,
+}
+
 /// Where and how to evaluate a media prompt in an existing llama context.
 /// Shared by image and audio evaluation; media bytes remain borrowed separately.
 #[derive(Debug, Clone, Copy)]
@@ -132,7 +141,7 @@ impl MtmdContext {
         image_bytes: &[u8],
         params: &MtmdEvalParams,
     ) -> Result<i32, String> {
-        self.eval_media(lctx, text, image_bytes, params, MediaKind::Image)
+        self.eval_media(lctx, Media { text, bytes: image_bytes, kind: MediaKind::Image }, params)
     }
 
     /// Audio analogue of `eval_image`. The underlying mtmd helper
@@ -154,21 +163,15 @@ impl MtmdContext {
         audio_bytes: &[u8],
         params: &MtmdEvalParams,
     ) -> Result<i32, String> {
-        self.eval_media(lctx, text, audio_bytes, params, MediaKind::Audio)
+        self.eval_media(lctx, Media { text, bytes: audio_bytes, kind: MediaKind::Audio }, params)
     }
 
     /// Internal workhorse — single-bitmap eval (image OR audio, whichever
     /// the bytes turn out to be). The `kind` argument shapes only the
     /// error messages so failures point at the actual modality the
     /// caller asked for; the underlying mtmd code path is identical.
-    fn eval_media(
-        &self,
-        lctx: &mut Context,
-        text: &str,
-        media_bytes: &[u8],
-        params: &MtmdEvalParams,
-        kind: MediaKind,
-    ) -> Result<i32, String> {
+    fn eval_media(&self, lctx: &mut Context, media: Media<'_>, params: &MtmdEvalParams) -> Result<i32, String> {
+        let Media { text, bytes: media_bytes, kind } = media;
         // Step 1: load bitmap from raw bytes — the helper auto-detects
         // image vs audio from magic bytes (per mtmd-helper.h: stb_image
         // formats for images, miniaudio formats wav/mp3/flac for audio).
