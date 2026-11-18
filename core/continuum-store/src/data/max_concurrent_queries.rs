@@ -126,9 +126,8 @@ pub struct DataState {
     /// only same-cursor concurrent activity is serialized, which is
     /// the minimum required for cursor-state correctness.
     pub(super) paginated_queries: DashMap<String, Arc<tokio::sync::Mutex<PaginatedQueryState>>>,
-    /// Module context for inter-module communication (event bus, shared compute)
-    /// Published once after successful initialization; readers never take a lock.
-    pub(crate) context: OnceLock<Arc<ModuleContext>>,
+    /// Published once, after the registrar succeeds.
+    runtime: OnceLock<StoreRuntime>,
     /// Active migration handle for status/pause/verify (lightweight, lock-free)
     pub(super) active_migration: Mutex<Option<MigrationHandle>>,
     /// Pre-cutover connection string (for rollback)
@@ -141,14 +140,30 @@ impl Default for DataState {
     }
 }
 
+struct StoreRuntime {
+    bus: Arc<crate::runtime::MessageBus>,
+    logger: Arc<crate::runtime::ModuleLogger>,
+}
+
 impl DataState {
+    #[cfg(test)]
+    pub(super) fn attached_bus(&self) -> Option<&Arc<crate::runtime::MessageBus>> {
+        self.runtime.get().map(|runtime| &runtime.bus)
+    }
+
+    pub(crate) fn attach_runtime(&self, ctx: &ModuleContext) -> Result<(), String> {
+        self.runtime.set(StoreRuntime {
+            bus: Arc::clone(&ctx.bus),
+            logger: ctx.logger("data"),
+        }).map_err(|_| "data module context is already initialized".to_owned())
+    }
     pub fn new() -> Self {
         Self {
             adapters: DashMap::new(),
             init_lock: Mutex::new(()),
             vector_cache: crate::runtime::shared_compute::SharedCompute::new(),
             paginated_queries: DashMap::new(),
-            context: OnceLock::new(),
+            runtime: OnceLock::new(),
             active_migration: Mutex::new(None),
             previous_connection: Mutex::new(None),
         }
@@ -158,7 +173,7 @@ impl DataState {
     /// Events follow pattern: data:{collection}:{action}
     /// Actions: created, updated, deleted, batch
     pub(super) fn publish_event(&self, collection: &str, action: &str, payload: serde_json::Value) {
-        if let Some(ctx) = self.context.get() {
+        if let Some(ctx) = self.runtime.get() {
             let event_name = format!("data:{}:{}", collection, action);
             ctx.bus.publish_async_only(&event_name, payload);
         }
@@ -170,9 +185,8 @@ impl DataState {
         if duration_ms < 50 {
             return;
         }
-        if let Some(ctx) = self.context.get() {
-            let logger = ctx.logger("data");
-            logger.timing_with_meta(
+        if let Some(ctx) = self.runtime.get() {
+            ctx.logger.timing_with_meta(
                 operation,
                 duration_ms as u64,
                 &format!("collection={}", collection),

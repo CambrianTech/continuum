@@ -74,15 +74,7 @@ impl ServiceModule for DataModule {
             registered = registered as u64,
             "Rust-authored ORM entities registered before the first ensure-schema"
         );
-        // Store context for event publishing
-        let ctx_arc = Arc::new(ModuleContext::new(
-            ctx.registry.clone(),
-            ctx.bus.clone(),
-            ctx.compute.clone(),
-            ctx.runtime.clone(),
-        ));
-        self.state.context.set(ctx_arc)
-            .map_err(|_| "data module context is already initialized".to_string())?;
+        self.state.attach_runtime(ctx)?;
         log_info!("data", "init", "DataModule initialized with event bus");
         Ok(())
     }
