@@ -226,6 +226,7 @@ impl KvCachePlan {
         match self.cache_type.trim().to_ascii_lowercase().as_str() {
             F16 => Some(llama::KvCacheType::F16),
             "q8_0" => Some(llama::KvCacheType::Q8_0),
+            "q4_0" => Some(llama::KvCacheType::Q4_0),
             _ => None,
         }
     }
