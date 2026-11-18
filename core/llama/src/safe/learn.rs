@@ -343,6 +343,16 @@ fn optimizer_params(optimizer: Optimizer) -> sys::ggml_opt_optimizer_params {
     params
 }
 
+/// llama.h encodes "the whole window" as a horizon of 0; a Rust horizon is never 0, so the two meet
+/// only here.
+fn native_horizon(horizon: Option<NonZeroU32>) -> u32 {
+    const WHOLE_WINDOW: u32 = 0;
+    match horizon {
+        Some(positions) => positions.get(),
+        None => WHOLE_WINDOW,
+    }
+}
+
 fn shadow_params(shadow: &Shadow<'_>, binding: &mut Binding) -> sys::llama_opt_params {
     let data = std::ptr::from_mut(binding).cast::<c_void>();
     sys::llama_opt_params {
@@ -358,7 +368,7 @@ fn shadow_params(shadow: &Shadow<'_>, binding: &mut Binding) -> sys::llama_opt_p
         adapter: shadow.adapter.ptr.as_ptr(),
         recompute: shadow.recompute,
         walk_exact: shadow.walk.exact,
-        walk_horizon: shadow.walk.horizon.map_or(0, NonZeroU32::get),
+        walk_horizon: native_horizon(shadow.walk.horizon),
         static_admission: Some(optimizer_buffer_admitted),
         static_admission_data: data,
         workspace_admission: Some(workspace_admitted),
