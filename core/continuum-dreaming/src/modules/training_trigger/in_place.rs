@@ -701,10 +701,16 @@ fn waits_for_her_act(seated: bool) -> bool {
     !seated
 }
 
+#[derive(Debug, Clone, Copy)]
+enum AdmissionPhase {
+    Prepare,
+    StepRevalidation,
+}
+
 /// Her learning memory was not free: the pass ends holding nothing, and the next pass (the tick or a
 /// serving change) asks again; a wait would hold her pass on memory measured for one moment.
-fn memory_short(key: &BucketKey, wait: &crate::inference::training_admission::TrainingWait) {
-    continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, wait = %wait,
+fn memory_short(key: &BucketKey, phase: AdmissionPhase, wait: &crate::inference::training_admission::TrainingWait) {
+    continuum_base::probe!(class = "training.in_place.memory_short", persona = %key.persona_id, phase = ?phase, wait = %wait,
         "her learning memory was not free; the pass ends holding nothing and the next pass asks again");
 }
 
