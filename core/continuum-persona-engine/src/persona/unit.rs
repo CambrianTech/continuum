@@ -40,8 +40,13 @@ where
     PersonaParts<B, T, G, L, D>: Lifecycle + Send,
 {
     type Suspension = <PersonaParts<B, T, G, L, D> as Lifecycle>::Suspension;
+    type Release = <PersonaParts<B, T, G, L, D> as Lifecycle>::Release;
 
     async fn suspend(&mut self) -> Self::Suspension {
         self.parts.suspend().await
+    }
+
+    async fn release(&mut self) -> Self::Release {
+        self.parts.release().await
     }
 }

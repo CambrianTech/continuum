@@ -5,7 +5,7 @@ mod lifecycle;
 mod unit;
 
 pub use id::{Epoch, PersonaId};
-pub use lifecycle::{Lifecycle, PersonaParts, Preservation, Suspension};
+pub use lifecycle::{Lifecycle, PersonaParts, Preservation, Releasing, Report};
 pub use unit::PersonaUnit;
 
 #[cfg(test)]
