@@ -16,25 +16,38 @@ struct continuum_chat {
     common_chat_templates_ptr templates;
 };
 
+// What every call hands back: its result (a handle or an owned string) or the native error text.
+struct continuum_chat_reply {
+    void *out;
+    char error[512];
+};
+
+// What the model has written so far, by length (no terminator), and whether the stream continues.
+struct continuum_chat_utterance {
+    const char *text;
+    size_t length;
+    int partial;
+};
+
 // One rendered request: what the sampler and the caller need once, and the parser every update uses.
 struct continuum_chat_render {
     common_chat_params params;
     common_chat_parser_params parser;
 };
 
-static void report(char *error, size_t capacity, const char *what) noexcept {
-    std::snprintf(error, capacity, "%s", what);
+static void report(continuum_chat_reply *reply, const char *what) noexcept {
+    std::snprintf(reply->error, sizeof(reply->error), "%s", what);
 }
 
 template<class Work>
-static int guarded(Work work, char *error, size_t capacity) noexcept {
+static int guarded(Work work, continuum_chat_reply *reply) noexcept {
     try {
         work();
         return 0;
     } catch (const std::exception &failure) {
-        report(error, capacity, failure.what());
+        report(reply, failure.what());
     } catch (...) {
-        report(error, capacity, "unknown C++ exception");
+        report(reply, "unknown C++ exception");
     }
     return 1;
 }
@@ -62,11 +75,11 @@ static common_reasoning_format reasoning_format(int code) {
 
 // The model's templates; `override_template` (nullable) replaces the GGUF's own.
 extern "C" int continuum_chat_init(const llama_model *model, const char *override_template,
-        continuum_chat **out, char *error, size_t capacity) noexcept {
+        continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         auto templates = common_chat_templates_init(model, override_template ? override_template : "");
-        *out = new continuum_chat{std::move(templates)};
-    }, error, capacity);
+        reply->out = new continuum_chat{std::move(templates)};
+    }, reply);
 }
 
 extern "C" void continuum_chat_free(continuum_chat *chat) noexcept {
@@ -81,7 +94,7 @@ extern "C" void continuum_chat_string_free(char *text) noexcept {
 // "json_schema":{...}|null, "grammar":"", "enable_thinking":bool, "add_generation_prompt":bool,
 // "parallel_tool_calls":bool}, under `reasoning` (see reasoning_format).
 extern "C" int continuum_chat_render_new(const continuum_chat *chat, const char *request, int reasoning,
-        continuum_chat_render **out, char *error, size_t capacity) noexcept {
+        continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         const auto in = common_json::parse(request);
         common_chat_templates_inputs inputs;
@@ -108,8 +121,8 @@ extern "C" int continuum_chat_render_new(const continuum_chat *chat, const char 
         if (!render->params.parser.empty()) {
             render->parser.parser.load(render->params.parser);
         }
-        *out = render.release();
-    }, error, capacity);
+        reply->out = render.release();
+    }, reply);
 }
 
 extern "C" void continuum_chat_render_free(continuum_chat_render *render) noexcept {
@@ -118,8 +131,7 @@ extern "C" void continuum_chat_render_free(continuum_chat_render *render) noexce
 
 // What the sampler and the caller need, once: the prompt, the grammar and its lazy triggers, the
 // preserved tokens, the extra stops and the thinking tags (no parser state: it stays native).
-extern "C" int continuum_chat_render_describe(const continuum_chat_render *render, char **out,
-        char *error, size_t capacity) noexcept {
+extern "C" int continuum_chat_render_describe(const continuum_chat_render *render, continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         const auto &params = render->params;
         common_json triggers = common_json::array();
@@ -137,28 +149,27 @@ extern "C" int continuum_chat_render_describe(const continuum_chat_render *rende
             {"thinking_start_tag", params.thinking_start_tag},
             {"thinking_end_tags", params.thinking_end_tags},
         };
-        *out = owned(description.dump());
-    }, error, capacity);
+        reply->out = owned(description.dump());
+    }, reply);
 }
 
 // Parse what the model has written so far (`length` bytes of `text`) with the render's own parser:
 // the assistant message in the OpenAI shape (content, reasoning_content, tool_calls).
-extern "C" int continuum_chat_render_parse(const continuum_chat_render *render, const char *text, size_t length,
-        int is_partial, char **out, char *error, size_t capacity) noexcept {
+extern "C" int continuum_chat_render_parse(const continuum_chat_render *render, const continuum_chat_utterance *said,
+        continuum_chat_reply *reply) noexcept {
     return guarded([&] {
-        const auto message = common_chat_parse(std::string(text, length), is_partial != 0, render->parser);
-        *out = owned(message.to_json_oaicompat().dump());
-    }, error, capacity);
+        const auto message = common_chat_parse(std::string(said->text, said->length), said->partial != 0, render->parser);
+        reply->out = owned(message.to_json_oaicompat().dump());
+    }, reply);
 }
 
 // A content-only render without a model, for tests of the boundary itself.
-extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_render **out, char *error,
-        size_t capacity) noexcept {
+extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         auto render = std::make_unique<continuum_chat_render>();
         render->params.format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
         render->parser = common_chat_parser_params(render->params);
         render->parser.reasoning_format = reasoning_format(reasoning);
-        *out = render.release();
-    }, error, capacity);
+        reply->out = render.release();
+    }, reply);
 }
