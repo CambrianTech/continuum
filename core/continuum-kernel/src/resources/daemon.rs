@@ -159,9 +159,6 @@ pub struct ResourceDaemon {
     governor: Mutex<ResourceGovernor>,
     /// Scan sources, one per managed kind. Read off-lock each tick.
     sources: Vec<Arc<dyn CapacitySource>>,
-    /// Orders physical samples: each scan takes the next value BEFORE it reads its sources, and the
-    /// governor keeps only the newest per kind, so a slow tick scan never overwrites a newer one.
-    sample_seq: std::sync::atomic::AtomicU64,
     /// Leaseholders, by registration order. Grows via `add_consumer`.
     consumers: RwLock<Vec<Arc<dyn ResourceConsumer>>>,
     /// Three-strikes quarantine for misbehaving consumers — the shared base
@@ -241,7 +238,6 @@ impl ResourceDaemon {
         let daemon = Arc::new(Self {
             governor: Mutex::new(governor),
             sources,
-            sample_seq: std::sync::atomic::AtomicU64::new(1),
             consumers: RwLock::new(consumers),
             quarantine: Mutex::new(QuarantineLedger::new(DEFAULT_QUARANTINE_LIMIT)),
             channel,
@@ -330,13 +326,12 @@ impl ResourceDaemon {
         // read the sources outside the lock (a slow reader never stalls other allocations), numbered before
         // reading; then ingest in order and grant under one lock, against the newest accepted sample (this
         // one, or a newer one a tick took meanwhile) (Codex on #6124)
-        let sequence = self.next_sample();
-        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes(), s.backed_by())).collect();
+        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by())).collect();
         let now = EpochMs::now().millis();
         let mut g = self.governor.lock();
-        for (kind, ceiling, used, backing) in scans {
+        for (kind, ceiling, sample, backing) in scans {
             g.set_capacity(kind, ceiling);
-            g.set_physical_sample(kind, used, sequence);
+            g.set_physical_sample(kind, sample);
             g.set_backing(kind, backing);
         }
         let lease = g.acquire(req, now)?;
@@ -346,17 +341,12 @@ impl ResourceDaemon {
 
     /// The holder of `lease_id` declares its bytes resident (see [`LeaseGuard::landed`]).
     pub fn landed(&self, lease_id: &str) -> Result<(), LeaseError> {
-        // only a sample numbered from here on was taken after the declaration and can show the bytes
-        let from = self.sample_seq.load(std::sync::atomic::Ordering::Relaxed);
+        // only a reading observed from here on was taken after the declaration and can show the bytes
+        let from = super::observed::Observed::now();
         let mut g = self.governor.lock();
         g.landed(lease_id, from)?;
         self.publish_locked(&g);
         Ok(())
-    }
-
-    /// The next physical sample sequence; taken before a scan reads its sources.
-    fn next_sample(&self) -> u64 {
-        self.sample_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
@@ -532,11 +522,10 @@ impl ResourceDaemon {
         // 2. Read every source's fixed ceiling AND live physical usage OFF the
         //    accounting lock (cached monitor reads). Both feed the governor below;
         //    the ceiling is near-constant, the usage moves with external pressure.
-        let sequence = self.next_sample(); // before reading: a scan that lands late is older than any taken after
-        let scans: Vec<(ResourceKind, u64, u64, Option<ResourceKind>)> = self
+        let scans: Vec<(ResourceKind, u64, super::observed::PhysicalSample, Option<ResourceKind>)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes(), s.backed_by()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by()))
             .collect();
 
         // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
@@ -580,11 +569,11 @@ impl ResourceDaemon {
         //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil, used, backing) in &scans {
+            for (kind, ceil, sample, backing) in &scans {
                 g.set_capacity(*kind, *ceil);
                 // The un-inversion ground truth: everything physically resident,
                 // netted against the fixed ceiling to yield `available`.
-                g.set_physical_sample(*kind, *used, sequence);
+                g.set_physical_sample(*kind, *sample);
                 g.set_backing(*kind, *backing);
             }
             // Feed the self-declared attribution axis: each consumer's freshly-polled

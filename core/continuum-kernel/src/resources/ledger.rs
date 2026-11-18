@@ -148,9 +148,9 @@ pub struct ResourceLeaseLedger {
     /// `available = capacity − max(granted, physical_used)`. Absent (no physical
     /// monitor) → 0, and `available` degrades to `capacity − granted`.
     physical_used: BTreeMap<ResourceKind, u64>,
-    /// The sequence of the physical sample accepted per kind (Codex on #6124): a scan takes its sequence
-    /// before it reads, so a slower, older scan finishing late never overwrites a newer one.
-    sampled: BTreeMap<ResourceKind, u64>,
+    /// When the accepted physical reading of each kind was observed (its probe's start, Codex on #6124): an
+    /// older observation arriving late never overwrites a newer one.
+    sampled: BTreeMap<ResourceKind, super::observed::Observed>,
     /// Kinds that draw on another kind's physical bytes ([`CapacitySource::backed_by`]): on unified
     /// memory, VRAM on RAM. Absent: the kind has its own physical backing (a discrete device).
     ///
@@ -166,14 +166,15 @@ pub struct ResourceLeaseLedger {
 #[derive(Debug, Clone)]
 struct Held {
     lease: ResourceLease,
-    /// The first sample sequence that can show the lease resident: the sequence next to be taken when
-    /// its holder declared it landed. None while undeclared.
-    landed_from: Option<u64>,
+    /// When its holder declared it landed: only a reading observed at or after this can show it. None while
+    /// undeclared.
+    landed_from: Option<super::observed::Observed>,
 }
 
 impl Held {
-    /// This lease's bytes still owed on top of physical use, given the newest accepted sample of its kind.
-    fn pending(&self, accepted: Option<u64>) -> u64 {
+    /// This lease's bytes still owed on top of physical use, given the oldest of the accepted observations that
+    /// must show it (its kind's, and its backing pool's on unified memory).
+    fn pending(&self, accepted: Option<super::observed::Observed>) -> u64 {
         match (self.landed_from, accepted) {
             (Some(from), Some(sample)) if sample >= from => 0,
             _ => self.lease.bytes,
@@ -217,14 +218,13 @@ impl ResourceLeaseLedger {
         self.physical_used.insert(kind, bytes);
     }
 
-    /// Ingest a physical sample taken as `sequence`, only if it is newer than the one this kind holds.
-    /// Returns whether it was accepted.
-    pub fn set_physical_sample(&mut self, kind: ResourceKind, bytes: u64, sequence: u64) -> bool {
-        if self.sampled.get(&kind).is_some_and(|&held| held >= sequence) {
+    /// Ingest `sample` only if it was observed after the reading this kind holds. Returns whether it was accepted.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, sample: super::observed::PhysicalSample) -> bool {
+        if self.sampled.get(&kind).is_some_and(|&held| held >= sample.observed) {
             return false;
         }
-        self.sampled.insert(kind, sequence);
-        self.physical_used.insert(kind, bytes);
+        self.sampled.insert(kind, sample.observed);
+        self.physical_used.insert(kind, sample.used);
         true
     }
 
@@ -289,13 +289,23 @@ impl ResourceLeaseLedger {
         self.leases
             .values()
             .filter(|held| held.lease.kind == kind)
-            .map(|held| held.pending(self.sampled.get(&kind).copied()))
+            .map(|held| held.pending(self.observed_for(kind)))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
-    /// The holder of `lease_id` declares its bytes resident. They stop being owed on top once a physical
-    /// sample numbered `from` or later (taken after this declaration) is accepted. Missing lease is fail-loud.
-    pub fn landed(&mut self, lease_id: &str, from: u64) -> Result<(), LeaseError> {
+    /// The oldest accepted observation that must show a `kind` lease: its own, and on unified memory its backing
+    /// pool's too (both readings have to have been taken after the landing). None until both exist.
+    fn observed_for(&self, kind: ResourceKind) -> Option<super::observed::Observed> {
+        let own = self.sampled.get(&kind).copied()?;
+        match self.backing.get(&kind) {
+            Some(backing) => self.sampled.get(backing).map(|&pool| own.min(pool)),
+            None => Some(own),
+        }
+    }
+
+    /// The holder of `lease_id` declares its bytes resident as of `from`. They stop being owed on top once a
+    /// reading observed at or after `from` is accepted. Missing lease is fail-loud.
+    pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
         let held = self.leases.get_mut(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
         held.landed_from.get_or_insert(from);
         Ok(())

@@ -60,6 +60,14 @@ pub trait CapacitySource: Send + Sync {
         0
     }
 
+    /// Physical use with the instant its observation began. A direct read is observed as it is called (the
+    /// instant is taken before the read); a source that serves a cached reading returns the instant its probe
+    /// started, so the ledger never takes an old frame for a new one.
+    fn sample(&self) -> super::observed::PhysicalSample {
+        let observed = super::observed::Observed::now();
+        super::observed::PhysicalSample { used: self.used_bytes(), observed }
+    }
+
     /// The kind whose physical bytes this one draws on, when the two share one backing (unified
     /// memory: GPU allocations come out of host RAM). `None` on a discrete device. The ledger then
     /// commits this kind by OUR residency on it (granted or measured), never by every process's
@@ -117,6 +125,15 @@ impl CapacitySource for GpuCapacitySource {
         match self.monitor.free_bytes() {
             Some(free) => self.monitor.total_bytes().saturating_sub(free),
             None => 0,
+        }
+    }
+
+    fn sample(&self) -> super::observed::PhysicalSample {
+        // the monitor's cached frame with the instant its probe started; no reading yet is observed never, so
+        // it cannot clear a landing
+        match self.monitor.free_reading() {
+            Some((free, observed)) => super::observed::PhysicalSample { used: self.monitor.total_bytes().saturating_sub(free), observed },
+            None => super::observed::PhysicalSample { used: 0, observed: super::observed::Observed::NEVER },
         }
     }
 }

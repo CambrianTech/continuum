@@ -103,6 +103,10 @@ pub trait GpuMonitor: Send + Sync {
     /// told directly to the governor. An unreadable sensor is not a full tank.
     fn free_bytes(&self) -> Option<u64>;
 
+    /// The free bytes with the instant the probe that measured them STARTED: a cached reading answers with
+    /// its own frame's instant, never the time it was asked. None until a real reading lands.
+    fn free_reading(&self) -> Option<(u64, crate::resources::Observed)>;
+
     /// Bytes allocated by OUR process specifically. Lets the policy
     /// distinguish "system is tight" from "we are tight" and react
     /// differently (system-tight → spill our slots; we-tight → just
@@ -261,6 +265,11 @@ impl GpuMonitor for MockMonitor {
         // unknown state is a property of real sensors, so tests that want it
         // reach for a monitor that models the failure, not a `None` here.
         Some(self.free_bytes.load(std::sync::atomic::Ordering::Relaxed))
+    }
+    fn free_reading(&self) -> Option<(u64, crate::resources::Observed)> {
+        // the scenario sets the reading as it happens: observed now, taken before the read
+        let observed = crate::resources::Observed::now();
+        self.free_bytes().map(|free| (free, observed))
     }
     fn process_bytes(&self) -> u64 {
         self.process_bytes

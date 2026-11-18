@@ -121,13 +121,13 @@ impl ResourceGovernor {
         self.ledger.set_physical_used(kind, bytes);
     }
 
-    /// Ingest a physical sample taken as `sequence`; an older one never overwrites a newer.
-    pub fn set_physical_sample(&mut self, kind: ResourceKind, bytes: u64, sequence: u64) -> bool {
-        self.ledger.set_physical_sample(kind, bytes, sequence)
+    /// Ingest a physical reading; one observed earlier than the held reading never overwrites it.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, sample: super::observed::PhysicalSample) -> bool {
+        self.ledger.set_physical_sample(kind, sample)
     }
 
     /// The holder of `lease_id` declares its bytes resident.
-    pub fn landed(&mut self, lease_id: &str, from: u64) -> Result<(), LeaseError> {
+    pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
         self.ledger.landed(lease_id, from)
     }
 
