@@ -283,8 +283,8 @@ mod callbacks;
 
 // Tree ownership for deploy builds: worktree creation, reuse verification and removal.
 mod tree_owner;
-pub(crate) use tree_owner::{GitTreeOwner, TestTreeOwner, TreeOwner, TreeRefusal};
-
+#[cfg(any(test, feature = "test-fixtures"))]
+pub(crate) use tree_owner::TestTreeOwner;
 impl From<continuum_host::deploy_spawn::Spawned> for Spawned {
     fn from(s: continuum_host::deploy_spawn::Spawned) -> Self {
         Self { pid: s.pid, mode: s.mode, child: s.child }
