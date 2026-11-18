@@ -2580,6 +2580,8 @@ request sequence's completion is recorded so its replay returns it; the external
    stream bind, not reload.
 5. The MTP draft context: its own KV streams, moved with hers.
 
+**Later, and only if a node measures it worth it: a second core (Joel, 2026-11-18: "two minds in two lanes ... like two cores in a cpu ... maybe some machine can handle it? Or maybe it's always worse than one").** A `Core` is one active / next / retiring pipeline (`Roles`); the engine owns a list of them, one by default, and a mind decodes on exactly one core. A second core is never configured: the engine calibrates on its node (aggregate and per-mind tok/s, one core vs two, at real context lengths) and adds it only when aggregate throughput rises and each mind's act stays inside its budget. Expectation to test, not assume: a dense model with spare compute (the 5090) may gain, since two sequences share one read of the weights; an MoE on unified memory (the M5's 35B-A3B) likely never does, since the two minds' tokens hit different experts while their KV contends for the same bandwidth (four at once measured about 2 tok/s each vs about 80 for one). Nothing in `PersonaUnit`, `Tier` or the pipeline changes for it.
+
 **Evidence before implementation (Codex's condition):** a prototype that swaps a persona between a stream and RAM by
 raw slice copies on the M5, measuring copy time per switch against bandwidth, the first-token latency of the arriving
 persona with layer-ordered streaming, and byte-identical restore (her next-token logits equal before and after a
