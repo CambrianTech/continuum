@@ -624,6 +624,53 @@ organ is scheduled, and her organs implement it. Each repair moves its area onto
 rules), one owner at a time.
 
 
+### 9.5 The Node's Bytes Are A Governed Tree: Disk First
+
+**Why (the MacBookPro and the M5, 2026-11-18).** A deploy on the MacBookPro sat refused for minutes
+at 95% disk ("used 474.8 GB + projected 0.6 GB exceeds 9500bp of 500 GB") waiting for someone to
+type `deploy-consume --retry-resource`, while the residents there were lane-starved. On the M5, 30
+Claude Code agent worktrees (2.4 GB checkout + 462 MB metadata apiece, 76+ days old, every commit
+already on a remote) sat inside five peer workspaces: copies of the main repo's own agent
+worktrees, made when workspaces were provisioned by copying the repo directory. Nothing owned them,
+so nothing could release them. Each tier kept its own pool, its own `df`, and its own refusal; the
+consumer that needed bytes was told no and left to wait. Nothing here is a mind's problem, and no
+mind should wait on a human for it (§9.4: she recovers herself).
+
+**The shape: every holder of bytes is a `Part`; one governor owns the policy.**
+
+```
+Node
+├─ Citizens ─ Citizen ─ Workspace ─ { checkout (shared clone), build target, agent worktrees, caches }
+├─ Artifacts ─ { published cores, models }
+└─ BuildCache
+```
+
+- Each node implements `Footprint` (held / needs / reclaimable on the disk tier, folded from its
+  children, never measured by a caller's `du`) and `Lifecycle` (`prepare` / `suspend` / `resume` /
+  `shutdown`), plus `reclaim(want) -> Released(bytes) | Pending(ticket) | Refused(reason)`.
+  Reclaim order follows the dependencies (§9.3): derived artifacts first (a build target, a merged
+  agent worktree), then dormant workspaces, never a live mind's state.
+- A child exists only because its parent's `prepare` made it: a workspace's agent worktrees are its
+  children, created by it and released by it when dormant and merged. A directory no node owns is
+  a defect the tree reports, not a cache.
+- **`DiskGovernor` is one `ServiceModule`** (CONCURRENCY-STYLE-GUIDE: its own interval task, a
+  `watch` snapshot, `spawn_blocking` for filesystem work). It folds the tree's footprint and runs
+  relief when pressure crosses the measured line.
+- **Admission goes through it, never around it.** A deploy, a build or a model download asks
+  `admit(Need { bytes, owner })` and receives `Granted(lease)`, `Reclaiming(ticket)` (await it: the
+  tree frees the bytes) or `Refused(which parts hold the bytes and why none can release)`. No
+  consumer checks the disk itself, and no refusal waits for a person to type a retry. With the core
+  down, the deploy CLI builds the same tree in-process from the same crate.
+- **What it replaces, one owner at a time:** the scattered `ensure_projected_disk_capacity`
+  callers, `CitizenWorkspacePool`, `CargoTargetPool` and the broker's disk pools become `Part`s;
+  provisioning a workspace by copying a directory becomes `Workspace::prepare` (a shared clone of
+  the tracked tree, as `citizen_layer` already does).
+
+**Then memory, the same way.** RAM, VRAM and the unified pool are the next tier: the resource
+ledger (#6124) already spends a shared pool once per grant; its consumers become `Part`s whose
+footprints fold into the same governor shape.
+
+
 ## 10. The Recursive Bootstrap
 
 Every operation that today is a script (`npx tsx generator/CommandGenerator.ts`, `cargo test`, `scripts/generate-structure.ts`, `install.sh`'s ad-hoc steps) is a candidate for promotion to a command. The default state going forward is: if it operates on a module, it is itself a command, and that command lives in a module.
