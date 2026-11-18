@@ -506,60 +506,51 @@ call is idempotent: a repeated `suspend` on a suspended part reports the same pr
 preservation rules are written once, inside the part that owns the state, and every caller gets
 them for free.
 
-**Capacity composes through the tree too (`Footprint`, the second shared trait).** Every part
-answers for its own memory, per tier (device, host, flash), so admission is arithmetic over the
-tree and never a guess from the whole machine:
+**Capacity composes through the tree too (`Footprint`, the second shared capability).** Every part
+answers for its memory, so admission reads the objects instead of guessing from the whole machine.
+Two things are kept apart, as with ownership and location: **allocation** (a physical allocation,
+identified once by its existing lease or custody claim, held by the service that holds the bytes)
+and **attribution** (which part is charged for it, by reference to that one allocation). Her KV is
+attributed to her and allocated in the engine's KV pool; it is counted once, by its allocation
+identity, never as persona bytes plus pool bytes.
 
-```rust
-trait Footprint {
-    fn held(&self) -> Usage;              // what I hold now, per tier, measured by me
-    fn needs(&self, step: &Step) -> Need; // what my next step adds: Known(per tier) | Unmeasured
-    fn reclaimable(&self) -> Reclaim;     // what I could give back, per tier, and at what cost
-}
-```
+- `held()`: the allocations a part is attributed, per tier, INCLUDING granted reservations and
+  in-flight custody (a claim not yet confirmed released is still held).
+- `needs(step)`: the PEAK concurrent increase the step adds over what is held, per tier, or a typed
+  `Unmeasured`; never a sum of children's sequential peaks, never a zero standing in for unknown.
+- `reclaimable()`: what could be given back and at what cost (drop, page out, recompute);
+  prospective until its completion fence passes and its preserved backing is verified.
 
-A persona's `held` is the sum of her parts (her KV and token history, her genome's layers, her
-learning's optimizer and shadow adapter, her mind's working memory); an engine incarnation's is its
-weights, KV pool and training workspace; the node's is the sum of its engines and personas, and
-"external" is the host's measurement minus that sum, a labelled remainder never charged against a
-GPU budget. Admission is a tier's capacity minus what its objects hold, against a step's `needs`.
-The owner measures its own bytes (the engine its allocations, learning its preflight); the governor
-sums and never re-measures them. `Unmeasured` is a type, never a zero. The host's own measurement
-is a cross-check: the gap between it and the tree is published as drift, which is how a leak
-surfaces with an owner. `Lifecycle` uses it: `prepare` is admitted against `needs`, `suspend`
-reports what moved between tiers, and a swap retires by `reclaimable` cost.
+On unified memory one physical backing serves host and device: every tier's ledger names the
+backing it draws on, so the two totals can never both be spent from the same bytes. Admission is an
+ATOMIC claim through the existing governor (its leases and custody), never "capacity minus a
+snapshot" computed outside it. The host's measurement is a cross-check: drift between it and the
+attributed allocations is published, and it can name an owner only where children report their
+own observations (a child whose allocations the engine's ledger confirms); negative drift is drift,
+never zero external. These are the existing footprint, lease and custody types, adapted where they
+live; nothing here is a second governor.
 
-(The M5, 2026-11-17: the governor charged every process on the host, browsers and builds included,
-against the GPU's working-set cap, read 0 bytes free, and refused a 4 MB optimizer while the GPU
-had about 13 GB of its working set left. A `Footprint` tree would have admitted it.)
-
-**Both traits walk the tree for free (the composite).** Every part exposes its children through
-the same interface (`Part::children`, in dependency order), and the traits' default methods recurse:
-a part implements only its own direct state (`own_held`, `own_suspend`), and `held`, `needs`,
-`reclaimable`, `suspend` and `shutdown` fold its children's answers into its own. So
-`persona.held()` walks her mind, genome, body, residency and learning, each walking its own parts;
-`node.held()` walks its engines and personas. One traversal answers every question: admission sums
-`needs` along the path a step touches; drift is attributed by descending to the child whose `held`
-diverges from what the host measures (a leak is found by walking to its owner); shutdown and swap
-follow the order the parent declared once. A parent never re-measures what a child reports;
-independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
-is a planning-time operation, never per token or per block, so a dynamic call per child is fine
-there.
+**Both capabilities walk the tree (the composite).** Every part exposes its children through the
+same interface, and the default methods fold them, so a part implements only its own direct
+answers. `persona.held()` walks her mind, genome, body, residency and learning; a parent never
+re-measures what a child reports, and an allocation shared by two children is counted once by its
+identity. Ordering is declared PER OPERATION, not once: `prepare` runs in dependency order,
+`suspend` and `shutdown` in reverse, and a partial failure rolls back the children already done.
+Independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
+is a planning-time operation, never per token or per block.
 
 **Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
-same interface and simply calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new
-gene kind in her genome, a new memory tier in her residency) is two things: write it with its own
-state (`own_held`, `own_suspend`, and the rest of its own direct answers), and add it to its
-parent's `children()`. Nothing else changes: her capacity includes its bytes, `persona.suspend()`
-preserves it in the declared order, admission counts its needs, leak tracing can walk into it, and
-a swap stages and retires it with the rest of her. No caller changes, because callers only ever
-talk to the parent. The interface is the same at every depth, so the design never has to be
-explained twice: nodes and subnodes, as deep as the being needs, each simple to understand alone.
+same interface and calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new gene kind
+in her genome, a new memory tier in her residency) is: write it with its own direct answers, attach
+its allocations to their existing claims, and add it to its parent's children with its place in
+each operation's order. Her capacity, lifecycle, admission and swap then include it, and no caller
+changes, because callers talk only to the parent.
 
-**The first code step.** `Part`, `Footprint` and `Lifecycle` are defined once in the floor crate
-(`continuum-base`), so every crate can implement them. `Genome` becomes the first real node, with
-its trial store, signatures and residency as its children. Each later repair adds the next node,
-and an old owner is moved onto the tree in the same change that repairs it.
+**The first code step.** The capability interfaces are added beside the existing footprint, lease
+and custody types in the crate that owns them (or, if more than one crate must implement them, at
+the lowest crate both already depend on, with that placement justified in the change). `Genome`
+becomes the first node, with its trial store, signatures and residency as children. Each later
+repair adds the next node, and an old owner moves onto the tree in the change that repairs it.
 
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
