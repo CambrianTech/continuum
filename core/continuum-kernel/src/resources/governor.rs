@@ -121,6 +121,16 @@ impl ResourceGovernor {
         self.ledger.set_physical_used(kind, bytes);
     }
 
+    /// Ingest a physical sample taken as `sequence`; an older one never overwrites a newer.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, bytes: u64, sequence: u64) -> bool {
+        self.ledger.set_physical_sample(kind, bytes, sequence)
+    }
+
+    /// The holder of `lease_id` declares its bytes resident.
+    pub fn landed(&mut self, lease_id: &str, from: u64) -> Result<(), LeaseError> {
+        self.ledger.landed(lease_id, from)
+    }
+
     /// Daemon feeds which kind a kind draws on (unified memory: VRAM on RAM), each tick.
     pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
         self.ledger.set_backing(kind, backing);

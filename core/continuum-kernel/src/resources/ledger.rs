@@ -148,6 +148,9 @@ pub struct ResourceLeaseLedger {
     /// `available = capacity − max(granted, physical_used)`. Absent (no physical
     /// monitor) → 0, and `available` degrades to `capacity − granted`.
     physical_used: BTreeMap<ResourceKind, u64>,
+    /// The sequence of the physical sample accepted per kind (Codex on #6124): a scan takes its sequence
+    /// before it reads, so a slower, older scan finishing late never overwrites a newer one.
+    sampled: BTreeMap<ResourceKind, u64>,
     /// Kinds that draw on another kind's physical bytes ([`CapacitySource::backed_by`]): on unified
     /// memory, VRAM on RAM. Absent: the kind has its own physical backing (a discrete device).
     ///
@@ -155,19 +158,26 @@ pub struct ResourceLeaseLedger {
     backing: BTreeMap<ResourceKind, ResourceKind>,
 }
 
-/// A live lease and its owner's residency of its kind when it was granted (Codex on #6124): the lease is
-/// pending until that residency has grown past this by its bytes, so a new lease beside the same owner's
-/// old residency is never hidden inside it.
+/// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
+/// the holder's growth: growth beside a lease (the same owner's KV, another process) cannot tell which bytes
+/// are the lease's. A lease is owed in full on top of physical use until its holder declares it resident
+/// AND a physical sample taken after that declaration has been accepted (before it, the reading cannot
+/// include the bytes). A holder that never declares is over-counted (refuses), never under-counted.
 #[derive(Debug, Clone)]
 struct Held {
     lease: ResourceLease,
-    owner_resident_at_grant: u64,
+    /// The first sample sequence that can show the lease resident: the sequence next to be taken when
+    /// its holder declared it landed. None while undeclared.
+    landed_from: Option<u64>,
 }
 
 impl Held {
-    /// This lease's bytes not yet landed when its owner measures `resident` of its kind.
-    fn pending(&self, resident: u64) -> u64 {
-        self.lease.bytes.saturating_sub(resident.saturating_sub(self.owner_resident_at_grant))
+    /// This lease's bytes still owed on top of physical use, given the newest accepted sample of its kind.
+    fn pending(&self, accepted: Option<u64>) -> u64 {
+        match (self.landed_from, accepted) {
+            (Some(from), Some(sample)) if sample >= from => 0,
+            _ => self.lease.bytes,
+        }
     }
 }
 
@@ -205,6 +215,17 @@ impl ResourceLeaseLedger {
     /// Sibling of `set_capacity`; the ground-truth axis of the un-inversion.
     pub fn set_physical_used(&mut self, kind: ResourceKind, bytes: u64) {
         self.physical_used.insert(kind, bytes);
+    }
+
+    /// Ingest a physical sample taken as `sequence`, only if it is newer than the one this kind holds.
+    /// Returns whether it was accepted.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, bytes: u64, sequence: u64) -> bool {
+        if self.sampled.get(&kind).is_some_and(|&held| held >= sequence) {
+            return false;
+        }
+        self.sampled.insert(kind, sequence);
+        self.physical_used.insert(kind, bytes);
+        true
     }
 
     /// Bytes of this kind physically resident across everyone, as last scanned.
@@ -263,28 +284,21 @@ impl ResourceLeaseLedger {
         std::iter::once(root).chain(self.backing.iter().filter(|(_, b)| **b == root).map(|(k, _)| *k)).collect()
     }
 
-    /// Bytes granted on `kind` that have not yet landed: each lease's bytes past the growth of its owner's
-    /// residency since its own grant. Its baseline was the owner's residency plus what the owner's earlier
-    /// leases still had pending then, so growth before a lease, or growth its earlier leases are owed,
-    /// never counts as its landing (Codex on #6124: a grant beside old residency, and a grant after
-    /// unrelated growth, were both hidden).
+    /// Bytes granted on `kind` whose holders have not declared them landed: owed on top of physical use.
     fn not_yet_resident(&self, kind: ResourceKind) -> u64 {
         self.leases
             .values()
             .filter(|held| held.lease.kind == kind)
-            .map(|held| held.pending(self.measured_by(&held.lease.consumer_id, kind)))
+            .map(|held| held.pending(self.sampled.get(&kind).copied()))
             .fold(0u64, |acc, b| acc.saturating_add(b))
     }
 
-    /// What `owner`'s leases of `kind` still have pending: the part of its residency a new lease's
-    /// landing must grow past.
-    fn pending_of(&self, owner: &str, kind: ResourceKind) -> u64 {
-        let resident = self.measured_by(owner, kind);
-        self.leases
-            .values()
-            .filter(|held| held.lease.kind == kind && held.lease.consumer_id == owner)
-            .map(|held| held.pending(resident))
-            .fold(0u64, |acc, b| acc.saturating_add(b))
+    /// The holder of `lease_id` declares its bytes resident. They stop being owed on top once a physical
+    /// sample numbered `from` or later (taken after this declaration) is accepted. Missing lease is fail-loud.
+    pub fn landed(&mut self, lease_id: &str, from: u64) -> Result<(), LeaseError> {
+        let held = self.leases.get_mut(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
+        held.landed_from.get_or_insert(from);
+        Ok(())
     }
 
     /// Free headroom of this kind, ignoring reservations — the honest global
@@ -524,8 +538,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        let owner_resident_at_grant = self.measured_by(&req.consumer_id, req.kind).saturating_add(self.pending_of(&req.consumer_id, req.kind));
-        self.leases.insert(lease_id, Held { lease: lease.clone(), owner_resident_at_grant });
+        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None });
         Ok(lease)
     }
 

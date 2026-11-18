@@ -583,12 +583,11 @@
         let mut ledger = ResourceLeaseLedger::new();
         ledger.set_capacity(ResourceKind::Vram, 24_000);
 
-        // Regime (a): we granted 10_000 but only 6_000 is resident so far (the
-        // lease's allocation is still in flight; its holder measures the 6_000). The
-        // other 4_000 is still owed: committed = 6k + 4k = 10k; available = 14k — the
-        // grant is protected, not double-counted. A holder that never measures is
-        // charged its whole lease on top of physical use (Codex on #6124: an unmeasured
-        // stage beside residency must not hide inside it).
+        // Regime (a): we granted 10_000 and 6_000 is physically used, whose we cannot tell. Until
+        // the holder declares the lease landed and a later sample shows it, the whole lease is
+        // owed on top: committed = 6k + 10k = 16k; available = 8k (Codex on #6124: growth beside a
+        // lease is never read as the lease landing). Declared and sampled, it is carried by
+        // physical use: committed = max(10k, 6k) = 10k; available = 14k, never counted twice.
         ledger
             .acquire(
                 &req(
@@ -601,8 +600,10 @@
                 0,
             )
             .unwrap();
-        ledger.set_measured("serving", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 6_000, detail: "allocating".into() }]);
-        ledger.set_physical_used(ResourceKind::Vram, 6_000);
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, 6_000, 1));
+        assert_eq!(ledger.committed(ResourceKind::Vram), 16_000, "an undeclared lease is owed on top");
+        ledger.landed("lease-a", 2).unwrap();
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, 6_000, 2));
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
             10_000,
@@ -611,16 +612,15 @@
         assert_eq!(ledger.available(ResourceKind::Vram), 14_000);
 
         // Regime (b): a game grabs VRAM — physical_used jumps to 21_000 while our
-        // lease still owes 4_000. committed = 21k + 4k = 25k (past the ceiling);
-        // available = 0. We refuse to hand out the bytes the game took, and the bytes
-        // our own lease is still to take.
-        ledger.set_physical_used(ResourceKind::Vram, 21_000);
+        // grant is unchanged at 10_000. committed = max(10k, 21k) = 21k; available
+        // = 24k − 21k = 3k. We now refuse to hand out the bytes the game took.
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, 21_000, 3));
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
-            25_000,
-            "physical wins when external pressure exceeds grants, and the owed lease stays on top"
+            21_000,
+            "physical wins when external pressure exceeds grants"
         );
-        assert_eq!(ledger.available(ResourceKind::Vram), 0);
+        assert_eq!(ledger.available(ResourceKind::Vram), 3_000);
 
         // Regime (c): attribute 8_000 of the residency to serving; the rest of
         // physical_used is external (the game). external = 21k − 8k = 13k.
@@ -649,8 +649,8 @@
             "physical − measured = the game's floor"
         );
         assert_eq!(
-            vram.available_bytes, 1_000,
-            "board available == committed math: 21k physical + the 2k still owed"
+            vram.available_bytes, 3_000,
+            "board available == committed math"
         );
     }
 
@@ -840,14 +840,12 @@
             assert_eq!(l.available_for("embed", ResourceKind::Ram), free - 350 * MB, "a GPU floor binds the host axis");
             l.reserve("render", ResourceKind::Vram, 0);
 
-            // The sample lands her 300 MB: measured and physical rise together, the headroom does not move.
+            // Her 300 MB land: she declares them, and a sample taken after shows them. Physical rises by what
+            // stopped being owed; the headroom does not move.
             let before = l.available(ResourceKind::Ram);
-            l.set_measured(
-                "learning:her",
-                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 300 * MB, detail: "optimizer".into() }],
-            );
+            l.landed(&gpu.lease_id, 1).expect("test: her lease is live");
             for kind in [ResourceKind::Vram, ResourceKind::Ram] {
-                l.set_physical_used(kind, HOST_USED + 300 * MB);
+                assert!(l.set_physical_sample(kind, HOST_USED + 300 * MB, 1));
             }
             assert_eq!(l.available(ResourceKind::Ram), before, "landed bytes are counted once, not again");
             assert_eq!(l.available(ResourceKind::Vram), before);
@@ -882,14 +880,10 @@
                     l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
                     "unified={unified} stager={stager}: a 4.096 MB step does not fit 2 MB"
                 );
-                // the stage lands: its owner measures it and the device shows it, counted once
-                if stager == "serving" {
-                    l.set_measured("serving", resident(18 * MB));
-                } else {
-                    l.set_measured(stager, vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 18 * MB, detail: "staged".into() }]);
-                }
+                // the stage lands: its holder declares it, and a sample taken after shows it, counted once
+                l.landed("stage", 1).expect("test: the stage is live");
                 for kind in [ResourceKind::Vram, ResourceKind::Ram] {
-                    l.set_physical_used(kind, base + 18 * MB);
+                    assert!(l.set_physical_sample(kind, base + 18 * MB, 1));
                 }
                 assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: landed, still counted once");
             }
@@ -904,11 +898,10 @@
             for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
                 let base = cap - 50 * MB;
                 let mut l = ResourceLeaseLedger::new();
-                let sample = |l: &mut ResourceLeaseLedger, resident: u64| {
+                let sample = |l: &mut ResourceLeaseLedger, resident: u64, sequence: u64| {
                     for kind in [ResourceKind::Vram, ResourceKind::Ram] {
-                        l.set_physical_used(kind, resident);
+                        assert!(l.set_physical_sample(kind, resident, sequence));
                     }
-                    l.set_measured("serving", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: resident, detail: "weights + KV".into() }]);
                 };
                 for kind in [ResourceKind::Vram, ResourceKind::Ram] {
                     l.set_capacity(kind, cap);
@@ -916,17 +909,49 @@
                 if unified {
                     l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
                 }
-                sample(&mut l, base);
+                sample(&mut l, base, 1);
                 assert!(l.acquire(&req("serving", ResourceKind::Vram, 10 * MB, ReclaimPolicy::Graceful), "first".into(), 0).is_ok());
-                sample(&mut l, base + 30 * MB);
+                l.landed("first", 2).expect("test: first is live");
+                sample(&mut l, base + 30 * MB, 2); // the first 10 landed, 20 of unrelated KV
                 assert!(l.acquire(&req("serving", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "second".into(), 0).is_ok());
                 assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: the second grant is still owed");
                 assert!(
                     l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
                     "unified={unified}: a 4.096 MB step does not fit 2 MB"
                 );
-                sample(&mut l, base + 48 * MB);
+                l.landed("second", 3).expect("test: second is live");
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: declared, but no sample since shows it");
+                sample(&mut l, base + 48 * MB, 3);
                 assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: landed, counted once");
+            }
+        }
+
+        // what this catches (Codex's replay of c1bb9ab97 on #6124): the same owner's KV growth after a grant read
+        // as that grant landing. 70 MB of headroom; serving takes 18 MB for a prefetch, then its KV grows 20 MB
+        // before the prefetch lands: 32 MB are left, not 50, and only a declared landing plus a later sample
+        // stops the 18 MB being owed.
+        #[test]
+        fn growth_beside_an_undeclared_grant_never_lands_it() {
+            for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
+                let base = cap - 70 * MB;
+                let mut l = ResourceLeaseLedger::new();
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                    assert!(l.set_physical_sample(kind, base, 1));
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "prefetch".into(), 0).is_ok());
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(l.set_physical_sample(kind, base + 20 * MB, 2)); // KV, not the prefetch
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 32 * MB, "unified={unified}: the prefetch is still owed");
+                // an older sample arriving late never replaces the newer one
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(!l.set_physical_sample(kind, base, 1));
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 32 * MB, "unified={unified}: the late, older sample was refused");
             }
         }
     }

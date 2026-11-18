@@ -159,6 +159,9 @@ pub struct ResourceDaemon {
     governor: Mutex<ResourceGovernor>,
     /// Scan sources, one per managed kind. Read off-lock each tick.
     sources: Vec<Arc<dyn CapacitySource>>,
+    /// Orders physical samples: each scan takes the next value BEFORE it reads its sources, and the
+    /// governor keeps only the newest per kind, so a slow tick scan never overwrites a newer one.
+    sample_seq: std::sync::atomic::AtomicU64,
     /// Leaseholders, by registration order. Grows via `add_consumer`.
     consumers: RwLock<Vec<Arc<dyn ResourceConsumer>>>,
     /// Three-strikes quarantine for misbehaving consumers — the shared base
@@ -238,6 +241,7 @@ impl ResourceDaemon {
         let daemon = Arc::new(Self {
             governor: Mutex::new(governor),
             sources,
+            sample_seq: std::sync::atomic::AtomicU64::new(1),
             consumers: RwLock::new(consumers),
             quarantine: Mutex::new(QuarantineLedger::new(DEFAULT_QUARANTINE_LIMIT)),
             channel,
@@ -323,16 +327,36 @@ impl ResourceDaemon {
         self: &std::sync::Arc<Self>,
         req: &LeaseRequest,
     ) -> Result<LeaseGuard, LeaseError> {
+        // read the sources outside the lock (a slow reader never stalls other allocations), numbered before
+        // reading; then ingest in order and grant under one lock, against the newest accepted sample (this
+        // one, or a newer one a tick took meanwhile) (Codex on #6124)
+        let sequence = self.next_sample();
         let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes(), s.backed_by())).collect();
-        {
-            let mut governor = self.governor.lock();
-            for (kind, ceiling, used, backing) in scans {
-                governor.set_capacity(kind, ceiling);
-                governor.set_physical_used(kind, used);
-                governor.set_backing(kind, backing);
-            }
+        let now = EpochMs::now().millis();
+        let mut g = self.governor.lock();
+        for (kind, ceiling, used, backing) in scans {
+            g.set_capacity(kind, ceiling);
+            g.set_physical_sample(kind, used, sequence);
+            g.set_backing(kind, backing);
         }
-        self.acquire_guarded(req)
+        let lease = g.acquire(req, now)?;
+        self.publish_locked(&g);
+        Ok(LeaseGuard { daemon: std::sync::Arc::clone(self), lease_id: lease.lease_id, released: false })
+    }
+
+    /// The holder of `lease_id` declares its bytes resident (see [`LeaseGuard::landed`]).
+    pub fn landed(&self, lease_id: &str) -> Result<(), LeaseError> {
+        // only a sample numbered from here on was taken after the declaration and can show the bytes
+        let from = self.sample_seq.load(std::sync::atomic::Ordering::Relaxed);
+        let mut g = self.governor.lock();
+        g.landed(lease_id, from)?;
+        self.publish_locked(&g);
+        Ok(())
+    }
+
+    /// The next physical sample sequence; taken before a scan reads its sources.
+    fn next_sample(&self) -> u64 {
+        self.sample_seq.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
@@ -508,6 +532,7 @@ impl ResourceDaemon {
         // 2. Read every source's fixed ceiling AND live physical usage OFF the
         //    accounting lock (cached monitor reads). Both feed the governor below;
         //    the ceiling is near-constant, the usage moves with external pressure.
+        let sequence = self.next_sample(); // before reading: a scan that lands late is older than any taken after
         let scans: Vec<(ResourceKind, u64, u64, Option<ResourceKind>)> = self
             .sources
             .iter()
@@ -559,7 +584,7 @@ impl ResourceDaemon {
                 g.set_capacity(*kind, *ceil);
                 // The un-inversion ground truth: everything physically resident,
                 // netted against the fixed ceiling to yield `available`.
-                g.set_physical_used(*kind, *used);
+                g.set_physical_sample(*kind, *used, sequence);
                 g.set_backing(*kind, *backing);
             }
             // Feed the self-declared attribution axis: each consumer's freshly-polled
@@ -746,6 +771,13 @@ impl LeaseGuard {
     /// The board-visible id of the held lease — for evidence/telemetry lines.
     pub fn lease_id(&self) -> &str {
         &self.lease_id
+    }
+
+    /// Declare the held bytes resident: the holder calls it once its allocation has landed (the engine
+    /// confirmed the buffers, the lane reported loaded). Until then the lease is owed on top of physical
+    /// use; a holder that never declares is over-counted, never under-counted.
+    pub fn landed(&self) -> Result<(), LeaseError> {
+        self.daemon.landed(&self.lease_id)
     }
 
     /// The bytes this guard holds, read from the governor itself (0 once the lease
