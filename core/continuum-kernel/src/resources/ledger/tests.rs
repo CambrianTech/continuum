@@ -332,13 +332,14 @@
         ledger.set_physical_used(ResourceKind::Ram, 52 * gib);
         ledger.set_measured("deploy-build", foot(12 * gib));
         assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 12 * gib);
-        // a partial grant below its residency: the larger of the two meets the floor
+        // a new grant beside its residency is owed on top of it until measured (Codex on #6124:
+        // a lease beside old residency is never hidden inside it), so serving loses its 3 GiB too
         ledger.set_measured("deploy-build", foot(6 * gib));
         ledger.set_physical_used(ResourceKind::Ram, 46 * gib);
         ledger
             .acquire(&req("deploy-build", ResourceKind::Ram, 3 * gib, ReclaimPolicy::Graceful), "b".into(), 100)
             .unwrap();
-        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2) - 3 * gib);
     }
 
     // what this catches (the M5, 2026-11-14 03:35Z, canary 958ea3056): a boot sizing that takes the
@@ -583,8 +584,11 @@
         ledger.set_capacity(ResourceKind::Vram, 24_000);
 
         // Regime (a): we granted 10_000 but only 6_000 is resident so far (the
-        // lease's allocation is still in flight). committed = max(10k, 6k) = 10k;
-        // available = 24k − 10k = 14k — the grant is protected, not double-counted.
+        // lease's allocation is still in flight; its holder measures the 6_000). The
+        // other 4_000 is still owed: committed = 6k + 4k = 10k; available = 14k — the
+        // grant is protected, not double-counted. A holder that never measures is
+        // charged its whole lease on top of physical use (Codex on #6124: an unmeasured
+        // stage beside residency must not hide inside it).
         ledger
             .acquire(
                 &req(
@@ -597,6 +601,7 @@
                 0,
             )
             .unwrap();
+        ledger.set_measured("serving", vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: 6_000, detail: "allocating".into() }]);
         ledger.set_physical_used(ResourceKind::Vram, 6_000);
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
@@ -606,15 +611,16 @@
         assert_eq!(ledger.available(ResourceKind::Vram), 14_000);
 
         // Regime (b): a game grabs VRAM — physical_used jumps to 21_000 while our
-        // grant is unchanged at 10_000. committed = max(10k, 21k) = 21k; available
-        // = 24k − 21k = 3k. We now refuse to hand out the bytes the game took.
+        // lease still owes 4_000. committed = 21k + 4k = 25k (past the ceiling);
+        // available = 0. We refuse to hand out the bytes the game took, and the bytes
+        // our own lease is still to take.
         ledger.set_physical_used(ResourceKind::Vram, 21_000);
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
-            21_000,
-            "physical wins when external pressure exceeds grants"
+            25_000,
+            "physical wins when external pressure exceeds grants, and the owed lease stays on top"
         );
-        assert_eq!(ledger.available(ResourceKind::Vram), 3_000);
+        assert_eq!(ledger.available(ResourceKind::Vram), 0);
 
         // Regime (c): attribute 8_000 of the residency to serving; the rest of
         // physical_used is external (the game). external = 21k − 8k = 13k.
@@ -643,8 +649,8 @@
             "physical − measured = the game's floor"
         );
         assert_eq!(
-            vram.available_bytes, 3_000,
-            "board available == committed math"
+            vram.available_bytes, 1_000,
+            "board available == committed math: 21k physical + the 2k still owed"
         );
     }
 

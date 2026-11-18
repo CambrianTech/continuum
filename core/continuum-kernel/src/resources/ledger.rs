@@ -541,6 +541,7 @@ impl ResourceLeaseLedger {
         let lease = self
             .leases
             .get_mut(lease_id)
+            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
@@ -639,6 +640,7 @@ impl ResourceLeaseLedger {
         let mut candidates: Vec<&ResourceLease> = self
             .leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind && l.reclaim_rank(now_ms).is_some())
             .filter(|l| {
                 // Dwell protection — expired bytes are always fair game; a
