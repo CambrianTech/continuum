@@ -565,6 +565,13 @@ as terminal, preserved or pending, and only the reversible children are resumed.
 Independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
 is a planning-time operation, never per token or per block.
 
+**Concurrency is the same tree (launch and join).** A part LAUNCHES its children's work downward and
+is not done until every child has JOINED upward; cancellation flows down the same edges; no task
+outlives the part that launched it (a scoped `JoinSet` owned by the parent, never a detached
+spawn). The 2026-11-17 learning lease outlived its engine because its fence ran detached and
+nothing joined it; the incarnation's `shutdown` would have joined it or handed it to its completion
+owner before releasing anything.
+
 **Growing her is adding a node.** An object is made of its sub-objects, and every one follows the
 same interface and calls its sub-parts. Adding an organ (an `Amygdala` in her mind, a new gene kind
 in her genome, a new memory tier in her residency) is: write it with its own direct answers, attach
