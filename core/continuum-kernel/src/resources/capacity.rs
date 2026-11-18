@@ -24,6 +24,7 @@ use std::sync::Arc;
 use crate::gpu::monitor::GpuMonitor;
 
 use super::lease::ResourceKind;
+use super::observed::{Observed, PhysicalSample};
 
 /// One resource axis's two live numbers, sourced from a hardware monitor: the
 /// **fixed ceiling** (the hardware upper limit this node fundamentally has, less
@@ -63,9 +64,9 @@ pub trait CapacitySource: Send + Sync {
     /// Physical use with the instant its observation began. A direct read is observed as it is called (the
     /// instant is taken before the read); a source that serves a cached reading returns the instant its probe
     /// started, so the ledger never takes an old frame for a new one.
-    fn sample(&self) -> super::observed::PhysicalSample {
+    fn sample(&self) -> PhysicalSample {
         let observed = super::observed::Observed::now();
-        super::observed::PhysicalSample { used: self.used_bytes(), observed }
+        PhysicalSample { used: self.used_bytes(), observed }
     }
 
     /// The kind whose physical bytes this one draws on, when the two share one backing (unified
@@ -128,12 +129,12 @@ impl CapacitySource for GpuCapacitySource {
         }
     }
 
-    fn sample(&self) -> super::observed::PhysicalSample {
+    fn sample(&self) -> PhysicalSample {
         // the monitor's cached frame with the instant its probe started; no reading yet is observed never, so
         // it cannot clear a landing
         match self.monitor.free_reading() {
-            Some((free, observed)) => super::observed::PhysicalSample { used: self.monitor.total_bytes().saturating_sub(free), observed },
-            None => super::observed::PhysicalSample { used: 0, observed: super::observed::Observed::NEVER },
+            Some((free, observed)) => PhysicalSample { used: self.monitor.total_bytes().saturating_sub(free), observed },
+            None => PhysicalSample { used: 0, observed: Observed::NEVER },
         }
     }
 }
@@ -144,16 +145,17 @@ impl CapacitySource for GpuCapacitySource {
 pub trait HostMemoryReader: Send + Sync {
     /// Total physical RAM. A CONSTANT for the machine, so implementations read it once.
     fn total_bytes(&self) -> u64;
-    /// Free physical RAM as of the monitor's last poll, or `None` before the first one.
-    /// `None` is "unknown", NEVER "zero" — see [`HostRamCapacitySource::used_bytes`].
-    fn available_bytes(&self) -> Option<u64>;
+    /// Free physical RAM and the instant the poll that measured it BEGAN, or `None` before the first
+    /// reading. `None` is "unknown", NEVER "zero" (see [`HostRamCapacitySource::used_bytes`]). A cached
+    /// reading keeps the instant it was taken; it is never redated to when it was asked for (#6124).
+    fn available(&self) -> Option<(u64, Observed)>;
 }
 
 /// Reads the live host through the [`MemoryPressureMonitor`]'s already-published numbers.
 ///
 /// Total is read ONCE at construction (`memory_pressure::sample_host_memory`) because physical RAM is a
 /// stable fact about the machine, and available comes from
-/// [`current_available_bytes`](crate::system_resources::memory_pressure::current_available_bytes)
+/// [`current_available_reading`](crate::system_resources::memory_pressure::current_available_reading)
 /// — a lock-free atomic the monitor loop refreshes every 2s. Both reads satisfy the module's
 /// non-blocking contract; neither touches the reporter list (`budget_snapshot()` DOES — it locks
 /// and calls `budget()`/`report()` on every reporter, which must never happen on the daemon's
@@ -179,7 +181,9 @@ pub struct LiveHostMemory {
     ///
     /// Erring toward "plenty free" is the worst direction to err: it over-grants into a
     /// machine that is already swapping.
-    last_known_free: AtomicU64,
+    /// The last good reading with the instant its poll began, kept together so a fallback never
+    /// pairs a reading with another's instant. Read and written once per daemon tick, uncontended.
+    last_known: std::sync::Mutex<Option<(u64, Observed)>>,
 }
 
 impl Default for LiveHostMemory {
@@ -191,8 +195,10 @@ impl Default for LiveHostMemory {
 impl LiveHostMemory {
     pub fn new() -> Self {
         // Measured by the monitor that owns host memory, never sampled here (private_probes).
+        let observed = Observed::now();
         let sample = crate::system_resources::memory_pressure::sample_host_memory();
-        Self { total: sample.total, last_known_free: AtomicU64::new(sample.available) }
+        let last_known = (sample.available > 0).then_some((sample.available, observed));
+        Self { total: sample.total, last_known: std::sync::Mutex::new(last_known) }
     }
 
     /// A direct host sample — the SAME `host_statistics64` read `MemoryPressureMonitor`
@@ -200,11 +206,20 @@ impl LiveHostMemory {
     /// `system/resources` already serves from. Used only when the monitor's atomic is
     /// unset; the daemon's tick is ~1Hz, so this is at most one cheap syscall per tick
     /// on the degraded path and ZERO on the healthy one.
-    fn direct_sample(&self) -> Option<u64> {
+    fn direct_sample(&self) -> Option<(u64, Observed)> {
+        let observed = Observed::now();
         match crate::system_resources::memory_pressure::sample_host_memory().available {
             0 => None,
-            n => Some(n),
+            n => Some((n, observed)),
         }
+    }
+
+    fn remember(&self, reading: (u64, Observed)) -> (u64, Observed) {
+        let mut last = self.last_known.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // a panic mid-copy leaves a whole (u64, Observed): still a reading
+        if last.is_none_or(|(_, seen)| reading.1 >= seen) {
+            *last = Some(reading);
+        }
+        reading
     }
 }
 
@@ -216,21 +231,16 @@ impl HostMemoryReader for LiveHostMemory {
     /// Free bytes, from the monitor if it is publishing, else a direct sample, else the
     /// last value either source gave. `None` ONLY if nothing has ever produced a reading
     /// — which after a successful `new()` means the host itself reported nothing.
-    fn available_bytes(&self) -> Option<u64> {
-        if let Some(n) = crate::system_resources::memory_pressure::current_available_bytes() {
-            self.last_known_free.store(n, Ordering::Relaxed);
-            return Some(n);
+    fn available(&self) -> Option<(u64, Observed)> {
+        if let Some(reading) = crate::system_resources::memory_pressure::current_available_reading() {
+            return Some(self.remember(reading));
         }
-        if let Some(n) = self.direct_sample() {
-            self.last_known_free.store(n, Ordering::Relaxed);
-            return Some(n);
+        if let Some(reading) = self.direct_sample() {
+            return Some(self.remember(reading));
         }
         // Stale is FAR better than fabricated-empty: a slightly old number keeps the
         // governor conservative, whereas 0-used invites it to over-grant a full machine.
-        match self.last_known_free.load(Ordering::Relaxed) {
-            0 => None,
-            n => Some(n),
-        }
+        *self.last_known.lock().unwrap_or_else(std::sync::PoisonError::into_inner) // see remember
     }
 }
 
@@ -288,10 +298,20 @@ impl<R: HostMemoryReader> CapacitySource for HostRamCapacitySource<R> {
         // at `capacity − granted`. The alternative (treating unknown as total-consumed) would
         // refuse every RAM consumer for the first seconds of every boot, which is the very bug
         // this type exists to end. The window is one 2s poll.
-        match self.reader.available_bytes() {
-            Some(avail) => self.reader.total_bytes().saturating_sub(avail),
-            None => 0,
-        }
+        self.sample().used
+    }
+
+    fn sample(&self) -> PhysicalSample {
+        host_sample(&self.reader)
+    }
+}
+
+/// A host reading as a physical sample: used = total − free, at the instant its poll began; no reading
+/// is used 0 observed [`Observed::NEVER`], so it degrades to the ledger's count and clears no landing.
+fn host_sample<R: HostMemoryReader>(host: &R) -> PhysicalSample {
+    match host.available() {
+        Some((free, observed)) => PhysicalSample { used: host.total_bytes().saturating_sub(free), observed },
+        None => PhysicalSample { used: 0, observed: Observed::NEVER },
     }
 }
 
@@ -352,11 +372,8 @@ impl<R: HostMemoryReader> UnifiedMemoryPool<R> {
     /// The ONE usage measurement, shared by both views. Unknown (pre-first-poll)
     /// degrades to 0 for the same reason as [`HostRamCapacitySource::used_bytes`]:
     /// "not measured yet" must never be rendered as "all of it is spoken for".
-    fn pool_used(&self) -> u64 {
-        match self.host.available_bytes() {
-            Some(avail) => self.host.total_bytes().saturating_sub(avail),
-            None => 0,
-        }
+    fn pool_sample(&self) -> PhysicalSample {
+        host_sample(&self.host)
     }
 
     /// The two capacity sources to register with the daemon. Both read this pool, so
@@ -401,7 +418,12 @@ impl<R: HostMemoryReader> CapacitySource for UnifiedPoolView<R> {
     fn used_bytes(&self) -> u64 {
         // THE fix: one measurement, both axes. Reporting these independently is what
         // let VRAM claim headroom RAM knew was gone.
-        self.pool.pool_used()
+        self.pool.pool_sample().used
+    }
+
+    fn sample(&self) -> PhysicalSample {
+        // the host frame's own instant, on both axes: never redated to when the ledger asked (#6124)
+        self.pool.pool_sample()
     }
 
     fn backed_by(&self) -> Option<ResourceKind> {
@@ -535,12 +557,36 @@ mod tests {
             fn total_bytes(&self) -> u64 {
                 self.total
             }
-            fn available_bytes(&self) -> Option<u64> {
-                self.available
+            fn available(&self) -> Option<(u64, Observed)> {
+                self.available.map(|free| (free, Observed::from_nanos(1)))
             }
         }
 
         const GIB: u64 = 1024 * 1024 * 1024;
+
+        // what this catches (Codex on #6124 at 20a9ba11): the M5's host frame is the memory monitor's 2 s cached
+        // reading; both unified views and the RAM source redated it to whenever the ledger asked, so a
+        // frame taken before a landing could clear it. Every host view reports the instant its poll began.
+        #[test]
+        fn every_host_view_reports_the_instant_its_frame_was_taken() {
+            struct Frame(Option<(u64, Observed)>);
+            impl HostMemoryReader for Frame {
+                fn total_bytes(&self) -> u64 {
+                    64 * GIB
+                }
+                fn available(&self) -> Option<(u64, Observed)> {
+                    self.0
+                }
+            }
+            let taken = Observed::from_nanos(4);
+            let frame = PhysicalSample { used: 24 * GIB, observed: taken };
+            for view in Arc::new(UnifiedMemoryPool::new(Frame(Some((40 * GIB, taken))), 48 * GIB)).views() {
+                assert_eq!(view.sample(), frame, "{:?}: the frame's own instant", view.kind());
+            }
+            assert_eq!(HostRamCapacitySource::new(Frame(Some((40 * GIB, taken)))).sample(), frame);
+            let none = HostRamCapacitySource::new(Frame(None)).sample();
+            assert_eq!(none, PhysicalSample { used: 0, observed: Observed::NEVER }, "no frame clears nothing");
+        }
 
         // what this catches: the RAM axis reporting a ceiling of 0, which is what made
         // `available_for(_, Ram)` return 0 for every consumer for as long as this source
