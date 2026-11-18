@@ -508,8 +508,8 @@ fn build_messages_name_prefixed(
 /// with no closing instruction) makes qwen3.5 emit ` *` + `<|endoftext|>`
 /// after 1 token because the model reads it as "summary of a closed
 /// conversation, no question for me." A prompt that works ends with
-/// explicit "Respond with ..." guidance; the render prompt needs it (token-level diagnostic captured in
-/// the deleted continuous-batching scheduler).
+/// explicit "Respond with ..." guidance; the render prompt needs it. Token-level diagnostic captured in
+/// llamacpp_scheduler.rs (search "scheduler DIAG").
 ///
 /// Caller must pass `persona_name` so the closing cue addresses the
 /// right responder.

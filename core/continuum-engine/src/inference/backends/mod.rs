@@ -5,12 +5,6 @@
 pub mod llamacpp;
 pub mod persona_scheduler;
 
-// MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
-// builds don't see the module at all. Phase A scaffold — see continuum#897
-// and docs/inference/MLX-BACKEND.md.
-#[cfg(all(feature = "mlx", target_os = "macos"))]
-pub mod mlx_adapter;
-
 use std::path::Path;
 
 use candle_core::quantized::gguf_file;
