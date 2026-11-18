@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
 mod index;
-use index::DirIndex;
+use index::{DirIndex, Seen};
 
 /// What removing one file did. A guarded remover returns [`Removal::Protected`] for a file
 /// something live still points at.
@@ -88,9 +88,15 @@ impl FilesystemTierPool {
     /// `usage / max_bytes` to pressure 0.0..1.0+ and acts when it
     /// crosses thresholds.
     pub fn new(tier_name: impl Into<String>, dir: PathBuf, max_bytes: u64) -> Self {
+        Self::built(tier_name, dir, max_bytes, || {})
+    }
+
+    /// [`Self::new`], running `between` after the watch starts and before the seed walk: production
+    /// runs nothing there; a test writes, to prove a write in that window is counted exactly once.
+    fn built(tier_name: impl Into<String>, dir: PathBuf, max_bytes: u64, between: impl FnOnce()) -> Self {
         let pool = Self {
             tier_name: tier_name.into(),
-            index: Arc::new(Mutex::new(DirIndex::seeded(&dir))),
+            index: Arc::new(Mutex::new(DirIndex::default())),
             observed: Arc::new(parking_lot::Condvar::new()),
             rescan: Arc::new(AtomicBool::new(false)),
             watcher: Mutex::new(None),
@@ -98,8 +104,21 @@ impl FilesystemTierPool {
             max_bytes,
             remove: None,
         };
+        // Watch FIRST, then seed under the index lock: a write in between is seen by the walk, and an
+        // event that arrives during the walk waits for the lock and then reconciles against what is on
+        // disk, so nothing falls between the walk and the watch (Codex on #6113 d9e1af314).
         pool.watch();
+        between();
+        pool.seed();
         pool
+    }
+
+    /// Rebuild the index from the directory under the index lock; an unreadable directory keeps what
+    /// was known and leaves the rescan set, so the next read tries again.
+    fn seed(&self) {
+        if self.index.lock().reseed(&self.dir) == Seen::Unreadable {
+            self.rescan.store(true, Ordering::Release);
+        }
     }
 
     /// Watch her directory: each change the kernel reports updates only the paths it names. A watch
@@ -114,7 +133,9 @@ impl FilesystemTierPool {
             Ok(event) => {
                 let mut index = index.lock();
                 for path in &event.paths {
-                    index.observe(path);
+                    if index.observe(path) == Seen::Unreadable {
+                        rescan.store(true, Ordering::Release);
+                    }
                 }
                 observed.notify_all();
             }
@@ -156,10 +177,10 @@ impl FilesystemTierPool {
         if !self.rescan.swap(false, Ordering::AcqRel) {
             return;
         }
-        *self.index.lock() = DirIndex::seeded(&self.dir);
         if self.watcher.lock().is_none() {
-            self.watch();
+            self.watch(); // watch before the walk, as at creation
         }
+        self.seed();
     }
 }
 
@@ -370,5 +391,22 @@ mod tests {
         assert!(pool.wait_for_usage(|usage| usage == 1_000, deadline()), "the kernel reported both writes, nested included");
         fs::remove_file(dir.path().join("b.log")).unwrap();
         assert!(pool.wait_for_usage(|usage| usage == 700, deadline()), "and the removal");
+    }
+
+    /// What this catches (Codex on #6113 d9e1af314): the pool walked its directory BEFORE it started
+    /// watching, so a write between the walk and the watch was never counted. The watch now starts
+    /// first: a write in that window is counted, exactly once (the walk and its event reconcile the
+    /// same file), and later writes still arrive by event.
+    #[test]
+    fn a_write_between_the_watch_and_the_seed_walk_is_counted_once() {
+        let dir = tempdir().unwrap();
+        let window = dir.path().join("window.log");
+        let pool = FilesystemTierPool::built("watched", dir.path().to_path_buf(), 1_000_000, || {
+            fs::write(&window, vec![b'.'; 500]).unwrap();
+        });
+        assert_eq!(pool.usage_bytes(), 500, "the write in the window is counted");
+        let deadline = || std::time::Instant::now() + Duration::from_secs(10);
+        fs::write(dir.path().join("later.log"), vec![b'.'; 200]).unwrap();
+        assert!(pool.wait_for_usage(|usage| usage == 700, deadline()), "once, never twice, and later writes still arrive");
     }
 }
