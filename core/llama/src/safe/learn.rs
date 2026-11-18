@@ -435,7 +435,7 @@ impl LearnRun<'_, '_, '_> {
     }
 
     /// Whether a further gradient chunk remains (restoration needs no new grant).
-    pub fn needs_gradient(&self) -> bool {
+    pub fn needs_gradient(&mut self) -> bool {
         unsafe { sys::llama_opt_learn_needs_gradient(self.learner.ctx.as_ptr()) }
     }
 
