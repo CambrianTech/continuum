@@ -350,11 +350,6 @@ pub struct ServingDaemonModule {
     /// the one launch lays its pool out on it, so the engine holds the memory the planner just
     /// proved it may. `None` until a plan has been computed.
     planned_budget: Arc<parking_lot::Mutex<Option<PlannedBudget>>>,
-    /// The engine process this core last asked to move onto the shared pool: one try per
-    /// engine, so a refused move is never retried every tick.
-    shared_pool_move_tried: Arc<std::sync::atomic::AtomicU64>,
-    /// The engine process last judged floor-sized (`floor_sized`): one retirement per engine.
-    floor_sized_tried: Arc<std::sync::atomic::AtomicU64>,
     /// The host's memory as the last two readings saw it (`settle`): a launch below the seated
     /// minds' needs waits while memory is still being returned.
     host_settle: parking_lot::Mutex<settle::HostSettle>,
@@ -562,8 +557,6 @@ impl ServingDaemonModule {
             intent,
             lane_demand: Arc::new(std::sync::atomic::AtomicU32::new(1)),
             planned_budget: Arc::new(parking_lot::Mutex::new(None)),
-            shared_pool_move_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
-            floor_sized_tried: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             host_settle: parking_lot::Mutex::new(settle::HostSettle::default()),
             host_reading: parking_lot::Mutex::new(None),
             live_pool: watch::channel(live_pool::LivePool::default()).0,
@@ -700,7 +693,6 @@ mod hold;
 mod own_credit;
 use own_credit::{OwnCredit, PlanBudget, PlannedBudget};
 mod reconcile;
-mod floor_sized;
 mod settle;
 mod host_fit;
 mod live_pool;

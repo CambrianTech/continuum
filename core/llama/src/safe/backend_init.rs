@@ -527,6 +527,13 @@ impl Model {
         }
     }
 
+    /// Whether the GGUF carries a chat template: the default one (`name` None) or a named one
+    /// (`tokenizer.chat_template.<name>`, e.g. `tool_use`). Reads the pointer only, no copy.
+    pub fn has_chat_template(&self, name: Option<&std::ffi::CStr>) -> bool {
+        let name = name.map_or(std::ptr::null(), std::ffi::CStr::as_ptr);
+        !unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), name) }.is_null()
+    }
+
     /// Convert a token to its UTF-8 string representation.
     pub fn token_to_piece(&self, token: i32) -> String {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };

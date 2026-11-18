@@ -78,6 +78,7 @@ fn model_info_with_runtime(
     info
 }
 
+mod chat_turn;
 mod construction;
 mod provider;
 pub use construction::LlamaCppLaunch;

@@ -3,7 +3,6 @@
 use super::*;
 // The SSE wire types + stream consumer live in `crate::inference::sse_stream` (S3b decompose).
 use crate::inference::sse_stream::warn_if_decode_collapsed;
-use continuum_tool_protocol::UnparsedArguments;
 
 impl OpenAICompatibleAdapter {
     /// Generate `request` under `terms` (`DispatchTerms::default()` = none beyond the lane's own).
@@ -645,57 +644,10 @@ impl OpenAICompatibleAdapter {
         }
 
         // Assemble native tool calls from the streamed fragments.
-        let mut tool_calls: Option<Vec<ToolCall>> = if acc_tools.is_empty() {
-            None
-        } else {
-            let calls: Vec<ToolCall> = acc_tools
-                .into_iter()
-                .filter(|t| !t.name.is_empty())
-                .map(|t| {
-                    // A model's tool arguments that do not parse as JSON are a REAL
-                    // failure of the generation, and this seam is the only place that
-                    // knows it. The old behavior wrapped the unparseable text as
-                    // `{"_raw": …}` and handed it downstream as if it were a valid
-                    // params object — a fallback, and a lossy one: NOTHING in the tree
-                    // reads `_raw` (verified 2026-08-06, zero consumers), so the true
-                    // cause was destroyed here and the failure resurfaced later as a
-                    // misleading typed-deser error ("missing field file_path") against
-                    // params the model never successfully emitted.
-                    //
-                    // Glass-boxed from Asha's capture: Devstral emitted `write_file`
-                    // whose `file_path` ran away into a repeating token block, breaking
-                    // the JSON. The turn showed a confusing downstream error instead of
-                    // "your tool arguments were not valid JSON."
-                    // [[fallbacks-are-illegal-fail-loud]] (#334)
-                    // The fate of a call whose arguments do not parse is decided HERE, the
-                    // one seam that knows why the generation stopped: the output limit cut
-                    // it (never a retry: the same call re-cuts), or she wrote bad JSON (a
-                    // retry). Typed in the call, so no reader infers it from a JSON EOF
-                    // (`continuum_tool_protocol::call_ending`, ONE-ACT 6b).
-                    let arg_len = t.arguments.len();
-                    let input: Value = match UnparsedArguments::parse(t.arguments, finish_reason.generation_end()) {
-                        Ok(v) => v,
-                        Err(unparsed) => {
-                            continuum_base::probe!(
-                                class = "ai.tool_call.unparseable_args",
-                                tool = t.name.as_str(),
-                                cut = matches!(unparsed, UnparsedArguments::Cut { .. }),
-                                arg_len,
-                                // The whole blob rides in the call's input below; the probe names its size.
-                                "model emitted tool arguments that are not valid JSON — the call cannot be honored as written",
-                            );
-                            unparsed.into_input()
-                        }
-                    };
-                    ToolCall {
-                        id: t.id,
-                        name: t.name,
-                        input,
-                    }
-                })
-                .collect();
-            (!calls.is_empty()).then_some(calls)
-        };
+        // Glass-boxed from Asha's capture (#334): Devstral emitted `write_file` whose `file_path` ran
+        // away into a repeating token block; the call's fate is decided in the one shared assembler.
+        let mut tool_calls: Option<Vec<ToolCall>> =
+            crate::inference::native_tool_calls::assemble(acc_tools, finish_reason.generation_end());
 
         // UNIVERSAL text-format tool-call fallback. When no NATIVE tool_calls came
         // back, scan the model's TEXT for `{"tool_call": {...}}` envelopes and lift
@@ -714,20 +666,7 @@ impl OpenAICompatibleAdapter {
             }
         }
 
-        // Build content blocks
-        let mut content_blocks = Vec::new();
-        if !text.is_empty() {
-            content_blocks.push(ContentPart::Text { text: text.clone() });
-        }
-        if let Some(ref tcs) = tool_calls {
-            for tc in tcs {
-                content_blocks.push(ContentPart::ToolUse {
-                    id: tc.id.clone(),
-                    name: tc.name.clone(),
-                    input: tc.input.clone(),
-                });
-            }
-        }
+        let content_blocks = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
 
         // Every request asks for `stream_options.include_usage`; a finished stream without
         // its usage frame broke that contract, and zero tokens would be a count the budget trusts.
@@ -840,11 +779,7 @@ impl OpenAICompatibleAdapter {
             usage,
             response_time_ms,
             request_id,
-            content: if content_blocks.is_empty() {
-                None
-            } else {
-                Some(content_blocks)
-            },
+            content: content_blocks,
             tool_calls,
             reasoning,
             routing: None,

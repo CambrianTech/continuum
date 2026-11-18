@@ -159,11 +159,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // adapter edit. If both sources are absent, render_chat passes
         // None to llama.cpp which is its own loud failure (chatml default
         // doesn't match qwen3.5's special tokens — output corruption).
-        let registry_template: Option<String> = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(backend.model_id()))
-            .and_then(|m| m.chat_template.clone());
-        let template_string = backend.model_chat_template().or(registry_template);
-        let template = template_string.as_deref();
+        // Looked up only where it is used: the media path's plain template, and the chat render's
+        // one-time init when the GGUF has neither a default nor a named tool_use template (Codex on
+        // #6145, common/chat.cpp:761-776). A text turn copies no template string.
+        let registry_template = || {
+            crate::model_registry::try_global()
+                .and_then(|reg| reg.model(backend.model_id()))
+                .and_then(|m| m.chat_template.clone())
+        };
         // Walk the request to find any image / audio content. If present,
         // the model MUST natively accept that modality (else the bridge
         // is wrong upstream — sensory-bridge converts to text BEFORE
@@ -244,70 +247,92 @@ impl AIProviderAdapter for LlamaCppAdapter {
             );
         }
 
-        let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
-        let mut messages: Vec<llama::ChatMsg> = Vec::new();
-        if let Some(sys) = request.system_prompt.as_ref() {
-            if !sys.is_empty() {
+        // A text turn renders through the model's own chat handling with her tools (S2b): the same
+        // wire messages and tools serving sends, and one render kept to parse what she writes. Only a
+        // media turn builds the plain template's messages and media bytes (mtmd has no chat render).
+        let (prompt, collected_media, chat_render) = if !super::chat_turn::carries_media(&request) {
+            let rendered = continuum_base::time_sync!("inference.render_chat", {
+                super::chat_turn::chat_request(&request).and_then(|body| {
+                    Ok(backend.render_chat_turn(&body.to_string(), registry_template, llama::ReasoningFormat::Auto)?)
+                })
+            });
+            let render = match rendered {
+                Ok(render) => render,
+                Err(refused) => return Err(refused.to_string()),
+            };
+            let prompt = match super::chat_turn::prompt_of(&render) {
+                Ok(prompt) => prompt,
+                Err(refused) => return Err(refused.to_string()),
+            };
+            (prompt, Vec::new(), Some(render))
+        } else {
+            let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
+            let mut messages: Vec<llama::ChatMsg> = Vec::new();
+            if let Some(sys) = request.system_prompt.as_ref() {
+                if !sys.is_empty() {
+                    messages.push(llama::ChatMsg {
+                        role: "system".to_string(),
+                        content: sys.clone(),
+                    });
+                }
+            }
+            for msg in &request.messages {
+                let content = match &msg.content {
+                    MessageContent::Text(t) => t.clone(),
+                    MessageContent::Parts(parts) => {
+                        let mut out = String::new();
+                        for p in parts {
+                            match p {
+                                crate::ai::types::ContentPart::Text { text } => {
+                                    out.push_str(text);
+                                }
+                                crate::ai::types::ContentPart::Image { image } => {
+                                    // Splice the marker at this exact spot —
+                                    // mtmd_tokenize replaces it with the
+                                    // image-token chunk. Position matters
+                                    // (text-before-image vs after changes
+                                    // what the model sees).
+                                    out.push_str(llama::MtmdContext::default_marker());
+                                    let bytes = decode_image_bytes(image)?;
+                                    collected_media.push((llama::MediaKind::Image, bytes));
+                                }
+                                crate::ai::types::ContentPart::Audio { audio } => {
+                                    // Same shape as image — splice marker,
+                                    // collect bytes. mtmd's bitmap helper
+                                    // auto-detects audio from magic bytes;
+                                    // the modality tag here drives backend
+                                    // capability checks (supports_audio
+                                    // instead of supports_vision) and
+                                    // routing to generate_with_audio.
+                                    out.push_str(llama::MtmdContext::default_marker());
+                                    let bytes = decode_audio_bytes(audio)?;
+                                    collected_media.push((llama::MediaKind::Audio, bytes));
+                                }
+                                crate::ai::types::ContentPart::Video { .. } => {
+                                    return Err("llamacpp_adapter: encoded video input is unsupported; decode it into timestamped frames and audio before model projection. No video was consumed.".into());
+                                }
+                                crate::ai::types::ContentPart::ToolUse { .. }
+                                | crate::ai::types::ContentPart::ToolResult { .. } => {} // handled by tool path
+                            }
+                        }
+                        out
+                    }
+                };
                 messages.push(llama::ChatMsg {
-                    role: "system".to_string(),
-                    content: sys.clone(),
+                    role: msg.role.clone(),
+                    content,
                 });
             }
-        }
-        for msg in &request.messages {
-            let content = match &msg.content {
-                MessageContent::Text(t) => t.clone(),
-                MessageContent::Parts(parts) => {
-                    let mut out = String::new();
-                    for p in parts {
-                        match p {
-                            crate::ai::types::ContentPart::Text { text } => {
-                                out.push_str(text);
-                            }
-                            crate::ai::types::ContentPart::Image { image } => {
-                                // Splice the marker at this exact spot —
-                                // mtmd_tokenize replaces it with the
-                                // image-token chunk. Position matters
-                                // (text-before-image vs after changes
-                                // what the model sees).
-                                out.push_str(llama::MtmdContext::default_marker());
-                                let bytes = decode_image_bytes(image)?;
-                                collected_media.push((llama::MediaKind::Image, bytes));
-                            }
-                            crate::ai::types::ContentPart::Audio { audio } => {
-                                // Same shape as image — splice marker,
-                                // collect bytes. mtmd's bitmap helper
-                                // auto-detects audio from magic bytes;
-                                // the modality tag here drives backend
-                                // capability checks (supports_audio
-                                // instead of supports_vision) and
-                                // routing to generate_with_audio.
-                                out.push_str(llama::MtmdContext::default_marker());
-                                let bytes = decode_audio_bytes(audio)?;
-                                collected_media.push((llama::MediaKind::Audio, bytes));
-                            }
-                            crate::ai::types::ContentPart::Video { .. } => {
-                                return Err("llamacpp_adapter: encoded video input is unsupported; decode it into timestamped frames and audio before model projection. No video was consumed.".into());
-                            }
-                            crate::ai::types::ContentPart::ToolUse { .. }
-                            | crate::ai::types::ContentPart::ToolResult { .. } => {} // handled by tool path
-                        }
-                    }
-                    out
-                }
-            };
-            messages.push(llama::ChatMsg {
-                role: msg.role.clone(),
-                content,
-            });
-        }
-        // RTOS probe: chat-template rendering is synchronous + small,
-        // but cumulative across thousands of turns it can shadow real
-        // bottlenecks. Bracketing it lets the operator subtract it
-        // from `inference.forward.*` cleanly.
-        let prompt = continuum_base::time_sync!("inference.render_chat", {
-            llama::render_chat(template.as_deref(), &messages, true)
-        })?;
+            // RTOS probe: chat-template rendering is synchronous + small,
+            // but cumulative across thousands of turns it can shadow real
+            // bottlenecks. Bracketing it lets the operator subtract it
+            // from `inference.forward.*` cleanly.
+            let prompt = continuum_base::time_sync!("inference.render_chat", {
+                let template = backend.model_chat_template().or_else(registry_template);
+                llama::render_chat(template.as_deref(), &messages, true)
+            })?;
+            (prompt, collected_media, None)
+        };
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -464,7 +489,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
-        let (text, tokens) = result?;
+        let (written, tokens) = result?;
+        // What she wrote, read by the render that produced her prompt: content, reasoning and her
+        // native calls (assembled by the one owner the streamed path uses). A media turn's output
+        // is its text.
+        let end = super::chat_turn::generation_end(tokens, max_tokens);
+        let (text, reasoning, tool_calls) = match &chat_render {
+            Some(render) => match super::chat_turn::parse_turn(render, &written, end) {
+                Ok(turn) => (turn.text, turn.reasoning, turn.tool_calls),
+                Err(refused) => return Err(refused.to_string()),
+            },
+            None => (written, None, None),
+        };
+        let content = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
+        let finish_reason = super::chat_turn::finish_reason(end, tool_calls.is_some());
 
         let elapsed = gen_start.elapsed();
         let tok_per_sec = if elapsed.as_secs_f64() > 0.0 {
@@ -505,7 +543,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
 
         Ok(TextGenerationResponse {
             text,
-            finish_reason: FinishReason::Stop,
+            finish_reason,
             model: backend.model_id().to_string(),
             provider: LLAMACPP_PROVIDER_ID.to_string(),
             usage: UsageMetrics {
@@ -516,13 +554,10 @@ impl AIProviderAdapter for LlamaCppAdapter {
             },
             response_time_ms: elapsed.as_millis() as u64,
             request_id: format!("llamacpp-{}", continuum_base::time::EpochMs::now().millis()),
-            content: None,
-            tool_calls: None,
-            // TODO: if this in-process backend serves a reasoning model (qwen3 etc.)
-            // it would emit inline `<think>` in `text` too — apply
-            // `crate::ai::openai_adapter::extract_reasoning` here to separate it.
-            // Not Asha's path today (she routes through the openai adapter).
-            reasoning: None,
+            content,
+            tool_calls,
+            // Split by the model's own reasoning format (the render's parser), never a tag regex.
+            reasoning,
             routing: None,
             error: None,
             timing: None,

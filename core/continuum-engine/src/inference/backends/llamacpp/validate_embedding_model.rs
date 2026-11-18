@@ -244,6 +244,10 @@ impl ModelCapabilities {
 pub struct LlamaCppBackend {
     /// One temporary embedding context is admitted per loaded model.
     pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
+    /// The model's chat templates (its GGUF template, or the catalog's), loaded at the first chat
+    /// turn and kept for every render. `ChatTemplates` is `Send`, not `Sync`: renders take this
+    /// lock and release it before decode. Declared before `model`, so it drops first.
+    pub(super) chat: OnceLock<Result<Mutex<llama::ChatTemplates>, llama::ChatRefusal>>,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
     pub(super) model_id: String,
