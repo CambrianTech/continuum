@@ -571,10 +571,12 @@ runtime already is this tree: a `ServiceModule` carries the lifecycle (`drain`, 
 `shutdown`) and the runtime walks the modules, so modules keep using it and a persona's parts follow
 the same contract; this is never a second, parallel lifecycle. Work spawned outside a module is
 still launch and join: every spawn is owned by the part WHOSE LIFETIME IT SHARES, which joins or
-stops it. On 2026-11-17 a learning fence was owned (`spawn_owned`, drained by the training-trigger
-module) but by the wrong parent: the trigger outlives any one engine incarnation, so nothing joined
-the fence when its engine died, and its lease outlived its owner. Owned by the incarnation, the
-incarnation's `shutdown` would have joined it or handed it to its completion owner first.
+stops it. A stop request, a joined completion and a GPU fence are three different facts, and an
+owner waits for the one it needs. The demonstrated 2026-11-17 failure is ownership, not an
+unjoined task: the learning fence exited on the engine's verified death as written, but the
+training trigger's per-incarnation slot map still held the dead incarnation's slot, whose `Arc`
+kept the learning workspace (and its 4.9 GB lease) alive; nothing removed the slot until #6119
+retired dead incarnations. State kept under another owner's identity outlived that owner.
 
 **The tree is the parallel, data-flow schedule.** Siblings with no dependency edge between them run at
 once, and a node runs as soon as its inputs are ready: preparation flows down, results flow up, and
@@ -597,6 +599,16 @@ and custody types in the crate that owns them (or, if more than one crate must i
 the lowest crate both already depend on, with that placement justified in the change). `Genome`
 becomes the first node, with its trial store, signatures and residency as children. Each later
 repair adds the next node, and an old owner moves onto the tree in the change that repairs it.
+
+**The acceptance test this architecture must pass (Codex and Joel, 2026-11-18).** The objects earn
+their keep only when these measurements pass together, at 4, 8 and 16 personas with realistic
+context lengths and memory pressure: sustained total throughput near the engine's single-stream
+rate on the M5 (about 80 tok/s) INCLUDING switching overhead, not a short burst; millisecond
+handoffs when the next persona is prefetched, preserving her context, genome, sampler and learning
+state, with no repeated prefill of unchanged history; and learning that actually completes while
+serving continues (a step admitted, a checkpoint written, an evaluation passed, later work
+improved). Throughput, switch latency, time waiting for a turn, memory and learning outcomes are
+measured together. As of 2026-11-18 these do not pass.
 
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
