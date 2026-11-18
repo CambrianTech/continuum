@@ -13,6 +13,9 @@ pub enum LlamaServerError {
     /// Spawn itself failed (binary missing, bad args, OS refused). Loud.
     #[error("llama-server spawn failed: {0}")]
     Spawn(String),
+    /// The live engine answered, but its observed build or placement cannot serve this target.
+    #[error(transparent)]
+    ReadinessRefused(#[from] ReadinessRefusal),
     /// The model GGUF could not be resolved on disk for the requested id.
     #[error("no local GGUF for model '{0}'")]
     ModelNotFound(String),
@@ -43,6 +46,14 @@ pub enum LlamaServerError {
     /// The engine refused an adapter change (`/lora-adapters/{fresh,load,unload}`), by its answer.
     #[error("adapter change refused: {0}")]
     AdapterChange(AdapterChangeRefusal),
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ReadinessRefusal {
+    #[error("{program} reported a debug build. Rebuild in release from the canary pin for the next system startup.")]
+    DebugBuild { program: String },
+    #[error("{program} admitted no GPU placement ({evidence}; residency {residency}). Check backend loading under the core. Last stderr: {stderr}")]
+    CpuPlacement { program: String, evidence: &'static str, residency: String, stderr: String },
 }
 
 /// Why the engine refused an adapter change.
@@ -205,6 +216,11 @@ pub trait LlamaServerControl: Send + Sync {
     /// replacement path even when model identity and HTTP health are unchanged.
     fn paging_recovery_required(&self) -> bool {
         false
+    }
+
+    /// Finish the retained engine's readiness before comparing it with current demand.
+    async fn finish_pending_readiness(&self, _current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        Ok(())
     }
 
     /// The model id the running server reports serving, or `None` if nothing is

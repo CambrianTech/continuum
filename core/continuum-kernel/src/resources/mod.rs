@@ -177,6 +177,7 @@ pub mod daemon;
 pub mod governor;
 pub mod lease;
 pub mod ledger;
+pub mod observed;
 pub mod mode_policy;
 pub mod placement;
 pub mod throughput_class;
@@ -188,8 +189,9 @@ pub use broker::{
 };
 
 pub use arbiter::{ArbiterContext, LeaseArbiter, TieredArbiter};
+pub use observed::{Observed, PhysicalSample};
 pub use capacity::{
-    default_ram_reserve_for, CapacitySource, GpuCapacitySource, HostMemoryReader,
+    CapacitySource, GpuCapacitySource, HostMemoryReader,
     HostRamCapacitySource, LiveHostMemory, MockCapacitySource, UnifiedMemoryPool,
 };
 pub use ceiling_prior::CeilingEvidence;

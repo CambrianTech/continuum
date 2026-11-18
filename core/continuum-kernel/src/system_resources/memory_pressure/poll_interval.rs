@@ -128,6 +128,17 @@ pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::syn
 /// treat as "unknown — don't veto on it"). Lock-free read from anywhere.
 pub(super) static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// When the poll that produced [`CURRENT_AVAILABLE_BYTES`] began ([`Observed`](crate::resources::Observed) nanos; 0 =
+/// never). Written after the bytes, read before them, so a reader never pairs a newer instant with an
+/// older reading (Codex on #6124: a 2 s cached frame was redated to whenever the ledger asked).
+pub(super) static CURRENT_AVAILABLE_OBSERVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Publish one poll's free bytes with the instant the poll began.
+pub(super) fn publish_available(available: u64, observed: crate::resources::Observed) {
+    CURRENT_AVAILABLE_BYTES.store(available, std::sync::atomic::Ordering::Release);
+    CURRENT_AVAILABLE_OBSERVED.store(observed.nanos(), std::sync::atomic::Ordering::Release);
+}
+
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
 pub fn is_memory_gate_closed() -> bool {
@@ -166,10 +177,35 @@ pub fn available_from(sys: &sysinfo::System) -> u64 {
     sys.total_memory().saturating_sub(sys.used_memory())
 }
 
+/// One fresh host memory sample: physical total and available (by [`available_from`]), measured
+/// here, by the monitor that owns host memory, for a reader that needs it before the monitor's
+/// first poll (the resource authority's unified pool at boot).
+pub fn sample_host_memory() -> HostMemorySample {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    HostMemorySample { total: sys.total_memory(), available: available_from(&sys) }
+}
+
+/// A host memory sample: bytes of physical RAM and bytes available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemorySample {
+    pub total: u64,
+    pub available: u64,
+}
+
 pub fn current_available_bytes() -> Option<u64> {
     match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
         n => Some(n),
+    }
+}
+
+/// The monitor's last free-bytes reading and the instant its poll began; `None` before the first poll.
+pub fn current_available_reading() -> Option<(u64, crate::resources::Observed)> {
+    let observed = CURRENT_AVAILABLE_OBSERVED.load(std::sync::atomic::Ordering::Acquire);
+    match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Acquire) {
+        0 => None,
+        n => Some((n, crate::resources::Observed::from_nanos(observed))),
     }
 }
 

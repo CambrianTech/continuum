@@ -52,7 +52,8 @@ pub fn try_training_memory(daemon: &std::sync::Arc<ResourceDaemon>, admission: A
         Ok(hold) => hold,
         Err(refusal) => return Ok(Err(TrainingWait::Serving(refusal))),
     };
-    let attempt = daemon.acquire_guarded(&request(consumer, kind, bytes));
+    // a step runs long on this grant: decide it on physical use measured now, not the last tick's sample
+    let attempt = daemon.acquire_measured_now(&request(consumer, kind, bytes));
     drop(hold);
     match attempt {
         Ok(guard) => Ok(Ok(guard)),

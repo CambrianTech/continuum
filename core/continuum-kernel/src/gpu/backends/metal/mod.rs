@@ -136,6 +136,14 @@ impl MetalProbe {
     }
 }
 
+inventory::submit! {
+    crate::gpu::monitor::GpuBackendFactory {
+        preference: 0,
+        name: "metal",
+        monitor: || MetalMonitor::new().map(|m| m as Arc<dyn crate::gpu::monitor::GpuMonitor>),
+    }
+}
+
 impl MetalMonitor {
     /// Detect a Metal device and put it under the shared monitor. Returns an
     /// `Arc<Self>` because the daemon runner takes one (its task captures it for the

@@ -61,6 +61,11 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     reconciling: Reconciling<'_>,
 ) -> EnsureOutcome {
     let Reconciling { current, operation } = reconciling;
+    match ctrl.finish_pending_readiness(current).await {
+        Ok(()) => {}
+        Err(LlamaServerError::Superseded) => return EnsureOutcome::Superseded,
+        Err(error) => return EnsureOutcome::Degraded { reason: error.to_string() },
+    }
     let mut convergence_pair = None;
     let active = match ctrl.active_model().await {
         Ok(active) => active,
