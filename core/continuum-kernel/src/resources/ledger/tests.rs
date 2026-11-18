@@ -2,6 +2,14 @@
     use super::*;
     use crate::resources::arbiter::TieredArbiter;
 
+    /// An observation instant for a scripted reading, and a reading observed then.
+    fn obs(nanos: u64) -> crate::resources::Observed {
+        crate::resources::Observed::from_nanos(nanos)
+    }
+    fn at(used: u64, nanos: u64) -> crate::resources::PhysicalSample {
+        crate::resources::PhysicalSample { used, observed: obs(nanos) }
+    }
+
     mod self_eviction {
         use super::*;
         use crate::resources::consumer::ConsumerFootprint;
@@ -332,13 +340,14 @@
         ledger.set_physical_used(ResourceKind::Ram, 52 * gib);
         ledger.set_measured("deploy-build", foot(12 * gib));
         assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 12 * gib);
-        // a partial grant below its residency: the larger of the two meets the floor
+        // a new grant beside its residency is owed on top of it until measured (Codex on #6124:
+        // a lease beside old residency is never hidden inside it), so serving loses its 3 GiB too
         ledger.set_measured("deploy-build", foot(6 * gib));
         ledger.set_physical_used(ResourceKind::Ram, 46 * gib);
         ledger
             .acquire(&req("deploy-build", ResourceKind::Ram, 3 * gib, ReclaimPolicy::Graceful), "b".into(), 100)
             .unwrap();
-        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2));
+        assert_eq!(ledger.available_for("serving", ResourceKind::Ram), 18 * gib - (4 * gib + gib / 2) - 3 * gib);
     }
 
     // what this catches (the M5, 2026-11-14 03:35Z, canary 958ea3056): a boot sizing that takes the
@@ -582,9 +591,11 @@
         let mut ledger = ResourceLeaseLedger::new();
         ledger.set_capacity(ResourceKind::Vram, 24_000);
 
-        // Regime (a): we granted 10_000 but only 6_000 is resident so far (the
-        // lease's allocation is still in flight). committed = max(10k, 6k) = 10k;
-        // available = 24k − 10k = 14k — the grant is protected, not double-counted.
+        // Regime (a): we granted 10_000 and 6_000 is physically used, whose we cannot tell. Until
+        // the holder declares the lease landed and a later sample shows it, the whole lease is
+        // owed on top: committed = 6k + 10k = 16k; available = 8k (Codex on #6124: growth beside a
+        // lease is never read as the lease landing). Declared and sampled, it is carried by
+        // physical use: committed = max(10k, 6k) = 10k; available = 14k, never counted twice.
         ledger
             .acquire(
                 &req(
@@ -597,7 +608,10 @@
                 0,
             )
             .unwrap();
-        ledger.set_physical_used(ResourceKind::Vram, 6_000);
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, at(6_000, 1)));
+        assert_eq!(ledger.committed(ResourceKind::Vram), 16_000, "an undeclared lease is owed on top");
+        ledger.landed("lease-a", obs(2)).unwrap();
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, at(6_000, 2)));
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
             10_000,
@@ -608,7 +622,7 @@
         // Regime (b): a game grabs VRAM — physical_used jumps to 21_000 while our
         // grant is unchanged at 10_000. committed = max(10k, 21k) = 21k; available
         // = 24k − 21k = 3k. We now refuse to hand out the bytes the game took.
-        ledger.set_physical_used(ResourceKind::Vram, 21_000);
+        assert!(ledger.set_physical_sample(ResourceKind::Vram, at(21_000, 3)));
         assert_eq!(
             ledger.committed(ResourceKind::Vram),
             21_000,
@@ -739,4 +753,244 @@
             !ids.contains(&"c1"),
             "active pinned never eligible regardless of policy"
         );
+    }
+
+    mod unified_backing {
+        use super::*;
+        use crate::resources::consumer::ConsumerFootprint;
+
+        // The M5, 2026-11-18 01:15Z, as `resources/board` reported it after the deploy of 2606f3b41.
+        const VRAM_CEILING: u64 = 55_662_788_608; // min(host - reserve, Metal working-set hint)
+        const RAM_CEILING: u64 = 60_129_542_144; // host - reserve
+        const HOST_USED: u64 = 59_533_099_008; // every process on the host, ours or not
+        const ENGINE_RESIDENT: u64 = 40_814_580_336; // serving's measured weights + KV on the GPU
+        const OPTIMIZER: u64 = 4_096_000; // the learning step refused 23 times in 15 minutes
+
+        fn the_m5(backed: bool) -> ResourceLeaseLedger {
+            let mut l = ResourceLeaseLedger::new();
+            for (kind, ceiling) in [(ResourceKind::Vram, VRAM_CEILING), (ResourceKind::Ram, RAM_CEILING)] {
+                l.set_capacity(kind, ceiling);
+                l.set_physical_used(kind, HOST_USED);
+            }
+            l.set_measured(
+                "serving",
+                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: ENGINE_RESIDENT, detail: "Qwen3.6-35B weights + KV".into() }],
+            );
+            if backed {
+                l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+            }
+            l
+        }
+
+        // what this catches (the M5, 2026-11-18): on unified memory every process on the host was
+        // charged against the GPU's working-set ceiling (59.5 GB used against 55.66 GB), so the GPU
+        // read 0 free and a 4 MB learning step was refused all night. Backed by the host pool, the
+        // GPU is committed by OUR residency and bounded by the host's free bytes: the step fits,
+        // and the host's own limit still holds.
+        #[test]
+        fn a_unified_gpu_is_charged_for_our_residency_and_bounded_by_the_host() {
+            assert_eq!(the_m5(false).available(ResourceKind::Vram), 0, "fixture: the night's reading");
+            let l = the_m5(true);
+            let host_free = RAM_CEILING - HOST_USED;
+            assert_eq!(l.available(ResourceKind::Vram), host_free, "bounded by the host pool, which is the tighter limit");
+            assert!(l.available_for("learning:her", ResourceKind::Vram) >= OPTIMIZER, "her optimizer fits");
+            assert_eq!(l.available(ResourceKind::Ram), host_free, "the host axis is unchanged");
+        }
+
+        // what this catches: the backing letting the GPU spend bytes it does not have. Our own GPU
+        // residency still bounds it, and a host grant leaves the GPU less, never the same bytes twice.
+        #[test]
+        fn the_backing_never_lets_the_shared_bytes_be_spent_twice() {
+            let mut l = the_m5(true);
+            l.set_physical_used(ResourceKind::Ram, 0);
+            l.set_physical_used(ResourceKind::Vram, 0);
+            assert_eq!(l.available(ResourceKind::Vram), VRAM_CEILING - ENGINE_RESIDENT, "the GPU's own ceiling binds when the host is free");
+            l.set_measured(
+                "serving",
+                vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: VRAM_CEILING, detail: "full".into() }],
+            );
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a GPU full of our residency has nothing to give");
+            l.set_backing(ResourceKind::Vram, None);
+            l.set_physical_used(ResourceKind::Vram, HOST_USED);
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a discrete device keeps capacity minus physical use");
+        }
+
+        // what this catches (Codex on #6124): the shared host bytes spent twice between samples. A
+        // GPU grant that has not allocated yet was invisible to the host axis until the next scan
+        // (and any grant was, while physical use exceeded the grants), so a host grant could take the
+        // same bytes; reservations were withheld only on their own axis. Replayed on the 01:15Z board
+        // with no sample between grants: every grant, on either axis, spends the shared headroom once;
+        // shrink and release return exactly what they free; a floor on either axis binds both; the
+        // sample that lands the bytes moves nothing.
+        #[test]
+        fn mixed_grants_spend_the_shared_headroom_once_before_the_next_sample() {
+            const MB: u64 = 1_000_000;
+            let mut l = the_m5(true);
+            let free = RAM_CEILING - HOST_USED;
+            let gpu = l.acquire(&req("learning:her", ResourceKind::Vram, 400 * MB, ReclaimPolicy::Graceful), "gpu".into(), 0).expect("test: fits");
+            assert_eq!(l.available(ResourceKind::Ram), free - 400 * MB, "a GPU grant spends the host bytes now");
+            assert_eq!(l.available(ResourceKind::Vram), free - 400 * MB);
+            let over = free - 400 * MB + 1;
+            assert!(l.acquire(&req("embed", ResourceKind::Ram, over, ReclaimPolicy::Graceful), "over".into(), 0).is_err(), "the host cannot hand out the GPU's bytes");
+            l.acquire(&req("embed", ResourceKind::Ram, free - 400 * MB, ReclaimPolicy::Graceful), "ram".into(), 0).expect("test: the rest fits");
+            assert_eq!(l.available(ResourceKind::Vram), 0, "a host grant spends the GPU's headroom too");
+            assert!(l.acquire(&req("other", ResourceKind::Vram, 1, ReclaimPolicy::Graceful), "gpu2".into(), 0).is_err(), "spent once, on both axes");
+
+            assert_eq!(l.shrink(&gpu.lease_id, 100 * MB).expect("test: shrink"), 300 * MB);
+            assert_eq!(l.available(ResourceKind::Vram), 100 * MB, "a shrink returns what it frees, no more");
+            l.release("ram").expect("test: release");
+            assert_eq!(l.available(ResourceKind::Ram), free - 300 * MB);
+
+            l.reserve("call", ResourceKind::Ram, 50 * MB);
+            assert_eq!(l.available_for("learning:her", ResourceKind::Vram), free - 350 * MB, "a host floor binds the GPU axis");
+            l.reserve("call", ResourceKind::Ram, 0);
+            l.reserve("render", ResourceKind::Vram, 50 * MB);
+            assert_eq!(l.available_for("embed", ResourceKind::Ram), free - 350 * MB, "a GPU floor binds the host axis");
+            l.reserve("render", ResourceKind::Vram, 0);
+
+            // Her 300 MB land: she declares them, and a sample taken after shows them. Physical rises by what
+            // stopped being owed; the headroom does not move.
+            let before = l.available(ResourceKind::Ram);
+            l.landed(&gpu.lease_id, obs(1)).expect("test: her lease is live");
+            for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                assert!(l.set_physical_sample(kind, at(HOST_USED + 300 * MB, 1)));
+            }
+            assert_eq!(l.available(ResourceKind::Ram), before, "landed bytes are counted once, not again");
+            assert_eq!(l.available(ResourceKind::Vram), before);
+        }
+
+        // The ledger's arithmetic holds at any capacity, so each case runs near the limit of several
+        // (none of them is a claim about a machine): what matters is the headroom left beside residency.
+        const MB: u64 = 1_000_000;
+        const CAPACITIES: [u64; 3] = [8_000 * MB, 48_000 * MB, 512_000 * MB];
+
+        // what this catches (Codex's replay of cb410506c on #6124): a new lease beside its owner's old
+        // residency hidden inside it. 20 MB of headroom; an 18 MB stage leaves 2 MB, so a 4.096 MB learning
+        // step is refused, on a discrete device and on unified memory, whether serving or a separate
+        // consumer holds the stage. Once the stage measures resident, nothing changes.
+        #[test]
+        fn a_new_lease_beside_old_residency_is_pending_until_measured() {
+            for (cap, unified, stager) in CAPACITIES.iter().flat_map(|&cap| [(cap, false, "serving"), (cap, false, "stage"), (cap, true, "serving"), (cap, true, "stage")]) {
+                let base = cap - 20 * MB; // resident now: 20 MB of headroom
+                let mut l = ResourceLeaseLedger::new();
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                    l.set_physical_used(kind, base);
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                let resident = |extra: u64| vec![ConsumerFootprint { kind: ResourceKind::Vram, bytes: base + extra, detail: "weights + KV".into() }];
+                l.set_measured("serving", resident(0));
+                assert!(l.acquire(&req(stager, ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "stage".into(), 0).is_ok());
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: the stage is spent now");
+                assert!(
+                    l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
+                    "unified={unified} stager={stager}: a 4.096 MB step does not fit 2 MB"
+                );
+                // the stage lands: its holder declares it, and a sample taken after shows it, counted once
+                l.landed("stage", obs(1)).expect("test: the stage is live");
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(l.set_physical_sample(kind, at(base + 18 * MB, 1)));
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified} stager={stager}: landed, still counted once");
+            }
+        }
+
+        // what this catches (Codex's replay of 8a0b59e03 on #6124): growth before a lease credited to it. 50 MB of
+        // headroom; serving takes 10 MB, then measures 30 MB more (its 10 landed, 20 of unrelated KV growth),
+        // then takes 18 MB more. That 18 is still owed (2 MB left), so a 4.096 MB step is refused, on both
+        // topologies; when it lands, it is counted once.
+        #[test]
+        fn a_later_grant_is_never_credited_with_growth_before_it() {
+            for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
+                let base = cap - 50 * MB;
+                let mut l = ResourceLeaseLedger::new();
+                let sample = |l: &mut ResourceLeaseLedger, resident: u64, sequence: u64| {
+                    for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                        assert!(l.set_physical_sample(kind, at(resident, sequence)));
+                    }
+                };
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                sample(&mut l, base, 1);
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 10 * MB, ReclaimPolicy::Graceful), "first".into(), 0).is_ok());
+                l.landed("first", obs(2)).expect("test: first is live");
+                sample(&mut l, base + 30 * MB, 2); // the first 10 landed, 20 of unrelated KV
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "second".into(), 0).is_ok());
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: the second grant is still owed");
+                assert!(
+                    l.acquire(&req("learning:her", ResourceKind::Vram, 4_096_000, ReclaimPolicy::Graceful), "step".into(), 0).is_err(),
+                    "unified={unified}: a 4.096 MB step does not fit 2 MB"
+                );
+                l.landed("second", obs(3)).expect("test: second is live");
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: declared, but no sample since shows it");
+                sample(&mut l, base + 48 * MB, 3);
+                assert_eq!(l.available(ResourceKind::Vram), 2 * MB, "unified={unified}: landed, counted once");
+            }
+        }
+
+        // what this catches (Codex's replay of c1bb9ab97 on #6124): the same owner's KV growth after a grant read
+        // as that grant landing. 70 MB of headroom; serving takes 18 MB for a prefetch, then its KV grows 20 MB
+        // before the prefetch lands: 32 MB are left, not 50, and only a declared landing plus a later sample
+        // stops the 18 MB being owed.
+        // what this catches (Codex's stale-cache replay of c8a484d6f on #6124): a cached reading served again after a
+        // landing taken as showing it. 30 MB of headroom; an 18 MB stage is declared landed at t=5, while the monitor
+        // still serves the frame its probe began at t=4: the stage stays owed. A frame observed at t=5 shows it, once.
+        // On unified memory the backing pool's reading must be that new too.
+        #[test]
+        fn a_landing_clears_only_on_a_reading_observed_after_it() {
+            for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
+                let base = cap - 30 * MB;
+                let mut l = ResourceLeaseLedger::new();
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                    assert!(l.set_physical_sample(kind, at(base, 1)));
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                assert!(l.acquire(&req("stage", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "stage".into(), 0).is_ok());
+                l.landed("stage", obs(5)).expect("test: the stage is live");
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(l.set_physical_sample(kind, at(base, 4))); // the cached frame, taken before the landing
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 12 * MB, "unified={unified}: an older frame cannot show the landing");
+                assert!(l.set_physical_sample(ResourceKind::Vram, at(base + 18 * MB, 5)));
+                if unified {
+                    assert_eq!(l.available(ResourceKind::Vram), 12 * MB, "the device shows it, the backing pool has not yet: still owed on top");
+                    assert!(l.set_physical_sample(ResourceKind::Ram, at(base + 18 * MB, 5)));
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 12 * MB, "unified={unified}: observed after the landing, counted once");
+            }
+        }
+
+        #[test]
+        fn growth_beside_an_undeclared_grant_never_lands_it() {
+            for (cap, unified) in CAPACITIES.iter().flat_map(|&cap| [(cap, false), (cap, true)]) {
+                let base = cap - 70 * MB;
+                let mut l = ResourceLeaseLedger::new();
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    l.set_capacity(kind, cap);
+                    assert!(l.set_physical_sample(kind, at(base, 1)));
+                }
+                if unified {
+                    l.set_backing(ResourceKind::Vram, Some(ResourceKind::Ram));
+                }
+                assert!(l.acquire(&req("serving", ResourceKind::Vram, 18 * MB, ReclaimPolicy::Graceful), "prefetch".into(), 0).is_ok());
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(l.set_physical_sample(kind, at(base + 20 * MB, 2))); // KV, not the prefetch
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 32 * MB, "unified={unified}: the prefetch is still owed");
+                // an older sample arriving late never replaces the newer one
+                for kind in [ResourceKind::Vram, ResourceKind::Ram] {
+                    assert!(!l.set_physical_sample(kind, at(base, 1)));
+                }
+                assert_eq!(l.available(ResourceKind::Vram), 32 * MB, "unified={unified}: the late, older sample was refused");
+            }
+        }
     }

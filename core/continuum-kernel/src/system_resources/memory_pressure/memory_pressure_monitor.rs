@@ -216,6 +216,7 @@ impl MemoryPressureMonitor {
             }
 
             // System memory.
+            let observed = crate::resources::Observed::now(); // before the read: the reading is at least this new
             st.sys.refresh_memory();
             let total = st.sys.total_memory();
             // NOT `available_memory()` — it returns 0 on this platform while
@@ -272,7 +273,7 @@ impl MemoryPressureMonitor {
             CURRENT_PRESSURE_LEVEL.store(level.to_u8(), Ordering::Relaxed);
             // Publish the honest free-physical-bytes number too, so a subsystem sizing
             // a large elective allocation can veto against real headroom, not the ratio.
-            CURRENT_AVAILABLE_BYTES.store(available, Ordering::Relaxed);
+            publish_available(available, observed);
 
             // Hysteresis.
             if level == st.prev_level {

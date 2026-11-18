@@ -31,7 +31,7 @@ struct Entry {
     engine: LearningEngine,
     /// The engine incarnation the residency was registered with: the only one whose receipts count.
     admitted: LedgerEngine,
-    _leases: Vec<LeaseGuard>,
+    leases: Vec<LeaseGuard>,
     orphaned: bool,
 }
 
@@ -52,8 +52,21 @@ impl Custody {
     /// Take `leases` into custody for `residency`, registered with `engine` as incarnation
     /// `admitted`; the caller keeps only the claim.
     pub(super) fn hold(self: &Arc<Self>, engine: &LearningEngine, admitted: &LedgerEngine, residency: ResidencyId, leases: Vec<LeaseGuard>) -> Claim {
-        self.entries.lock().insert(residency, Entry { engine: engine.clone(), admitted: admitted.clone(), _leases: leases, orphaned: false });
+        self.entries.lock().insert(residency, Entry { engine: engine.clone(), admitted: admitted.clone(), leases, orphaned: false });
         Claim { custody: Arc::clone(self), residency, released: false }
+    }
+
+    /// The engine ran a step inside `residency`: its bytes are allocated, so its leases are declared landed
+    /// (owed on top of physical use only until a sample taken after this shows them).
+    pub(super) fn landed(&self, residency: &ResidencyId) {
+        let entries = self.entries.lock();
+        let Some(entry) = entries.get(residency) else { return };
+        for lease in &entry.leases {
+            if let Err(error) = lease.landed() {
+                continuum_base::probe!(class = "training.custody.landing_unrecorded", lease = lease.lease_id(), error = ?error,
+                    "a learning lease could not be declared landed; it stays owed on top of physical use");
+            }
+        }
     }
 
     /// How many residencies are held, and how many of them nobody claims.
