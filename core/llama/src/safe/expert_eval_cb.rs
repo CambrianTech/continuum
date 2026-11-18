@@ -146,6 +146,10 @@ pub struct Context<'m> {
     /// Declared AFTER `ptr` so it drops after `Drop::drop`'s `llama_free` runs — no
     /// callback can fire against a freed bridge. `None` when no observer was set.
     pub(super) _observer: Option<Box<ExpertObserverBridge>>,
+    /// The learning callbacks' holder (`learn.rs`): the optimizer and the context keep pointers to
+    /// it past a reply, so it lives exactly as long as the context. Declared after `ptr` for the
+    /// same reason as `_observer`. `None` until the context first learns.
+    pub(super) learn_callbacks: Option<Box<super::learn::CallbackHolder>>,
 }
 
 impl<'m> Context<'m> {

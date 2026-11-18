@@ -451,6 +451,7 @@ impl Model {
             ptr: ctx,
             _model: PhantomData,
             _observer: observer_bridge,
+            learn_callbacks: None,
         })
     }
 
