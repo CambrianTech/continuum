@@ -162,7 +162,7 @@ crate::action_command! {
         let persona_uuid = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &crate::persona::persona_scope::PersonaCards)
             .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let canonical_persona: crate::identity::PersonaRef = persona_uuid.to_string().into();
-        let persona_name = p.persona_name.clone().unwrap_or_else(|| persona_uuid.to_string());
+        let persona_name = p.persona_name.as_deref().unwrap_or(canonical_persona.as_str()); // Display name defaults to the resolved persona ID.
 
         let executor = this.state.executor().map_err(CommandError::Internal)?;
 
@@ -182,7 +182,6 @@ crate::action_command! {
         let result = consolidate_in_order(&records, persona_uuid, &p.base_model, |record| {
             let conn = &conn;
             let classifier = &classifier;
-            let persona_name = &persona_name;
             let base_model = &p.base_model;
             async move {
                 let params = received_submission_params(
