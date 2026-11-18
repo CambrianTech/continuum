@@ -1,17 +1,25 @@
 // The model's own chat handling (llama.cpp common/chat): render a conversation through the GGUF's
-// template, with its tools and reasoning, and parse what the model wrote back into content,
-// reasoning and tool calls. One JSON document crosses each way, in the OpenAI shape the adapters
-// already speak; exceptions terminate on this side of the Rust FFI boundary.
+// template, with its tools and reasoning, and parse what the model writes back into content,
+// reasoning and tool calls. A render is a native handle that keeps its parser state, so a streamed
+// update parses with it directly (Codex on #6142: no re-serialized render per partial). Exceptions
+// terminate on this side of the Rust FFI boundary.
 #include "chat.h"
 
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <stdexcept>
 #include <string>
 
 struct continuum_chat {
     common_chat_templates_ptr templates;
+};
+
+// One rendered request: what the sampler and the caller need once, and the parser every update uses.
+struct continuum_chat_render {
+    common_chat_params params;
+    common_chat_parser_params parser;
 };
 
 static void report(char *error, size_t capacity, const char *what) noexcept {
@@ -41,11 +49,15 @@ static char *owned(const std::string &text) {
     return copy;
 }
 
-static common_reasoning_format reasoning_format(const std::string &name) {
-    if (name == "none") return COMMON_REASONING_FORMAT_NONE;
-    if (name == "deepseek") return COMMON_REASONING_FORMAT_DEEPSEEK;
-    if (name == "deepseek-legacy") return COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY;
-    return COMMON_REASONING_FORMAT_AUTO;
+// The reasoning formats the Rust side names; anything else is refused, never defaulted.
+static common_reasoning_format reasoning_format(int code) {
+    switch (code) {
+        case 0: return COMMON_REASONING_FORMAT_NONE;
+        case 1: return COMMON_REASONING_FORMAT_AUTO;
+        case 2: return COMMON_REASONING_FORMAT_DEEPSEEK;
+        case 3: return COMMON_REASONING_FORMAT_DEEPSEEK_LEGACY;
+        default: throw std::invalid_argument("unknown reasoning format");
+    }
 }
 
 // The model's templates; `override_template` (nullable) replaces the GGUF's own.
@@ -65,12 +77,11 @@ extern "C" void continuum_chat_string_free(char *text) noexcept {
     std::free(text);
 }
 
-// Render. Input: {"messages":[...], "tools":[...], "tool_choice":"auto", "json_schema":{...}|null,
-// "grammar":"", "enable_thinking":bool, "reasoning_format":"auto", "add_generation_prompt":bool,
-// "parallel_tool_calls":bool}. Output: the prompt, the grammar and its lazy triggers, the strings
-// to stop at, and the parser state the parse call needs back.
-extern "C" int continuum_chat_apply(const continuum_chat *chat, const char *request,
-        char **out, char *error, size_t capacity) noexcept {
+// Render an OpenAI-shaped request: {"messages":[...], "tools":[...], "tool_choice":"auto",
+// "json_schema":{...}|null, "grammar":"", "enable_thinking":bool, "add_generation_prompt":bool,
+// "parallel_tool_calls":bool}, under `reasoning` (see reasoning_format).
+extern "C" int continuum_chat_render_new(const continuum_chat *chat, const char *request, int reasoning,
+        continuum_chat_render **out, char *error, size_t capacity) noexcept {
     return guarded([&] {
         const auto in = common_json::parse(request);
         common_chat_templates_inputs inputs;
@@ -84,17 +95,38 @@ extern "C" int continuum_chat_apply(const continuum_chat *chat, const char *requ
         }
         inputs.grammar = in.value("grammar", std::string());
         inputs.enable_thinking = in.value("enable_thinking", true);
-        inputs.reasoning_format = reasoning_format(in.value("reasoning_format", std::string("auto")));
+        inputs.reasoning_format = reasoning_format(reasoning);
         inputs.add_generation_prompt = in.value("add_generation_prompt", true);
         inputs.parallel_tool_calls = in.value("parallel_tool_calls", false);
         inputs.use_jinja = true;
 
-        const auto params = common_chat_templates_apply(chat->templates.get(), inputs);
+        auto render = std::make_unique<continuum_chat_render>();
+        render->params = common_chat_templates_apply(chat->templates.get(), inputs);
+        render->parser = common_chat_parser_params(render->params);
+        render->parser.reasoning_format = inputs.reasoning_format;
+        render->parser.parse_tool_calls = true;
+        if (!render->params.parser.empty()) {
+            render->parser.parser.load(render->params.parser);
+        }
+        *out = render.release();
+    }, error, capacity);
+}
+
+extern "C" void continuum_chat_render_free(continuum_chat_render *render) noexcept {
+    delete render;
+}
+
+// What the sampler and the caller need, once: the prompt, the grammar and its lazy triggers, the
+// preserved tokens, the extra stops and the thinking tags (no parser state: it stays native).
+extern "C" int continuum_chat_render_describe(const continuum_chat_render *render, char **out,
+        char *error, size_t capacity) noexcept {
+    return guarded([&] {
+        const auto &params = render->params;
         common_json triggers = common_json::array();
         for (const auto &trigger : params.grammar_triggers) {
             triggers.push_back({{"type", static_cast<int>(trigger.type)}, {"value", trigger.value}, {"token", trigger.token}});
         }
-        const common_json result = {
+        const common_json description = {
             {"prompt", params.prompt},
             {"grammar", params.grammar},
             {"grammar_lazy", params.grammar_lazy},
@@ -104,32 +136,29 @@ extern "C" int continuum_chat_apply(const continuum_chat *chat, const char *requ
             {"supports_thinking", params.supports_thinking},
             {"thinking_start_tag", params.thinking_start_tag},
             {"thinking_end_tags", params.thinking_end_tags},
-            {"format", static_cast<int>(params.format)},
-            {"generation_prompt", params.generation_prompt},
-            {"parser", params.parser},
-            {"reasoning_format", in.value("reasoning_format", std::string("auto"))},
         };
-        *out = owned(result.dump());
+        *out = owned(description.dump());
     }, error, capacity);
 }
 
-// Parse what the model wrote. `rendered` is the apply output (its format, generation prompt,
-// parser and reasoning format); the result is the assistant message in the OpenAI shape
-// (content, reasoning_content, tool_calls).
-extern "C" int continuum_chat_parse(const char *rendered, const char *text, int is_partial,
-        char **out, char *error, size_t capacity) noexcept {
+// Parse what the model has written so far (`length` bytes of `text`) with the render's own parser:
+// the assistant message in the OpenAI shape (content, reasoning_content, tool_calls).
+extern "C" int continuum_chat_render_parse(const continuum_chat_render *render, const char *text, size_t length,
+        int is_partial, char **out, char *error, size_t capacity) noexcept {
     return guarded([&] {
-        const auto from = common_json::parse(rendered);
-        common_chat_parser_params params;
-        params.format = static_cast<common_chat_format>(from.at("format").get<int>());
-        params.generation_prompt = from.value("generation_prompt", std::string());
-        params.reasoning_format = reasoning_format(from.value("reasoning_format", std::string("auto")));
-        params.parse_tool_calls = true;
-        const auto parser = from.value("parser", std::string());
-        if (!parser.empty()) {
-            params.parser.load(parser);
-        }
-        const auto message = common_chat_parse(text, is_partial != 0, params);
+        const auto message = common_chat_parse(std::string(text, length), is_partial != 0, render->parser);
         *out = owned(message.to_json_oaicompat().dump());
+    }, error, capacity);
+}
+
+// A content-only render without a model, for tests of the boundary itself.
+extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_render **out, char *error,
+        size_t capacity) noexcept {
+    return guarded([&] {
+        auto render = std::make_unique<continuum_chat_render>();
+        render->params.format = COMMON_CHAT_FORMAT_CONTENT_ONLY;
+        render->parser = common_chat_parser_params(render->params);
+        render->parser.reasoning_format = reasoning_format(reasoning);
+        *out = render.release();
     }, error, capacity);
 }
