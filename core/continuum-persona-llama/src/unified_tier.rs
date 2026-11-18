@@ -8,8 +8,8 @@
 use std::collections::HashMap;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
-use continuum_persona_engine::residency::{Direction, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{BindRefusal, Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
+use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
+use llama::{Batch, BindRefusal, Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
 
 /// One of the context's two execution streams, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,8 +74,20 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.streams.iter().position(|held| *held == Some(persona)).map(stream_at)
     }
 
-    /// The context, for the active mind's decode.
-    pub fn context(&mut self) -> &mut Context<'m> {
+    /// The logits of output `i` of the last decode (the batch index whose logits were asked for).
+    pub fn logits_ith(&self, i: i32) -> &[f32] {
+        self.ctx.logits_ith(i)
+    }
+
+    /// The last position `persona`'s stream holds, while she is bound.
+    pub fn position_of(&self, persona: PersonaId) -> Option<i32> {
+        self.stream_of(persona).map(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
+    }
+
+    /// The raw context, past every binding: only for custody replays that must put foreign state on a
+    /// stream (an adopted context). Never on the production path.
+    #[cfg(feature = "test-fixtures")]
+    pub fn raw_context(&mut self) -> &mut Context<'m> {
         self.ctx
     }
 
@@ -175,6 +187,52 @@ impl Tier for UnifiedTier<'_, '_> {
             Direction::Out => self.move_out(what.persona, what.epoch)?,
         }
         Ok(Landed(what))
+    }
+}
+
+/// One step of the bound mind's decode: her tokens from position `from`, with the logits of the last
+/// one if `logits_at_end`. It names no sequence: the tier decodes on the stream she is bound to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Step {
+    pub tokens: Vec<i32>,
+    pub from: i32,
+    pub logits_at_end: bool,
+}
+
+/// A decode this tier ran: libllama's decode returns once its outputs are readable, so it has landed
+/// when it exists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decoded;
+
+impl Completion for Decoded {
+    fn complete(&self) -> bool {
+        true
+    }
+}
+
+impl Execute for UnifiedTier<'_, '_> {
+    type Work = Step;
+    type Done = Decoded;
+
+    fn submit(&mut self, persona: PersonaId, epoch: Epoch, step: Step) -> Result<Decoded, TierRefusal> {
+        let stream = self.stream_of(persona).ok_or_else(|| refused(persona, "not bound"))?;
+        let held = self.minds.get(&persona).map(|mind| mind.epoch);
+        if held != Some(epoch) {
+            return Err(refused(persona, "another epoch of her is bound"));
+        }
+        let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(persona, "an empty step"))?;
+        let count = i32::try_from(step.tokens.len()).map_err(|_| refused(persona, "a step longer than a batch can hold"))?;
+        let mut batch = Batch::allocated(count, 1);
+        for (offset, (i, &token)) in (0..count).zip(step.tokens.iter().enumerate()) {
+            batch.push(token, step.from + offset, &[stream.seq()], step.logits_at_end && i == last);
+        }
+        self.ctx.decode(&batch).map_err(|message| TierRefusal {
+            tier: TIER,
+            persona,
+            reason: "the engine refused her decode",
+            native: Native::Reported(message),
+        })?;
+        Ok(Decoded)
     }
 }
 
