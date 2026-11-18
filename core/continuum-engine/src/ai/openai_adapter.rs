@@ -30,7 +30,7 @@ use super::adapter::{
 use super::openai_endpoints::OpenAiBase;
 use super::registry_bridge::models_for_provider_via_registry;
 use super::types::{
-    ActiveAdapterRequest, ContentPart, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
+    ActiveAdapterRequest, EmbeddingInput, EmbeddingRequest, EmbeddingResponse,
     FinishReason, GenerationTiming, HealthState, HealthStatus, ModelInfo, TextGenerationRequest,
     TextGenerationResponse, ToolCall, UsageMetrics,
 };
