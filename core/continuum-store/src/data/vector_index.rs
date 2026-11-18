@@ -47,10 +47,14 @@ pub(crate) const NATIVE_ORDER: ByteOrder =
     if cfg!(target_endian = "little") { ByteOrder::Little } else { ByteOrder::Big };
 
 /// The identity an embedder reports for the vectors it produces.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
+#[derive(Hash, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
 #[serde(transparent)]
 #[ts(export, export_to = "../../../protocol/typescript/data/EmbedderId.ts")]
 pub struct EmbedderId(String);
+
+impl std::borrow::Borrow<str> for EmbedderId {
+    fn borrow(&self) -> &str { self.as_str() }
+}
 
 impl EmbedderId {
     pub fn new(id: &str) -> Self {

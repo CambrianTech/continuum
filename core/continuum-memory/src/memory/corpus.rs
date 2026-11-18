@@ -7,6 +7,8 @@
 //! → Rust caches MemoryCorpus per persona → recall layers operate on corpus.
 //! Zero SQL. Zero filesystem access. Pure computation.
 
+mod embeddings;
+use embeddings::MemoryEmbeddings;
 use crate::memory::types::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -20,7 +22,7 @@ use std::time::Instant;
 /// No SQL, no filesystem access — pure compute on in-memory data.
 pub struct MemoryCorpus {
     pub memories: Vec<MemoryRecord>,
-    pub memory_embeddings: HashMap<String, MemoryEmbedding>,
+    pub(super) memory_embeddings: MemoryEmbeddings,
     pub timeline_events: Vec<TimelineEvent>,
     pub event_embeddings: HashMap<String, Vec<f32>>,
     pub loaded_at: Instant,
@@ -36,7 +38,7 @@ impl MemoryCorpus {
     ) -> Self {
         Self {
             memories,
-            memory_embeddings,
+            memory_embeddings: MemoryEmbeddings::from_rows(memory_embeddings),
             timeline_events,
             event_embeddings,
             loaded_at: Instant::now(),
@@ -49,7 +51,7 @@ impl MemoryCorpus {
         corpus_events: Vec<CorpusTimelineEvent>,
     ) -> Self {
         let mut memories = Vec::with_capacity(corpus_memories.len());
-        let mut memory_embeddings = HashMap::with_capacity(corpus_memories.len());
+        let mut memory_embeddings = MemoryEmbeddings::with_capacity(corpus_memories.len());
 
         for cm in corpus_memories {
             if let Some(emb) = cm.embedding {
@@ -81,7 +83,7 @@ impl MemoryCorpus {
     pub fn empty() -> Self {
         Self {
             memories: vec![],
-            memory_embeddings: HashMap::new(),
+            memory_embeddings: MemoryEmbeddings::default(),
             timeline_events: vec![],
             event_embeddings: HashMap::new(),
             loaded_at: Instant::now(),

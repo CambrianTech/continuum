@@ -249,9 +249,7 @@ impl PersonaMemoryManager {
 
             // Validate under the same read custody used for scoring: an append during
             // the embedding await cannot introduce an unchecked representation.
-            if had_query_embedding && corpus.memory_embeddings.values().any(
-                |embedding| embedding.producer.as_str() != self.embedding.id()
-            ) {
+            if had_query_embedding && !corpus.memory_embeddings.accepts(self.embedding.id()) {
                 return Err(MemoryError("memory embeddings and query embedder belong to different spaces".into()));
             }
 
@@ -331,7 +329,7 @@ impl PersonaMemoryManager {
             corpus
                 .memories
                 .iter()
-                .filter(|m| !corpus.memory_embeddings.contains_key(&m.id))
+                .filter(|m| corpus.memory_embeddings.get(&m.id).is_none())
                 .take(MAX_PER_CALL)
                 .map(|m| (m.id.clone(), m.content.clone()))
                 .collect()
