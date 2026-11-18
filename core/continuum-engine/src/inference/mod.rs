@@ -66,6 +66,7 @@ pub mod page_ref;
 pub mod slots;
 pub mod speed_pulse;
 pub mod sse_stream;
+pub(crate) mod native_tool_calls;
 pub mod llm_module;
 pub mod llm_module_bus;
 pub mod llm_module_service;
