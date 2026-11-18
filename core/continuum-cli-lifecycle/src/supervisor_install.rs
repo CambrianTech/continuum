@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 pub mod maintenance;
+pub mod arms;
 
 pub const CORE_TASK: &str = "ContinuumCore";
 pub const DEPLOY_TASK: &str = "ContinuumDeploy";
