@@ -2,6 +2,7 @@
 //! pool, flash). An adapter holds only the calls that differ; the pipeline never branches on
 //! which tier it has.
 
+use super::FenceTag;
 use crate::persona::PersonaId;
 
 /// A tier could not take or give a persona's bytes: named, so the engine keeps her where she is.
@@ -20,9 +21,8 @@ pub trait Tier {
     /// The tier's name, for refusals and receipts.
     fn name(&self) -> &'static str;
 
-    /// Begin moving her blocks INTO the execution stream (layer order, behind compute).
-    fn copy_in(&mut self, persona: PersonaId) -> Result<Self::Fence, TierRefusal>;
-
-    /// Begin moving her blocks OUT of the execution stream into this tier.
-    fn copy_out(&mut self, persona: PersonaId) -> Result<Self::Fence, TierRefusal>;
+    /// Begin the transfer `what` names: her blocks of that exact epoch, in that direction (into the
+    /// execution stream, layer order behind compute; or out of it into this tier). The fence it
+    /// returns carries the same tag, so [`crate::pipeline::Roles`] accepts it only for that unit.
+    fn begin(&mut self, what: FenceTag) -> Result<Self::Fence, TierRefusal>;
 }

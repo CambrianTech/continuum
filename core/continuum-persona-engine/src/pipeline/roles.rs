@@ -125,6 +125,16 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         self.retiring.as_ref().map(Retiring::persona)
     }
 
+    /// The exact copy-out to begin for the mind awaiting it (her persona, epoch, direction out): the
+    /// descriptor the completion owner hands its tier, so no second lookup by id can name another
+    /// generation. `None` when nobody awaits a copy-out.
+    pub fn awaiting_copy_out(&self) -> Option<FenceTag> {
+        match self.retiring.as_ref() {
+            Some(Retiring::AwaitingCopyOut(unit)) => Some(expects(unit, Direction::Out)),
+            _ => None,
+        }
+    }
+
     fn present(&self, persona: PersonaId) -> bool {
         self.active.as_ref().is_some_and(|a| a.persona() == persona)
             || self.staged() == Some(persona)

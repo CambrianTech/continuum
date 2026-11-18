@@ -171,3 +171,43 @@ fn a_mind_already_in_the_core_is_not_staged_again() {
     let refused = roles.stage(mind(1, &drops), fence).err().expect("test: already active");
     assert_eq!(refused.reason, StageRefusal::AlreadyPresent { persona: id(1) });
 }
+
+/// A tier that issues tagged transfers for whatever it is asked to begin.
+struct TestTier {
+    drops: Drops,
+}
+impl crate::residency::Tier for TestTier {
+    type Fence = Transfer;
+    fn name(&self) -> &'static str {
+        "test"
+    }
+    fn begin(&mut self, what: FenceTag) -> Result<Transfer, crate::residency::TierRefusal> {
+        Ok(Transfer { tag: what, landed: Rc::new(Cell::new(true)), drops: self.drops.clone() })
+    }
+}
+
+// what this catches (Codex on #6130 at 9446c2be7): the copy-out begun for a persona by id alone,
+// which can name another generation of her. The completion owner begins exactly the transfer the
+// Core describes, and a transfer of another epoch is refused with the fence returned.
+#[test]
+fn the_completion_owner_begins_exactly_the_described_copy_out() {
+    use crate::residency::Tier;
+    let drops = Drops::default();
+    let mut tier = TestTier { drops: drops.clone() };
+    let mut roles: Roles<Unit, Transfer> = Roles::default();
+    assert_eq!(roles.awaiting_copy_out(), None, "nobody awaits a copy-out yet");
+    bind(&mut roles, 1, &drops);
+    bind(&mut roles, 2, &drops);
+
+    let described = roles.awaiting_copy_out().expect("test: she awaits her copy-out");
+    assert_eq!(described, FenceTag { persona: id(1), epoch: Epoch(1), direction: Direction::Out });
+
+    let stale = tier.begin(FenceTag { epoch: Epoch(0), ..described }).expect("test: the tier begins what it is told");
+    let refused = roles.begin_retire(stale).err().expect("test: another generation's copy-out");
+    assert!(matches!(refused.reason, RetireRefusal::WrongFence { .. }));
+
+    let copy_out = tier.begin(described).expect("test: begin the described transfer");
+    assert!(roles.begin_retire(copy_out).is_ok());
+    assert_eq!(roles.awaiting_copy_out(), None, "begun: no longer awaiting");
+    assert_eq!(roles.release_retired().map(|u| u.epoch()), Ok(Epoch(1)));
+}
