@@ -406,19 +406,26 @@ impl LlamaCppBackend {
     }
 
     /// Render one chat turn through the model's own chat handling (llama.cpp common/chat): the
-    /// OpenAI-shaped `request` (messages, tools, tool_choice) with its tools and reasoning, under
-    /// `override_template` when the GGUF carries none. The templates load once, at the first turn;
-    /// the lock is held for the render alone, so it is released before decode. The returned render
-    /// keeps its parser for every partial and the final parse of this request.
+    /// OpenAI-shaped `request` (messages, tools, tool_choice) with its tools and reasoning. The
+    /// templates load once, at the first turn, and decide there: a GGUF carrying its default OR its
+    /// named `tool_use` template loads its own (common/chat promotes a lone named one to default,
+    /// and any override would mask it); only a GGUF with neither takes `fallback_template`, which is
+    /// asked for at that one init and never per turn. The lock is held for the render alone, so it
+    /// is released before decode. The returned render keeps its parser for every partial and the
+    /// final parse of this request.
     pub fn render_chat_turn(
         &self,
         request: &str,
-        override_template: Option<&str>,
+        fallback_template: impl FnOnce() -> Option<String>,
         reasoning: llama::ReasoningFormat,
     ) -> Result<llama::ChatRender, llama::ChatRefusal> {
         let templates = self
             .chat
-            .get_or_init(|| llama::ChatTemplates::new(&self.model, override_template).map(Mutex::new))
+            .get_or_init(|| {
+                let native = self.model.has_chat_template(None) || self.model.has_chat_template(Some(c"tool_use"));
+                let fallback = if native { None } else { fallback_template() };
+                llama::ChatTemplates::new(&self.model, fallback.as_deref()).map(Mutex::new)
+            })
             .as_ref()
             .map_err(Clone::clone)?;
         // A render reads the templates and never mutates them, so a lock poisoned by a panicking

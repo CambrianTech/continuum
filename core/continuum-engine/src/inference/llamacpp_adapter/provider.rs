@@ -159,16 +159,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // adapter edit. If both sources are absent, render_chat passes
         // None to llama.cpp which is its own loud failure (chatml default
         // doesn't match qwen3.5's special tokens — output corruption).
-        let registry_template: Option<String> = crate::model_registry::try_global()
-            .and_then(|reg| reg.model(backend.model_id()))
-            .and_then(|m| m.chat_template.clone());
-        let model_owns_template = backend.model_chat_template().is_some();
-        let template_string = backend.model_chat_template().or(registry_template);
-        let template = template_string.as_deref();
-        // The chat render loads the model's own templates (its named tool_use one among them) only
-        // when no override is given: the registry's template overrides only for a model without one
-        // (Codex on #6145, common/chat.cpp:761-776).
-        let chat_override = if model_owns_template { None } else { template };
+        // Looked up only where it is used: the media path's plain template, and the chat render's
+        // one-time init when the GGUF has neither a default nor a named tool_use template (Codex on
+        // #6145, common/chat.cpp:761-776). A text turn copies no template string.
+        let registry_template = || {
+            crate::model_registry::try_global()
+                .and_then(|reg| reg.model(backend.model_id()))
+                .and_then(|m| m.chat_template.clone())
+        };
         // Walk the request to find any image / audio content. If present,
         // the model MUST natively accept that modality (else the bridge
         // is wrong upstream — sensory-bridge converts to text BEFORE
@@ -255,7 +253,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let (prompt, collected_media, chat_render) = if !super::chat_turn::carries_media(&request) {
             let rendered = continuum_base::time_sync!("inference.render_chat", {
                 super::chat_turn::chat_request(&request).and_then(|body| {
-                    Ok(backend.render_chat_turn(&body.to_string(), chat_override, llama::ReasoningFormat::Auto)?)
+                    Ok(backend.render_chat_turn(&body.to_string(), registry_template, llama::ReasoningFormat::Auto)?)
                 })
             });
             let render = match rendered {
@@ -330,6 +328,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // bottlenecks. Bracketing it lets the operator subtract it
             // from `inference.forward.*` cleanly.
             let prompt = continuum_base::time_sync!("inference.render_chat", {
+                let template = backend.model_chat_template().or_else(registry_template);
                 llama::render_chat(template.as_deref(), &messages, true)
             })?;
             (prompt, collected_media, None)
