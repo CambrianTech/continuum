@@ -139,7 +139,7 @@ pub trait HostMemoryReader: Send + Sync {
 
 /// Reads the live host through the [`MemoryPressureMonitor`]'s already-published numbers.
 ///
-/// Total is probed ONCE at construction (`sysinfo::total_memory()`) because physical RAM is a
+/// Total is read ONCE at construction (`memory_pressure::sample_host_memory`) because physical RAM is a
 /// stable fact about the machine, and available comes from
 /// [`current_available_bytes`](crate::system_resources::memory_pressure::current_available_bytes)
 /// — a lock-free atomic the monitor loop refreshes every 2s. Both reads satisfy the module's
@@ -178,14 +178,9 @@ impl Default for LiveHostMemory {
 
 impl LiveHostMemory {
     pub fn new() -> Self {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        Self {
-            total: sys.total_memory(),
-            last_known_free: AtomicU64::new(
-                crate::system_resources::memory_pressure::available_from(&sys),
-            ),
-        }
+        // Measured by the monitor that owns host memory, never sampled here (private_probes).
+        let sample = crate::system_resources::memory_pressure::sample_host_memory();
+        Self { total: sample.total, last_known_free: AtomicU64::new(sample.available) }
     }
 
     /// A direct host sample — the SAME `host_statistics64` read `MemoryPressureMonitor`
@@ -194,9 +189,7 @@ impl LiveHostMemory {
     /// unset; the daemon's tick is ~1Hz, so this is at most one cheap syscall per tick
     /// on the degraded path and ZERO on the healthy one.
     fn direct_sample(&self) -> Option<u64> {
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        match crate::system_resources::memory_pressure::available_from(&sys) {
+        match crate::system_resources::memory_pressure::sample_host_memory().available {
             0 => None,
             n => Some(n),
         }

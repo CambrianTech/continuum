@@ -166,6 +166,22 @@ pub fn available_from(sys: &sysinfo::System) -> u64 {
     sys.total_memory().saturating_sub(sys.used_memory())
 }
 
+/// One fresh host memory sample: physical total and available (by [`available_from`]), measured
+/// here, by the monitor that owns host memory, for a reader that needs it before the monitor's
+/// first poll (the resource authority's unified pool at boot).
+pub fn sample_host_memory() -> HostMemorySample {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    HostMemorySample { total: sys.total_memory(), available: available_from(&sys) }
+}
+
+/// A host memory sample: bytes of physical RAM and bytes available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemorySample {
+    pub total: u64,
+    pub available: u64,
+}
+
 pub fn current_available_bytes() -> Option<u64> {
     match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
