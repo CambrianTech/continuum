@@ -506,6 +506,33 @@ call is idempotent: a repeated `suspend` on a suspended part reports the same pr
 preservation rules are written once, inside the part that owns the state, and every caller gets
 them for free.
 
+**Capacity composes through the tree too (`Footprint`, the second shared trait).** Every part
+answers for its own memory, per tier (device, host, flash), so admission is arithmetic over the
+tree and never a guess from the whole machine:
+
+```rust
+trait Footprint {
+    fn held(&self) -> Usage;              // what I hold now, per tier, measured by me
+    fn needs(&self, step: &Step) -> Need; // what my next step adds: Known(per tier) | Unmeasured
+    fn reclaimable(&self) -> Reclaim;     // what I could give back, per tier, and at what cost
+}
+```
+
+A persona's `held` is the sum of her parts (her KV and token history, her genome's layers, her
+learning's optimizer and shadow adapter, her mind's working memory); an engine incarnation's is its
+weights, KV pool and training workspace; the node's is the sum of its engines and personas, and
+"external" is the host's measurement minus that sum, a labelled remainder never charged against a
+GPU budget. Admission is a tier's capacity minus what its objects hold, against a step's `needs`.
+The owner measures its own bytes (the engine its allocations, learning its preflight); the governor
+sums and never re-measures them. `Unmeasured` is a type, never a zero. The host's own measurement
+is a cross-check: the gap between it and the tree is published as drift, which is how a leak
+surfaces with an owner. `Lifecycle` uses it: `prepare` is admitted against `needs`, `suspend`
+reports what moved between tiers, and a swap retires by `reclaimable` cost.
+
+(The M5, 2026-11-17: the governor charged every process on the host, browsers and builds included,
+against the GPU's working-set cap, read 0 bytes free, and refused a 4 MB optimizer while the GPU
+had about 13 GB of its working set left. A `Footprint` tree would have admitted it.)
+
 **The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
 service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
