@@ -83,6 +83,28 @@ pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: Generat
     Ok(ParsedTurn { text: text_of("content").unwrap_or_default(), reasoning: text_of("reasoning_content"), tool_calls: native_tool_calls::assemble(raw, end) }) // unwrap_or_default: a turn that only called a tool has no visible text
 }
 
+/// Whether her turn carries media (an image, audio, or a video the media path refuses): only then
+/// does it take the plain template's media path; every other turn renders through her chat render.
+pub(super) fn carries_media(request: &TextGenerationRequest) -> bool {
+    use crate::ai::types::ContentPart;
+    request.messages.iter().any(|message| match &message.content {
+        MessageContent::Parts(parts) => parts
+            .iter()
+            .any(|part| matches!(part, ContentPart::Image { .. } | ContentPart::Audio { .. } | ContentPart::Video { .. })),
+        MessageContent::Text(_) => false,
+    })
+}
+
+/// The response's finish reason: the output limit first, so a turn the cap cut (even mid-call) is
+/// reported as cut, never as a finished call; then a tool call; then a stop.
+pub(super) fn finish_reason(end: GenerationEnd, called: bool) -> FinishReason {
+    match end {
+        GenerationEnd::OutputLimit => FinishReason::Length,
+        _ if called => FinishReason::ToolUse,
+        _ => FinishReason::Stop,
+    }
+}
+
 /// Why a decode of `tokens` with a cap of `max_tokens` stopped: the cap, or the model's own end.
 pub(super) fn generation_end(tokens: usize, max_tokens: usize) -> GenerationEnd {
     if tokens >= max_tokens {
@@ -148,5 +170,31 @@ mod tests {
     fn a_decode_that_reached_its_cap_ended_at_the_output_limit() {
         assert_eq!(generation_end(64, 64), GenerationEnd::OutputLimit);
         assert_eq!(generation_end(12, 64), GenerationEnd::Finished);
+    }
+
+    // what this catches (Codex on #6145): a turn the output limit cut reported as a finished call or
+    // a stop (unconditionally ToolUse/Stop), so a truncated call is retried as if complete.
+    #[test]
+    fn a_cut_turn_reports_its_length_even_mid_call() {
+        assert!(matches!(finish_reason(GenerationEnd::OutputLimit, true), FinishReason::Length));
+        assert!(matches!(finish_reason(GenerationEnd::OutputLimit, false), FinishReason::Length));
+        assert!(matches!(finish_reason(GenerationEnd::Finished, true), FinishReason::ToolUse));
+        assert!(matches!(finish_reason(GenerationEnd::Finished, false), FinishReason::Stop));
+    }
+
+    // what this catches (Codex on #6145): a text turn paying to build the plain template's messages
+    // and media it discards, or a media turn (video included, which the media path refuses) taking
+    // the chat render.
+    #[test]
+    fn only_a_turn_with_media_takes_the_media_path() {
+        use crate::ai::types::{ChatMessage, ContentPart};
+        let turn = |content: MessageContent| TextGenerationRequest {
+            messages: vec![ChatMessage { role: "user".into(), content, name: None }],
+            ..Default::default()
+        };
+        assert!(!carries_media(&turn(MessageContent::Text("hello".into()))));
+        assert!(!carries_media(&turn(MessageContent::Parts(vec![ContentPart::Text { text: "hello".into() }]))));
+        let video = crate::ai::types::VideoInput { url: None, base64: None, mime_type: None };
+        assert!(carries_media(&turn(MessageContent::Parts(vec![ContentPart::Video { video }]))));
     }
 }
