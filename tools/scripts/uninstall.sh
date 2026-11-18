@@ -52,6 +52,7 @@ dir_size() {
     local size
     size=$(du -sh "$path" 2>/dev/null | awk '{print $1}') || true
     echo "${size:-0B}"
+    echo "${size:-0B}"
   else
     echo "0B"
   fi
@@ -62,8 +63,8 @@ TOTAL_FREED_KB=0
 
 # Add directory size (in KB) to running total, then remove it
 remove_dir() {
-  local path="$1"
-  if [ -d "$path" ]; then
+    kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}') || true
+    TOTAL_FREED_KB=$((TOTAL_FREED_KB + ${kb:-0}))
     local kb
     kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}') || true
     kb=${kb:-0}
