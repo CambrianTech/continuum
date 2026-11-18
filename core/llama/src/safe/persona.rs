@@ -51,11 +51,18 @@ impl PersonaBlocks {
         NonNull::new(unsafe { sys::llama_persona_init(ctx.as_ptr()) }).map(|ptr| Self { ptr })
     }
 
-    /// Reserve her token history once, for `owner`: `tokens` ids and `receipts` append receipts.
-    /// A second reserve is refused (`already_reserved`); an allocation failure is `out_of_memory`.
-    pub fn reserve(&mut self, owner: PersonaOwner, tokens: usize, receipts: usize) -> Result<(), PersonaRefusal> {
+    /// Own her token history, once, for `owner`. Sized by nothing: it starts empty and her owner
+    /// grows it ahead of need ([`Self::grow`]). A second reserve is refused (`already_reserved`).
+    pub fn reserve(&mut self, owner: PersonaOwner) -> Result<(), PersonaRefusal> {
         // SAFETY: `self.ptr` is live for this handle.
-        status(unsafe { sys::llama_persona_reserve_tokens(self.ptr.as_ptr(), owner.persona, owner.epoch, tokens, receipts) })
+        status(unsafe { sys::llama_persona_reserve_tokens(self.ptr.as_ptr(), owner.persona, owner.epoch) })
+    }
+
+    /// Grow her history by `tokens` ids and `receipts` appends, keeping what she holds. Her owner
+    /// calls it between acts, never inside one; an append on the hot path only writes.
+    pub fn grow(&mut self, tokens: usize, receipts: usize) -> Result<(), PersonaRefusal> {
+        // SAFETY: `self.ptr` is live for this handle.
+        status(unsafe { sys::llama_persona_grow_tokens(self.ptr.as_ptr(), tokens, receipts) })
     }
 
     /// Move sequence `seq`'s state out of `ctx` into these blocks; her stream is left empty.
