@@ -177,7 +177,7 @@ impl LlamaServerProcess {
     /// A readiness timeout can outlive the plan that initiated startup. Publish the observed
     /// engine under its own contract before reconciliation evaluates the next plan.
     pub(super) async fn publish_retained_engine(&self, current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
-        let prepared = self.loading.lock().as_ref().map(|kept| kept.tail.prepared.clone());
+        let prepared = self.loading.lock().as_ref().map(|kept| Arc::clone(&kept.tail.prepared));
         let Some(prepared) = prepared else { return Ok(()) };
         let endpoint = crate::inference::slots::directory().endpoint(&self.root);
         let transition = endpoint.transition_if(&|| current() && self.loading.lock().as_ref()
