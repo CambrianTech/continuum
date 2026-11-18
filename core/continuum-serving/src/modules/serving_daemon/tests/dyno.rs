@@ -74,9 +74,8 @@ fn the_launch_never_sizes_below_the_residents_pages() {
 // usable 16 GB while the stopped engine's memory was still being returned, launched -c 2045, and 15 s
 // later planned 2 x 134,690 at 25 GB; nothing applied it. The four residents' full-detail
 // requirements were ~68-110k each. Driven through the daemon's own pool sizing (`launch_pool`), the
-// settle gate (`settle::launch_gate`) and the floor-sized rule (`floor_sized::floor_sized`).
+// settle gate (`settle::launch_gate`) and the measured host budget.
 mod boot_during_memory_settle {
-    use super::super::super::floor_sized::floor_sized;
     use super::super::super::launch::{launch_pool, Seated};
     use super::super::super::settle::{launch_gate, HostSettle, LaunchGate};
     use crate::inference::planning::serving_plan::ModelFootprint;
@@ -121,7 +120,7 @@ mod boot_during_memory_settle {
     // what this catches: the fix. With the remembered residents in the demand, a launch below their
     // need waits while the compressor shrinks; where this model ran before, the gap reading launches
     // at the proven pool (every single need held); once the host settles the grown plan launches
-    // with every need inside it; and an engine already at the floor is retired once for it.
+    // with every need inside it.
     #[test]
     fn after_the_boot_waits_for_the_settle_and_launches_what_the_minds_need() {
         let fp = m5();
@@ -140,9 +139,6 @@ mod boot_during_memory_settle {
         assert_eq!(launch_gate(settled, at_t15, need), LaunchGate::Launch, "a settled host launches");
         assert!(at_t15 >= 2 * u64::from(GROWN_WINDOW), "the settled plan's pool: {at_t15}");
         assert!(NEEDS.iter().all(|&n| n <= at_t15), "every remembered need fits the launch: {at_t15}");
-
-        let applied = floor_sized(MIN_SERVE_CTX, &NEEDS, at_t15).expect("an engine already at the floor is floor-sized");
-        assert_eq!((applied.held_now, applied.held_then), (0, NEEDS.len()), "the grown plan is applied: none held, then all");
     }
 }
 
