@@ -25,7 +25,7 @@ pub(crate) enum TreeRefusal {
     #[error("{path} is not a registered worktree of the git repo at {repo}")]
     NotRegistered { path: PathBuf, repo: PathBuf },
     /// The tree has uncommitted changes or is otherwise dirty.
-    #[error("{path} is dirty (uncommitted changes or untracked files)")]
+    #[error("{0} is dirty (uncommitted changes or untracked files)")]
     Dirty(PathBuf),
 }
 
@@ -99,7 +99,7 @@ impl GitTreeOwner {
         if !found_path {
             return Err(TreeRefusal::NotRegistered {
                 path: path.to_path_buf(),
-                repo: repo_root.clone(),
+                repo: repo_root.to_path_buf(),
             });
         }
 
@@ -120,17 +120,19 @@ impl GitTreeOwner {
             .args(["status", "--porcelain"])
             .output()
             .ok()
-            .filter(|o| o.status.success())?;
+            .filter(|o| o.status.success());
 
-        // Non-empty stdout means dirty (unstaged changes, untracked files, etc.).
-        let status_output = String::from_utf8_lossy(&output.stdout);
-        !status_output.trim().is_empty()
+        match output {
+            Some(o) => !String::from_utf8_lossy(&o.stdout).trim().is_empty(),
+            None => false,
+        }
     }
 }
 
 impl TreeOwner for GitTreeOwner {
     fn tree_for(&self, tip: &str) -> Result<PathBuf, TreeRefusal> {
-        self.ensure_pool_exists()?;
+        self.ensure_pool_exists()
+            .map_err(|e| TreeRefusal::Create { tip: tip.into(), stderr: e })?;
 
         let wt_path = self.pool_dir.join(tip);
 

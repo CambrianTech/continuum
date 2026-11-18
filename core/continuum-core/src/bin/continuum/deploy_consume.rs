@@ -2,6 +2,7 @@
 
 use super::*;
 use continuum_cli_lifecycle::deploy_health::RefusalKind;
+use continuum_core::modules::deploy_actuator::CONSUME_MAX_ATTEMPTS;
 
 /// The consumer's log — the only place its output can land, since the scheduled task
 /// has no stdout. Set once by `deploy-consume`; read by the dark build to redirect

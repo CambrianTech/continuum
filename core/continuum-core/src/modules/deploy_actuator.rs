@@ -283,6 +283,7 @@ mod callbacks;
 
 // Tree ownership for deploy builds: worktree creation, reuse verification and removal.
 mod tree_owner;
+pub(crate) use tree_owner::{GitTreeOwner, TreeOwner};
 #[cfg(any(test, feature = "test-fixtures"))]
 pub(crate) use tree_owner::TestTreeOwner;
 impl From<continuum_host::deploy_spawn::Spawned> for Spawned {
@@ -388,6 +389,8 @@ impl DeployActuator {
         spawner: Box<dyn DeploySpawner>,
     ) -> Self {
         let state_dir = root.join("state");
+        // Build tree_owner before moving values into the struct — GitTreeOwner needs them.
+        let tree_owner: Arc<dyn TreeOwner> = Arc::new(GitTreeOwner::new(root.clone(), user_home.clone()));
         Self {
             spawner,
             user_home,
@@ -396,7 +399,7 @@ impl DeployActuator {
             switch,
             said_deferred: parking_lot::Mutex::new(None),
             said_gave_up: parking_lot::Mutex::new(None),
-            tree_owner: Arc::new(GitTreeOwner::new(root, user_home.clone())),
+            tree_owner,
         }
     }
 
@@ -511,6 +514,10 @@ impl DeployActuator {
             }
             Decided::Skip(ActuateSkipReason::AlreadyActuated { attempt, elapsed_ms }) => {
                 return ActuateOutcome::Skipped(ActuateSkipReason::AlreadyActuated { attempt: *attempt, elapsed_ms: *elapsed_ms });
+            }
+            // ConcurrentClaim is already handled above (line 476) — unreachable here, but needed for exhaustiveness.
+            Decided::Skip(ActuateSkipReason::ConcurrentClaim) => {
+                return ActuateOutcome::Skipped(ActuateSkipReason::ConcurrentClaim);
             }
         };
         // Property 2: the deploy owns its build tree — create a detached worktree at
