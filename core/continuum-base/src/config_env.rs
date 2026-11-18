@@ -90,6 +90,18 @@ pub fn read_all() -> Vec<(String, String)> {
     config_path().map(|p| read_all_from(&p)).unwrap_or_default()
 }
 
+/// Credential keys that MUST NOT leak into child processes (citizen shells,
+/// cargo builds, etc.). The core applies ALL config.env lines to its own process
+/// on boot via [`apply_to_process`]; this list is the inverse — the subset of
+/// those lines that are secrets and must be stripped from every spawned child.
+///
+/// This is the single owner for which config.env keys are credentials: callers in
+/// continuum-hands (shell, git_bridge) remove them once; readers use [`read`] to
+/// fetch without env-inheritance coupling.
+pub fn secret_keys() -> &'static [&'static str] {
+    &["HF_TOKEN", "GH_TOKEN"]
+}
+
 /// Apply `config.env` to THIS process's environment, left to right (last assignment
 /// wins — shell `source` semantics). Called by the core server before its runtime is
 /// built, on EVERY boot, so a supervised launch (launchd / the Windows task, whose

@@ -137,6 +137,13 @@ pub(super) async fn run_shell_command(
     for (k, v) in identity {
         cmd.env(k, v);
     }
+    // Strip credential keys from config.env so they do NOT leak into citizen shells
+    // (or any child process). The core applied them to its own env at boot via
+    // `apply_to_process`; this inverse list is the single owner for which keys are
+    // secrets — continuum-hands removes each one, readers use `config_env::read`.
+    for key in continuum_base::config_env::secret_keys() {
+        cmd.env_remove(key);
+    }
     // The command text rides in the environment when a login shell hands it to bash
     // (see `command_in_env` above); set last so no session variable can shadow it.
     if command_in_env {
@@ -414,3 +421,59 @@ pub fn utf8_text_env(cmd: &mut TokioCommand) {
     cmd.env("PYTHONUTF8", "1").env("PYTHONIOENCODING", "utf-8");
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// What this catches (card f25f4141): the core applies HF_TOKEN via
+    /// `apply_to_process` at boot, so it exists in the parent's environment. This test
+    /// verifies that after applying `env_remove` for every key in `secret_keys()`, a
+    /// spawned child does NOT inherit those secrets — even though the parent process has them.
+    #[test]
+    fn citizen_shell_env_strips_secret_keys() {
+        // Simulate: the core applied HF_TOKEN via apply_to_process at boot.
+        unsafe { std::env::set_var("HF_TOKEN", "test-token-12345") };
+
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("echo $HF_TOKEN");
+
+        // Apply the same stripping logic used in run_shell_command.
+        for key in continuum_base::config_env::secret_keys() {
+            cmd.env_remove(key);
+        }
+
+        let output = cmd.output().expect("failed to spawn shell");
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+
+        // The core still has HF_TOKEN (this test only stripped it from the child).
+        assert_eq!(
+            std::env::var("HF_TOKEN").as_deref(),
+            Ok("test-token-12345"),
+            "core should still have HF_TOKEN in its environment"
+        );
+
+        // The spawned shell child does NOT inherit it.
+        assert_eq!(
+            stdout, "",
+            "citizen shell should not inherit HF_TOKEN (stdout={:?})",
+            stdout
+        );
+
+        unsafe { std::env::remove_var("HF_TOKEN") };
+    }
+
+    /// What this catches: secret_keys() returns the expected credential names. If someone
+    /// adds a new secret to config.env but forgets it here, it will leak into citizen shells.
+    #[test]
+    fn secret_keys_contains_hf_token_and_gh_token() {
+        let keys = continuum_base::config_env::secret_keys();
+        assert!(
+            keys.contains(&"HF_TOKEN"),
+            "secret_keys must include HF_TOKEN"
+        );
+        assert!(
+            keys.contains(&"GH_TOKEN"),
+            "secret_keys must include GH_TOKEN"
+        );
+    }
+}
