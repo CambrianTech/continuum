@@ -387,14 +387,20 @@ model, finds an owner by its folder and never reconstructs it from functions spr
 - A free function that reaches into a global (a home path, a serving snapshot, a registry) is a
   missing object: the object holds what it needs, and its constructor (`of`, `at`) is the one
   place that resolves it.
-- State keyed by another owner's identity (a map from an engine incarnation, a persona, a slot)
-  belongs to that owner: it moves there, and dropping the owner releases it.
+- Classify every map keyed by another owner's identity (an engine incarnation, a persona, a slot):
+  an INDEX or a LEASE held by a service is legitimate; STATE that only that owner may change moves
+  to it. Dropping a runtime owner never erases what must outlive it: durable state persists, and
+  asynchronous custody (a learning step, a page in flight) transfers to its completion owner and is
+  reclaimed only on that completion fence or the verified death of the process holding it.
 - An invalid transition is unrepresentable through the interface (a typed outcome, not a checked
   string); a failure is typed (`StoreUnresolved`, never `Result<_, String>`).
 - Repairing an area moves its state and operations into its owner, migrates every caller, and
   deletes the old path in the same change. Wrapping the same globals in a struct is not an object.
-- Rust gives this without inheritance: structs, traits as interfaces, adapters for what varies,
-  and `Drop` for release.
+- A pure directory move (paths only, tests unchanged) and a transfer of ownership (who may change
+  or release state) are separate changes: the move is proven by unchanged tests, the transfer by
+  lifecycle and fault tests (drop mid-operation, relaunch, restart).
+- Rust gives this without inheritance: structs, methods, traits at real seams, adapters for what
+  varies, and `Drop` that hands custody to its completion owner rather than discarding it.
 
 **The genome, as the first map** (`continuum-genome`; the moves are pure moves, one PR per owner):
 
@@ -421,8 +427,16 @@ never dropped at condemn).
 A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
 anatomy: each part is an object that owns its state, each thing she does is a trait (a verb any
 fitting part implements), and the world she lives in is outside her. The `Persona` is the root
-object; she moves whole (CONTINUUM-ENGINE 4.14), so everything that is hers is reachable from her
-and released with her.
+object; she moves whole (CONTINUUM-ENGINE 4.14), so everything that is hers is reachable from her.
+
+**Ownership is not location.** She owns her identity, the versions of her state and the authority
+to change it, and holds typed handles; the services that hold the bytes own their physical custody,
+indexes and shared budgets (the engine holds her KV, the store her durable rows, shared residency
+its allocations), with no copy of her policy. Dropping her runtime object never erases her: her
+identity, genome and memories are durable; her blocks still in flight transfer to their completion
+owner and are reclaimed only on its fence or a verified process death; moving her state between
+tiers never invalidates it. The tree below is LOGICAL composition across the existing crates (the
+placement map, 9.2), not one crate that all of her source moves into.
 
 **Her parts (nouns, objects; one directory each under `persona/`):**
 
@@ -448,7 +462,8 @@ Persona                    one being: identity, mind, genome, body, residency, l
 └── learning/   Learning       her journal, learners and credits: corrections become genes
 ```
 
-**Her verbs (traits; a part implements the ones it can do):**
+**Her verbs (capabilities: a method on the part that does it by default; a trait only where parts
+really share or substitute the verb, never one trait per verb, never dynamic dispatch per block):**
 
 | Trait | Meaning | Implemented by |
 |---|---|---|
@@ -461,14 +476,14 @@ Persona                    one being: identity, mind, genome, body, residency, l
 | `Remember` | lay down an engram from what she did | Hippocampus |
 | `Learn` | turn a reviewed correction into a gene | Learning |
 | `Consolidate` | dream: replay, prune, strengthen | Hippocampus, Learning |
-| `Swap` | stage, bind and retire her state between tiers in milliseconds | Residency, TokenHistory |
+| `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
 | `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
 
-**The world (outside her; she reaches it only through traits):** rooms and activities, cards
+**The world (outside her; she reaches it through its interfaces):** rooms and activities, cards
 and the board, tool definitions, other citizens, the engine and its incarnations, the node's
 service modules and algorithms, the grid. A node's organs (serving, the store, the engine) serve
-every persona through their interfaces; none of them holds a persona's state, and no persona
-holds theirs.
+every persona: they physically hold her bytes under her handles and own their budgets, but never
+her policy, and she never holds theirs.
 
 **Where today's code stands against this map:** `WorkspaceCycle`, `WorkingMemory`,
 `RecallFaculty`, `Genome`, `GeneResidency` and `Phenotype` exist as objects. The hippocampus is
