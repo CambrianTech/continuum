@@ -14,10 +14,8 @@ pub enum LlamaServerError {
     #[error("llama-server spawn failed: {0}")]
     Spawn(String),
     /// The live engine answered, but its observed build or placement cannot serve this target.
-    #[error("live engine readiness refused: the engine reported a debug build")]
-    DebugBuild,
-    #[error("live engine readiness refused: the GPU target is resident on CPU")]
-    CpuPlacement,
+    #[error(transparent)]
+    ReadinessRefused(#[from] ReadinessRefusal),
     /// The model GGUF could not be resolved on disk for the requested id.
     #[error("no local GGUF for model '{0}'")]
     ModelNotFound(String),
@@ -48,6 +46,14 @@ pub enum LlamaServerError {
     /// The engine refused an adapter change (`/lora-adapters/{fresh,load,unload}`), by its answer.
     #[error("adapter change refused: {0}")]
     AdapterChange(AdapterChangeRefusal),
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ReadinessRefusal {
+    #[error("{program} reported a debug build. Rebuild in release from the canary pin for the next system startup.")]
+    DebugBuild { program: String },
+    #[error("{program} admitted no GPU placement ({evidence}; residency {residency}). Check backend loading under the core. Last stderr: {stderr}")]
+    CpuPlacement { program: String, evidence: &'static str, residency: String, stderr: String },
 }
 
 /// Why the engine refused an adapter change.

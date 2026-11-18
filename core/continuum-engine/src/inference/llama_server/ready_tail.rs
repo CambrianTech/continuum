@@ -43,7 +43,7 @@ impl LlamaServerProcess {
                 bin = %prepared.engine_program,
                 "refused to serve from a DEBUG build (startup stderr) — build for speed"
             );
-            return Err(LlamaServerError::DebugBuild);
+            return Err(super::control::ReadinessRefusal::DebugBuild { program: prepared.engine_program.clone() }.into());
         }
         // READY AND ACCEPTED: this lane owns its page dir. Before the ledger attaches
         // (`transition.ready` below), move the newest legacy per-window dir's pages into it,
@@ -131,7 +131,9 @@ impl LlamaServerProcess {
                     "PLACEMENT VIOLATION: a GPU-placement lane came up ON CPU — refused, not served \
                      (ready must be a verified observation, #441 / card 0c4317e1)"
                 );
-                return Err(LlamaServerError::CpuPlacement);
+                return Err(super::control::ReadinessRefusal::CpuPlacement {
+                    program: prepared.engine_program.clone(), evidence, residency: residency_line, stderr: self.stderr_log_tail(),
+                }.into());
             }
             if let Some(r) = residency.as_ref() {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.placement.measured",
