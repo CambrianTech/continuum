@@ -25,14 +25,13 @@ impl Incarnation {
     }
 }
 
-/// Settings the context was ASKED for that llama.cpp does not report back: flash attention may be
-/// `Auto` (resolved natively per backend), and the KV types are requests. Never read as applied
-/// capability.
+/// Settings the context was ASKED for that llama.cpp does not report back: the KV types are
+/// requests. Never read as applied capability. (Flash attention is not a request: the scheduler
+/// always enables it, and a context that cannot have it is refused, never made.)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Requested {
     pub type_k: KvCacheType,
     pub type_v: KvCacheType,
-    pub flash_attn: FlashAttn,
 }
 
 /// The applied geometry of one engine, as llama.cpp reports it from the created context.
@@ -67,7 +66,7 @@ impl EngineGeometry {
             n_ubatch: ctx.n_ubatch(),
             decoding: 1,
             staging: n_seq_max.saturating_sub(1),
-            requested: Requested { type_k: config.type_k, type_v: config.type_v, flash_attn: config.flash_attn },
+            requested: Requested { type_k: config.type_k, type_v: config.type_v },
         }
     }
 }

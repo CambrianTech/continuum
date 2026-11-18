@@ -80,6 +80,7 @@ impl LlamaCppAdapter {
             n_seq_max_override: None,
             n_ubatch_override: None,
             n_gpu_layers_override: None,
+            plan: engine_start::LoadPlan::Registry,
         })
     }
 
@@ -111,6 +112,7 @@ impl LlamaCppAdapter {
             n_seq_max_override: None,
             n_ubatch_override: None,
             n_gpu_layers_override: None,
+            plan: engine_start::LoadPlan::Registry,
         }
     }
 
@@ -135,6 +137,7 @@ impl LlamaCppAdapter {
             n_seq_max_override: Some(launch.n_seq_max),
             n_ubatch_override: Some(launch.n_ubatch),
             n_gpu_layers_override: Some(launch.n_gpu_layers),
+            plan: engine_start::LoadPlan::Registry,
         }
     }
 
@@ -259,6 +262,21 @@ impl LlamaCppAdapter {
             reg.model(&self.default_model)
                 .and_then(crate::model_registry::artifacts::resolve_mmproj_for_model)
         });
+        let config = match &self.plan {
+            engine_start::LoadPlan::Engine(launch) => launch.config(mmproj_path),
+            engine_start::LoadPlan::Registry => self.registry_config(mmproj_path, &active_kv),
+        };
+        let backend = LlamaCppBackend::load(config)
+            .map_err(|e| format!("LlamaCppBackend::load failed: {e}"))?;
+        self.loaded(backend, guard)
+    }
+
+    /// The registry adapters' backend config: the caller's overrides with their documented fallbacks.
+    fn registry_config(
+        &self,
+        mmproj_path: Option<PathBuf>,
+        active_kv: &crate::inference::kv_quant::KvCachePair,
+    ) -> LlamaCppConfig {
         // CONTINUUM_TIER is set by install.sh's hardware probe (commit
         // 7b3b8e086) — when the install detects a Mac Intel + discrete
         // AMD or integrated Intel UHD host, it exports
@@ -327,7 +345,7 @@ impl LlamaCppAdapter {
             requested_n_seq_max
         };
 
-        let config = LlamaCppConfig {
+        LlamaCppConfig {
             model_path: self.model_path.clone(),
             mmproj_path,
             n_gpu_layers,
@@ -351,16 +369,23 @@ impl LlamaCppAdapter {
             // not-hand-edited-files]] so each model declares its own
             // realistic batch ceiling.
             n_ubatch: self.n_ubatch_override.unwrap_or(512),
+            // The one-off (multimodal) context only; the persona scheduler's context owns its own
+            // attention kernel (driver.rs), since its copy-out requires it.
             flash_attn: FlashAttn::Disabled,
             fused_gdn_ar: false,
             fused_gdn_ch: false,
             type_k: active_kv.k,
             type_v: active_kv.v,
             ..Default::default()
-        };
-        let backend = LlamaCppBackend::load(config)
-            .map_err(|e| format!("LlamaCppBackend::load failed: {e}"))?;
+        }
+    }
 
+    /// Record a loaded backend: its weights' footprint, then the adapter's handle.
+    fn loaded(
+        &self,
+        backend: LlamaCppBackend,
+        mut guard: parking_lot::RwLockWriteGuard<'_, Option<Arc<LlamaCppBackend>>>,
+    ) -> Result<Arc<LlamaCppBackend>, String> {
         // Report model_weights bytes to the global FootprintRegistry so
         // the policy can see the on-disk size charged against this process
         // (mmap'd, so file size ≈ resident bytes for the model itself).

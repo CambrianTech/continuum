@@ -81,6 +81,7 @@ fn model_info_with_runtime(
 mod construction;
 pub use construction::LlamaCppLaunch;
 mod engine_start;
+pub use engine_start::{EngineKv, EngineLaunch, EngineLaunchRefusal, Offload};
 mod payload;
 #[cfg(test)]
 mod tests;
@@ -184,6 +185,9 @@ pub struct LlamaCppAdapter {
     /// profile already resolved the right value (e.g., 0 on Compat
     /// tier while #131's Metal hang fix is pending).
     n_gpu_layers_override: Option<i32>,
+    /// How the backend is configured at load: the registry knobs above, or the node's one engine
+    /// exactly as serving launched it (then the knobs above are unused).
+    plan: engine_start::LoadPlan,
 }
 
 #[async_trait]

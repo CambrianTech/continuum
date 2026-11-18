@@ -149,7 +149,11 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
             n_batch: config.n_batch,
             n_ubatch: config.n_ubatch,
             n_seq_max: streams,
-            flash_attn: config.flash_attn,
+            // Required by the copy-out every switch runs: the fork refuses to move a mind out of a
+            // transposed V cache (live on the M5: "backend status 3: transposed_v", 191 refused
+            // deliberations, build 4aefe5131a, 2026-11-18 22:26Z). Flash attention keeps V
+            // untransposed; a backend without it refuses this context by name (`Refused`).
+            flash_attn: FlashAttn::Enabled,
             fused_gdn_ar: config.fused_gdn_ar,
             fused_gdn_ch: config.fused_gdn_ch,
             type_k: config.type_k,

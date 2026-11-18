@@ -436,7 +436,6 @@ impl LlamaCppBackend {
                         n_ctx: total_n_ctx,
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,
-                        flash_attn: self.config.flash_attn,
                         fused_gdn_ar: self.config.fused_gdn_ar,
                         fused_gdn_ch: self.config.fused_gdn_ch,
                         type_k: self.config.type_k,

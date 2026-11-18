@@ -58,13 +58,14 @@ pub struct GenerationRequest {
 }
 
 /// The context the scheduler creates. Its window holds [`continuum_persona_llama::STREAMS`] minds'
-/// windows (the active mind's and the next one's); no sequence count is configurable.
+/// windows (the active mind's and the next one's); no sequence count is configurable, and no
+/// attention kernel either: the scheduler moves minds through per-sequence copy-out, which needs an
+/// untransposed V, so its context is always flash attention ([`driver`] owns that, not its caller).
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
     pub n_ctx: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
-    pub flash_attn: FlashAttn,
     pub fused_gdn_ar: bool,
     pub fused_gdn_ch: bool,
     pub type_k: KvCacheType,

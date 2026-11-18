@@ -11,6 +11,7 @@
 //! it switches no base while residents hold minds on it (S2 suspends them first), it has no host
 //! prompt cache to resize, and its native paging and learning arrive with S2/S3.
 
+use std::num::NonZeroU32;
 use std::sync::{Arc, OnceLock};
 
 use async_trait::async_trait;
@@ -18,9 +19,9 @@ use async_trait::async_trait;
 use crate::ai::adapter::AIProviderAdapter;
 use crate::inference::backends::persona_scheduler::{EngineGeometry, EngineState};
 use crate::inference::llama_server::{
-    LlamaServerControl, LlamaServerError, PromptCacheLimit, PromptCacheRefusal, ServingTarget,
+    LanePlacement, LlamaServerControl, LlamaServerError, PromptCacheLimit, PromptCacheRefusal, ServingTarget,
 };
-use crate::inference::llamacpp_adapter::LlamaCppAdapter;
+use crate::inference::llamacpp_adapter::{EngineKv, EngineLaunch, LlamaCppAdapter, Offload};
 use crate::inference::weight_residency::ContextGeometry;
 
 /// One loaded engine: which model, the adapter residents share, and its live lifecycle.
@@ -76,14 +77,46 @@ impl InProcessEngine {
         }
     }
 
-    async fn load(target: &ServingTarget) -> Result<Loaded, LlamaServerError> {
-        let model_id = target.model.id.clone();
-        let gguf = target
+    /// The launch serving's own owners decide: the window and placement from the target, the
+    /// micro-batch from the measured prefill batch and the model's ceiling, the KV types from the KV
+    /// plan. Anything serving cannot name is refused here, never filled with a default.
+    fn launch_for(target: &ServingTarget) -> Result<EngineLaunch, LlamaServerError> {
+        let refuse = |why: String| LlamaServerError::Spawn(format!("the in-process engine for {}: {why}", target.model.id));
+        let gguf_path = target
             .model
             .gguf_local_path
             .clone()
-            .ok_or_else(|| LlamaServerError::ModelNotFound(model_id.clone()))?;
-        let adapter = Arc::new(LlamaCppAdapter::for_engine(&model_id, &gguf, target.context_window));
+            .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
+        let context = NonZeroU32::new(target.context_window).ok_or_else(|| refuse("serving planned a zero window".into()))?;
+        let n_ubatch = crate::inference::lane_args::prefill_ubatch(target.model.serving.max_ubatch)
+            .ok_or_else(|| refuse("the model's catalog ceiling allows no micro-batch".into()))?;
+        let kv_plan = crate::inference::kv_cache_plan::resolve();
+        let kv = kv_plan
+            .engine_cache_type()
+            .ok_or_else(|| refuse(format!("serving's KV plan names `{}`, which this engine cannot hold", kv_plan.cache_type)))?;
+        let offload = match target.placement {
+            LanePlacement::Gpu => Offload::AllLayers,
+            LanePlacement::Cpu => Offload::CpuOnly,
+        };
+        EngineLaunch {
+            model_id: target.model.id.clone(),
+            gguf_path,
+            context,
+            // One decode call per micro-batch: always a whole number of them, as the learner needs.
+            n_batch: n_ubatch,
+            n_ubatch,
+            offload,
+            kv: EngineKv { k: kv, v: kv },
+        }
+        .validated()
+        .map_err(|refusal| refuse(refusal.to_string()))
+    }
+
+    async fn load(target: &ServingTarget) -> Result<Loaded, LlamaServerError> {
+        let launch = Self::launch_for(target)?;
+        let model_id = launch.model_id.clone();
+        let gguf = launch.gguf_path.clone();
+        let adapter = Arc::new(LlamaCppAdapter::for_engine(launch));
         let starting = adapter.clone();
         // Loading the weights and making the context is blocking native work: never on the runtime.
         let mut state = tokio::task::spawn_blocking(move || starting.start_engine())
