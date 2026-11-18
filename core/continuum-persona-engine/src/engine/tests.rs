@@ -49,7 +49,7 @@ impl Tier for Recording {
     }
     fn begin(&mut self, what: FenceTag) -> Result<Transfer, TierRefusal> {
         if self.refuse.get() == Some(what.direction) {
-            return Err(TierRefusal { tier: "recording", persona: what.persona, reason: "refused by the test" });
+            return Err(TierRefusal { tier: "recording", persona: what.persona, reason: "refused by the test", native: Native::NotAsked });
         }
         let landed = Rc::new(Cell::new(false));
         self.begun.borrow_mut().push((what, Rc::clone(&landed)));

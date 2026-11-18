@@ -32,7 +32,7 @@ mod tests;
 
 use crate::persona::PersonaId;
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
-use crate::residency::{Direction, FenceTag, Tier, TierRefusal};
+use crate::residency::{Direction, FenceTag, Native, Tier, TierRefusal};
 
 /// Why a mind was not staged. Either way she is handed back.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -130,7 +130,7 @@ impl<U: Identified, T: Tier> PersonaEngine<U, T> {
         // The tag came from the pipeline itself, so the fence it carries is the one it expects.
         self.roles.begin_retire(fence).map_err(|refused| HandoffError::CopyOut {
             previous: tag.persona,
-            refusal: TierRefusal { tier: self.tier.name(), persona: tag.persona, reason: refusal_reason(&refused.reason) },
+            refusal: TierRefusal { tier: self.tier.name(), persona: tag.persona, reason: refusal_reason(&refused.reason), native: Native::NotAsked },
         })
     }
 
