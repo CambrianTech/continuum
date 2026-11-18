@@ -436,7 +436,17 @@ The same publish/subscribe mechanism connects parts within a mind, participants 
 and runtime services. Each part owns its subscriptions through its lifecycle and wakes when relevant
 input arrives. Small typed values travel in the event. Larger payloads stay with their owners and
 travel by handle. An idle subscriber can sleep without scanning history or polling its peers.
-See the [CBAR substrate contract](CBAR-SUBSTRATE-ARCHITECTURE.md) for queues and scheduling.
+This applies the existing CBAR pattern and the persona's [ordered event stream](MIND-DATAFLOW-OVERHAUL.md).
+For each participating object, document which typed events wake it, which part of its state each
+event changes, what it publishes, and who owns pending deliveries during suspension. The object
+applies a new event once to the state it maintains. Subscribers receive small values or
+[handles to the original content](CONTENT-TRAVELS-BY-HANDLE.md) through the existing delivery owner.
+
+A swap gives this contract a concrete test. Suspend the persona after a correction is accepted
+but before learning consumes it. On resume, the correction must still be owed. Suspend again after
+learning records completion, and the same delivery must leave that completed step alone. Preserve
+the last applied event with its effect at the owner's commit boundary. A wake signal may coalesce
+when the latest state suffices; the correction itself stays available until its owner settles it.
 
 A persona is a being, not a loop over a prompt. She has an anatomy, and the code reads as that
 anatomy: each part is an object that owns its state, each thing she does is a capability of the
