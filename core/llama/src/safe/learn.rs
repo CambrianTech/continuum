@@ -328,6 +328,12 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
             return Err(Refused { refusal, admission });
         };
+        // A reply trains on per-token logits: a pooled (embedding) context has none, and native code
+        // would refuse only at the first labelled step (Codex's BigMama replay at 7f8462502).
+        if unsafe { sys::llama_pooling_type(self.ctx.as_ptr()) } != sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
+            let refusal = LearnRefusal { step: "context", message: "a pooled context cannot learn: create it with PoolingType::None".into() };
+            return Err(Refused { refusal, admission });
+        }
         let key = ShadowKey::of(&shadow.adapter);
         if self.holder().shadows.get(key).is_none() {
             let refusal = LearnRefusal { step: "select_shadow", message: "the shadow is not retained on this context".into() };
