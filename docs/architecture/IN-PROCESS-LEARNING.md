@@ -27,8 +27,8 @@ her stable gene set, so serving's state is what it was.
 | Today (C++, in llama-server) | Moves to | Owner |
 |---|---|---|
 | The `llama_opt_*` calls | `llama` crate `safe/learn.rs`: a `Learner` over `&mut Context`, typed `LearnRefusal` from `llama_opt_failure`, the status as an enum | Fable |
-| The residency mirror and its admission callbacks (`static_admission`, `workspace_admission`) | A Rust `LearnAdmission` trait the callbacks call; it is answered by the governed grant `training_admission.rs:43` already issues | Fable (trait), Codex (grant) |
-| The learn ledger (grants: `period_ms`, `max_chunk_us`, `share_ppm`; committed steps) | The persona scheduler's driver: `Job::Learn` runs chunk by chunk between turns, within its grant's time share | Fable |
+| The residency mirror and its admission callbacks (`static_admission`, `workspace_admission`) | A Rust `LearnAdmission` trait the callbacks call. Codex implements it over `training_admission` and the ResourceDaemon: measured incremental bytes, held until the step completes | Fable (trait), Codex (implementation) |
+| The learn ledger (grants: `period_ms`, `max_chunk_us`, `share_ppm`; committed steps) | The time-share policy stays with the existing grant issuer. The driver consumes ONE versioned grant and measures its elapsed chunks and drains. There is no second quota and no dedicated lane | Codex (issuer), Fable (driver) |
 | Shadow selection per mind (`llama_opt_init` with her shadow adapter) and the preflight (`llama_opt_measure_shadow_graph`) | The driver, when it binds her for a learn | Fable |
 | `POST /learn`, `/learn/grants` and the residency endpoints | Removed with llama-server, after the trainer reaches the scheduler | Codex |
 
@@ -39,7 +39,7 @@ her stable gene set, so serving's state is what it was.
 - A `Turn` runs as today: switch, prefill her new tail, decode.
 - A `Learn` binds her and her shadow, calls `learn_begin`, then runs one chunk per `step`. Between
   chunks the driver serves any waiting `Turn`, so a turn waits at most one chunk (`max_chunk_us`),
-  never a whole reply. When a waiting turn needs the context exclusively, the driver calls `drain`,
+  never a whole reply. `max_chunk_us` is a target, not a bound: her first-token wait also includes the drain, the rebind, any queued turns and decode, and that added delay is proven by contention and fault traces. When a waiting turn needs the context exclusively, the driver calls `drain`,
   which stops new gradient chunks and restores the served tail. Steps already committed stay
   committed.
 - Nothing decodes in parallel. A learn chunk and a decode never overlap; they alternate.
@@ -47,10 +47,9 @@ her stable gene set, so serving's state is what it was.
 ## How the trainer reaches it
 
 The trainer calls a `LearnPort` trait with one method per verb it uses today (`seat`, `learn`,
-`release`). Two adapters implement it for the length of the migration: the HTTP `LearningEngine`
-and the in-process `Scheduler`. The trainer picks the scheduler whenever one serves the model, then
-the HTTP adapter and `live_lane` are deleted with the lanes. The adapters hold only the lines that
-differ; the logic lives once.
+`release`). The in-process `Scheduler` implements it, and the trainer moves to it in ONE production
+cutover. No engine means a typed `Unavailable`, never a runtime fallback to HTTP. The HTTP
+`LearningEngine` and `live_lane` are deleted in that cutover or right after it.
 
 ## Slices, each with its validator
 
@@ -59,8 +58,11 @@ differ; the logic lives once.
 2. **L2, `Job::Learn` on the driver.** Chunks interleave with turns. Validator: a learn and two
    minds' turns on one context. Each turn's first token waits at most one chunk, and each mind's
    native prefix is intact afterwards.
-3. **L3, the trainer through `LearnPort`.** Validator: the in-place trainer's existing tests pass
-   against the scheduler adapter, with no llama-server running.
+3. **L3, the trainer through `LearnPort`.** Validators, with no llama-server running:
+   - the in-place trainer's existing tests pass;
+   - her native prefix is equivalent before and after a learn;
+   - a committed step survives an interruption and its retry without being applied twice;
+   - held-out quality holds after a reload, alongside throughput on the 35B model.
 4. **Then:** delete llama-server's learn endpoints, the HTTP adapter, `live_lane`, and the lanes
    (Codex's serving half, Fable's engine half).
 
