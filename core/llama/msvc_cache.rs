@@ -30,6 +30,8 @@ pub fn environment_identity() -> String {
         "LIB",
         "LIBPATH",
         "PATH",
+        "CUDA_PATH",
+        "CMAKE_CUDA_ARCHITECTURES",
         "CMAKE_GENERATOR_INSTANCE",
         "CMAKE_GENERATOR_PLATFORM",
         "CMAKE_GENERATOR_TOOLSET",
