@@ -87,6 +87,7 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     tier.begin(tag(1, Direction::In)).map_err(|e| e.to_string())?;
     let seq = tier.stream_of(her).ok_or("replay: she is not bound")?.seq();
     tier.submit(her, Epoch(1), Step { tokens: tokens.clone(), from: 0, logits_at_end: false }).map_err(|e| e.to_string())?;
+    tier.settle().map_err(|e| e.to_string())?;
     let held_to = tier.position_of(her).ok_or("replay: she is not bound after her decode")?;
     tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
     let first = *tokens.first().ok_or("replay: no tokens")?;

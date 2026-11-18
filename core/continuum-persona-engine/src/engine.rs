@@ -119,6 +119,12 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         self.decoding.as_ref().map_or(true, Completion::complete)
     }
 
+    /// Wait until the active mind's submitted steps have finished on the device (the tier's own
+    /// attestation, never an assumption that a returned submit has landed).
+    pub fn settle(&mut self) -> Result<(), TierRefusal> {
+        self.tier.settle()
+    }
+
     /// Submit one step of the active mind's decode. Refused while her previous step is still on the
     /// device: one decode is in flight at a time.
     pub fn submit(&mut self, work: T::Work) -> Result<(), DecodeError> {

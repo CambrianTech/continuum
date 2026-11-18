@@ -157,6 +157,13 @@ impl<'m> Context<'m> {
         self.ptr.as_ptr()
     }
 
+    /// Wait until every computation submitted to this context has finished on the device.
+    /// `llama_decode` may return while the device still runs the graph; libllama synchronizes on
+    /// result retrieval, and this is the explicit form.
+    pub fn synchronize(&mut self) {
+        unsafe { sys::llama_synchronize(self.ptr.as_ptr()) }
+    }
+
     /// Context window size.
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }

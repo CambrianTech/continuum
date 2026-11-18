@@ -5,7 +5,9 @@
 //! stream, answering to the sequence she is bound as). Both are synchronous copies, so the fence a
 //! move returns has already landed.
 
+use std::cell::Cell;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
@@ -62,11 +64,13 @@ pub struct UnifiedTier<'c, 'm> {
     /// process the RAM tier lives in (a persona is a 128-bit id; the fork stamps 64 bits).
     handles: HashMap<PersonaId, u64>,
     last_rebind: Option<Rebind>,
+    /// The last submitted decode's landed flag, until the device is known to have finished it.
+    in_flight: Option<Rc<Cell<bool>>>,
 }
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>) -> Self {
-        Self { ctx, streams: [None, None], minds: HashMap::new(), handles: HashMap::new(), last_rebind: None }
+        Self { ctx, streams: [None, None], minds: HashMap::new(), handles: HashMap::new(), last_rebind: None, in_flight: None }
     }
 
     /// The stream `persona` is bound to, if she is in the execution stream.
@@ -75,8 +79,13 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     }
 
     /// The logits of output `i` of the last decode (the batch index whose logits were asked for).
+    /// libllama synchronizes on result retrieval, so reading them also attests the last decode landed.
     pub fn logits_ith(&self, i: i32) -> &[f32] {
-        self.ctx.logits_ith(i)
+        let logits = self.ctx.logits_ith(i);
+        if let Some(landed) = &self.in_flight {
+            landed.set(true);
+        }
+        logits
     }
 
     /// The last position `persona`'s stream holds, while she is bound.
@@ -140,6 +149,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     }
 
     fn move_out(&mut self, persona: PersonaId, epoch: Epoch) -> Result<(), TierRefusal> {
+        // her save reads her cells: whatever was submitted for her must have landed first
+        self.settle()?;
         let slot = self.streams.iter().position(|held| *held == Some(persona)).ok_or_else(|| refused(persona, "not bound"))?;
         let stream = stream_at(slot);
         let mind = self.minds.get_mut(&persona).ok_or_else(|| refused(persona, "not held here"))?;
@@ -199,14 +210,17 @@ pub struct Step {
     pub logits_at_end: bool,
 }
 
-/// A decode this tier ran: libllama's decode returns once its outputs are readable, so it has landed
-/// when it exists.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Decoded;
+/// A decode this tier submitted. `llama_decode` may return while the device still runs it (libllama
+/// synchronizes on result retrieval, Codex on #6139), so it reports landed only once the tier saw a
+/// result read or settled.
+#[derive(Debug, Clone)]
+pub struct Decoded {
+    landed: Rc<Cell<bool>>,
+}
 
 impl Completion for Decoded {
     fn complete(&self) -> bool {
-        true
+        self.landed.get()
     }
 }
 
@@ -232,7 +246,17 @@ impl Execute for UnifiedTier<'_, '_> {
             reason: "the engine refused her decode",
             native: Native::Reported(message),
         })?;
-        Ok(Decoded)
+        let landed = Rc::new(Cell::new(false));
+        self.in_flight = Some(Rc::clone(&landed));
+        Ok(Decoded { landed })
+    }
+
+    fn settle(&mut self) -> Result<(), TierRefusal> {
+        self.ctx.synchronize();
+        if let Some(landed) = self.in_flight.take() {
+            landed.set(true);
+        }
+        Ok(())
     }
 }
 

@@ -70,6 +70,12 @@ impl Execute for Recording {
         self.decodes.borrow_mut().push((tag, Rc::clone(&landed)));
         Ok(Pending { tag, landed })
     }
+    fn settle(&mut self) -> Result<(), TierRefusal> {
+        for (_, landed) in self.decodes.borrow().iter() {
+            landed.set(true);
+        }
+        Ok(())
+    }
 }
 
 /// Land the most recent entry of `log`.
@@ -134,7 +140,8 @@ fn a_handoff_waits_for_the_active_decode_while_the_next_mind_streams_in() {
     assert_eq!(h.engine.staged(), Some(id(2)), "next is still staged");
     assert_eq!(h.moves.borrow().len(), 2, "no copy-out began for her");
 
-    land_last(&h.decodes);
+    assert_eq!(h.engine.settle(), Ok(()), "the tier attests the device finished");
+    assert!(h.engine.decode_landed());
     assert_eq!(h.engine.handoff(), Ok(Some(id(1))));
     assert_eq!(h.engine.active(), Some(id(2)));
     assert!(h.engine.decode_landed(), "the new mind starts with nothing in flight");

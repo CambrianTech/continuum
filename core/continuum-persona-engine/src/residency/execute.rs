@@ -23,4 +23,9 @@ pub trait Execute: Tier {
     /// Submit `work` as `persona`'s decode at `epoch`, on the stream she is bound to. Refused when she
     /// is not bound here at that epoch.
     fn submit(&mut self, persona: PersonaId, epoch: Epoch, work: Self::Work) -> Result<Self::Done, TierRefusal>;
+
+    /// Wait until every step submitted so far has finished on the device, so each completion it
+    /// returned reports landed. A backend whose submit returns before the device finishes (libllama
+    /// synchronizes only on result retrieval) waits here; the engine settles before a handoff.
+    fn settle(&mut self) -> Result<(), TierRefusal>;
 }
