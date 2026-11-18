@@ -148,12 +148,11 @@ impl MemoryCorpus {
             .memories
             .iter()
             .filter(|m| m.importance >= min_importance)
-            .map(|m| {
-                let access_time = m.last_accessed_at.as_deref().unwrap_or(&m.timestamp);
-                let days = chrono::DateTime::parse_from_rfc3339(access_time)
-                    .map(|t| (now - t.with_timezone(&chrono::Utc)).num_hours() as f64 / 24.0)
-                    .unwrap_or(0.0);
-                (m, days.max(0.0))
+            .filter_map(|m| {
+                let access_time = m.last_accessed_at.as_deref().unwrap_or(&m.timestamp); // Before first access, age starts at creation.
+                let accessed = chrono::DateTime::parse_from_rfc3339(access_time).ok()?;
+                let days = (now - accessed.with_timezone(&chrono::Utc)).num_hours() as f64 / 24.0;
+                Some((m, days.max(0.0)))
             })
             .collect();
         result.sort_by(|a, b| {
@@ -378,6 +377,24 @@ mod tests {
             importance,
             topics: vec![],
         }
+    }
+
+    #[test]
+    fn unknown_age_does_not_displace_a_dated_decay_candidate() {
+        let created = "2020-01-01T00:00:00Z";
+        let mut corpus = MemoryCorpus::empty();
+        let mut malformed = make_memory("bad-access", "", 1.0, created);
+        malformed.last_accessed_at = Some("invalid".into());
+        corpus.memories = vec![
+            malformed,
+            make_memory("bad-creation", "", 1.0, "invalid"),
+            make_memory("never-accessed", "", 0.8, created),
+        ];
+        let ranked = corpus.decayable_memories(0.5, 1);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0.id, "never-accessed");
+        assert!(ranked[0].1 > 0.0);
+        assert_eq!(corpus.memories.len(), 3);
     }
 
     #[test]
