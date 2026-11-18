@@ -372,6 +372,50 @@ Rules:
 4. **Crate cuts follow this table**, not file sizes: rendering and media leave the core first, then
    the serving planner, then the store. Each cut is also a build-time win.
 
+### 9.3 Inside A Crate: One Object, One Directory
+
+The placement map says where a module runs. Inside a crate the unit is the **object**: one owner
+of one kind of state, with private fields, methods that are the only way to change that state, and
+an explicit lifetime (Joel and Codex, 2026-11-17: "who owns these bytes, who may change them, and
+what proves they are safe to release"). The directory tree is the object map: a reader, human or
+model, finds an owner by its folder and never reconstructs it from functions spread across files.
+
+**The rules:**
+- An object is a directory named for it; its struct lives in the directory's `mod.rs` (or the
+  file named for it), and its parts (the state it owns and the policies it applies) are files
+  and subdirectories inside it. A sibling is a peer owner, never a fragment of another.
+- A free function that reaches into a global (a home path, a serving snapshot, a registry) is a
+  missing object: the object holds what it needs, and its constructor (`of`, `at`) is the one
+  place that resolves it.
+- State keyed by another owner's identity (a map from an engine incarnation, a persona, a slot)
+  belongs to that owner: it moves there, and dropping the owner releases it.
+- An invalid transition is unrepresentable through the interface (a typed outcome, not a checked
+  string); a failure is typed (`StoreUnresolved`, never `Result<_, String>`).
+- Repairing an area moves its state and operations into its owner, migrates every caller, and
+  deletes the old path in the same change. Wrapping the same globals in a struct is not an object.
+- Rust gives this without inheritance: structs, traits as interfaces, adapters for what varies,
+  and `Drop` for release.
+
+**The genome, as the first map** (`continuum-genome`; the moves are pure moves, one PR per owner):
+
+| Directory | Object | Owns |
+|---|---|---|
+| `genome/` | `Genome` | one persona's genome; `compose(base, perception)` |
+| `genome/trials/` | `GeneTrials`, `GeneTrial` | her trial store, each gene's standing, `StoreUnresolved` |
+| `genome/signatures/` | `SignatureStore` | where her genes route |
+| `genome/residency/` | `GeneResidency` | which genes sit on the device |
+| `genome/selection/` | `select`, `Need`, `Candidate`, `Phenotype` | choosing a turn's genes (today `composer`) |
+| `genome/manifest/` | the adapter manifest | genes the engine may load |
+| `learner/` | the in-place learner | seat, custody, learning memory |
+| `recall/` | gene recall | scoring and its sources |
+| `fitness/` | fitness and its ledger | competence, training outcomes |
+
+**Next owners, same shape:** `Persona` (blocks, token history, genome, learning, moved whole:
+CONTINUUM-ENGINE 4.14), and `EngineIncarnation` (everything bound to one engine process:
+learners, workspace, custody claims, slot KV; retired by the serving lifecycle's completion owner,
+never dropped at condemn).
+
+
 ## 10. The Recursive Bootstrap
 
 Every operation that today is a script (`npx tsx generator/CommandGenerator.ts`, `cargo test`, `scripts/generate-structure.ts`, `install.sh`'s ad-hoc steps) is a candidate for promotion to a command. The default state going forward is: if it operates on a module, it is itself a command, and that command lives in a module.
