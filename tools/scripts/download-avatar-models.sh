@@ -18,7 +18,7 @@
 # swallow errors" rule); the run summary at the end reports failed-vs-total
 # count, but the script returns 0 so the model-init container is healthy.
 
-set -eu
+set -eu  # NOTE: no pipefail and no -e on the per-VRM curl/extract calls
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/shared/preflight.sh"

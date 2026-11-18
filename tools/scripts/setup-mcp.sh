@@ -3,7 +3,6 @@
 # Run this once to enable JTAG tools in Claude Code
 
 set -e
-set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JTAG_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
