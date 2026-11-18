@@ -2567,10 +2567,13 @@ draft streams, recurrent rollback, sampler, genome and learning generation and t
 request sequence's completion is recorded so its replay returns it; the external adapter calls the same owner.
 
 **Open questions (answered by measurement or prototype before code):**
-1. Stream count is fixed at context creation (`n_seq_max`); a persona maps to a stream for her residency, so the
-   engine needs a stream allocator (3 for the pipeline, more if memory allows), not one stream per persona forever.
-2. A stream's `kv_size` is fixed: a persona longer than it needs a larger stream class, or her context capped by the
-   allocation (measured against her real lengths, 4.9.1 F1: 50-93k).
+1. **Nothing is sized at creation (Joel, 2026-11-18: "It shouldn't even take those stupid params. It's dynamic like
+   everything else").** No stream count, no per-stream KV size, no context length is passed in. A mind's blocks are
+   reserved from the governed memory pool as she appends and returned as she retires (a lease that grows and
+   shrinks with her, like every other resource), so her length is bounded only by memory, never by a creation
+   parameter. Where libllama today fixes `n_seq_max` or a stream's `kv_size` at context creation, the fork's persona
+   seam grows or replaces the allocation live; that seam is the work, not a number to choose.
+2. (Merged into 1: no stream class, no cap from an allocation; measured against her real lengths, 4.9.1 F1: 50-93k.)
 3. Whether ggml's attention view over one stream (the `sinfo.s0` offset) is already what the kernels read with no
    per-cell indirection on Metal and CUDA (it appears so from `get_k`); confirm in the kernels.
 4. The adapter (genome) binding per stream: today's per-request LoRA set on the context; it must switch with the
