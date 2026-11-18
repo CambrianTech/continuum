@@ -171,7 +171,7 @@ mod tests {
         let Composition::Genes(phenotype) = genome.compose(Some("qwen-a"), "fix the build").await else {
             panic!("test: a readable store on a known base composes");
         };
-        assert_eq!(phenotype.genes.iter().map(|g| g.path.as_path()).collect::<Vec<_>>(), vec![std::path::Path::new("/genome/Aris/code_owner/adapter.gguf")], "her promoted gene, once");
+        assert_eq!(phenotype.genes.iter().map(|g| g.path.as_str()).collect::<Vec<_>>(), vec!["/genome/Aris/code_owner/adapter.gguf"], "her promoted gene, once");
         assert!(matches!(genome.compose(None, "fix the build").await, Composition::Unknown(_)), "an unknown base while she holds a gene is unknown");
         let Composition::Genes(none) = genome.compose(Some("qwen-b"), "fix the build").await else {
             panic!("test: a known base she holds no live gene on composes");
