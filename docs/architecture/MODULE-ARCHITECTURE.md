@@ -552,10 +552,14 @@ scatter and records read back in birth order.
 same interface, and the default methods fold them, so a part implements only its own direct
 answers. `persona.held()` walks her mind, genome, body, residency and learning; a parent never
 re-measures what a child reports, and an allocation shared by two children is counted once by its
-identity. Every method has the same shape: call the same method on the children, then do my own part, or
-the reverse, chosen once per method in the trait. Children first, then self: `held`, `suspend`,
-`shutdown` (a parent totals or stops after its parts have). Self first, then children: `prepare`,
-`resume` (a parent stages the context its parts bind into). A partial failure never pretends to
+identity. The shared implementation owns the traversal; each object supplies only its children and its own
+operation. Every method has the same shape, and its DIRECTION FOLLOWS THE DEPENDENCIES: establish
+what the children need before starting them (`prepare`, `resume`: self, then children); finish the
+children before releasing what they depend on (`held`, `suspend`, `shutdown`: children, then self).
+Preparation propagates down; results collect up. `shutdown` first closes the part's admission, so
+no new work arrives while its children stop, then stops the children in reverse dependency order,
+then releases its own resources. Callers see one `shutdown()` or `resume()`; the ordering, the
+pending results and the preservation rules are written once. A partial failure never pretends to
 roll back what cannot be undone (a stopped process stays stopped): the outcome reports each child
 as terminal, preserved or pending, and only the reversible children are resumed.
 Independent children run in parallel; a child's Pending or Failed reaches the root intact. The walk
