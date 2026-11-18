@@ -49,7 +49,9 @@ confirm() {
 dir_size() {
   local path="$1"
   if [ -d "$path" ]; then
-    du -sh "$path" 2>/dev/null | awk '{print $1}'
+    local size
+    size=$(du -sh "$path" 2>/dev/null | awk '{print $1}') || true
+    echo "${size:-0B}"
   else
     echo "0B"
   fi
@@ -63,7 +65,8 @@ remove_dir() {
   local path="$1"
   if [ -d "$path" ]; then
     local kb
-    kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}')
+    kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}') || true
+    kb=${kb:-0}
     TOTAL_FREED_KB=$((TOTAL_FREED_KB + kb))
     rm -rf "$path"
   fi
