@@ -18,7 +18,7 @@ External callers pass an opaque database handle to a data or vector command. The
 
 Declare the field representation on the entity. A JSON string scalar includes its JSON quotes. The staged-credit role `Owner` is stored as `"Owner"`. Native binary data stays in its declared binary representation. A worker refers to a large native artifact through a typed descriptor.
 
-Readers use `DataRecord::decode` to interpret stored rows. A strict decode runs first. Older rows may have NULL in columns added after the row was written; the shared decoder allows declared defaults to supply missing fields. A required field without a valid value still fails. A schema change must distinguish intentional nullability from a migration default. [Row decoding](../../core/continuum-kernel/src/orm/record_decode.rs)
+Readers use `DataRecord::decode` to interpret stored rows. A strict decode runs first. Older rows may have NULL in columns added after the row was written; the shared decoder allows declared defaults to supply missing fields. Use a decoding default only for a migrated column whose historical value is defined. Adding a required field needs a migration that supplies its value. Preserve NULL when absence is part of the schema. [Row decoding](../../core/continuum-kernel/src/orm/record_decode.rs)
 
 ## Database concurrency
 
