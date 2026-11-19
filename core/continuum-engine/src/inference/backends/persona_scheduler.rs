@@ -19,6 +19,7 @@
 
 mod driver;
 mod emit;
+mod record;
 mod frame;
 mod reuse;
 mod geometry;
@@ -99,25 +100,35 @@ pub struct SchedulerConfig {
 pub struct Scheduler {
     request_tx: std::sync::mpsc::Sender<GenerationRequest>,
     state: tokio::sync::watch::Receiver<EngineState>,
+    snapshot: tokio::sync::watch::Receiver<continuum_persona_engine::protocol::EngineSnapshot>,
 }
 
 impl Scheduler {
-    /// Spawn the driver thread. It runs until the last handle is dropped and its last turn ended.
+    /// Spawn the driver thread and its stages. It runs until the last handle is dropped and its
+    /// last turn ended.
     pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, SchedulerError> {
-        // Emit runs on the runtime's workers beside the driver thread: the driver hands it what it
-        // decoded and never waits on text, stop sequences or callers.
+        // Emit and Record run on the runtime's workers beside the driver thread: the driver hands
+        // them what it decoded and what it did, and never waits on text, callers or measurement.
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(SchedulerError::NoRuntime);
         }
-        let emit = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
-        let (request_tx, request_rx) = std::sync::mpsc::channel();
         let incarnation = Incarnation::next();
+        let emit = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
+        let (snapshot_tx, snapshot) = tokio::sync::watch::channel(record::Record::empty(incarnation.get()));
+        let record = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx));
+        let (request_tx, request_rx) = std::sync::mpsc::channel();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
-            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit }))
+            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record }))
             .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
-        Ok(Self { request_tx, state })
+        Ok(Self { request_tx, state, snapshot })
+    }
+
+    /// The engine's published snapshot (CONTINUUM-ENGINE 4.16): its busy share and longest idle gap
+    /// per window. Observational: grants commit through their owners.
+    pub fn snapshot(&self) -> tokio::sync::watch::Receiver<continuum_persona_engine::protocol::EngineSnapshot> {
+        self.snapshot.clone()
     }
 
     /// The engine as it is: starting, the geometry its context applied, or why it was refused. The

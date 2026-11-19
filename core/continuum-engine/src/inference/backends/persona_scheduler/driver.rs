@@ -1,7 +1,7 @@
 //! The driver thread: a frame loop over one context (CONTINUUM-ENGINE 4.15). Each frame advances one
 //! turn by one step, so no mind waits behind another's whole prompt; one mind decodes at a time.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::sync::mpsc::Receiver;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -17,9 +17,9 @@ use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
-use continuum_flow::{PushError, StageInput};
+use continuum_flow::{Outbox, StageInput};
 
-use super::{emit, frame, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
+use super::{emit, frame, record, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -144,15 +144,16 @@ struct Driver<'c, 'm> {
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
     /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
-    emit: StageInput<emit::Out>,
-    /// What Emit turned back while full, handed over in order before anything newer.
-    backlog: VecDeque<emit::Out>,
+    emit: Outbox<emit::Out>,
+    /// Where each GPU step's span and each finished turn's row go; measured and written off this
+    /// thread.
+    record: Outbox<record::Fact>,
     /// Answers opened by this engine, numbering each.
     answers: u64,
 }
 
-/// How long the loop with no turn waits for a request while Emit is full, before handing the
-/// backlog over again.
+/// How long the loop with no turn waits for a request while a stage is full, before handing what
+/// waits over again.
 const EMIT_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// What the driver thread starts with: the incarnation it serves as, where it publishes what the engine
@@ -162,12 +163,13 @@ pub(super) struct Start {
     pub(super) state: tokio::sync::watch::Sender<EngineState>,
     pub(super) requests: Receiver<GenerationRequest>,
     pub(super) emit: StageInput<emit::Out>,
+    pub(super) record: StageInput<record::Fact>,
 }
 
 /// Run until every handle is dropped.
 pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
-    let Start { incarnation, state, requests, emit } = start;
+    let Start { incarnation, state, requests, emit, record } = start;
     // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
     // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
     let _stops = StopsOnExit { state: &state, incarnation };
@@ -200,8 +202,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         batch,
         engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)),
         parked: HashMap::new(),
-        emit,
-        backlog: VecDeque::new(),
+        emit: Outbox::new(emit),
+        record: Outbox::new(record),
         answers: 0,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
@@ -214,7 +216,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         if turns.is_empty() {
             // Emit full with no turn left: the only wait with a bound, until Emit drains (its depth
             // is thousands of tokens; this does not happen at the M5's decode rate).
-            let next = if driver.backlog.is_empty() {
+            let next = if !driver.holding() {
                 requests.recv().map(Some).map_err(|_| ())
             } else {
                 match requests.recv_timeout(EMIT_RETRY) {
@@ -238,12 +240,12 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             Ok(Advanced::Continues) => {}
             Ok(Advanced::Done(done)) => {
                 let turn = turns.remove(index);
-                driver.emit(emit::Out::End { answer: turn.answer, event: done });
+                driver.emit.send(emit::Out::End { answer: turn.answer, event: done });
             }
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 let turn = turns.remove(index);
-                driver.emit(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
+                driver.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
             }
         }
     }
@@ -345,39 +347,19 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
 }
 
 impl Driver<'_, '_> {
+    /// Hand each stage what waited while it was full, before anything newer.
+    fn flush(&mut self) {
+        self.emit.flush();
+        self.record.flush();
+    }
+
+    /// Whether anything still waits for a stage that was full.
+    fn holding(&self) -> bool {
+        self.emit.waiting() + self.record.waiting() > 0
+    }
+
     /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
     /// or sampler that cannot be built is refused at once, before it waits for a frame.
-    /// Hand `out` to Emit without waiting. Emit full: it joins the backlog, which goes over in
-    /// order, before anything newer, at the next frame.
-    fn emit(&mut self, out: emit::Out) {
-        if !self.backlog.is_empty() {
-            self.backlog.push_back(out);
-            return;
-        }
-        match self.emit.push(out) {
-            Ok(_) => {}
-            Err(PushError::Full(out)) => self.backlog.push_back(out),
-            Err(PushError::Stopped(_)) => {} // Emit ended: its callers are gone with it
-        }
-    }
-
-    /// Hand the backlog to Emit, in order, until it is empty or Emit is full again.
-    fn flush(&mut self) {
-        while let Some(out) = self.backlog.pop_front() {
-            match self.emit.push(out) {
-                Ok(_) => {}
-                Err(PushError::Full(out)) => {
-                    self.backlog.push_front(out);
-                    return;
-                }
-                Err(PushError::Stopped(_)) => {
-                    self.backlog.clear();
-                    return;
-                }
-            }
-        }
-    }
-
     fn admit(&mut self, mut req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
@@ -393,7 +375,7 @@ impl Driver<'_, '_> {
                 self.answers += 1;
                 let answer = emit::AnswerSeq(self.answers);
                 let cancel = Arc::new(AtomicBool::new(false));
-                self.emit(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
+                self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
                 turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary, answer, cancel });
             }
             Err(refused) => {
@@ -455,15 +437,17 @@ impl Driver<'_, '_> {
             Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
-        let took = stepping.elapsed();
+        let stepped = Instant::now();
+        let took = stepped.saturating_duration_since(stepping);
         if decoding {
             turn.spent.decode += took;
         } else {
             turn.spent.prefill += took;
         }
+        self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
         if let Ok(Advanced::Done(TokenEvent::Done { tokens_generated, .. })) = &advanced {
             self.report_footprint(turn.id, turn.one_off);
-            self.probe(turn, *tokens_generated);
+            self.record.send(record::Fact::Turn(Self::row(turn, *tokens_generated)));
         }
         advanced
     }
@@ -565,7 +549,7 @@ impl Driver<'_, '_> {
             return Ok(done(turn, generated));
         }
         // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
-        self.emit(emit::Out::Token { answer: turn.answer, token });
+        self.emit.send(emit::Out::Token { answer: turn.answer, token });
         let generated = generated + 1;
         if generated >= turn.req.max_tokens {
             return Ok(done(turn, generated));
@@ -590,31 +574,30 @@ impl Driver<'_, '_> {
 
     /// One row per turn: where her seconds went (waiting for her first frame, switches, prefill of
     /// what her blocks did not hold, decode), so the one-mind gate (switch in ms, decode near the
-    /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live.
-    fn probe(&self, turn: &Turn, generated: usize) {
+    /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live. Built
+    /// from her counters here; written by Record.
+    fn row(turn: &Turn, generated: usize) -> record::TurnRow {
         let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX); // unwrap_or: past u64 ms reads as the most
-        continuum_base::probe!(
-            class = "persona.engine.turn",
-            persona = %turn.id.0,
-            one_off = turn.one_off,
-            prompt_tokens = turn.prompt.len() as u64,
-            reused_tokens = turn.spent.reused as u64,
-            start = turn.spent.start,
-            boundary = turn.boundary.map_or(0, |end| end as u64), // map_or: 0 = no view end in this prompt
-            checkpoint_ms = turn.spent.checkpoint_ms,
-            wait_ms = turn.spent.first_step.map_or(0, ms),
-            switches = turn.spent.switches,
-            switch_ms = ms(turn.spent.switch),
-            prefill_ms = ms(turn.spent.prefill),
-            decode_ms = ms(turn.spent.decode),
-            forward_ms = ms(turn.spent.forward),
-            graphs_reused = turn.spent.graphs_reused,
-            gpu_ms = ms(turn.spent.gpu),
-            sample_ms = ms(turn.spent.sample),
-            generated = generated as u64,
-            total_ms = ms(turn.submitted.elapsed()),
-            "persona engine turn"
-        );
+        record::TurnRow {
+            persona: turn.id.0,
+            one_off: turn.one_off,
+            prompt_tokens: turn.prompt.len() as u64,
+            reused_tokens: turn.spent.reused as u64,
+            start: turn.spent.start,
+            boundary: turn.boundary.map_or(0, |end| end as u64), // map_or: 0 = no view end in this prompt
+            checkpoint_ms: turn.spent.checkpoint_ms,
+            wait_ms: turn.spent.first_step.map_or(0, ms),
+            switches: turn.spent.switches,
+            switch_ms: ms(turn.spent.switch),
+            prefill_ms: ms(turn.spent.prefill),
+            decode_ms: ms(turn.spent.decode),
+            forward_ms: ms(turn.spent.forward),
+            graphs_reused: turn.spent.graphs_reused,
+            gpu_ms: ms(turn.spent.gpu),
+            sample_ms: ms(turn.spent.sample),
+            generated: generated as u64,
+            total_ms: ms(turn.submitted.elapsed()),
+        }
     }
 
     /// Make `id` the active mind: her parked state comes back (or a new mind starts), the previous
