@@ -1,5 +1,5 @@
-//! A stage: CBAR's `QueueThread<T>` (`cb-mobile-sdk/cpp/utility/Threads.h`) in Rust. One input in
-//! hand and one pending (reliable by default; a signal stage keeps the newest), one worker task that
+//! A stage: CBAR's `QueueThread<T>` (`cb-mobile-sdk/cpp/utility/Threads.h`) in Rust. The inputs in
+//! hand and up to its declared depth waiting (reliable by default; a signal stage keeps the newest), one worker task that
 //! wakes only on a push, and a class. A stage is its handler and nothing else: the slot, waking,
 //! backpressure and shutdown live here, never in the subsystem.
 
@@ -29,15 +29,33 @@ pub trait Stage: Send + 'static {
     const QOS: Qos;
     /// What a full stage does: never drops unless a signal stage opts in.
     const OVERFLOW: Overflow = Overflow::Reliable;
+    /// How many inputs may wait while it handles one (CBAR's `queueSize`). One is the double buffer
+    /// every signal stage wants; a stream of ordered items (a token stream) declares more, so its
+    /// producer hands items over without being turned back between handles.
+    const DEPTH: usize = 1;
     fn handle(&mut self, input: Self::Input) -> impl Future<Output = ()> + Send;
+    /// Handle everything that was waiting, in order, in one wake: on a wake it does many. The
+    /// default handles them one by one; a stage that batches (one write for many tokens)
+    /// overrides it.
+    fn handle_all(&mut self, inputs: Vec<Self::Input>) -> impl Future<Output = ()> + Send
+    where
+        Self: Sized,
+    {
+        async move {
+            for input in inputs {
+                self.handle(input).await;
+            }
+        }
+    }
 }
 
-/// A stage holds one input in hand (the one it is handling) and one pending: CBAR's double
-/// buffer. A producer that finds the pending slot full gets its input back (`Reliable`) or replaces
-/// the pending one (`KeepNewest`), so no stage sizes a queue of its own.
+/// A stage holds the inputs it is handling and up to `DEPTH` waiting, in order. A producer that
+/// finds it full gets its input back (`Reliable`) or displaces the oldest (`KeepNewest`), so no
+/// subsystem sizes or locks a queue of its own.
 struct Inbox<T> {
     producers: AtomicUsize,
-    pending: Mutex<Option<T>>,
+    pending: Mutex<std::collections::VecDeque<T>>,
+    depth: usize,
     /// Wakes the worker: an input arrived, or the last producer left.
     signal: Notify,
     /// Wakes a waiting producer: the worker took the pending input, or the stage stopped.
@@ -85,12 +103,13 @@ impl<T> StageInput<T> {
             if self.inbox.stopped.load(Ordering::Acquire) {
                 return Err(PushError::Stopped(item));
             }
-            let dropped = match (pending.is_some(), self.inbox.overflow) {
+            let full = pending.len() >= self.inbox.depth;
+            let dropped = match (full, self.inbox.overflow) {
                 (true, Overflow::Reliable) => return Err(PushError::Full(item)),
-                (true, Overflow::KeepNewest) => 1,
+                (true, Overflow::KeepNewest) => usize::from(pending.pop_front().is_some()),
                 (false, _) => 0,
             };
-            *pending = Some(item);
+            pending.push_back(item);
             dropped
         };
         self.inbox.signal.notify_one();
@@ -132,7 +151,8 @@ impl<T> Drop for StageInput<T> {
 pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
     let inbox = Arc::new(Inbox {
         producers: AtomicUsize::new(1),
-        pending: Mutex::new(None),
+        pending: Mutex::new(std::collections::VecDeque::with_capacity(S::DEPTH.max(1))),
+        depth: S::DEPTH.max(1),
         signal: Notify::new(),
         space: Notify::new(),
         stopped: AtomicBool::new(false),
@@ -145,17 +165,19 @@ pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
         // and gets its input back instead of waiting on a slot nothing will take.
         let _stops = StopsOnExit(Arc::clone(&inbox));
         loop {
+            // Everything waiting is taken in one wake and handled in order: the lock is held for the
+            // take alone, never across the work.
             let (next, closed) = {
                 let mut pending = inbox.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
-                (pending.take(), inbox.producers.load(Ordering::Acquire) == 0)
+                (pending.drain(..).collect::<Vec<_>>(), inbox.producers.load(Ordering::Acquire) == 0)
             };
-            match next {
-                Some(item) => {
-                    inbox.space.notify_one();
-                    stage.handle(item).await;
-                }
-                None if closed => return,
-                None => inbox.signal.notified().await,
+            if !next.is_empty() {
+                inbox.space.notify_waiters();
+                stage.handle_all(next).await;
+            } else if closed {
+                return;
+            } else {
+                inbox.signal.notified().await;
             }
         }
     });

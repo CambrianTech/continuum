@@ -235,6 +235,39 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     assert_eq!(*seen.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 3], "the newest wake is handled"); // test: plain data
 }
 
+// what this catches: a token stream turned back between handles. A stage that declares a depth
+// takes that many waiting inputs before handing one back, and its worker takes everything waiting
+// in one wake, in order (CBAR's queueSize; Joel 2026-11-19: "on a turn do many").
+#[tokio::test(start_paused = true)]
+async fn a_deep_stage_queues_its_depth_and_handles_all_waiting_in_one_wake_in_order() {
+    use std::sync::{Arc, Mutex};
+    struct Stream(Arc<Mutex<Vec<Vec<u32>>>>, Arc<tokio::sync::Notify>);
+    impl Stage for Stream {
+        type Input = u32;
+        const QOS: Qos = Qos::Interactive;
+        const DEPTH: usize = 3;
+        async fn handle(&mut self, _input: u32) {}
+        async fn handle_all(&mut self, inputs: Vec<u32>) {
+            self.1.notified().await; // hold the worker so the queue fills behind it
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(inputs); // test: plain data
+        }
+    }
+    let (wakes, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
+    let stream = spawn_stage(Stream(Arc::clone(&wakes), Arc::clone(&gate)));
+    assert_eq!(stream.push(1), Ok(0));
+    tokio::task::yield_now().await; // the worker takes [1] and waits on the gate
+    for token in 2..=4 {
+        assert_eq!(stream.push(token), Ok(0), "a depth-3 stage queues three behind the one in hand");
+    }
+    assert_eq!(stream.push(5), Err(crate::PushError::Full(5)), "the fourth waiting input is handed back, never dropped");
+    for _ in 0..2 {
+        gate.notify_one();
+        tokio::task::yield_now().await;
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(*wakes.lock().unwrap_or_else(|e| e.into_inner()), vec![vec![1], vec![2, 3, 4]], "everything waiting is handled in one wake, in order"); // test: plain data
+}
+
 // Last producers may close concurrently while the worker sleeps or drains accepted input.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn simultaneous_last_producers_close_and_drain_the_stage() {
