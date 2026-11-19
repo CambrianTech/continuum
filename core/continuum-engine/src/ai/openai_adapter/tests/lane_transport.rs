@@ -546,7 +546,7 @@ async fn single_slot_background_use_preserves_only_successfully_saved_activity_p
     let mut adapter = test_adapter();
     adapter.config.base_url = format!("http://{address}");
     adapter.config.llamacpp_sampling_extensions = true;
-    adapter.concurrency = Arc::new(tokio::sync::Semaphore::new(1));
+    adapter.concurrency = crate::inference::slots::DecodeBound::with_permits(1);
     let root = adapter.endpoints().root().to_owned();
     let endpoint = crate::inference::slots::directory().endpoint(&root);
     let transition = endpoint.transition().await;

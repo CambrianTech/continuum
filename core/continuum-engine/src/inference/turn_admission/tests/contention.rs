@@ -13,7 +13,7 @@ async fn scratch_release_does_not_wake_residents_with_every_citizen_slot_pinned(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = format!("test://scratch-contention-{}", Uuid::new_v4());
     let pool = Arc::new(KvSlotPool::new(&root, 3));
-    let sem = Arc::new(Semaphore::new(3));
+    let sem = crate::inference::slots::DecodeBound::with_permits(3);
     let client = reqwest::Client::new();
     let mut holders = Vec::new();
     for _ in 0..2 {
@@ -90,7 +90,7 @@ async fn same_mind_wait_releases_the_callers_serving_lane() -> Result<(), Box<dy
     let root = format!("test://same-mind-lane-{}", Uuid::new_v4());
     let key = PageKey::mind(Uuid::new_v4()).ok_or("mind key")?;
     let pool = Arc::new(KvSlotPool::new(&root, 1));
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let held = admit_turn(
         &sem,
@@ -141,7 +141,7 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
     let root = format!("test://outer-lane-{}", Uuid::new_v4());
     let pool = Arc::new(KvSlotPool::new(&root, 1));
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
     let held = admit_turn(
@@ -212,7 +212,7 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
 async fn all_pinned_waiters_park_without_self_waking() -> Result<(), Box<dyn std::error::Error>> {
     let root = format!("test://contention-{}", Uuid::new_v4());
     let pool = Arc::new(KvSlotPool::new(&root, 1));
-    let sem = Arc::new(Semaphore::new(10));
+    let sem = crate::inference::slots::DecodeBound::with_permits(10);
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
     let held = admit_turn(
@@ -280,7 +280,7 @@ async fn pinned_waiters_do_not_retain_the_endpoint_during_transition(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = format!("test://contention-transition-{}", Uuid::new_v4());
     let pool = Arc::new(KvSlotPool::new(&root, 1));
-    let sem = Arc::new(Semaphore::new(10));
+    let sem = crate::inference::slots::DecodeBound::with_permits(10);
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
     let held = admit_turn(

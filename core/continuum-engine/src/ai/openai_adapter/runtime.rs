@@ -57,7 +57,7 @@ impl OpenAICompatibleAdapter {
         } else {
             64
         };
-        let concurrency = std::sync::Arc::new(tokio::sync::Semaphore::new(slots));
+        let concurrency = crate::inference::slots::DecodeBound::with_permits(slots);
 
         Self {
             config,

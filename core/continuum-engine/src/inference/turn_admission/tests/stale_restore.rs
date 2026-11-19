@@ -20,7 +20,7 @@ struct Rig {
     slots: Slots,
     hold: Arc<SaveHold>,
     pool: Arc<KvSlotPool>,
-    lanes: Arc<Semaphore>,
+    lanes: crate::inference::slots::DecodeBound,
     client: reqwest::Client,
     server: tokio::task::JoinHandle<()>,
 }
@@ -29,7 +29,7 @@ struct Rig {
 /// older 100 (paged out by mind 3, restored, then grown); mind 3 resident on slot 0.
 async fn resident_ahead_of_her_page(dir: &std::path::Path) -> Rig {
     let client = reqwest::Client::new();
-    let lanes = Arc::new(Semaphore::new(2));
+    let lanes = crate::inference::slots::DecodeBound::with_permits(2);
     let (root, slots, hold, server) = fake_engine(dir.to_path_buf()).await;
     let (_endpoint, pool) = boot(&root, dir).await;
     for (mind, tokens) in [(1, 100), (2, 200), (3, 300), (1, 150)] {

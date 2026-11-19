@@ -88,7 +88,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
     // The owned engine verified ready on this endpoint: its pool is stamped.
     let pool = crate::inference::slots::directory().ensure_pool(&root, 2);
     crate::inference::slots::stamp_engine_incarnation(&root, 4_242, 1_800_000_000);
-    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let client = reqwest::Client::new();
     let persona = uuid::Uuid::new_v4();
     let key = crate::inference::slots::PageKey::mind(persona).expect("test: a non-nil id"); // JUSTIFIED: test fixture

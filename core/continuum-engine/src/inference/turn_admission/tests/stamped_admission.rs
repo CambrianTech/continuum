@@ -25,7 +25,7 @@ use super::*;
 async fn every_ready_shared_pool_admission_names_its_engine() {
     let root = format!("test://stamped-{}", Uuid::new_v4());
     let pool = crate::inference::slots::directory().ensure_pool(&root, 2);
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let key = PageKey::mind(Uuid::from_u128(7)).expect("test: a non-nil id"); // JUSTIFIED: test fixture
     let unstamped = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)

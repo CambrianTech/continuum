@@ -143,7 +143,7 @@ pub(super) async fn boot(root: &str, dir: &std::path::Path) -> (Arc<crate::infer
 }
 
 /// One act of `mind`: admitted (paging as the pool decides), then her slot holds `tokens`.
-pub(super) async fn act(lanes: &Arc<Semaphore>, pool: &Arc<KvSlotPool>, client: &reqwest::Client, root: &str, slots: &Slots, mind: u128, tokens: u64) -> PageIn {
+pub(super) async fn act(lanes: &crate::inference::slots::DecodeBound, pool: &Arc<KvSlotPool>, client: &reqwest::Client, root: &str, slots: &Slots, mind: u128, tokens: u64) -> PageIn {
     let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
     let mut turn = admit_turn(lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), client, root, tokens, std::time::Duration::ZERO)
         .await
@@ -162,7 +162,7 @@ pub(super) async fn act(lanes: &Arc<Semaphore>, pool: &Arc<KvSlotPool>, client: 
 async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
     let dir = tempfile::tempdir().expect("test: page dir");
     let client = reqwest::Client::new();
-    let lanes = Arc::new(Semaphore::new(2));
+    let lanes = crate::inference::slots::DecodeBound::with_permits(2);
 
     // Core A: three minds on two slots, so one is paged out and two stay resident.
     let (root_a, slots_a, _, server_a) = fake_engine(dir.path().to_path_buf()).await;
@@ -201,7 +201,7 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
 async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
     let dir = tempfile::tempdir().expect("test: page dir");
     let client = reqwest::Client::new();
-    let lanes = Arc::new(Semaphore::new(2));
+    let lanes = crate::inference::slots::DecodeBound::with_permits(2);
 
     // Engine A: two residents, neither ever paged out (no page on disk yet).
     let (root_a, slots_a, _, server_a) = fake_engine(dir.path().to_path_buf()).await;
@@ -243,9 +243,9 @@ async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
 
 /// Two minds resident on a fresh two-slot engine (no scratch slot), so a transient
 /// borrow must detach and save one: mind 1, the cheaper page at 100 tokens.
-async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, Arc<KvSlotPool>, Arc<Semaphore>, tokio::task::JoinHandle<()>) {
+async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, Arc<KvSlotPool>, crate::inference::slots::DecodeBound, tokio::task::JoinHandle<()>) {
     let client = reqwest::Client::new();
-    let lanes = Arc::new(Semaphore::new(2));
+    let lanes = crate::inference::slots::DecodeBound::with_permits(2);
     let (root, slots, hold, server) = fake_engine(dir.to_path_buf()).await;
     let (_endpoint, pool) = boot(&root, dir).await;
     assert!(pool.scratch_slot().is_none(), "test: two slots reserve no scratch slot");

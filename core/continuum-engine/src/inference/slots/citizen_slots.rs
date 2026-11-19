@@ -61,6 +61,17 @@ impl SlotClass {
             SlotClass::Probe => "probe",
         }
     }
+
+    /// The ONE map from a request's class to its rank for the decode permit: an act, a fork's act
+    /// and a call riding a live act are foreground; everything else yields to them. A turn's rank
+    /// is its class, never whether it named a page (Codex on #6159).
+    pub fn decode_rank(self) -> super::endpoint_concurrency::DecodeRank {
+        use super::endpoint_concurrency::DecodeRank;
+        match self {
+            SlotClass::Turn | SlotClass::Fork | SlotClass::Sidecar => DecodeRank::Foreground,
+            SlotClass::Background | SlotClass::Dream | SlotClass::Probe => DecodeRank::Background,
+        }
+    }
 }
 
 /// An external agent's call through the driver gateway: a Turn of its session's mind, so the
