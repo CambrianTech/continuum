@@ -1,5 +1,17 @@
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EmbedPlanError {
+    #[error(transparent)]
+    Quote(#[from] llama::ContextQuoteError),
+    #[error("{0}")]
+    NoWindow(&'static str),
+}
+
+impl From<EmbedPlanError> for String {
+    fn from(error: EmbedPlanError) -> Self { error.to_string() }
+}
+
 impl LlamaCppBackend {
     /// Load a GGUF model.
     pub fn load(config: LlamaCppConfig) -> Result<Self, String> {
@@ -46,6 +58,7 @@ impl LlamaCppBackend {
             config,
             model_id,
             weights,
+            embed_planner: OnceLock::new(),
             embed_residency: OnceLock::new(),
             caps,
             scheduler: OnceLock::new(),
@@ -54,38 +67,27 @@ impl LlamaCppBackend {
         })
     }
 
-    /// The model's real capability facts (read once at load).
-    /// Where this backend's layers are, as configured: on the GPU when llama offloads to one and
-    /// every layer is offloaded, on the host when none is, split otherwise (never measured: see
-    /// [`super::Placement`]).
-    pub(crate) fn placement(&self) -> super::Placement {
-        let offloads = llama::supports_gpu_offload();
-        match self.config.n_gpu_layers {
-            0 => super::Placement::Host,
-            _ if !offloads => super::Placement::Host,
-            n if n < 0 || u32::try_from(n).is_ok_and(|n| n >= self.model.n_layer()) => super::Placement::Device,
-            _ => super::Placement::Split,
-        }
+    pub(crate) fn pooled_bytes(&self, width: u32) -> Result<super::ContextBytes, EmbedPlanError> {
+        let planner = match self.embed_planner.get() {
+            Some(planner) => planner,
+            None => {
+                let planner = llama::PooledContextPlanner::open(&self.config.model_path, self.config.n_gpu_layers)
+                    .map_err(llama::ContextQuoteError::from)?;
+                self.embed_planner.get_or_init(|| planner)
+            }
+        };
+        let bytes = planner.quote(super::embedding_batch::pooled_params(width))?;
+        Ok(super::ContextBytes { host: bytes.host, device: bytes.device })
     }
 
-    /// What this backend's embed lane holds while it embeds: its weights, and the context its
-    /// window allows, each in the pool it resides in. None for a model with no trained context.
-    fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
-        let placement = self.placement();
-        Some(crate::inference::embed_lane_memory::EmbedNeed {
+    pub(crate) fn embed_residency(&self) -> Result<&crate::inference::embed_lane_memory::EmbedResidency, EmbedPlanError> {
+        if let Some(residency) = self.embed_residency.get() { return Ok(residency); }
+        let window = super::EmbedWindow::for_model(self.caps.n_ctx_train).ok_or(EmbedPlanError::NoWindow(super::NO_TRAINED_CONTEXT))?;
+        let need = crate::inference::embed_lane_memory::EmbedNeed {
             weights: super::ContextBytes { device: self.weights.device, host: self.weights.host },
-            context: super::EmbedWindow::for_model(self.caps.n_ctx_train)?.context_bytes(placement),
-        })
-    }
-
-    /// The embed lane's resident claim, made once from its need; none for a model with no trained
-    /// context.
-    pub(crate) fn embed_residency(&self) -> Option<&crate::inference::embed_lane_memory::EmbedResidency> {
-        if let Some(residency) = self.embed_residency.get() {
-            return Some(residency);
-        }
-        let need = self.embed_need()?;
-        Some(self.embed_residency.get_or_init(|| crate::inference::embed_lane_memory::EmbedResidency::claim(need)))
+            context: self.pooled_bytes(window.tokens())?,
+        };
+        Ok(self.embed_residency.get_or_init(|| crate::inference::embed_lane_memory::EmbedResidency::claim(need)))
     }
 
     pub fn capabilities(&self) -> &ModelCapabilities {

@@ -44,3 +44,27 @@ fn pooled_embedding_preserves_text_after_interior_nul() {
     let output = ctx.embed(&tokens).expect("embed full input");
     assert!(!output.is_empty() && output.iter().all(|v| v.is_finite()));
 }
+
+#[test]
+fn pooled_quote_matches_allocated_buffers() -> Result<(), Box<dyn std::error::Error>> {
+    let path = std::path::PathBuf::from(std::env::var("CONTINUUM_TEST_EMBED_MODEL")?);
+    let planner = PooledContextPlanner::open(&path, 0)?;
+    let model = Model::load(&path, ModelParams { n_gpu_layers: 0, use_mmap: true })?;
+    for width in [256, 2048] {
+        let params = || ContextParams {
+            pooling_type: PoolingType::Last,
+            n_ctx: width,
+            n_batch: width,
+            n_ubatch: width,
+            ..Default::default()
+        };
+        let projected = planner.quote(params())?;
+        let allocated = model.new_pooled_context(params())?;
+        let mut bytes = sys::llama_context_buffer_bytes { host: 0, device: 0 };
+        // SAFETY: the allocated context and output buffer live through the call.
+        assert!(unsafe { sys::llama_context_get_buffer_bytes(allocated.ptr.as_ptr(), &mut bytes) });
+        assert!(bytes.host + bytes.device > 0);
+        assert_eq!((projected.host, projected.device), (bytes.host, bytes.device), "width {width}");
+    }
+    Ok(())
+}

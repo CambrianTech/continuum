@@ -4,20 +4,6 @@
 //! what this request allocates, never a bound for the longest text, and never more than the window's.
 use llama::Model;
 
-/// Where a backend's layers are, as CONFIGURED (its offload setting and whether this build of
-/// llama offloads at all), never measured: llama reports no context's per-buffer placement
-/// before it exists (card 9bddda93). What is not known stays explicit as `Split`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Placement {
-    /// Every layer on the GPU: KV and compute in device memory, the CPU's share and the output
-    /// buffer in host memory.
-    Device,
-    /// No layer on a GPU: everything in host memory.
-    Host,
-    /// Some layers on the GPU: the split is not measured, so each pool is charged its upper bound.
-    Split,
-}
-
 /// What a context allocates in each pool, in bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ContextBytes {
@@ -25,17 +11,9 @@ pub(crate) struct ContextBytes {
     pub host: u64,
 }
 
-/// The widest piece the embed lane embeds in one context, in tokens: the model's trained context
-/// or the range its context cost was measured over (`MEASURED_UP_TO`), whichever is smaller. A
-/// longer text is embedded in windows of it (`Plan::Windows`), every token kept.
-///
-/// The model's trained context alone was the window before: Qwen3-Embedding-0.6B trains at 32,768
-/// tokens, so one 19,456-token text sized a 13,547 MiB context (the M5, canary 958ea3056,
-/// 2026-11-14 03:35Z: `embed.vram.refused` requested 14,205,059,072 B beside 13,915,160,576 B,
-/// `embedding.neural.failed`), and recall lost that item. A longer text now stands as the
-/// token-weighted mean of its windows (the combiner card 57ef2a06 already runs past 32,768 tokens);
-/// its effect on recall ranking for texts between 2,048 and 32,768 tokens is not measured yet. Every
-/// byte past the measured range was an extrapolation.
+/// The number of tokens the lane embeds in one pass. Its window is bounded by
+/// one native logical batch and the model's trained context. Longer inputs
+/// retain every token across windows and combine their outputs by token count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EmbedWindow(u32);
 
@@ -43,64 +21,17 @@ impl EmbedWindow {
     /// The window for a model trained at `n_ctx_train` tokens; none for a model that reports no
     /// trained context, where nothing it embeds can be planned.
     pub(crate) fn for_model(n_ctx_train: u32) -> Option<Self> {
-        (n_ctx_train > 0).then_some(Self(n_ctx_train.min(MEASURED_UP_TO)))
+        let width = n_ctx_train.min(llama::ContextParams::native_batch_width());
+        (width > 0).then_some(Self(width))
     }
 
     pub(crate) fn tokens(self) -> u32 {
         self.0
     }
-
-    /// What the widest context this window allows allocates in each pool: the lane's context need.
-    pub(crate) fn context_bytes(self, placement: Placement) -> ContextBytes {
-        context_bytes(self.0, placement)
-    }
 }
 
 /// Why a model with no trained context embeds nothing.
 pub(crate) const NO_TRAINED_CONTEXT: &str = "embedding model reports no trained context: no window can be planned";
-
-/// The largest context the rates below were measured at (four sizes, 256 to 2,048 tokens).
-const MEASURED_UP_TO: u32 = 2_048;
-
-/// A measured rate: `mib` MiB llama reported for a context of `tokens` tokens (the largest
-/// per-token reading of four sizes, 256 to 2,048, each linear within 3%). Qwen3-Embedding-0.6B
-/// Q8_0, engine-c, flash attention on, measured on the M5 on 2026-11-10; logs in
-/// `~/.continuum/evidence/replicate-2026-11-10/` (`metal-embed-ctx-*`, `cpu-embed-ctx-*`).
-#[derive(Debug, Clone, Copy)]
-struct Measured {
-    mib: f64,
-    tokens: u32,
-}
-
-impl Measured {
-    fn over(self, n_ctx: u32) -> u64 {
-        (self.mib * 1024.0 * 1024.0 / f64::from(self.tokens) * f64::from(n_ctx)).ceil() as u64
-    }
-}
-
-/// KV, wherever it resides (MTL0 and CPU report the same).
-const KV: Measured = Measured { mib: 28.0, tokens: 256 };
-/// The device's compute buffer with every layer offloaded (MTL0).
-const DEVICE_COMPUTE: Measured = Measured { mib: 150.25, tokens: 256 };
-/// The CPU's compute share beside a device context.
-const DEVICE_CPU_COMPUTE: Measured = Measured { mib: 24.05, tokens: 2_048 };
-/// The CPU's compute buffer with no layer offloaded.
-const HOST_COMPUTE: Measured = Measured { mib: 154.25, tokens: 256 };
-/// The output buffer, the same at every size (0.58 MiB), rounded up.
-const OUTPUT: u64 = 1024 * 1024;
-
-/// What a context of `n_ctx` tokens allocates in each pool, at `placement`. The rates are this
-/// model's on Metal and on the CPU; another backend's are measured there (REPLICATE.md).
-pub(crate) fn context_bytes(n_ctx: u32, placement: Placement) -> ContextBytes {
-    let n = llama::ContextParams::allocated_n_ctx(n_ctx);
-    let on_device = || KV.over(n) + DEVICE_COMPUTE.over(n);
-    let on_host = || KV.over(n) + HOST_COMPUTE.over(n) + OUTPUT;
-    match placement {
-        Placement::Device => ContextBytes { device: on_device(), host: DEVICE_CPU_COMPUTE.over(n) + OUTPUT },
-        Placement::Host => ContextBytes { device: 0, host: on_host() },
-        Placement::Split => ContextBytes { device: on_device(), host: on_host() },
-    }
-}
 
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {
@@ -136,21 +67,11 @@ impl EmbeddingBatch {
         Ok(Self { sequences, plans, widest })
     }
 
-    /// What this batch's context allocates in each pool at `placement`: what the embed lane leases
-    /// before it creates the context.
-    pub(crate) fn context_bytes(&self, placement: Placement) -> ContextBytes {
-        context_bytes(self.widest, placement)
-    }
+    pub(crate) fn width(&self) -> u32 { self.widest }
 
     /// Embed every piece in one context sized to the widest; KV is cleared between pieces.
     pub(crate) fn embed(self, model: &Model) -> Result<Vec<Vec<f32>>, String> {
-        let mut ctx = model.new_pooled_context(llama::ContextParams {
-            pooling_type: llama::PoolingType::Last,
-            n_ctx: self.widest,
-            n_batch: self.widest,
-            n_ubatch: self.widest,
-            ..Default::default()
-        })?;
+        let mut ctx = model.new_pooled_context(pooled_params(self.widest))?;
         embed_plans(&self.sequences, &self.plans, |tokens| {
             ctx.memory_clear(true);
             ctx.embed(tokens)
@@ -158,6 +79,10 @@ impl EmbeddingBatch {
     }
 }
 
+
+pub(super) fn pooled_params(width: u32) -> llama::ContextParams {
+    llama::ContextParams { pooling_type: llama::PoolingType::Last, n_ctx: width, n_batch: width, n_ubatch: width, ..Default::default() }
+}
 
 /// How one tokenized text is embedded.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -296,7 +221,6 @@ fn weighted_mean(pieces: &[(Vec<f32>, usize)]) -> Result<Vec<f32>, String> {
 mod tests {
     use super::*;
 
-    const MIB: u64 = 1024 * 1024;
 
     /// The batch `tokenize` builds from these tokens at `limit`, without a model.
     fn planned(sequences: Vec<Vec<i32>>, specials: &[i32], limit: usize) -> EmbeddingBatch {
@@ -305,41 +229,20 @@ mod tests {
         EmbeddingBatch { sequences, plans, widest }
     }
 
-    // what this catches (the M5 on 26960c09d, 758 failed embeddings in 3 h, 9% success; Codex on
-    // #5910: one context's bytes are in two pools): a lease sized for the longest text, or charged
-    // all to one pool. A short text leases its own small context; each pool covers what llama
-    // reported for it at 2,048 tokens; an unmeasured split is charged in full to both.
-    #[test]
-    fn a_context_leases_what_it_allocates_in_each_pool() {
-        let short = context_bytes(40, Placement::Device);
-        assert!(short.device < 200 * MIB && short.host < 10 * MIB, "a short text: {short:?}");
-        assert_eq!(short, context_bytes(256, Placement::Device), "llama pads to 256 tokens");
-        let device = context_bytes(2_048, Placement::Device);
-        assert!(device.device >= (224 + 1_200) * MIB, "MTL0 KV 224 + compute 1,200.96 MiB: {device:?}");
-        assert!(device.host >= 24 * MIB, "CPU compute 24.05 + output 0.58 MiB: {device:?}");
-        let host = context_bytes(2_048, Placement::Host);
-        assert_eq!(host.device, 0);
-        assert!(host.host >= (224 + 1_200) * MIB, "CPU KV 224 + compute 1,200.97 MiB: {host:?}");
-        let split = context_bytes(2_048, Placement::Split);
-        assert_eq!((split.device, split.host), (device.device, host.host), "an unmeasured split: the upper bound in each pool");
-    }
-
     // what this catches (dyno, the M5 on canary 958ea3056, 2026-11-14 03:35Z): an embed context
     // sized to the model's trained 32,768 tokens. Before: one 19,456-token text planned whole at that
     // limit leased 14,205,059,072 B, the receipt's exact request, refused beside 13,915,160,576 B.
-    // After: the window derives from the measured range, the same text is windows of it, and the
+    // After: the window caps the width of each pass, the same text is windows of it, and the
     // context is what a 2,048-token window allocates, every text token still embedded once.
     #[test]
     fn an_embed_context_derives_from_the_window_never_the_trained_context() {
         let text: Vec<i32> = std::iter::once(1).chain(2..19_457).collect(); // 19,456 tokens, prefix [1]
         let before = planned(vec![text.clone()], &[1], 32_768);
-        assert_eq!(before.context_bytes(Placement::Device).device, 14_205_059_072, "the receipt's request");
+        assert_eq!(before.width(), 19_456);
         let window = EmbedWindow::for_model(32_768).expect("test: a trained context");
         assert_eq!(window.tokens(), 2_048);
         let after = planned(vec![text], &[1], 2_048);
         assert!(after.widest <= window.tokens(), "no piece past the window");
-        assert_eq!(after.context_bytes(Placement::Device), window.context_bytes(Placement::Device));
-        assert!(after.context_bytes(Placement::Device).device < 1_500 * MIB, "{:?}", after.context_bytes(Placement::Device));
         let pieces = match &after.plans[0] {
             Plan::Windows { windows, .. } => windows.clone(),
             Plan::Direct => Vec::new(), // fails the sum below: a 19,456-token text must be windowed
