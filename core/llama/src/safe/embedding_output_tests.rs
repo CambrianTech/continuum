@@ -26,3 +26,21 @@ fn pooled_only_preserves_embedding_and_omits_logits() {
         assert!(max_delta < 1e-5, "embedding changed in run {run}: {max_delta}");
     }
 }
+
+#[test]
+fn pooled_embedding_preserves_text_after_interior_nul() {
+    let path = std::env::var_os("CONTINUUM_TEST_EMBED_MODEL").expect("fixture model");
+    let model = Model::load(path, ModelParams { n_gpu_layers: 0, use_mmap: true }).expect("load");
+    let text = "A".repeat(7135) + "\0different suffix";
+    let tokens = model.tokenize(&text, false, false).expect("tokenize full input");
+    let decoded: String = tokens.iter().map(|token| model.token_to_piece(*token)).collect();
+    assert_eq!(decoded, text);
+
+    let width = u32::try_from(tokens.len()).expect("fixture width");
+    let mut ctx = model.new_pooled_context(ContextParams {
+        n_ctx: width, n_batch: width, n_ubatch: width,
+        pooling_type: PoolingType::Last, ..Default::default()
+    }).expect("pooled context");
+    let output = ctx.embed(&tokens).expect("embed full input");
+    assert!(!output.is_empty() && output.iter().all(|v| v.is_finite()));
+}
