@@ -12,7 +12,7 @@ pub(crate) struct ContextBytes {
 }
 
 /// The number of tokens the lane embeds in one pass. Its window is bounded by
-/// the model's trained context and the embedding window policy. Longer inputs
+/// one native logical batch and the model's trained context. Longer inputs
 /// retain every token across windows and combine their outputs by token count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EmbedWindow(u32);
@@ -21,7 +21,8 @@ impl EmbedWindow {
     /// The window for a model trained at `n_ctx_train` tokens; none for a model that reports no
     /// trained context, where nothing it embeds can be planned.
     pub(crate) fn for_model(n_ctx_train: u32) -> Option<Self> {
-        (n_ctx_train > 0).then_some(Self(n_ctx_train.min(MAX_WINDOW_TOKENS)))
+        let width = n_ctx_train.min(llama::ContextParams::native_batch_width());
+        (width > 0).then_some(Self(width))
     }
 
     pub(crate) fn tokens(self) -> u32 {
@@ -31,11 +32,6 @@ impl EmbedWindow {
 
 /// Why a model with no trained context embeds nothing.
 pub(crate) const NO_TRAINED_CONTEXT: &str = "embedding model reports no trained context: no window can be planned";
-
-/// Limit each pass so a single long document cannot claim a full training-length
-/// context beside serving. The pooled allocation replay covers up to this width;
-/// the native planner prices each request at its actual width.
-const MAX_WINDOW_TOKENS: u32 = 2_048;
 
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {

@@ -111,6 +111,12 @@ pub enum PoolingType {
 }
 
 impl ContextParams {
+    /// The logical batch width selected by the linked native backend for a default context.
+    pub fn native_batch_width() -> u32 {
+        // SAFETY: this takes no inputs and returns the backend defaults by value.
+        unsafe { sys::llama_context_default_params().n_batch }
+    }
+
     /// The window llama allocates for a requested `n_ctx`: it pads every context to a multiple of
     /// 256 tokens (`llama-context.cpp`, `cparams.n_ctx = GGML_PAD(cparams.n_ctx, 256)`), so what a
     /// context costs is priced on this, never on the request.
