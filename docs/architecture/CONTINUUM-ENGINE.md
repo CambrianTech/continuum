@@ -94,10 +94,25 @@ so no mind waits behind another's whole prompt (`persona_scheduler/frame.rs`). B
 served whole waited 300-360 s behind each other's prefills.
 
 **Which turn the next frame advances:**
-1. The active mind's decoding turn continues. One mind decodes until she stops, because switching
-   mid-answer only adds a switch.
-2. Otherwise the turn with the least un-reusable prefill left goes first, discounted by how long it
-   has waited. A short tail never waits behind a long prompt, and a long prompt is never starved.
+1. The current scheduler continues an active decode until the answer ends. On the 5090 HTTP
+   path, a single endpoint permit also covers the whole generation. An 8,126-token answer
+   occupied one resident slot while another resident with its own slot still awaited admission.
+2. For prefill, select the least un-reusable work remaining, discounted by time already queued.
+
+**Required handoff under contention.** Keep decoding while no other ready turn needs service.
+When a foreground turn becomes ready, the scheduler compares its time to first output with the
+cost of interrupting the current stream, including both transfers and the next audio deadline
+when speaking. Stage the selected successor while the current step runs. At a landed step,
+the existing residency owner can hand off the stream. The interrupted turn retains its
+sampler, token history, stop matcher and pending output in order. Its next frame resumes
+from the landed token. Measure the longest gap in each active stream and the oldest ready
+turn as well as total tokens per second. This policy requires resumable decode on the
+serving backend. Releasing an HTTP admission permit while its backend still generates
+would misrepresent available capacity.
+
+A warm-ahead hint may use immediately available capacity. The foreground turn can proceed
+when staging has done no work. Once a transfer starts, its completion owner retains the
+affected slot until the native receipt lands. Independent work remains runnable throughout.
 
 **Nothing on the engine thread waits.** Everything else runs as a `continuum-flow` stage, CBAR's
 `QueueThread<T>` (SUBSTRATE §2): its own worker, a bounded inbox, woken only by a push.
