@@ -481,8 +481,7 @@ impl Driver<'_, '_> {
             }
         }
         let preserved = entries.len();
-        let failed: Vec<Uuid> = retained.iter().map(|(persona, _)| *persona).collect();
-        let manifest = preserve::next_manifest(store.last(), entries, &failed);
+        let manifest = preserve::next_manifest(store.last(), entries);
         let served = preserve::ServedModel { model: self.model_id.clone() };
         match store.publish(&served, manifest) {
             Ok(unremoved) => retained.extend(unremoved.into_iter().map(|(path, why)| (Uuid::nil(), format!("an unnamed block file {} was not removed: {why}", path.display())))),

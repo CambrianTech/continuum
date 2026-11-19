@@ -80,12 +80,14 @@ impl Generation {
     }
 }
 
-/// The manifest a stop publishes: every mind written this generation, and, for each mind whose write
-/// failed, her entry from the last complete generation (her file is still there: nothing this stop
-/// wrote has its name).
-pub(super) fn next_manifest(last: &[PreservedMind], written: Vec<PreservedMind>, failed: &[uuid::Uuid]) -> Vec<PreservedMind> {
-    let failed: HashSet<&uuid::Uuid> = failed.iter().collect();
-    let kept = last.iter().filter(|mind| failed.contains(&mind.persona)).cloned();
+/// The manifest a stop publishes: every mind written this generation, and every other mind of the
+/// last complete generation, as she was. An entry leaves only when a newer write replaces it: a mind
+/// whose write failed, whose resume was refused (a smaller window at boot), or who had no turn before
+/// this stop keeps her last entry and her file (nothing this stop wrote has its name). Codex on #6159:
+/// a refused restore followed by a stop must never delete her last saved blocks.
+pub(super) fn next_manifest(last: &[PreservedMind], written: Vec<PreservedMind>) -> Vec<PreservedMind> {
+    let replaced: HashSet<uuid::Uuid> = written.iter().map(|mind| mind.persona).collect();
+    let kept = last.iter().filter(|mind| !replaced.contains(&mind.persona)).cloned();
     written.into_iter().chain(kept).collect()
 }
 
@@ -140,16 +142,23 @@ impl Preserved {
 
     /// Publish `manifest` (its every block file already written), then remove the block files it no
     /// longer names. A refused save publishes nothing and removes nothing: the last generation stands.
-    /// Returns the files that could not be removed (named, never fatal: the next publish retries them).
+    /// Once the save returns, `manifest` IS the last complete generation, whatever cleanup does after
+    /// (Codex on #6159: a failed directory listing after the commit must not leave `last` stale or
+    /// report the save as lost). Returns what cleanup could not do, named, never fatal: the next
+    /// publish retries it.
     pub(super) fn publish(&mut self, served: &ServedModel, manifest: Vec<PreservedMind>) -> Result<Vec<(PathBuf, String)>, String> {
         self.store.save(&Singleton, served, &manifest).map_err(|why| why.to_string())?;
+        self.last = manifest;
+        let unnamed = match unreferenced(&self.dir, &self.last) {
+            Ok(unnamed) => unnamed,
+            Err(e) => return Ok(vec![(self.dir.clone(), format!("listing the block files to remove: {e}"))]),
+        };
         let mut kept = Vec::new();
-        for path in unreferenced(&self.dir, &manifest).map_err(|e| format!("persona-blocks {}: {e}", self.dir.display()))? {
+        for path in unnamed {
             if let Err(e) = std::fs::remove_file(&path) {
                 kept.push((path, e.to_string()));
             }
         }
-        self.last = manifest;
         Ok(kept)
     }
 }
@@ -189,13 +198,62 @@ mod tests {
         assert_eq!(std::fs::read(reopened.path(&loaded[0].blocks)).ok().as_deref(), Some(&b"generation one"[..]), "with its own blocks");
     }
 
-    // what this catches (Codex on #6159): a failed preserve dropping that resident from the next
-    // manifest. She keeps her last complete entry; a mind written this stop gets the new one.
+    // what this catches (Codex on #6159): a resident dropped from the next manifest because this stop
+    // did not write her (her write failed, her resume was refused, she had no turn). Only a newer
+    // write replaces her entry.
     #[test]
-    fn a_mind_whose_write_failed_keeps_her_last_complete_entry() {
+    fn a_mind_not_written_this_stop_keeps_her_last_complete_entry() {
         let last = vec![mind(1, "a.old.cpb"), mind(2, "b.old.cpb"), mind(3, "c.old.cpb")];
-        let next = next_manifest(&last, vec![mind(1, "a.new.cpb")], &[uuid::Uuid::from_u128(2)]);
-        assert_eq!(next, vec![mind(1, "a.new.cpb"), mind(2, "b.old.cpb")], "written: new; failed: kept; neither: gone");
+        let next = next_manifest(&last, vec![mind(1, "a.new.cpb")]);
+        assert_eq!(next, vec![mind(1, "a.new.cpb"), mind(2, "b.old.cpb"), mind(3, "c.old.cpb")], "written: new; the rest: as they were");
+    }
+
+    // what this catches (Codex on #6159, the highest-risk path): a refused restore followed by a stop
+    // deleting her last saved blocks. Saved at one boot, refused at the next (a smaller window), a
+    // stop before her next turn, then a boot that fits her: her original history and blocks resume.
+    #[test]
+    fn a_refused_restore_then_a_stop_keeps_her_history_and_blocks() {
+        let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
+        let served = ServedModel { model: "m".into() };
+        let her = uuid::Uuid::from_u128(1);
+        let mut saved_at = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
+        let file = Generation::fresh().file(her);
+        std::fs::write(saved_at.path(&file), b"her rows at the large window").expect("test: write"); // expect: the test's own precondition
+        let original = vec![PreservedMind { persona: her, epoch: 1, basis: String::new(), held: vec![1, 2, 3], blocks: file.clone() }];
+        saved_at.publish(&served, original.clone()).expect("test: publish"); // expect: the test's own precondition
+
+        // the smaller boot: her manifest loads, her read is refused, so she never enters the warm
+        // table; the stop before her next turn writes nobody
+        let mut refused_at = Preserved::at(dir.path().to_path_buf()).expect("test: reopen"); // expect: the test's own precondition
+        let loaded = refused_at.store.load(&Singleton, &served);
+        assert!(matches!(loaded, Loaded::Matched(_)), "her manifest loads: {}", loaded.describe());
+        let Loaded::Matched(loaded) = loaded else { return };
+        refused_at.remember(loaded);
+        let manifest = next_manifest(refused_at.last(), Vec::new());
+        let unremoved = refused_at.publish(&served, manifest).expect("test: publish"); // expect: the test's own precondition
+        assert!(unremoved.is_empty(), "{unremoved:?}");
+
+        // the boot that fits her
+        let fits = Preserved::at(dir.path().to_path_buf()).expect("test: reopen"); // expect: the test's own precondition
+        let back = fits.store.load(&Singleton, &served);
+        assert!(matches!(back, Loaded::Matched(_)), "her manifest loads: {}", back.describe());
+        let Loaded::Matched(back) = back else { return };
+        assert_eq!(back, original, "her original history and file");
+        assert_eq!(std::fs::read(fits.path(&back[0].blocks)).ok().as_deref(), Some(&b"her rows at the large window"[..]), "her blocks, never deleted");
+    }
+
+    // what this catches (Codex on #6159): a committed manifest reported as lost, and `last` left
+    // stale, when cleanup cannot list the directory after the save. The new generation is
+    // authoritative from the commit; the listing failure comes back as cleanup.
+    #[test]
+    fn a_cleanup_failure_after_the_commit_leaves_the_new_generation_authoritative() {
+        let dir = tempfile::tempdir().expect("test: a temp dir"); // expect: the test's own precondition
+        let mut preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
+        preserved.dir = dir.path().join("listing-fails-here");
+        let manifest = vec![mind(1, "a.g2.cpb")];
+        let cleanup = preserved.publish(&ServedModel { model: "m".into() }, manifest.clone()).expect("test: the save committed"); // expect: the test's own precondition
+        assert_eq!(cleanup.len(), 1, "the listing failure is reported as cleanup: {cleanup:?}");
+        assert_eq!(preserved.last(), manifest.as_slice(), "last is the committed generation");
     }
 
     // what this catches: publishing removing a file the manifest names, or leaving one it no longer
