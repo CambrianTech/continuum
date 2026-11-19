@@ -17,14 +17,18 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 ---
 
-## Runtime and storage design authorities
+## Runtime architecture
 
-| For a change to | Start with | Design owner |
-|---|---|---|
-| Runtime workers, subscriptions, serving, GPU scheduling, streaming, KV and mind-state caches, or mind swaps | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) | Fable |
-| Rust persistence, entity schemas, migrations, typed queries or native data storage | [Rust ORM Architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) | Codex |
+| Design question | Chapter |
+|---|---|
+| How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
+| How do the parts of one mind run independently and respond to events? | [Concurrent mind and governor](architecture/CONCURRENT-MIND-AND-GOVERNOR.md). The [stage contract](architecture/STAGE-CONTRACT.md) specifies proposed inputs, outputs, wakeups and completion. |
+| How does a governor share capacity among consumers? | [Shared resources](architecture/SHARED-RESOURCES.md) describes the common owner and resource-specific adapters. |
+| How do minds take turns decoding while transfers and preparation proceed? | [Continuum Engine](architecture/CONTINUUM-ENGINE.md), owned by Fable. [Review #6092](https://github.com/CambrianTech/continuum/pull/6092) tracks proposed changes. |
+| How does a resident learn on the serving engine? | [In-process learning](architecture/IN-PROCESS-LEARNING.md) describes the design and migration dependencies. |
+| How are native data, entity schemas, typed queries and migrations represented? | [Rust ORM architecture](infrastructure/RUST-ORM-ARCHITECTURE.md), owned by Codex. The engine chapter owns serving caches. [Disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs) implement retention accounting. |
 
-The engine chapter tracks merged design. [Engine design review #6092](https://github.com/CambrianTech/continuum/pull/6092) covers proposed swap and transfer contracts. Disk cache retention belongs to the [disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs).
+Revise the chapter that owns the contract and link to it from its callers. When a failure changes the design, link the fixing change and its evidence from the affected rule. Mark proposed behavior until the implementation and live result establish it.
 
 ## Where things live — EVERY directory, with counts
 
