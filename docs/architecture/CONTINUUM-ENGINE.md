@@ -99,13 +99,23 @@ served whole waited 300-360 s behind each other's prefills.
    occupied one resident slot while another resident with its own slot still awaited admission.
 2. For prefill, select the least un-reusable work remaining, discounted by time already queued.
 
+The M5 starts its first-step clock when the driver puts the turn in its local list. A long
+interval on that clock means the driver already received the submission. Attribute it at the
+frame owner: record when the oldest same-mind predecessor finishes, when the turn first
+becomes eligible, which turn gets the stream, and whether Emit or Record lacks capacity.
+Emit a transition when the reason changes. Carry the turn's identity through first token and
+delivery so admission delay, GPU work and downstream delay can be measured independently.
+
 **Required handoff under contention.** Keep decoding while no other ready turn needs service.
 When a foreground turn becomes ready, the scheduler compares its time to first output with the
 cost of interrupting the current stream, including both transfers and the next audio deadline
 when speaking. Stage the selected successor while the current step runs. At a landed step,
 the existing residency owner can hand off the stream. The interrupted turn retains its
 sampler, token history, stop matcher and pending output in order. Its next frame resumes
-from the landed token. Measure the longest gap in each active stream and the oldest ready
+from the landed token. Give a suspended decode an explicit next service deadline. Its
+remaining prefill is zero, so ranking it by prefill cost would immediately select it again.
+Reconsider at each landed frame and on readiness changes. Keep same-mind successors ordered.
+Measure the longest gap in each active stream and the oldest ready
 turn as well as total tokens per second. This policy requires resumable decode on the
 serving backend. Releasing an HTTP admission permit while its backend still generates
 would misrepresent available capacity.
