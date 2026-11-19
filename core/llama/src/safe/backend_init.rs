@@ -304,7 +304,36 @@ impl Default for ModelParams {
     }
 }
 
+/// Bytes allocated for the loaded model's native weight buffers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WeightAllocation {
+    pub device: u64,
+    pub host: u64,
+}
+
 impl Model {
+    pub fn weight_allocation(&self) -> Result<WeightAllocation, String> {
+        let mut allocation = WeightAllocation::default();
+        let model = self.ptr.as_ptr();
+        // SAFETY: the model stays loaded throughout this immutable enumeration.
+        let count = unsafe { sys::llama_model_n_weight_backends(model) };
+        for index in 0..count {
+            let name = unsafe { sys::llama_model_weight_backend_name(model, index) };
+            if name.is_null() {
+                return Err(format!("missing weight buffer name at index {index}"));
+            }
+            // The backend registry owns the NUL-terminated buffer type name.
+            let name = unsafe { std::ffi::CStr::from_ptr(name) };
+            let bytes = unsafe { sys::llama_model_weight_backend_bytes(model, index) } as u64;
+            if name.to_bytes().starts_with(b"CPU") {
+                allocation.host += bytes;
+            } else {
+                allocation.device += bytes;
+            }
+        }
+        Ok(allocation)
+    }
+
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
         backend_init();
