@@ -62,7 +62,7 @@ pub struct PersonaObligation {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RecordedEffect {
-    ToolBatch { calls: Vec<(String, String)> },
+    ToolBatch { calls: Vec<(crate::ai::types::ToolCallId, String)> },
     Speech,
 }
 

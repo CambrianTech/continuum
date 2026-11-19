@@ -94,7 +94,7 @@ async fn live_room_input_reaches_next_action_without_replacing_task_or_room() {
                 content: None,
                 tool_calls: (step < 2).then(|| {
                     vec![ToolCall {
-                        id: format!("call-{step}"),
+                        id: crate::ai::types::ToolCallId::fixture(&format!("call-{step}")),
                         name: "code/read".into(),
                         input: serde_json::json!({ "path": format!("src/{step}.rs") }),
                     }]

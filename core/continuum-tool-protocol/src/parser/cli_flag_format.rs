@@ -101,7 +101,7 @@ impl ToolCallFormat for CliFlagFormat {
                 continue; // bare tool-name line stays speech (≥1-arg precedent)
             }
             out.push(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: name.to_string(),
                 input: serde_json::Value::Object(args),
             });
@@ -362,7 +362,7 @@ pub(super) fn lift_sole_paren_call(span: &str, resolve_name: ResolveName) -> Opt
     let Some(paren) = span.find('(') else {
         if is_discovery(span) {
             return Some(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: span.to_string(),
                 input: serde_json::Value::Object(serde_json::Map::new()),
             });
@@ -379,7 +379,7 @@ pub(super) fn lift_sole_paren_call(span: &str, resolve_name: ResolveName) -> Opt
                 .chars()
                 .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '/' || c == '-');
         return ok.then(|| ToolCall {
-            id: format!("jip-{}", Uuid::new_v4()),
+            id: crate::ToolCallId::mint(),
             name: span.to_string(),
             input: serde_json::Value::Object(serde_json::Map::new()),
         });
@@ -406,7 +406,7 @@ pub(super) fn lift_sole_paren_call(span: &str, resolve_name: ResolveName) -> Opt
     }
     let args = paren_call_args(&span[paren + 1..span.len() - 1])?;
     Some(ToolCall {
-        id: format!("jip-{}", Uuid::new_v4()),
+        id: crate::ToolCallId::mint(),
         name: name.to_string(),
         input: serde_json::Value::Object(args),
     })
@@ -458,7 +458,7 @@ impl ToolCallFormat for NarratedBareArgsFormat {
                 continue;
             };
             out.push(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: tool,
                 input: serde_json::Value::Object(map),
             });
@@ -551,7 +551,7 @@ impl ToolCallFormat for XmlParameterFormat {
                     .all(|c| c.is_ascii_alphanumeric() || "/_-.".contains(c));
             if let Some(input) = xml_parameters(body).filter(|_| name_ok) {
                 out.push(ToolCall {
-                    id: format!("jip-{}", Uuid::new_v4()),
+                    id: crate::ToolCallId::mint(),
                     name: name.to_string(),
                     input: serde_json::Value::Object(input),
                 });

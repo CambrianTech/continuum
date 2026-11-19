@@ -201,7 +201,7 @@ fn the_next_act_holds_the_whole_previous_view_as_its_head() {
 fn acted(wm: &crate::cognition::working_memory::WorkingMemory, room: Uuid, seq: u64) {
     use crate::ai::types::{ResultCustody, ToolResult};
     use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
-    let id = format!("call-{seq}");
+    let id = crate::ai::types::ToolCallId::fixture(&format!("call-{seq}"));
     let call = ToolCall { id: id.clone(), name: "code/read".into(), input: json!({ "file_path": format!("src/f{seq}.rs") }) };
     wm.record_native_action_statement(&format!("Reading f{seq}.rs next."), room, std::slice::from_ref(&call));
     let content = format!("fn f{seq}() -> u32 {{ {seq} }}\n").repeat(40);

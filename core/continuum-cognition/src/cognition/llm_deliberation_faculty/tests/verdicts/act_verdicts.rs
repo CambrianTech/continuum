@@ -369,7 +369,7 @@ async fn native_lane_text_fence_with_sibling_args_still_becomes_an_act() {
 async fn native_structured_calls_win_over_a_text_fence() {
     let persona = Uuid::new_v4();
     let native = ToolCall {
-        id: "t1".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"t1"),
         name: "code/read".to_string(),
         input: json!({ "path": "deploy.md" }),
     };
@@ -674,7 +674,7 @@ async fn empty_prose_with_no_tools_is_a_pass() {
 // 2026-11-17). Her act, then her next generation: exactly two calls, neither a one-token pass.
 #[tokio::test]
 async fn her_act_and_her_next_generation_are_the_only_requests_on_her_slot() {
-    let call = ToolCall { id: "t1".to_string(), name: "code/read".to_string(), input: json!({ "path": "deploy.md" }) };
+    let call = ToolCall { id: crate::ai::types::ToolCallId::fixture(&"t1"), name: "code/read".to_string(), input: json!({ "path": "deploy.md" }) };
     let adapter = Arc::new(ScriptedAdapter {
         prompt_cache: crate::ai::adapter::PromptCache::PinnedSlot,
         ..ScriptedAdapter::new(vec![

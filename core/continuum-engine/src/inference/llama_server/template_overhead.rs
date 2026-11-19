@@ -93,10 +93,15 @@ impl MessageShape {
 /// template's own newline), non-ASCII, JSON.
 const PROBE_TEXTS: [&str; 5] = ["ok", "Result: 4 files changed.", "line one\nline two\n", "了解しました", "{\"a\": 1}"];
 
+/// The probes' one call id, the same every run so the measured markup is deterministic.
+fn probe_call_id() -> crate::ai::types::ToolCallId {
+    crate::ai::types::ToolCallId::from_wire_or_mint(Some("c1".to_owned()))
+}
+
 fn call(name: &str, input: serde_json::Value) -> ChatMessage {
     ChatMessage {
         role: "assistant".into(),
-        content: MessageContent::Parts(vec![ContentPart::ToolUse { id: "c1".into(), name: name.into(), input }]),
+        content: MessageContent::Parts(vec![ContentPart::ToolUse { id: probe_call_id(), name: name.into(), input }]),
         name: None,
     }
 }
@@ -108,7 +113,7 @@ pub fn probe_messages() -> Vec<ChatMessage> {
     for role in ["system", "user", "assistant"] {
         probes.extend(PROBE_TEXTS.iter().map(|text| ChatMessage::text(role, *text)));
     }
-    probes.extend(PROBE_TEXTS.iter().map(|text| ChatMessage::tool_result("c1", *text, false)));
+    probes.extend(PROBE_TEXTS.iter().map(|text| ChatMessage::tool_result(probe_call_id(), *text, false)));
     probes.push(call("f", serde_json::json!({})));
     probes.push(call("code_read", serde_json::json!({ "path": "main.rs" })));
     probes.push(call("work_list", serde_json::json!({ "room": continuum_base::reserved_rooms::GENERAL, "limit": 5 })));
@@ -223,7 +228,7 @@ mod tests {
     #[test]
     fn a_message_is_classified_by_what_the_template_wraps() {
         let shape = |message: &ChatMessage| MessageShape::of(message);
-        assert_eq!(shape(&ChatMessage::tool_result("c1", "x", false)), MessageShape { kind: MessageKind::ToolResult, units: 1, parameters: 0 });
+        assert_eq!(shape(&ChatMessage::tool_result(probe_call_id(), "x", false)), MessageShape { kind: MessageKind::ToolResult, units: 1, parameters: 0 });
         let edit = call("code_edit", serde_json::json!({ "path": "a", "old": "b", "new": "c" }));
         assert_eq!(shape(&edit), MessageShape { kind: MessageKind::ToolCall, units: 1, parameters: 3 });
         assert_eq!(shape(&ChatMessage::text("system", "x")).kind, MessageKind::System);

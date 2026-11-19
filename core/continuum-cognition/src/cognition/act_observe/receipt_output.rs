@@ -104,11 +104,11 @@ mod tests {
 
     fn act(name: &str, input: serde_json::Value, content: &str, custody: ResultCustody) -> Observation {
         Observation {
-            call: ToolCall { id: format!("call-{name}"), name: name.into(), input },
+            call: ToolCall { id: crate::ai::types::ToolCallId::fixture(&format!("call-{name}")), name: name.into(), input },
             output: ToolOutput {
                 image: None,
                 additional_images: None,
-                result: ToolResult { tool_use_id: format!("call-{name}"), content: content.into(), is_error: None, custody },
+                result: ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&format!("call-{name}")), content: content.into(), is_error: None, custody },
                 verb: ToolVerb::classify(name),
                 paths: Vec::new(),
                 verdict: Default::default(),

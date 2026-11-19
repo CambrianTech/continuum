@@ -73,7 +73,7 @@ async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
         .with_acting(body(exec.clone(), admission()));
     let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
     let cut = ToolCall {
-        id: "tool-attempt-cut-at-limit".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"tool-attempt-cut-at-limit"),
         name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.into(),
         input: serde_json::json!({}),
     };
@@ -120,7 +120,7 @@ async fn valid_json_from_an_uncommitted_generation_takes_no_effect_at_the_act_se
         }
     }
     let write = ToolCall {
-        id: "write-1".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"write-1"),
         name: "code/write".into(),
         input: serde_json::json!({"file_path": "src/accounts.rs", "content": "pub fn create() {}"}),
     };
@@ -296,7 +296,7 @@ async fn a_folded_running_alias_still_registers_its_dispatch_handle() {
         .with_acting(the_body);
 
     let call = ToolCall {
-        id: "fold-1".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"fold-1"),
         // THE ALIAS, not the canonical name.
         name: "bash".into(),
         input: serde_json::json!({ "command": "cargo test --workspace" }),
@@ -402,7 +402,7 @@ async fn a_refusals_next_moves_load_into_her_tool_head() {
     let the_body = body(exec, admission());
     let wm = the_body.working_memory.clone();
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(the_body);
-    let call = ToolCall { id: "submit-1".into(), name: "work_submit".into(), input: serde_json::json!({ "card_id": "149f1391" }) };
+    let call = ToolCall { id: crate::ai::types::ToolCallId::fixture(&"submit-1"), name: "work_submit".into(), input: serde_json::json!({ "card_id": "149f1391" }) };
     let outcome = apply_act(
         &cycle,
         std::slice::from_ref(&call),
@@ -523,8 +523,8 @@ async fn an_acts_calls_carry_the_generation_that_issued_them() {
         Err(poisoned) => panic!("stamp record poisoned: {poisoned}"),
     };
     let two_submits = [
-        ToolCall { id: "submit-1".into(), name: "work/submit".into(), input: serde_json::json!({"card_id": "a"}) },
-        ToolCall { id: "submit-2".into(), name: "work/submit".into(), input: serde_json::json!({"card_id": "b"}) },
+        ToolCall { id: crate::ai::types::ToolCallId::fixture(&"submit-1"), name: "work/submit".into(), input: serde_json::json!({"card_id": "a"}) },
+        ToolCall { id: crate::ai::types::ToolCallId::fixture(&"submit-2"), name: "work/submit".into(), input: serde_json::json!({"card_id": "b"}) },
     ];
 
     let exec = StampingExecutor { issued: None, seen: Arc::new(Mutex::new(Vec::new())) };

@@ -20,7 +20,7 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Effect {
     /// A tool batch, as (call id, tool name) pairs, so recovery can find each call's receipt.
-    ToolBatch { calls: Vec<(String, String)> },
+    ToolBatch { calls: Vec<(crate::ai::types::ToolCallId, String)> },
     /// Her reply, posted to the room.
     Speech,
 }

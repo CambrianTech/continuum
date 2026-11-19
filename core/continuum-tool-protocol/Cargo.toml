@@ -9,3 +9,7 @@ serde_json = { workspace = true }
 uuid = { version = "1", features = ["v4"] }
 ts-rs.workspace = true
 schemars = { workspace = true }
+
+[features]
+# ToolCallId::fixture for tests in dependent crates (production code mints or reads ids from a wire).
+test-fixtures = []

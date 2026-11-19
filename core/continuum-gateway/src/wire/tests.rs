@@ -24,7 +24,7 @@ fn tool_answer() -> TextGenerationResponse {
         response_time_ms: 0,
         request_id: "r1".into(),
         content: None,
-        tool_calls: Some(vec![ToolCall { id: "call_1".into(), name: "read_file".into(), input: json!({"path": "a.rs"}) }]),
+        tool_calls: Some(vec![ToolCall { id: continuum_engine::ai::types::ToolCallId::fixture(&"call_1"), name: "read_file".into(), input: json!({"path": "a.rs"}) }]),
         reasoning: None,
         routing: None,
         error: None,

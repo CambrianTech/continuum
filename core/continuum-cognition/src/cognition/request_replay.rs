@@ -621,7 +621,7 @@ mod tests {
             request_id: "provider-response".into(),
             content: None,
             tool_calls: Some(vec![crate::ai::ToolCall {
-                id: "proposed-write".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"proposed-write"),
                 name: "code/write".into(),
                 input: serde_json::json!({"path": target, "content": "forbidden replay effect"}),
             }]),

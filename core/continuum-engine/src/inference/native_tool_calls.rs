@@ -3,7 +3,7 @@
 //! model's own chat parser). One owner decides a call's fate, so a call reads the same whichever
 //! engine served her turn.
 
-use continuum_tool_protocol::{GenerationEnd, ToolCall, UnparsedArguments};
+use continuum_tool_protocol::{GenerationEnd, ToolCall, ToolCallId, UnparsedArguments};
 use serde_json::Value;
 
 use crate::ai::types::ContentPart;
@@ -49,7 +49,9 @@ pub(crate) fn assemble(raw: impl IntoIterator<Item = StreamToolAccum>, end: Gene
                     unparsed.into_input()
                 }
             };
-            ToolCall { id: call.id, name: call.name, input }
+            // The one place a generated call gets its id: the one the model named, or a minted one
+            // when its template names none (Qwen's), for every engine (ToolCallId).
+            ToolCall { id: ToolCallId::from_wire_or_mint(Some(call.id)), name: call.name, input }
         })
         .collect();
     (!calls.is_empty()).then_some(calls)

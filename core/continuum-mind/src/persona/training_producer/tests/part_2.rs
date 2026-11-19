@@ -322,12 +322,12 @@ use super::*;
     pub(super) fn the_acted_chain_renders_intent_then_every_call_in_order() {
         let calls = vec![
             crate::ai::types::ToolCall {
-                id: "a".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"a"),
                 name: "code/read".into(),
                 input: json!({"path": "x.py"}),
             },
             crate::ai::types::ToolCall {
-                id: "b".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"b"),
                 name: "code/edit".into(),
                 input: json!({"path": "x.py", "mode": "replace"}),
             },
@@ -342,7 +342,7 @@ use super::*;
     #[test]
     pub(super) fn the_act_chain_keeps_every_act_in_order() {
         let c = |n: &str| crate::ai::types::ToolCall {
-            id: n.into(),
+            id: crate::ai::types::ToolCallId::fixture(&n),
             name: n.into(),
             input: json!({}),
         };
@@ -375,7 +375,7 @@ use super::*;
                 response_time_ms: 0,
                 request_id: "r".into(),
                 content: None,
-                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: crate::ai::types::ToolCallId::mint(), name: name.into(), input }]),
                 reasoning: None,
                 routing: None,
                 error: None,
@@ -434,7 +434,7 @@ use super::*;
                 response_time_ms: 0,
                 request_id: "r".into(),
                 content: None,
-                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: uuid::Uuid::new_v4().to_string(), name: name.into(), input }]),
+                tool_calls: tool.map(|(name, input)| vec![crate::ai::ToolCall { id: crate::ai::types::ToolCallId::mint(), name: name.into(), input }]),
                 reasoning: Some("let me organize the situation".into()),
                 routing: None,
                 error: None,

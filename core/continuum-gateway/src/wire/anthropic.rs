@@ -2,7 +2,7 @@
 
 use super::{decode, event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Finish, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
-use continuum_engine::ai::types::ImageInput;
+use continuum_engine::ai::types::{ImageInput, ToolCallId};
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
 
@@ -200,12 +200,12 @@ fn part(block: &Value) -> Option<ContentPart> {
             }})
         }
         "tool_use" => Some(ContentPart::ToolUse {
-            id: block.get("id").and_then(Value::as_str)?.to_owned(),
+            id: block.get("id").and_then(Value::as_str).and_then(ToolCallId::from_wire)?,
             name: block.get("name").and_then(Value::as_str)?.to_owned(),
             input: block.get("input").cloned().unwrap_or_else(|| json!({})), // unwrap_or_else: a call with no input has an empty one
         }),
         "tool_result" => Some(ContentPart::ToolResult {
-            tool_use_id: block.get("tool_use_id").and_then(Value::as_str)?.to_owned(),
+            tool_use_id: block.get("tool_use_id").and_then(Value::as_str).and_then(ToolCallId::from_wire)?,
             content: block.get("content").map(text_of).unwrap_or_default(), // unwrap_or_default: an empty result
             is_error: block.get("is_error").and_then(Value::as_bool),
         }),

@@ -378,7 +378,7 @@ mod tests {
 
         fn call(name: &str, input: serde_json::Value) -> crate::ai::types::ToolCall {
             crate::ai::types::ToolCall {
-                id: "t1".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"t1"),
                 name: name.into(),
                 input,
             }

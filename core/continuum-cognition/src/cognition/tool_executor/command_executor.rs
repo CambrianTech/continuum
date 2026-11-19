@@ -960,7 +960,7 @@ pub mod test_support {
     /// Dispatch one native call and return its (is_error, content).
     pub async fn dispatch(exec: &CommandToolExecutor, name: &str, input: Value) -> (bool, String) {
         let calls = vec![NativeToolCall {
-            id: "x".to_string(),
+            id: crate::ai::types::ToolCallId::mint(),
             name: name.to_string(),
             input,
         }];

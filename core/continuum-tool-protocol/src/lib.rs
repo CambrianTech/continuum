@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use ts_rs::TS;
 pub mod call_batch;
+pub mod call_id;
 pub mod call_ending;
 pub mod parser;
 pub use call_batch::{CallBatch, CallOrigin, CommittedCall, Disposed, HeldCall};
+pub use call_id::{EmptyToolCallId, ToolCallId};
 pub use call_ending::{CallEnding, GenerationEnd, UnparsedArguments, UnreadableMarker};
 
 /// Native tool specification for providers with JSON tool support
@@ -62,7 +64,8 @@ pub struct ToolInputSchema {
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolCall.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ToolCall {
-    pub id: String,   // Unique ID for this tool use (e.g., "toolu_01A...")
+    /// Unique id for this tool use (e.g. "toolu_01A..."), never empty ([`ToolCallId`]).
+    pub id: ToolCallId,
     pub name: String, // Tool name
     #[ts(type = "Record<string, unknown>")]
     pub input: Value, // Tool parameters as JSON
@@ -86,7 +89,7 @@ mod tests {
     use super::*;
 
     fn call(input: Value) -> ToolCall {
-        ToolCall { id: uuid::Uuid::new_v4().to_string(), name: "code/read".into(), input }
+        ToolCall { id: ToolCallId::mint(), name: "code/read".into(), input }
     }
 
     // what this catches: one request encoding two ways (key order the model chose, a fresh call

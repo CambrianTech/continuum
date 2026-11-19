@@ -37,14 +37,14 @@ fn read(start: u32, end: u32, total: u32, stored_head: Option<(usize, &str)>) ->
     };
     Observation {
         call: ToolCall {
-            id: format!("read-{start}"),
+            id: crate::ai::types::ToolCallId::fixture(&format!("read-{start}")),
             name: "code/read".into(),
             input: serde_json::json!({ "file_path": PATH, "start_line": start, "end_line": end }),
         },
         output: ToolOutput {
             image: None,
             additional_images: None,
-            result: ToolResult { tool_use_id: format!("read-{start}"), content, is_error: None, custody },
+            result: ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&format!("read-{start}")), content, is_error: None, custody },
             verb: ToolVerb::classify("code/read"),
             paths: Vec::new(),
             verdict: Default::default(),
@@ -244,14 +244,14 @@ pub(super) fn record_read_and_edit(wm: &WorkingMemory) {
 fn edit(path: &str) -> Observation {
     Observation {
         call: ToolCall {
-            id: "edit".into(),
+            id: crate::ai::types::ToolCallId::fixture(&"edit"),
             name: "code/edit".into(),
             input: serde_json::json!({ "file_path": path, "old_string": "ConcurrentClaim", "new_string": "ActuateSkipReason::ConcurrentClaim" }),
         },
         output: ToolOutput {
             image: None,
             additional_images: None,
-            result: ToolResult { tool_use_id: "edit".into(), content: "ok: 1 replacement".into(), is_error: None, custody: ResultCustody::Whole { handle: "edit".into() } },
+            result: ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&"edit"), content: "ok: 1 replacement".into(), is_error: None, custody: ResultCustody::Whole { handle: "edit".into() } },
             verb: ToolVerb::classify("code/edit"),
             paths: Vec::new(),
             verdict: Default::default(),
@@ -263,11 +263,11 @@ fn edit(path: &str) -> Observation {
 /// A `code/git/commit` that landed, as the executor reports it: the act that closes her change.
 fn commit() -> Observation {
     Observation {
-        call: ToolCall { id: "commit".into(), name: "code/git/commit".into(), input: serde_json::json!({ "message": "the change" }) },
+        call: ToolCall { id: crate::ai::types::ToolCallId::fixture(&"commit"), name: "code/git/commit".into(), input: serde_json::json!({ "message": "the change" }) },
         output: ToolOutput {
             image: None,
             additional_images: None,
-            result: ToolResult { tool_use_id: "commit".into(), content: "ok: committed".into(), is_error: None, custody: ResultCustody::Whole { handle: "commit".into() } },
+            result: ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&"commit"), content: "ok: committed".into(), is_error: None, custody: ResultCustody::Whole { handle: "commit".into() } },
             verb: ToolVerb::classify("code/git/commit"),
             paths: Vec::new(),
             verdict: Default::default(),

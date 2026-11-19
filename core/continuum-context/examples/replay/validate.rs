@@ -82,7 +82,7 @@ pub fn act_of(request: &serde_json::Value) -> Act {
             .iter()
             .map(|call| {
                 let name = call["name"].as_str().unwrap_or_default().to_owned(); // unwrap_or_default: a nameless call fingerprints as its arguments alone
-                let canonical = continuum_tool_protocol::ToolCall { id: String::new(), name: name.clone(), input: call["input"].clone() }.canonical_input();
+                let canonical = continuum_tool_protocol::ToolCall { id: continuum_tool_protocol::ToolCallId::mint(), name: name.clone(), input: call["input"].clone() }.canonical_input();
                 (name, canonical)
             })
             .collect();

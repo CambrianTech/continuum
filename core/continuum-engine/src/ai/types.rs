@@ -53,13 +53,13 @@ pub enum ContentPart {
         video: VideoInput,
     },
     ToolUse {
-        id: String,
+        id: ToolCallId,
         name: String,
         #[ts(type = "Record<string, unknown>")]
         input: Value,
     },
     ToolResult {
-        tool_use_id: String,
+        tool_use_id: ToolCallId,
         content: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         #[ts(optional)]
@@ -117,7 +117,7 @@ pub struct VideoInput {
 // ============================================================================
 
 pub use continuum_tool_protocol::{
-    CallBatch, CallEnding, CallOrigin, CommittedCall, Disposed, GenerationEnd, HeldCall, NativeToolSpec, ToolCall, ToolInputSchema,
+    CallBatch, CallEnding, CallOrigin, CommittedCall, Disposed, GenerationEnd, HeldCall, NativeToolSpec, ToolCall, ToolCallId, ToolInputSchema,
     UnparsedArguments, UnreadableMarker,
 };
 
@@ -126,7 +126,8 @@ pub use continuum_tool_protocol::{
 #[ts(export, export_to = "../../../protocol/typescript/ai/ToolResult.ts")]
 #[serde(rename_all = "camelCase")]
 pub struct ToolResult {
-    pub tool_use_id: String, // Matches ToolCall.id
+    /// The call this result answers (its id, never empty). Build one with [`ToolResult::answering`].
+    pub tool_use_id: ToolCallId,
     pub content: String,     // Tool execution result (or error message)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -139,6 +140,13 @@ pub struct ToolResult {
     #[serde(skip)]
     #[ts(skip)]
     pub custody: ResultCustody,
+}
+
+impl ToolResult {
+    /// The result of `call`: it answers that call's id, so a result cannot name another call.
+    pub fn answering(call: &ToolCall, content: impl Into<String>, is_error: Option<bool>, custody: ResultCustody) -> Self {
+        Self { tool_use_id: call.id.clone(), content: content.into(), is_error, custody }
+    }
 }
 
 /// Custody of one tool result: two facts that used to share one `Option<String>`
@@ -758,14 +766,14 @@ impl ChatMessage {
 
     /// Create a message with tool result
     pub fn tool_result(
-        tool_use_id: impl Into<String>,
+        tool_use_id: ToolCallId,
         content: impl Into<String>,
         is_error: bool,
     ) -> Self {
         Self {
             role: "user".to_string(),
             content: MessageContent::Parts(vec![ContentPart::ToolResult {
-                tool_use_id: tool_use_id.into(),
+                tool_use_id,
                 content: content.into(),
                 is_error: if is_error { Some(true) } else { None },
             }]),

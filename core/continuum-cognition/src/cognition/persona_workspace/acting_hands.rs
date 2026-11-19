@@ -60,7 +60,7 @@ pub async fn drive_create_workspace(
     hands: &ActingHands,
     root: &str,
     path_prepend: &[String],
-    call_id: &str,
+    call_id: &crate::ai::types::ToolCallId,
     refuse_inert_edits: bool,
 ) -> Result<(), crate::sdk_codegen::CommandError> {
     let ws_ctx = crate::cognition::tool_executor::ToolExecutionContext {
@@ -75,7 +75,7 @@ pub async fn drive_create_workspace(
         },
     };
     let ws_call = crate::ai::types::ToolCall {
-        id: call_id.to_string(),
+        id: call_id.clone(),
         name: "code/create-workspace".to_string(),
         input: serde_json::json!({
             "workspace_root": root,

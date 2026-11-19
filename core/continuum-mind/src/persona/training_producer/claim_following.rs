@@ -226,7 +226,7 @@ mod tests {
     use super::*;
 
     fn call(name: &str) -> ToolCall {
-        ToolCall { id: name.into(), name: name.into(), input: serde_json::json!({}) }
+        ToolCall { id: crate::ai::types::ToolCallId::fixture(&name), name: name.into(), input: serde_json::json!({}) }
     }
 
     // what this catches: a hold read on every act (a board round trip per code/read), or

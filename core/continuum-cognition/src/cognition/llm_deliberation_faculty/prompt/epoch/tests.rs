@@ -362,13 +362,13 @@ fn the_final_fit_and_a_view_start_price_a_multi_role_sequence_identically() {
     let pricing = PromptCalibration::default().with_template(super::super::template::TemplateEstimate::from_measurement(&super::super::template::recorded_qwen36()));
     let call = ChatMessage {
         role: "assistant".into(),
-        content: crate::ai::types::MessageContent::Parts(vec![crate::ai::types::ContentPart::ToolUse { id: "c1".into(), name: "code_read".into(), input: serde_json::json!({ "path": "main.rs" }) }]),
+        content: crate::ai::types::MessageContent::Parts(vec![crate::ai::types::ContentPart::ToolUse { id: crate::ai::types::ToolCallId::fixture(&"c1"), name: "code_read".into(), input: serde_json::json!({ "path": "main.rs" }) }]),
         name: None,
     };
     let sequence = vec![
         ChatMessage::text("user", "Read main.rs please."),
         call,
-        ChatMessage::tool_result("c1", "fn main() {\n    println!(\"hi\");\n}\n", false),
+        ChatMessage::tool_result(crate::ai::types::ToolCallId::fixture("c1"), "fn main() {\n    println!(\"hi\");\n}\n", false),
         ChatMessage::text("assistant", "It prints hi."),
         ChatMessage::text("user", "了解しました。次は？"),
     ];

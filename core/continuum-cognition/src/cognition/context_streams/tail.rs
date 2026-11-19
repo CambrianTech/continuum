@@ -92,7 +92,7 @@ pub(crate) struct Parts {
 /// What a one-call act's repeat block keeps of its result: the call it answers and the run it ends.
 struct Answer {
     seq: u64,
-    tool_use_id: String,
+    tool_use_id: crate::ai::types::ToolCallId,
     is_error: Option<bool>,
     run: Option<String>,
     label: String,
@@ -322,9 +322,9 @@ mod tests {
             seq,
             newest: Some(newest),
             words: Some("Reading it again.".to_owned()),
-            calls: vec![ToolCall { id: format!("call-{seq}"), name: "tool/output".to_owned(), input: serde_json::json!({"outputId": "255452cef96d2177"}) }],
+            calls: vec![ToolCall { id: crate::ai::types::ToolCallId::fixture(&format!("call-{seq}")), name: "tool/output".to_owned(), input: serde_json::json!({"outputId": "255452cef96d2177"}) }],
             results: Results::Native {
-                results: vec![ToolResult { tool_use_id: format!("call-{seq}"), content: output.to_owned(), is_error: None, custody: Default::default() }],
+                results: vec![ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&format!("call-{seq}")), content: output.to_owned(), is_error: None, custody: Default::default() }],
                 label: format!("[result #{seq}]"),
             },
             run: None,

@@ -79,7 +79,7 @@ async fn listing(hands: &ActingHands) -> String {
         },
     };
     let call = crate::ai::types::ToolCall {
-        id: "ls".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"ls"),
         name: "code/list".to_string(),
         input: serde_json::json!({ "path": "." }),
     };
@@ -104,7 +104,7 @@ async fn command_work_stays_with_its_card_across_background_dispatch() {
     let (card_a, card_b) = (Uuid::new_v4(), Uuid::new_v4());
     let claim_a = crate::identity::hands_context::HandsContext::for_claim(persona, card_a, Uuid::new_v4());
     let hands = live.in_context(claim_a).expect("claim A's hands");
-    drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], "root", false)
+    drive_create_workspace(&hands, &home.path().to_string_lossy(), &[], &crate::ai::types::ToolCallId::fixture("root"), false)
         .await
         .unwrap();
     note_acting_root_in(persona, Some(claim_a), Some(home.path().to_path_buf()));
@@ -219,12 +219,12 @@ async fn a_claims_hands_are_its_own_and_her_default_hands_never_move() {
     std::fs::write(home.path().join("HER_OWN_notes.md"), "# mine\n").unwrap();
     let persona = Uuid::new_v4();
     let live = hands_for(persona);
-    drive_create_workspace(&live, &home.path().to_string_lossy(), &[], "home", false).await.expect("her home");
+    drive_create_workspace(&live, &home.path().to_string_lossy(), &[], &crate::ai::types::ToolCallId::fixture("home"), false).await.expect("her home");
 
     let (card, claim) = (Uuid::new_v4(), Uuid::new_v4());
     let context = crate::identity::hands_context::HandsContext::for_claim(persona, card, claim);
     let claim_hands = live.in_context(context).expect("her executor acts in a claim's context");
-    drive_create_workspace(&claim_hands, &card_dir.path().to_string_lossy(), &[], "bind", false).await.expect("rooted once");
+    drive_create_workspace(&claim_hands, &card_dir.path().to_string_lossy(), &[], &crate::ai::types::ToolCallId::fixture("bind"), false).await.expect("rooted once");
     assert!(listing(&claim_hands).await.contains("CARD_ONLY.rs"), "the claim's hands stand in the card");
     let at_home = listing(&live).await;
     assert!(at_home.contains("HER_OWN_notes.md") && !at_home.contains("CARD_ONLY.rs"), "her default hands never moved: {at_home}");
@@ -295,7 +295,7 @@ async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (Str
             supported_media_types: vec![],
         },
     };
-    let call = crate::ai::types::ToolCall { id: name.to_string(), name: name.to_string(), input };
+    let call = crate::ai::types::ToolCall { id: crate::ai::types::ToolCallId::fixture(&name), name: name.to_string(), input };
     let out = hands.executor.execute_native_batch(&crate::ai::types::CallBatch::classify([call.clone()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx).await.expect("the call runs");
     (out.results[0].content.clone(), out.results[0].is_error.is_some())
 }
@@ -303,7 +303,7 @@ async fn call(hands: &ActingHands, name: &str, input: serde_json::Value) -> (Str
 /// Root a set of hands the way `root_acting_workspace` does: the workspace, then its
 /// place in the acting-root record.
 async fn root(hands: &ActingHands, dir: &std::path::Path) {
-    drive_create_workspace(hands, &dir.to_string_lossy(), &[], "root", false).await.expect("roots");
+    drive_create_workspace(hands, &dir.to_string_lossy(), &[], &crate::ai::types::ToolCallId::fixture("root"), false).await.expect("roots");
     note_acting_root_in(hands.persona_id, hands.context, Some(dir.to_path_buf()));
 }
 

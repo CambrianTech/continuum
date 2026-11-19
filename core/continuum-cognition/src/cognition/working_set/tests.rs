@@ -817,7 +817,7 @@ fn uncut_acts_bring_the_room_back_down_after_a_cut() {
 fn a_cut_inside_an_open_tool_call_is_a_cut_answer() {
     use crate::ai::types::{FinishReason, ToolCall, UnparsedArguments};
     let call = ToolCall {
-        id: "call-write".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"call-write"),
         name: "code/write".into(),
         input: UnparsedArguments::Cut { raw: "{\"path\":\"src/a.rs\",\"content\":\"pub fn create_accounts(".into() }.into_input(),
     };

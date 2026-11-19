@@ -71,6 +71,7 @@ metal = { workspace = true }
 objc = { workspace = true }
 
 [dev-dependencies]
+continuum-tool-protocol = { path = "../continuum-tool-protocol", features = ["test-fixtures"] }
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
 source-hygiene = { path = "../source-hygiene" }

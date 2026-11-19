@@ -5,7 +5,7 @@
 //! as a `[result #n]` item of her actions in the next, so the engine re-prefilled the whole
 //! previous tail (the M5, 2026-11-06: 2,822 s over 78 acts).
 
-use crate::ai::types::{ChatMessage, ContentPart, MessageContent};
+use crate::ai::types::{ChatMessage, ContentPart, MessageContent, ToolCallId};
 
 use super::{ContextMessage, Role};
 
@@ -13,8 +13,8 @@ use super::{ContextMessage, Role};
 #[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum NativePart {
     Text(String),
-    ToolUse { id: String, name: String, input: ToolInput },
-    ToolResult { tool_use_id: String, content: String, is_error: Option<bool> },
+    ToolUse { id: ToolCallId, name: String, input: ToolInput },
+    ToolResult { tool_use_id: ToolCallId, content: String, is_error: Option<bool> },
 }
 
 impl NativePart {

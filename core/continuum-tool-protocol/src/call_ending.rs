@@ -153,7 +153,7 @@ mod tests {
 
     fn call(raw: &str, end: GenerationEnd) -> ToolCall {
         let input = UnparsedArguments::parse(raw.to_string(), end).unwrap_or_else(UnparsedArguments::into_input);
-        ToolCall { id: "t".into(), name: "code/edit".into(), input }
+        ToolCall { id: crate::ToolCallId::fixture(&"t"), name: "code/edit".into(), input }
     }
 
     const COMPLETE: &str = r#"{"file_path":"a.rs"}"#;
@@ -183,7 +183,7 @@ mod tests {
                 assert_eq!(UnparsedArguments::of(&c.input).ok().flatten().map(|u| u.raw().to_string()), Some(raw.to_string()));
             }
             // A call another adapter handed on parsed is still held.
-            let parsed = ToolCall { id: "t".into(), name: "code/edit".into(), input: serde_json::json!({"file_path": "a.rs"}) };
+            let parsed = ToolCall { id: crate::ToolCallId::fixture(&"t"), name: "code/edit".into(), input: serde_json::json!({"file_path": "a.rs"}) };
             assert_eq!(parsed.ending(end), held);
         }
     }
@@ -194,7 +194,7 @@ mod tests {
     fn an_unreadable_marker_is_malformed_never_absent() {
         let input = serde_json::json!({ UnparsedArguments::MARKER: { "kind": "renamed_in_a_later_build", "raw": "{" } });
         assert!(UnparsedArguments::of(&input).is_err());
-        let call = ToolCall { id: "t".into(), name: "code/edit".into(), input };
+        let call = ToolCall { id: crate::ToolCallId::fixture(&"t"), name: "code/edit".into(), input };
         assert_eq!(call.ending(GenerationEnd::Finished), CallEnding::Malformed);
     }
 

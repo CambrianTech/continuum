@@ -478,6 +478,7 @@ required-features = ["avatar-3d"]
 unexpected_cfgs = "allow"
 
 [dev-dependencies]
+continuum-tool-protocol = { path = "../continuum-tool-protocol", features = ["test-fixtures"] }
 continuum-kernel = { path = "../continuum-kernel", features = ["test-fixtures"] }
 continuum-engine = { path = "../continuum-engine", features = ["test-fixtures"] }
 continuum-serving = { path = "../continuum-serving", features = ["test-fixtures"] }

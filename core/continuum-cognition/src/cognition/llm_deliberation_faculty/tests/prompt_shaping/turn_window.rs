@@ -204,7 +204,7 @@ async fn own_history_preserves_corrections_at_each_inference_step() {
             *report,
             Some(occurred_at),
         ));
-        let call_id = format!("verify-{step}");
+        let call_id = crate::ai::types::ToolCallId::fixture(&format!("verify-{step}"));
         wm.record_receipt_typed(
             &[Observation {
                 call: ToolCall {
@@ -697,7 +697,7 @@ fn the_reply_claims_her_measured_need_and_no_cap() {
     let parts = vec![
         crate::ai::types::ContentPart::Text { text: "note".into() },
         crate::ai::types::ContentPart::ToolUse {
-            id: "call-1".into(),
+            id: crate::ai::types::ToolCallId::fixture(&"call-1"),
             name: "write_file".into(),
             input: serde_json::json!({"path": "notes.md", "content": "# Example\nA written file's bytes."}),
         },

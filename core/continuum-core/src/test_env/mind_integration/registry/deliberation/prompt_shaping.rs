@@ -54,11 +54,11 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
         other_png.get_ref(),
     ).unwrap();
     let ws = Workspace::new("fix the __eq__ comparison in sympy Expr");
-    wm.record_native_action_statement("", ws.activity_room_id, &[ToolCall { id: "capture".into(), name: "perception/observe".into(), input: json!({}) }]);
+    wm.record_native_action_statement("", ws.activity_room_id, &[ToolCall { id: crate::ai::types::ToolCallId::fixture(&"capture"), name: "perception/observe".into(), input: json!({}) }]);
     wm.record_receipt_typed(
         &[Observation {
             call: ToolCall {
-                id: "capture".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"capture"),
                 name: "perception/observe".into(),
                 input: json!({}),
             },
@@ -66,7 +66,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
                 image: Some(image.clone()),
                 additional_images: Some(vec![other_image.clone()]),
                 result: ToolResult {
-                    tool_use_id: "capture".into(),
+                    tool_use_id: crate::ai::types::ToolCallId::fixture(&"capture"),
                     content: grep_result.clone(),
                     is_error: None,
                     custody: crate::ai::types::ResultCustody::Unsaved,
@@ -214,7 +214,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let seq = wm.active_action_full().unwrap().0;
     let mut batch = wm.active_action_observations(seq);
     let mut error = batch[0].clone();
-    error.call.id = "failed-call".into();
+    error.call.id = crate::ai::types::ToolCallId::fixture("failed-call");
     error.call.name = "bash".into();
     error.call.input = json!({"command": "cat missing.rs"});
     let original_error_call = error.call.clone();
@@ -227,7 +227,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     error.output.result.is_error = Some(true);
     error.status = ActStatus::Errored { message: "file does not exist".into() };
     let mut skipped = error.clone();
-    skipped.call.id = "skipped-call".into();
+    skipped.call.id = crate::ai::types::ToolCallId::fixture("skipped-call");
     skipped.output.result.tool_use_id = skipped.call.id.clone();
     skipped.output.result.content = "not executed; prior output available via tool/output saved-result".into();
     skipped.output.result.custody = crate::ai::types::ResultCustody::Pointer { handle: "saved-result".into() };
@@ -245,17 +245,17 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let wire_batch = crate::inference::request_body::wire_messages(&fitted.messages, None, true, false, "llama-server");
     let at = wire_batch.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
     for (i, observation) in batch.iter().enumerate() {
-        assert_eq!(wire_batch[at]["tool_calls"][i]["id"], native_calls[i].id);
+        assert_eq!(wire_batch[at]["tool_calls"][i]["id"], native_calls[i].id.as_str());
         assert_eq!(wire_batch[at]["tool_calls"][i]["function"]["name"], native_calls[i].name);
         let arguments: serde_json::Value = serde_json::from_str(wire_batch[at]["tool_calls"][i]["function"]["arguments"].as_str().unwrap()).unwrap();
         assert_eq!(arguments, native_calls[i].input);
-        assert_eq!(wire_batch[at + 1 + i]["tool_call_id"], observation.call.id);
+        assert_eq!(wire_batch[at + 1 + i]["tool_call_id"], observation.call.id.as_str());
         assert_eq!(wire_batch[at + 1 + i]["content"], observation.output.result.content);
     }
     let mut invalid = faculty.messages_unfitted(&ws, None);
     if let MessageContent::Parts(parts) = &mut invalid.latest_result[1].content {
         if let ContentPart::ToolResult { tool_use_id, .. } = &mut parts[0] {
-            *tool_use_id = "unmatched".into();
+            *tool_use_id = crate::ai::types::ToolCallId::fixture("unmatched");
         }
     }
     assert!(invalid.active_protocol_error().is_some());
@@ -296,7 +296,7 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let corrected_wire = crate::inference::request_body::wire_messages(&corrected.messages, None, true, false, "llama-server");
     let call_at = corrected_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
     for (i, observation) in batch.iter().enumerate() {
-        assert_eq!(corrected_wire[call_at + 1 + i]["tool_call_id"], observation.call.id);
+        assert_eq!(corrected_wire[call_at + 1 + i]["tool_call_id"], observation.call.id.as_str());
     }
     wm.set_scope(Some("another-workspace".into()));
     assert!(wm.active_action_full().is_none(), "native result cannot demote to foreign-root prose");
@@ -317,8 +317,8 @@ async fn pinned_act_result_reaches_the_prompt_even_with_an_empty_broadcast() {
     let returned_wire = crate::inference::request_body::wire_messages(&returned.messages, None, true, false, "llama-server");
     let at = returned_wire.iter().position(|m| m["tool_calls"][0]["id"] == "capture").unwrap();
     for (index, call) in native_calls.iter().enumerate() {
-        assert_eq!(returned_wire[at]["tool_calls"][index]["id"], call.id);
-        assert_eq!(returned_wire[at + 1 + index]["tool_call_id"], call.id);
+        assert_eq!(returned_wire[at]["tool_calls"][index]["id"], call.id.as_str());
+        assert_eq!(returned_wire[at + 1 + index]["tool_call_id"], call.id.as_str());
     }
     wm.set_scope(None);
     wm.record_settlement("observed", None);
