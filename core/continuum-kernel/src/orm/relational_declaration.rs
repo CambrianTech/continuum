@@ -19,6 +19,8 @@ pub struct Model {
 pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
+mod retired_indexes;
+
 mod catalog {
     use sea_orm::entity::prelude::*;
     #[derive(Clone, Debug, PartialEq, DeriveEntityModel, serde::Serialize, serde::Deserialize)]
@@ -59,7 +61,7 @@ pub(super) async fn admit(
         .map_err(SchemaError::from)?
     {
         Some(receipt) => {
-            verify_physical(&receipt, &actual)?;
+            retired_indexes::reconcile(db, &receipt, &actual).await?;
             let previous = decode(&receipt)?;
             if !super::entity::schemas_equivalent(&previous, schema) {
                 super::relational_evolution::evolve(db, &previous, schema).await?;
@@ -148,7 +150,7 @@ pub(super) async fn restore<C: ConnectionTrait>(
     for receipt in receipts {
         let schema = decode(&receipt)?;
         super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, GapFault::Compile(Box::new(error))))?;
-        verify_physical(&receipt, &physical(db, &schema.collection).await?)?;
+        retired_indexes::reconcile(db, &receipt, &physical(db, &schema.collection).await?).await?;
         schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
     }
     Ok(schemas)
