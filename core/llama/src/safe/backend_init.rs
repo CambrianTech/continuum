@@ -311,6 +311,17 @@ pub struct WeightAllocation {
     pub host: u64,
 }
 
+/// The native allocator refused the requested context.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create context")]
+pub struct ContextCreationRefused;
+
+impl From<ContextCreationRefused> for String {
+    fn from(error: ContextCreationRefused) -> Self {
+        error.to_string()
+    }
+}
+
 impl Model {
     pub fn weight_allocation(&self) -> WeightAllocation {
         // SAFETY: the model stays loaded throughout this immutable allocation query.
@@ -416,16 +427,16 @@ impl Model {
 
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
-        self.build_context(params, false)
+        Ok(self.build_context(params, false)?)
     }
 
     /// Create a context that produces pooled embeddings without allocating logits.
-    pub fn new_pooled_context(&self, mut params: ContextParams) -> Result<Context<'_>, String> {
+    pub fn new_pooled_context(&self, mut params: ContextParams) -> Result<Context<'_>, ContextCreationRefused> {
         params.embeddings = true;
         self.build_context(params, true)
     }
 
-    fn build_context(&self, params: ContextParams, pooled_only: bool) -> Result<Context<'_>, String> {
+    fn build_context(&self, params: ContextParams, pooled_only: bool) -> Result<Context<'_>, ContextCreationRefused> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
@@ -470,7 +481,7 @@ impl Model {
         }
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
-        let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
+        let ctx = NonNull::new(raw).ok_or(ContextCreationRefused)?;
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,

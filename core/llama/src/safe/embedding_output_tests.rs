@@ -12,7 +12,7 @@ fn pooled_only_preserves_embedding_and_omits_logits() {
             embeddings: true, pooling_type: PoolingType::Last,
             n_ctx: width, n_batch: width, n_ubatch: width, ..Default::default()
         };
-        let mut ctx = if only { model.new_pooled_context(params) } else { model.new_context(params) }.expect("context");
+        let mut ctx = if only { model.new_pooled_context(params).expect("pooled context") } else { model.new_context(params).expect("normal context") };
         outputs.push(ctx.embed(&tokens).expect("whole sequence"));
         // SAFETY: ctx owns a live context. The returned pointer is only checked for null.
         assert_eq!(unsafe { sys::llama_get_logits(ctx.ptr.as_ptr()) }.is_null(), only);
