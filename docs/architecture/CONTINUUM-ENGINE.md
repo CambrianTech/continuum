@@ -2797,6 +2797,23 @@ to prefilling 62,873 tokens, most of them minds starting cold after the restart.
 Gate: after a deploy, no cold first act; delivered tok/s in the first window after boot within 10% of the window
 before it.
 
+**The paradigms: every owner is built from these, and nothing else** (Joel, 2026-11-19: "formal architecture and reuse
+of a solid and reused lifecycle is the only way to do it. This code would be ten times less and ten times faster if it
+had consistent reuse of paradigms"). Each owner instantiates them; it never re-derives one. A change that hand-writes
+what one of them does is the defect, whatever it measures.
+
+| Concern | The one paradigm | What it replaces (found on 11-19) |
+|---|---|---|
+| Threads, queues, backpressure | `continuum-flow` `Stage` (CBAR's `QueueThread<T>`: own worker, declared depth, `handle_all`) and `Outbox` (producer never waits) | the driver's serial loop, `spawn_blocking` per turn, a hand backlog |
+| A seam between owners | typed commands in, events out, one snapshot (`protocol.rs`) | whole-turn calls, text across seams, ad hoc channels |
+| Being, stopping, coming back | `Lifecycle`: `prepare`, `suspend`, `resume`, `release`, typed `Preservation`; a parent's call is its children's, folded concurrently (Codex owns the kernel fold) | serial `SettleBeforeStop` participants, hand-ordered teardown (`SaveTimedOut`, `JoinTimedOut` on BigMama) |
+| State that outlives a process | `continuum-saved-state` kinds (envelope, typed `Loaded`, contract compared by field; `ExternalBlob` for natively written bytes) | a hand manifest, checksum and atomic rename in `preserve.rs` (deleted) |
+| What a node holds | `Footprint`, folded over children | a hand sum of tier and checkpoint bytes |
+| What happened | `Record` (a stage) publishing probes and the snapshot | probes written on the hot thread, lost at boot and exit |
+
+Before an owner is written: name which of these it instantiates; search for the existing one; a missing capability is
+added to the paradigm (the flow stage's depth, saved-state's `ExternalBlob`), never beside it.
+
 **One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
 artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
 below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
