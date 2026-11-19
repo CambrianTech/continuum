@@ -110,9 +110,12 @@ turn as well as total tokens per second. This policy requires resumable decode o
 serving backend. Releasing an HTTP admission permit while its backend still generates
 would misrepresent available capacity.
 
-A warm-ahead hint may use immediately available capacity. The foreground turn can proceed
-when staging has done no work. Once a transfer starts, its completion owner retains the
-affected slot until the native receipt lands. Independent work remains runnable throughout.
+Prompt assembly owns interest in the next swap. A capacity or slot-release event makes
+that work runnable while assembly proceeds. A pending swap holds no mind or slot and
+needs no timer. When assembly finishes, the foreground request takes responsibility for
+the same page. If the transfer has already begun, its existing completion owner retains
+physical custody until the native receipt lands. If the turn is cancelled before any
+transfer, dropping its interest withdraws the pending work.
 
 **Nothing on the engine thread waits.** Everything else runs as a `continuum-flow` stage, CBAR's
 `QueueThread<T>` (SUBSTRATE §2): its own worker, a bounded inbox, woken only by a push.
