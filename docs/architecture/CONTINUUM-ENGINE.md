@@ -2693,10 +2693,50 @@ from its documented architecture: its source is not on this machine, so those po
 4. `Answer`: the caller awaits a stream on its own task. No OS thread is parked per turn, and a reply can be read as it
    arrives.
 
-**Threads and what crosses them.** A persona's own task tokenizes her appends and awaits her `Answer`. The engine thread
-runs frames. An IO worker moves cold blocks. Only three things cross: the command queue (bounded, per `Mind`, in
-order), the `Answer` streams, and the snapshot. No lock is held across a seam, no permit stands for a lane, and nothing
-waits for a whole turn.
+**The engine is a dataflow graph of stages, on every core** (Joel, 2026-11-19: "My default was a separate thread and
+data flow and so publish and subscribe to any data and react. Never your stupid locks and serial bs. We have 16 or more
+cores!!! Use them all. You make it easy and reusable with good base objects abstraction and interfaces for free.")
+
+The base object already exists and the engine ignored it. `continuum-flow::Stage` is CBAR's `QueueThread<T>`
+(`cb-mobile-sdk/cpp/utility/Threads.h:109-212`; `continuum-flow/src/stage.rs:1`). A stage is its handler and nothing
+else. It gets its own worker that wakes only on a push, one input in hand and one pending (CBAR's double buffer),
+`Reliable` or `KeepNewest` overflow, and a QoS class. The same crate provides the per-owner serial queue and the aging
+dispatcher (goal 9). CBAR's analyzer hub (`CBP_Analyzer.cpp` `addItem`) fans each frame out to every analyzer thread,
+real-time ones inline and the rest on their own threads. The engine's graph is that hub for minds:
+
+| Stage | Input -> output | Runs on | Cores |
+|---|---|---|---|
+| `Tokenize` | a mind's appended items -> ids | the worker pool, one serial queue per mind (FIFO across clones, Codex) | many |
+| `Prepare` | ids + her proxy's record -> a `PreparedTurn` (where she resumes: append, rewind to a mark, cold; the tokens to prefill) | the pool, once per turn, never per frame | many |
+| `Residency` | promote, demote, restore requests -> blocks staged in host memory; disk reads and writes | its own worker; disk IO on the IO pool | 1-2 |
+| `Engine` | prepared turns, staged blocks -> one step per frame (bind, prefill chunk, one token); logits | the one thread that touches the context | 1 + the GPU |
+| `Sample` | logits handle -> token | its own worker, overlapped with the GPU's next prefill chunk for NEXT (below) | 1 |
+| `Emit` | tokens -> pieces, stop and tool-call detection, `Answer` streams | its own worker | 1 |
+| `Record` | step costs -> probe rows and the `EngineSnapshot` | its own worker, `KeepNewest` | 1 |
+
+Each stage publishes typed data and the next stage subscribes. Nothing is serialized onto the engine thread except what
+needs the context itself: binding, the forward pass and the logits read.
+
+**Keeping the GPU fed (the 3 fps problem).** One mind's tokens are a true chain: her next forward pass needs the token
+just sampled. Live, that chain runs decode, a full synchronize, sample, detokenize and send before the next decode
+starts, so the GPU idles during every CPU step. Measured on the M5 (serving down, fork a58c3b4cf, the served GGUF and
+its Q4_0 KV): `llama-bench` decodes 49.5 tok/s at 12k and 34.8 at 46k. Live at 7f67dc28d0 one mind decodes about
+10 ms per token slower than that (26.2 tok/s at 47k). The graph removes the gap three ways:
+1. *Off the chain.* Detokenize, stop and tool detection, `Answer` sends and probes leave the engine thread for `Emit`
+   and `Record`. The engine thread is left with forward, logits read and the sampler. e582fd2125 splits a turn's decode
+   time into forward, sample and the rest of the frame, so the size of each part is a receipt, not a guess.
+2. *Fill the gaps.* While ACTIVE's token is being sampled, the GPU runs NEXT's next prefill chunk: GPU work never waits
+   for CPU work. This is the 4.13 overlap; still one mind decoding at a time, never two minds batched.
+3. *More tokens per forward pass.* The MTP draft (`mtp-Qwen3.6-35B-A3B-Q4_0.gguf` is on the M5) proposes tokens that
+   one forward pass verifies (4.10). That is the only way past the chip's single-mind rate.
+
+**One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
+artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
+below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
+hand-writes a loop, a thread or a channel.
+
+**What crosses a stage boundary:** typed inputs (bounded, per owner, in order), `Answer` streams and the snapshot. No
+lock is held across a seam, no permit stands for a lane, and nothing waits for a whole turn.
 
 **Media and genes are commands on the same object.** An image or audio item is an `extend` whose ids include the
 projector's embedding positions, applied in *pre* like any append, so the single-flight bypass is deleted. Genes are
@@ -2715,13 +2755,15 @@ text before it. The rule then: `extend` renders from her last mark, and the temp
 bounds. A probe counts every append whose render differs before its mark, so a rewrite is never silent.
 
 **Order: vertical slices, each deployed on the M5 and read for 15 minutes before the next.**
-- *S1 `Answer` and the snapshot.* `submit` returns a handle and streams tokens; `spawn_blocking` is deleted from the text
-  path. Gate: no OS thread parked per turn; first-token time recorded per turn.
-- *S2 `Mind` and `MindProxy`.* `extend`, `answer`, `mark` and `rewind`; tokenizing moves to the persona's task; the
-  proxy table replaces `Turn`, `Mind`, `parked` and `Roles`. Gate: engine-thread time per admitted turn near zero;
-  prefill equals the appended tokens.
-- *S3 Streaming in the frame.* NEXT is copied in during ACTIVE's decode within the measured budget. Gate: switch time on
-  the critical path near zero while decode tok/s holds.
+- *S1 `Emit`, `Record` and `Answer`.* The engine thread hands tokens to `Emit` and costs to `Record`
+  (`continuum-flow` stages); `submit` returns an `Answer` stream; `spawn_blocking` is deleted from the text path. Gate:
+  live decode within 10% of `llama-bench` at the same depth and KV type (today about 10 ms per token behind); no OS
+  thread parked per turn.
+- *S2 `Mind`, `Tokenize`, `Prepare`, `MindProxy`.* `extend`, `answer`, `mark` and `rewind`; tokenizing and the reuse
+  decision run on the pool; the proxy table replaces `Turn`, `Mind`, `parked` and `Roles`. Gate: engine-thread time per
+  admitted turn near zero; prefill equals the appended tokens.
+- *S3 `Residency`, `Sample` and the overlap.* NEXT is copied in, and NEXT's prefill chunks run, during ACTIVE's sample
+  steps. Gate: switch time on the critical path near zero; GPU idle between ACTIVE's tokens near zero.
 - *S4 Cold tier and restore at boot.* A restart demotes and never drops. Gate: no cold first act after a deploy (live
   2026-11-19 00:56-01:00Z: four cold first acts, waits stacked to 155 s).
 - *S5 Delete the legacy* (lanes, `kv_page`, served windows, the media bypass), split by crate with Codex.
