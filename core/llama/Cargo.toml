@@ -21,6 +21,7 @@ bindgen = "0.70"
 sha2 = { workspace = true } # streamed producer-output identity shared with cache reclamation
 
 [features]
+embedding-model-tests = []
 default = []
 metal = []
 cuda = []
