@@ -2732,23 +2732,32 @@ its Q4_0 KV): `llama-bench` decodes 49.5 tok/s at 12k and 34.8 at 46k. Live at 7
 
 **The GPU is never idle while anything could use it** (Joel, 2026-11-19: "Should be almost 2s between fully active GPU so
 like 80% or more on all the time or we have failed... No wait for no apparent reason... Why would we ever have a wait?").
-The gate: GPU busy at least 80% of every window, and no idle gap over 2 s while any mind is resident. A mind's turn may
-queue only behind GPU work; a turn waiting while the GPU idles is a defect.
+The gate: GPU busy at least 80% of every window, and no idle gap over 2 s while any mind is resident.
+
+**Minds are active, not turn-takers** (Joel, 2026-11-19: "If one persona is for some reason waiting the other persona
+should swap in but regardless I disagree with this philosophy. These are active minds not bottlenecked crap"). The
+request/response shape is the defect: a mind that "submits a turn", waits for the whole answer, runs a tool, rebuilds her
+view, renders, tokenizes and submits again has made herself the bottleneck, and a scheduler that fills her silences with
+"background work" only papers over it. The model is a process on an OS:
+- *A mind is always running.* Her thinking is one continuous stream in the engine (her `MindProxy`), not a series of
+  requests. Whatever she perceives (a message, a tool's output, a file she opened) is appended to that stream as it
+  arrives and prefilled then. Nothing waits for her to "ask".
+- *A tool is I/O she started, not a pause.* `Emit` sees the call while she is still decoding and the tool starts then.
+  While it runs she is **blocked on I/O** for that call only, and the engine runs another mind immediately: the swap is
+  the OS running the next runnable process, in milliseconds (4.14). When the result arrives it is appended to her
+  stream and she is runnable again.
+- *The engine runs whichever minds are runnable.* There is no queue of turns to wait in. If every resident is blocked
+  on I/O at once, that is a measured fact to fix in her I/O (a slow tool, a serial step in perception), never a reason
+  to idle the engine by design.
+- *Learning is one of her activities.* Her in-place LoRA step on her own reviewed work (4.11.6) is something an active
+  mind does, scheduled like her other work; it does not wait for an idle node.
+- *A restart is not a dark minute.* The engine comes up first and minds restore their blocks from disk (S4).
 
 Measured on the M5 at a990358854, from the turn rows (each turn's prefill, decode and switch time merged into busy spans):
-from 01:42:00 to 01:49:20 the GPU was busy 74% of 440 s, with 18 idle gaps. The first was the 63.5 s boot. Six were
-3.0-6.9 s between turns, two of them a mind waiting on herself. At each gap no mind had GPU work submitted: from a turn's
-end to her next submission a mind takes 3.7 s at p50 (p90 181 s, 16 turns), serially running her tool, rebuilding her view,
-rendering, tokenizing and submitting. Three moves remove the gaps:
-1. *Her next turn is mostly prefilled before she asks.* `Emit` sees a tool call while the model is still decoding, so
-   the tool starts then. Its result, and every perception item, is appended and prefilled the moment it arrives, as
-   `Background` work. When she asks, only the tail remains.
-2. *There is always GPU work at a lower class.* The `continuum-flow` scheduler's classes run interactive and work turns
-   first. Background work fills every gap and yields at a token or chunk boundary: warm-ahead prefill of every resident's
-   appended items, and her learning steps on her own reviewed work (the in-place LoRA step, 4.11.6). Learning stops
-   being something that waits for an idle node; it fills the gaps.
-3. *A restart is not a dark minute.* The engine comes up first and minds restore their blocks from disk (S4); the 63.5 s
-   boot gap was the core booting with every mind cold.
+from 01:42:00 to 01:49:20 the GPU was busy 74% of 440 s, with 18 idle gaps. The first was the 63.5 s boot, every mind
+cold. Six were 3.0-6.9 s, at moments when no mind had work in the engine: today a mind runs request/response, taking
+3.7 s at p50 (p90 181 s, 16 turns) from one answer's end to her next request, serially running her tool, rebuilding her
+view, rendering, tokenizing and submitting. Twice the GPU waited on the same mind coming back.
 
 `Record` publishes the GPU's busy share and its longest idle gap every window in the snapshot. That is the gate, read
 live, not reconstructed from rows afterwards.
