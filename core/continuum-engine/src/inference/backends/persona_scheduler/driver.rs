@@ -231,6 +231,8 @@ struct Spent {
     /// is left of `decode` is the frame's own work around them (CONTINUUM-ENGINE 4.16: the M5 at
     /// 7f67dc28d0 decoded ~10 ms/token slower than llama-bench on the same GGUF and KV type).
     forward: std::time::Duration,
+    /// Of `decode`: waiting for the forward pass to land on the GPU.
+    gpu: std::time::Duration,
     sample: std::time::Duration,
     switches: u64,
 }
@@ -475,6 +477,11 @@ impl Driver<'_, '_> {
         self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
         self.record(|her| her.held.push(token))?;
+        // Wait for the forward pass here, where reading her logits would wait anyway, so the GPU's
+        // time and the sampler's are measured apart.
+        let landing = Instant::now();
+        self.engine.settle()?;
+        turn.spent.gpu += landing.elapsed();
         let sampling = Instant::now();
         let next = self.engine.tier().sample(&mut turn.sampler, 0);
         turn.spent.sample += sampling.elapsed();
@@ -502,6 +509,7 @@ impl Driver<'_, '_> {
             prefill_ms = ms(turn.spent.prefill),
             decode_ms = ms(turn.spent.decode),
             forward_ms = ms(turn.spent.forward),
+            gpu_ms = ms(turn.spent.gpu),
             sample_ms = ms(turn.spent.sample),
             generated = generated as u64,
             total_ms = ms(turn.submitted.elapsed()),
