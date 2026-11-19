@@ -1,4 +1,4 @@
-# Flow implementation plan: making the concurrent mind real (2026-10-28)
+# Runtime data flow and migration plan
 
 > The design already exists. [CONCURRENT-MIND-AND-GOVERNOR](CONCURRENT-MIND-AND-GOVERNOR.md) §1 and
 > §3.1-3.3 and [SUBSTRATE-DOCTRINE-ORGANIC-FLOW](SUBSTRATE-DOCTRINE-ORGANIC-FLOW.md) ("Flow not RPC",
@@ -11,7 +11,7 @@
 > inserts and signals"; "You can't let inference pile up"; "I'd always take the most recent";
 > "Think of live conversations"; "Simulate all cases".
 
-## 1. What the measurements say (M5, Qwen3.6-35B-A3B, 4 residents)
+## 1. October measurements on the M5 (Qwen3.6-35B-A3B, four residents)
 
 - **The engine is not slow.**
   - Our server matches stock `llama-bench` at 64k context: prefill 322 vs 304 tok/s, decode 30.5 vs 29.5.
@@ -48,7 +48,7 @@
    - **work**: her act on her card;
    - **utility**: ambient thought, perception enrichers, gene exams;
    - **background**: dreams, training, consolidation.
-5. **Each owner is a serial queue** that targets a class. Her newer signal supersedes her waiting one and keeps her place. Utility and background queues are bounded and shed their oldest. Nothing piles up (Joel; "Backpressure is intrinsic").
+5. **Each mutable resource has an owner.** Order mutations that touch the same state. Independent substages subscribe and advance separately. Coalesce redundant wakes by key, keep distinct commands and completions, and replace obsolete previews with the latest. Bound each buffer by the resource it consumes.
 6. **One event-driven dispatcher per capacity**, the `continuum-flow` primitive.
    - It owns its ready set, wakes on events (submitted, freed, page landed, aging instant), and never polls.
    - It is a pure scheduler (decisions, testable in microseconds) plus a thin actor.
@@ -309,30 +309,48 @@ What the plan does at each point:
 | D: polling loops | 34 | become event-driven (watch/notify on the thing that changes) |
 | E: dead or duplicate | 11 | deleted, including the kernel's ConcurrentPriorityQueue, inference-grpc's unused priority queue, the unused TokioConcurrencyPolicy |
 
-The top live-latency items, in order:
-1. the serial per-mind loop with no preemption (a directed line waits for a whole self-turn);
-2. the per-mind act gate;
-3. the classless adapter semaphore;
-4. slot wait and page IO when minds outnumber slots;
-5. the relaunch drain barrier;
-6. the adapter registry RwLock held across generation;
-7. the voice path's drops and mutexes;
-8. RAG work inline on the turn path;
-9. remote minds' refusal and 2 s reply poll;
-10. token flush timers.
+### Current audit scope
 
-## 5. Order of work (each step: simulator cases pass, dyno replay no worse, 15-minute live read no worse)
+The October inventory above is historical. The November pass surveyed Rust source under
+`core/*/src` on engine head `6b49d2570c`, tracing provider queries, restore, paging,
+health, transport, storage and process ownership. Text matches for locks, channels,
+spawns and timers select code for inspection. They do not establish contention. Native
+transfer geometry was checked against four retained M5 files. Voice, grid transit,
+storage contention and accelerator occupancy still need live traces.
 
-| step | what | owner | proves |
-|---|---|---|---|
-| 0 | Hold #5558 commits 3-5; keep 4579b4711 live | Fable | done 14:20Z |
-| 1 | `continuum-flow` primitive + **simulator** (pure scheduler, fake engine, virtual clock; §6 cases) | Fable | every case in §6 green in seconds |
-| 2 | Engine compute as the first capacity: one dispatcher replaces lanes, adapter semaphore and the act gate; in-flight gauge and directed class move into it; warm-ahead becomes a utility-class use of free capacity (no reserved scratch slot) | Fable (dispatcher), Codex (admission/allocator/pager seams) | sim: directed waits < one decode step, gauge exact, warm-ahead intact; live: slot wait, act median |
-| 3 | KV memory admission: `MindMemory::seat` + RAM paging (fork #79, #70) as the release-memory verb | Fable, Codex | sim: no resident overwritten unsaved; live: switch freeze ~0.1 s |
-| 4 | Training and examiner as consumers: compute yield at batch boundary, memory lease kept; fork yield windows and TrainingHolds-as-scheduler deleted; S7 stop-drain fixture (920619c5) | Cormac | sim: training's worst-case wait bounded; live: resident decode during training |
-| 5 | The mind's stages on the flow: coalesced signal per mind, codec consolidation, late render with capture at send, prefill as enricher | Fable | sim: 20-line burst = one wake, newest read; live: act median, prefill per act |
-| 6 | Live path: STT/TTS capacities, barge-in yield, event-driven flush, call-join sleeps gone | Fable + BigMama (live) | sim: first token ≤ 1 s after silence; live: the seven timestamps |
-| 7 | The rest of category A by subsystem; D polls to events; E deleted | each owner by area | per-subsystem receipts, lines removed |
+## 5. Runtime migration order
+
+Use the [shared workflow and required hook contract](SUBSTRATE.md#extension-bar).
+Keep the [engine](CONTINUUM-ENGINE.md) authoritative for serving and native execution,
+and the [ORM](../infrastructure/RUST-ORM-ARCHITECTURE.md) authoritative for durable data.
+Each row below names the first callers to migrate and the evidence needed to retire their
+old path. Items in the same wave can proceed independently.
+
+| Wave and subsystem | Observed seam and proposed change | Live acceptance |
+|---|---|---|
+| 1. Serving, decoder, KV transfers and restart | The driver opens preservation after native allocation. Have preservation supply restore requirements before planning. Budget concurrently resident streams and parked bytes separately. Publish applied geometry once. Keep single-writer ordering for a decode stream and the fence that transfers custody. | Preserve all four identities across restart. Record restore time, cell and byte demand, refusal reason, time to first useful output and interleaved per-resident progress. |
+| 1. Providers, genome and embeddings | Health and model queries await providers under the registry guard. Snapshot handles once and query independently. Route catalog and paging to the backend owning the adapter. Remove the in-process path to the HTTP-only gene catalog. Audit `ensure_adapter`, which loads under the map lock. A pooled embedding context needs exclusive use during a call, while unrelated contexts can proceed. | Exercise a slow provider alongside registry mutation, embedding and decode. Report requested, loaded and turn-applied adapter identity separately. |
+| 1. Governors, resident scheduling and health | `health_ledger::verdict`, the spawner and grid allocator all consume a two-minds-per-lane policy. The M5 reported starvation with four residents, one intentional decode lane and zero lane-starved events. Separate observed delay and progress from placement policy. Have governors subscribe to capacity and completion. | Replay a slow mind alongside active peers. Measure per-resident ready age, first response, useful acts and starvation by cause. |
+| 1. Mind, cortical functions, grounding, context and memory | Follow the addressed inbound pump to each consuming region. Store distinct input once, wake subscribers by typed handle, and let independent subscribers advance while a tool or decode is outstanding. Share immutable context by generation and invalidate only affected inputs. | Interrupt a coding turn with speech and a second tool result. Check both completions reach the correct mind and later context includes both. |
+| 2. Tool use, command dispatch, host and process lifecycle | Build on the owned process capture, identity and completion in `continuum-process/src/owned.rs`. Remove per-command polling where the handle supplies completion. Keep process exit verification at the OS boundary. Give long builds independent handles. | Issue two tools, interrupt one and deliver the other's result while the mind remains responsive. Verify cancellation reaches only its owned process. |
+| 2. Live voice, perception, capture and rooms | Trace `continuum-live` call management through the LiveKit bridge, perception, STT, turn selection, TTS and playback. One ordered writer per media stream. Release call-map guards before codecs and network I/O. Invalidate unplayed speech on barge-in. Preserve committed transcripts. | Measure silence to first audible sample and interruption to playback stop under simultaneous coding load. Report dropped frames and audio gaps. |
+| 2. Store, ORM, vector data and disk | SQLite already separates concurrent reads from writes. Consolidate repeated blocking read dispatch on its pool owner. Keep transaction commit and each cursor advance ordered; let different cursors progress. Model disk transfer and migration as owned operations with completion handles. | Run vector backfill, cursor reads and checkpoint publication together. Track query tail latency, memory, write backlog and recoverable manifest generation. |
+| 2. Learning, academy, dreams and experience | Follow the lived turn through capture, review, staged credit, evaluation and applied adapter. Reuse the same completion owner for background consolidation and training. Batch-boundary yield belongs to the training resource. Credit identities survive retries. | Trace one real reviewed submission to accepted credit, evaluation and subsequent use on a named resident. Record competing interactive latency. |
+| 3. Grid, AIRC, gateway and remote execution | In Tailscale transport reads and writes have separate guards. Preserve frame ordering per connection direction. Use one connection owner and independent peer outboxes. Carry operation identity, epoch and completion across reconnect. | Delay one peer, lose an acknowledgement, reconnect and retry. Verify other peers progress, a tool effect commits once and only one node owns decode. |
+| 3. Kernel, service, sentinel, deployment and observability | Use one service lifecycle and completion path for a child worker. On stop, stop admission and drain only work that owns resources needed by the replacement. Preserve the durable publish boundary. Account delivered text, accepted tool calls and played audio at their consumers. | Overlap a build with foreground work. Restart cleanly, identify both running artifacts and reconcile output counters against observed work and resident identities. |
+
+The M5 comparison at a 24,576-token window produced 12,174 generated tokens, 30 observed
+acts and 13 empty outputs in 900 seconds. Three preserved minds needed more cells than
+the new window. Treat that run as a baseline with cold starts. For each migration record
+the model, applied layout, context depths, resident identities, artifact digests and
+memory range. Compare equal-duration workloads and distinguish delivered output from
+generated tokens. A change in context geometry or population limits causal attribution.
+
+Use the earliest wave that removes an observed dependency. Finish a vertical slice
+through its real consumers, publish its local deployment evidence, and remove the old
+owner before expanding it to the next family. Keep CUDA, Metal, SIMD and native batch
+selection with the compute owner; choose among them with per-stage byte, time and
+quality measurements.
 
 ## 6. The simulator: every case, deterministic, in seconds
 
