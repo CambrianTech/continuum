@@ -156,6 +156,16 @@ pub(super) const DEFERRED: &[(&str, &str)] = &[
              removal is an operator's decision. Bounded: written once, the receipt stops \
              any second write",
         ),
+        // Jtags: per-peer agent communication logs (`citizens/jtags/<label>/airc/`).
+        // 8 GB accumulated on the M5 with no reporter able to see it. Deferred until a
+        // pool that knows which jtag streams are still active can evict stale ones;
+        // live inter-peer channels must never be deleted beneath their writers.
+        (
+            "jtags",
+            "#12ad2a0a: JtagPool — evict jtag dirs whose peer label no longer appears in \
+             any roster entry, then streams older than the newest retention window per pair; \
+             never a file a live write holds",
+        ),
         ("forge", "#155: export trimmer — intermediates only, published artifacts stay"),
         // Registered the day benchmark/swe-* landed, BEFORE a sweep ran. Everything under
         // it is re-creatable — repo clones from git, venvs from uv, the dataset from HF —

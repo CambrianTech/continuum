@@ -106,6 +106,11 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
         kept(continuum, "citizens"),
+        // Jtags: per-peer agent communication logs under citizens/jtags/<label>/airc/.
+        // UNTRACKED until now — the M5 held 8 GB of jtag data with no reporter able to see
+        // it and no pool able to evict it. Same law as every row above: a directory the
+        // substrate writes unbounded data into gets a TrackedDir row and an eviction decision.
+        kept(continuum, "jtags"),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
