@@ -249,6 +249,16 @@ matrix units stayed off, how a hung device probe moved a 27B to the CPU, and how
   against it, and a mismatch refuses with its cause, with no fallback. It replaces
   `SchedulerConfig`, `LlamaCppConfig`'s engine fields, `LlamaCppLaunch` and the adapter's overrides,
   and their three contradicting values for flash attention, fused GDN and sequence count.
+- **Proposed restore contract.** Before context allocation, the preservation owner supplies
+  the native layout and capacity each saved mind requires. The native reader defines those
+  requirements. A token history length alone cannot establish that its block file fits.
+  The turn owner supplies prompt and output needs. The tier supplies the streams that can
+  coexist. The planner budgets the active and staged streams together and accounts separately
+  for parked blocks in backing storage. Only the active stream decodes.
+  Before publishing readiness, check the applied geometry against these requirements. Report
+  each refused mind and its limiting constraint, and retain its last durable generation for
+  retry. Serving and governors read the same engine incarnation's per-sequence window and
+  admission decision. Neither derives a resident's allowance from total context and a local divisor.
 - **Launch flags carry startup facts only.** A context resizes live, and a relaunch happens only for
   a dead engine.
 
