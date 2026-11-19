@@ -11,6 +11,7 @@
 pub mod engine;
 pub mod persona;
 pub mod pipeline;
+pub mod protocol;
 pub mod residency;
 pub mod schedule;
 pub mod turn;
