@@ -88,7 +88,7 @@ impl fmt::Display for EmbedLeaseError {
 pub(crate) struct EmbedResidency {
     need: EmbedNeed,
     daemon: Option<Arc<ResourceDaemon>>,
-    _claim: Option<crate::resources::ResidencyGuard>,
+    _claim: Option<crate::resources::ResidencyGuard<2>>,
 }
 
 impl EmbedResidency {
@@ -100,7 +100,7 @@ impl EmbedResidency {
 
     fn claim_on(daemon: Option<Arc<ResourceDaemon>>, need: EmbedNeed) -> Self {
         use crate::resources::ResidentFloor;
-        let claim = daemon.as_ref().map(|owner| owner.hold_residency(EMBED_LANE_CONSUMER_ID, vec![
+        let claim = daemon.as_ref().map(|owner| owner.hold_residency(EMBED_LANE_CONSUMER_ID, [
             ResidentFloor { kind: ResourceKind::Vram, resident: need.weights.device, headroom: need.context.device },
             ResidentFloor { kind: ResourceKind::Ram, resident: need.weights.host, headroom: need.context.host },
         ]));

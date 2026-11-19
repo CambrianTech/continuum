@@ -357,7 +357,7 @@ impl ResourceDaemon {
 
     /// Hold native resident allocations and the additional headroom each needs.
     /// Multiple loaded instances of the same consumer contribute independently.
-    pub fn hold_residency(self: &Arc<Self>, consumer: &'static str, pools: Vec<ResidentFloor>) -> ResidencyGuard {
+    pub fn hold_residency<const N: usize>(self: &Arc<Self>, consumer: &'static str, pools: [ResidentFloor; N]) -> ResidencyGuard<N> {
         let guard = ResidencyGuard { daemon: Arc::clone(self), consumer, pools };
         guard.adjust(u64::saturating_add);
         guard
@@ -940,13 +940,13 @@ pub struct ResidentFloor {
 }
 
 /// Releases precisely this instance's contribution when its owner unloads.
-pub struct ResidencyGuard {
+pub struct ResidencyGuard<const N: usize> {
     daemon: Arc<ResourceDaemon>,
     consumer: &'static str,
-    pools: Vec<ResidentFloor>,
+    pools: [ResidentFloor; N],
 }
 
-impl ResidencyGuard {
+impl<const N: usize> ResidencyGuard<N> {
     fn adjust(&self, change: fn(u64, u64) -> u64) {
         let mut governor = self.daemon.governor.lock();
         governor.adjust_residency(self.consumer, &self.pools, change);
@@ -954,7 +954,7 @@ impl ResidencyGuard {
     }
 }
 
-impl Drop for ResidencyGuard {
+impl<const N: usize> Drop for ResidencyGuard<N> {
     fn drop(&mut self) {
         self.adjust(u64::saturating_sub);
     }
