@@ -24,8 +24,6 @@ pub type PermitReturn<'a> = std::pin::Pin<Box<tokio::sync::futures::Notified<'a>
 /// semaphore carries no state of its own, so one signal serves them all, and each woken waiter
 /// re-tries its own semaphore. A wake is still one real return, never a spin.
 static ADAPTER_PERMIT_RETURNED: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
-/// The turns waiting on any pool-less adapter semaphore (see [`DecodeBound::turns_waiting`]).
-static ADAPTER_TURNS_WAITING: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
 
 /// Permits in circulation (held or free) and the size the installed generation asks for.
 struct Counts {
@@ -154,7 +152,9 @@ impl From<&Arc<Semaphore>> for DecodeBound {
         Self {
             permits: Arc::clone(permits),
             returned: Arc::clone(&ADAPTER_PERMIT_RETURNED),
-            turns_waiting: Arc::clone(&ADAPTER_TURNS_WAITING),
+            // a pool-less adapter's own semaphore ranks its own waiters only: a turn waiting on one
+            // never holds back another adapter's work (Codex on #6159)
+            turns_waiting: Arc::new(AtomicUsize::new(0)),
             retire: None,
         }
     }
@@ -199,6 +199,14 @@ impl DecodeBound {
     /// `waiting` (kept across its retries, its lane released and taken again) until it holds a
     /// permit, so background work does not take the permits it waits for.
     pub fn try_or_return_as(&self, turn: Option<super::PageKey>, waiting: &mut Option<TurnWaiting>) -> Result<DecodePermit, PermitReturn<'_>> {
+        // Background work holding a lane (a keyed dream, a dream on a pool without scratch) takes
+        // the endpoint's priority decision too: while a turn waits it gets the wait, never the
+        // permit, and lets its lane go as any refused try does (Codex on #6159 at 411773eb20).
+        if turn.is_none() && self.turns_waiting.load(Ordering::Acquire) > 0 {
+            let mut returned = Box::pin(self.returned.notified());
+            returned.as_mut().enable();
+            return Err(returned);
+        }
         let tried = self.try_or_return();
         match (&tried, turn) {
             (Ok(_), _) => *waiting = None,
@@ -416,5 +424,40 @@ mod tests {
         drop(admitted);
         drop(dream.await);
         assert_eq!(available(&endpoint), 1);
+    }
+
+    // what this catches (Codex on #6159 at 411773eb20): background work that holds a lane (a keyed
+    // dream, a dream on a pool without scratch) tries through try_or_return_as, and took a returned
+    // permit while a turn waited. While a turn waits it is given the wait, not the permit, so it lets
+    // its lane go; it takes a permit again once no turn waits.
+    #[test]
+    fn a_laned_dream_is_given_the_wait_while_a_turn_waits() {
+        let endpoint = EndpointConcurrency::new();
+        endpoint.retarget(1);
+        let bound = endpoint.bound();
+        let held = bound.try_acquire().expect("test: the one permit"); // expect: the test's own precondition
+        let page = super::super::PageKey::mind(uuid::Uuid::new_v4()).expect("test: a mind page"); // expect: the test's own precondition
+        let mut turn = None;
+        assert!(bound.try_or_return_as(Some(page), &mut turn).is_err(), "the turn finds none and waits");
+        drop(held);
+        let mut dream = None;
+        assert!(bound.try_or_return_as(None, &mut dream).is_err(), "the free permit is not the dream's while the turn waits");
+        assert!(dream.is_none(), "a dream is never counted as a waiting turn");
+        let admitted = bound.try_or_return_as(Some(page), &mut turn).ok().expect("test: the turn takes it"); // expect: the test's own precondition
+        drop(admitted);
+        assert!(bound.try_or_return_as(None, &mut dream).is_ok(), "no turn waits: the dream goes");
+    }
+
+    // what this catches (Codex on #6159): pool-less adapters sharing one waiting-turn count, so a turn
+    // waiting on one adapter's semaphore held back another adapter's work.
+    #[test]
+    fn a_pool_less_adapter_ranks_only_its_own_waiters() {
+        let mine = Arc::new(Semaphore::new(0));
+        let theirs = Arc::new(Semaphore::new(1));
+        let page = super::super::PageKey::mind(uuid::Uuid::new_v4()).expect("test: a mind page"); // expect: the test's own precondition
+        let mut turn = None;
+        assert!(DecodeBound::from(&mine).try_or_return_as(Some(page), &mut turn).is_err(), "a turn waits on mine");
+        let mut other = None;
+        assert!(DecodeBound::from(&theirs).try_or_return_as(None, &mut other).is_ok(), "their work is not held back by my turn");
     }
 }
