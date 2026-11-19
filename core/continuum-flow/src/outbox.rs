@@ -47,6 +47,17 @@ impl<T> Outbox<T> {
         }
     }
 
+    /// Hand over everything waiting, awaiting the stage's space between items: for a producer with
+    /// nothing else to do, woken when the stage takes what it holds, never by a poll.
+    pub async fn drain(&mut self) {
+        while let Some(item) = self.backlog.pop_front() {
+            if self.input.send(item).await.is_err() {
+                self.backlog.clear(); // the stage ended: nothing will take the rest
+                return;
+            }
+        }
+    }
+
     /// Items still waiting here because the stage was full.
     pub fn waiting(&self) -> usize {
         self.backlog.len()

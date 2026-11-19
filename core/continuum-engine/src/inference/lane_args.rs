@@ -47,14 +47,6 @@
 // context-budget-exempt: the engine's physical prefill micro-batch (--ubatch-size), a compute-pass size, never a context or prompt budget.
 pub(crate) const UBATCH_TOKENS: u32 = 2048;
 
-/// The micro-batch a model prefills in: [`UBATCH_TOKENS`], lowered (never raised) by the model's own
-/// ceiling (`ModelServingPrefs::max_ubatch`). The decision the launched server's `--ubatch-size`
-/// applies in [`LaneInvocation::with_options`], as a value the in-process engine reads instead of
-/// re-deriving. `None` for a catalog ceiling of zero (no batch can run; the caller refuses).
-pub(crate) fn prefill_ubatch(model_ceiling: Option<u32>) -> Option<std::num::NonZeroU32> {
-    std::num::NonZeroU32::new(model_ceiling.map_or(UBATCH_TOKENS, |cap| cap.min(UBATCH_TOKENS)))
-}
-
 use std::path::Path;
 
 /// One conversion for anything that can be a CLI argument.

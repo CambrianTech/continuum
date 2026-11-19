@@ -168,16 +168,21 @@ impl Scheduler {
             return Err(SchedulerError::NoRuntime);
         }
         let incarnation = Incarnation::next();
-        let (emit, emit_worker) = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
+        // Each stage's capacity is the engine's admitted window in items: one decoded token (Emit) or
+        // one step (Record) per item, and a full stage holds the driver's push until it drains, so
+        // nothing waiting outgrows what serving admitted (Codex, 2026-11-19: the owner supplies it).
+        let window = usize::try_from(config.n_ctx).ok().and_then(std::num::NonZeroUsize::new).ok_or(SchedulerError::NoWindow)?;
+        let capacity = continuum_flow::Capacity::granted(window);
+        let (emit, emit_worker) = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)), capacity);
         let (snapshot_tx, snapshot) = tokio::sync::watch::channel(record::Record::empty(incarnation.get()));
-        let (record, record_worker) = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx));
+        let (record, record_worker) = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx), capacity);
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         let runtime = tokio::runtime::Handle::current();
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
             .spawn(move || {
-                driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record });
+                driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record, stages_on: runtime.clone() });
                 emit_worker.stop();
                 record_worker.stop();
                 let (emit, record) = runtime.block_on(async { tokio::join!(emit_worker.join(), record_worker.join()) });
@@ -218,4 +223,6 @@ pub enum SchedulerError {
     Closed,
     #[error("the persona scheduler was started outside a tokio runtime, so its Emit stage has nowhere to run")]
     NoRuntime,
+    #[error("the persona scheduler was given no window, so its stages have no capacity")]
+    NoWindow,
 }

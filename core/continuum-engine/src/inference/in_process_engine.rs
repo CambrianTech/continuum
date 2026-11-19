@@ -24,6 +24,33 @@ use crate::inference::llama_server::{
 use crate::inference::llamacpp_adapter::{EngineKv, EngineLaunch, LlamaCppAdapter, Offload};
 use crate::inference::weight_residency::ContextGeometry;
 
+/// Why the in-process engine refused a launch, a load or a lifecycle change.
+#[derive(Debug, thiserror::Error)]
+pub enum InProcessRefusal {
+    #[error("the in-process engine for {model}: serving planned a zero window")]
+    ZeroWindow { model: String },
+    #[error("the in-process engine for {model}: the model's catalog ceiling allows no micro-batch")]
+    NoMicroBatch { model: String },
+    #[error("the in-process engine for {model}: serving's KV plan names `{cache_type}`, which this engine cannot hold")]
+    KvType { model: String, cache_type: String },
+    #[error("the in-process engine for {model}: {refusal}")]
+    Launch { model: String, refusal: crate::inference::llamacpp_adapter::EngineLaunchRefusal },
+    #[error("the engine load task failed: {0}")]
+    LoadTask(#[from] tokio::task::JoinError),
+    #[error("the engine did not start: {0}")]
+    Start(String), // start_engine's own refusal, which is text
+    #[error("the engine's driver exited while starting")]
+    DriverExited,
+    #[error("the in-process engine was refused: {0}")]
+    Refused(Arc<str>),
+    #[error("the in-process engine holds {held} and was asked for {asked}: one engine holds one base, and switching it while residents hold minds on it waits for their suspension (S2)")]
+    HoldsAnotherBase { held: String, asked: String },
+    #[error("the in-process engine for {model} did not become ready: {state:?}")]
+    NotReady { model: String, state: EngineState },
+    #[error("the in-process engine is serving residents; it goes idle only after their minds are suspended (S2), never by dropping their state")]
+    ServingResidents,
+}
+
 /// One loaded engine: which model, the adapter residents share, and its live lifecycle.
 struct Loaded {
     model_id: String,
@@ -72,7 +99,7 @@ impl InProcessEngine {
         match state {
             EngineState::Ready(geometry) => Ok(geometry),
             EngineState::Starting(_) => Err(LlamaServerError::Unreachable("the in-process engine is still starting".into())),
-            EngineState::Refused { reason, .. } => Err(LlamaServerError::Spawn(format!("the in-process engine was refused: {reason}"))),
+            EngineState::Refused { reason, .. } => Err(InProcessRefusal::Refused(reason).into()),
             EngineState::Stopped(_) => Err(LlamaServerError::Unreachable("the in-process engine stopped".into())),
         }
     }
@@ -81,19 +108,21 @@ impl InProcessEngine {
     /// micro-batch from the measured prefill batch and the model's ceiling, the KV types from the KV
     /// plan. Anything serving cannot name is refused here, never filled with a default.
     fn launch_for(target: &ServingTarget) -> Result<EngineLaunch, LlamaServerError> {
-        let refuse = |why: String| LlamaServerError::Spawn(format!("the in-process engine for {}: {why}", target.model.id));
+        let model = || target.model.id.clone();
         let gguf_path = target
             .model
             .gguf_local_path
             .clone()
-            .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
-        let context = NonZeroU32::new(target.context_window).ok_or_else(|| refuse("serving planned a zero window".into()))?;
-        let n_ubatch = crate::inference::lane_args::prefill_ubatch(target.model.serving.max_ubatch)
-            .ok_or_else(|| refuse("the model's catalog ceiling allows no micro-batch".into()))?;
+            .ok_or_else(|| LlamaServerError::ModelNotFound(model()))?;
+        let context = NonZeroU32::new(target.context_window).ok_or_else(|| InProcessRefusal::ZeroWindow { model: model() })?;
+        // The micro-batch the launched server's `--ubatch-size` applies, lowered (never raised) by the
+        // model's own catalog ceiling; a ceiling of zero allows no batch, and is refused.
+        let ceiling = target.model.serving.max_ubatch.map_or(crate::inference::lane_args::UBATCH_TOKENS, |cap| cap.min(crate::inference::lane_args::UBATCH_TOKENS));
+        let n_ubatch = NonZeroU32::new(ceiling).ok_or_else(|| InProcessRefusal::NoMicroBatch { model: model() })?;
         let kv_plan = crate::inference::kv_cache_plan::resolve();
         let kv = kv_plan
             .engine_cache_type()
-            .ok_or_else(|| refuse(format!("serving's KV plan names `{}`, which this engine cannot hold", kv_plan.cache_type)))?;
+            .ok_or_else(|| InProcessRefusal::KvType { model: model(), cache_type: kv_plan.cache_type.to_string() })?;
         let offload = match target.placement {
             LanePlacement::Gpu => Offload::AllLayers,
             LanePlacement::Cpu => Offload::CpuOnly,
@@ -109,7 +138,7 @@ impl InProcessEngine {
             kv: EngineKv { k: kv, v: kv },
         }
         .validated()
-        .map_err(|refusal| refuse(refusal.to_string()))
+        .map_err(|refusal| InProcessRefusal::Launch { model: model(), refusal }.into())
     }
 
     async fn load(target: &ServingTarget) -> Result<Loaded, LlamaServerError> {
@@ -121,12 +150,11 @@ impl InProcessEngine {
         // Loading the weights and making the context is blocking native work: never on the runtime.
         let mut state = tokio::task::spawn_blocking(move || starting.start_engine())
             .await
-            .map_err(|join| LlamaServerError::Spawn(format!("the engine load task failed: {join}")))?
-            .map_err(LlamaServerError::Spawn)?;
-        state
-            .wait_for(|s| !matches!(s, EngineState::Starting(_)))
-            .await
-            .map_err(|_| LlamaServerError::Spawn("the engine's driver exited while starting".into()))?;
+            .map_err(InProcessRefusal::LoadTask)?
+            .map_err(InProcessRefusal::Start)?;
+        if state.wait_for(|s| !matches!(s, EngineState::Starting(_))).await.is_err() {
+            return Err(InProcessRefusal::DriverExited.into());
+        }
         continuum_base::probe!(
             class = "serving.engine.in_process.loaded",
             model = %model_id,
@@ -141,7 +169,7 @@ impl InProcessEngine {
 #[async_trait]
 impl LlamaServerControl for InProcessEngine {
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
-        Ok(self.loaded.lock().await.as_ref().map(|loaded| loaded.model_id.clone()))
+        Ok(self.loaded.lock().await.as_ref().map(|loaded| &loaded.model_id).cloned())
     }
 
     /// Genes are paged per turn by the scheduler (a request names its genes and their scales), never
@@ -156,19 +184,12 @@ impl LlamaServerControl for InProcessEngine {
             if loaded.model_id == target.model.id {
                 return Ok(());
             }
-            return Err(LlamaServerError::Spawn(format!(
-                "the in-process engine holds {} and was asked for {}: one engine holds one base, and \
-                 switching it while residents hold minds on it waits for their suspension (S2)",
-                loaded.model_id, target.model.id
-            )));
+            return Err(InProcessRefusal::HoldsAnotherBase { held: loaded.model_id.clone(), asked: target.model.id.clone() }.into());
         }
         let loaded = Self::load(target).await?;
-        if loaded.state.borrow().ready().is_none() {
-            return Err(LlamaServerError::Spawn(format!(
-                "the in-process engine for {} did not become ready: {:?}",
-                loaded.model_id,
-                *loaded.state.borrow()
-            )));
+        let state = loaded.state.borrow().clone();
+        if state.ready().is_none() {
+            return Err(InProcessRefusal::NotReady { model: loaded.model_id, state }.into());
         }
         *self.published.write() = Some(loaded.adapter.clone() as Arc<dyn AIProviderAdapter>);
         *guard = Some(loaded);
@@ -181,11 +202,7 @@ impl LlamaServerControl for InProcessEngine {
         if self.loaded.lock().await.is_none() {
             return Ok(());
         }
-        Err(LlamaServerError::Spawn(
-            "the in-process engine is serving residents; it goes idle only after their minds are \
-             suspended (S2), never by dropping their state"
-                .into(),
-        ))
+        Err(InProcessRefusal::ServingResidents.into())
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -212,7 +229,7 @@ impl LlamaServerControl for InProcessEngine {
 
     /// The decode path proven by a one-token warm-up on the shared engine.
     async fn decode_smoke_ok(&self) -> bool {
-        let adapter = self.loaded.lock().await.as_ref().map(|loaded| loaded.adapter.clone());
+        let adapter = self.loaded.lock().await.as_ref().map(|loaded| Arc::clone(&loaded.adapter));
         match adapter {
             Some(adapter) => adapter.warmup().await.is_ok(),
             None => false,

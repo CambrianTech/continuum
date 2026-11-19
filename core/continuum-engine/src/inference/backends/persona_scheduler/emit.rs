@@ -53,9 +53,6 @@ impl Emit {
 impl Stage for Emit {
     type Input = Out;
     const QOS: Qos = Qos::Interactive;
-    /// A token stream: the engine hands tokens over without being turned back between wakes. Sized
-    /// to a few seconds of decode at the M5's measured ~35-50 tok/s, many times over.
-    const DEPTH: usize = 4096;
 
     async fn handle(&mut self, out: Out) {
         match out {
@@ -75,8 +72,9 @@ impl Stage for Emit {
                 }
             }
             Out::End { answer, event } => {
-                if let Some(open) = self.open.remove(&answer) {
-                    let _ = open.sink.send(event); // a caller that hung up has nothing to tell
+                let ended = self.open.remove(&answer).map(|open| open.sink.send(event).is_ok());
+                if ended == Some(false) {
+                    continuum_base::probe!(class = "persona.engine.caller_gone", "a turn's caller hung up before its end");
                 }
             }
         }

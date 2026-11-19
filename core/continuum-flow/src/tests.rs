@@ -3,6 +3,11 @@
 use super::*;
 use std::time::{Duration, Instant};
 
+/// A reliable stage with one input waiting: the double buffer.
+fn one() -> Capacity {
+    Capacity::granted(std::num::NonZeroUsize::MIN)
+}
+
 fn aging() -> Aging {
     // Background rises a class every 10 s, utility every 5 s; work and interactive do not age.
     Aging([Duration::from_secs(10), Duration::from_secs(5), Duration::ZERO, Duration::ZERO])
@@ -205,7 +210,7 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
         }
     }
     let (got, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let (results, _results_worker) = spawn_stage(Results(Arc::clone(&got), Arc::clone(&gate)));
+    let (results, _results_worker) = spawn_stage(Results(Arc::clone(&got), Arc::clone(&gate)), one());
     assert_eq!(results.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes 1 and waits on the gate
     assert_eq!(results.push(2), Ok(0));
@@ -223,7 +228,7 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3], "the awaited result is delivered"); // test: plain data
 
     let (seen, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let (wakes, _wakes_worker) = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
+    let (wakes, _wakes_worker) = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)), Capacity::latest());
     assert_eq!(wakes.push(1), Ok(0));
     tokio::task::yield_now().await;
     assert_eq!(wakes.push(2), Ok(0));
@@ -245,7 +250,6 @@ async fn a_deep_stage_queues_its_depth_and_handles_all_waiting_in_one_wake_in_or
     impl Stage for Stream {
         type Input = u32;
         const QOS: Qos = Qos::Interactive;
-        const DEPTH: usize = 3;
         async fn handle(&mut self, _input: u32) {}
         async fn handle_all(&mut self, inputs: Vec<u32>) {
             self.1.notified().await; // hold the worker so the queue fills behind it
@@ -253,7 +257,7 @@ async fn a_deep_stage_queues_its_depth_and_handles_all_waiting_in_one_wake_in_or
         }
     }
     let (wakes, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let (stream, _stream_worker) = spawn_stage(Stream(Arc::clone(&wakes), Arc::clone(&gate)));
+    let (stream, _stream_worker) = spawn_stage(Stream(Arc::clone(&wakes), Arc::clone(&gate)), Capacity::granted(std::num::NonZeroUsize::new(3).expect("test: three")));
     assert_eq!(stream.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes [1] and waits on the gate
     for token in 2..=4 {
@@ -290,7 +294,7 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
     }
     for queued in [false, true] {
         let (ended, done) = tokio::sync::oneshot::channel();
-        let (first, _first_worker) = spawn_stage(Drain { seen: Vec::new(), ended: Some(ended) });
+        let (first, _first_worker) = spawn_stage(Drain { seen: Vec::new(), ended: Some(ended) }, one());
         let second = first.clone();
         tokio::task::yield_now().await;
         let barrier = Arc::new(Barrier::new(2));
@@ -326,7 +330,7 @@ async fn a_stage_whose_handler_panicked_hands_inputs_back() {
             assert_ne!(input, 1, "test: the handler breaks on its first input");
         }
     }
-    let (stage, _stage_worker) = spawn_stage(Breaks);
+    let (stage, _stage_worker) = spawn_stage(Breaks, one());
     assert_eq!(stage.push(1), Ok(0));
     for _ in 0..50 {
         tokio::task::yield_now().await;
@@ -355,7 +359,7 @@ async fn eviction_and_final_cleanup_belong_to_the_joined_worker() {
         const OVERFLOW: Overflow = Overflow::KeepNewest;
         async fn handle(&mut self, _: Payload) {}
     }
-    let (input, worker) = spawn_stage(Consumer);
+    let (input, worker) = spawn_stage(Consumer, Capacity::latest());
     let (released, observed) = std::sync::mpsc::channel();
     // The current-thread executor cannot poll the worker until the producer returns.
     std::thread::scope(|scope| {
@@ -369,4 +373,41 @@ async fn eviction_and_final_cleanup_belong_to_the_joined_worker() {
     worker.stop();
     worker.join().await.expect("test: worker drained successfully");
     assert_eq!(observed.into_iter().collect::<Vec<_>>(), [true, true]);
+}
+
+// what this catches (Codex, 2026-11-19, on the granted capacity): a stalled sink losing or reordering
+// what its producer could not hand over. A producer whose stage is full keeps the rest in its outbox
+// against the same grant, and `drain` resumes it only on the stage's space, never on a poll: a stalled
+// answer, then the next answer's items, arrive whole and in order once the sink resumes.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_stage_holds_its_producer_and_drain_resumes_it_on_space_in_order() {
+    use std::sync::{Arc, Mutex};
+    struct Sink(Arc<Mutex<Vec<u32>>>, Arc<tokio::sync::Notify>);
+    impl Stage for Sink {
+        type Input = u32;
+        const QOS: Qos = Qos::Interactive;
+        async fn handle(&mut self, input: u32) {
+            self.1.notified().await; // a stalled caller: each item waits for the gate
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(input); // test: plain data
+        }
+    }
+    let (got, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
+    let (input, worker) = spawn_stage(Sink(Arc::clone(&got), Arc::clone(&gate)), one());
+    let mut outbox = crate::Outbox::new(input);
+    for item in 1..=4 {
+        outbox.send(item); // the first answer's end and the next answer's first items
+    }
+    tokio::task::yield_now().await;
+    assert!(outbox.waiting() > 0, "a stage of one holds the rest in its producer's outbox, never drops them");
+    let resumed = async {
+        for _ in 0..4 {
+            gate.notify_one();
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::join!(outbox.drain(), resumed);
+    assert_eq!(outbox.waiting(), 0, "drain hands over everything once the stage takes it");
+    drop(outbox);
+    worker.join().await.expect("test: the worker drained");
+    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3, 4], "every item arrives once, in order"); // test: plain data
 }

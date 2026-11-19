@@ -1,5 +1,5 @@
 //! A stage: CBAR's `QueueThread<T>` (`cb-mobile-sdk/cpp/utility/Threads.h`) in Rust. The inputs in
-//! hand and up to its declared depth waiting (reliable by default; a signal stage keeps the newest), one worker task that
+//! hand and up to its owner's capacity waiting (reliable by default; a signal stage keeps the newest), one worker task that
 //! wakes only on a push, and a class. A stage is its handler and nothing else: the slot, waking,
 //! backpressure and shutdown live here, never in the subsystem.
 
@@ -32,10 +32,6 @@ pub trait Stage: Send + 'static {
     const QOS: Qos;
     /// What a full stage does: never drops unless a signal stage opts in.
     const OVERFLOW: Overflow = Overflow::Reliable;
-    /// How many inputs may wait while it handles one (CBAR's `queueSize`). One is the double buffer
-    /// every signal stage wants; a stream of ordered items (a token stream) declares more, so its
-    /// producer hands items over without being turned back between handles.
-    const DEPTH: usize = 1;
     fn handle(&mut self, input: Self::Input) -> impl Future<Output = ()> + Send;
     /// Handle everything that was waiting, in order, in one wake: on a wake it does many. The
     /// default handles them one by one; a stage that batches (one write for many tokens)
@@ -52,7 +48,29 @@ pub trait Stage: Send + 'static {
     }
 }
 
-/// A stage holds the inputs it is handling and up to `DEPTH` waiting, in order. A producer that
+/// How many inputs may wait while a stage handles one (CBAR's `queueSize`). A stage never sizes
+/// itself: the resource owner that spawns it supplies the capacity from what it was admitted
+/// (Codex, 2026-11-19), and inputs waiting count against that owner until they are handled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Capacity(std::num::NonZeroUsize);
+
+impl Capacity {
+    /// A reliable queue of `items`, from its owner's admitted budget.
+    pub fn granted(items: std::num::NonZeroUsize) -> Self {
+        Self(items)
+    }
+
+    /// A latest-value stage: it holds one pending value by its semantics, the newest.
+    pub fn latest() -> Self {
+        Self(std::num::NonZeroUsize::MIN)
+    }
+
+    pub fn items(self) -> usize {
+        self.0.get()
+    }
+}
+
+/// A stage holds the inputs it is handling and up to its capacity waiting, in order. A producer that
 /// finds it full gets its input back (`Reliable`) or displaces the oldest (`KeepNewest`), so no
 /// subsystem sizes or locks a queue of its own.
 struct Inbox<T> {
@@ -193,7 +211,7 @@ impl<T> StageWorker<T> {
 
 impl<T> Inbox<T> {
     fn close(&self) {
-        let guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = self.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
         self.stopped.store(true, Ordering::Release);
         drop(guard);
         self.signal.notify_one();
@@ -201,12 +219,12 @@ impl<T> Inbox<T> {
     }
 }
 
-/// Start a worker and give its producers and lifecycle owner distinct handles.
-pub fn spawn_stage<S: Stage>(mut stage: S) -> (StageInput<S::Input>, StageWorker<S::Input>) {
+/// Start a worker of `capacity` and give its producers and lifecycle owner distinct handles.
+pub fn spawn_stage<S: Stage>(mut stage: S, capacity: Capacity) -> (StageInput<S::Input>, StageWorker<S::Input>) {
     let inbox = Arc::new(Inbox {
         producers: AtomicUsize::new(1),
         pending: Mutex::new(Batch::default()),
-        depth: S::DEPTH.max(1),
+        depth: capacity.items(),
         signal: Notify::new(),
         space: Notify::new(),
         stopped: AtomicBool::new(false),
