@@ -32,20 +32,42 @@ pub struct Activity {
 /// A named point in an activity's token history (an epoch's start, a view's stable end). Its
 /// checkpoint is the engine's; a rewind to it never re-reads what precedes it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MarkId(pub u64);
+pub struct MarkId(pub uuid::Uuid);
 
 /// One answer being generated in an activity. Its events carry this id; dropping the handle that
-/// holds it is a [`Command::Cancel`].
+/// holds it is a [`Command::Cancel`]. A UUIDv7 minted by the mind: never reused, across activities
+/// and engine restarts, so a delayed credit or cancel can only ever reach its own answer (Codex on
+/// 42ca70c64b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct AnswerId(pub u64);
+pub struct AnswerId(pub uuid::Uuid);
 
-/// What a mind asks of the engine. `S` is the engine's sampler specification (the engine owns
-/// sampling; the seam only carries it).
+/// The kind of a media span.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaKind {
+    Image,
+    Audio,
+}
+
+/// One piece of an activity's appended input, in order.
 #[derive(Debug, Clone)]
-pub enum Command<S> {
-    /// Append token ids to the activity, tokenized on her side. The engine prefills them as soon
-    /// as it schedules the activity, whether or not she has asked to think yet.
-    Extend { activity: Activity, tokens: Arc<[i32]> },
+pub enum Span<M> {
+    /// Token ids, tokenized on her side.
+    Text(Arc<[i32]>),
+    /// A media item already encoded by the projector. `chunk` is the engine adapter's owning
+    /// handle to the immutable native chunk (never a raw pointer or encoded bytes); it is held
+    /// through the activity's marks and rewinds and released with them. `basis` names the
+    /// projector revision it was encoded under, so a stale chunk is refused, not decoded.
+    /// `positions` is what the engine reports the chunk occupies, which is not its token count.
+    Media { chunk: M, kind: MediaKind, basis: u64, positions: u32 },
+}
+
+/// What a mind asks of the engine. `S` is the engine's sampler specification and `M` its media
+/// chunk handle: the engine owns both; the seam only carries them.
+#[derive(Debug, Clone)]
+pub enum Command<S, M> {
+    /// Append spans to the activity, in order. The engine prefills them as soon as it schedules
+    /// the activity, whether or not she has asked to think yet.
+    Extend { activity: Activity, spans: Vec<Span<M>> },
     /// Think on: generate from the activity's current end. `credit` is how many tokens may be
     /// in flight to the consumer unacknowledged (see [`Command::Credit`]); the engine never
     /// holds a frame for a consumer, it stops producing for that answer until credit returns.
@@ -73,8 +95,42 @@ pub enum Ended {
     Cancelled,
 }
 
+/// The command a refusal refuses, by identity, so a failed mark and a failed rewind are told apart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operation {
+    Extend,
+    Think(AnswerId),
+    Credit(AnswerId),
+    Cancel(AnswerId),
+    Mark(MarkId),
+    Rewind(MarkId),
+    Release,
+}
+
+/// Why a command was refused.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Refusal {
+    /// The activity is not one the engine holds (released, or never extended).
+    NoSuchActivity,
+    /// The command names another epoch of her state than the one held.
+    StaleEpoch,
+    /// The answer named is not open.
+    NoSuchAnswer,
+    /// The mark named was never taken in this activity, or was released.
+    NoSuchMark,
+    /// The mark lies past what she holds; a rewind never moves forward.
+    MarkAhead,
+    /// A media span was encoded under another projector revision.
+    StaleBasis,
+    /// The engine could not hold more of her (memory).
+    OutOfMemory,
+    /// The native engine refused, in its words.
+    Native(Arc<str>),
+}
+
 /// What the engine reports. Every event names what it is about; none is an answer to a caller
-/// waiting for it.
+/// waiting for it. An answer ends exactly once, with [`Event::Done`] or with a [`Event::Refused`]
+/// naming it, whatever its credit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     /// The next token of an answer.
@@ -85,7 +141,7 @@ pub enum Event {
     Marked { activity: Activity, mark: MarkId, position: u32 },
     /// A command could not be applied; the activity is as it was before it. `answer` is set when
     /// the command concerned one.
-    Refused { activity: Activity, answer: Option<AnswerId>, reason: Arc<str> },
+    Refused { activity: Activity, operation: Operation, reason: Refusal },
 }
 
 /// Where a mind's state is.
