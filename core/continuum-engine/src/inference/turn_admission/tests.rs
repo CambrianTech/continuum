@@ -369,6 +369,15 @@
             .expect("test: A admitted");
         let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
 
+        let capacity = DecodeBound::from(&sem);
+        let last_free = capacity.try_acquire().expect("fixture: spare permit");
+        let speculative = warm_ahead(capacity, b, pool.clone(), &client, root);
+        tokio::pin!(speculative);
+        assert!(futures::poll!(&mut speculative).is_pending());
+        assert!(MindTurn::try_begin(b).is_some(), "pending interest holds no mind gate");
+        drop(last_free);
+        assert!(speculative.await.is_ok(), "permit return wakes the pending hint");
+
         let warm = warm_ahead(&sem, b, pool.clone(), &client, root);
         assert!(warm.await.is_ok(), "warm-ahead is best-effort: it gives up at once, never waits");
 
@@ -787,7 +796,7 @@
         };
         // Dropping the warm-ahead waiter is not cancellation of engine IO.
         assert!(futures::poll!(&mut queued).is_pending(), "same-slot waiter stays behind the restore");
-        assert_eq!(sem.available_permits(), 0, "both admissions still own their lanes");
+        assert_eq!(sem.available_permits(), 1, "only the in-flight transfer owns a permit while its receipt is pending");
         assert!(endpoint.is_ready(), "caller cancellation does not condemn a progressing engine");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "no duplicate restore was dispatched");
         release.notify_one();
@@ -816,18 +825,19 @@
         );
         assert_eq!(pool.take_resident(slot).0, Some(key));
 
-        // A warm-ahead while her act runs, even from another adapter, is a no-op: her KV is
-        // already in her slot, and it never queues behind her act (`slots::mind_gate`). It
-        // cannot see or erase her act's provisional holder.
+        // Cross-adapter interest remains pending behind a physical operation. Cancelling
+        // that interest leaves the current turn and its provisional attribution intact.
         let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
         let other_adapter = Arc::new(Semaphore::new(2));
         let before = calls.load(Ordering::SeqCst);
-        tokio::time::timeout(std::time::Duration::from_secs(5), warm_ahead(&other_adapter, key, pool.clone(), &client, &root))
-            .await
-            .expect("a mid-act warm-ahead returns at once")
-            .expect("skipped, not failed");
+        {
+            let interest = warm_ahead(&other_adapter, key, pool.clone(), &client, &root);
+            tokio::pin!(interest);
+            assert!(futures::poll!(&mut interest).is_pending());
+            assert_eq!(other_adapter.available_permits(), 2, "pending work returned its capacity");
+        }
         assert_eq!(calls.load(Ordering::SeqCst), before, "no paging while she acts");
         turn.generation_completed();
         drop(turn);

@@ -46,7 +46,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
     /// admission and paging owner as generation. Only a completed restore or
     /// existing physical residency is warm; failure leaves the turn backstop
     /// responsible for restoring or prefilling normally.
-    fn warm_ahead(&self, key: crate::inference::slots::PageKey) {
+    fn warm_ahead(&self, key: crate::inference::slots::PageKey) -> Option<futures::future::RemoteHandle<()>> {
+        use futures::FutureExt;
         use continuum_base::probed::Probed;
         let root = self.endpoints().root().to_string();
         // Discovery is the pin path's job — warm-ahead only acts on servers
@@ -54,7 +55,7 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
         // real turn), so it can never race the /props probe or mis-latch it.
         let pool = match crate::inference::slots::directory().get(&root) {
             Probed::Known(pool) => pool,
-            Probed::NotAsked | Probed::Absent(_) => return,
+            Probed::NotAsked | Probed::Absent(_) => return None,
         };
         if pool.scratch_slot().is_none() {
             // Without reserved scratch, already-admitted keyless traffic can
@@ -67,12 +68,12 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 reason = "no_scratch_slot",
                 "warm-ahead skipped: this server has no scratch slot, so the page restore runs at admission instead of during prompt assembly"
             );
-            return;
+            return None;
         }
         let client = self.client.clone();
         // The endpoint's own permits: a pooled server's one aggregate bound (card 23069702).
         let concurrency = crate::inference::slots::directory().endpoint(&root).concurrency().bound();
-        tokio::spawn(async move {
+        let (work, interest) = async move {
             let _ = crate::inference::turn_admission::warm_ahead(
                 concurrency,
                 key,
@@ -81,7 +82,9 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
                 &root,
             )
             .await;
-        });
+        }.remote_handle();
+        tokio::spawn(work);
+        Some(interest)
     }
 
     /// The llama.cpp extensions are what pin a page's slot and keep its prompt cache.

@@ -455,16 +455,11 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
     }
 
     /// RESTORE-AHEAD (compression-ladder rung 1, FOLLOW-THE-SIGNAL doc): the
-    /// caller is ABOUT to generate for this page (a mind, or a fork) — begin paging its warm
-    /// KV state into a serving slot NOW, overlapped with the caller's own
-    /// prompt assembly, instead of racing the restore against the turn at pin
-    /// time (measured 2026-09-01: pin-time restores queue behind busy slots to
-    /// the 10s timeout; the scheduler knowing "she is next" IS the cache
-    /// prediction, so use it). Non-blocking: implementations spawn and return.
-    ///
-    /// Default: no-op — cloud adapters and adapters without slot paging have
-    /// nothing to warm.
-    fn warm_ahead(&self, _page: crate::inference::slots::PageKey) {}
+    /// caller is preparing a turn for this page. A paging adapter returns interest in
+    /// staging that page on capacity and slot releases during prompt assembly. The caller
+    /// drops the handle at foreground dispatch or cancellation. Already-issued native I/O
+    /// stays with the paging completion owner. Adapters without speculative paging return None.
+    fn warm_ahead(&self, _page: crate::inference::slots::PageKey) -> Option<futures::future::RemoteHandle<()>> { None }
 
     /// Whether a request's prompt stays where the next request that begins with it is served
     /// ([`PromptCache`]). Default `NotKept`: a cloud or in-process adapter keeps no prompt for it.

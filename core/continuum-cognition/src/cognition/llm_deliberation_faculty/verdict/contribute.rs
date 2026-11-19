@@ -18,14 +18,9 @@ impl LlmDeliberationFaculty {
         // prompt. The same act then acquires its selected home lane's admission;
         // no remote-sized request is replayed on a smaller local window.
         loaded.adapter.prepare_generation().await;
-        // RESTORE-AHEAD (compression-ladder rung 1): tell the serving adapter
-        // this page generates NEXT, so her KV page pages in DURING the
-        // prompt assembly below instead of racing the turn at pin time. Fire-
-        // and-forget; the pin-time path stays the backstop; no page (a nil id, or
-        // a fork in no room) warms nothing.
-        if let Some(page) = self.page(ws.room_id) {
-            loaded.adapter.warm_ahead(page);
-        }
+        // Keep interest in the next capacity event throughout prompt assembly. Early
+        // return drops the handle. Dispatched page I/O has its own completion owner.
+        let mut warming = self.page(ws.room_id).and_then(|page| loaded.adapter.warm_ahead(page));
         // Size this turn's {prompt + reply reserve} to the LIVE served per-slot window —
         // in BOTH directions. If the lane relaunched SMALLER than this persona's spawn-time
         // pin, a prompt over the slot overflows `llama_decode` → 500 "Compute error" that
@@ -351,6 +346,7 @@ impl LlmDeliberationFaculty {
             // A rebuilt request with no max_tokens keeps the last one sent (the read of the
             // previous value is also what keeps the initializer honest).
             sent_allowance = request.max_tokens.or(sent_allowance);
+            drop(warming.take());
             let result = self
                 .generate_for_workspace(ws, &binding, fit_window, request, terms, allocation, receipts)
                 .await?;
