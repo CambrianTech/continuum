@@ -573,9 +573,11 @@ impl LlamaCppBackend {
         // — adding fields like `grammar` doesn't require changing this
         // signature). Previously this path silently overwrote the caller's
         // top_k/top_p/repeat_penalty fields with no-op defaults.
+        // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
+        let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
         let req = GenerationRequest {
-            prompt: prompt.to_string(),
-            stable_prefix: turn.stable_prefix.map(str::to_owned),
+            prompt,
+            view_end,
             max_tokens,
             sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),

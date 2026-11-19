@@ -27,8 +27,6 @@ use crate::runtime;
 /// Why a turn did not complete. The mind stays in the engine's custody either way.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TurnError {
-    #[error("her prompt did not tokenize: {0}")]
-    Tokenize(String),
     /// Her turn's sampler could not be built as asked (a think bound llama.cpp refused).
     #[error("her sampler was refused: {0}")]
     Sampler(String),
@@ -380,30 +378,18 @@ impl Driver<'_, '_> {
         }
     }
 
-    fn admit(&mut self, req: GenerationRequest, turns: &mut Vec<Turn>) {
+    fn admit(&mut self, mut req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
         };
-        // special=true so chat-template markers tokenize as the model's own special tokens
-        let built = self
-            .model
-            .tokenize(&req.prompt, true, true)
-            .map_err(TurnError::Tokenize)
-            .and_then(|prompt| sampling::sampler(self.model, &req.sampling).map(|sampler| (prompt, sampler)).map_err(TurnError::Sampler));
-        match built {
-            Ok((prompt, sampler)) => {
+        // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.
+        match sampling::sampler(self.model, &req.sampling).map_err(TurnError::Sampler) {
+            Ok(sampler) => {
+                let prompt = std::mem::take(&mut req.prompt);
                 let basis = Basis { genes: signature(&req.active_loras) };
                 let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-                // Her view's end, in this prompt's own tokens: where the tokens of her view's text
-                // stop agreeing with the prompt's (a token can straddle the edge). A boundary that
-                // leaves nothing to prefill after it marks nothing.
-                let boundary = req
-                    .stable_prefix
-                    .as_deref()
-                    .and_then(|stable| self.model.tokenize(stable, true, true).ok())
-                    .map(|stable| reuse::common_prefix(&stable, &prompt))
-                    .filter(|end| *end > 0 && *end < prompt.len());
+                let boundary = req.view_end;
                 self.answers += 1;
                 let answer = emit::AnswerSeq(self.answers);
                 let cancel = Arc::new(AtomicBool::new(false));

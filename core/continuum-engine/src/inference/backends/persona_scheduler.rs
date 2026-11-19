@@ -44,13 +44,30 @@ pub enum TokenEvent {
     Error(String),
 }
 
+/// A turn's prompt as token ids and where her view ends in them, computed by the submitter on its
+/// own thread (each act runs on its own), so many acts tokenize at once and the engine thread never
+/// does (CONTINUUM-ENGINE 4.16). The view's end is where the tokens of her view's text stop
+/// agreeing with the prompt's (a token can straddle the edge); an end that leaves nothing after it
+/// marks nothing.
+pub fn prepare(model: &Model, prompt: &str, view: Option<&str>) -> Result<(Vec<i32>, Option<usize>), String> {
+    // special=true so chat-template markers tokenize as the model's own special tokens
+    let tokens = model.tokenize(prompt, true, true)?;
+    let view_end = view
+        .and_then(|view| model.tokenize(view, true, true).ok())
+        .map(|view| reuse::common_prefix(&view, &tokens))
+        .filter(|end| *end > 0 && *end < tokens.len());
+    Ok((tokens, view_end))
+}
+
 /// What a caller submits to the scheduler.
 pub struct GenerationRequest {
-    pub prompt: String,
-    /// The text at the head of `prompt` that her next act will hold unchanged (her view, as the
-    /// model's template renders it, without the generation prompt), or `None` for a turn with no
-    /// view. The engine checkpoints her where it ends, so her next act prefills only what follows.
-    pub stable_prefix: Option<String>,
+    /// Her prompt as token ids, tokenized by the submitter on its own thread ([`prepare`]): the
+    /// engine thread never tokenizes.
+    pub prompt: Vec<i32>,
+    /// Where her view ends in `prompt` (what her next act will hold unchanged), or `None` for a
+    /// turn with no view. The engine checkpoints her there, so her next act prefills only what
+    /// follows.
+    pub view_end: Option<usize>,
     pub max_tokens: usize,
     pub sampling: SamplingConfig,
     pub stop_sequences: Vec<String>,
