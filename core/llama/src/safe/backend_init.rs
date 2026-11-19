@@ -304,7 +304,20 @@ impl Default for ModelParams {
     }
 }
 
+/// Bytes allocated for the loaded model's native weight buffers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WeightAllocation {
+    pub device: u64,
+    pub host: u64,
+}
+
 impl Model {
+    pub fn weight_allocation(&self) -> WeightAllocation {
+        // SAFETY: the model stays loaded throughout this immutable allocation query.
+        let allocation = unsafe { sys::llama_model_weight_allocation(self.ptr.as_ptr()) };
+        WeightAllocation { host: allocation.host as u64, device: allocation.device as u64 }
+    }
+
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
         backend_init();
