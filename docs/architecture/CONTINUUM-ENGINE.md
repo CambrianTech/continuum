@@ -59,7 +59,9 @@ node is a `Tier` move whose transfer crosses the network. Its fence lands when t
 blocks, and a refusal returns her whole. **Proposed:** before the tier's shape is fixed, a replay
 covers a lost acknowledgement: the peer accepts her unit, its ACK is lost, the sender retries, and
 the old completion arrives after the stream was reused. The two nodes must agree on one owner of
-her decode, and a byte stream received alone never grants a second decode authority.
+her decode, and a byte stream received alone never grants a second decode authority. The transfer's
+identity and its retry replay belong to this tier. What the transfer costs, and who is charged for
+it, is accounted in [SHARED-RESOURCES.md](SHARED-RESOURCES.md).
 
 **Proposed: the rest of the object map.** Each row deletes the copies it names, in this order:
 1. `EngineConfig` resolved once from what the engine reports; every context is built from it (§7).
@@ -137,8 +139,13 @@ is an event.
 **The policies, each with its invariant:**
 - **P3, grants at the act** (I3, I4): `ActHold`, reservations and sealed `GrantHandoff` receipts.
   Standing grants, waiter queues and head-of-line rules are deleted.
-- **P4, a restart is warm** (I2): adoption keeps a slot's live KV resident, and a restored page that
-  reuses nothing is found by its token-level divergence. **P4a**, genes change in place through
+- **P4, a restart is warm** (I2), for a restart in the same format: adoption keeps a slot's live KV
+  resident, and a restored page that reuses nothing is found by its token-level divergence. A first
+  boot that crosses formats (llama-server page files into the persona engine) has no reader yet.
+  **Proposed:** a typed importer converts each mind's page file (tokens and state in one file, with
+  its `.lora`, `.ckpt` and `.dft` companions and the saved ledger naming her) into her preserved
+  unit, and refuses her by name when her epoch, adapter or sentinel cannot be proven. It never
+  reconstructs her history from chat text. **P4a**, genes change in place through
   their one owner: a load is plan, lease, register the residency, then load inside it, and an unload
   carries the engine identity captured before the catalog read, so a replaced engine refuses. The
   genome side is IN-PROCESS-LEARNING.md.
