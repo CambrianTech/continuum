@@ -36,7 +36,19 @@ the MTP draft. So 60 needs the draft and prefill overlapped with decode (§3), n
 
 ## 2. Objects and ownership
 
-Each concept has one owner. A row's object owns what it names, and nothing else holds a copy.
+The engine follows the [substrate extension contract](SUBSTRATE.md#extension-bar).
+For example, `PersonaEngine` checks admission with `Roles` before asking a `Tier` to
+begin copy-in. Each tier implements the native transfer. Every tier inherits the same
+admission order through the engine entry point.
+
+**Proposed adapter catalog.** The registry selects providers and snapshots their handles
+in priority order. Release its read guard before querying them. A provider that supports
+listing implements a required catalog read against its loaded adapters. Distinguish an
+unsupported provider, a failed read and a successful empty list in the query result.
+Diagnostics and residency consume that observation. The decode owner reports which
+adapters and scales it applied to an individual turn.
+
+The table identifies the owner of each operation and its state.
 
 | Object | Where | Owns |
 |---|---|---|

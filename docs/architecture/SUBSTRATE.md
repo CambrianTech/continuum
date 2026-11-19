@@ -394,20 +394,18 @@ the module.
 
 ### Extension Bar
 
-The acceptance test for the runtime pattern is unified in §"Acceptance
-Criteria for Substrate-Done" below. The shorter version, restated for the
-person about to write a new module:
+Put each workflow on the lowest owner shared by its callers. The owner implements the
+sequence once. Give each operation whose implementation varies a narrow, typed trait
+method. A required method has no body. Supply a default when it gives every implementer
+a correct result. When an ordering rule protects custody or correctness, put the public
+entry point on the owner and have it call the hooks. A trait default can be overridden.
 
-- New modules are small (a few hundred lines at most). If a persona recipe,
-  model adapter, RAG source, media observer, render observer, memory
-  consolidator, or grid bridge needs to implement its own transport,
-  backpressure, retry loop, logging, queue, metrics, throttle, or lifecycle,
-  the substrate is missing a base capability — file the substrate gap, do
-  not work around it in the module.
-- The correct high-performance path is the *shortest* path. Anti-pattern: a
-  PR that grows a module to compensate for missing substrate behavior. The
-  reviewer's job in that case is to ask which substrate gap is being papered
-  over, then route the work there.
+Use the substrate for subscriptions, queues, backpressure, completion, retries, metrics
+and shutdown. Pass handles to independent workers and release registry or queue guards
+before invoking a hook. Only the work that consumes a result depends on its completion.
+When two modules implement the same sequence, move it to their common owner, migrate
+both callers and remove their copies. Review the resulting module against the
+[substrate acceptance criteria](#acceptance-criteria-for-substrate-done).
 
 ### Runtime Frame
 
