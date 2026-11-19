@@ -104,6 +104,9 @@ extern "C" int continuum_chat_render_new(const continuum_chat *chat, const char 
         if (in.contains("tools") && !in.at("tools").is_null()) {
             inputs.tools = common_chat_tools_parse_oaicompat(in.at("tools"));
         }
+        if (in.contains("tail_tools") && !in.at("tail_tools").is_null()) {
+            inputs.tail_tools = common_chat_tools_parse_oaicompat(in.at("tail_tools"));
+        }
         inputs.tool_choice = common_chat_tool_choice_parse_oaicompat(in.value("tool_choice", std::string("auto")));
         if (in.contains("json_schema") && !in.at("json_schema").is_null()) {
             inputs.json_schema = in.at("json_schema").dump();

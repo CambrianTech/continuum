@@ -127,6 +127,9 @@ pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, Cha
             None => {}
         }
     }
+    if let Some(tail) = request.tail_tools.as_deref().filter(|tools| !tools.is_empty()) {
+        body["tail_tools"] = json!(openai_tools(tail));
+    }
     Ok(body)
 }
 
