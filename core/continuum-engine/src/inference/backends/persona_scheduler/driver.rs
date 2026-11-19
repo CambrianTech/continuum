@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
-use continuum_persona_engine::persona::{Epoch, PersonaId};
+use continuum_persona_engine::persona::{Epoch, Footprint, Held, PersonaId};
 use continuum_persona_engine::pipeline::Identified;
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
@@ -81,6 +81,33 @@ struct KeptCheckpoint {
     blocks: llama::PersonaCheckpoint,
     end: usize,
     basis: Basis,
+}
+
+/// Her checkpoint holds her recurrent rows in host memory.
+impl Footprint for KeptCheckpoint {
+    fn held(&self) -> Held {
+        Held::host(self.blocks.bytes() as u64)
+    }
+}
+
+/// What a mind holds herself: her token history and her checkpoint. Her blocks in the context are
+/// the tier's custody; [`Bound`] is that child's view.
+impl Footprint for Mind {
+    fn held(&self) -> Held {
+        self.held.held() + self.kept.held()
+    }
+}
+
+/// A bound mind's blocks, as the tier that holds them in the context reports them.
+struct Bound<'t, 'c, 'm> {
+    tier: &'t UnifiedTier<'c, 'm>,
+    id: PersonaId,
+}
+
+impl Footprint for Bound<'_, '_, '_> {
+    fn held(&self) -> Held {
+        Held::device(self.tier.state_bytes_of(self.id).unwrap_or(0)) // unwrap_or: an unbound mind holds nothing in the context
+    }
 }
 
 impl Mind {
@@ -569,19 +596,22 @@ impl Driver<'_, '_> {
         Ok(())
     }
 
-    /// Attribute her stream's bytes to her in the footprint registry (one-offs are not attributed).
+    /// Attribute what the active mind holds to her in the footprint registry: her own footprint
+    /// (tokens, checkpoint) and her blocks in the context, each asked of its owner (one-offs are not
+    /// attributed).
     fn report_footprint(&mut self, id: PersonaId, one_off: bool) {
         if one_off {
             return;
         }
-        // Her stream's bytes and her checkpoint's (her recurrent rows, held in host memory beside her).
-        let kept: u64 = match self.engine.active_mut() {
-            Some(her) if her.id == id => her.kept.as_ref().map_or(0, |kept| kept.blocks.bytes() as u64), // map_or: no checkpoint kept holds no bytes
-            _ => 0,
-        };
-        if let Some(bytes) = self.engine.tier().state_bytes_of(id).filter(|bytes| *bytes > 0) {
-            footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), bytes + kept);
+        let blocks = Bound { tier: self.engine.tier(), id }.held();
+        if blocks == Held::NOTHING {
+            return;
         }
+        let own = match self.engine.active_mut() {
+            Some(her) if her.id == id => her.held(),
+            _ => Held::NOTHING,
+        };
+        footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), (blocks + own).total());
     }
 }
 

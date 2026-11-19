@@ -100,3 +100,26 @@ fn one_pending_fence_leaves_all_siblings_free_to_start() {
         assert!(suspend.await.is_preserved());
     });
 }
+
+/// A part that holds a fixed number of bytes.
+struct Sized(Held);
+
+impl Footprint for Sized {
+    fn held(&self) -> Held {
+        self.0
+    }
+}
+
+// what this catches: a parent re-measuring or skipping a child. A persona's footprint is exactly
+// her parts' footprints, host and device kept apart, and an absent child adds nothing.
+#[test]
+fn a_persona_holds_the_sum_of_her_parts() {
+    let parts = PersonaParts {
+        blocks: Sized(Held::device(4_000)),
+        tokens: Sized(Held::host(120)),
+        genome: Sized(Held::device(300)),
+        learning: None::<Sized>,
+        decode: Sized(Held::host(5)),
+    };
+    assert_eq!(parts.held(), Held { host: 125, device: 4_300 });
+}

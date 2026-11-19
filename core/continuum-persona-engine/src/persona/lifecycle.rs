@@ -43,6 +43,13 @@ macro_rules! persona_parts {
             }
         }
 
+        // Her footprint is her parts' footprints: the same fold as suspend.
+        impl<$($part: super::Footprint),+> super::Footprint for PersonaParts<$($part),+> {
+            fn held(&self) -> super::Held {
+                super::Held::NOTHING $(+ self.$field.held())+
+            }
+        }
+
         impl<$($part: Suspension),+> Suspension for PersonaParts<$($part),+> {
             fn is_preserved(&self) -> bool {
                 $(self.$field.is_preserved())&&+
