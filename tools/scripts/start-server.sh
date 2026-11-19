@@ -758,32 +758,10 @@ if [ -n "${CONTINUUM_PREBUILT_CORE:-}" ]; then
 else
   core_build_bins="continuum-core-server $core_build_bins"
 fi
-cli_build_separately=""
-# Windows locks a running image, so the build must not write over the CLI that invoked
-# it. The caller names its own image in CONTINUUM_SKIP_SELF_BUILD; the build skips the
-# CLI only when that IS the file it would write. `install` runs from ~/.local/bin and the
-# supervisor from its slot, never from the target dir, so they rebuild the CLI; skipping
-# it for them staged an OLD CLI into the slot on every deploy and install copied it onto
-# PATH. "1" (a caller that does not name its image) keeps the old unconditional skip.
-cli_is_running_image() {
-  [ -n "${CONTINUUM_SKIP_SELF_BUILD:-}" ] || return 1
-  [ "$CONTINUUM_SKIP_SELF_BUILD" = "1" ] && return 0
-  local running out
-  running="$(cygpath -u "$CONTINUUM_SKIP_SELF_BUILD" 2>/dev/null || printf '%s' "$CONTINUUM_SKIP_SELF_BUILD")"
-  out="$(cygpath -u "$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum" 2>/dev/null || printf '%s' "$CARGO_TARGET_DIR/$PROFILE_LABEL/continuum")"
-  running="$(printf '%s' "${running%.exe}" | tr '[:upper:]' '[:lower:]')"
-  out="$(printf '%s' "$out" | tr '[:upper:]' '[:lower:]')"
-  [ "$running" = "$out" ]
-}
-if cli_is_running_image; then
-  echo "▶ skipping continuum CLI build — this script was invoked BY the running"
-  echo "  continuum binary, which cannot replace its own image while executing."
-  echo "  The CORE is still rebuilt below. To update the CLI itself: npm start"
-elif [ "$CONTINUUM_CLI_FEATURES" = "$CONTINUUM_FEATURES" ]; then
-  core_build_bins="$core_build_bins continuum"
-else
-  cli_build_separately=1
-fi
+# Always build continuum alongside the other bins in the same cargo invocation.
+# The CLI feature set is now identical to the core's (see core-features.sh), so
+# there's no reason to split them — one library compile, four links.
+core_build_bins="$core_build_bins continuum"
 
 echo "▶ building $core_build_bins — one cargo invocation ($PROFILE_LABEL), the library compiles once"
 # shellcheck disable=SC2086  # the bin list is a word list, split on purpose
