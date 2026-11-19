@@ -202,8 +202,7 @@ impl InPlace {
     /// Seat `key`'s learner if needed and cover her next pending example's memory, waiting for this
     /// engine (holding no serving resource): the step that follows only revalidates. Seating's
     /// embeddings, competence decision and leases all happen here, never under her serving guards.
-    async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation) -> Result<Prepared, String> {
-        let mut held = self.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+    async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, mut held: engine_lock::EngineGuard) -> Result<Prepared, String> {
         for row in rows {
             let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
             match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {

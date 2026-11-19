@@ -90,6 +90,16 @@ impl TrainingTriggerState {
         Ok(())
     }
 
+    /// Waiting for the bucket and engine changes no resident state. Once both are held,
+    /// run_leased rechecks admission and owns preparation through caller disconnect.
+    pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation) -> Result<Prepared, String> {
+        let lease = self.submit_gates.acquire(&key).await;
+        let held = self.in_place.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+        self.run_leased(lease, key, move |state, key| async move {
+            state.in_place.prepare(&state, &key, &rows, engine, held).await
+        }).await?
+    }
+
     /// Learn bucket `key`'s pending `rows` on `engine` until it stops, then publish what it learned.
     /// Each step: (1) her acts finish, holding nothing; (2) her learner is seated and the example's
     /// memory covered under the bucket's gate and the engine, holding no serving resource, every
@@ -120,13 +130,9 @@ impl TrainingTriggerState {
                 }
             }
             // 2. seat and cover her next example, holding no serving resource
-            let prepare_rows = Arc::clone(&rows);
-            let prepared = match self
-                .run_owned(key.clone(), move |state, key| async move { state.in_place.prepare(&state, &key, &prepare_rows, engine).await })
-                .await
-            {
-                Ok(Ok(prepared)) => prepared,
-                Ok(Err(why)) | Err(why) => {
+            let prepared = match self.prepare_bucket(key.clone(), Arc::clone(&rows), engine).await {
+                Ok(prepared) => prepared,
+                Err(why) => {
                     failure = Some(why);
                     break;
                 }
