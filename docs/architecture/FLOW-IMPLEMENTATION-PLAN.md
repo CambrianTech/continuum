@@ -78,19 +78,12 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
   dependencies by type (`getAnalyzerOfType<T>()`), and implements one handler. `CBP_ElevationAnalyzer`
   is 71 lines, most of them boilerplate.
 
-`continuum-flow` therefore ships a **`Stage`** alongside the capacity dispatcher:
-
-```rust
-pub trait Stage: Send + 'static {
-    type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
-    const QOS: Qos;                // its class
-    const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
-    async fn handle(&mut self, input: Self::Input);
-}
-// spawn_stage(stage) -> StageInput<Input>: a stage holds one input in hand and one pending (CBAR's
-// double buffer); push() fills the pending slot, or hands the input back / replaces it when full, and signals.
-// A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
-```
+Use the deployed [Stage contract](../../core/continuum-flow/src/stage.rs). Implement
+`Input`, `QOS` and `handle`. Override `handle_all` when the resource can consume
+a batch. The owner supplies admitted `Capacity` to `spawn_stage(stage, capacity)`
+and receives the input handle and worker. A reliable push returns the input when full.
+A replaceable signal can select `KeepNewest` and still handle a full stage. Producers
+holding other useful work can retain the returned item for the next capacity event.
 
 The module owns every concern that today is copied into each subsystem:
 - the queue and its bound;
@@ -333,7 +326,7 @@ old path. Items in the same wave can proceed independently.
 | 1. Governors, resident scheduling and health | `health_ledger::verdict`, the spawner and grid allocator all consume a two-minds-per-lane policy. The M5 reported starvation with four residents, one intentional decode lane and zero lane-starved events. Separate observed delay and progress from placement policy. Have governors subscribe to capacity and completion. | Replay a slow mind alongside active peers. Measure per-resident ready age, first response, useful acts and starvation by cause. |
 | 1. Mind, cortical functions, grounding, context and memory | Follow the addressed inbound pump to each consuming region. Store distinct input once, wake subscribers by typed handle, and let independent subscribers advance while a tool or decode is outstanding. Share immutable context by generation and invalidate only affected inputs. | Interrupt a coding turn with speech and a second tool result. Check both completions reach the correct mind and later context includes both. |
 | 2. Tool use, command dispatch, host and process lifecycle | Build on the owned process capture, identity and completion in `continuum-process/src/owned.rs`. Remove per-command polling where the handle supplies completion. Keep process exit verification at the OS boundary. Give long builds independent handles. | Issue two tools, interrupt one and deliver the other's result while the mind remains responsive. Verify cancellation reaches only its owned process. |
-| 2. Live voice, perception, capture and rooms | Trace `continuum-live` call management through the LiveKit bridge, perception, STT, turn selection, TTS and playback. One ordered writer per media stream. Release call-map guards before codecs and network I/O. Invalidate unplayed speech on barge-in. Preserve committed transcripts. | Measure silence to first audible sample and interruption to playback stop under simultaneous coding load. Report dropped frames and audio gaps. |
+| 2. Live voice, perception, capture and rooms | `call_manager::stop_audio_loop` holds the calls-map read guard while awaiting a call write guard and shutdown. Lease the call handle, release the map guard, and give the call owner shutdown. Trace the LiveKit bridge through STT, turn selection, TTS and playback. One ordered writer per media stream. Release call-map guards before codecs and network I/O. Invalidate unplayed speech on barge-in. Preserve committed transcripts. | Measure silence to first audible sample and interruption to playback stop under simultaneous coding load. Report dropped frames and audio gaps. |
 | 2. Store, ORM, vector data and disk | SQLite already separates concurrent reads from writes. Consolidate repeated blocking read dispatch on its pool owner. Keep transaction commit and each cursor advance ordered; let different cursors progress. Model disk transfer and migration as owned operations with completion handles. | Run vector backfill, cursor reads and checkpoint publication together. Track query tail latency, memory, write backlog and recoverable manifest generation. |
 | 2. Learning, academy, dreams and experience | Follow the lived turn through capture, review, staged credit, evaluation and applied adapter. Reuse the same completion owner for background consolidation and training. Batch-boundary yield belongs to the training resource. Credit identities survive retries. | Trace one real reviewed submission to accepted credit, evaluation and subsequent use on a named resident. Record competing interactive latency. |
 | 3. Grid, AIRC, gateway and remote execution | In Tailscale transport reads and writes have separate guards. Preserve frame ordering per connection direction. Use one connection owner and independent peer outboxes. Carry operation identity, epoch and completion across reconnect. | Delay one peer, lose an acknowledgement, reconnect and retry. Verify other peers progress, a tool effect commits once and only one node owns decode. |
