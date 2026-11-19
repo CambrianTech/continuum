@@ -64,7 +64,7 @@ mod replay {
         struct Chat {
             #[serde(flatten)]
             base: BaseEntity,
-            room_id: String,
+            room_id: uuid::Uuid,
         }
 
         #[derive(Serialize, Deserialize, Entity)]
@@ -72,7 +72,7 @@ mod replay {
         struct Memory {
             #[serde(flatten)]
             base: BaseEntity,
-            persona_id: String,
+            persona_id: uuid::Uuid,
             timestamp: String,
             importance: i64,
         }
@@ -114,11 +114,13 @@ mod replay {
         Ok(())
     }
 
+    // What this catches: the retired indexes blocking an otherwise exact durable schema.
     #[tokio::test]
     async fn reopen_drops_only_the_five_retired_indexes() -> Result<(), Box<dyn std::error::Error>> {
         reopen_legacy_catalog(false).await
     }
 
+    // What this catches: a failed reopen changing indexes on an earlier table in the transaction.
     #[tokio::test]
     async fn unexpected_index_rolls_back_retired_indexes_across_tables() -> Result<(), Box<dyn std::error::Error>> {
         reopen_legacy_catalog(true).await
