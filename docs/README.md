@@ -21,10 +21,10 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 | For a change to | Start with | Design owner |
 |---|---|---|
-| Runtime workers, subscriptions, serving, GPU scheduling, streaming, caches or mind swaps | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) | Fable |
+| Runtime workers, subscriptions, serving, GPU scheduling, streaming, KV and mind-state caches, or mind swaps | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) | Fable |
 | Rust persistence, entity schemas, migrations, typed queries or native data storage | [Rust ORM Architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) | Codex |
 
-For a change that crosses the boundary, record the runtime contract in the engine manual and the durable representation in the ORM manual. Link the two decisions. Keep benchmark receipts with their tested artifacts and identify proposed behavior separately from deployed behavior.
+The engine chapter tracks merged design. [Engine design review #6092](https://github.com/CambrianTech/continuum/pull/6092) covers proposed swap and transfer contracts. Disk cache retention belongs to the [disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs).
 
 ## Where things live — EVERY directory, with counts
 
