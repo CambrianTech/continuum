@@ -2632,6 +2632,105 @@ samples only a turn's final prompt position.
 4. *The class key* (4.1c: interactive, work, utility, background) in the submission, so `pick` orders by class before
    cost; goal 9's scheduler owns `pick` from then on.
 
+### 4.16 A mind is one object; the engine holds her proxy (2026-11-19, design for review)
+
+Joel, 2026-11-19: "The synchronous addiction you hate is the opposite of graphics engines. Study unreal more carefully and
+design an object based approach here not this confusing disjoint mess."
+
+**What 4.15 promised and the code still does instead** (branch `fable/residents-on-the-scheduler`, 7f67dc28d0):
+- *The caller blocks.* `llamacpp_adapter.rs` `generate_text` parks an OS thread in `spawn_blocking` around
+  `generate_for_persona` until the whole turn is done, then receives the whole text. No handle and no token stream.
+- *Her history is processed again every act.* The adapter renders her entire chat to text (`native_chat::render`),
+  renders it a second time without the generation prompt (`native_chat::stable_text`), and the engine thread tokenizes
+  both (`driver.rs` `admit`): about 47k tokens twice on the thread that decodes. The boundary is then rediscovered by
+  `reuse::common_prefix` and `reuse::choose` compares her whole history every frame.
+- *Moves block the frame.* Gene paging (`ensure_adapter`) runs in the parked thread before the turn. A switch (`stage`,
+  `settle`, `handoff`, `finish_retirement`) copies blocks between frames on the engine thread (19-97 ms live, a6da599330).
+- *One mind is in about six places:* the adapter's rendered text, `Turn`, the driver's `Mind`, its `parked` map, the
+  persona engine's `Roles`, the tier and the fork's blocks. Media takes a separate single-flight path that bypasses the
+  scheduler. The legacy lane vocabulary (`ServingPlan.lanes`: `planned_lanes=3` live against `n_seq_max=1`; 346
+  references) plus `kv_page` (29 files) and served windows (24 files) still plan and page around all of it.
+
+**The model.** bgfx is read from its source (`~/.continuum/reference/bgfx/src`). Unreal's render threading is described
+from its documented architecture: its source is not on this machine, so those points are not file:line receipts.
+- *A game object and its render proxy (Unreal).* A `UPrimitiveComponent` lives on the game thread and owns gameplay state.
+  When registered, it creates an `FPrimitiveSceneProxy` that the render thread alone owns. The game thread never touches
+  the proxy: it enqueues commands (`ENQUEUE_RENDER_COMMAND`, a lambda that runs on the render thread), and it rarely
+  waits (`FRenderCommandFence`). No state is shared and no lock spans the threads.
+- *Handles at once, work later (bgfx).* `createTexture` returns a handle immediately. The work lands in the SUBMIT frame's
+  `m_cmdPre` and runs at the start of a render frame; destruction lands in `m_cmdPost` (`renderFrame`, `bgfx.cpp:3430-3495`).
+  `Context::frame()` (`bgfx.cpp:2987`) waits only for the previous render frame, swaps `m_submit` and `m_render`, and
+  releases the render thread: one handoff per frame, two semaphores, no per-object lock.
+- *Streaming with a budget (Nanite, documented).* Requests gathered during frame N are fetched asynchronously. Pages are
+  installed at a frame boundary within a per-frame budget, so a draw never waits on IO; a page that is not resident yet
+  draws at a coarser level.
+
+**The objects.**
+
+1. `Mind`: her handle, held by the persona (cheap to clone, `Send`). It owns her identity and epoch, her genes, and her
+   history as token ids, append-only within an epoch. Every method returns at once:
+   - `extend(items)`: her own task tokenizes only the appended items (the view's codec already appends keyed items
+     within an epoch, section 5), then enqueues `Append(ids)`. Nothing re-renders or re-tokenizes what she already sent.
+   - `answer(sampling, stop) -> Answer`: enqueues `Think` and returns an `Answer` handle (a token stream plus a done
+     event). Dropping it cancels. Her generated tokens become part of her history.
+   - `mark() -> Mark` and `rewind(mark)`: a named point in her history. The epoch's start is a mark, so a collapse is
+     `rewind(epoch_mark)` followed by `extend`, with nothing to rediscover. The engine keeps the checkpoint for a mark
+     (4.15's recurrent-rows checkpoint); `common_prefix` and the boundary render go away.
+   - `rest()`: a cooling hint. Dropping the last handle releases her proxy.
+2. `MindProxy`: the engine thread's only record of her. It holds her ids, her marks' checkpoints, her pending commands,
+   her `Answer` senders, and her residency: `Bound` (in the context), `Warm` (native blocks in RAM), `Cold` (on disk).
+   It replaces `Turn`, `Mind`, `parked` and `Roles` with one table keyed by `PersonaId`.
+3. `Engine`: one thread, the only toucher of the context. Each frame runs the phases of bgfx's `renderFrame`:
+   - *pre:* apply queued commands (create a proxy, append, mark, rewind, release), like `m_cmdPre`;
+   - *stream:* residency work within a measured per-frame budget (Nanite's install). NEXT's blocks are copied in and
+     PREVIOUS's out in chunks between ACTIVE's tokens, so a switch binds a stream that is already resident. Demotion to
+     disk and restore from disk go to an IO worker that returns a handle;
+   - *execute:* one step for the turn `frame::pick` chooses (a prefill chunk or one token); the policy stays the one
+     pure function;
+   - *post:* send tokens to their `Answer` streams, release retired proxies, and publish a double-buffered
+     `EngineSnapshot` (`watch`). The snapshot holds residency per mind, queue, rates and waits, and is the only thing
+     serving and the scheduler read.
+4. `Answer`: the caller awaits a stream on its own task. No OS thread is parked per turn, and a reply can be read as it
+   arrives.
+
+**Threads and what crosses them.** A persona's own task tokenizes her appends and awaits her `Answer`. The engine thread
+runs frames. An IO worker moves cold blocks. Only three things cross: the command queue (bounded, per `Mind`, in
+order), the `Answer` streams, and the snapshot. No lock is held across a seam, no permit stands for a lane, and nothing
+waits for a whole turn.
+
+**Media and genes are commands on the same object.** An image or audio item is an `extend` whose ids include the
+projector's embedding positions, applied in *pre* like any append, so the single-flight bypass is deleted. Genes are
+part of her basis: a change is a command, and the adapter pages in during *stream* under the same budget.
+
+**What it deletes.** The `spawn_blocking` forward path and the whole-text result; `native_chat::stable_text`,
+`TurnPrompt` and the per-act full render and tokenize; `reuse::common_prefix` as the boundary finder (a `Mark` names
+it); `Driver.parked`, `Turn` and `Roles` as separate owners of one mind; the media bypass; and, with Codex by crate
+(serving, grid, governor to Codex; engine planning, persona, spawner to Fable), `ServingPlan.lanes`, `max_lanes`,
+`lane_footprint`, `served_window_store` and `kv_page`. One `EngineConfig` window and one KV pool remain, which minds
+page through.
+
+**Open question, answered before S2.** Chat templates may rewrite past turns (Qwen's templates are reported to drop
+earlier turns' reasoning; to be verified against the GGUF's own template). If they do, an appended message can change
+text before it. The rule then: `extend` renders from her last mark, and the template's rewrite region is what a mark
+bounds. A probe counts every append whose render differs before its mark, so a rewrite is never silent.
+
+**Order: vertical slices, each deployed on the M5 and read for 15 minutes before the next.**
+- *S1 `Answer` and the snapshot.* `submit` returns a handle and streams tokens; `spawn_blocking` is deleted from the text
+  path. Gate: no OS thread parked per turn; first-token time recorded per turn.
+- *S2 `Mind` and `MindProxy`.* `extend`, `answer`, `mark` and `rewind`; tokenizing moves to the persona's task; the
+  proxy table replaces `Turn`, `Mind`, `parked` and `Roles`. Gate: engine-thread time per admitted turn near zero;
+  prefill equals the appended tokens.
+- *S3 Streaming in the frame.* NEXT is copied in during ACTIVE's decode within the measured budget. Gate: switch time on
+  the critical path near zero while decode tok/s holds.
+- *S4 Cold tier and restore at boot.* A restart demotes and never drops. Gate: no cold first act after a deploy (live
+  2026-11-19 00:56-01:00Z: four cold first acts, waits stacked to 155 s).
+- *S5 Delete the legacy* (lanes, `kv_page`, served windows, the media bypass), split by crate with Codex.
+
+**The gate for the whole section** (Joel's targets, relayed by Codex 2026-11-19): delivered tokens per second over a
+full 900 s of real resident work, swaps and waits included, at least 60 on the M5 and 200 on BigMama, with per-resident
+progress and useful completion reported. Today one mind decodes at 26-32 tok/s on the M5 (a6da599330, no MTP draft), so
+60 also needs the MTP draft (4.10) and prefill overlapped with decode (S3); one mind alone cannot reach it.
+
 ## 5. A mind's context and the engine it runs on
 
 **Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
