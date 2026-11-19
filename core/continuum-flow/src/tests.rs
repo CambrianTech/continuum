@@ -205,7 +205,7 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
         }
     }
     let (got, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let results = spawn_stage(Results(Arc::clone(&got), Arc::clone(&gate)));
+    let (results, _results_worker) = spawn_stage(Results(Arc::clone(&got), Arc::clone(&gate)));
     assert_eq!(results.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes 1 and waits on the gate
     assert_eq!(results.push(2), Ok(0));
@@ -223,7 +223,7 @@ async fn a_reliable_stage_never_drops_a_result_and_a_signal_stage_keeps_the_newe
     assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3], "the awaited result is delivered"); // test: plain data
 
     let (seen, hold) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let wakes = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
+    let (wakes, _wakes_worker) = spawn_stage(Wakes(Arc::clone(&seen), Arc::clone(&hold)));
     assert_eq!(wakes.push(1), Ok(0));
     tokio::task::yield_now().await;
     assert_eq!(wakes.push(2), Ok(0));
@@ -253,7 +253,7 @@ async fn a_deep_stage_queues_its_depth_and_handles_all_waiting_in_one_wake_in_or
         }
     }
     let (wakes, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
-    let stream = spawn_stage(Stream(Arc::clone(&wakes), Arc::clone(&gate)));
+    let (stream, _stream_worker) = spawn_stage(Stream(Arc::clone(&wakes), Arc::clone(&gate)));
     assert_eq!(stream.push(1), Ok(0));
     tokio::task::yield_now().await; // the worker takes [1] and waits on the gate
     for token in 2..=4 {
@@ -290,7 +290,7 @@ async fn simultaneous_last_producers_close_and_drain_the_stage() {
     }
     for queued in [false, true] {
         let (ended, done) = tokio::sync::oneshot::channel();
-        let first = spawn_stage(Drain { seen: Vec::new(), ended: Some(ended) });
+        let (first, _first_worker) = spawn_stage(Drain { seen: Vec::new(), ended: Some(ended) });
         let second = first.clone();
         tokio::task::yield_now().await;
         let barrier = Arc::new(Barrier::new(2));
@@ -326,7 +326,7 @@ async fn a_stage_whose_handler_panicked_hands_inputs_back() {
             assert_ne!(input, 1, "test: the handler breaks on its first input");
         }
     }
-    let stage = spawn_stage(Breaks);
+    let (stage, _stage_worker) = spawn_stage(Breaks);
     assert_eq!(stage.push(1), Ok(0));
     for _ in 0..50 {
         tokio::task::yield_now().await;
@@ -336,4 +336,37 @@ async fn a_stage_whose_handler_panicked_hands_inputs_back() {
     }
     assert_eq!(stage.push(2), Err(crate::PushError::Stopped(2)), "a stopped stage keeps nothing");
     assert_eq!(stage.send(3).await, Err(crate::Stopped(3)), "a sender gets its input back instead of waiting");
+}
+
+// A producer can replace a heavy payload and close intake while its destructor is still pending.
+#[tokio::test]
+async fn eviction_and_final_cleanup_belong_to_the_joined_worker() {
+
+    struct Payload(std::thread::ThreadId, std::sync::mpsc::Sender<bool>);
+    impl Drop for Payload {
+        fn drop(&mut self) {
+            let _ = self.1.send(std::thread::current().id() != self.0);
+        }
+    }
+    struct Consumer;
+    impl Stage for Consumer {
+        type Input = Payload;
+        const QOS: Qos = Qos::Utility;
+        const OVERFLOW: Overflow = Overflow::KeepNewest;
+        async fn handle(&mut self, _: Payload) {}
+    }
+    let (input, worker) = spawn_stage(Consumer);
+    let (released, observed) = std::sync::mpsc::channel();
+    // The current-thread executor cannot poll the worker until the producer returns.
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            let payload = || Payload(std::thread::current().id(), released.clone());
+            assert!(matches!(input.push(payload()), Ok(0)));
+            assert!(matches!(input.push(payload()), Ok(1)));
+        });
+    });
+    assert!(observed.try_recv().is_err());
+    worker.stop();
+    worker.join().await.expect("test: worker drained successfully");
+    assert_eq!(observed.into_iter().collect::<Vec<_>>(), [true, true]);
 }

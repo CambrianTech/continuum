@@ -54,7 +54,7 @@ pub trait Stage: Send + 'static {
 /// subsystem sizes or locks a queue of its own.
 struct Inbox<T> {
     producers: AtomicUsize,
-    pending: Mutex<std::collections::VecDeque<T>>,
+    pending: Mutex<Batch<T>>,
     depth: usize,
     /// Wakes the worker: an input arrived, or the last producer left.
     signal: Notify,
@@ -64,6 +64,18 @@ struct Inbox<T> {
     /// nothing more will be taken, so an input is handed back instead of waiting forever.
     stopped: AtomicBool,
     overflow: Overflow,
+}
+
+/// Both queues are bounded by the stage depth. Retired payloads are destroyed on the worker.
+struct Batch<T> {
+    ready: std::collections::VecDeque<T>,
+    retired: Vec<T>,
+}
+
+impl<T> Default for Batch<T> {
+    fn default() -> Self {
+        Self { ready: Default::default(), retired: Vec::new() }
+    }
 }
 
 /// Why `push` handed an input back.
@@ -103,13 +115,23 @@ impl<T> StageInput<T> {
             if self.inbox.stopped.load(Ordering::Acquire) {
                 return Err(PushError::Stopped(item));
             }
-            let full = pending.len() >= self.inbox.depth;
+            let full = pending.ready.len() >= self.inbox.depth;
             let dropped = match (full, self.inbox.overflow) {
                 (true, Overflow::Reliable) => return Err(PushError::Full(item)),
-                (true, Overflow::KeepNewest) => usize::from(pending.pop_front().is_some()),
+                (true, Overflow::KeepNewest) => {
+                    if std::mem::needs_drop::<T>() && pending.retired.len() == self.inbox.depth {
+                        return Err(PushError::Full(item));
+                    }
+                    if let Some(oldest) = pending.ready.pop_front() {
+                        if std::mem::needs_drop::<T>() {
+                            pending.retired.push(oldest);
+                        }
+                    }
+                    1
+                }
                 (false, _) => 0,
             };
-            pending.push_back(item);
+            pending.ready.push_back(item);
             dropped
         };
         self.inbox.signal.notify_one();
@@ -147,11 +169,40 @@ impl<T> Drop for StageInput<T> {
     }
 }
 
-/// Start `stage` on its own task; returns its input.
-pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
+/// The single lifecycle owner. Producers receive only the input handle.
+#[must_use]
+pub struct StageWorker<T> {
+    inbox: Arc<Inbox<T>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl<T> StageWorker<T> {
+    /// Close intake immediately. The worker finishes its accepted inputs and releases its state.
+    pub fn stop(&self) {
+        self.inbox.close();
+    }
+
+    /// Wait for drain and teardown after stop, or after every producer has left.
+    pub async fn join(self) -> Result<(), tokio::task::JoinError> {
+        self.task.await
+    }
+}
+
+impl<T> Inbox<T> {
+    fn close(&self) {
+        let guard = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        self.stopped.store(true, Ordering::Release);
+        drop(guard);
+        self.signal.notify_one();
+        self.space.notify_waiters();
+    }
+}
+
+/// Start a worker and give its producers and lifecycle owner distinct handles.
+pub fn spawn_stage<S: Stage>(mut stage: S) -> (StageInput<S::Input>, StageWorker<S::Input>) {
     let inbox = Arc::new(Inbox {
         producers: AtomicUsize::new(1),
-        pending: Mutex::new(std::collections::VecDeque::with_capacity(S::DEPTH.max(1))),
+        pending: Mutex::new(Batch::default()),
         depth: S::DEPTH.max(1),
         signal: Notify::new(),
         space: Notify::new(),
@@ -159,7 +210,8 @@ pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
         overflow: S::OVERFLOW,
     });
     let input = StageInput { inbox: Arc::clone(&inbox) };
-    tokio::spawn(async move {
+    let worker_inbox = Arc::clone(&inbox);
+    let task = tokio::spawn(async move {
         // Marks the stage stopped however the worker ends: drained and closed, or its handler
         // panicked (the task's future is dropped as the panic unwinds). A waiting producer wakes
         // and gets its input back instead of waiting on a slot nothing will take.
@@ -169,11 +221,12 @@ pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
             // take alone, never across the work.
             let (next, closed) = {
                 let mut pending = inbox.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
-                (pending.drain(..).collect::<Vec<_>>(), inbox.producers.load(Ordering::Acquire) == 0)
+                (std::mem::take(&mut *pending), inbox.stopped.load(Ordering::Acquire) || inbox.producers.load(Ordering::Acquire) == 0)
             };
-            if !next.is_empty() {
+            if !next.ready.is_empty() {
                 inbox.space.notify_waiters();
-                stage.handle_all(next).await;
+                drop(next.retired);
+                stage.handle_all(next.ready.into()).await;
             } else if closed {
                 return;
             } else {
@@ -181,7 +234,7 @@ pub fn spawn_stage<S: Stage>(mut stage: S) -> StageInput<S::Input> {
             }
         }
     });
-    input
+    (input, StageWorker { inbox: worker_inbox, task })
 }
 
 struct StopsOnExit<T>(Arc<Inbox<T>>);
@@ -190,9 +243,11 @@ impl<T> Drop for StopsOnExit<T> {
     fn drop(&mut self) {
         // Under the slot's lock, so a push either landed before (and is drained or dropped with
         // the stage) or sees `stopped` and keeps its input.
-        let pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
+        let mut pending = self.0.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
         self.0.stopped.store(true, Ordering::Release);
+        let abandoned = std::mem::take(&mut *pending);
         drop(pending);
         self.0.space.notify_waiters();
+        drop(abandoned);
     }
 }

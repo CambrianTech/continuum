@@ -168,14 +168,23 @@ impl Scheduler {
             return Err(SchedulerError::NoRuntime);
         }
         let incarnation = Incarnation::next();
-        let emit = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
+        let (emit, emit_worker) = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
         let (snapshot_tx, snapshot) = tokio::sync::watch::channel(record::Record::empty(incarnation.get()));
-        let record = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx));
+        let (record, record_worker) = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx));
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
+        let runtime = tokio::runtime::Handle::current();
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
-            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record }))
+            .spawn(move || {
+                driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record });
+                emit_worker.stop();
+                record_worker.stop();
+                let (emit, record) = runtime.block_on(async { tokio::join!(emit_worker.join(), record_worker.join()) });
+                for failure in [emit, record].into_iter().filter_map(Result::err) {
+                    tracing::error!(%failure, "persona stage failed at shutdown");
+                }
+            })
             .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
         *SUSPENDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request_tx.clone()); // a poisoned slot is replaced whole
         crate::runtime::extensions::install_settle_before_stop(Arc::new(EngineSettle));

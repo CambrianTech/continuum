@@ -30,7 +30,7 @@ pub use flow::{Flow, Grant, Refused};
 pub use outbox::Outbox;
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
-pub use stage::{spawn_stage, Overflow, PushError, Stage, StageInput, Stopped};
+pub use stage::{spawn_stage, Overflow, PushError, Stage, StageInput, StageWorker, Stopped};
 
 #[cfg(test)]
 mod tests;
