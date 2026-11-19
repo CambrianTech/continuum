@@ -255,6 +255,7 @@ pub struct LlamaCppBackend {
     pub(super) weights: llama::WeightAllocation,
     /// The embed lane's resident claim, made at its first embed and cleared when this backend is
     /// dropped: the embedder's whole need stays reserved between embeds.
+    pub(super) embed_planner: OnceLock<llama::PooledContextPlanner>,
     pub(super) embed_residency: OnceLock<crate::inference::embed_lane_memory::EmbedResidency>,
     /// Real model capabilities, read once at load. The authority for the
     /// context window — never a per-tier guess.

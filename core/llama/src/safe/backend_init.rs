@@ -322,6 +322,33 @@ impl From<ContextCreationRefused> for String {
     }
 }
 
+/// Model metadata and placement used to size a pooled context without loading its weights.
+pub struct PooledContextPlanner(Model);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextBufferBytes {
+    pub host: u64,
+    pub device: u64,
+}
+
+impl PooledContextPlanner {
+    pub fn open(path: &Path, n_gpu_layers: i32) -> Result<Self, String> {
+        let params = ModelParams { n_gpu_layers, use_mmap: false };
+        Model::load_impl(path, params, true).map(Self)
+    }
+
+    pub fn quote(&self, params: ContextParams) -> Result<ContextBufferBytes, String> {
+        let context = self.0.new_pooled_context(params)?;
+        let mut bytes = sys::llama_context_buffer_bytes { host: 0, device: 0 };
+        // SAFETY: the context and writable result both outlive this synchronous query.
+        if unsafe { sys::llama_context_get_buffer_bytes(context.ptr.as_ptr(), &mut bytes) } {
+            Ok(ContextBufferBytes { host: bytes.host, device: bytes.device })
+        } else {
+            Err("llama could not account for the pooled context buffers".into())
+        }
+    }
+}
+
 impl Model {
     pub fn weight_allocation(&self) -> WeightAllocation {
         // SAFETY: the model stays loaded throughout this immutable allocation query.
@@ -331,14 +358,18 @@ impl Model {
 
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
+        Self::load_impl(path.as_ref(), params, false)
+    }
+
+    fn load_impl(path: &Path, params: ModelParams, no_alloc: bool) -> Result<Self, String> {
         backend_init();
 
-        let path = path.as_ref();
         let c_path = CString::new(path.to_string_lossy().as_bytes())
             .map_err(|e| format!("invalid path: {e}"))?;
 
         let mut ffi_params = unsafe { sys::llama_model_default_params() };
         ffi_params.n_gpu_layers = params.n_gpu_layers;
+        ffi_params.no_alloc = no_alloc;
         // Upstream 2026-07 replaced `use_mmap: bool` with the load_mode enum
         // (NONE/MMAP/MLOCK/DIRECT_IO — DIRECT_IO is the future NVMe cold-expert read path).
         ffi_params.load_mode = if params.use_mmap {
