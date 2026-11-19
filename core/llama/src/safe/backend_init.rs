@@ -512,14 +512,15 @@ impl Model {
     /// Tokenize a string.
     pub fn tokenize(&self, text: &str, add_bos: bool, special: bool) -> Result<Vec<i32>, String> {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
-        let c_text = CString::new(text).map_err(|e| format!("invalid text: {e}"))?;
-        let text_len = c_text.as_bytes().len() as i32;
+        let text_len = i32::try_from(text.len()).map_err(|_| "tokenizer input exceeds native length")?;
+        // llama_tokenize borrows exactly text_len bytes, including embedded NULs.
+        let bytes = text.as_ptr().cast();
 
         // First call with size 0 to get required size (negative = required)
         let required = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 std::ptr::null_mut(),
                 0,
@@ -527,12 +528,12 @@ impl Model {
                 special,
             )
         };
-        let size = required.unsigned_abs() as usize;
+        let size = required.checked_abs().ok_or("tokenizer output exceeds native capacity")? as usize;
         let mut tokens = vec![0i32; size];
         let n = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 tokens.as_mut_ptr(),
                 size as i32,
