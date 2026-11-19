@@ -74,12 +74,9 @@ pub struct DesiredRole {
     pub model_id: String,
     /// Continuous-batching lanes (`n_seq_max`) for this role's backend, from
     /// the serving daemon's ServingPlan. Defaults to 1 from `plan_for_tier`;
-    /// `PersonaSpawnerModule::with_serving` overrides it from the live plan.
+    /// `PersonaSpawnerModule::set_serving` overrides it from the live plan.
     pub lanes: u32,
-    /// Host-fit served context window (tokens) the gateway llama-server was
-    /// launched with — the planner's single source of truth, NOT a constant.
-    /// Defaults to `MIN_SERVE_CTX` from `plan_for_tier` (runnable floor when no
-    /// plan is published); `with_serving` overrides it from the live plan.
+    /// Verified context capacity in tokens. An unbound role has zero capacity.
     pub served_context_window: u32,
 }
 
@@ -108,7 +105,7 @@ pub fn plan_for_tier(
 /// Compose the desired roster from RECIPE-DECLARED roles (#430). The roles
 /// come from authored data (the default experience's `citizens`); this
 /// function maps each onto the serving scaffold — LCD fallback model until
-/// the serving daemon's plan overrides it via `with_serving`, single lane,
+/// the serving daemon's plan overrides it via `set_serving`, single lane,
 /// runnable-floor window.
 ///
 /// SLICE-14 GUARD, now enforced on DATA: heterogeneous multi-role plans are
@@ -144,14 +141,13 @@ pub fn plan_for_roles(
             role: role.clone(),
             // Fallback model when no ServingPlan is published yet: the FLOOR, which
             // is the 1.5B coder — there is no 0.5B row in the catalog any more. The
-            // serving daemon's plan overrides this via with_serving — that's the
+            // serving daemon's plan overrides this via set_serving — that's the
             // real, honest, GPU-residency-aware pick.
             model_id: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".to_string(),
-            // Default single lane; with_serving overrides from the live plan.
-            lanes: 1,
-            // Runnable floor until the serving daemon publishes a host-fit
-            // window.
-            served_context_window: crate::inference::planning::MIN_SERVE_CTX,
+            // Default single lane; set_serving overrides from the live plan.
+            lanes: 0,
+            // Geometry is unbound until the serving owner verifies it.
+            served_context_window: 0,
         })
         .collect()
     // TODO #133 slice 14: host every declared role after RoleAwareProvider +
@@ -208,8 +204,7 @@ pub struct PersonaSpawnerModule {
     /// actually spawns — single source of truth, not a hardcode.
     serving_base_model: Option<String>,
     serving_lanes: u32,
-    /// Host-fit served context window from the live ServingPlan. Defaults to
-    /// `MIN_SERVE_CTX` (runnable floor); `with_serving` sets the real value.
+    /// Context capacity last verified by the serving owner.
     serving_context_window: u32,
     /// How many citizens of the tier's (homogeneous) role template to host.
     /// Default 1. Driven by `CONTINUUM_PERSONA_FLOOR` at boot — the SAME
@@ -268,9 +263,9 @@ impl PersonaSpawnerModule {
             hw_capability,
             tier_category,
             serving_base_model: None,
-            serving_lanes: 1,
+            serving_lanes: 0,
             remembered_lanes: None,
-            serving_context_window: crate::inference::planning::MIN_SERVE_CTX,
+            serving_context_window: 0,
             population: 1,
             citizens: vec![RoleId::Helper],
             grid_roster: None,
@@ -339,49 +334,20 @@ impl PersonaSpawnerModule {
         self.population = population;
     }
 
-    /// Apply the serving daemon's [`ServingPlan`](crate::inference::planning::serving_plan::ServingPlan):
-    /// every desired role runs the plan's base model, lane count, and host-fit
-    /// served context window. The daemon makes the honest per-host decision
-    /// (budget + footprints, GPU-residency, served window); the spawner obeys
-    /// it. Passing the whole plan by reference (per [[pass-the-model-struct-no-param-hell]])
-    /// keeps adding a new serving knob a one-field change, not a signature
-    /// re-engineer. `None` (or a plan that doesn't fit GPU) keeps the tier's
-    /// `plan_for_tier` defaults.
-    pub fn with_serving(
-        mut self,
-        plan: Option<&crate::inference::planning::serving_plan::ServingPlan>,
-    ) -> Self {
-        if let Some(p) = plan.filter(|p| p.fits_on_gpu) {
-            self.serving_base_model = Some(p.base_model.model_id.clone());
-            self.serving_lanes = p.lanes.max(1);
-            self.serving_context_window = p
-                .served_context_window
-                .max(crate::inference::planning::MIN_SERVE_CTX);
-        }
-        self
-    }
-
-    /// Mutating twin of [`Self::with_serving`] for the resident reconciler: the
-    /// serving plan changes at runtime (a pin, a tier swap, a lane relaunch) and the
-    /// roster's seat count follows the LIVE lane count, never the boot-time one.
-    pub fn set_serving(&mut self, plan: Option<&crate::inference::planning::serving_plan::ServingPlan>) {
-        match plan {
-            Some(p) if p.fits_on_gpu => {
-                self.serving_base_model = Some(p.base_model.model_id.clone());
-                self.serving_lanes = p.lanes.max(1);
-                self.serving_context_window = p
-                    .served_context_window
-                    .max(crate::inference::planning::MIN_SERVE_CTX);
-            }
-            // A live plan that does NOT fit the GPU (a CPU-tier node, or a runtime
-            // downgrade) must never leave the seat count on a stale GPU plan's lanes
-            // (IntelMac's review of #3798): the marker and the lane count move together —
-            // both cleared, so `seats()` falls back to the configured population and the
-            // runnable-floor template.
-            _ => {
-                self.serving_base_model = None;
-                self.serving_lanes = 1;
-            }
+    /// Bind the roster to the geometry verified by the serving owner.
+    pub fn set_serving(&mut self, snapshot: Option<&crate::inference::llama_server::ServingSnapshot>) -> bool {
+        let applied = snapshot.filter(|s| s.is_live() && s.held_for.is_none() && s.loading_model.is_none()
+            && s.lanes > 0 && s.served_context_window > 0);
+        if let Some((serving, model)) = applied.and_then(|s| s.active_model.as_ref().map(|model| (s, model))) {
+            self.serving_base_model = Some(model.clone());
+            self.serving_lanes = serving.lanes;
+            self.serving_context_window = serving.served_context_window;
+            true
+        } else {
+            self.serving_base_model = None;
+            self.serving_lanes = 0;
+            self.serving_context_window = 0;
+            false
         }
     }
 
