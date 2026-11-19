@@ -5,8 +5,8 @@
 //! gap over 2,000 ms while a mind is resident. It also writes each turn's probe row.
 //!
 //! A step's span is the engine thread's time on it (bind, prefill chunk or token, including the
-//! wait for the device), so the share is the engine's occupancy. A window closes on the first step
-//! after it ends; a fully idle engine reports its gap with its next step, measured exactly.
+//! wait for the device), so the share is the engine's occupancy. A window is one turn: it closes
+//! when her turn ends, so a fully idle engine reports its gap with the next turn, measured exactly.
 
 use std::time::{Duration, Instant};
 
@@ -14,8 +14,27 @@ use continuum_flow::{Qos, Stage};
 use continuum_persona_engine::protocol::EngineSnapshot;
 use tokio::sync::watch;
 
-/// The window one snapshot measures.
-const WINDOW: Duration = Duration::from_secs(10);
+/// The busy share of `length`, in permille. A step that straddled the window's start counts only up
+/// to the window's length, so the share never passes 1000.
+fn busy_permille(busy: Duration, length: Duration) -> u16 {
+    if length.is_zero() {
+        return 0;
+    }
+    let share = busy.min(length).as_micros() * 1000 / length.as_micros();
+    share as u16 // at most 1000, by the min above
+}
+
+/// A gap in whole milliseconds; one longer than u32 ms (49 days) reads as the longest a snapshot
+/// can say.
+fn saturating_ms(gap: Duration) -> u32 {
+    gap.as_millis().min(u128::from(u32::MAX)) as u32 // at most u32::MAX by the min: 49 days, which the gate fails either way
+}
+
+/// A span in whole milliseconds, the one conversion every turn row uses. Past u64 ms (585 million
+/// years) it saturates.
+pub(super) fn whole_ms(span: Duration) -> u64 {
+    span.as_millis().min(u128::from(u64::MAX)) as u64 // at most u64::MAX by the min, unreachable for a real span
+}
 
 /// What the engine reports.
 pub(super) enum Fact {
@@ -33,9 +52,9 @@ pub(super) struct TurnRow {
     pub prompt_tokens: u64,
     pub reused_tokens: u64,
     pub start: &'static str,
-    pub boundary: u64,
+    pub boundary: Option<u64>,
     pub checkpoint_ms: u64,
-    pub wait_ms: u64,
+    pub wait_ms: Option<u64>,
     pub switches: u64,
     pub switch_ms: u64,
     pub prefill_ms: u64,
@@ -57,9 +76,9 @@ impl TurnRow {
             prompt_tokens = self.prompt_tokens,
             reused_tokens = self.reused_tokens,
             start = self.start,
-            boundary = self.boundary,
+            boundary = ?self.boundary,
             checkpoint_ms = self.checkpoint_ms,
-            wait_ms = self.wait_ms,
+            wait_ms = ?self.wait_ms,
             switches = self.switches,
             switch_ms = self.switch_ms,
             prefill_ms = self.prefill_ms,
@@ -98,13 +117,12 @@ impl Record {
 
     fn close_window(&mut self, now: Instant) {
         let length = now.saturating_duration_since(self.window_start);
-        let permille = if length.is_zero() { 0 } else { (self.busy.as_micros() * 1000 / length.as_micros()).min(1000) };
         let snapshot = EngineSnapshot {
             incarnation: self.incarnation,
             frame: self.steps,
             observed_at_ms: continuum_base::time::EpochMs::now().millis(),
-            gpu_busy_permille: u16::try_from(permille).unwrap_or(1000), // unwrap_or: clamped to 1000 above
-            longest_idle_ms: u32::try_from(self.longest_idle.as_millis()).unwrap_or(u32::MAX), // unwrap_or: a gap past u32 ms reads as the longest
+            gpu_busy_permille: busy_permille(self.busy, length),
+            longest_idle_ms: saturating_ms(self.longest_idle),
             minds: Vec::new(),
         };
         continuum_base::probe!(
@@ -112,7 +130,7 @@ impl Record {
             busy_permille = u64::from(snapshot.gpu_busy_permille),
             longest_idle_ms = u64::from(snapshot.longest_idle_ms),
             steps = self.steps,
-            window_ms = u64::try_from(length.as_millis()).unwrap_or(u64::MAX), // unwrap_or: past u64 ms reads as the most
+            window = ?length,
             "engine busy share and longest idle gap over one window (gate: >= 800 permille, <= 2000 ms)"
         );
         self.published.send_replace(snapshot);
@@ -125,8 +143,6 @@ impl Record {
 impl Stage for Record {
     type Input = Fact;
     const QOS: Qos = Qos::Utility;
-    /// One fact per engine step: seconds of steps at the M5's rate, many times over.
-    const DEPTH: usize = 8192;
 
     async fn handle(&mut self, fact: Fact) {
         match fact {
@@ -136,11 +152,13 @@ impl Stage for Record {
                 self.longest_idle = self.longest_idle.max(started.saturating_duration_since(self.last_end));
                 self.busy += ended.saturating_duration_since(started);
                 self.last_end = self.last_end.max(ended);
-                if ended.saturating_duration_since(self.window_start) >= WINDOW {
-                    self.close_window(ended);
-                }
             }
-            Fact::Turn(row) => row.write(),
+            // A window is one turn: from the last turn's end through this one's last step, so the
+            // idle gap before her turn counts against the share as much as the work in it.
+            Fact::Turn(row) => {
+                row.write();
+                self.close_window(self.last_end);
+            }
         }
     }
 }

@@ -31,7 +31,7 @@ impl LlamaCppAdapter {
     /// `try_new` so an install with no Qwen seeded reports
     /// `NoLocalModelLoadable` cleanly instead of crash-looping.
     pub fn new() -> Self {
-        Self::try_new().unwrap_or_else(|err| panic!("{err}"))
+        Self::try_new().unwrap_or_else(|err| panic!("{err}")) // unwrap_or_else: `new` is the documented panicking constructor; callers that may fail use `try_new`
     }
 
     /// Result-returning variant of [`Self::new`]. Returns
@@ -69,7 +69,7 @@ impl LlamaCppAdapter {
         let model_path = model
             .gguf_local_path
             .clone()
-            .expect("gguf_local_path present — filtered above");
+            .expect("gguf_local_path present — filtered above"); // expect: the filter above kept only models with a local GGUF
         Ok(Self {
             backend: Arc::new(RwLock::new(None)),
             model_path,
@@ -295,7 +295,7 @@ impl LlamaCppAdapter {
         // smoke binaries that don't carry a profile yet).
         let n_gpu_layers: i32 = self
             .n_gpu_layers_override
-            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() {
+            .unwrap_or_else(|| match std::env::var("CONTINUUM_TIER").as_deref() { // unwrap_or_else: no override places by the node tier
                 Ok("mac_intel_discrete") => 0,
                 _ => -1,
             });
@@ -309,7 +309,7 @@ impl LlamaCppAdapter {
         // regardless of what the caller configured. A `tracing::warn!`
         // surfaces the clamp so operators see the safety net firing
         // instead of silent quality loss.
-        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1);
+        let requested_n_seq_max = self.n_seq_max_override.unwrap_or(1); // unwrap_or: no override is one sequence, one mind decoding at a time
         let effective_n_seq_max = if requested_n_seq_max > 1 {
             match crate::inference::batching_probe::probe_gguf_batching_safety(&self.model_path) {
                 Ok(verdict) => {
@@ -368,7 +368,7 @@ impl LlamaCppAdapter {
             // Future: derive from the Rust catalog (catalog.rs) row per [[orm-everything-
             // not-hand-edited-files]] so each model declares its own
             // realistic batch ceiling.
-            n_ubatch: self.n_ubatch_override.unwrap_or(512),
+            n_ubatch: self.n_ubatch_override.unwrap_or(512), // unwrap_or: the one-off context only; the persona scheduler takes the measured micro-batch
             // The one-off (multimodal) context only; the persona scheduler's context owns its own
             // attention kernel (driver.rs), since its copy-out requires it.
             flash_attn: FlashAttn::Disabled,

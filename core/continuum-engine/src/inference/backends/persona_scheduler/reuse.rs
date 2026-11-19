@@ -6,6 +6,8 @@
 //! changed trailer re-prefilled her whole prompt every act (the M5, 2026-11-18, b762170061: reused
 //! 0 of 11,834-30,588 tokens on every act).
 
+pub(super) use continuum_persona_engine::turn::History;
+
 /// Where a turn's prefill starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Reuse {
@@ -63,14 +65,13 @@ pub(super) struct Kept<'a, B> {
 }
 
 /// Where `prompt` (under `basis`) starts, given what she holds and her checkpoint.
-pub(super) fn choose<B: PartialEq>(held: &[i32], held_basis: &B, kept: Option<Kept<'_, B>>, prompt: &[i32], basis: &B) -> Reuse {
+pub(super) fn choose<B: PartialEq>(held: History<'_, B>, kept: Option<Kept<'_, B>>, next: History<'_, B>) -> Reuse {
+    let (held_tokens, prompt, basis) = (held.tokens, next.tokens, next.basis);
     // The prompt extends her whole held history (her own generated tokens included): append.
-    if let continuum_persona_engine::turn::Prefill::Append { from } = continuum_persona_engine::turn::plan(
-        continuum_persona_engine::turn::History { basis: held_basis, tokens: held },
-        continuum_persona_engine::turn::History { basis, tokens: prompt },
-    ) {
+    if let continuum_persona_engine::turn::Prefill::Append { from } = continuum_persona_engine::turn::plan(held, next) {
         return Reuse::Append { from };
     }
+    let held = held_tokens;
     let Some(kept) = kept else {
         return Reuse::Restart(if held.is_empty() { Miss::Cold } else { Miss::NoCheckpoint });
     };
@@ -88,6 +89,10 @@ pub(super) fn choose<B: PartialEq>(held: &[i32], held_basis: &B, kept: Option<Ke
 mod tests {
     use super::*;
 
+    fn h<'a, B>(tokens: &'a [i32], basis: &'a B) -> History<'a, B> {
+        History { basis, tokens }
+    }
+
     // what this catches (the M5, 2026-11-18, b762170061): every act re-prefilling her whole prompt
     // because the clock trailer or her own generated tokens no longer matched. A new prompt that
     // keeps her view and changes only what follows it rewinds to her checkpoint; one that diverges
@@ -100,19 +105,19 @@ mod tests {
         let mut next: Vec<i32> = (0..80).collect();
         next.extend([900, 901, 902]); // a new trailer and her call, rendered differently
         let kept = || Some(Kept { end: 80, basis: &genes });
-        assert_eq!(choose(&held, &genes, kept(), &next, &genes), Reuse::Rewind { from: 80 });
+        assert_eq!(choose(h(&held, &genes), kept(), h(&next, &genes)), Reuse::Rewind { from: 80 });
 
         let mut early: Vec<i32> = (0..40).collect();
         early.push(777); // her view itself changed (a new epoch): before her checkpoint
         early.extend(41..90);
-        assert_eq!(choose(&held, &genes, kept(), &early, &genes), Reuse::Restart(Miss::Diverged));
+        assert_eq!(choose(h(&held, &genes), kept(), h(&early, &genes)), Reuse::Restart(Miss::Diverged));
 
-        assert_eq!(choose(&held, &genes, kept(), &next, &"tuned"), Reuse::Restart(Miss::Basis));
-        assert_eq!(choose(&held, &genes, None, &next, &genes), Reuse::Restart(Miss::NoCheckpoint));
-        assert_eq!(choose(&[], &genes, None, &next, &genes), Reuse::Restart(Miss::Cold));
+        assert_eq!(choose(h(&held, &genes), kept(), h(&next, &"tuned")), Reuse::Restart(Miss::Basis));
+        assert_eq!(choose(h(&held, &genes), None, h(&next, &genes)), Reuse::Restart(Miss::NoCheckpoint));
+        assert_eq!(choose(h(&[], &genes), None, h(&next, &genes)), Reuse::Restart(Miss::Cold));
 
         let mut extends = held.clone();
         extends.extend([5, 6]);
-        assert_eq!(choose(&held, &genes, kept(), &extends, &genes), Reuse::Append { from: 100 });
+        assert_eq!(choose(h(&held, &genes), kept(), h(&extends, &genes)), Reuse::Append { from: 100 });
     }
 }

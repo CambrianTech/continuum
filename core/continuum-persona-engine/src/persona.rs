@@ -8,7 +8,7 @@ mod unit;
 pub use footprint::{Footprint, Held};
 pub use id::{Epoch, MindId, PersonaId};
 pub use lifecycle::{Lifecycle, PersonaParts, Preservation, Suspension};
-pub use unit::PersonaUnit;
+pub use unit::{Carries, PersonaUnit};
 
 #[cfg(test)]
 mod lifecycle_tests;

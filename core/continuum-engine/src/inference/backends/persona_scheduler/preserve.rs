@@ -17,7 +17,19 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-use continuum_saved_state::{OwnedFile, Retention, SavedState, Singleton, Store};
+use continuum_saved_state::{OwnedFile, Retention, SaveError, SavedState, Singleton, Store};
+
+/// Why preserved minds cannot be opened or published. Each leaves the last complete generation
+/// standing.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum StoreError {
+    #[error("no continuum home: {0}")]
+    Home(String), // continuum_home's own refusal, which is text
+    #[error("persona-blocks {}: {source}", dir.display())]
+    Dir { dir: PathBuf, source: std::io::Error },
+    #[error(transparent)]
+    Save(#[from] SaveError),
+}
 
 /// One preserved mind: who she is, her genes, her token history (exactly what her blocks hold), and
 /// the file her blocks were written to in her generation.
@@ -60,7 +72,7 @@ impl SavedState for PreservedMinds {
 
     /// Format 1 named no block file: hers was the fixed `<persona>.cpb`.
     fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
-        let minds: Vec<PreservedMindV1> = (found == 1).then(|| serde_json::from_value(old).ok()).flatten()?;
+        let minds: Vec<PreservedMindV1> = (found == 1).then(|| serde_json::from_value(old).ok()).flatten()?; // disk boundary: the saved-state envelope's format-1 body
         Some(minds.into_iter().map(|m| PreservedMind { blocks: format!("{}.cpb", m.persona), persona: m.persona, epoch: m.epoch, basis: m.basis, held: m.held }).collect())
     }
 }
@@ -85,10 +97,10 @@ impl Generation {
 /// whose write failed, whose resume was refused (a smaller window at boot), or who had no turn before
 /// this stop keeps her last entry and her file (nothing this stop wrote has its name). Codex on #6159:
 /// a refused restore followed by a stop must never delete her last saved blocks.
-pub(super) fn next_manifest(last: &[PreservedMind], written: Vec<PreservedMind>) -> Vec<PreservedMind> {
+pub(super) fn next_manifest(last: &[PreservedMind], written: &[PreservedMind]) -> Vec<PreservedMind> {
     let replaced: HashSet<uuid::Uuid> = written.iter().map(|mind| mind.persona).collect();
     let kept = last.iter().filter(|mind| !replaced.contains(&mind.persona)).cloned();
-    written.into_iter().chain(kept).collect()
+    written.iter().cloned().chain(kept).collect()
 }
 
 /// The block files in `dir` that `manifest` does not name: removable once it is published.
@@ -116,19 +128,21 @@ pub(super) struct Preserved {
 
 impl Preserved {
     /// The node's preserved minds, under its continuum home.
-    pub(super) fn at_home() -> Result<Self, String> {
-        let dir = continuum_kernel::paths::continuum_home()?.join("persona-blocks");
+    pub(super) fn at_home() -> Result<Self, StoreError> {
+        let dir = continuum_kernel::paths::continuum_home().map_err(StoreError::Home)?.join("persona-blocks");
         Self::at(dir)
     }
 
-    fn at(dir: PathBuf) -> Result<Self, String> {
-        std::fs::create_dir_all(&dir).map_err(|e| format!("persona-blocks {}: {e}", dir.display()))?;
-        Ok(Self { store: Store::at(dir.clone()), dir, last: Vec::new() })
+    fn at(dir: PathBuf) -> Result<Self, StoreError> {
+        if let Err(source) = std::fs::create_dir_all(&dir) {
+            return Err(StoreError::Dir { dir, source });
+        }
+        Ok(Self { store: Store::at(dir.to_path_buf()), dir, last: Vec::new() })
     }
 
     /// The last complete generation, as loaded at start.
-    pub(super) fn remember(&mut self, minds: Vec<PreservedMind>) {
-        self.last = minds;
+    pub(super) fn remember(&mut self, minds: &[PreservedMind]) {
+        self.last = minds.to_vec();
     }
 
     pub(super) fn last(&self) -> &[PreservedMind] {
@@ -146,17 +160,18 @@ impl Preserved {
     /// (Codex on #6159: a failed directory listing after the commit must not leave `last` stale or
     /// report the save as lost). Returns what cleanup could not do, named, never fatal: the next
     /// publish retries it.
-    pub(super) fn publish(&mut self, served: &ServedModel, manifest: Vec<PreservedMind>) -> Result<Vec<(PathBuf, String)>, String> {
-        self.store.save(&Singleton, served, &manifest).map_err(|why| why.to_string())?;
+    pub(super) fn publish(&mut self, served: &ServedModel, manifest: &[PreservedMind]) -> Result<Vec<(PathBuf, std::io::Error)>, StoreError> {
+        let manifest = manifest.to_vec();
+        self.store.save(&Singleton, served, &manifest)?;
         self.last = manifest;
         let unnamed = match unreferenced(&self.dir, &self.last) {
             Ok(unnamed) => unnamed,
-            Err(e) => return Ok(vec![(self.dir.clone(), format!("listing the block files to remove: {e}"))]),
+            Err(listing) => return Ok(vec![(self.dir.clone(), listing)]),
         };
         let mut kept = Vec::new();
         for path in unnamed {
             if let Err(e) = std::fs::remove_file(&path) {
-                kept.push((path, e.to_string()));
+                kept.push((path, e));
             }
         }
         Ok(kept)
@@ -183,7 +198,7 @@ mod tests {
         let first = Generation::fresh();
         std::fs::write(preserved.path(&first.file(uuid::Uuid::from_u128(1))), b"generation one").expect("test: write"); // expect: the test's own precondition
         let published = vec![mind(1, &first.file(uuid::Uuid::from_u128(1)))];
-        preserved.publish(&served, published.clone()).expect("test: publish"); // expect: the test's own precondition
+        preserved.publish(&served, &published).expect("test: publish"); // expect: the test's own precondition
 
         // the next stop writes her blocks, then the process ends before its manifest
         let second = Generation::fresh();
@@ -204,7 +219,7 @@ mod tests {
     #[test]
     fn a_mind_not_written_this_stop_keeps_her_last_complete_entry() {
         let last = vec![mind(1, "a.old.cpb"), mind(2, "b.old.cpb"), mind(3, "c.old.cpb")];
-        let next = next_manifest(&last, vec![mind(1, "a.new.cpb")]);
+        let next = next_manifest(&last, &[mind(1, "a.new.cpb")]);
         assert_eq!(next, vec![mind(1, "a.new.cpb"), mind(2, "b.old.cpb"), mind(3, "c.old.cpb")], "written: new; the rest: as they were");
     }
 
@@ -220,7 +235,7 @@ mod tests {
         let file = Generation::fresh().file(her);
         std::fs::write(saved_at.path(&file), b"her rows at the large window").expect("test: write"); // expect: the test's own precondition
         let original = vec![PreservedMind { persona: her, epoch: 1, basis: String::new(), held: vec![1, 2, 3], blocks: file.clone() }];
-        saved_at.publish(&served, original.clone()).expect("test: publish"); // expect: the test's own precondition
+        saved_at.publish(&served, &original).expect("test: publish"); // expect: the test's own precondition
 
         // the smaller boot: her manifest loads, her read is refused, so she never enters the warm
         // table; the stop before her next turn writes nobody
@@ -228,9 +243,9 @@ mod tests {
         let loaded = refused_at.store.load(&Singleton, &served);
         assert!(matches!(loaded, Loaded::Matched(_)), "her manifest loads: {}", loaded.describe());
         let Loaded::Matched(loaded) = loaded else { return };
-        refused_at.remember(loaded);
-        let manifest = next_manifest(refused_at.last(), Vec::new());
-        let unremoved = refused_at.publish(&served, manifest).expect("test: publish"); // expect: the test's own precondition
+        refused_at.remember(&loaded);
+        let manifest = next_manifest(refused_at.last(), &[]);
+        let unremoved = refused_at.publish(&served, &manifest).expect("test: publish"); // expect: the test's own precondition
         assert!(unremoved.is_empty(), "{unremoved:?}");
 
         // the boot that fits her
@@ -251,7 +266,7 @@ mod tests {
         let mut preserved = Preserved::at(dir.path().to_path_buf()).expect("test: a store"); // expect: the test's own precondition
         preserved.dir = dir.path().join("listing-fails-here");
         let manifest = vec![mind(1, "a.g2.cpb")];
-        let cleanup = preserved.publish(&ServedModel { model: "m".into() }, manifest.clone()).expect("test: the save committed"); // expect: the test's own precondition
+        let cleanup = preserved.publish(&ServedModel { model: "m".into() }, &manifest).expect("test: the save committed"); // expect: the test's own precondition
         assert_eq!(cleanup.len(), 1, "the listing failure is reported as cleanup: {cleanup:?}");
         assert_eq!(preserved.last(), manifest.as_slice(), "last is the committed generation");
     }
@@ -265,7 +280,7 @@ mod tests {
         for file in ["a.g1.cpb", "a.g2.cpb", "b.g1.cpb", "b.g2.cpb.tmp"] {
             std::fs::write(preserved.path(file), b"rows").expect("test: write"); // expect: the test's own precondition
         }
-        let kept = preserved.publish(&ServedModel { model: "m".into() }, vec![mind(1, "a.g2.cpb"), mind(2, "b.g1.cpb")]).expect("test: publish"); // expect: the test's own precondition
+        let kept = preserved.publish(&ServedModel { model: "m".into() }, &[mind(1, "a.g2.cpb"), mind(2, "b.g1.cpb")]).expect("test: publish"); // expect: the test's own precondition
         assert!(kept.is_empty(), "{kept:?}");
         let mut left: Vec<String> = std::fs::read_dir(dir.path()).expect("test: list").filter_map(|e| e.ok()?.file_name().into_string().ok()).filter(|n| n.contains(".cpb")).collect(); // expect: the test's own precondition
         left.sort();

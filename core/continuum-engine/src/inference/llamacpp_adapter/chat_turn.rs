@@ -150,6 +150,29 @@ pub(super) struct ParsedTurn {
     pub(super) tool_calls: Option<Vec<ToolCall>>,
 }
 
+impl ParsedTurn {
+    /// A turn that kept no text and no call, told apart by its raw tail and the stop it ended on: a
+    /// stop string firing where her call began, the model ending inside its thinking, or a call the
+    /// parse dropped (Aiko, 20 turns from 15:36Z 2026-11-19, text 0, reasoning only).
+    pub(super) fn probe_if_empty(&self, written: &str, tokens: usize, end: GenerationEnd, stops: &[String]) {
+        if !self.text.is_empty() || self.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+            return;
+        }
+        let chars: Vec<char> = written.chars().collect();
+        let tail: String = chars[chars.len().saturating_sub(160)..].iter().collect();
+        continuum_base::probe!(
+            class = "inference.turn.wrote_nothing",
+            tokens = tokens as u64,
+            end = ?end,
+            stop = ?stops.iter().find(|stop| written.ends_with(stop.as_str())),
+            reasoning_chars = ?self.reasoning.as_ref().map(|r| r.chars().count()),
+            written_chars = chars.len() as u64,
+            tail = %tail,
+            "a turn ended with no text and no call: the raw tail and the stop it ended on"
+        );
+    }
+}
+
 /// Parse the finished output with the render that produced its prompt. `end` is why the generation
 /// stopped, so a call the output limit cut is typed as cut, never as bad JSON.
 pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: GenerationEnd) -> Result<ParsedTurn, ChatTurnError> {

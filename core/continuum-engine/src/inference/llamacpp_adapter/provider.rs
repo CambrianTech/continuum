@@ -256,9 +256,12 @@ impl AIProviderAdapter for LlamaCppAdapter {
             let rendered = continuum_base::time_sync!("inference.render_chat", {
                 super::chat_turn::thinking_request(&request, thinking).and_then(|body| render_body(&body))
             });
-            let render = rendered.map_err(|refused| refused.to_string())?;
-            let described = super::chat_turn::described(&render).map_err(|refused| refused.to_string())?;
-            let prompt = super::chat_turn::prompt_of(&described).map_err(|refused| refused.to_string())?;
+            let turn = rendered.and_then(|render| {
+                let described = super::chat_turn::described(&render)?;
+                let prompt = super::chat_turn::prompt_of(&described)?;
+                Ok((prompt, render, described))
+            });
+            let (prompt, render, described) = turn.map_err(|refused| refused.to_string())?; // the adapter trait's error is text
             (prompt, Vec::new(), Some((render, described)))
         } else {
             let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
@@ -368,11 +371,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
             }
         }
         // The template's own extra stops (a tool-call format that ends a turn on a marker).
-        for stop in chat_render.iter().flat_map(|(_, described)| described.additional_stops.iter()) {
-            if !stop_owned.contains(stop) {
-                stop_owned.push(stop.clone());
-            }
-        }
+        let template_stops: Vec<String> = chat_render.iter().flat_map(|(_, described)| described.additional_stops.iter()).filter(|stop| !stop_owned.contains(stop)).cloned().collect();
+        stop_owned.extend(template_stops);
 
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
@@ -510,28 +510,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let end = super::chat_turn::generation_end(tokens, max_tokens);
         let (text, reasoning, tool_calls) = match &chat_render {
             Some((render, _)) => match super::chat_turn::parse_turn(render, &written, end) {
-                Ok(turn) => (turn.text, turn.reasoning, turn.tool_calls),
+                Ok(turn) => {
+                    turn.probe_if_empty(&written, tokens, end, &stop_owned);
+                    (turn.text, turn.reasoning, turn.tool_calls)
+                }
                 Err(refused) => return Err(refused.to_string()),
             },
-            None => (written.clone(), None, None),
+            None => (written, None, None),
         };
-        // Why a turn ended and what the parse kept: a turn that wrote only reasoning (Aiko, 20
-        // turns from 15:36Z 2026-11-19, `finish=stop`, text 0, reasoning ending "let me read it
-        // now") is told apart as a stop string firing where her call began, the model ending
-        // inside its thinking, or a call the parse dropped. The raw tail is the evidence.
-        if text.is_empty() && tool_calls.as_ref().is_none_or(|calls| calls.is_empty()) {
-            let tail: String = { let chars: Vec<char> = written.chars().collect(); chars[chars.len().saturating_sub(160)..].iter().collect() };
-            continuum_base::probe!(
-                class = "inference.turn.wrote_nothing",
-                tokens = tokens as u64,
-                end = ?end,
-                stop = stop_owned.iter().find(|stop| written.ends_with(stop.as_str())).map(String::as_str).unwrap_or("none"), // unwrap_or: no stop string ends the text, which is itself the reading
-                reasoning_chars = reasoning.as_ref().map_or(0, |r| r.chars().count()) as u64,
-                written_chars = written.chars().count() as u64,
-                tail = %tail,
-                "a turn ended with no text and no call: the raw tail and the stop it ended on"
-            );
-        }
         let content = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
         let finish_reason = super::chat_turn::finish_reason(end, tool_calls.is_some());
 

@@ -26,9 +26,3 @@ pub trait Fence {
     /// Whether every byte of the transfer has landed.
     fn complete(&self) -> bool;
 }
-
-/// A unit that carries her own blocks: the tier moves the blocks it is handed and holds no copy of
-/// them (CONTINUUM-ENGINE 4.17).
-pub trait Carries<B> {
-    fn blocks_mut(&mut self) -> &mut B;
-}

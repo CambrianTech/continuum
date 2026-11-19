@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::mpsc::Receiver;
+use tokio::sync::mpsc::UnboundedReceiver as Receiver;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,7 +28,7 @@ use crate::runtime;
 pub(super) enum TurnError {
     /// Her turn's sampler could not be built as asked (a think bound llama.cpp refused).
     #[error("her sampler was refused: {0}")]
-    Sampler(String),
+    Sampler(#[from] llama::ChatRefusal),
     #[error(transparent)]
     Stage(#[from] StageError),
     #[error(transparent)]
@@ -45,6 +45,20 @@ pub(super) enum TurnError {
     TooLong,
     #[error("nothing was decoded for her turn")]
     NothingDecoded,
+}
+
+/// Why one mind was not preserved at a stop. She stays in the engine's custody, and the stop
+/// reports her as retained.
+#[derive(Debug, thiserror::Error)]
+enum PreserveError {
+    #[error(transparent)]
+    Turn(#[from] TurnError),
+    #[error(transparent)]
+    Retire(#[from] HandoffError),
+    #[error("she did not come back from her retirement")]
+    NotReturned,
+    #[error("the fork refused to write her blocks: {0}")]
+    Write(#[from] llama::PersonaRefusal),
 }
 
 /// The context could not be made, so no turn can run.
@@ -117,7 +131,7 @@ struct Bound<'t, 'c, 'm> {
 
 impl Footprint for Bound<'_, '_, '_> {
     fn held(&self) -> Held {
-        Held::device(self.tier.state_bytes_of(self.mind).unwrap_or(0)) // unwrap_or: an unbound mind holds nothing in the context
+        self.tier.state_bytes_of(self.mind).map_or_else(Held::default, Held::device) // an unbound mind holds nothing in the context
     }
 }
 
@@ -135,7 +149,7 @@ impl History {
     /// frame to size her turn's prefill.
     fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
         let kept = self.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
-        reuse::choose(&self.held, under, kept, prompt, basis)
+        reuse::choose(reuse::History { basis: under, tokens: &self.held }, kept, reuse::History { basis, tokens: prompt })
     }
 }
 
@@ -188,7 +202,7 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         }
     };
     // the last complete generation: what a mind whose next write fails keeps (preserve.rs)
-    preserved.remember(minds.clone());
+    preserved.remember(&minds);
     let mut parked = HashMap::new();
     for mind in minds {
         let id = PersonaId(mind.persona);
@@ -208,10 +222,6 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
     parked
 }
 
-/// How long the loop with no turn waits for a request while a stage is full, before handing what
-/// waits over again.
-const EMIT_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
-
 /// What the driver thread starts with: the incarnation it serves as, where it publishes what the engine
 /// is, and its one queue.
 pub(super) struct Start {
@@ -220,12 +230,14 @@ pub(super) struct Start {
     pub(super) requests: Receiver<Submission>,
     pub(super) emit: StageInput<emit::Out>,
     pub(super) record: StageInput<record::Fact>,
+    /// The runtime its stages run on, which a driver with nothing to advance awaits their space on.
+    pub(super) stages_on: tokio::runtime::Handle,
 }
 
 /// Run until every handle is dropped.
 pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
-    let Start { incarnation, state, requests, emit, record } = start;
+    let Start { incarnation, state, mut requests, emit, record, stages_on } = start;
     // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
     // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
     let _stops = StopsOnExit { state: &state, incarnation };
@@ -234,14 +246,14 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         state.send_replace(EngineState::Refused { incarnation, reason: refused.to_string().into() });
     };
     // A start refused: every submission is answered with why (a suspend finds nothing to preserve).
-    let refuse_all = |why: String| {
-        for submission in &requests {
+    let mut refuse_all = |why: String| {
+        while let Some(submission) = requests.blocking_recv() {
             match submission {
                 Submission::Turn(req) => {
-                    let _ = req.response_tx.send(TokenEvent::Error(why.clone()));
+                    tell(&req.response_tx, TokenEvent::Error(why.clone()));
                 }
                 Submission::Suspend(reply) => {
-                    let _ = reply.send(Suspended::default());
+                    report(reply, Suspended::default());
                 }
             }
         }
@@ -292,24 +304,26 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let mut turns: Vec<Turn> = Vec::new();
     loop {
         driver.flush();
-        if turns.is_empty() {
-            // Emit full with no turn left: the only wait with a bound, until Emit drains (its depth
-            // is thousands of tokens; this does not happen at the M5's decode rate).
-            let next = if !driver.holding() {
-                requests.recv().map(Some).map_err(|_| ())
-            } else {
-                match requests.recv_timeout(EMIT_RETRY) {
-                    Ok(req) => Ok(Some(req)),
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
+        // A stage full defers the producer: no step runs while what it decoded waits, so the backlog
+        // stays within the stage's grant plus one step (Codex on f530b00670). With nothing to step, or
+        // while deferred, the thread waits for EITHER a submission (a turn, or the stop's suspend) or
+        // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
+        let holding = driver.holding();
+        if holding || turns.is_empty() {
+            let woke = stages_on.block_on(async {
+                tokio::select! {
+                    biased;
+                    submission = requests.recv() => Some(submission),
+                    () = driver.drain(), if holding => None,
                 }
-            };
-            match next {
-                Ok(Some(submission)) => driver.take(submission, &mut turns),
-                Ok(None) => continue,
+            });
+            match woke {
+                Some(Some(submission)) => driver.take(submission, &mut turns),
                 // Every handle dropped: Emit ends once it has drained what it holds.
-                Err(()) => return,
+                Some(None) => return,
+                None => {} // the stages took what waited
             }
+            continue;
         }
         while let Ok(submission) = requests.try_recv() {
             driver.take(submission, &mut turns);
@@ -432,6 +446,12 @@ impl Driver<'_, '_> {
         self.record.flush();
     }
 
+    /// Hand each stage everything that waits for it, awaiting its space: only when no turn is left.
+    async fn drain(&mut self) {
+        self.emit.drain().await;
+        self.record.drain().await;
+    }
+
     /// Whether anything still waits for a stage that was full.
     fn holding(&self) -> bool {
         self.emit.waiting() + self.record.waiting() > 0
@@ -442,12 +462,12 @@ impl Driver<'_, '_> {
     fn take(&mut self, submission: Submission, turns: &mut Vec<Turn>) {
         match submission {
             Submission::Turn(req) if self.stopping => {
-                let _ = req.response_tx.send(TokenEvent::Error("the engine is stopping: her minds are preserved, and her turn starts after it restarts".into()));
+                tell(&req.response_tx, TokenEvent::Error("the engine is stopping: her minds are preserved, and her turn starts after it restarts".into()));
             }
             Submission::Turn(req) => self.admit(req, turns),
             Submission::Suspend(reply) => {
                 let suspended = self.suspend(turns);
-                let _ = reply.send(suspended); // the stop that asked has given up: its custody report is moot
+                report(reply, suspended);
             }
         }
     }
@@ -477,13 +497,13 @@ impl Driver<'_, '_> {
         for id in minds {
             match self.preserve(id, &store, &generation) {
                 Ok(entry) => entries.push(entry),
-                Err(why) => retained.push((id.0, why)),
+                Err(why) => retained.push((id.0, why.to_string())), // the stop's report: Display at the edge
             }
         }
         let preserved = entries.len();
-        let manifest = preserve::next_manifest(store.last(), entries);
+        let manifest = preserve::next_manifest(store.last(), &entries);
         let served = preserve::ServedModel { model: self.model_id.clone() };
-        match store.publish(&served, manifest) {
+        match store.publish(&served, &manifest) {
             Ok(unremoved) => retained.extend(unremoved.into_iter().map(|(path, why)| (Uuid::nil(), format!("an unnamed block file {} was not removed: {why}", path.display())))),
             Err(why) => retained.push((Uuid::nil(), format!("this stop's manifest was not saved, so the last complete generation stands: {why}"))),
         }
@@ -497,20 +517,20 @@ impl Driver<'_, '_> {
 
     /// One mind out to her file in `generation`: bound, rewound to her view, retired through the
     /// pipeline, written. Her entry names that file; it is published with the stop's manifest.
-    fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, String> {
-        self.switch_to(id, false).map_err(|e| e.to_string())?;
+    fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, PreserveError> {
+        self.switch_to(id, false)?;
         let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.as_ref().map(|kept| kept.end));
         if let Some(end) = end {
-            self.rewind_to_checkpoint().map_err(|e| e.to_string())?;
-            self.record(|her| her.tokens.cut(end)).map_err(|e| e.to_string())?;
+            self.rewind_to_checkpoint()?;
+            self.record(|her| her.tokens.cut(end))?;
         }
-        if self.engine.retire_active().map_err(|e| e.to_string())?.is_some() {
-            self.retire_previous().map_err(|e| e.to_string())?;
+        if self.engine.retire_active()?.is_some() {
+            self.retire_previous()?;
         }
-        let her = self.parked.get(&id).ok_or("she did not come back from her retirement")?;
+        let her = self.parked.get(&id).ok_or(PreserveError::NotReturned)?;
         let parts = her.parts();
         let file = generation.file(id.0);
-        parts.blocks.write_file(&store.path(&file)).map_err(|refused| format!("the fork refused to write her blocks: {refused:?}"))?;
+        parts.blocks.write_file(&store.path(&file))?;
         Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone(), blocks: file })
     }
 
@@ -522,7 +542,7 @@ impl Driver<'_, '_> {
             None => (PersonaId(Uuid::new_v4()), true),
         };
         // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.
-        match sampling::sampler(self.model, &req.sampling).map_err(TurnError::Sampler) {
+        match sampling::sampler(self.model, &req.sampling).map_err(TurnError::from) {
             Ok(sampler) => {
                 let prompt = std::mem::take(&mut req.prompt);
                 let basis = Basis { genes: signature(&req.active_loras) };
@@ -535,7 +555,7 @@ impl Driver<'_, '_> {
                 turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary, answer, cancel });
             }
             Err(refused) => {
-                let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
+                tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
             }
         }
     }
@@ -555,13 +575,13 @@ impl Driver<'_, '_> {
                 let (decoding, remaining) = match &turn.phase {
                     Phase::Waiting => {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
-                        let reused = her.map_or(0, |her| reuse_for(her, &turn.prompt, &turn.basis).reused()); // map_or: a mind never seen holds nothing
+                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).reused() } else { 0 }; // a mind never seen reuses nothing
                         (false, turn.prompt.len().saturating_sub(reused))
                     }
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
                     Phase::Decoding { .. } => (true, 0),
                 };
-                let waited_ms = u64::try_from(turn.submitted.elapsed().as_millis()).unwrap_or(u64::MAX); // unwrap_or: a wait past u64 ms is the oldest
+                let waited_ms = record::whole_ms(turn.submitted.elapsed());
                 frame::Candidate { active: active == Some(turn.id), decoding, remaining, waited_ms }
             })
             .collect();
@@ -657,7 +677,7 @@ impl Driver<'_, '_> {
                 _ => None,
             }
         })?;
-        turn.spent.checkpoint_ms = u64::try_from(taking.elapsed().as_millis()).unwrap_or(u64::MAX); // unwrap_or: past u64 ms reads as the most
+        turn.spent.checkpoint_ms = record::whole_ms(taking.elapsed());
         Ok(())
     }
 
@@ -733,16 +753,16 @@ impl Driver<'_, '_> {
     /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live. Built
     /// from her counters here; written by Record.
     fn row(turn: &Turn, generated: usize) -> record::TurnRow {
-        let ms = |d: std::time::Duration| u64::try_from(d.as_millis()).unwrap_or(u64::MAX); // unwrap_or: past u64 ms reads as the most
+        let ms = record::whole_ms;
         record::TurnRow {
             persona: turn.id.0,
             one_off: turn.one_off,
             prompt_tokens: turn.prompt.len() as u64,
             reused_tokens: turn.spent.reused as u64,
             start: turn.spent.start,
-            boundary: turn.boundary.map_or(0, |end| end as u64), // map_or: 0 = no view end in this prompt
+            boundary: turn.boundary.map(|end| end as u64),
             checkpoint_ms: turn.spent.checkpoint_ms,
-            wait_ms: turn.spent.first_step.map_or(0, ms),
+            wait_ms: turn.spent.first_step.map(ms),
             switches: turn.spent.switches,
             switch_ms: ms(turn.spent.switch),
             prefill_ms: ms(turn.spent.prefill),
@@ -822,6 +842,21 @@ impl Driver<'_, '_> {
 }
 
 /// A gene set's identity: sorted `id:scale`, comma-joined; empty is the base model.
+/// Tell a turn's caller `event`. A caller that hung up has gone, and the probe says so.
+fn tell(caller: &tokio::sync::mpsc::UnboundedSender<TokenEvent>, event: TokenEvent) {
+    if caller.send(event).is_err() {
+        continuum_base::probe!(class = "persona.engine.caller_gone", "a turn's caller hung up before its answer");
+    }
+}
+
+/// Report a suspend to the stop that asked. A stop that gave up has its custody report already
+/// (its cap ran out first), and the probe says this one arrived after.
+fn report(stop: tokio::sync::oneshot::Sender<Suspended>, suspended: Suspended) {
+    if let Err(late) = stop.send(suspended) {
+        continuum_base::probe!(class = "persona.engine.suspend_unheard", preserved = late.preserved as u64, retained = late.retained.len() as u64, "a suspend finished after its stop gave up");
+    }
+}
+
 fn signature(genes: &[(String, Arc<LoraAdapter>, f32)]) -> String {
     let mut parts: Vec<String> = genes.iter().map(|(id, _, scale)| format!("{id}:{scale}")).collect();
     parts.sort_unstable();
