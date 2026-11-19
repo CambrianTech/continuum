@@ -17,6 +17,15 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 ---
 
+## Runtime and storage design authorities
+
+| For a change to | Start with | Design owner |
+|---|---|---|
+| Runtime workers, subscriptions, serving, GPU scheduling, streaming, caches or mind swaps | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) | Fable |
+| Rust persistence, entity schemas, migrations, typed queries or native data storage | [Rust ORM Architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) | Codex |
+
+For a change that crosses the boundary, record the runtime contract in the engine manual and the durable representation in the ORM manual. Link the two decisions. Keep benchmark receipts with their tested artifacts and identify proposed behavior separately from deployed behavior.
+
 ## Where things live — EVERY directory, with counts
 
 595 markdown files. This table is the map; it is the thing to fix first when it goes

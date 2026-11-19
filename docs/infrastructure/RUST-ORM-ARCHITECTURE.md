@@ -9,6 +9,16 @@
 
 Unified data access layer where Rust handles all database operations. TypeScript becomes a thin IPC wrapper.
 
+### Storage contracts shared with the runtime
+
+The [engine manual](../architecture/CONTINUUM-ENGINE.md) owns worker execution, streaming and resource scheduling. This chapter owns the durable representation those workers read and write.
+
+**Existing schema contract.** A field declared as JSON stores a complete JSON value. This includes the quotes in a JSON string scalar. For example, the staged-credit role encodes as `"Owner"`. A bare `Owner` fails a typed JSON read. Stored review outcomes have the same constraint. Native binary artifacts retain their native bytes and travel through typed descriptors.
+
+**Verified data repair on BigMama.** Kimi and Sahar's stores contained 8,880 staged-credit roles and 46 counted review outcomes written as bare enum strings. The scoped repairs matched known enum values, preserved the row identities and logical values, and changed zero rows on retry. Both stores were reopened for verification. Grid-wide migration remains open.
+
+**Proposed reliable subscriber contract.** Scope each durable subscription position to its consumer and stream. When the durable effect and its progress cursor share a transaction, commit them together. For an external effect, persist an operation identity and reconcile its receipt on retry. A learning subscriber must be able to recover the exact served turn associated with an accepted review. Replay a crash on each side of the commit and a duplicate delivery before marking the contract implemented.
+
 ## Current State (Problems)
 
 ```
