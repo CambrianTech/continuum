@@ -91,6 +91,13 @@ impl Mind {
             self.kept = None;
         }
     }
+
+    /// Where `prompt` under `basis` would start for her (`reuse::choose`), deciding nothing and
+    /// moving nothing: the bind uses it to resume her, the frame to size her turn's prefill.
+    fn reuse(&self, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+        let kept = self.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
+        reuse::choose(&self.held, &self.basis, kept, prompt, basis)
+    }
 }
 
 impl Identified for Mind {
@@ -290,8 +297,10 @@ impl Driver<'_, '_> {
     }
 
     /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
-    /// candidate; among candidates, `frame::pick` decides.
-    fn pick(&self, turns: &[Turn]) -> Option<usize> {
+    /// candidate; among candidates, `frame::pick` decides. A waiting turn's prefill is what she
+    /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
+    /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
+    fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
         let mut seen = std::collections::HashSet::new();
         let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
         let active = self.engine.active();
@@ -300,7 +309,11 @@ impl Driver<'_, '_> {
             .map(|&index| {
                 let turn = &turns[index];
                 let (decoding, remaining) = match &turn.phase {
-                    Phase::Waiting => (false, turn.prompt.len()),
+                    Phase::Waiting => {
+                        let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
+                        let reused = her.map_or(0, |her| her.reuse(&turn.prompt, &turn.basis).reused()); // map_or: a mind never seen holds nothing
+                        (false, turn.prompt.len().saturating_sub(reused))
+                    }
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
                     Phase::Decoding { .. } => (true, 0),
                 };
@@ -354,11 +367,7 @@ impl Driver<'_, '_> {
     /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
-        let decided = {
-            let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-            let kept = her.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
-            reuse::choose(&her.held, &her.basis, kept, &turn.prompt, &basis)
-        };
+        let decided = self.engine.active_mut().ok_or(TurnError::NoneActive)?.reuse(&turn.prompt, &basis);
         let (from, start) = match decided {
             reuse::Reuse::Append { from } => (from, "append"),
             reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint() {
