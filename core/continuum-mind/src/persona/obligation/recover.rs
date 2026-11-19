@@ -97,11 +97,11 @@ fn began(effect: &RecordedEffect) -> String {
 
 /// Effects counted by what they began, in first-seen order: `code/shell x340, posting my reply x2`.
 fn tally(effects: &[&RecordedEffect]) -> String {
-    let mut counts: Vec<(String, usize)> = Vec::new();
+    let mut counts: Vec<(&str, usize)> = Vec::new();
     for effect in effects {
-        let names: Vec<String> = match effect {
-            RecordedEffect::Speech => vec!["posting my reply".into()],
-            RecordedEffect::ToolBatch { calls } => calls.iter().map(|(_, tool)| tool.clone()).collect(),
+        let names: Vec<&str> = match effect {
+            RecordedEffect::Speech => vec!["posting my reply"],
+            RecordedEffect::ToolBatch { calls } => calls.iter().map(|(_, tool)| tool.as_str()).collect(),
         };
         for name in names {
             match counts.iter_mut().find(|(seen, _)| *seen == name) {
