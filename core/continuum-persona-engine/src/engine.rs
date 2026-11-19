@@ -37,9 +37,9 @@
 #[cfg(test)]
 mod tests;
 
-use crate::persona::PersonaId;
+use crate::persona::{MindId, PersonaId};
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
-use crate::residency::{Completion, Direction, Execute, FenceTag, Native, TierRefusal};
+use crate::residency::{Carries, Completion, Direction, Execute, Native, TierRefusal};
 
 /// Why a mind was not staged. Either way she is handed back.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -96,7 +96,11 @@ pub struct PersonaEngine<U, T: Execute> {
     decoding: Option<T::Done>,
 }
 
-impl<U: Identified, T: Execute> PersonaEngine<U, T> {
+impl<U, T> PersonaEngine<U, T>
+where
+    U: Identified + Carries<T::Blocks>,
+    T: Execute,
+{
     pub fn new(tier: T) -> Self {
         Self { roles: Roles::default(), tier, decoding: None }
     }
@@ -125,6 +129,12 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         &self.tier
     }
 
+    /// New blocks for `mind`, for the unit that will carry them (the tier allocates them; the engine
+    /// never hands the tier itself out, so nothing moves a mind behind the pipeline).
+    pub fn blocks_for(&mut self, mind: MindId) -> Result<T::Blocks, TierRefusal> {
+        self.tier.blocks_for(mind)
+    }
+
     /// Whether the active mind's last submitted step has landed (`true` when none was submitted).
     pub fn decode_landed(&self) -> bool {
         self.decoding.as_ref().map_or(true, Completion::complete)
@@ -139,53 +149,45 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
     /// Submit one step of the active mind's decode. Refused while her previous step is still on the
     /// device: one decode is in flight at a time.
     pub fn submit(&mut self, work: T::Work) -> Result<(), DecodeError> {
-        let (persona, epoch) = match self.roles.active() {
-            Some(unit) => (unit.persona(), unit.epoch()),
-            None => return Err(DecodeError::NoneActive),
-        };
+        let mind = self.active_mind()?;
         if !self.decode_landed() {
-            return Err(DecodeError::InFlight { active: persona });
+            return Err(DecodeError::InFlight { active: mind.persona });
         }
-        self.decoding = Some(self.tier.submit(persona, epoch, work)?);
+        self.decoding = Some(self.tier.submit(mind, work)?);
         Ok(())
     }
 
     /// Checkpoint the active mind where she stands (CONTINUUM-ENGINE 4.15); her last position it
     /// holds through. Waits for her submitted step to land first, so it reads what she decoded.
     pub fn checkpoint_active(&mut self, into: &mut T::Checkpoint) -> Result<u32, DecodeError> {
-        let (persona, epoch) = self.active_identity()?;
+        let mind = self.active_mind()?;
         self.tier.settle()?;
         self.decoding = None;
-        Ok(self.tier.checkpoint(persona, epoch, into)?)
+        Ok(self.tier.checkpoint(mind, into)?)
     }
 
     /// Put the active mind back at `from`'s position: what she holds past it is cut. A refusal
     /// leaves her as she was.
     pub fn rewind_active(&mut self, from: &T::Checkpoint) -> Result<(), DecodeError> {
-        let (persona, epoch) = self.active_identity()?;
+        let mind = self.active_mind()?;
         self.tier.settle()?;
         self.decoding = None;
-        Ok(self.tier.rewind(persona, epoch, from)?)
+        Ok(self.tier.rewind(mind, from)?)
     }
 
-    fn active_identity(&self) -> Result<(PersonaId, crate::persona::Epoch), DecodeError> {
-        self.roles.active().map(|unit| (unit.persona(), unit.epoch())).ok_or(DecodeError::NoneActive)
+    fn active_mind(&self) -> Result<MindId, DecodeError> {
+        self.roles.active().map(Identified::mind).ok_or(DecodeError::NoneActive)
     }
 
-    /// Begin `unit`'s copy-in and hold her as next. Refused before any transfer starts when next is
-    /// occupied or she is already here, so a refusal never leaves a copy-in running for nobody. Runs
-    /// while the active mind decodes.
-    pub fn stage(&mut self, unit: U) -> Result<(), Refused<StageError, U>> {
-        let persona = unit.persona();
-        let occupied = match self.roles.staged() {
-            Some(staged) => Some(StageRefusal::NextOccupied { staged }),
-            None if self.present(persona) => Some(StageRefusal::AlreadyPresent { persona }),
-            None => None,
-        };
-        if let Some(reason) = occupied {
+    /// Begin `unit`'s copy-in (the tier is handed the blocks she carries) and hold her as next.
+    /// Refused before any transfer starts when next is occupied or she is already here, so a refusal
+    /// never leaves a copy-in running for nobody. Runs while the active mind decodes.
+    pub fn stage(&mut self, mut unit: U) -> Result<(), Refused<StageError, U>> {
+        if let Some(reason) = self.roles.admits(unit.persona()) {
             return Err(Refused { reason: reason.into(), returned: unit });
         }
-        let fence = match self.tier.begin(FenceTag { persona, epoch: unit.epoch(), direction: Direction::In }) {
+        let mind = unit.mind();
+        let fence = match self.tier.begin(mind, unit.blocks_mut(), Direction::In) {
             Ok(fence) => fence,
             Err(refusal) => return Err(Refused { reason: refusal.into(), returned: unit }),
         };
@@ -198,29 +200,30 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
     /// previous mind's copy-out. Returns who retired (`None` when nobody was active). Changes nothing
     /// until both have landed and the previous retirement is released.
     pub fn handoff(&mut self) -> Result<Option<PersonaId>, HandoffError> {
-        if !self.decode_landed() {
-            if let Some(active) = self.active() {
-                return Err(HandoffError::DecodeInFlight { active });
-            }
-        }
+        self.require_landed()?;
         let previous = self.roles.handoff()?;
-        self.decoding = None;
-        if previous.is_some() {
-            self.retry_retire()?;
-        }
-        Ok(previous)
+        self.retired(previous)
     }
 
     /// Retire the active mind with nobody to follow her (a stop's suspend): once her decode has
     /// landed, begin her copy-out. Returns who retired (`None` when nobody was active); bring it to
     /// its end with [`Self::finish_retirement`].
     pub fn retire_active(&mut self) -> Result<Option<PersonaId>, HandoffError> {
-        if !self.decode_landed() {
-            if let Some(active) = self.active() {
-                return Err(HandoffError::DecodeInFlight { active });
-            }
-        }
+        self.require_landed()?;
         let previous = self.roles.retire()?;
+        self.retired(previous)
+    }
+
+    /// A move out of the active role is refused while her decode is on the device.
+    fn require_landed(&self) -> Result<(), HandoffError> {
+        match self.active() {
+            Some(active) if !self.decode_landed() => Err(HandoffError::DecodeInFlight { active }),
+            _ => Ok(()),
+        }
+    }
+
+    /// After the active role changed hands: her decode is over, and whoever left begins her copy-out.
+    fn retired(&mut self, previous: Option<PersonaId>) -> Result<Option<PersonaId>, HandoffError> {
         self.decoding = None;
         if previous.is_some() {
             self.retry_retire()?;
@@ -228,23 +231,19 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         Ok(previous)
     }
 
-    /// Begin the copy-out of the mind awaiting it (after a handoff whose copy-out was refused). Does
-    /// nothing when no copy-out awaits.
+    /// Begin the copy-out of the mind awaiting it (after a handoff whose copy-out was refused): the
+    /// tier is handed her own blocks. Does nothing when no copy-out awaits.
     pub fn retry_retire(&mut self) -> Result<(), HandoffError> {
-        let Some(tag) = self.roles.awaiting_copy_out() else { return Ok(()) };
+        let tier_name = self.tier.name();
+        let Some((tag, unit)) = self.roles.awaiting_copy_out_mut() else { return Ok(()) };
         let fence = self
             .tier
-            .begin(tag)
-            .map_err(|refusal| HandoffError::CopyOut { previous: tag.persona, refusal })?;
+            .begin(tag.mind, unit.blocks_mut(), Direction::Out)
+            .map_err(|refusal| HandoffError::CopyOut { previous: tag.mind.persona, refusal })?;
         // The tag came from the pipeline itself, so the fence it carries is the one it expects.
         self.roles.begin_retire(fence).map_err(|refused| HandoffError::CopyOut {
-            previous: tag.persona,
-            refusal: TierRefusal {
-                tier: self.tier.name(),
-                persona: tag.persona,
-                reason: refusal_reason(&refused.reason),
-                native: Native::NotAsked,
-            },
+            previous: tag.mind.persona,
+            refusal: TierRefusal { tier: tier_name, mind: tag.mind, reason: refusal_reason(&refused.reason), native: Native::NotAsked },
         })
     }
 
@@ -263,19 +262,6 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         }
         self.retry_retire()?;
         Ok(Some(self.release_retired()?))
-    }
-
-    /// Give up the blocks of a mind that has left the pipeline (a one-off whose turn ended). Refused
-    /// while she is active, staged or retiring: custody of a present mind is never dropped.
-    pub fn forget(&mut self, persona: PersonaId) -> Result<(), TierRefusal> {
-        if self.present(persona) || self.staged() == Some(persona) {
-            return Err(TierRefusal { tier: self.tier.name(), persona, reason: "she is still in the pipeline", native: Native::NotAsked });
-        }
-        self.tier.release(persona)
-    }
-
-    fn present(&self, persona: PersonaId) -> bool {
-        self.active() == Some(persona) || self.retiring() == Some(persona)
     }
 }
 

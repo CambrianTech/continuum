@@ -5,7 +5,7 @@
 //! the engine can hold a handoff until work already submitted to the device has landed.
 
 use super::{Tier, TierRefusal};
-use crate::persona::{Epoch, PersonaId};
+use crate::persona::MindId;
 
 /// One submitted decode's completion, as the tier reports it.
 pub trait Completion {
@@ -20,9 +20,9 @@ pub trait Execute: Tier {
     /// The completion of one submitted step.
     type Done: Completion;
 
-    /// Submit `work` as `persona`'s decode at `epoch`, on the stream she is bound to. Refused when she
+    /// Submit `work` as `mind`'s decode, on the stream she is bound to. Refused when she
     /// is not bound here at that epoch.
-    fn submit(&mut self, persona: PersonaId, epoch: Epoch, work: Self::Work) -> Result<Self::Done, TierRefusal>;
+    fn submit(&mut self, mind: MindId, work: Self::Work) -> Result<Self::Done, TierRefusal>;
 
     /// Wait until every step submitted so far has finished on the device, so each completion it
     /// returned reports landed. A backend whose submit returns before the device finishes (libllama
@@ -35,9 +35,9 @@ pub trait Execute: Tier {
 
     /// Take `persona`'s checkpoint at her current position without moving her; her last position it
     /// holds through. Refused when she is not bound here at `epoch`; a refusal leaves no checkpoint.
-    fn checkpoint(&mut self, persona: PersonaId, epoch: Epoch, into: &mut Self::Checkpoint) -> Result<u32, TierRefusal>;
+    fn checkpoint(&mut self, mind: MindId, into: &mut Self::Checkpoint) -> Result<u32, TierRefusal>;
 
     /// Put `persona` back at `from`'s position: what she holds past it is cut. Refused (and she is
     /// left as she was) when she is not bound here at `epoch` or the checkpoint is ahead of her.
-    fn rewind(&mut self, persona: PersonaId, epoch: Epoch, from: &Self::Checkpoint) -> Result<(), TierRefusal>;
+    fn rewind(&mut self, mind: MindId, from: &Self::Checkpoint) -> Result<(), TierRefusal>;
 }

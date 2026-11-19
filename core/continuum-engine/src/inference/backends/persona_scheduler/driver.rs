@@ -9,10 +9,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine, RetireError, StageError};
-use continuum_persona_engine::persona::{Epoch, Footprint, Held, PersonaId};
-use continuum_persona_engine::pipeline::Identified;
+use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
+use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier, STREAMS};
 use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
 
@@ -64,15 +63,26 @@ struct Basis {
     genes: String,
 }
 
-/// One mind this scheduler serves: her id and epoch, the tokens her blocks hold, and their basis.
-struct Mind {
-    id: PersonaId,
-    epoch: Epoch,
+/// One mind this scheduler serves: the unit that travels (CONTINUUM-ENGINE 4.17). Her blocks are her
+/// own part, so wherever her unit is (active, parked, preserved) her blocks are with her.
+type Mind = PersonaUnit<Blocks, History, Basis, (), Tenure>;
+
+/// Her parts, as the active mind's record is changed in place.
+type Parts = PersonaParts<Blocks, History, Basis, (), Tenure>;
+
+/// How long she stays: a resident is parked between turns and preserved at a stop; a one-off (no
+/// persona) is dropped, blocks and all, when her turn ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tenure {
+    Resident,
+    OneOff,
+}
+
+/// The tokens her blocks hold, and her checkpoint at her last view's end while what she holds still
+/// runs through it.
+#[derive(Default)]
+struct History {
     held: Vec<i32>,
-    basis: Basis,
-    /// A one-off (no persona): her blocks are released when her turn ends.
-    one_off: bool,
-    /// Her checkpoint at her last view's end, while what she holds still runs through it.
     kept: Option<KeptCheckpoint>,
 }
 
@@ -91,9 +101,9 @@ impl Footprint for KeptCheckpoint {
     }
 }
 
-/// What a mind holds herself: her token history and her checkpoint. Her blocks in the context are
-/// the tier's custody; [`Bound`] is that child's view.
-impl Footprint for Mind {
+/// Her token history and her checkpoint. Her blocks in the context are reported by the tier that
+/// binds them; [`Bound`] is that child's view.
+impl Footprint for History {
     fn held(&self) -> Held {
         self.held.held() + self.kept.held()
     }
@@ -102,16 +112,16 @@ impl Footprint for Mind {
 /// A bound mind's blocks, as the tier that holds them in the context reports them.
 struct Bound<'t, 'c, 'm> {
     tier: &'t UnifiedTier<'c, 'm>,
-    id: PersonaId,
+    mind: MindId,
 }
 
 impl Footprint for Bound<'_, '_, '_> {
     fn held(&self) -> Held {
-        Held::device(self.tier.state_bytes_of(self.id).unwrap_or(0)) // unwrap_or: an unbound mind holds nothing in the context
+        Held::device(self.tier.state_bytes_of(self.mind).unwrap_or(0)) // unwrap_or: an unbound mind holds nothing in the context
     }
 }
 
-impl Mind {
+impl History {
     /// Keep only her first `len` tokens; a cut below her checkpoint's end drops the checkpoint.
     fn cut(&mut self, len: usize) {
         self.held.truncate(len);
@@ -120,21 +130,22 @@ impl Mind {
         }
     }
 
-    /// Where `prompt` under `basis` would start for her (`reuse::choose`), deciding nothing and
-    /// moving nothing: the bind uses it to resume her, the frame to size her turn's prefill.
-    fn reuse(&self, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+    /// Where `prompt` under `basis` would start for her, whose blocks were computed under `under`
+    /// (`reuse::choose`), deciding nothing and moving nothing: the bind uses it to resume her, the
+    /// frame to size her turn's prefill.
+    fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
         let kept = self.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
-        reuse::choose(&self.held, &self.basis, kept, prompt, basis)
+        reuse::choose(&self.held, under, kept, prompt, basis)
     }
 }
 
-impl Identified for Mind {
-    fn persona(&self) -> PersonaId {
-        self.id
-    }
-    fn epoch(&self) -> Epoch {
-        self.epoch
-    }
+/// Where `prompt` under `basis` would start for `her`.
+fn reuse_for(her: &Mind, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+    her.parts().tokens.reuse(&her.parts().genome, prompt, basis)
+}
+
+fn resident(her: &Mind) -> bool {
+    her.parts().decode == Tenure::Resident
 }
 
 /// The driver's state: the model, the one engine over the one context, and every mind not active.
@@ -180,10 +191,11 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &preserve::Preserved, model
     for mind in minds {
         let id = PersonaId(mind.persona);
         let epoch = Epoch(mind.epoch);
-        match tier.read_file(id, epoch, &preserved.blocks(mind.persona)) {
-            Ok(()) => {
+        match tier.read_file(MindId { persona: id, epoch }, &preserved.blocks(mind.persona)) {
+            Ok(blocks) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
-                parked.insert(id, Mind { id, epoch, held: mind.held, basis: Basis { genes: mind.basis }, one_off: false, kept: None });
+                let parts = Parts { blocks, tokens: History { held: mind.held, kept: None }, genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+                parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
                 log.warn(&format!("preserved mind {} did not verify and starts cold: {refused}", mind.persona));
@@ -451,8 +463,8 @@ impl Driver<'_, '_> {
         let Some(store) = self.store.take() else {
             return Suspended { preserved: 0, retained: vec![(Uuid::nil(), "this node has no home to preserve minds in".into())] };
         };
-        let mut minds: Vec<PersonaId> = self.parked.iter().filter(|(_, mind)| !mind.one_off).map(|(id, _)| *id).collect();
-        if let Some(active) = self.engine.active().filter(|id| self.engine.active_mut().is_some_and(|her| !her.one_off && her.id == *id)) {
+        let mut minds: Vec<PersonaId> = self.parked.iter().filter(|(_, mind)| resident(mind)).map(|(id, _)| *id).collect();
+        if let Some(active) = self.engine.active().filter(|id| self.engine.active_mut().is_some_and(|her| resident(her) && her.id() == *id)) {
             minds.push(active);
         }
         let mut entries = Vec::new();
@@ -479,17 +491,18 @@ impl Driver<'_, '_> {
     /// One mind out to her file: bound, rewound to her view, retired through the pipeline, written.
     fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved) -> Result<preserve::PreservedMind, String> {
         self.switch_to(id, false).map_err(|e| e.to_string())?;
-        let end = self.engine.active_mut().and_then(|her| her.kept.as_ref().map(|kept| kept.end));
+        let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.as_ref().map(|kept| kept.end));
         if let Some(end) = end {
             self.rewind_to_checkpoint().map_err(|e| e.to_string())?;
-            self.record(|her| her.cut(end)).map_err(|e| e.to_string())?;
+            self.record(|her| her.tokens.cut(end)).map_err(|e| e.to_string())?;
         }
         if self.engine.retire_active().map_err(|e| e.to_string())?.is_some() {
             self.retire_previous().map_err(|e| e.to_string())?;
         }
         let her = self.parked.get(&id).ok_or("she did not come back from her retirement")?;
-        self.engine.tier().write_file(id, her.epoch, &store.blocks(id.0)).map_err(|refused| refused.to_string())?;
-        Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch.0, basis: her.basis.genes.clone(), held: her.held.clone() })
+        let parts = her.parts();
+        parts.blocks.write_file(&store.blocks(id.0)).map_err(|refused| format!("the fork refused to write her blocks: {refused:?}"))?;
+        Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone() })
     }
 
     /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
@@ -533,7 +546,7 @@ impl Driver<'_, '_> {
                 let (decoding, remaining) = match &turn.phase {
                     Phase::Waiting => {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
-                        let reused = her.map_or(0, |her| her.reuse(&turn.prompt, &turn.basis).reused()); // map_or: a mind never seen holds nothing
+                        let reused = her.map_or(0, |her| reuse_for(her, &turn.prompt, &turn.basis).reused()); // map_or: a mind never seen holds nothing
                         (false, turn.prompt.len().saturating_sub(reused))
                     }
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
@@ -591,7 +604,7 @@ impl Driver<'_, '_> {
     /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
-        let decided = self.engine.active_mut().ok_or(TurnError::NoneActive)?.reuse(&turn.prompt, &basis);
+        let decided = reuse_for(self.engine.active_mut().ok_or(TurnError::NoneActive)?, &turn.prompt, &basis);
         let (from, start) = match decided {
             reuse::Reuse::Append { from } => (from, "append"),
             reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint() {
@@ -601,8 +614,8 @@ impl Driver<'_, '_> {
             reuse::Reuse::Restart(miss) => (0, miss.reason()),
         };
         let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-        her.cut(from);
-        her.basis = basis;
+        her.parts_mut().tokens.cut(from);
+        her.parts_mut().genome = basis;
         turn.spent.reused = from;
         turn.spent.start = start;
         Ok(from)
@@ -611,10 +624,10 @@ impl Driver<'_, '_> {
     /// Rewind the active mind to her kept checkpoint (taken out and put back, so the engine can read
     /// it while it moves her).
     fn rewind_to_checkpoint(&mut self) -> Result<(), TurnError> {
-        let kept = self.engine.active_mut().ok_or(TurnError::NoneActive)?.kept.take();
+        let kept = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept.take();
         let Some(kept) = kept else { return Err(TurnError::NoneActive) };
         let rewound = self.engine.rewind_active(&kept.blocks);
-        self.record(|her| her.kept = Some(kept))?;
+        self.record(|her| her.tokens.kept = Some(kept))?;
         Ok(rewound?)
     }
 
@@ -622,7 +635,7 @@ impl Driver<'_, '_> {
     /// buffers. A refused take keeps none, so a later act restarts instead of rewinding to a stale one.
     fn keep_checkpoint(&mut self, turn: &mut Turn, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
-        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.kept.take();
+        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept.take();
         let mut blocks = match previous.map(|kept| kept.blocks).or_else(llama::PersonaCheckpoint::new) {
             Some(blocks) => blocks,
             None => return Ok(()), // the host could not allocate a checkpoint: she restarts next act, named in its row
@@ -630,7 +643,7 @@ impl Driver<'_, '_> {
         let taken = self.engine.checkpoint_active(&mut blocks);
         let basis = turn.basis.clone();
         self.record(|her| {
-            her.kept = match taken {
+            her.tokens.kept = match taken {
                 Ok(pos) if pos as usize + 1 == end => Some(KeptCheckpoint { blocks, end, basis }),
                 _ => None,
             }
@@ -652,7 +665,7 @@ impl Driver<'_, '_> {
         self.engine.submit(Step { tokens: chunk.clone(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
-            self.record(|her| her.held.extend_from_slice(&chunk))?;
+            self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
             if turn.boundary == Some(end) {
                 self.keep_checkpoint(turn, end)?;
             }
@@ -661,7 +674,7 @@ impl Driver<'_, '_> {
         }
         let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
         let token = self.engine.tier().sample(&mut turn.sampler, at);
-        self.record(|her| her.held.extend_from_slice(&chunk))?;
+        self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
         turn.phase = Phase::Decoding { token, pos, generated: 0 };
@@ -693,7 +706,7 @@ impl Driver<'_, '_> {
         self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
         turn.spent.graphs_reused += self.engine.tier().graphs_reused().saturating_sub(reused_before);
-        self.record(|her| her.held.push(token))?;
+        self.record(|her| her.tokens.held.push(token))?;
         // Wait for the forward pass here, where reading her logits would wait anyway, so the GPU's
         // time and the sampler's are measured apart.
         let landing = Instant::now();
@@ -748,10 +761,15 @@ impl Driver<'_, '_> {
         }
         let mind = match self.parked.remove(&id) {
             Some(parked) => parked,
-            None => Mind { id, epoch: Epoch(1), held: Vec::new(), basis: Basis::default(), one_off, kept: None },
+            None => {
+                let first = MindId { persona: id, epoch: Epoch(1) };
+                let blocks = self.engine.blocks_for(first)?;
+                let tenure = if one_off { Tenure::OneOff } else { Tenure::Resident };
+                Mind::new(id, first.epoch, Parts { blocks, tokens: History::default(), genome: Basis::default(), learning: (), decode: tenure })
+            }
         };
         if let Err(refused) = self.engine.stage(mind) {
-            self.parked.insert(refused.returned.id, refused.returned);
+            self.parked.insert(refused.returned.id(), refused.returned);
             return Err(refused.reason.into());
         }
         self.engine.settle()?;
@@ -762,20 +780,18 @@ impl Driver<'_, '_> {
         self.retire_previous()
     }
 
-    /// Park the mind whose retirement finishes (or forget her if she was a one-off).
+    /// Park the mind whose retirement finishes. A one-off is dropped, and her blocks with her.
     fn retire_previous(&mut self) -> Result<(), TurnError> {
         let Some(previous) = self.engine.finish_retirement()? else { return Ok(()) };
-        if previous.one_off {
-            self.engine.forget(previous.id)?;
-        } else {
-            self.parked.insert(previous.id, previous);
+        if resident(&previous) {
+            self.parked.insert(previous.id(), previous);
         }
         Ok(())
     }
 
     /// Update the active mind's own record (what her blocks now hold).
-    fn record(&mut self, change: impl FnOnce(&mut Mind)) -> Result<(), TurnError> {
-        change(self.engine.active_mut().ok_or(TurnError::NoneActive)?);
+    fn record(&mut self, change: impl FnOnce(&mut Parts)) -> Result<(), TurnError> {
+        change(self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut());
         Ok(())
     }
 
@@ -786,14 +802,12 @@ impl Driver<'_, '_> {
         if one_off {
             return;
         }
-        let blocks = Bound { tier: self.engine.tier(), id }.held();
+        let Some(her) = self.engine.active_mut().filter(|her| her.id() == id) else { return };
+        let (mind, own) = (MindId { persona: id, epoch: her.epoch() }, her.parts().tokens.held());
+        let blocks = Bound { tier: self.engine.tier(), mind }.held();
         if blocks == Held::NOTHING {
             return;
         }
-        let own = match self.engine.active_mut() {
-            Some(her) if her.id == id => her.held(),
-            _ => Held::NOTHING,
-        };
         footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), (blocks + own).total());
     }
 }

@@ -3107,6 +3107,7 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-cli-lifecycle",
+ "continuum-flow",
  "continuum-host",
  "continuum-kernel",
  "continuum-persona-engine",
@@ -7124,6 +7125,8 @@ dependencies = [
  "bindgen",
  "cc",
  "cmake",
+ "serde",
+ "serde_json",
  "sha2",
  "thiserror 2.0.18",
 ]

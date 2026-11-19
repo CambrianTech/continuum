@@ -2,15 +2,15 @@
 //! pool, flash). An adapter holds only the calls that differ; the pipeline never branches on
 //! which tier it has.
 
-use super::FenceTag;
-use crate::persona::PersonaId;
+use super::Direction;
+use crate::persona::MindId;
 
-/// A tier could not take or give a persona's bytes: named, so the engine keeps her where she is.
+/// A tier could not take or give a mind's bytes: named, so the engine keeps her where she is.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("{tier}: {reason} for persona {persona:?}{native}")]
+#[error("{tier}: {reason} for {mind:?}{native}")]
 pub struct TierRefusal {
     pub tier: &'static str,
-    pub persona: PersonaId,
+    pub mind: MindId,
     pub reason: &'static str,
     /// The backend's own refusal, kept rather than erased.
     pub native: Native,
@@ -37,19 +37,23 @@ impl std::fmt::Display for Native {
     }
 }
 
-/// A residency tier.
+/// A residency tier: the native moves of a mind's blocks. It is handed the blocks it moves (her unit
+/// carries them, CONTINUUM-ENGINE 4.17) and keeps only which stream holds which mind; giving a mind up
+/// is dropping her unit, so there is no release here.
 pub trait Tier {
     type Fence: super::Fence;
+    /// Her blocks in this tier's form.
+    type Blocks;
 
     /// The tier's name, for refusals and receipts.
     fn name(&self) -> &'static str;
 
-    /// Begin the transfer `what` names: her blocks of that exact epoch, in that direction (into the
-    /// execution stream, layer order behind compute; or out of it into this tier). The fence it
-    /// returns carries the same tag, so [`crate::pipeline::Roles`] accepts it only for that unit.
-    fn begin(&mut self, what: FenceTag) -> Result<Self::Fence, TierRefusal>;
+    /// New blocks for `mind` (a mind seen for the first time, or a new epoch of her), stamped with her
+    /// owner: what her unit carries from then on.
+    fn blocks_for(&mut self, mind: MindId) -> Result<Self::Blocks, TierRefusal>;
 
-    /// Give up `persona`'s blocks held in this tier (a mind that will not come back, such as a one-off
-    /// probe). Refused while she is in the execution stream.
-    fn release(&mut self, persona: PersonaId) -> Result<(), TierRefusal>;
+    /// Begin moving `mind`'s `blocks` in `direction` (into the execution stream, layer order behind
+    /// compute; or out of it into her blocks). The fence it returns is tagged with her mind and the
+    /// direction, so [`crate::pipeline::Roles`] accepts it only for that unit.
+    fn begin(&mut self, mind: MindId, blocks: &mut Self::Blocks, direction: Direction) -> Result<Self::Fence, TierRefusal>;
 }

@@ -6,7 +6,7 @@ mod lifecycle;
 mod unit;
 
 pub use footprint::{Footprint, Held};
-pub use id::{Epoch, PersonaId};
+pub use id::{Epoch, MindId, PersonaId};
 pub use lifecycle::{Lifecycle, PersonaParts, Preservation, Suspension};
 pub use unit::PersonaUnit;
 

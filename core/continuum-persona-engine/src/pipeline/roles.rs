@@ -10,21 +10,24 @@
 //!
 //! Every refusal that receives owned values returns them ([`Refused`]): nothing is dropped.
 
-use crate::persona::{Epoch, PersonaId, PersonaUnit};
+use crate::persona::{Epoch, MindId, PersonaId, PersonaUnit};
 use crate::residency::{Direction, Fence, FenceTag};
 
-/// What the pipeline needs to know of a unit: whose it is and which generation.
+/// What the pipeline needs to know of a unit: which mind it is. Presence is by persona (one of her
+/// at a time, whatever epoch); a move's fence is by the whole id.
 pub trait Identified {
-    fn persona(&self) -> PersonaId;
-    fn epoch(&self) -> Epoch;
+    fn mind(&self) -> MindId;
+    fn persona(&self) -> PersonaId {
+        self.mind().persona
+    }
+    fn epoch(&self) -> Epoch {
+        self.mind().epoch
+    }
 }
 
 impl<B, T, G, L, D> Identified for PersonaUnit<B, T, G, L, D> {
-    fn persona(&self) -> PersonaId {
-        self.id()
-    }
-    fn epoch(&self) -> Epoch {
-        PersonaUnit::epoch(self)
+    fn mind(&self) -> MindId {
+        MindId { persona: self.id(), epoch: PersonaUnit::epoch(self) }
     }
 }
 
@@ -103,7 +106,7 @@ impl<U, F> Default for Roles<U, F> {
 }
 
 fn expects<U: Identified>(unit: &U, direction: Direction) -> FenceTag {
-    FenceTag { persona: unit.persona(), epoch: unit.epoch(), direction }
+    FenceTag { mind: unit.mind(), direction }
 }
 
 impl<U: Identified, F: Fence> Roles<U, F> {
@@ -135,18 +138,38 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         }
     }
 
+    /// The copy-out to begin and the unit it moves: the engine hands her own blocks to the tier, so
+    /// no tier holds a second copy of who she is (CONTINUUM-ENGINE 4.17).
+    pub fn awaiting_copy_out_mut(&mut self) -> Option<(FenceTag, &mut U)> {
+        match self.retiring.as_mut() {
+            Some(Retiring::AwaitingCopyOut(unit)) => Some((expects(unit, Direction::Out), unit)),
+            _ => None,
+        }
+    }
+
     fn present(&self, persona: PersonaId) -> bool {
         self.active.as_ref().is_some_and(|a| a.persona() == persona)
             || self.staged() == Some(persona)
             || self.retiring() == Some(persona)
     }
 
+    /// Whether `persona` may be staged now: next is free and she is not already here. The one check,
+    /// asked before her copy-in begins (so a refusal never leaves a transfer running for nobody) and
+    /// again when she is staged.
+    pub fn admits(&self, persona: PersonaId) -> Option<StageRefusal> {
+        if let Some(staged) = self.staged() {
+            Some(StageRefusal::NextOccupied { staged })
+        } else if self.present(persona) {
+            Some(StageRefusal::AlreadyPresent { persona })
+        } else {
+            None
+        }
+    }
+
     /// Stage `unit` as next under `fence`, her copy-in. A refusal returns both.
     pub fn stage(&mut self, unit: U, fence: F) -> Result<(), Refused<StageRefusal, (U, F)>> {
-        let reason = if let Some(staged) = self.staged() {
-            Some(StageRefusal::NextOccupied { staged })
-        } else if self.present(unit.persona()) {
-            Some(StageRefusal::AlreadyPresent { persona: unit.persona() })
+        let reason = if let Some(refusal) = self.admits(unit.persona()) {
+            Some(refusal)
         } else if fence.tag() != expects(&unit, Direction::In) {
             Some(StageRefusal::WrongFence { got: fence.tag() })
         } else {
