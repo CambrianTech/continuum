@@ -19,6 +19,9 @@ pub enum Overflow {
     Reliable,
     /// Drop the oldest and keep the newest (CBAR's `QueueThread`). Only for signals whose input
     /// references content committed elsewhere: a wake, a frame, a "fresh activity" digest handle.
+    /// A displaced input is dropped on the worker, never by the producer; while the worker has a
+    /// full depth of displaced inputs still to drop, `push` hands the new one back as
+    /// [`PushError::Full`] (backpressure), so a KeepNewest caller handles `Full` too.
     KeepNewest,
 }
 
