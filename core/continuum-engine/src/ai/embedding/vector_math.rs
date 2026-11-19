@@ -162,7 +162,7 @@ pub fn top_k_similar(
         .collect();
 
     // Sort by similarity descending and take top k
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); // An unordered score cannot outrank its peer in this stable sort.
     sorted.truncate(k);
     sorted
 }
@@ -268,9 +268,9 @@ pub fn detect_clusters(
                         / (component.len() - 1).max(1) as f32;
                     (item, avg)
                 })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) // Unordered averages tie when choosing the representative.
                 .map(|(item, _)| item)
-                .unwrap_or(component[0]);
+                .unwrap_or(component[0]); // The traversal seeds each component with a visited node before choosing its representative.
 
             clusters.push(Cluster {
                 indices: component,
@@ -284,7 +284,7 @@ pub fn detect_clusters(
     clusters.sort_by(|a, b| {
         b.strength
             .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal) // An unordered cohesion score leaves the clusters in their original order.
     });
     clusters
 }
