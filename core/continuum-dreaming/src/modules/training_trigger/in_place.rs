@@ -193,8 +193,7 @@ impl InPlace {
                     fence(mind, engine).await;
                     drop(slot);
                     drop(held);
-                })
-                .await;
+                });
                 Ok(Next::Fenced)
             }
         }

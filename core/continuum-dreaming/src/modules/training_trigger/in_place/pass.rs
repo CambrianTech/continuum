@@ -251,7 +251,7 @@ impl TrainingTriggerState {
 
     /// Run `operation` as one of the trigger's owned operations, outliving the caller; shutdown
     /// drains it like every other.
-    pub(super) async fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.operations.lock().await.spawn(operation);
+    pub(super) fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.operations.lock().spawn(operation);
     }
 }
