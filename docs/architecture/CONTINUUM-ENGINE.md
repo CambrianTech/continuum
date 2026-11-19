@@ -2858,6 +2858,23 @@ field kept in sync: she is in the warm table, or in `Roles` as next, active or r
 - Deleted: the driver's `Mind` and `parked` (now the warm table of units), the tier's `Mind`, `minds` map, `Saved` (moves
   into the blocks part) and `Rebind` (diagnostic only; the example measures from the blocks part).
 
+*Landed: 68d8bea7cf (2026-11-19). On the M5 through the guard, 04:56-05:01Z: 27 generate calls, 0 inference
+failures, 6 resident acts, 0 llama-servers.* The tier's `minds` map and its `Mind` are gone, along with the driver's
+`Mind` (now `PersonaUnit<Blocks, History, Basis, (), Tenure>`), `PersonaEngine::forget` and `Tier::release`. `Saved`
+moved into `Blocks`. One departure from the plan: `Rebind` stays as the tier's report of how the last bind met her
+blocks, because the example's switch timings are measured by it. The `parked` table remains as the warm table of units.
+There is no `retiring_mut`; `Roles::awaiting_copy_out_mut` hands the engine the unit whose copy-out begins.
+
+**The grid is one more tier (outlier B for this interface).** A mind is a value her blocks travel with, so moving her
+to another node is `begin(mind, &mut blocks, direction)` on a tier whose transfer crosses the network. Its fence lands
+when the peer has her blocks, and a refusal returns her whole, like a move between two streams on one context.
+Grid compute is then the sum of each node's single-decoder engine. Before step 2 fixes the tier's shape, the grid
+tier gets the replay Codex asked for (2026-11-19 04:51Z): the peer accepts her unit, its ACK is lost, the sender
+retries, and the old completion arrives after the stream was reused. The two nodes must agree on one owner of her
+decode. Pending evidence keeps her native bytes in custody, and a byte stream received alone never grants a second
+decode authority. The replay tests that the fence and transfer identify her, whether or not two copies of her unit
+could coexist.
+
 **Order (each step deploys on the M5 through the guard, read before the next; each deletes what its row names):**
 1. `MindId` and the unit-as-mind: the driver's `parked`, the tier's minds/streams and `Saved`/`Rebind` collapse
    into it; `Roles` keeps ids. Gate: the turn and switch rows unchanged in value, the three location owners gone.
