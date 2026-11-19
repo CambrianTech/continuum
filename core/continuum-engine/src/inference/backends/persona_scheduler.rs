@@ -19,6 +19,7 @@
 
 mod driver;
 mod frame;
+mod reuse;
 mod geometry;
 mod sampling;
 
@@ -45,6 +46,10 @@ pub enum TokenEvent {
 /// What a caller submits to the scheduler.
 pub struct GenerationRequest {
     pub prompt: String,
+    /// The text at the head of `prompt` that her next act will hold unchanged (her view, as the
+    /// model's template renders it, without the generation prompt), or `None` for a turn with no
+    /// view. The engine checkpoints her where it ends, so her next act prefills only what follows.
+    pub stable_prefix: Option<String>,
     pub max_tokens: usize,
     pub sampling: SamplingConfig,
     pub stop_sequences: Vec<String>,

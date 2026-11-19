@@ -18,7 +18,7 @@ pub use chat_template::{
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod persona;
-pub use persona::{BindRefusal, PersonaBlocks, PersonaOwner, PersonaRefusal};
+pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]

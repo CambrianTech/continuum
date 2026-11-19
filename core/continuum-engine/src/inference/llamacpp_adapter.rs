@@ -501,6 +501,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 llama::render_chat(template.as_deref(), &messages, true)
             })?,
         };
+        // Where her next act stops matching this prompt (her view, CONTINUUM-ENGINE 4.15): the engine
+        // checkpoints her there and her next act prefills only what follows.
+        let stable_prefix = native.as_ref().and_then(|turn| native_chat::stable_text(&backend, &request, think_on, &turn.prompt));
 
         // No hardcoded cap. If the caller didn't specify, the model can
         // decode up to its trained context. Capping silently at 2048 was
@@ -544,6 +547,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
         let prompt_for_blocking = prompt.clone();
+        let stable_for_blocking = stable_prefix.clone();
         let stop_for_closure = stop_owned.clone();
         let sampling_for_closure = sampling.clone();
         // Parse the wire-format persona_id (Option<String> on the public
@@ -592,7 +596,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .collect();
                     backend_for_blocking.generate_for_persona(
                         allocation,                        persona_id,
-                        &prompt_for_blocking,
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref() },
                         max_tokens,
                         sampling_for_closure,
                         &stop_refs,

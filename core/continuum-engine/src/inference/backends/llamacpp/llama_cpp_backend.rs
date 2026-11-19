@@ -1,5 +1,13 @@
 use super::*;
 
+/// A turn's prompt and the head of it her next act will hold unchanged (her view, without the
+/// generation prompt), which the engine checkpoints her at. `None` for a turn with no view.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnPrompt<'a> {
+    pub text: &'a str,
+    pub stable_prefix: Option<&'a str>,
+}
+
 impl LlamaCppBackend {
     /// Load a GGUF model.
     pub fn load(config: LlamaCppConfig) -> Result<Self, String> {
@@ -498,7 +506,7 @@ impl LlamaCppBackend {
         self.generate_for_persona(
             allocation,
             None,
-            prompt,
+            TurnPrompt { text: prompt, stable_prefix: None },
             max_tokens,
             sampling,
             stop_sequences,
@@ -519,7 +527,7 @@ impl LlamaCppBackend {
         &self,
         allocation: GenerationAllocation,
         persona_id: Option<uuid::Uuid>,
-        prompt: &str,
+        turn: TurnPrompt<'_>,
         max_tokens: usize,
         sampling: SamplingConfig,
         stop_sequences: &[&str],
@@ -527,6 +535,7 @@ impl LlamaCppBackend {
     ) -> Result<(String, usize), String> {
         let log = runtime::logger("llamacpp");
         let gen_start = Instant::now();
+        let prompt = turn.text;
         let prompt_len_chars = prompt.len();
 
         // Channel for streaming tokens back from the scheduler.
@@ -568,6 +577,7 @@ impl LlamaCppBackend {
         // top_k/top_p/repeat_penalty fields with no-op defaults.
         let req = GenerationRequest {
             prompt: prompt.to_string(),
+            stable_prefix: turn.stable_prefix.map(str::to_owned),
             max_tokens,
             sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),

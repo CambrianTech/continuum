@@ -23,6 +23,7 @@ use crate::runtime;
 mod validate_embedding_model;
 pub use validate_embedding_model::*;
 mod llama_cpp_backend;
+pub use llama_cpp_backend::TurnPrompt;
 mod embedding_lane;
 mod embedding_batch;
 pub(crate) use embedding_batch::{resident_weights, ContextBytes, EmbedWindow, EmbeddingBatch, Placement, NO_TRAINED_CONTEXT};

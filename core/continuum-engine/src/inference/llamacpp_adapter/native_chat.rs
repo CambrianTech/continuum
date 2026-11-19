@@ -49,6 +49,22 @@ pub(super) fn render<'b>(
     Ok(NativeTurn { templates, prompt })
 }
 
+/// The text of her prompt that her next act will hold unchanged: her view's messages
+/// (`request.view_messages`, where cognition says her next act stops matching), rendered by the
+/// model's own template with its generation prompt taken off. The engine checkpoints her there, so
+/// a next act that keeps it prefills only what follows (CONTINUUM-ENGINE 4.15). `None` for a turn
+/// with no view, or a render that does not end in its own generation prompt.
+pub(super) fn stable_text(backend: &LlamaCppBackend, request: &TextGenerationRequest, enable_thinking: bool, full: &ChatPrompt) -> Option<String> {
+    let held = usize::try_from(request.view_messages?).ok()?;
+    let rendered = if held >= request.messages.len() {
+        full.clone()
+    } else {
+        let view = TextGenerationRequest { messages: request.messages[..held].to_vec(), ..request.clone() };
+        render(backend, &view, enable_thinking).ok()?.prompt
+    };
+    rendered.prompt.strip_suffix(rendered.generation_prompt.as_str()).map(str::to_owned)
+}
+
 impl NativeTurn<'_> {
     /// Read a finished generation with the template's own parser.
     pub(super) fn read(&self, output: &str) -> Result<NativeReply, String> {

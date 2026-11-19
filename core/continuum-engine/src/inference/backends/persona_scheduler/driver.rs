@@ -11,7 +11,6 @@ use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine,
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::pipeline::Identified;
 use continuum_persona_engine::residency::TierRefusal;
-use continuum_persona_engine::turn::{plan, History, Prefill};
 use continuum_persona_llama::{Genes, Step, UnifiedTier, STREAMS};
 use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
@@ -72,6 +71,26 @@ struct Mind {
     basis: Basis,
     /// A one-off (no persona): her blocks are released when her turn ends.
     one_off: bool,
+    /// Her checkpoint at her last view's end, while what she holds still runs through it.
+    kept: Option<KeptCheckpoint>,
+}
+
+/// Her checkpoint and what makes it valid: she held exactly `held[..end]` under `basis` when it was
+/// taken, and nothing she holds below `end` has changed since (a cut below it drops it).
+struct KeptCheckpoint {
+    blocks: llama::PersonaCheckpoint,
+    end: usize,
+    basis: Basis,
+}
+
+impl Mind {
+    /// Keep only her first `len` tokens; a cut below her checkpoint's end drops the checkpoint.
+    fn cut(&mut self, len: usize) {
+        self.held.truncate(len);
+        if self.kept.as_ref().is_some_and(|kept| kept.end > len) {
+            self.kept = None;
+        }
+    }
 }
 
 impl Identified for Mind {
@@ -175,6 +194,9 @@ struct Turn {
     phase: Phase,
     submitted: Instant,
     spent: Spent,
+    /// Where her view ends in `prompt` (CONTINUUM-ENGINE 4.15): a prefill chunk ends exactly there
+    /// and she is checkpointed, so her next act resumes from it. `None` for a turn with no view.
+    boundary: Option<usize>,
 }
 
 /// Where a turn stands.
@@ -191,6 +213,9 @@ enum Phase {
 #[derive(Default)]
 struct Spent {
     reused: usize,
+    /// How her prefill started: append, rewind, or the restart's reason.
+    start: &'static str,
+    checkpoint_ms: u64,
     first_step: Option<std::time::Duration>,
     switch: std::time::Duration,
     prefill: std::time::Duration,
@@ -247,7 +272,16 @@ impl Driver<'_, '_> {
             Ok((prompt, sampler)) => {
                 let basis = Basis { genes: signature(&req.active_loras) };
                 let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default() });
+                // Her view's end, in this prompt's own tokens: where the tokens of her view's text
+                // stop agreeing with the prompt's (a token can straddle the edge). A boundary that
+                // leaves nothing to prefill after it marks nothing.
+                let boundary = req
+                    .stable_prefix
+                    .as_deref()
+                    .and_then(|stable| self.model.tokenize(stable, true, true).ok())
+                    .map(|stable| reuse::common_prefix(&stable, &prompt))
+                    .filter(|end| *end > 0 && *end < prompt.len());
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary });
             }
             Err(refused) => {
                 let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
@@ -290,16 +324,7 @@ impl Driver<'_, '_> {
             turn.spent.switches += 1;
         }
         if matches!(turn.phase, Phase::Waiting) {
-            let basis = turn.basis.clone();
-            let prompt = &turn.prompt;
-            let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-            let from = match plan(History { basis: &her.basis, tokens: &her.held }, History { basis: &basis, tokens: prompt }) {
-                Prefill::Append { from } => from,
-                Prefill::Restart => 0,
-            };
-            her.held.truncate(from);
-            her.basis = basis;
-            turn.spent.reused = from;
+            let from = self.resume(turn)?;
             if from >= turn.prompt.len() {
                 return Err(TurnError::NothingDecoded);
             }
@@ -324,10 +349,69 @@ impl Driver<'_, '_> {
         advanced
     }
 
+    /// Where her prefill starts, now that she is bound (`reuse::choose`): what she holds when the
+    /// prompt extends it, her checkpoint when the prompt keeps her view and changes what follows, else
+    /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
+    fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
+        let basis = turn.basis.clone();
+        let decided = {
+            let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
+            let kept = her.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
+            reuse::choose(&her.held, &her.basis, kept, &turn.prompt, &basis)
+        };
+        let (from, start) = match decided {
+            reuse::Reuse::Append { from } => (from, "append"),
+            reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint() {
+                Ok(()) => (from, "rewind"),
+                Err(_) => (0, "rewind_refused"),
+            },
+            reuse::Reuse::Restart(miss) => (0, miss.reason()),
+        };
+        let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
+        her.cut(from);
+        her.basis = basis;
+        turn.spent.reused = from;
+        turn.spent.start = start;
+        Ok(from)
+    }
+
+    /// Rewind the active mind to her kept checkpoint (taken out and put back, so the engine can read
+    /// it while it moves her).
+    fn rewind_to_checkpoint(&mut self) -> Result<(), TurnError> {
+        let kept = self.engine.active_mut().ok_or(TurnError::NoneActive)?.kept.take();
+        let Some(kept) = kept else { return Err(TurnError::NoneActive) };
+        let rewound = self.engine.rewind_active(&kept.blocks);
+        self.record(|her| her.kept = Some(kept))?;
+        Ok(rewound?)
+    }
+
+    /// Checkpoint the active mind at her view's end (`end` tokens held), reusing her checkpoint's
+    /// buffers. A refused take keeps none, so a later act restarts instead of rewinding to a stale one.
+    fn keep_checkpoint(&mut self, turn: &mut Turn, end: usize) -> Result<(), TurnError> {
+        let taking = Instant::now();
+        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.kept.take();
+        let mut blocks = match previous.map(|kept| kept.blocks).or_else(llama::PersonaCheckpoint::new) {
+            Some(blocks) => blocks,
+            None => return Ok(()), // the host could not allocate a checkpoint: she restarts next act, named in its row
+        };
+        let taken = self.engine.checkpoint_active(&mut blocks);
+        let basis = turn.basis.clone();
+        self.record(|her| {
+            her.kept = match taken {
+                Ok(pos) if pos as usize + 1 == end => Some(KeptCheckpoint { blocks, end, basis }),
+                _ => None,
+            }
+        })?;
+        turn.spent.checkpoint_ms = u64::try_from(taking.elapsed().as_millis()).unwrap_or(u64::MAX); // unwrap_or: past u64 ms reads as the most
+        Ok(())
+    }
+
     /// One chunk of her prompt from `pos`. The last chunk asks for logits and samples her first
     /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
-        let end = (pos + self.batch.get()).min(turn.prompt.len());
+        // A chunk never runs past her view's end, so she can be checkpointed exactly there.
+        let limit = turn.boundary.filter(|boundary| *boundary > pos).unwrap_or(turn.prompt.len()); // unwrap_or: no view end ahead, the prompt's end bounds the chunk
+        let end = (pos + self.batch.get()).min(limit);
         let chunk = turn.prompt[pos..end].to_vec();
         let last = end == turn.prompt.len();
         let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
@@ -336,6 +420,9 @@ impl Driver<'_, '_> {
         if !last {
             self.engine.settle()?;
             self.record(|her| her.held.extend_from_slice(&chunk))?;
+            if turn.boundary == Some(end) {
+                self.keep_checkpoint(turn, end)?;
+            }
             turn.phase = Phase::Prefilling { pos: end };
             return Ok(());
         }
@@ -388,6 +475,9 @@ impl Driver<'_, '_> {
             one_off = turn.one_off,
             prompt_tokens = turn.prompt.len() as u64,
             reused_tokens = turn.spent.reused as u64,
+            start = turn.spent.start,
+            boundary = turn.boundary.map_or(0, |end| end as u64), // map_or: 0 = no view end in this prompt
+            checkpoint_ms = turn.spent.checkpoint_ms,
             wait_ms = turn.spent.first_step.map_or(0, ms),
             switches = turn.spent.switches,
             switch_ms = ms(turn.spent.switch),
@@ -413,7 +503,7 @@ impl Driver<'_, '_> {
         }
         let mind = match self.parked.remove(&id) {
             Some(parked) => parked,
-            None => Mind { id, epoch: Epoch(1), held: Vec::new(), basis: Basis::default(), one_off },
+            None => Mind { id, epoch: Epoch(1), held: Vec::new(), basis: Basis::default(), one_off, kept: None },
         };
         if let Err(refused) = self.engine.stage(mind) {
             self.parked.insert(refused.returned.id, refused.returned);
@@ -445,12 +535,17 @@ impl Driver<'_, '_> {
     }
 
     /// Attribute her stream's bytes to her in the footprint registry (one-offs are not attributed).
-    fn report_footprint(&self, id: PersonaId, one_off: bool) {
+    fn report_footprint(&mut self, id: PersonaId, one_off: bool) {
         if one_off {
             return;
         }
+        // Her stream's bytes and her checkpoint's (her recurrent rows, held in host memory beside her).
+        let kept: u64 = match self.engine.active_mut() {
+            Some(her) if her.id == id => her.kept.as_ref().map_or(0, |kept| kept.blocks.bytes() as u64), // map_or: no checkpoint kept holds no bytes
+            _ => 0,
+        };
         if let Some(bytes) = self.engine.tier().state_bytes_of(id).filter(|bytes| *bytes > 0) {
-            footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), bytes);
+            footprint_registry::global().report_authoritative(FootprintKey::for_persona(id.0, ResourceType::KvCache, Residency::Active), bytes + kept);
         }
     }
 }

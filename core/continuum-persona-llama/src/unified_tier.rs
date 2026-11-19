@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, Context, LoraAdapter, PersonaBlocks, PersonaOwner, PersonaRefusal, Sampler};
+use llama::{Batch, BindRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Sampler};
 
 /// Execution streams one context holds: the active mind's and the next mind's. The context is
 /// created with this many sequences; no more are ever decoded at once (one decodes, one binds).
@@ -313,6 +313,34 @@ impl Execute for UnifiedTier<'_, '_> {
             landed.set(true);
         }
         Ok(())
+    }
+
+    /// Her recurrent rows copied out where she stands; her attention KV stays in place (the fork's
+    /// `llama_persona_checkpoint_*`). Its buffers are reused take after take.
+    type Checkpoint = PersonaCheckpoint;
+
+    fn checkpoint(&mut self, persona: PersonaId, epoch: Epoch, into: &mut PersonaCheckpoint) -> Result<u32, TierRefusal> {
+        let stream = self.bound_at(persona, epoch)?;
+        self.settle()?;
+        into.take(&mut *self.ctx, stream.seq()).map_err(|refusal| native(persona, "the fork refused her checkpoint", refusal))?;
+        into.pos().ok_or_else(|| refused(persona, "her checkpoint holds no position"))
+    }
+
+    fn rewind(&mut self, persona: PersonaId, epoch: Epoch, from: &PersonaCheckpoint) -> Result<(), TierRefusal> {
+        let stream = self.bound_at(persona, epoch)?;
+        self.settle()?;
+        from.rewind(&mut *self.ctx, stream.seq()).map_err(|refusal| native(persona, "the fork refused her rewind", refusal))
+    }
+}
+
+impl UnifiedTier<'_, '_> {
+    /// Her stream, when she is bound here at `epoch`.
+    fn bound_at(&self, persona: PersonaId, epoch: Epoch) -> Result<Stream, TierRefusal> {
+        let stream = self.stream_of(persona).ok_or_else(|| refused(persona, "not bound"))?;
+        match self.minds.get(&persona).map(|mind| mind.epoch) {
+            Some(held) if held == epoch => Ok(stream),
+            _ => Err(refused(persona, "another epoch of her is bound")),
+        }
     }
 }
 

@@ -28,4 +28,16 @@ pub trait Execute: Tier {
     /// returned reports landed. A backend whose submit returns before the device finishes (libllama
     /// synchronizes only on result retrieval) waits here; the engine settles before a handoff.
     fn settle(&mut self) -> Result<(), TierRefusal>;
+
+    /// Her state at a stable boundary, kept beside her and reused act after act
+    /// (CONTINUUM-ENGINE 4.15): a request that holds her prompt up to it prefills only what follows.
+    type Checkpoint;
+
+    /// Take `persona`'s checkpoint at her current position without moving her; her last position it
+    /// holds through. Refused when she is not bound here at `epoch`; a refusal leaves no checkpoint.
+    fn checkpoint(&mut self, persona: PersonaId, epoch: Epoch, into: &mut Self::Checkpoint) -> Result<u32, TierRefusal>;
+
+    /// Put `persona` back at `from`'s position: what she holds past it is cut. Refused (and she is
+    /// left as she was) when she is not bound here at `epoch` or the checkpoint is ahead of her.
+    fn rewind(&mut self, persona: PersonaId, epoch: Epoch, from: &Self::Checkpoint) -> Result<(), TierRefusal>;
 }

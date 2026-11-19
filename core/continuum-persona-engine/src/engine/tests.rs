@@ -81,6 +81,15 @@ impl Execute for Recording {
         }
         Ok(())
     }
+    type Checkpoint = Option<u32>;
+    fn checkpoint(&mut self, _persona: PersonaId, _epoch: Epoch, into: &mut Option<u32>) -> Result<u32, TierRefusal> {
+        let at = u32::try_from(self.decodes.borrow().len()).unwrap_or(u32::MAX); // unwrap_or: a test log never holds 4 billion steps
+        *into = Some(at);
+        Ok(at)
+    }
+    fn rewind(&mut self, persona: PersonaId, _epoch: Epoch, from: &Option<u32>) -> Result<(), TierRefusal> {
+        from.map(|_| ()).ok_or(TierRefusal { tier: "recording", persona, reason: "nothing taken", native: Native::NotAsked })
+    }
 }
 
 /// Land the most recent entry of `log`.

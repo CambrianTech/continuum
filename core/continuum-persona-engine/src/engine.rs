@@ -150,6 +150,28 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         Ok(())
     }
 
+    /// Checkpoint the active mind where she stands (CONTINUUM-ENGINE 4.15); her last position it
+    /// holds through. Waits for her submitted step to land first, so it reads what she decoded.
+    pub fn checkpoint_active(&mut self, into: &mut T::Checkpoint) -> Result<u32, DecodeError> {
+        let (persona, epoch) = self.active_identity()?;
+        self.tier.settle()?;
+        self.decoding = None;
+        Ok(self.tier.checkpoint(persona, epoch, into)?)
+    }
+
+    /// Put the active mind back at `from`'s position: what she holds past it is cut. A refusal
+    /// leaves her as she was.
+    pub fn rewind_active(&mut self, from: &T::Checkpoint) -> Result<(), DecodeError> {
+        let (persona, epoch) = self.active_identity()?;
+        self.tier.settle()?;
+        self.decoding = None;
+        Ok(self.tier.rewind(persona, epoch, from)?)
+    }
+
+    fn active_identity(&self) -> Result<(PersonaId, crate::persona::Epoch), DecodeError> {
+        self.roles.active().map(|unit| (unit.persona(), unit.epoch())).ok_or(DecodeError::NoneActive)
+    }
+
     /// Begin `unit`'s copy-in and hold her as next. Refused before any transfer starts when next is
     /// occupied or she is already here, so a refusal never leaves a copy-in running for nobody. Runs
     /// while the active mind decodes.

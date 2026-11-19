@@ -129,6 +129,60 @@ impl Drop for PersonaBlocks {
     }
 }
 
+/// A bound mind's state at one of her positions, taken WITHOUT moving her (the fork's
+/// `llama_persona_checkpoint_*`, CONTINUUM-ENGINE 4.15): her recurrent rows are copied out; her
+/// attention KV stays in place. [`Self::rewind`] writes the rows back and cuts what she holds past
+/// [`Self::pos`], so her next decode continues from the boundary instead of re-prefilling from zero.
+/// Its buffers are reused take after take; one checkpoint rewinds any number of times.
+pub struct PersonaCheckpoint {
+    ptr: NonNull<sys::llama_persona_checkpoint>,
+}
+
+// Plain host memory owned by this handle; the engine owner moves it between threads only with the
+// context it belongs to.
+unsafe impl Send for PersonaCheckpoint {}
+
+impl PersonaCheckpoint {
+    /// An empty checkpoint (nothing taken). `None` when the allocation failed.
+    pub fn new() -> Option<Self> {
+        // SAFETY: the fork returns an owned checkpoint or NULL.
+        NonNull::new(unsafe { sys::llama_persona_checkpoint_init() }).map(|ptr| Self { ptr })
+    }
+
+    /// Take sequence `seq`'s state at her current position. A refusal leaves no checkpoint (a later
+    /// rewind refuses), never a stale one.
+    pub fn take(&mut self, ctx: &mut Context<'_>, seq: i32) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the fork reserves before copying and refuses whole.
+        status(unsafe { sys::llama_persona_checkpoint_take(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
+    }
+
+    /// Put sequence `seq` back at [`Self::pos`]: what she holds past it is cut. A refusal (nothing
+    /// taken, or a checkpoint ahead of what she holds) leaves her exactly as she was.
+    pub fn rewind(&self, ctx: &mut Context<'_>, seq: i32) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the fork checks before writing and refuses whole.
+        status(unsafe { sys::llama_persona_checkpoint_rewind(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
+    }
+
+    /// Her last position the checkpoint holds through; `None` when nothing is taken.
+    pub fn pos(&self) -> Option<u32> {
+        // SAFETY: `self.ptr` is live for this handle.
+        u32::try_from(unsafe { sys::llama_persona_checkpoint_pos(self.ptr.as_ptr()) }).ok()
+    }
+
+    /// The bytes it holds (her recurrent rows): what the footprint registry is told.
+    pub fn bytes(&self) -> usize {
+        // SAFETY: `self.ptr` is live for this handle.
+        unsafe { sys::llama_persona_checkpoint_bytes(self.ptr.as_ptr()) }
+    }
+}
+
+impl Drop for PersonaCheckpoint {
+    fn drop(&mut self) {
+        // SAFETY: owned since `new`; freed exactly once here.
+        unsafe { sys::llama_persona_checkpoint_free(self.ptr.as_ptr()) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
