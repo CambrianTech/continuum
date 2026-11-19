@@ -174,7 +174,9 @@ impl Obligations {
             }
             let mut pinned = self.pinned.lock();
             for row in rows.iter().filter(|row| row.room_id == room) {
-                pinned.insert(row.id, (row.clone(), now_ms));
+                // The room's notice re-renders from what it holds on every close, so it keeps its own copy.
+                let held = (row.clone(), now_ms);
+                pinned.insert(row.id, held);
                 carried.insert(row.id);
             }
             drop(pinned);
