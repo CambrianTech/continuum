@@ -31,16 +31,10 @@ crate::action_command! {
     params: AiRegistryQueryParams,
     output: AiModelsListResult,
     run(this, _ctx, _p) => {
-        let registry = this.registry.read().await;
-        let available = registry.available();
-
-        let mut models = Vec::new();
-        for id in &available {
-            if let Some(adapter) = registry.get(id) {
-                models.extend(adapter.get_available_models().await);
-            }
-        }
-
+        let catalogs = AdapterRegistry::query_available(&this.registry, |_, adapter| async move {
+            adapter.get_available_models().await
+        }).await;
+        let models: Vec<_> = catalogs.into_iter().flatten().collect();
         let count = models.len();
         Ok(AiModelsListResult { models, count })
     }

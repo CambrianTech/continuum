@@ -48,23 +48,17 @@ crate::action_command! {
     params: AiRegistryQueryParams,
     output: AiProvidersHealthResult,
     run(this, _ctx, _p) => {
-        let registry = this.registry.read().await;
-        let available = registry.available();
-
-        let mut providers = Vec::new();
-        for id in &available {
-            if let Some(adapter) = registry.get(id) {
-                let health = adapter.health_check().await;
-                providers.push(ProviderHealth {
-                    provider: id.to_string(),
-                    name: adapter.name().to_string(),
-                    status: format!("{:?}", health.status).to_lowercase(),
-                    api_available: health.api_available,
-                    response_time_ms: health.response_time_ms,
-                    message: health.message,
-                });
+        let providers = AdapterRegistry::query_available(&this.registry, |provider, adapter| async move {
+            let health = adapter.health_check().await;
+            ProviderHealth {
+                provider,
+                name: adapter.name().to_string(),
+                status: format!("{:?}", health.status).to_lowercase(),
+                api_available: health.api_available,
+                response_time_ms: health.response_time_ms,
+                message: health.message,
             }
-        }
+        }).await;
 
         Ok(AiProvidersHealthResult { providers })
     }
