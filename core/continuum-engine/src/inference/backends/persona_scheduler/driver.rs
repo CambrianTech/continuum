@@ -261,6 +261,8 @@ struct Spent {
     /// Of `decode`: waiting for the forward pass to land on the GPU.
     gpu: std::time::Duration,
     sample: std::time::Duration,
+    /// Of her decoded tokens, how many reused a built graph instead of rebuilding it on the CPU.
+    graphs_reused: u64,
     switches: u64,
 }
 
@@ -508,8 +510,10 @@ impl Driver<'_, '_> {
             return Ok(done(turn, generated));
         }
         let forward = Instant::now();
+        let reused_before = self.engine.tier().graphs_reused();
         self.engine.submit(Step { tokens: vec![token], from: pos, logits_at_end: true, genes: Arc::clone(&turn.genes) })?;
         turn.spent.forward += forward.elapsed();
+        turn.spent.graphs_reused += self.engine.tier().graphs_reused().saturating_sub(reused_before);
         self.record(|her| her.held.push(token))?;
         // Wait for the forward pass here, where reading her logits would wait anyway, so the GPU's
         // time and the sampler's are measured apart.
@@ -543,6 +547,7 @@ impl Driver<'_, '_> {
             prefill_ms = ms(turn.spent.prefill),
             decode_ms = ms(turn.spent.decode),
             forward_ms = ms(turn.spent.forward),
+            graphs_reused = turn.spent.graphs_reused,
             gpu_ms = ms(turn.spent.gpu),
             sample_ms = ms(turn.spent.sample),
             generated = generated as u64,

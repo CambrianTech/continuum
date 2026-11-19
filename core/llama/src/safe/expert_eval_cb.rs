@@ -164,6 +164,14 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_synchronize(self.ptr.as_ptr()) }
     }
 
+    /// How many times this context has reused a built compute graph instead of rebuilding it
+    /// (libllama's own counter, `llama_perf_context().n_reused`). A decode that rebuilds its graph
+    /// pays the build on the CPU before the device starts.
+    pub fn graphs_reused(&self) -> u64 {
+        // SAFETY: `self.ptr` is a live context; the call only reads its counters.
+        u64::try_from(unsafe { sys::llama_perf_context(self.ptr.as_ptr()) }.n_reused).unwrap_or(0) // unwrap_or: libllama's counter starts at 0 and only counts up; a negative reads as none reused
+    }
+
     /// Context window size.
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }

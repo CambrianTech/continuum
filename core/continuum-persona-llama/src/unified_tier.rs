@@ -100,6 +100,11 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.stream_of(persona).map(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
     }
 
+    /// How many decodes on this context reused a built graph (libllama's counter).
+    pub fn graphs_reused(&self) -> u64 {
+        self.ctx.graphs_reused()
+    }
+
     /// Sample her next token from output `i` of the last decode. Like [`Self::logits_ith`], reading the
     /// logits synchronizes, so it also attests the last decode landed.
     pub fn sample(&self, sampler: &mut Sampler, i: i32) -> i32 {
