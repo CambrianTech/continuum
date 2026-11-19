@@ -91,7 +91,7 @@ fi
 
 echo -e "${YELLOW}[1/3] Repository${NC}"
 
-if [ -d "$INSTALL_DIR/tools/scripts/install.sh" ] || [ -f "$INSTALL_DIR/tools/scripts/install.sh" ]; then
+if [ -d "$INSTALL_DIR" ] && git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree &>/dev/null; then
   echo -e "  Existing installation found — pulling latest..."
   cd "$INSTALL_DIR"
   git pull --ff-only 2>/dev/null || {
@@ -121,15 +121,14 @@ echo -e "  ${GREEN}Repository ready${NC}"
 
 echo -e "\n${YELLOW}[2/2] Installing + launching${NC}"
 
-cd src
 
 # Export mode so npm start and the orchestrator can read it
 export CONTINUUM_UI_MODE="$MODE"
 # Tell install.sh to auto-launch after install
 export CONTINUUM_AUTO_LAUNCH=1
 
-bash scripts/install.sh
-
+# Run the from-source install (Node, Rust, Python ML, Postgres, system deps)
+bash "$INSTALL_DIR/tools/scripts/install.sh"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${GREEN}  Continuum is running!${NC}"
@@ -146,6 +145,5 @@ case "$MODE" in
     echo -e "  Server:    ${GREEN}http://localhost:9003${NC} (API only)"
     ;;
 esac
-echo -e "  Stop:      ${GREEN}cd $INSTALL_DIR/src && npm stop${NC}"
-echo -e "  Uninstall: ${GREEN}cd $INSTALL_DIR/src && bash scripts/uninstall.sh${NC}"
-echo ""
+echo -e "  Stop:      ${GREEN}cd $INSTALL_DIR && npm stop${NC}"
+echo -e "  Uninstall: ${YELLOW}(not yet implemented)${NC}"
