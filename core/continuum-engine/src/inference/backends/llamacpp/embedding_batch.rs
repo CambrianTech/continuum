@@ -102,18 +102,6 @@ pub(crate) fn context_bytes(n_ctx: u32, placement: Placement) -> ContextBytes {
     }
 }
 
-/// Where a model file's `bytes` of weights reside at `placement`: on the device with every layer
-/// offloaded, on the host with none, and charged in full to both when the split is not measured
-/// (as a context's bytes are). The file's length is the weights' size within its metadata, a few
-/// MiB of the ~0.6 GiB Qwen3-Embedding-0.6B Q8_0.
-pub(crate) fn resident_weights(bytes: u64, placement: Placement) -> ContextBytes {
-    match placement {
-        Placement::Device => ContextBytes { device: bytes, host: 0 },
-        Placement::Host => ContextBytes { device: 0, host: bytes },
-        Placement::Split => ContextBytes { device: bytes, host: bytes },
-    }
-}
-
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {
     sequences: Vec<Vec<i32>>,

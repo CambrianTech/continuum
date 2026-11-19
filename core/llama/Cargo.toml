@@ -12,9 +12,7 @@ path = "src/bin/bench.rs"
 
 [dependencies]
 thiserror.workspace = true
-# The chat seam (chat_template.rs) speaks llama.cpp's own OpenAI-compatible JSON.
-serde.workspace = true
-serde_json.workspace = true
+# Nothing yet — FFI + safe wrapper is self-contained
 
 [build-dependencies]
 cc = "1"

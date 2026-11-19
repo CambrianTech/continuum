@@ -242,12 +242,15 @@ impl ModelCapabilities {
 pub struct LlamaCppBackend {
     /// One temporary embedding context is admitted per loaded model.
     pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
+    /// The model's chat templates (its GGUF template, or the catalog's), loaded at the first chat
+    /// turn and kept for every render. `ChatTemplates` is `Send`, not `Sync`: renders take this
+    /// lock and release it before decode. Declared before `model`, so it drops first.
+    pub(super) chat: OnceLock<Result<Mutex<llama::ChatTemplates>, llama::ChatRefusal>>,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
     pub(super) model_id: String,
-    /// The model file's length, read once at load: the weights' bytes the embed lane's working
-    /// set carries (`embed_lane_memory::EmbedNeed`).
-    pub(super) weights_bytes: u64,
+    /// Native weight buffer allocations reported by the loaded model.
+    pub(super) weights: llama::WeightAllocation,
     /// The embed lane's resident claim, made at its first embed and cleared when this backend is
     /// dropped: the embedder's whole need stays reserved between embeds.
     pub(super) embed_residency: OnceLock<crate::inference::embed_lane_memory::EmbedResidency>,
@@ -257,9 +260,6 @@ pub struct LlamaCppBackend {
     /// Lazy-spawned scheduler. Lives behind OnceLock because spawning
     /// touches the Model Arc and we want a single instance per backend.
     pub(super) scheduler: OnceLock<(GenerationAllocation, Result<Scheduler, SchedulerError>)>,
-    /// The model's own chat contract (its jinja template with tools, its native tool-call parse),
-    /// built from the model once at its first tool turn and held for the backend's life.
-    pub(super) chat: OnceLock<Result<llama::ChatTemplates, llama::ChatRefusal>>,
     /// Lazy-loaded multimodal projector. Built on first `generate_with_image`
     /// call from `config.mmproj_path` (so text-only backends pay zero cost).
     /// Sits behind a Mutex<Option<...>> so concurrent first-call requests

@@ -304,7 +304,20 @@ impl Default for ModelParams {
     }
 }
 
+/// Bytes allocated for the loaded model's native weight buffers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WeightAllocation {
+    pub device: u64,
+    pub host: u64,
+}
+
 impl Model {
+    pub fn weight_allocation(&self) -> WeightAllocation {
+        // SAFETY: the model stays loaded throughout this immutable allocation query.
+        let allocation = unsafe { sys::llama_model_weight_allocation(self.ptr.as_ptr()) };
+        WeightAllocation { host: allocation.host as u64, device: allocation.device as u64 }
+    }
+
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
         backend_init();
@@ -444,7 +457,9 @@ impl Model {
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,
+            model: self.ptr,
             _observer: observer_bridge,
+            learn_callbacks: None,
         })
     }
 
@@ -517,6 +532,13 @@ impl Model {
                 .ok()
                 .map(String::from)
         }
+    }
+
+    /// Whether the GGUF carries a chat template: the default one (`name` None) or a named one
+    /// (`tokenizer.chat_template.<name>`, e.g. `tool_use`). Reads the pointer only, no copy.
+    pub fn has_chat_template(&self, name: Option<&std::ffi::CStr>) -> bool {
+        let name = name.map_or(std::ptr::null(), std::ffi::CStr::as_ptr);
+        !unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), name) }.is_null()
     }
 
     /// Convert a token to its UTF-8 string representation.

@@ -24,9 +24,6 @@ impl LlamaCppBackend {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_else(|| "unknown".into()); // unwrap_or_else: a model path with no file stem is named "unknown" in logs and receipts
 
-        let weights_bytes = std::fs::metadata(&config.model_path)
-            .map_err(|e| format!("model file metadata {}: {e}", config.model_path.display()))?
-            .len();
         let load_start = Instant::now();
         let model = Model::load(
             &config.model_path,
@@ -35,6 +32,7 @@ impl LlamaCppBackend {
                 use_mmap: true,
             },
         )?;
+        let weights = model.weight_allocation();
         let caps = ModelCapabilities::from_model(&model);
         log.info(&format!(
             "Loaded {} in {:.2}s (vocab={}, n_ctx_train={}, n_layer={}, \
@@ -51,14 +49,14 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            chat: OnceLock::new(),
             model: Arc::new(model),
             config,
             model_id,
-            weights_bytes,
+            weights,
             embed_residency: OnceLock::new(),
             caps,
             scheduler: OnceLock::new(),
-            chat: OnceLock::new(),
             mtmd: Mutex::new(None),
             loras: Mutex::new(HashMap::new()),
         })
@@ -83,7 +81,7 @@ impl LlamaCppBackend {
     fn embed_need(&self) -> Option<crate::inference::embed_lane_memory::EmbedNeed> {
         let placement = self.placement();
         Some(crate::inference::embed_lane_memory::EmbedNeed {
-            weights: super::resident_weights(self.weights_bytes, placement),
+            weights: super::ContextBytes { device: self.weights.device, host: self.weights.host },
             context: super::EmbedWindow::for_model(self.caps.n_ctx_train)?.context_bytes(placement),
         })
     }
@@ -413,6 +411,35 @@ impl LlamaCppBackend {
         self.model.chat_template()
     }
 
+    /// Render one chat turn through the model's own chat handling (llama.cpp common/chat): the
+    /// OpenAI-shaped `request` (messages, tools, tool_choice) with its tools and reasoning. The
+    /// templates load once, at the first turn, and decide there: a GGUF carrying its default OR its
+    /// named `tool_use` template loads its own (common/chat promotes a lone named one to default,
+    /// and any override would mask it); only a GGUF with neither takes `fallback_template`, which is
+    /// asked for at that one init and never per turn. The lock is held for the render alone, so it
+    /// is released before decode. The returned render keeps its parser for every partial and the
+    /// final parse of this request.
+    pub fn render_chat_turn(
+        &self,
+        request: &str,
+        fallback_template: impl FnOnce() -> Option<String>,
+        reasoning: llama::ReasoningFormat,
+    ) -> Result<llama::ChatRender, llama::ChatRefusal> {
+        let templates = self
+            .chat
+            .get_or_init(|| {
+                let native = self.model.has_chat_template(None) || self.model.has_chat_template(Some(c"tool_use"));
+                let fallback = if native { None } else { fallback_template() };
+                llama::ChatTemplates::new(&self.model, fallback.as_deref()).map(Mutex::new)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        // A render reads the templates and never mutates them, so a lock poisoned by a panicking
+        // render leaves them intact.
+        let templates = templates.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a poisoned render lock guards immutable templates
+        templates.render(request, reasoning)
+    }
+
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self
@@ -461,15 +488,6 @@ impl LlamaCppBackend {
             Ok(scheduler) => Ok(scheduler),
             Err(refused) => Err(refused.to_string()),
         }
-    }
-
-    /// The model's own chat contract, built once: its template rendered with tools, and its native
-    /// tool-call output parsed back. A model llama.cpp cannot build one for is refused by name.
-    pub fn chat_templates(&self) -> Result<&llama::ChatTemplates, String> {
-        self.chat
-            .get_or_init(|| llama::ChatTemplates::for_model(&self.model))
-            .as_ref()
-            .map_err(|refusal| format!("{}: {refusal}", self.model_id))
     }
 
     /// Start the persona scheduler for `allocation` (idempotent) and return its lifecycle.

@@ -231,6 +231,7 @@ impl ServingDaemonModule {
         )
     }
 
+    #[cfg(test)]
     pub(super) fn live_candidates(&self) -> Vec<ModelFootprint> {
         let intent = self.intent.snapshot();
         servable_candidates(&self.catalog.snapshot(), &intent.suppressed, &intent.pinned)
