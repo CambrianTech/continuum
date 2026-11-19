@@ -2814,6 +2814,47 @@ what one of them does is the defect, whatever it measures.
 Before an owner is written: name which of these it instantiates; search for the existing one; a missing capability is
 added to the paradigm (the flow stage's depth, saved-state's `ExternalBlob`), never beside it.
 
+### 4.17 The engine as objects: the map every piece moves onto (2026-11-19, design for review)
+
+Joel, 2026-11-19: "I keep telling you to find patterns and design architecture stop writing slop"; "Idgaf the workload.
+It must be done. This is going to be easier to keep track of and fast." An inventory of the engine path at a985d39b1a
+(file:line receipts in the review thread) found each concept implemented many times: stop/suspend 7 ways, persona
+identity 7 forms, engine configuration 7 structs that disagree (flash attention, fused GDN, sequence count), a turn's time
+measured 6 times, where a mind is encoded 6 ways across 3 owners (`Driver.parked`, `Roles`, `UnifiedTier`), two whole
+decode loops (text and media) with two sampler builders and stop handling in 4 places, two prefill planners, three
+scheduling policies, two `Stage` traits, two `StopsOnExit`. It also found a resume doc claiming a checksum the code
+does not check, and a static sender that keeps the driver from ever exiting. The map below is what each becomes. Every
+row deletes the copies it names; nothing is added beside them.
+
+**Objects (each one owner; each built from 4.16's paradigms):**
+
+| Object | Owns, and nothing else does | Replaces |
+|---|---|---|
+| `MindId { persona: PersonaId, epoch: Epoch }` | a mind's identity, everywhere; the fork's 64-bit stamp is derived from it inside the tier only | raw `Uuid` (`persona_id: Option<Uuid>`, `PreservedMind`, `TurnRow`, `Uuid::nil()` sentinels), `FenceTag`'s and `Activity`'s persona+epoch pairs, the `Identified` trait, the String parse in the adapter |
+| `Mind` (one table, `MindTable`, keyed by `MindId`) | her record (token history, basis, marks and their checkpoints) and her one `Place`: `Bound(stream)`, `Staged`, `Retiring`, `Warm` (native blocks in RAM), `Cold` (on disk) | `Driver.parked`, the driver's `Mind`, the tier's `Mind`, `Saved`, `Rebind`, protocol `Residency`, kv_quant `Residency`, the native token history that is never used on this path |
+| `Roles` | which `MindId` is active, next, retiring (ids only, transitions only) | its own copies of the stage pre-checks in `engine.rs`, the two `present`s, the near-duplicate handoff/retire bodies (one transition function) |
+| `Tier` (the adapter over the context) | the native moves, given a mind's blocks: bind, save, checkpoint, rewind, file write and read; stateless about who is where | `UnifiedTier.streams` and `minds` bookkeeping, its epoch checks repeated at six sites |
+| `EngineConfig` (resolved once, by serving's owner) and `EngineGeometry` (what the context applied) | every setting a context is made with, and what it reported | `SchedulerConfig`, `LlamaCppConfig`'s engine fields, `LlamaCppLaunch`, the adapter's override fields, `Requested`, and the three contradicting values of flash attention, fused GDN and sequence count |
+| `Answer` (protocol `AnswerId`, a token stream) | one answer's lifetime: tokens, stops, end, cancel | `AnswerSeq`, the backend's `block_on` collector with its 2 ms sleep-spin, `spawn_blocking` per turn, `Done.elapsed_ms` |
+| `Emit` | stop sequences and the text of an answer, once | the backend's trailing trim, the media loop's stop check, the adapter's stop-list merge |
+| One decode path | every turn, text or media (a media span is an `Extend`, 4.16) | `generate_with_media`'s own context, sampler builder and EOG/stop/max loop |
+| `Prefill` decision (`reuse::choose`, marks per 4.16) | where a turn starts | `turn::plan` |
+| `frame::pick` | which activity runs next (goal 9's scheduler owns it) | the unused `NextPolicy` |
+| `Record` | every measurement of a step and a turn, derived from ONE span per step; occupancy; turn rows | `Spent` timed beside `Busy` from the same instants, the backend's tok/s log, the adapter's `inference.forward.text` and `generate.exit` tok/s, `report_footprint` twice per turn |
+| `PreservedMinds` (saved-state kind) + blocks through saved-state's `ExternalBlob` medium | what outlives a restart, verified on load | the doc's unchecked checksum claim; the block file path helper becomes the medium |
+| The engine as a `Lifecycle` node | `prepare` (start, resume minds), `suspend` (preserve minds), `release`; its children are its minds; folded by the kernel (Codex) | `EngineSettle`, the static `SUSPENDS` sender (the driver then exits on disconnect again), `Driver::suspend`'s own report type, the three refusal paths (one `stopping` state), both `StopsOnExit` (one, in continuum-flow) |
+| One `Stage` base | kernel `StageRunner` and `continuum-flow::Stage` as one, adapters for the difference (Codex's lane) | two traits |
+
+**Order (each step deploys on the M5 through the guard, read before the next; each deletes what its row names):**
+1. `MindId` and `MindTable` with `Place`: the driver's `parked`, the tier's minds/streams and `Saved`/`Rebind` collapse
+   into it; `Roles` keeps ids. Gate: the turn and switch rows unchanged in value, the three location owners gone.
+2. `EngineConfig` / `EngineGeometry`: one resolution, every context built from it; the contradicting values gone.
+3. `Answer` + `Emit` own stops and streams end to end: the backend collector, its sleep-spin and `spawn_blocking` gone;
+   the media path joins the one decode path (Codex reviews the media chunk descriptor).
+4. `Record` from one span: the five other turn-time measurements gone.
+5. Lifecycle node + `PreservedMinds` over `ExternalBlob`: on Codex's kernel fold; `EngineSettle` and `SUSPENDS` gone.
+6. Prefill and scheduling policy: `turn::plan` and `NextPolicy` gone.
+
 **One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
 artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
 below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
