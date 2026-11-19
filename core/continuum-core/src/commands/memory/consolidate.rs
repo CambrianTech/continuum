@@ -17,7 +17,7 @@
 //! weights before wiring the tick — the methodical "explicit command first, autonomic
 //! second" discipline.
 //!
-//! Zero new serving code: it reuses the corpus read (`data/list`, the hydrate pattern) and
+//! Zero new serving code: it reuses the typed durable memory snapshot and
 //! the producer's [`received_submission_params`] — one payload contract for the
 //! live-turn and received-lesson sources alike.
 
@@ -32,7 +32,6 @@ use crate::genome::training_outcome::SubmitOutcome;
 use crate::log_info;
 use crate::logging::TimingGuard;
 use crate::memory::MemoryRecord;
-use crate::orm::list_result::DataListResult;
 use crate::modules::memory::MemoryState;
 use crate::persona::domain_classifier::DomainClassifier;
 use crate::persona::training_producer::{
@@ -42,6 +41,7 @@ use crate::routing::CallerIdentity;
 use crate::runtime::InProcessTransport;
 use crate::sdk_codegen::CommandError;
 use continuum_client::{ClientError, Connection};
+use continuum_memory::commands::{shared_lessons, SharedLessonSelection};
 
 /// Params for `memory/consolidate`. Flat + CLI-friendly.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -69,17 +69,6 @@ pub struct MemoryConsolidateParams {
     pub since_timestamp: Option<String>,
 }
 
-/// Whether a shared lesson is newer than the resume watermark. Pure so the
-/// watermark contract is unit-testable without the executor. rfc3339 timestamps compare
-/// lexicographically, so a plain `>` is a correct chronological test for same-format
-/// stamps; an absent `since` admits everything (the first, full run).
-pub(crate) fn is_after_watermark(record_ts: &str, since: Option<&str>) -> bool {
-    match since {
-        Some(watermark) => record_ts > watermark,
-        None => true,
-    }
-}
-
 /// What `memory/consolidate` did — a synchronous receipt of the trigger's accepted
 /// submissions. Acceptance can mean buffered examples; it does not prove trained weights.
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -100,59 +89,6 @@ pub struct ConsolidateResult {
     #[serde(default)]
     #[ts(optional)]
     pub latest_consolidated_ts: Option<String>,
-}
-
-/// Decode a complete snapshot before submitting anything. data/list has no default
-/// order or page limit; explicitly requesting ascending order below and checking its
-/// total prevents a capped/partial result from silently advancing past unseen lessons.
-fn shared_lessons_from_list(
-    listed: serde_json::Value,
-    since: Option<&str>,
-) -> Result<Vec<MemoryRecord>, CommandError> {
-    let listed: DataListResult = serde_json::from_value(listed).map_err(|e| {
-        // Decode the Value-native data/list response once; owned rows move into the typed receipt.
-        CommandError::Internal(format!("memory/consolidate: invalid data/list result: {e}"))
-    })?;
-    if listed.items.len() != listed.total as usize {
-        return Err(CommandError::Internal(format!(
-            "memory/consolidate: incomplete shared-lesson snapshot: received {} of {} rows; watermark unchanged",
-            listed.items.len(), listed.total
-        )));
-    }
-    let mut records = Vec::with_capacity(listed.items.len());
-    for (index, item) in listed.items.into_iter().enumerate() {
-        let data = match item {
-            serde_json::Value::Object(mut obj) => obj.remove("data"),
-            _ => None,
-        }
-        .ok_or_else(|| {
-            CommandError::Internal(format!(
-                "memory/consolidate: shared-lesson row {index} has no data; watermark unchanged"
-            ))
-        })?;
-        // Fold only ORM top-level names; move the values rather than cloning the corpus.
-        let data = match data {
-            serde_json::Value::Object(obj) => serde_json::Value::Object(
-                obj.into_iter()
-                    .map(|(k, v)| (crate::orm::adapter::naming::to_snake_case(&k), v))
-                    .collect(),
-            ),
-            other => other,
-        };
-        let record: MemoryRecord = serde_json::from_value(data).map_err(|e| {
-            // Decode one persisted ORM row at corpus hydration; no typed-to-Value round trip.
-            CommandError::Internal(format!(
-                "memory/consolidate: invalid shared-lesson row {index}: {e}; watermark unchanged"
-            ))
-        })?;
-        // Empty lessons are intentionally ineligible, not failed submissions. Validate
-        // the whole snapshot first, then exclude them before grouping or counting.
-        if is_after_watermark(&record.timestamp, since) && !record.content.trim().is_empty() {
-            records.push(record);
-        }
-    }
-    records.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.id.cmp(&b.id)));
-    Ok(records)
 }
 
 /// Commit only complete timestamp groups. A strict timestamp cursor cannot represent
@@ -226,38 +162,14 @@ crate::action_command! {
         let persona_uuid = crate::persona::persona_scope::persona_in(p.persona_id.as_str(), &crate::persona::persona_scope::PersonaCards)
             .map_err(|e| CommandError::Arguments(crate::sdk_codegen::ArgumentsRefusal::id("persona_id", e)))?;
         let canonical_persona: crate::identity::PersonaRef = persona_uuid.to_string().into();
-        let persona_name = p.persona_name.clone().unwrap_or_else(|| persona_uuid.to_string());
+        let persona_name = p.persona_name.as_deref().unwrap_or(canonical_persona.as_str()); // Display name defaults to the resolved persona ID.
 
         let executor = this.state.executor().map_err(CommandError::Internal)?;
 
-        // Read the persona's SHARED lessons from durable truth (the rows memory/share wrote),
-        // filtered server-side to memory_type "shared" — the same data/list path hydrate uses.
-        let mut filter = serde_json::json!({
-            "persona_id": canonical_persona, "memory_type": "shared"
-        });
-        if let Some(since) = &p.since_timestamp {
-            filter["timestamp"] = serde_json::json!({ "$gt": since });
-        }
-        let listed = executor
-            .execute_json(
-                "data/list",
-                serde_json::json!({
-                    "collection": super::MEMORIES_COLLECTION,
-                    "dbPath": super::persona_db_handle(&canonical_persona),
-                    "filter": filter,
-                    "sort": [
-                        { "field": "timestamp", "direction": "asc" },
-                        { "field": "id", "direction": "asc" }
-                    ],
-                }),
-            )
-            .await
-            .map_err(|e| {
-                CommandError::Internal(format!("memory/consolidate: data/list failed: {e}"))
-            })?;
-
-        let records = shared_lessons_from_list(listed, p.since_timestamp.as_deref())?;
-
+        let records = shared_lessons(&this.state, &SharedLessonSelection {
+            persona: &canonical_persona,
+            since_timestamp: p.since_timestamp.as_deref(),
+        }).await?;
         // Dispatch AS the persona: its LocalPersona identity gates the Privileged submit,
         // exactly like the live-turn producer ([[persona-is-a-client]]).
         let conn = Connection::new(InProcessTransport::new(
@@ -270,7 +182,6 @@ crate::action_command! {
         let result = consolidate_in_order(&records, persona_uuid, &p.base_model, |record| {
             let conn = &conn;
             let classifier = &classifier;
-            let persona_name = &persona_name;
             let base_model = &p.base_model;
             async move {
                 let params = received_submission_params(
@@ -293,34 +204,10 @@ crate::action_command! {
 
 #[cfg(test)]
 mod tests {
-    use super::{consolidate_in_order, is_after_watermark, shared_lessons_from_list};
+    use super::consolidate_in_order;
     use crate::persona::training_producer::submit_training;
     use continuum_client::{mock::MockTransport, ClientError, Connection};
     use serde_json::json;
-
-    // what this catches: the resume cursor excludes completed timestamp groups;
-    // failed or partial groups must remain above that cursor for the next run.
-    #[test]
-    fn watermark_admits_only_strictly_newer_lessons() {
-        // First run: no watermark → every lesson is a candidate.
-        assert!(is_after_watermark("2026-07-26T00:00:00Z", None));
-
-        // A lesson strictly newer than the watermark is admitted...
-        assert!(is_after_watermark(
-            "2026-07-26T12:00:00Z",
-            Some("2026-07-26T08:00:00Z")
-        ));
-        // ...one AT the watermark is not (already consolidated on the run that set it)...
-        assert!(!is_after_watermark(
-            "2026-07-26T08:00:00Z",
-            Some("2026-07-26T08:00:00Z")
-        ));
-        // ...and an older one is not (a re-run must not re-train it).
-        assert!(!is_after_watermark(
-            "2026-07-25T23:59:59Z",
-            Some("2026-07-26T08:00:00Z")
-        ));
-    }
 
     // what this catches: card 3eaabbc6 — a later success must never move the cursor
     // over an earlier refusal, including an accepted sibling with the same timestamp.
@@ -342,15 +229,21 @@ mod tests {
         ]
         .into_iter()
         .map(|(id, timestamp, content)| {
-            json!({ "data": super::super::share::build_shared_record(
-                "recipient", "teacher", content.to_string(), "scope", None, 0.6,
-                id.to_string(), timestamp.to_string(),
-            ) })
+            super::super::share::build_shared_record(
+                "recipient",
+                "teacher",
+                content.to_string(),
+                "scope",
+                None,
+                0.6,
+                id.to_string(),
+                timestamp.to_string(),
+            )
         })
         .collect::<Vec<_>>();
-        let records =
-            shared_lessons_from_list(json!({ "total": items.len(), "items": items }), None)
-                .expect("complete valid snapshot");
+        let mut records = items;
+        records.retain(|record| !record.content.trim().is_empty());
+        records.sort_unstable_by(|a, b| a.timestamp.cmp(&b.timestamp).then(a.id.cmp(&b.id)));
         assert_eq!(
             records.len(),
             4,
@@ -460,24 +353,5 @@ mod tests {
             assert_eq!(result.consolidated, accepted);
             assert_eq!(result.latest_consolidated_ts.as_deref(), watermark);
         }
-    }
-
-    // what this catches: card 3eaabbc6 — a silently truncated or malformed data/list
-    // snapshot must fail before any submit, rather than skip a row and advance past it.
-    #[test]
-    fn invalid_or_partial_lesson_snapshots_cannot_advance_a_watermark() {
-        for listed in [
-            json!({ "items": [], "total": 1 }),
-            json!({ "items": [{}], "total": 1 }),
-            json!({ "items": [{ "data": { "timestamp": "2026-09-08T00:00:00Z" } }], "total": 1 }),
-            json!({ "items": [] }),
-        ] {
-            assert!(shared_lessons_from_list(listed, None).is_err());
-        }
-        assert!(
-            shared_lessons_from_list(json!({ "items": [], "total": 0 }), None)
-                .expect("empty complete snapshot")
-                .is_empty()
-        );
     }
 }

@@ -253,7 +253,7 @@ pub async fn stage_credit<T: Transport>(
     // and uncertain predecessors. Children cascade in the same transaction.
 
     for collection in [StagedCredit::COLLECTION, StagedCreditGeneration::COLLECTION] {
-        let result = conn
+        conn
             .commands()
             .execute_value(
                 "data/ensure-schema",
@@ -267,7 +267,6 @@ pub async fn stage_credit<T: Transport>(
                 json!({ "collection": collection, "dbPath": handle }),
             )
             .await?;
-        storage_ok(&result, "data/ensure-schema", collection)?;
     }
 
     // The ordered receipts remain authoritative. A single scalar is meaningful
@@ -296,19 +295,13 @@ pub async fn stage_credit<T: Transport>(
         .filter(|id| **id != submission_id)
         .chain(std::iter::once(&submission_id))
     {
-        operations.push(BatchOperation {
-            operation_type: BatchOperationType::Delete,
-            collection: StagedCredit::COLLECTION.to_string(),
-            id: Some(prev.to_string()),
-            data: None,
-        });
+        operations.push(BatchOperation::Delete(RowKey { collection: StagedCredit::COLLECTION.to_string(), id: prev.to_string() }));
     }
-    operations.push(BatchOperation {
-        operation_type: BatchOperationType::Create,
+    operations.push(BatchOperation::Create(RowWrite {
         collection: StagedCredit::COLLECTION.to_string(),
-        id: Some(submission_id.to_string()),
-        data: Some(serde_json::to_value(&parent)?), // ORM batch boundary: BatchOperation.data is Value by contract
-    });
+        id: submission_id.to_string(),
+        data: serde_json::to_value(&parent)?, // ORM batch boundary: RowWrite.data is Value by contract
+    }));
     // One correlation row per generation, faults included: the receipts themselves
     // ride on the parent as an opaque JSON column (the ORM has no collection
     // FieldType), so these child rows ARE the index that column cannot carry.
@@ -318,15 +311,14 @@ pub async fn stage_credit<T: Transport>(
             staged_credit_id: submission_id,
             submitted_request_id: receipt.submitted_request_id.clone(),
         };
-        operations.push(BatchOperation {
-            operation_type: BatchOperationType::Create,
+        operations.push(BatchOperation::Create(RowWrite {
             collection: StagedCreditGeneration::COLLECTION.to_string(),
-            id: Some(child.id.to_string()),
-            data: Some(serde_json::to_value(&child)?), // ORM batch boundary: BatchOperation.data is Value by contract
-        });
+            id: child.id.to_string(),
+            data: serde_json::to_value(&child)?, // ORM batch boundary: RowWrite.data is Value by contract
+        }));
     }
 
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/batch",
@@ -335,7 +327,6 @@ pub async fn stage_credit<T: Transport>(
             json!({ "operations": operations, "dbPath": handle }),
         )
         .await?;
-    storage_ok(&result, "data/batch", StagedCredit::COLLECTION)?;
     Ok(submission_id)
 }
 
@@ -474,47 +465,6 @@ pub(super) fn served_provenance(
     })
 }
 
-/// Fail on a command that SUCCEEDED AS A CALL and FAILED AS AN OPERATION.
-///
-/// `execute_value` returns `Ok` for anything that made the round trip, and the data
-/// commands report adapter failure INSIDE the payload as
-/// `StorageResult { success: false, error }` — which `InProcessTransport` forwards
-/// unchanged. So `.await?` catches a broken transport and nothing else: a child
-/// constraint violation rolls the whole batch back, the call still returns `Ok`, and
-/// without this the caller emitted `training.credit.staged` with a submission id for
-/// rows that do not exist (Astra/S6 on 799b8fe9). Transport success is not operation
-/// success, and a receipt that cannot report failure is not a receipt.
-pub fn storage_ok(
-    value: &serde_json::Value,
-    command: &str,
-    collection: &str,
-) -> Result<(), ClientError> {
-    // Decoded as the TYPED result the data layer actually returns, not by poking at a
-    // "success" key: a shape change should break the build here rather than silently
-    // read as false and start rejecting every staging attempt.
-    let decoded: crate::orm::types::StorageResult<serde_json::Value> =
-        serde_json::from_value(value.clone())?; // ORM boundary: decode the data layer's typed StorageResult
-    if decoded.success {
-        return Ok(());
-    }
-    // `Refused` is the variant whose own doc says "substrate accepted the command but
-    // returned an error" — which is precisely this: the call arrived, the operation
-    // did not happen.
-    Err(ClientError::Refused {
-        command: command.to_string(),
-        outcome: None,
-        refusal: None,
-        reason: format!(
-            "`{collection}`: {}",
-            decoded
-                .error
-                .as_deref()
-                // An unsuccessful result with no message is still a failure. Saying so
-                // beats inventing a reason or, worse, reading the silence as success.
-                .unwrap_or("reported success=false with no error message"), // unwrap_or: the failure stands with or without its message
-        ),
-    })
-}
 
 pub async fn submit_training<T: Transport>(
     conn: &Connection<T>,

@@ -130,6 +130,7 @@ impl OrmEntity for HwTierDescriptor {
         // record's UUID `id` (BaseEntity primary).
         fields.extend(vec![
             SchemaField {
+                default_value: None,
                 name: "tierId".to_string(),
                 field_type: FieldType::String,
                 indexed: true,
@@ -139,6 +140,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "label".to_string(),
                 field_type: FieldType::String,
                 indexed: false,
@@ -150,6 +152,7 @@ impl OrmEntity for HwTierDescriptor {
             // category is indexed for tier-bucket queries
             // ("give me all Pro tiers").
             SchemaField {
+                default_value: None,
                 name: "category".to_string(),
                 field_type: FieldType::String,
                 indexed: true,
@@ -159,6 +162,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "localVideoCapable".to_string(),
                 field_type: FieldType::Boolean,
                 indexed: false,
@@ -168,6 +172,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "minParamsBMeaningful".to_string(),
                 field_type: FieldType::Number,
                 indexed: false,
@@ -177,6 +182,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "maxParamsBFits".to_string(),
                 field_type: FieldType::Number,
                 indexed: false,
@@ -186,6 +192,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "unifiedMemoryGib".to_string(),
                 field_type: FieldType::Number,
                 indexed: false,
@@ -195,6 +202,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "discreteVramGib".to_string(),
                 field_type: FieldType::Number,
                 indexed: false,
@@ -204,6 +212,7 @@ impl OrmEntity for HwTierDescriptor {
                 foreign_key: None,
             },
             SchemaField {
+                default_value: None,
                 name: "note".to_string(),
                 field_type: FieldType::String,
                 indexed: false,

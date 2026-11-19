@@ -25,7 +25,7 @@ use uuid::Uuid;
 
 use crate::cognition::conversation::IncomingMessage;
 use crate::orm::OrmEntity;
-use crate::persona::training_producer::{storage_ok, substrate_connection};
+use crate::persona::training_producer::substrate_connection;
 use crate::runtime::CommandExecutor;
 use continuum_client::{ClientError, Connection, Transport};
 
@@ -102,18 +102,18 @@ fn handle(persona_name: &str) -> String {
 }
 
 pub async fn ensure_storage<T: Transport>(conn: &Connection<T>, persona_name: &str) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/ensure-schema",
             json!({ "collection": PersonaObligation::COLLECTION, "dbPath": handle(persona_name) }),
         )
         .await?;
-    storage_ok(&result, "data/ensure-schema", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn record<T: Transport>(conn: &Connection<T>, persona_name: &str, row: &PersonaObligation) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/create",
@@ -125,45 +125,26 @@ pub async fn record<T: Transport>(conn: &Connection<T>, persona_name: &str, row:
             }),
         )
         .await?;
-    storage_ok(&result, "data/create", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn close<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/delete",
             json!({ "collection": PersonaObligation::COLLECTION, "id": id, "dbPath": handle(persona_name) }),
         )
         .await?;
-    storage_ok(&result, "data/delete", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
-/// Every open row of one persona, oldest first. A short page is refused rather than read as
-/// complete: `total` must equal what came back.
+/// Reconcile every open obligation through bounded identity pages, then restore
+/// admission order for replay. Recovery needs each trigger, never a clipped view.
 pub async fn open<T: Transport>(conn: &Connection<T>, persona_name: &str, persona_id: Uuid) -> Result<Vec<PersonaObligation>, ClientError> {
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": PersonaObligation::COLLECTION,
-                "dbPath": handle(persona_name),
-                "filter": { "personaId": persona_id.to_string() },
-                "sort": [{ "field": "admittedAtMs", "direction": "asc" }],
-            }),
-        )
-        .await?;
-    let listed: crate::orm::list_result::DataListResult = serde_json::from_value(value)?; // ORM boundary: the typed list result
-    whole_page(listed.items.len(), listed.total as usize)?;
-    listed
-        .items
-        .into_iter()
-        .map(|item| {
-            let record: crate::orm::types::DataRecord = serde_json::from_value(item)?; // ORM boundary
-            Ok(record.decode()?) // ORM boundary: the row as written
-        })
-        .collect()
+    let mut rows: Vec<PersonaObligation> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &handle(persona_name), collection: PersonaObligation::COLLECTION, filter: &serde_json::Map::from_iter([("personaId".into(), json!(persona_id.to_string()))]), select: None }).await?;
+    rows.sort_by_key(|row| (row.admitted_at_ms, row.id));
+    Ok(rows)
 }
 
 /// A short page is refused, never read as complete: which turns a stop interrupted cannot be
@@ -194,6 +175,7 @@ pub async fn find<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uu
                 "collection": PersonaObligation::COLLECTION,
                 "dbPath": handle(persona_name),
                 "filter": { "id": id.to_string() },
+                "limit": 1,
             }),
         )
         .await?;
@@ -233,7 +215,7 @@ pub async fn admit_reconciled<T: Transport>(conn: &Connection<T>, persona_name: 
 /// Record an effect on a turn's row before it happens: the first sets `effectAtMs`, and each
 /// appends to `effects`. Replaces the whole list with `all`, the mark's in-memory record.
 pub async fn mark_effect<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, first_at_ms: u64, all: &[RecordedEffect]) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/update",
@@ -245,11 +227,11 @@ pub async fn mark_effect<T: Transport>(conn: &Connection<T>, persona_name: &str,
             }),
         )
         .await?;
-    storage_ok(&result, "data/update", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: &str, id: Uuid, now_ms: u64) -> Result<(), ClientError> {
-    let result = conn
+    conn
         .commands()
         .execute_value(
             "data/update",
@@ -261,7 +243,7 @@ pub async fn mark_interrupted<T: Transport>(conn: &Connection<T>, persona_name: 
             }),
         )
         .await?;
-    storage_ok(&result, "data/update", PersonaObligation::COLLECTION)
+    Ok(())
 }
 
 /// What a start found: the rows a stop or crash interrupted, and how many of them this start
@@ -449,6 +431,29 @@ mod tests {
             room_id: room,
             work: None,
         }
+    }
+
+    #[tokio::test]
+    async fn recovery_pages_by_identity_and_replays_by_admission_time() -> Result<(), ClientError> {
+        let persona = Uuid::new_v4();
+        let room = Uuid::new_v4();
+        let size = crate::orm::query::default_page_size();
+        let rows: Vec<_> = (0..=size).map(|n| PersonaObligation::admitted_as(
+            Uuid::from_u128(n as u128 + 1), persona, room, &message(room), None, (size - n) as u64,
+        )).collect();
+        let mock = continuum_client::mock::MockTransport::new();
+        for page in rows.chunks(size) {
+            let items: Vec<_> = page.iter().map(|row| json!({
+                "id": row.id, "collection": PersonaObligation::COLLECTION, "data": row,
+                "metadata": {"createdAt":"now", "updatedAt":"now", "version":1}
+            })).collect();
+            mock.respond_with("data/list", json!({"items":items,"total":size+1}));
+        }
+        let recovered = open(&Connection::new(mock), "fixture", persona).await?;
+        assert_eq!(recovered.len(), size + 1);
+        assert_eq!(recovered.first().map(|row| row.id), rows.last().map(|row| row.id));
+        assert!(recovered.windows(2).all(|pair| pair[0].admitted_at_ms < pair[1].admitted_at_ms));
+        Ok(())
     }
 
     // what this catches: a start re-reporting what an earlier start already reported, so the

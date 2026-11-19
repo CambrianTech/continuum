@@ -1,11 +1,15 @@
 use super::*;
 
+/// The backend a cutover leaves and the one it moves to, named so they cannot be swapped.
+pub(crate) struct ConnectionSwap {
+    pub(crate) current: String,
+    pub(crate) target: String,
+}
+
 impl DataState {
 
     /// Backfill vectors - generate embeddings for records missing them
     ///
-    /// Uses batch embedding generation for efficiency (10x faster than single).
-    /// Processes in configurable batch sizes to manage memory.
     /// Generate embeddings for records in a collection that lack one, in batches.
     /// `text_field` names the field to embed; `filter` narrows the records;
     /// `model` is advisory (the gateway selects the served embed model).
@@ -22,6 +26,9 @@ impl DataState {
         require_public_collection(collection)?;
         require_field_name(text_field)?;
         require_query_fields(&filter, &None, &None)?;
+        if batch_size == 0 {
+            return Err("vector/backfill: batch_size must be positive".into());
+        }
         use std::time::Instant;
         let start = Instant::now();
 
@@ -49,55 +56,75 @@ impl DataState {
 
         let (scope, adapter) = self.adapter_with_identity(handle).await?;
 
-        // Query all records from collection
-        let query = StorageQuery {
-            collection: collection.to_string(),
-            filter: filter.clone(),
-            ..Default::default()
+        use crate::orm::query::QueryOperator;
+        use super::vector_corpus::EMBEDDING_FIELD;
+        use super::vector_index::{unit_f32, EmbedderId, Producer};
+        let producer = Producer::Embedder(EmbedderId::new(embedder.id()));
+        // Intersect with the caller's predicate; never overwrite it or fetch a
+        // binary body merely to discover that this record already has one.
+        let with_embedding = |condition| {
+            let mut fields = filter.clone().unwrap_or_default(); // no caller predicate is the empty conjunction
+            let condition = match fields.remove(EMBEDDING_FIELD) {
+                Some(FieldFilter::Value(value)) => QueryOperator::And(vec![QueryOperator::Eq(value), condition]),
+                Some(FieldFilter::Operator(existing)) => QueryOperator::And(vec![existing, condition]),
+                None => condition,
+            };
+            fields.insert(EMBEDDING_FIELD.to_owned(), FieldFilter::Operator(condition));
+            Some(fields)
         };
-        let query_result = adapter.query(query).await;
-        if !query_result.success {
-            return Err(query_result
-                .error
-                .unwrap_or_else(|| "Query failed".to_string()));
-        }
+        let missing_filter = with_embedding(QueryOperator::IsNull);
+        let mut skipped = adapter.count(&StorageQuery {
+            collection: collection.into(), filter: with_embedding(QueryOperator::IsNotNull),
+            ..Default::default()
+        }).await.map_err(|e| e.to_string())?;
 
-        let records = query_result.data.unwrap_or_default();
-        let total = records.len();
+        let mut cursor = None;
+        let mut total = skipped;
         let mut processed = 0usize;
         let mut failed = 0usize;
-        let mut skipped = 0usize;
 
         log_info!(
             "data",
             "vector/backfill",
-            "Starting backfill for {} records in {}",
-            total,
+            "Starting paged backfill in {}",
             collection
         );
 
-        // Process in batches for memory efficiency
-        for chunk in records.chunks(batch_size) {
+        // Read only the caller's batch at a time. An id cursor remains valid
+        // when writing an embedding removes a row from the caller's filter.
+        // This is a live scan, not a database snapshot across model calls.
+        loop {
+            let query = StorageQuery {
+                collection: collection.to_string(),
+                filter: missing_filter.clone(),
+                select: Some(vec![text_field.to_owned()]),
+                sort: Some(vec![SortSpec { field: "id".into(), direction: SortDirection::Asc }]),
+                limit: Some(batch_size),
+                cursor: cursor.take(),
+                ..Default::default()
+            };
+            let chunk = adapter.query(&query).await.map_err(|e| e.to_string())?;
+            let Some(last) = chunk.last() else { break };
+            cursor = Some(crate::orm::query::Cursor {
+                field: "id".into(),
+                value: json!(last.id),
+                direction: crate::orm::query::CursorDirection::After,
+            });
+            total += chunk.len();
             // Collect texts that need embeddings
             let mut texts_to_embed: Vec<(usize, &str)> = Vec::new();
 
             for (i, record) in chunk.iter().enumerate() {
-                // Check if already has embedding
-                if let Some(embedding) = record.data.get("embedding") {
-                    if !embedding.is_null() {
-                        skipped += 1;
-                        continue;
-                    }
-                }
-
                 // Extract text from specified field
                 if let Some(text) = record.data.get(text_field) {
                     if let Some(text_str) = text.as_str() {
                         if !text_str.is_empty() {
                             texts_to_embed.push((i, text_str));
+                            continue;
                         }
                     }
                 }
+                skipped += 1;
             }
 
             if texts_to_embed.is_empty() {
@@ -123,27 +150,44 @@ impl DataState {
 
                 let record = &chunk[*idx];
 
-                // Convert f32 to f64 for JSON
-                let embedding_f64: Vec<f64> = embedding.iter().map(|&v| v as f64).collect();
-
-                let update_data = json!({
-                    "embedding": embedding_f64
-                });
+                // The producer's one normalization, fused into the one copy that moves its
+                // f32 output into the payload: `unit = true` is certified here, so search
+                // scores this row with one dot product and never normalizes it again.
+                let payload = match unit_f32(embedding.iter().copied(), &producer) {
+                    Ok(payload) => payload,
+                    Err(error) => {
+                        log_error!(
+                            "data",
+                            "vector/backfill",
+                            "embedder output for record {} in {} cannot be stored: {}",
+                            record.id,
+                            collection,
+                            error
+                        );
+                        failed += 1;
+                        continue;
+                    }
+                };
 
                 let update_result = adapter
-                    .update(collection, &record.id, update_data, false)
+                    .update_binary(crate::orm::seam::BinaryWrite {
+                        row: crate::orm::seam::RowRef { collection, id: &record.id },
+                        payloads: std::collections::BTreeMap::from([(EMBEDDING_FIELD.to_owned(), payload)]),
+                        condition: crate::orm::binary::BinaryWriteCondition::IfAbsent,
+                    })
                     .await;
 
-                if update_result.success {
-                    processed += 1;
-                } else {
-                    failed += 1;
+                match update_result {
+                    Ok(crate::orm::seam::BinaryWritten::Written) => {
+                        processed += 1;
+                        // Keep completed writes visible even if a later page fails.
+                        self.vector_cache.invalidate(&scope, collection);
+                    }
+                    Ok(crate::orm::seam::BinaryWritten::Unchanged) => skipped += 1,
+                    Err(_) => failed += 1,
                 }
             }
         }
-
-        // Invalidate vector cache since we modified embeddings
-        self.vector_cache.invalidate(&scope, collection);
 
         let total_ms = start.elapsed().as_millis();
         log_info!(
@@ -189,11 +233,14 @@ impl DataState {
     ///
     /// Advantages over the TypeScript path:
     /// - No IPC overhead per page (state is Rust-side)
-    /// - Cursor-based pagination using last ID (faster than OFFSET for large datasets)
+    /// - Server-owned page state (currently OFFSET-based; not a keyset cursor)
     /// - DashMap for concurrent query state (lock-free reads)
     pub(super) async fn handle_query_open(&self, params: QueryOpenParams) -> Result<CommandResult, String> {
+        if params.page_size == 0 || params.page_size.checked_add(1).is_none() {
+            return Err("data/query-open: pageSize must be positive and leave room for the next-row probe".into());
+        }
         require_public_collection(&params.collection)?;
-        require_query_fields(&params.filter, &params.sort, &None)?;
+        require_query_fields(&params.filter, &params.sort, &params.select)?;
         use std::time::Instant;
         let start = Instant::now();
 
@@ -210,7 +257,7 @@ impl DataState {
                 filter: params.filter.clone(),
                 ..Default::default()
             };
-            adapter.count(count_query).await.data.unwrap_or(0) as u64
+            adapter.count(&count_query).await.map_err(|e| e.to_string())? as u64
         } else {
             0
         };
@@ -238,6 +285,7 @@ impl DataState {
             collection: params.collection.clone(),
             filter: params.filter,
             sort: params.sort,
+            select: params.select,
             page_size: params.page_size,
             total_count,
             current_page: 0,
@@ -296,8 +344,8 @@ impl DataState {
     /// either the typed envelope's `handle` (new canonical) or the
     /// legacy `queryId` field (back-compat).
     ///
-    /// Uses keyset pagination (WHERE id > cursor) instead of OFFSET for performance.
-    /// For sorted queries, combines sort column(s) with id for deterministic ordering.
+    /// Uses server-owned OFFSET pagination. Concurrent writes can change page membership;
+    /// this is not yet a stable keyset cursor.
     pub(super) async fn handle_query_next(
         &self,
         req: CommandRequest<QueryNextParams>,
@@ -350,6 +398,7 @@ impl DataState {
         let collection = state.collection.clone();
         let filter = state.filter.clone();
         let sort = state.sort.clone();
+        let select = state.select.clone();
         let page_size = state.page_size;
         let total_count = state.total_count;
         let current_page = state.current_page;
@@ -375,22 +424,23 @@ impl DataState {
         // formula `offset + items_count < total_count`, which was both
         // wrong under concurrent inserts (total_count goes stale mid-iter)
         // and required the open-time COUNT(*) we just stopped paying for.
-        let offset = current_page * page_size;
+        let offset = current_page.checked_mul(page_size)
+            .ok_or("data/query-next: page offset exceeds the supported range")?;
+        let probe_limit = page_size.checked_add(1)
+            .ok_or("data/query-next: page size cannot include the next-row probe")?;
+        let next_page = current_page.checked_add(1)
+            .ok_or("data/query-next: page number exceeds the supported range")?;
         let query = StorageQuery {
             collection: collection.clone(),
             filter: filter.clone(),
             sort: sort.clone(),
-            limit: Some(page_size + 1),
+            limit: Some(probe_limit),
             offset: Some(offset),
+            select,
             ..Default::default()
         };
 
-        let result = adapter.query(query).await;
-        if !result.success {
-            return Err(result.error.unwrap_or_else(|| "Query failed".to_string()));
-        }
-
-        let mut records = result.data.unwrap_or_default();
+        let mut records = adapter.query(&query).await.map_err(|e| e.to_string())?;
         let new_has_more = records.len() > page_size;
         if new_has_more {
             records.truncate(page_size);
@@ -404,7 +454,7 @@ impl DataState {
         // `MutexGuard` from the top of the function, so this write is
         // atomic with the read above. No second DashMap lookup needed;
         // the per-cursor mutex held the whole window.
-        state.current_page += 1;
+        state.current_page = next_page;
         state.cursor_id = new_cursor_id;
         state.has_more = new_has_more;
         drop(state);
@@ -490,22 +540,13 @@ impl DataState {
     /// source for the typed `migration/start` command.
     pub(crate) async fn migration_start(
         &self,
-        source: String,
-        target: String,
-        batch_size: usize,
-        throttle_ms: u64,
-        collections: Option<Vec<String>>,
+        source: &str,
+        target: &str,
+        config: MigrationConfig,
     ) -> Result<MigrationProgress, String> {
         // Get or create adapters for source and target
-        let source_adapter = self.get_adapter(&source).await?;
-        let target_adapter = self.get_adapter(&target).await?;
-
-        let config = MigrationConfig {
-            batch_size,
-            throttle_ms,
-            collections,
-        };
-
+        let source_adapter = self.get_adapter(source).await?;
+        let target_adapter = self.get_adapter(target).await?;
         let mut engine = MigrationEngine::new(source_adapter, target_adapter, config);
         let handle = engine.handle();
 
@@ -513,17 +554,14 @@ impl DataState {
         *self.active_migration.lock().await = Some(handle.clone());
 
         // Spawn migration as background task — returns immediately
+        log_info!(
+            "data", "migration/start", "Background migration started: {} -> {}",
+            source, target
+        );
         tokio::spawn(async move {
-            log_info!(
-                "data",
-                "migration/start",
-                "Background migration started: {} -> {}",
-                source,
-                target
-            );
             match engine.run().await {
                 Ok(status) => {
-                    log_info!("data", "migration/start", "Migration completed: {}", status);
+                    log_info!("data", "migration/start", "Migration completed: {:?}", status);
                 }
                 Err(e) => {
                     log_error!("data", "migration/start", "Migration failed: {}", e);
@@ -576,7 +614,7 @@ impl DataState {
     pub(crate) async fn migration_verify(&self) -> Result<MigrationVerification, String> {
         let guard = self.active_migration.lock().await;
         match guard.as_ref() {
-            Some(handle) => handle.verify().await,
+            Some(handle) => handle.verify().await.map_err(|e| e.to_string()),
             None => Err("No active migration".into()),
         }
     }
@@ -584,11 +622,8 @@ impl DataState {
     /// Cutover: swap the active adapter for a new connection string, redirecting
     /// all subsequent operations to the new backend. Single source for
     /// `migration/cutover`.
-    pub(crate) async fn migration_cutover(
-        &self,
-        current: String,
-        target: String,
-    ) -> Result<MigrationCutover, String> {
+    pub(crate) async fn migration_cutover(&self, swap: ConnectionSwap) -> Result<MigrationCutover, String> {
+        let ConnectionSwap { current, target } = swap;
         // Store current for rollback
         *self.previous_connection.lock().await = Some(current.clone());
 

@@ -216,7 +216,9 @@
         );
         // A failed boot open must leave the same owner retryable, not mark an
         // empty catalog ready or require a second registry after disk recovery.
-        let unavailable = Arc::new(crate::orm::sqlite::SqliteAdapter::new());
+        let mut closed = crate::orm::SeaOrmAdapter::connect(crate::orm::adapter::AdapterConfig { connection_string: ":memory:".into(), ..Default::default() }).await.expect("test: open temporary store");
+        crate::orm::StorageAdapter::close(&mut closed).await.expect("test: close store before admission");
+        let unavailable = Arc::new(closed);
         assert!(first.open_records(unavailable).await.is_err());
         assert!(first.admit(later.path()).await.is_err());
         first.open_records(adapter.clone()).await.unwrap();

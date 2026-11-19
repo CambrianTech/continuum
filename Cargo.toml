@@ -300,8 +300,9 @@ candle-transformers = { version = "0.9" }
 serde = { version = "1", features = ["derive", "rc"] } # rc: a tool surface is one shared Arc<[NativeToolSpec]> from build to request, never copied per act (card 9cf06ade)
 serde_json = { version = "1", features = ["raw_value"] } # raw_value: a derived field is held as its exact text until decoded, so u128 ids never pass through Value (#5659)
 
-# Database
-rusqlite = { version = "0.38", features = ["bundled"] }
+# Storage: shared versions; provider/runtime features belong to the consuming owner.
+# SeaORM owns relational storage; callers use its typed boundary.
+sea-orm = { version = "1.1.20", default-features = false }
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -311,7 +312,7 @@ tokio-stream = "0.1"
 
 # Timing and UUIDs (for JTAG protocol)
 chrono = "0.4"
-uuid = { version = "1.6", features = ["v4", "v5", "serde"] }
+uuid = { version = "1.6", features = ["v4", "v5", "v7", "serde"] }
 
 # Safetensors for model/adapter weights
 safetensors = "0.7"

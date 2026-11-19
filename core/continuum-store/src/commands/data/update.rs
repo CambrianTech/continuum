@@ -3,7 +3,8 @@
 use std::sync::Arc;
 
 use crate::data::DataState;
-use crate::orm::types::{DataRecord, StorageResult, UUID};
+use crate::orm::seam::Versioning;
+use crate::orm::types::{DataRecord, UUID};
 
 /// Params for `data/update`.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, ts_rs::TS, schemars::JsonSchema)]
@@ -20,17 +21,18 @@ pub struct DataUpdateParams {
     /// The new record body (collection-specific shape).
     #[ts(type = "unknown")]
     pub data: serde_json::Value,
-    /// Bump the record's version on write (optimistic-concurrency aware stores).
+    /// Whether the write moves the record's version (optimistic-concurrency aware stores); kept
+    /// unless the caller says otherwise.
     #[serde(default)]
-    pub increment_version: bool,
+    pub versioning: Versioning,
     /// Storage handle. Defaults to "main" (the shared DB). Power callers may pass
     /// a specific store. Accepts the legacy `dbPath` field name as an alias.
     // `dbPath` on the wire, NOT `handle`: the envelope owns that name and refuses a
     // string for it (`expected struct HandleRef`) — card ea28d2f6. The Rust field keeps
     // its name; only the wire changes.
-    #[serde(default, rename = "dbPath", skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub handle: Option<String>,
+    #[serde(default, rename = "dbPath", skip_serializing_if = "crate::data::StoreHandle::is_main")]
+    #[ts(optional, as = "Option<crate::data::StoreHandle>")]
+    pub handle: crate::data::StoreHandle,
 }
 
 crate::action_command! {
@@ -40,12 +42,12 @@ crate::action_command! {
     name: "data/update",
     access: Privileged,
     params: DataUpdateParams,
-    output: StorageResult<DataRecord>,
+    output: DataRecord,
     run(this, _ctx, p) => {
-        let handle = p.handle.as_deref().unwrap_or("main");
+        let handle = p.handle.as_str();
         let result = this
             .state
-            .update_record(handle, p.collection, p.id, p.data, p.increment_version)
+            .update_record(handle, &p.collection, &p.id, p.data, p.versioning)
             .await?;
         Ok(result)
     }

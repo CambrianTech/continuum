@@ -26,6 +26,7 @@ pub mod embedding;
 pub mod recall;
 pub mod timeline;
 pub mod types;
+pub mod persistent;
 
 pub use cache::MemoryCache;
 pub use consciousness::build_consciousness_context;
@@ -246,6 +247,12 @@ impl PersonaMemoryManager {
                 MemoryError(format!("Failed to acquire read lock for {persona_id}: {e}"))
             })?;
 
+            // Validate under the same read custody used for scoring: an append during
+            // the embedding await cannot introduce an unchecked representation.
+            if had_query_embedding && !corpus.memory_embeddings.accepts(self.embedding.id()) {
+                return Err(MemoryError("memory embeddings and query embedder belong to different spaces".into()));
+            }
+
             let query = RecallQuery {
                 query_text: req.query_text.clone(),
                 query_embedding,
@@ -322,7 +329,7 @@ impl PersonaMemoryManager {
             corpus
                 .memories
                 .iter()
-                .filter(|m| !corpus.memory_embeddings.contains_key(&m.id))
+                .filter(|m| corpus.memory_embeddings.get(&m.id).is_none())
                 .take(MAX_PER_CALL)
                 .map(|m| (m.id.clone(), m.content.clone()))
                 .collect()
@@ -355,7 +362,7 @@ impl PersonaMemoryManager {
         if n > 0 {
             if let Ok(mut corpus) = corpus_lock.write() {
                 for (id, v) in embedded {
-                    corpus.memory_embeddings.insert(id, v);
+                    corpus.memory_embeddings.insert(id, types::MemoryEmbedding { values: v, producer: continuum_store::data::vector_index::EmbedderId::new(self.embedding.id()) });
                 }
             }
         }
@@ -524,7 +531,12 @@ mod tests {
                 origin_node: None,
                 origin_seq: None,
             },
-            embedding: Some(vec![0.1; 384]),
+            embedding: Some(types::MemoryEmbedding {
+                values: vec![0.1; 384],
+                producer: continuum_store::data::vector_index::EmbedderId::new(
+                    StubEmbeddingProvider.id(),
+                ),
+            }),
         }
     }
 

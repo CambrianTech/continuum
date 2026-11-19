@@ -4,16 +4,13 @@ use super::*;
 /// ([`counted_outcome`](super::counted_outcome)), so a registration replay re-decides it and counts
 /// nothing more. `Accepted` is counted where the acceptance is written ([`settle_passed`]), the
 /// only place that knows this decision settled it.
-pub(super) async fn consume_review_credit<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+pub(super) async fn consume_review_credit<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
-    let decided = decide_review_credit(conn, persona_name, persona_id, room_id, board, review_id, self_review).await;
+    let ReviewSelection { persona_name, persona_id, review_id, .. } = *selection;
+    let conn = connections.citizen;
+    let decided = decide_review_credit(connections, selection).await;
     if let Ok(credit) = &decided {
         if credit.state != ReviewedCreditState::Accepted {
             super::counted_outcome::count_outcome_once(conn, persona_name, persona_id, review_id.as_uuid(), credit.state).await;
@@ -22,15 +19,12 @@ pub(super) async fn consume_review_credit<T: Transport>(
     decided
 }
 
-async fn decide_review_credit<T: Transport>(
-    conn: &Connection<T>,
-    persona_name: &str,
-    persona_id: Uuid,
-    room_id: Uuid,
-    board: &airc_work::WorkBoardProjection,
-    review_id: airc_work::WorkReviewId,
-    self_review: &SelfReview,
+async fn decide_review_credit<T: Transport, S: Transport>(
+    connections: &ReviewConnections<'_, T, S>,
+    selection: &ReviewSelection<'_>,
 ) -> Result<ReviewedCredit, CreditBindingError> {
+    let ReviewSelection { persona_name, persona_id, room_id, board, review_id, self_review } = *selection;
+    let conn = connections.citizen;
     let review = board
         .submission_review(review_id)
         .ok_or(CreditBindingError::WrongSelection)?;
@@ -107,7 +101,7 @@ async fn decide_review_credit<T: Transport>(
         airc_work::WorkReviewOutcome::Passed => ReviewedCreditState::AwaitingAcceptance,
     };
     if result.state == ReviewedCreditState::FailedReview {
-        correction::reject_on_failed_review(persona_name, submitted.card_id.as_uuid()).await;
+        correction::reject_on_failed_review(connections.substrate, persona_name, submitted.card_id.as_uuid()).await?;
     }
     if result.state != ReviewedCreditState::AwaitingAcceptance {
         return Ok(result);
@@ -167,7 +161,7 @@ pub(super) async fn settle_passed<T: Transport>(
     // completed after staging.
     let resolved = with_lived(persona_id, persona_name, row).await;
     // A pass after a reviewed failure on this card is a correction: its own bucket, one trains.
-    let verdict = correction::passing_verdict(persona_name, row.card_id, row.id).await;
+    let verdict = correction::passing_verdict(conn, persona_name, row.card_id, row.id).await?;
     let mut params = match staged_submission_params(persona_id, persona_name, &*resolved, verdict) {
         Ok(params) => params,
         Err(reason) => {
@@ -288,16 +282,56 @@ pub async fn credit_status<T: Transport>(
     submission_id: Uuid,
 ) -> Result<ReviewedCredit, ClientError> {
     let id = submission_id.to_string();
-    let Some(binding) = read_one::<_, WorkCreditBinding>(conn, persona_name, &id).await? else {
+    let Some(CreditSnapshot { binding, progress }) = read_credit(conn, persona_name, submission_id).await? else {
         return Ok(ReviewedCredit::pending(ReviewedCreditState::Unbound));
+    };
+    // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
+    let (state, decision_review_id, destination) = match progress {
+        CreditProgress::AwaitingReview => (ReviewedCreditState::AwaitingReview, None, None),
+        CreditProgress::Decided(decision) => (
+            ReviewedCreditState::AwaitingAcceptance,
+            Some(decision.review.review_id.as_uuid()),
+            read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
+        ),
+        CreditProgress::Accepted { decision, acceptance } => (
+            ReviewedCreditState::Accepted,
+            Some(decision.review.review_id.as_uuid()),
+            Some(acceptance.receipt),
+        ),
+    };
+    Ok(ReviewedCredit {
+        state,
+        staged_revision_id: Some(binding.selection.staged_revision_id),
+        decision_review_id,
+        destination,
+    })
+}
+
+/// One validated set of credit rows. Status and boundary recovery share the
+/// same causality checks and keep the evidence they already read.
+pub(super) struct CreditSnapshot {
+    pub(super) binding: WorkCreditBinding,
+    pub(super) progress: CreditProgress,
+}
+
+/// Where one credit is in its review: an acceptance exists only with the decision it accepts.
+pub(super) enum CreditProgress {
+    AwaitingReview,
+    Decided(CreditReviewDecision),
+    Accepted { decision: CreditReviewDecision, acceptance: CreditReviewAcceptance },
+}
+
+pub(super) async fn read_credit<T: Transport>(
+    conn: &Connection<T>,
+    persona_name: &str,
+    submission_id: Uuid,
+) -> Result<Option<CreditSnapshot>, ClientError> {
+    let id = submission_id.to_string();
+    let Some(binding) = read_one::<_, WorkCreditBinding>(conn, persona_name, &id).await? else {
+        return Ok(None);
     };
     let decision = read_one::<_, CreditReviewDecision>(conn, persona_name, &id).await?;
     let accepted = read_one::<_, CreditReviewAcceptance>(conn, persona_name, &id).await?;
-    // A decided credit the trigger refused names the refusal as its destination (card 99b2773a).
-    let refused = match (&accepted, &decision) {
-        (None, Some(_)) => read_one::<_, CreditSubmitRefusal>(conn, persona_name, &id).await?.map(|r| r.receipt),
-        _ => None,
-    };
     if accepted.as_ref().is_some_and(|accepted| {
         accepted.decision_id != submission_id
             || decision.as_ref().is_none_or(|decision| {
@@ -314,18 +348,14 @@ pub async fn credit_status<T: Transport>(
             "review acceptance does not match its decision and selected revision".into(),
         ));
     }
-    Ok(ReviewedCredit {
-        state: if accepted.is_some() {
-            ReviewedCreditState::Accepted
-        } else if decision.is_some() {
-            ReviewedCreditState::AwaitingAcceptance
-        } else {
-            ReviewedCreditState::AwaitingReview
+    let progress = match accepted {
+        Some(acceptance) => match decision {
+            Some(decision) => CreditProgress::Accepted { decision, acceptance },
+            None => return Err(ClientError::Transport("review acceptance has no decision".into())),
         },
-        staged_revision_id: Some(binding.selection.staged_revision_id),
-        decision_review_id: decision.map(|d| d.review.review_id.as_uuid()),
-        destination: accepted.map(|a| a.receipt).or(refused),
-    })
+        None => decision.map_or(CreditProgress::AwaitingReview, CreditProgress::Decided),
+    };
+    Ok(Some(CreditSnapshot { binding, progress }))
 }
 
 /// An indexed one-row list distinguishes absence from storage/decoding failure;
@@ -362,23 +392,21 @@ pub async fn read_one<T: Transport, E: OrmEntity + DeserializeOwned>(
 }
 
 pub(in crate::persona::training_producer) fn create<E: OrmEntity + Serialize>(id: String, entity: &E) -> Result<BatchOperation, ClientError> {
-    Ok(BatchOperation {
-        operation_type: BatchOperationType::Create,
+    Ok(BatchOperation::Create(RowWrite {
         collection: E::COLLECTION.into(),
-        id: Some(id),
-        data: Some(serde_json::to_value(entity)?), // Encode one entity into the ORM batch's required Value payload.
-    })
+        id,
+        data: serde_json::to_value(entity)?, // Encode one entity into the ORM batch's required Value payload.
+    }))
 }
 
 pub(super) fn create_intent(row: &StagedCredit, work_submission_id: Option<Uuid>) -> BatchOperation {
-    BatchOperation {
-        operation_type: BatchOperationType::Create,
+    BatchOperation::Create(RowWrite {
         collection: CreditTransferIntent::COLLECTION.into(),
-        id: Some(row.id.to_string()),
+        id: row.id.to_string(),
         // Encode the borrowed snapshot once at the storage boundary; retaining
         // a second Rust clone of its complete prompt/act chain is unnecessary.
-        data: Some(json!({"id": row.id, "workSubmissionId": work_submission_id, "snapshot": row})),
-    }
+        data: json!({"id": row.id, "workSubmissionId": work_submission_id, "snapshot": row}),
+    })
 }
 
 pub(super) fn same_intent(
@@ -407,8 +435,7 @@ pub(in crate::persona::training_producer) async fn write_batch<T: Transport>(
     persona_name: &str,
     operations: Vec<BatchOperation>,
 ) -> Result<(), ClientError> {
-    let value = conn
-        .commands()
+    conn.commands()
         .execute_value(
             "data/batch",
             json!({
@@ -416,7 +443,7 @@ pub(in crate::persona::training_producer) async fn write_batch<T: Transport>(
             }),
         )
         .await?;
-    storage_ok(&value, "data/batch", WorkCreditBinding::COLLECTION)
+    Ok(())
 }
 
 pub async fn transfer_accepted<T: Transport>(
@@ -606,31 +633,11 @@ pub(super) async fn generation_row<T: Transport>(
     submitted: &airc_work::WorkSubmission,
     generation: &str,
 ) -> Result<StagedCredit, CreditBindingError> {
-    let value = conn
-        .commands()
-        .execute_value(
-            "data/list",
-            json!({
-                "collection": StagedCreditGeneration::COLLECTION,
-                "dbPath": format!("@persona:{persona_name}"),
-                "filter": {"submittedRequestId": generation},
-            }),
-        )
-        .await?;
-    // The child index exists precisely for this join. Loading every lived turn
-    // on the card can materialize tens of MiB before finding a single request.
-    // Never bind from a partial result, or trust the index instead of the parent.
-    let result: crate::orm::list_result::DataListResult =
-        serde_json::from_value(value).map_err(ClientError::from)?; // Decode the data/list storage command response envelope.
-    if result.items.len() != result.total as usize {
-        return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
-    }
+    // Read the compact child index through the shared cursor owner. Parent
+    // evidence is loaded only for matching links and still revalidated below.
+    let links: Vec<StagedCreditGeneration> = crate::orm::client_read::matching(conn, crate::orm::client_read::ListSelection { handle: &format!("@persona:{persona_name}"), collection: StagedCreditGeneration::COLLECTION, filter: &serde_json::Map::from_iter([("submittedRequestId".into(), json!(generation))]), select: None }).await?;
     let mut selected = None;
-    for value in result.items {
-        let record: crate::orm::types::DataRecord =
-            serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
-        let link: StagedCreditGeneration =
-            record.decode().map_err(ClientError::from)?; // Decode the persisted generation-index entity from its storage record.
+    for link in links {
         if link.submitted_request_id != generation {
             return Err(CreditBindingError::WrongSelection);
         }

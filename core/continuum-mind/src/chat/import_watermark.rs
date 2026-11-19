@@ -9,7 +9,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 use super::chat_data_handle::ChatModule;
-use crate::orm::types::{BatchOperation, BatchOperationType};
+use crate::orm::types::{BatchOperation, RowWrite};
 
 /// A position in a room's airc transcript (the daemon's cursor), typed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,8 +93,8 @@ impl ChatModule {
         self.write_watermark(
             room,
             vec![
-                (BatchOperationType::Ensure, full),
-                (BatchOperationType::Update, position),
+                (BatchOperation::Ensure as fn(RowWrite) -> BatchOperation, full),
+                (BatchOperation::Update, position),
             ],
         )
         .await
@@ -113,7 +113,7 @@ impl ChatModule {
         };
         self.write_watermark(
             room,
-            vec![(BatchOperationType::Ensure, row_value(room, mark, history)?)],
+            vec![(BatchOperation::Ensure as fn(RowWrite) -> BatchOperation, row_value(room, mark, history)?)],
         )
         .await
     }
@@ -121,16 +121,11 @@ impl ChatModule {
     async fn write_watermark(
         &self,
         room: RoomId,
-        writes: Vec<(BatchOperationType, Value)>,
+        writes: Vec<(fn(RowWrite) -> BatchOperation, Value)>,
     ) -> Result<(), String> {
         let operations: Vec<BatchOperation> = writes
             .into_iter()
-            .map(|(operation_type, data)| BatchOperation {
-                operation_type,
-                collection: COLLECTION.to_string(),
-                id: Some(room.as_uuid().to_string()),
-                data: Some(data),
-            })
+            .map(|(operation, data)| operation(RowWrite { collection: COLLECTION.to_string(), id: room.as_uuid().to_string(), data }))
             .collect();
         self.run_batch(operations).await.map(drop)
     }

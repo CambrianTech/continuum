@@ -163,8 +163,12 @@ impl DormancyLedger {
     /// Boot: read every row, migrate from the hold when the table is empty, and hold the
     /// dormant minds whose homes are on this node. Probes each mind it keeps down.
     pub async fn load(&self, homes: &[Home], migration: Migration<'_>) -> Result<Vec<PersonaWakefulness>, DormancyError> {
-        let mut rows: Vec<PersonaWakefulness> = self.store.find_all().await?.into_iter().map(|(_, r)| r).collect();
-        if rows.is_empty() && !homes.is_empty() {
+        let empty = self.store.count().await? == 0;
+        let mut rows = Vec::with_capacity(homes.len());
+        for home in homes {
+            if let Some(row) = self.store.find_by_id(home.id.as_uuid()).await? { rows.push(row); }
+        }
+        if empty && !homes.is_empty() {
             rows = migrate_from_hold(homes, migration);
             let ops = rows.iter().map(|r| self.store.create_op(r.id.as_uuid(), r)).collect::<Result<Vec<_>, _>>()?;
             crate::orm::store::commit(&self.adapter, ops).await?;

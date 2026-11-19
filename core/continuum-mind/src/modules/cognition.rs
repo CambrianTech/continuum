@@ -247,6 +247,9 @@ impl ServiceModule for CognitionModule {
         const BUDGET: std::time::Duration = std::time::Duration::from_millis(1_800);
 
         let first_to_close = crate::cognition::turn_ingress::close();
+        // Runtime skips shutdown() if save_state times out. Close periodic
+        // admission here, while the existing writer gate retains admitted IO.
+        crate::cognition::persona_workspace::global().close_volatile_checkpoints();
         let deadline = std::time::Instant::now() + BUDGET;
         // Only the turns a stop owes a wait (`turn_ingress::awaited`): a confirmed turn is handed
         // back to the next start and a self-tick holds nothing durable, so neither makes the

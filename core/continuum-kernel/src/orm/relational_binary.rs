@@ -1,0 +1,102 @@
+//! Native payload access through the existing schema and transaction owner.
+use super::storage_error::StorageError;
+use super::{
+    binary::{descriptor_column, BinaryValue},
+    types::FieldType,
+};
+use sea_orm::sea_query::{Alias, Expr};
+use sea_orm::{ConnectionTrait, DbBackend};
+
+impl super::relational::RelationalStore {
+    pub async fn create_binary(
+        &self,
+        record: super::types::DataRecord,
+        payloads: std::collections::BTreeMap<String, BinaryValue>,
+    ) -> Result<String, StorageError> {
+        if payloads.is_empty() {
+            return Err(StorageError::NoPayloads);
+        }
+        // Compile typed bindings before dispatch, then move them into the same committing owner.
+        super::binary::native_identity(&record.id)?;
+        let statement = self.insert_statement_with_binary(&record, payloads)?;
+        self.write_with_revisions(move |store, transaction| {
+            Box::pin(async move {
+                transaction
+                    .execute(DbBackend::Sqlite.build(&statement))
+                    .await?;
+                let revision = store
+                    .native_changed_on(transaction, &record.collection, &record.id)
+                    .await?;
+                Ok((record.id, vec![revision]))
+            })
+        })
+        .await
+    }
+
+    pub(super) fn binary_column(&self, collection: &str, field: &str) -> Result<Alias, StorageError> {
+        let schema = self.schema(collection)?;
+        let declared = schema
+            .fields
+            .iter()
+            .find(|f| f.name == field)
+            .ok_or_else(|| StorageError::Undeclared { collection: collection.to_owned().into(), field: field.to_owned().into() })?;
+        if declared.field_type != FieldType::Binary {
+            return Err(StorageError::NotBinary { collection: collection.to_owned().into(), field: field.to_owned().into() });
+        }
+        super::relational_query::column(&schema, field)
+    }
+
+    /// Write `write`'s payloads; `true` when a row changed. The row is owned from here on,
+    /// because the committing task takes it.
+    pub async fn update_binary(&self, write: super::seam::BinaryWrite<'_>) -> Result<bool, StorageError> {
+        let super::seam::BinaryWrite { row, payloads, condition } = write;
+        super::binary::native_identity(row.id)?;
+        let (collection, id) = (row.collection.to_owned(), row.id.to_owned());
+        if payloads.is_empty() {
+            return Err(StorageError::NoPayloads);
+        }
+        let mut fields = Vec::with_capacity(payloads.len() * 2);
+        let mut predicate = sea_orm::Condition::all();
+        for (field, value) in payloads {
+            let column = self.binary_column(&collection, &field)?;
+            let header_column = Alias::new(descriptor_column(&field));
+            if condition == super::binary::BinaryWriteCondition::IfAbsent {
+                predicate = predicate
+                    .add(Expr::col(column.clone()).is_null())
+                    .add(Expr::col(header_column.clone()).is_null());
+            }
+            let (descriptor, bytes) = value.into_parts();
+            fields.push((column, bytes.into()));
+            fields.push((header_column, descriptor.encode()?.into()));
+        }
+        self.write_with_revisions(move |store, transaction| {
+            Box::pin(async move {
+                let changed = store
+                    .update_fields_matching_on(
+                        transaction,
+                        super::relational_write::FieldWrite {
+                            row: super::seam::RowRef { collection: &collection, id: &id },
+                            fields,
+                            versioning: super::seam::Versioning::Increment,
+                        },
+                        predicate,
+                    )
+                    .await?;
+                if !changed && condition == super::binary::BinaryWriteCondition::Replace {
+                    return Err(StorageError::NotFound { collection: collection.to_string().into(), id: id.to_string() });
+                }
+                let revisions = if changed {
+                    vec![
+                        store
+                            .native_changed_on(transaction, &collection, &id)
+                            .await?,
+                    ]
+                } else {
+                    Vec::new()
+                };
+                Ok((changed, revisions))
+            })
+        })
+        .await
+    }
+}

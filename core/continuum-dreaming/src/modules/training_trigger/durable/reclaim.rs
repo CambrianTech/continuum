@@ -17,11 +17,11 @@ impl DurableStore {
         // the active-intent index only, a page at a time: each intent closed here leaves the index,
         // so the next page is the next active ones, and history is never scanned
         loop {
-        let result = self.adapter.query(QueryBuilder::new(DispatchIntent::COLLECTION).filter_eq("isActive", true).limit(64).build()).await;
-        if !result.success {
-            return Err(result.error.unwrap_or_else(|| "active dispatch query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
-        }
-        let rows = result.data.ok_or("active dispatch query omitted rows")?;
+        let rows = self
+            .adapter
+            .query(&QueryBuilder::new(DispatchIntent::COLLECTION).filter_eq("isActive", true).limit(64).build())
+            .await
+            .map_err(|e| format!("active dispatch query: {e}"))?;
         if rows.is_empty() {
             break;
         }
@@ -55,21 +55,13 @@ impl DurableStore {
     async fn reclaim_stranded(&self) -> Result<usize, String> {
         let mut returned = 0;
         loop {
-            let result = self
-                .adapter
-                .query(
-                    QueryBuilder::new(Submission::COLLECTION)
+            let result = self.adapter.query(&QueryBuilder::new(Submission::COLLECTION)
                         .filter_eq("isPending", false)
                         .filter("dispatchId", QueryOperator::IsNotNull)
                         .filter("retirementId", QueryOperator::IsNull)
                         .limit(64)
-                        .build(),
-                )
-                .await;
-            if !result.success {
-                return Err(result.error.unwrap_or_else(|| "stranded submission query refused".into())); // the query failed; this supplies its missing diagnostic, never rows
-            }
-            let rows = result.data.ok_or("stranded submission query omitted rows")?;
+                        .build(),).await.map_err(|e| e.to_string());
+        let rows = result?;
             if rows.is_empty() {
                 return Ok(returned);
             }

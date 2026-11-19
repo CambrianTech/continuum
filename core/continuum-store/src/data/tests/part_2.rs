@@ -8,10 +8,11 @@ use super::*;
         let (_tmp, db_path) = test_db_path("backfill");
 
         // Create schema with content and embedding fields
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_backfill".to_string(),
             fields: vec![
                 crate::orm::types::SchemaField {
+                default_value: None,
                     name: "content".to_string(),
                     field_type: crate::orm::types::FieldType::String,
                     indexed: false,
@@ -21,8 +22,9 @@ use super::*;
                     foreign_key: None,
                 },
                 crate::orm::types::SchemaField {
+                default_value: None,
                     name: "embedding".to_string(),
-                    field_type: crate::orm::types::FieldType::Json,
+                    field_type: crate::orm::types::FieldType::Binary,
                     indexed: false,
                     unique: false,
                     nullable: true,
@@ -37,7 +39,8 @@ use super::*;
         // entity collection per Phase 2 Step 3) — call the adapter directly
         // with a synthetic test CollectionSchema.
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         // Create records without embeddings
         for i in 0..5 {
@@ -90,45 +93,6 @@ use super::*;
         }
     }
 
-    #[test]
-    pub(super) fn test_cosine_similarity() {
-        // Test identical vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![1.0, 0.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim - 1.0).abs() < 0.001,
-            "Identical vectors should have similarity 1.0"
-        );
-
-        // Test orthogonal vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![0.0, 1.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            sim.abs() < 0.001,
-            "Orthogonal vectors should have similarity 0.0"
-        );
-
-        // Test opposite vectors
-        let a = vec![1.0, 0.0, 0.0];
-        let b = vec![-1.0, 0.0, 0.0];
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim + 1.0).abs() < 0.001,
-            "Opposite vectors should have similarity -1.0"
-        );
-
-        // Test with 384-dimension vectors (typical embedding size)
-        let a: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let b: Vec<f64> = (0..384).map(|i| (i as f64) * 0.01).collect();
-        let sim = DataState::cosine_similarity(&a, &b);
-        assert!(
-            (sim - 1.0).abs() < 0.001,
-            "Identical 384-dim vectors should have similarity 1.0"
-        );
-    }
-
     // ====================================================================
     // HandleRef migration tests for data/query-open/next/close
     // ====================================================================
@@ -154,9 +118,10 @@ use super::*;
         let module = DataModule::new(no_substrate_entities);
         let (tmp, db_path) = test_db_path(suffix);
 
-        let schema = CollectionSchema {
+        let mut schema = CollectionSchema {
             collection: "test_handle_cursor".to_string(),
             fields: vec![crate::orm::types::SchemaField {
+                default_value: None,
                 name: "name".to_string(),
                 field_type: crate::orm::types::FieldType::String,
                 indexed: false,
@@ -168,7 +133,8 @@ use super::*;
             indexes: vec![],
         };
         let adapter = module.state.get_adapter(&db_path).await.unwrap();
-        let _ = adapter.ensure_schema(schema).await;
+        schema.fields.extend(crate::orm::base_entity_fields());
+        adapter.ensure_schema(&schema).await.expect("test: declared schema");
 
         for i in 0..rows {
             let _ = create_via_state(
@@ -206,6 +172,20 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn cursor_refuses_nonprogressing_and_overflowing_page_sizes() {
+        let module = DataModule::new(no_substrate_entities);
+        for page_size in [0, usize::MAX] {
+            let result = module.handle_command("data/query-open", json!({
+                "dbPath": "must-not-open",
+                "collection": "test_handle_cursor",
+                "pageSize": page_size,
+            })).await;
+            let error = result.expect_err("invalid page size must fail before opening storage");
+            assert!(error.contains("pageSize"), "unexpected error: {error}");
+        }
+    }
+
+    #[tokio::test]
     pub(super) async fn query_open_returns_handle_alongside_legacy_query_id() {
         let (module, _tmp, db_path) = setup_paginated_for_handle_tests("handle_open", 3).await;
         let response = open_cursor(&module, &db_path, 10).await;
@@ -240,6 +220,34 @@ use super::*;
         );
         // Both fields are real UUIDs.
         uuid::Uuid::parse_str(handle_id).expect("handle.id must parse as a UUID");
+    }
+
+    #[tokio::test]
+    async fn cursor_projection_is_kept_on_every_page_and_count_is_exact() {
+        let (module, _tmp, db_path) = setup_paginated_for_handle_tests("projected_cursor", 5).await;
+        let opened = module.handle_command("data/query-open", json!({
+            "dbPath": db_path, "collection": "test_handle_cursor", "pageSize": 3,
+            "select": ["id"], "countExact": true,
+        })).await.expect("test: open projected cursor");
+        let CommandResult::Json(opened) = opened else { panic!("test: JSON response") };
+        assert_eq!(opened["data"]["totalCount"], 5);
+        for (count, more) in [(3, true), (2, false)] {
+            let page = module.handle_command("data/query-next", json!({"handle": opened["handle"]}))
+                .await.expect("test: projected page");
+            let CommandResult::Json(page) = page else { panic!("test: JSON response") };
+            let items = page["data"]["items"].as_array().expect("test: items");
+            assert_eq!(items.len(), count);
+            assert_eq!(page["data"]["hasMore"], more);
+            assert_eq!(page["data"]["totalCount"], 5);
+            for item in items {
+                let record = <super::projection::ProjectedRecord as serde::Deserialize>::deserialize(item)
+                    .expect("test: projected cursor record");
+                assert_eq!(record.data, json!({
+                    "id": record.id, "createdAt": record.metadata.created_at,
+                    "updatedAt": record.metadata.updated_at, "version": record.metadata.version
+                }));
+            }
+        }
     }
 
     #[tokio::test]

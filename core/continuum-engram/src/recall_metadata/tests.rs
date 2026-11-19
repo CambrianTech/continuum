@@ -446,14 +446,14 @@
     #[tokio::test]
     async fn engram_recall_metadata_cascade_deletes_with_engram() {
         use continuum_kernel::orm::adapter::StorageAdapter;
-        use continuum_kernel::orm::sqlite::SqliteAdapter;
+        use continuum_kernel::orm::SeaOrmAdapter;
         use continuum_kernel::orm::OrmStore;
         use crate::engram::{AircMessageRef, Engram, EngramKind, EngramOrigin, TrustState};
         use std::sync::Arc;
 
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = tmp.path().join("engrams.sqlite");
-        let adapter = SqliteAdapter::open(&path).await.expect("adapter open");
+        let adapter = SeaOrmAdapter::open(&path).await.expect("adapter open");
         let adapter: Arc<dyn StorageAdapter> = Arc::new(adapter);
 
         let engrams = OrmStore::<Engram>::new(Arc::clone(&adapter))
@@ -512,7 +512,7 @@
         // Delete the engram. SQLite's CASCADE rule must remove the
         // child metadata row at the DB layer.
         let deleted = engrams.delete(engram_id).await.expect("delete engram");
-        assert!(deleted);
+        assert_eq!(deleted, continuum_kernel::orm::seam::Deleted::Removed);
 
         let after = metadata
             .find_by_id(row_id)

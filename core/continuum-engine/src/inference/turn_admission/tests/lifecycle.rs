@@ -24,9 +24,18 @@ pub(super) type Slots = Arc<std::sync::Mutex<HashMap<u32, String>>>;
 /// does (the dyno, `capacity::dyno`): a page larger than the pool, or one that does not fit
 /// beside what the other slots hold, is refused 400 in the engine's own words; a scripted
 /// refusal answers the next restore first. Without either, every restore succeeds.
+/// What the fixture engine does with a save: answer it, hold it until released, or refuse it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum SaveMode {
+    Answer = 0,
+    Hold = 1,
+    Refuse = 2,
+}
+
 #[derive(Default)]
 pub(super) struct SaveHold {
-    held: std::sync::atomic::AtomicBool,
+    save_mode: std::sync::atomic::AtomicU8,
     arrived: tokio::sync::Notify,
     release: tokio::sync::Notify,
     pub(super) cells: std::sync::Mutex<Option<u64>>,
@@ -42,6 +51,18 @@ fn held_tokens(held: &str) -> u64 {
 }
 
 impl SaveHold {
+    pub(super) fn set_save_mode(&self, mode: SaveMode) {
+        self.save_mode.store(mode as u8, std::sync::atomic::Ordering::Release);
+    }
+
+    fn save_mode(&self) -> SaveMode {
+        match self.save_mode.load(std::sync::atomic::Ordering::Acquire) {
+            1 => SaveMode::Hold,
+            2 => SaveMode::Refuse,
+            _ => SaveMode::Answer,
+        }
+    }
+
     /// Why the engine refuses restoring `page` into `slot` now, if it does.
     fn refusal(&self, slots: &HashMap<u32, String>, slot: u32, page: &str) -> Option<String> {
         if let Some(scripted) = self.scripted.lock().expect("test: fixture mutex").pop_front() {
@@ -70,7 +91,7 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         use axum::response::IntoResponse;
         let file = dir.join(body["filename"].as_str().expect("test: a page names its file"));
         let action = query.get("action").map(String::as_str).unwrap_or("restore"); // unwrap_or: the fixture reads a bare request as a restore
-        if action == "save" && hold.held.load(std::sync::atomic::Ordering::Acquire) {
+        if action == "save" && hold.save_mode() == SaveMode::Hold {
             hold.arrived.notify_one();
             hold.release.notified().await;
         }
@@ -78,6 +99,11 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         match action {
             "save-size" => Json(json!({"id_slot": slot, "filename": body["filename"], "projected_bytes": 100})).into_response(),
             "save" => {
+                if hold.save_mode() == SaveMode::Refuse {
+                    return (axum::http::StatusCode::BAD_REQUEST, Json(json!({
+                        "error": {"code": 400, "type": "invalid_request_error", "message": "fixture save refused"}
+                    }))).into_response();
+                }
                 let held = slots.get(&slot).cloned().unwrap_or_default(); // unwrap_or_default: an empty slot saves an empty page
                 std::fs::write(&file, held).expect("test: page write");
                 Json(json!({"id_slot": slot, "filename": body["filename"], "n_saved": 10})).into_response()
@@ -257,6 +283,25 @@ async fn two_residents(dir: &std::path::Path) -> (String, Slots, Arc<SaveHold>, 
     (root, slots, hold, pool, lanes, server)
 }
 
+#[tokio::test]
+async fn a_rejected_transient_save_preserves_the_resident_and_refuses_the_borrow() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let client = reqwest::Client::new();
+    let (root, slots, hold, pool, lanes, server) = two_residents(dir.path()).await;
+    let gate = Box::leak(Box::new(crate::runtime::admission_gate::AdmissionGate::new()));
+    hold.set_save_mode(SaveMode::Refuse);
+
+    let borrowed = admit_transient_through(&client, &root, None, gate).await;
+    assert!(borrowed.is_err(), "a failed save must not authorize overwriting the resident");
+    assert_eq!(gate.in_flight(), 0);
+    assert_eq!(
+        act(&lanes, &pool, &client, &root, &slots, 1, 110).await,
+        PageIn::Resident,
+        "a rejected save leaves the original live state attributed and reusable"
+    );
+    server.abort();
+}
+
 // what this catches (review of #5540 at 3114e285b): a transient borrow (anonymous
 // traffic on a pool with no scratch slot, the cache probe) that detaches a resident or
 // starts a save after the stop closed page IO, so the stop exits with zero counted work
@@ -297,13 +342,13 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
     let gate: &'static crate::runtime::admission_gate::AdmissionGate =
         Box::leak(Box::new(crate::runtime::admission_gate::AdmissionGate::new()));
 
-    hold.held.store(true, std::sync::atomic::Ordering::Release);
+    hold.set_save_mode(SaveMode::Hold);
     let borrow = tokio::spawn({
         let (client, root) = (client.clone(), root.clone());
         async move { admit_transient_through(&client, &root, None, gate).await }
     });
     hold.arrived.notified().await; // mind 1's save is at the engine
-    hold.held.store(false, std::sync::atomic::Ordering::Release);
+    hold.set_save_mode(SaveMode::Answer);
 
     let settling = crate::inference::slots::page_io::settle(gate);
     tokio::pin!(settling);

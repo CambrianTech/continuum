@@ -1,7 +1,7 @@
 # One application-runtime owner for published core/CLI binaries and engines.
 # Windows/NVIDIA drivers remain platform inputs; VC/OpenMP redistributables do not.
 function Get-CoreRuntimeDirectories {
-    param([switch]$Cuda, [string]$CMakeCache)
+    param([switch]$Cuda, [string]$CMakeCache, [switch]$MsvcOnly)
     if (-not $env:VCToolsRedistDir) { Enter-MsvcEnv }
     if (-not $env:VCToolsRedistDir) { throw 'Selected MSVC toolchain did not identify its redistributable directory.' }
     $redist = Join-Path $env:VCToolsRedistDir 'x64'
@@ -10,6 +10,10 @@ function Get-CoreRuntimeDirectories {
         $_.Name -match '^Microsoft\.VC[0-9]+\.(CRT|OpenMP)$'
     } | ForEach-Object { $_.FullName })
     if (-not $directories.Count) { throw 'Selected toolchain has no x64 VC/OpenMP redistributables.' }
+    if ($MsvcOnly) {
+        foreach ($directory in $directories) { Assert-CorePreparedPath -Path $directory -Expected $directory }
+        return $directories
+    }
     if ($Cuda) {
         # A reused CMake cache can select a different toolkit than the default.
         # Package that build's runtime, never a different CUDA major from PATH.
@@ -37,7 +41,7 @@ function Get-CoreRuntimeDirectories {
 
 function Copy-CoreRuntimeClosure {
     param([string]$Directory, [string[]]$Executables, [string]$Inspector,
-        [string[]]$RuntimeDirectories, [string]$OutputNames)
+        [string[]]$RuntimeDirectories, [Parameter(Mandatory = $true)][string[]]$MsvcDirectories, [string]$OutputNames)
     Assert-CorePreparedPath -Path $Directory -Expected $Directory
     Assert-CorePreparedPath -Path $Inspector -Expected $Inspector -File
     foreach ($executable in $Executables) { Assert-CorePreparedPath -Path $executable -Expected $executable -File }
@@ -46,7 +50,9 @@ function Copy-CoreRuntimeClosure {
     # System32 copy must never hide the requirement on a clean consumer machine.
     $known = @(Get-Content -LiteralPath (Join-Path $PSScriptRoot 'windows-runtime-redistributables.txt'))
     foreach ($name in $known) {
-        $sources = @($RuntimeDirectories | ForEach-Object { Join-Path $_ $name } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+        # CUDA/OpenSSL distributions may bundle their own VC DLLs. The selected
+        # compiler owns these names; third-party copies are not competing owners.
+        $sources = @($MsvcDirectories | ForEach-Object { Join-Path $_ $name } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
         if ($sources.Count -gt 1) { throw "Ambiguous selected-toolchain redistributable: $name" }
         if ($sources.Count -eq 1) {
             Assert-CorePreparedPath -Path $sources[0] -Expected $sources[0] -File
@@ -56,6 +62,7 @@ function Copy-CoreRuntimeClosure {
         }
     }
     $arguments = @("-DCMAKE_GET_RUNTIME_DEPENDENCIES_COMMAND=$Inspector",
+        "-DMSVC_RUNTIME_DIRS=$(($MsvcDirectories | ForEach-Object { $_.Replace('\','/') }) -join ';')",
         "-DENGINE_DIR=$($Directory.Replace('\','/'))", "-DSYSTEM_DIR=$([Environment]::SystemDirectory.Replace('\','/'))",
         "-DEXECUTABLES=$(($Executables | ForEach-Object { $_.Replace('\','/') }) -join ';')",
         "-DRUNTIME_DIRS=$(($RuntimeDirectories | ForEach-Object { $_.Replace('\','/') }) -join ';')")
@@ -91,9 +98,10 @@ function Publish-CoreWindowsRuntime {
     Enter-MsvcEnv
     $inspector = (Get-Command dumpbin -ErrorAction Stop).Source
     $runtimeDirectories = @(Get-CoreRuntimeDirectories -Cuda)
-    Copy-CoreRuntimeClosure -Directory $Directory -Executables @((Join-Path $Directory 'continuum.exe')) -Inspector $inspector -RuntimeDirectories $runtimeDirectories -OutputNames (Join-Path $Directory 'bootstrap-runtime-libs.txt')
+    $msvcDirectories = @(Get-CoreRuntimeDirectories -MsvcOnly)
+    Copy-CoreRuntimeClosure -Directory $Directory -Executables @((Join-Path $Directory 'continuum.exe')) -Inspector $inspector -RuntimeDirectories $runtimeDirectories -MsvcDirectories $msvcDirectories -OutputNames (Join-Path $Directory 'bootstrap-runtime-libs.txt')
     $executables = @(Get-ChildItem -LiteralPath $Directory -File -Filter '*.exe' | ForEach-Object { $_.FullName })
-    Copy-CoreRuntimeClosure -Directory $Directory -Executables $executables -Inspector $inspector -RuntimeDirectories $runtimeDirectories -OutputNames (Join-Path $Directory 'runtime-imports.txt')
+    Copy-CoreRuntimeClosure -Directory $Directory -Executables $executables -Inspector $inspector -RuntimeDirectories $runtimeDirectories -MsvcDirectories $msvcDirectories -OutputNames (Join-Path $Directory 'runtime-imports.txt')
     $names = @(Get-ChildItem -LiteralPath $Directory -File -Filter '*.dll' | ForEach-Object { $_.Name } | Sort-Object -Unique)
     [IO.File]::WriteAllLines((Join-Path $Directory 'runtime-libs.txt'), [string[]]$names, [Text.UTF8Encoding]::new($false))
 }

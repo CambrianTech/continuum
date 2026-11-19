@@ -5,7 +5,6 @@
 export type { BackfillVectorsProgress } from './BackfillVectorsProgress';
 export type { BackfillVectorsRequest } from './BackfillVectorsRequest';
 export type { BatchOperation } from './BatchOperation';
-export type { BatchOperationType } from './BatchOperationType';
 export type { CollectionSchema } from './CollectionSchema';
 export type { CollectionStats } from './CollectionStats';
 export type { Cursor } from './Cursor';

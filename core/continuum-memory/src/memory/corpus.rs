@@ -7,6 +7,8 @@
 //! → Rust caches MemoryCorpus per persona → recall layers operate on corpus.
 //! Zero SQL. Zero filesystem access. Pure computation.
 
+mod embeddings;
+use embeddings::MemoryEmbeddings;
 use crate::memory::types::*;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -20,7 +22,7 @@ use std::time::Instant;
 /// No SQL, no filesystem access — pure compute on in-memory data.
 pub struct MemoryCorpus {
     pub memories: Vec<MemoryRecord>,
-    pub memory_embeddings: HashMap<String, Vec<f32>>,
+    pub(super) memory_embeddings: MemoryEmbeddings,
     pub timeline_events: Vec<TimelineEvent>,
     pub event_embeddings: HashMap<String, Vec<f32>>,
     pub loaded_at: Instant,
@@ -30,13 +32,13 @@ impl MemoryCorpus {
     /// Create a corpus from ORM-provided data.
     pub fn new(
         memories: Vec<MemoryRecord>,
-        memory_embeddings: HashMap<String, Vec<f32>>,
+        memory_embeddings: HashMap<String, MemoryEmbedding>,
         timeline_events: Vec<TimelineEvent>,
         event_embeddings: HashMap<String, Vec<f32>>,
     ) -> Self {
         Self {
             memories,
-            memory_embeddings,
+            memory_embeddings: MemoryEmbeddings::from_rows(memory_embeddings),
             timeline_events,
             event_embeddings,
             loaded_at: Instant::now(),
@@ -49,7 +51,7 @@ impl MemoryCorpus {
         corpus_events: Vec<CorpusTimelineEvent>,
     ) -> Self {
         let mut memories = Vec::with_capacity(corpus_memories.len());
-        let mut memory_embeddings = HashMap::with_capacity(corpus_memories.len());
+        let mut memory_embeddings = MemoryEmbeddings::with_capacity(corpus_memories.len());
 
         for cm in corpus_memories {
             if let Some(emb) = cm.embedding {
@@ -81,7 +83,7 @@ impl MemoryCorpus {
     pub fn empty() -> Self {
         Self {
             memories: vec![],
-            memory_embeddings: HashMap::new(),
+            memory_embeddings: MemoryEmbeddings::default(),
             timeline_events: vec![],
             event_embeddings: HashMap::new(),
             loaded_at: Instant::now(),
@@ -95,8 +97,7 @@ impl MemoryCorpus {
         let mut result: Vec<&MemoryRecord> = self.memories.iter().collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
                 .then_with(|| b.timestamp.cmp(&a.timestamp))
         });
         result
@@ -111,8 +112,7 @@ impl MemoryCorpus {
             .collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
         });
         result.truncate(limit);
         result
@@ -122,7 +122,7 @@ impl MemoryCorpus {
     pub fn memories_with_embeddings(&self) -> Vec<(&MemoryRecord, &[f32])> {
         self.memories
             .iter()
-            .filter_map(|m| self.memory_embeddings.get(&m.id).map(|e| (m, e.as_slice())))
+            .filter_map(|m| self.memory_embeddings.get(&m.id).map(|e| (m, e.values.as_slice())))
             .collect()
     }
 
@@ -150,18 +150,16 @@ impl MemoryCorpus {
             .memories
             .iter()
             .filter(|m| m.importance >= min_importance)
-            .map(|m| {
-                let access_time = m.last_accessed_at.as_deref().unwrap_or(&m.timestamp);
-                let days = chrono::DateTime::parse_from_rfc3339(access_time)
-                    .map(|t| (now - t.with_timezone(&chrono::Utc)).num_hours() as f64 / 24.0)
-                    .unwrap_or(0.0);
-                (m, days.max(0.0))
+            .filter_map(|m| {
+                let access_time = m.last_accessed_at.as_deref().unwrap_or(&m.timestamp); // Before first access, age starts at creation.
+                let accessed = chrono::DateTime::parse_from_rfc3339(access_time).ok()?;
+                let days = (now - accessed.with_timezone(&chrono::Utc)).num_hours() as f64 / 24.0;
+                Some((m, days.max(0.0)))
             })
             .collect();
         result.sort_by(|a, b| {
             b.0.importance
-                .partial_cmp(&a.0.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.0.importance)
         });
         result.truncate(limit);
         result
@@ -190,8 +188,7 @@ impl MemoryCorpus {
             .collect();
         result.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
                 .then_with(|| b.timestamp.cmp(&a.timestamp))
         });
         result.truncate(limit);
@@ -273,8 +270,7 @@ impl MemoryCorpus {
         // Sort by importance DESC, keep top N
         self.memories.sort_by(|a, b| {
             b.importance
-                .partial_cmp(&a.importance)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.importance)
         });
         let evicted = self.memories.len() - max_count;
         // Collect IDs of memories being removed so we can clean up embeddings
@@ -386,6 +382,24 @@ mod tests {
     }
 
     #[test]
+    fn unknown_age_does_not_displace_a_dated_decay_candidate() {
+        let created = "2020-01-01T00:00:00Z";
+        let mut corpus = MemoryCorpus::empty();
+        let mut malformed = make_memory("bad-access", "", 1.0, created);
+        malformed.last_accessed_at = Some("invalid".into());
+        corpus.memories = vec![
+            malformed,
+            make_memory("bad-creation", "", 1.0, "invalid"),
+            make_memory("never-accessed", "", 0.8, created),
+        ];
+        let ranked = corpus.decayable_memories(0.5, 1);
+        assert_eq!(ranked.len(), 1);
+        assert_eq!(ranked[0].0.id, "never-accessed");
+        assert!(ranked[0].1 > 0.0);
+        assert_eq!(corpus.memories.len(), 3);
+    }
+
+    #[test]
     fn test_empty_corpus() {
         let corpus = MemoryCorpus::empty();
         assert!(corpus.memories.is_empty());
@@ -432,7 +446,10 @@ mod tests {
     fn test_from_corpus_data() {
         let memories = vec![CorpusMemory {
             record: make_memory("m1", "test", 0.5, "2025-01-01T00:00:00Z"),
-            embedding: Some(vec![0.1, 0.2, 0.3]),
+            embedding: Some(MemoryEmbedding {
+                values: vec![0.1, 0.2, 0.3],
+                producer: continuum_store::data::vector_index::EmbedderId::new("corpus-fixture"),
+            }),
         }];
         let events = vec![CorpusTimelineEvent {
             event: make_event("e1", "room-1", "General", "2025-01-01T00:00:00Z", 0.6),

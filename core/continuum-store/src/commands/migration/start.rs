@@ -5,11 +5,8 @@ use std::sync::Arc;
 use crate::data::DataState;
 use crate::orm::migration::MigrationProgress;
 
-fn default_batch_size() -> usize {
-    500
-}
-fn default_throttle_ms() -> u64 {
-    10
+fn default_batch_size() -> std::num::NonZeroUsize {
+    crate::orm::migration::DEFAULT_BATCH_SIZE
 }
 
 /// Params for `migration/start`.
@@ -24,12 +21,11 @@ pub struct MigrationStartParams {
     pub source: String,
     /// Target connection string to write to.
     pub target: String,
-    /// Records per batch. Defaults to 500.
+    /// Records per page, positive (a zero page is refused at the wire); defaults to the migration owner's.
     #[serde(default = "default_batch_size")]
-    pub batch_size: usize,
-    /// Milliseconds to pause between batches (backpressure). Defaults to 10.
-    #[serde(default = "default_throttle_ms")]
-    pub throttle_ms: u64,
+    #[ts(type = "number")]
+    #[schemars(with = "u64")]
+    pub batch_size: std::num::NonZeroUsize,
     /// Optional explicit collection list. Omit to migrate every collection.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -49,7 +45,7 @@ crate::action_command! {
     run(this, _ctx, p) => {
         let result = this
             .state
-            .migration_start(p.source, p.target, p.batch_size, p.throttle_ms, p.collections)
+            .migration_start(&p.source, &p.target, crate::orm::migration::MigrationConfig { batch_size: p.batch_size, collections: p.collections })
             .await?;
         Ok(result)
     }

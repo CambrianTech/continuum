@@ -74,7 +74,7 @@ use super::*;
                 json!({
                     "collection": StagedCreditGeneration::COLLECTION,
                     "dbPath": format!("@persona:{name}"),
-                    "filter": {"submittedRequestId": "correction"}
+                    "filter": {"submittedRequestId": "correction"}, "limit": 2
                 }),
             )
             .await
@@ -87,9 +87,11 @@ use super::*;
         let handle = format!("@persona:{name}");
         let removed = data.commands().execute_value("data/batch", json!({
             "dbPath": handle,
-            "operations": [{"operationType": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
+            "operations": [{"op": "delete", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string()}]
         })).await.unwrap();
-        storage_ok(&removed, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
+        let removed: crate::orm::data_outputs::BatchOutcomes =
+            serde_json::from_value(removed).expect("typed batch deletion receipt");
+        assert!(matches!(removed.outcomes.as_slice(), [crate::orm::types::BatchOutcome::Removed]));
         assert!(matches!(
             reviewed::bind_submission_generation(
                 &data,
@@ -104,9 +106,12 @@ use super::*;
         ));
         let restored = data.commands().execute_value("data/batch", json!({
             "dbPath": handle,
-            "operations": [{"operationType": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
+            "operations": [{"op": "create", "collection": StagedCreditGeneration::COLLECTION, "id": child.id.to_string(), "data": child}]
         })).await.unwrap();
-        storage_ok(&restored, "data/batch", StagedCreditGeneration::COLLECTION).unwrap();
+        let restored: crate::orm::data_outputs::BatchOutcomes =
+            serde_json::from_value(restored).expect("typed batch restoration receipt");
+        assert!(matches!(restored.outcomes.as_slice(),
+            [crate::orm::types::BatchOutcome::Created { record }] if record.id == child.id.to_string()));
         let bound = reviewed::bind_submission_generation(
             &data,
             name,
@@ -431,7 +436,7 @@ use super::*;
                 "data/list",
                 json!({
                     "collection":StagedCreditGeneration::COLLECTION,
-                    "dbPath":format!("@persona:{name}")
+                    "dbPath":format!("@persona:{name}"), "limit": 9
                 }),
             )
             .await

@@ -35,6 +35,8 @@ pub enum FieldType {
     Boolean,
     Date,
     Json,
+    /// Producer-native bytes with a typed descriptor, stored as paired BLOBs.
+    Binary,
     Uuid,
 }
 
@@ -86,31 +88,30 @@ impl Default for CascadeRule {
     export,
     export_to = "../../../protocol/typescript/orm/ForeignKeyRef.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ForeignKeyRef {
     /// Target collection name (e.g. "engrams").
     pub collection: String,
     /// Target field on the referenced row. Almost always "id" but
     /// named so non-id natural-key references are expressible.
     pub field: String,
-    #[serde(default)]
     pub on_delete: CascadeRule,
-    #[serde(default)]
     pub on_update: CascadeRule,
 }
 
 /// Schema field definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaField.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaField {
+    /// Explicit declared insertion value; absence never invents a value.
+    #[serde(default)]
+    #[ts(optional, type = "unknown")]
+    pub default_value: Option<Value>,
     pub name: String,
     pub field_type: FieldType,
-    #[serde(default)]
     pub indexed: bool,
-    #[serde(default)]
     pub unique: bool,
-    #[serde(default)]
     pub nullable: bool,
     #[ts(optional)]
     pub max_length: Option<usize>,
@@ -123,27 +124,27 @@ pub struct SchemaField {
 }
 
 /// Composite index definition
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(export, export_to = "../../../protocol/typescript/orm/SchemaIndex.ts")]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SchemaIndex {
+    /// Direction of the final indexed column, matching decorator metadata.
+    pub descending: bool,
     pub name: String,
     pub fields: Vec<String>,
-    #[serde(default)]
     pub unique: bool,
 }
 
 /// Collection schema - defines table structure
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Serialize, Deserialize, TS, PartialEq)]
 #[ts(
     export,
     export_to = "../../../protocol/typescript/orm/CollectionSchema.ts"
 )]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CollectionSchema {
     pub collection: String,
     pub fields: Vec<SchemaField>,
-    #[serde(default)]
     pub indexes: Vec<SchemaIndex>,
 }
 
@@ -268,27 +269,8 @@ pub struct CollectionStats {
     pub indices: Option<Vec<String>>,
 }
 
-/// Batch operation type
-#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/orm/BatchOperationType.ts"
-)]
-#[serde(rename_all = "lowercase")]
-pub enum BatchOperationType {
-    Create,
-    Read,
-    Update,
-    Delete,
-    /// Create the row unless a row with its id already exists; an existing row is left untouched.
-    /// An idempotent import: the same line written twice is one row.
-    Ensure,
-    /// Create the row with the next value of a commit-ordered sequence, unless a row already
-    /// holds the same unique value (then nothing is written and that row's sequence is returned).
-    Append(SequenceSpec),
-}
 
-/// How an [`BatchOperationType::Append`] numbers its row: `sequence` is assigned
+/// How a [`BatchOperation::Append`] numbers its row: `sequence` is assigned
 /// `max(sequence) + 1` inside the batch's write transaction, so sequence order IS commit order
 /// (a row can never be acknowledged past an earlier allocation that commits later); `unique`
 /// names the field whose value identifies the row, so a duplicate reuses the first row.
@@ -299,27 +281,77 @@ pub struct SequenceSpec {
     pub unique: String,
 }
 
-/// What an append did: `fresh` when this batch created the row, otherwise the existing row's.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Sequenced {
-    pub seq: u64,
-    pub fresh: bool,
+/// What an append did: created its row at `seq`, or found the row its unique value already names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/Appended.ts")]
+#[serde(tag = "kind", content = "seq", rename_all = "camelCase")]
+pub enum Appended {
+    Fresh(#[ts(type = "number")] u64),
+    Existing(#[ts(type = "number")] u64),
 }
 
-/// Batch storage operation
-#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/orm/BatchOperation.ts"
-)]
-#[serde(rename_all = "camelCase")]
-pub struct BatchOperation {
-    pub operation_type: BatchOperationType,
+impl Appended {
+    /// The row's sequence, whichever way it was reached.
+    pub fn seq(self) -> u64 {
+        match self {
+            Self::Fresh(seq) | Self::Existing(seq) => seq,
+        }
+    }
+}
+
+/// One row, named: what a read or a delete carries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/RowKey.ts")]
+pub struct RowKey {
     pub collection: String,
-    pub id: Option<UUID>,
-    #[ts(type = "Record<string, unknown> | undefined")]
-    #[schemars(with = "Option<serde_json::Value>")]
-    pub data: Option<Value>,
+    pub id: UUID,
+}
+
+/// One row's declared fields to write: what a create, update or ensure carries.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/RowWrite.ts")]
+pub struct RowWrite {
+    pub collection: String,
+    pub id: UUID,
+    #[ts(type = "Record<string, unknown>")]
+    #[schemars(with = "serde_json::Value")]
+    pub data: Value,
+}
+
+/// One operation of an atomic batch, carrying exactly what it needs: no operation exists
+/// without its row, and no write without its data.
+#[derive(Debug, Clone, Serialize, Deserialize, TS, schemars::JsonSchema)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/BatchOperation.ts")]
+#[serde(tag = "op", rename_all = "camelCase")]
+pub enum BatchOperation {
+    Read(RowKey),
+    Create(RowWrite),
+    Update(RowWrite),
+    Delete(RowKey),
+    /// Create the row unless a row with its id already exists (an idempotent import).
+    Ensure(RowWrite),
+    /// Create the row at the next commit-ordered sequence value, unless a row already holds the
+    /// same unique value (then nothing is written and that row's sequence is returned).
+    Append { row: RowWrite, spec: SequenceSpec },
+}
+
+/// What one batch operation did; the batch committed all of them.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/orm/BatchOutcome.ts")]
+#[serde(tag = "outcome", rename_all = "camelCase")]
+pub enum BatchOutcome {
+    Read { record: DataRecord },
+    Created { record: DataRecord },
+    Updated,
+    /// The delete removed its row.
+    Removed,
+    /// The delete found no row.
+    Absent,
+    /// The ensure created its row.
+    Ensured,
+    /// The ensure found its row already there and left it untouched.
+    AlreadyPresent,
+    Appended { appended: Appended },
 }
 
 #[cfg(test)]

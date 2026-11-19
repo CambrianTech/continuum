@@ -43,6 +43,9 @@ pub enum ExamOutcome {
 #[serde(rename_all = "camelCase")]
 #[entity(collection = "genome_exam_receipts")]
 pub struct GeneExamReceipt {
+    /// The trial is the durable identity of its examination receipt.
+    #[entity(primary_key)]
+    pub id: Uuid,
     #[entity(indexed)]
     pub trial_id: Uuid,
     #[entity(indexed)]
@@ -98,6 +101,7 @@ impl GeneExamReceipt {
 
     fn blank(trial: &crate::genome::gene_trial::GeneTrial, boot: Uuid, now_ms: u64) -> Self {
         Self {
+            id: receipt_id(trial.id),
             trial_id: trial.id,
             persona_id: trial.persona_id,
             gene: trial.alias.clone(),
