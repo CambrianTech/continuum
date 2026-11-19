@@ -515,7 +515,7 @@ impl AIProviderAdapter for PlacementSwitch {
     fn api_style(&self) -> ApiStyle {
         self.current().api_style()
     }
-    fn warm_ahead(&self, page: crate::inference::slots::PageKey) {
+    fn warm_ahead(&self, page: crate::inference::slots::PageKey) -> Option<futures::future::RemoteHandle<()>> {
         self.current().warm_ahead(page)
     }
     fn prompt_cache(&self) -> crate::ai::adapter::PromptCache {

@@ -330,3 +330,40 @@ async fn pinned_waiters_do_not_retain_the_endpoint_during_transition(
     );
     Ok(())
 }
+
+// what this catches (card ff9ecfd8): a turn that finds every slot pinned used to be
+// admitted with NO slot, so the server placed it on whichever slot freed and overwrote a
+// resident's KV with no save (M5 8/13, IntelMac 19/36 contended leases). It must wait,
+// stay pending while the slot is held, and land PINNED on the freed slot once the holder
+// drops. A pending hint retains no mind gate while decode capacity is occupied.
+#[tokio::test]
+async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() -> Result<(), Box<dyn std::error::Error>> {
+    let root = "test://all-pinned";
+    let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
+    let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
+    let client = reqwest::Client::new();
+    let a = PageKey::mind(Uuid::from_u128(11)).unwrap(); // test: non-nil ids
+    let b = PageKey::mind(Uuid::from_u128(13)).unwrap(); // test: non-nil ids
+    let adm_a = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
+        .await?;
+    let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
+
+    let capacity = DecodeBound::from(&sem);
+    let last_free = capacity.try_acquire()?;
+    let speculative = warm_ahead(capacity, b, Arc::clone(&pool), &client, root);
+    tokio::pin!(speculative);
+    assert!(futures::poll!(&mut speculative).is_pending());
+    assert!(MindTurn::try_begin(b).is_some(), "pending interest holds no mind gate");
+    drop(last_free);
+    assert!(speculative.await.is_ok(), "permit return wakes the pending hint");
+
+    let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool), &client, root, 100, std::time::Duration::ZERO);
+    tokio::pin!(turn_b);
+    assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
+    assert_eq!(sem.available_permits(), 1, "a turn waiting for a slot must not hold a lane permit (Fable on #4515)");
+    drop(adm_a);
+    let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
+        .await??;
+    assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
+    Ok(())
+}

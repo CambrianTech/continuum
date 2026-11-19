@@ -319,21 +319,17 @@ pub(crate) async fn warm_ahead(
     root: &str,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
-    // Best-effort: a mind mid-act already has her KV in a slot, and her act queued behind
-    // it must not wait on this; held until the warm-ahead's paging is done.
-    let Some(_mind) = MindTurn::try_begin(key) else {
-        continuum_base::probe!(
-            class = "inference.kv_warm_ahead.skipped",
-            page = %key,
-            reason = "mind_mid_act",
-            "warm-ahead skipped: this mind is mid-act, so her KV is already in a slot"
-        );
-        return Ok(());
-    };
-    // Best-effort: a closed endpoint is an instant no, never a held permit.
-    // No generation follows: its drop keeps only the warmth paging confirmed (`Dispatch::Unsent`).
     let concurrency = concurrency.into();
-    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO).await?;
+    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO);
+    tokio::pin!(admission);
+    let admission = match futures::poll!(&mut admission) {
+        std::task::Poll::Ready(result) => result,
+        std::task::Poll::Pending => {
+            continuum_base::probe!(class = "inference.kv_warm_ahead.pending", page = %key,
+                "swap interest pending during prompt assembly");
+            admission.await
+        }
+    }?;
     if let Some(slot) = admission.slot {
         continuum_base::probe!(
             class = "inference.kv_warm_ahead",
@@ -376,7 +372,7 @@ async fn admit(
     // queued behind her learning (Codex on card 23069702).
     let keyed_dream = class == SlotClass::Dream && key.is_some();
     // 0. ONE ACT AT A TIME PER MIND — queued here, before the lane, holding nothing
-    //    (`slots::mind_gate`). Warm-ahead took its gate itself, without waiting.
+    //    (`slots::mind_gate`). Speculation checks custody only after its physical slot is ready.
     let mut mind = match key {
         Some(k) if !warm_only && !keyed_dream => {
             let begin = MindTurn::begin(k);
@@ -483,7 +479,7 @@ async fn admit(
             // no save (8 of 13 contended leases on the M5, 19 of 36 on the IntelMac, 2026-09-28).
             // The server cannot run the turn before a slot frees anyway, so the turn waits for a
             // slot release and leases again; the evictee is then saved by the paging plan below.
-            // Warm-ahead is best-effort and still gives up at once.
+            // A pending warm request uses the same release notification during prompt assembly.
             let pinned = loop {
                 let released = pool.released();
                 let notified = released.notified();
@@ -497,17 +493,11 @@ async fn admit(
                     if let Some(pinned) = pool.pin_slot(&k) {
                         break Some(pinned);
                     }
-                    if warm_only {
-                        break None;
-                    }
                     // Leased, then evicted before the pin: the pool CHANGED rather than filled,
                     // and no release may ever be announced for it (the evicting worker can cancel
                     // before it pins), so retry now instead of waiting (Codex on #4515).
                     tokio::task::yield_now().await;
                     continue;
-                }
-                if warm_only {
-                    break None;
                 }
                 waited = true;
                 // Never hold a lane while waiting for a slot (Fable on #4515): the lane semaphore
@@ -539,7 +529,7 @@ async fn admit(
                     // gate (Codex on #5898), no permit (card 6742aad1). A turn keeps its pin
                     // through the wait (a same-page returner must await the prior owner without
                     // permitting eviction).
-                    None if keyed_dream => {
+                    None if keyed_dream || warm_only => {
                         drop(admission);
                         lane = None;
                         if let Some(release) = pool.busy_until_release(slot)? { release.await; }
@@ -548,7 +538,16 @@ async fn admit(
                     None => pool.acquire_slot(slot).await?,
                 });
                 admission._endpoint.check_ready()?;
-                if keyed_dream {
+                if warm_only {
+                    mind = MindTurn::try_begin(k);
+                    if mind.is_none() {
+                        drop(admission);
+                        // The prior act or custody transfer owns this page. Its release
+                        // wakes the still-interested turn, with all physical resources free.
+                        drop(MindTurn::begin(k).await?);
+                        continue 'admit;
+                    }
+                } else if keyed_dream {
                     // Her gate, without waiting: her act running or queued comes first. Returning
                     // drops this admission, releasing the pin, the slot permit and the lane.
                     mind = Some(MindTurn::try_begin(k).ok_or_else(|| HER_ACT_FIRST.to_owned())?);
