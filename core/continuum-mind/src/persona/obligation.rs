@@ -288,9 +288,10 @@ pub struct Obligations {
     /// Consecutive store failures, shared with the turn marks: the backoff and the health
     /// probe read it, so a store that keeps failing slows her down loudly instead of spinning.
     failures: Arc<effects::Failures>,
-    /// The interrupted rows whose notice this start pinned, by row id, with the room whose
-    /// cycle carries it: closing a row unpins its notice, and only then (stop-drain S3).
-    pinned: parking_lot::Mutex<std::collections::HashMap<Uuid, Uuid>>,
+    /// The interrupted rows this start pinned into their room's one notice, by row id, with the
+    /// start's clock their ages are read against: closing a row re-renders that notice without it,
+    /// and the last row's close unpins it (stop-drain S3).
+    pinned: parking_lot::Mutex<std::collections::HashMap<Uuid, (PersonaObligation, u64)>>,
 }
 
 /// An executor over the real store's data module: what a loop's obligations write through.
