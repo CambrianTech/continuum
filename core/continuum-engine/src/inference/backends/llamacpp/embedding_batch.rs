@@ -11,17 +11,9 @@ pub(crate) struct ContextBytes {
     pub host: u64,
 }
 
-/// The widest piece the embed lane embeds in one context, in tokens: the model's trained context
-/// or the range its context cost was measured over (`MEASURED_UP_TO`), whichever is smaller. A
-/// longer text is embedded in windows of it (`Plan::Windows`), every token kept.
-///
-/// The model's trained context alone was the window before: Qwen3-Embedding-0.6B trains at 32,768
-/// tokens, so one 19,456-token text sized a 13,547 MiB context (the M5, canary 958ea3056,
-/// 2026-11-14 03:35Z: `embed.vram.refused` requested 14,205,059,072 B beside 13,915,160,576 B,
-/// `embedding.neural.failed`), and recall lost that item. A longer text now stands as the
-/// token-weighted mean of its windows (the combiner card 57ef2a06 already runs past 32,768 tokens);
-/// its effect on recall ranking for texts between 2,048 and 32,768 tokens is not measured yet. Every
-/// byte past the measured range was an extrapolation.
+/// The number of tokens the lane embeds in one pass. Its window is bounded by
+/// the model's trained context and the embedding window policy. Longer inputs
+/// retain every token across windows and combine their outputs by token count.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct EmbedWindow(u32);
 
@@ -29,23 +21,21 @@ impl EmbedWindow {
     /// The window for a model trained at `n_ctx_train` tokens; none for a model that reports no
     /// trained context, where nothing it embeds can be planned.
     pub(crate) fn for_model(n_ctx_train: u32) -> Option<Self> {
-        (n_ctx_train > 0).then_some(Self(n_ctx_train.min(MEASURED_UP_TO)))
+        (n_ctx_train > 0).then_some(Self(n_ctx_train.min(MAX_WINDOW_TOKENS)))
     }
 
     pub(crate) fn tokens(self) -> u32 {
         self.0
     }
-
-
 }
 
 /// Why a model with no trained context embeds nothing.
 pub(crate) const NO_TRAINED_CONTEXT: &str = "embedding model reports no trained context: no window can be planned";
 
-/// The largest context the rates below were measured at (four sizes, 256 to 2,048 tokens).
-const MEASURED_UP_TO: u32 = 2_048;
-
-
+/// Limit each pass so a single long document cannot claim a full training-length
+/// context beside serving. The pooled allocation replay covers up to this width;
+/// the native planner prices each request at its actual width.
+const MAX_WINDOW_TOKENS: u32 = 2_048;
 
 /// One request's sequences, each one's plan, and the window that embeds the widest piece.
 pub(crate) struct EmbeddingBatch {
@@ -246,7 +236,7 @@ mod tests {
     // what this catches (dyno, the M5 on canary 958ea3056, 2026-11-14 03:35Z): an embed context
     // sized to the model's trained 32,768 tokens. Before: one 19,456-token text planned whole at that
     // limit leased 14,205,059,072 B, the receipt's exact request, refused beside 13,915,160,576 B.
-    // After: the window derives from the measured range, the same text is windows of it, and the
+    // After: the window caps the width of each pass, the same text is windows of it, and the
     // context is what a 2,048-token window allocates, every text token still embedded once.
     #[test]
     fn an_embed_context_derives_from_the_window_never_the_trained_context() {
