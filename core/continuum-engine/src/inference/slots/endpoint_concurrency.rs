@@ -12,6 +12,7 @@
 //! with nothing to retire.
 
 use parking_lot::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, LazyLock};
 use tokio::sync::{Notify, OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
@@ -23,6 +24,8 @@ pub type PermitReturn<'a> = std::pin::Pin<Box<tokio::sync::futures::Notified<'a>
 /// semaphore carries no state of its own, so one signal serves them all, and each woken waiter
 /// re-tries its own semaphore. A wake is still one real return, never a spin.
 static ADAPTER_PERMIT_RETURNED: LazyLock<Arc<Notify>> = LazyLock::new(|| Arc::new(Notify::new()));
+/// The turns waiting on any pool-less adapter semaphore (see [`DecodeBound::turns_waiting`]).
+static ADAPTER_TURNS_WAITING: LazyLock<Arc<AtomicUsize>> = LazyLock::new(|| Arc::new(AtomicUsize::new(0)));
 
 /// Permits in circulation (held or free) and the size the installed generation asks for.
 struct Counts {
@@ -37,6 +40,8 @@ struct Circulation {
     counts: Mutex<Counts>,
     /// Raised when a permit returns to circulation or the size grows: what a waiter waits on.
     returned: Arc<Notify>,
+    /// Turns waiting for a permit: while any waits, background work does not take one.
+    turns_waiting: Arc<AtomicUsize>,
 }
 
 /// How many generations an endpoint runs at once, whatever its resident slots: ONE. Every slot keeps its
@@ -61,6 +66,7 @@ impl EndpointConcurrency {
                 permits: Arc::new(Semaphore::new(0)),
                 counts: Mutex::new(Counts { issued: 0, target: 0 }),
                 returned: Arc::new(Notify::new()),
+                turns_waiting: Arc::new(AtomicUsize::new(0)),
             }),
         }
     }
@@ -70,6 +76,7 @@ impl EndpointConcurrency {
         DecodeBound {
             permits: Arc::clone(&self.circulation.permits),
             returned: Arc::clone(&self.circulation.returned),
+            turns_waiting: Arc::clone(&self.circulation.turns_waiting),
             retire: Some(Arc::clone(&self.circulation)),
         }
     }
@@ -133,12 +140,43 @@ impl EndpointConcurrency {
 pub struct DecodeBound {
     permits: Arc<Semaphore>,
     returned: Arc<Notify>,
+    /// Turns waiting for this endpoint's permit. A TURN OUTRANKS BACKGROUND WORK (Codex, BigMama R21,
+    /// 2026-11-19 13:24-13:34Z): a turn holding a lane lets it go to wait, then must take its lane
+    /// again before it retries, while a dream retries at once; so each returned permit went to the
+    /// next dream and Kimi's admitted act waited 610 s behind four of them. While a turn waits,
+    /// [`DecodeBound::acquire`] (background, dreams) does not take a returned permit.
+    turns_waiting: Arc<AtomicUsize>,
     retire: Option<Arc<Circulation>>,
 }
 
 impl From<&Arc<Semaphore>> for DecodeBound {
     fn from(permits: &Arc<Semaphore>) -> Self {
-        Self { permits: Arc::clone(permits), returned: Arc::clone(&ADAPTER_PERMIT_RETURNED), retire: None }
+        Self {
+            permits: Arc::clone(permits),
+            returned: Arc::clone(&ADAPTER_PERMIT_RETURNED),
+            turns_waiting: Arc::clone(&ADAPTER_TURNS_WAITING),
+            retire: None,
+        }
+    }
+}
+
+/// A turn waiting for a decode permit, counted from its first refused try until it holds one; the
+/// last to leave wakes background work held back for it. Timed: how long her page waited for the
+/// permit is told apart from the lane, gate and slot waits on the same act (Codex, BigMama R21).
+pub struct TurnWaiting {
+    turns_waiting: Arc<AtomicUsize>,
+    returned: Arc<Notify>,
+    page: super::PageKey,
+    since: std::time::Instant,
+}
+
+impl Drop for TurnWaiting {
+    fn drop(&mut self) {
+        continuum_base::probe!(class = "inference.decode_permit.turn_waited", page = %self.page, ms = self.since.elapsed().as_millis() as u64,
+            waiting = self.turns_waiting.load(Ordering::Acquire) as u64, "a turn's wait for the decode permit ended");
+        if self.turns_waiting.fetch_sub(1, Ordering::AcqRel) == 1 {
+            self.returned.notify_waiters();
+        }
     }
 }
 
@@ -157,13 +195,40 @@ impl DecodeBound {
         self.try_acquire().map_err(|_| returned)
     }
 
-    /// Waits for a permit within the endpoint's size: each return wakes it to try once.
+    /// [`Self::try_or_return`] for a caller that may be a turn: a refused turn is counted waiting in
+    /// `waiting` (kept across its retries, its lane released and taken again) until it holds a
+    /// permit, so background work does not take the permits it waits for.
+    pub fn try_or_return_as(&self, turn: Option<super::PageKey>, waiting: &mut Option<TurnWaiting>) -> Result<DecodePermit, PermitReturn<'_>> {
+        let tried = self.try_or_return();
+        match (&tried, turn) {
+            (Ok(_), _) => *waiting = None,
+            (Err(_), Some(page)) if waiting.is_none() => {
+                self.turns_waiting.fetch_add(1, Ordering::AcqRel);
+                *waiting = Some(TurnWaiting {
+                    turns_waiting: Arc::clone(&self.turns_waiting),
+                    returned: Arc::clone(&self.returned),
+                    page,
+                    since: std::time::Instant::now(),
+                });
+            }
+            (Err(_), _) => {}
+        }
+        tried
+    }
+
+    /// Waits for a permit within the endpoint's size: each return wakes it to try once. Background
+    /// work: while a turn waits it does not take a returned permit (a turn outranks it), and the last
+    /// waiting turn's leaving wakes it.
     pub async fn acquire(&self) -> DecodePermit {
         loop {
-            match self.try_or_return() {
-                Ok(permit) => return permit,
-                Err(returned) => returned.await,
+            let mut returned = Box::pin(self.returned.notified());
+            returned.as_mut().enable();
+            if self.turns_waiting.load(Ordering::Acquire) == 0 {
+                if let Ok(permit) = self.try_acquire() {
+                    return permit;
+                }
             }
+            returned.await;
         }
     }
 }
@@ -324,5 +389,32 @@ mod tests {
         drop(held);
         drop(waiter.await);
         assert_eq!(adapter.available_permits(), 1);
+    }
+
+    // what this catches (Codex, BigMama R21, 2026-11-19 13:24-13:34Z): an admitted turn waiting 610 s
+    // while four dreams took the one decode permit in turn. A turn that must retake its lane before it
+    // retries lost every return to a background acquire that retries at once. While a turn waits,
+    // background work leaves a returned permit for it, and goes once no turn waits.
+    #[tokio::test]
+    async fn a_returned_permit_waits_for_the_turn_not_the_dream() {
+        let endpoint = EndpointConcurrency::new();
+        endpoint.retarget(1);
+        let bound = endpoint.bound();
+        let held = bound.try_acquire().expect("test: the one permit"); // expect: the test's own precondition
+        let mut turn = None;
+        let page = super::super::PageKey::mind(uuid::Uuid::new_v4()).expect("test: a mind page"); // expect: the test's own precondition
+        assert!(bound.try_or_return_as(Some(page), &mut turn).is_err(), "the turn finds none");
+        assert!(turn.is_some(), "and is counted waiting");
+        let dream = bound.acquire();
+        tokio::pin!(dream);
+        assert!(futures::poll!(&mut dream).is_pending());
+        drop(held);
+        assert!(futures::poll!(&mut dream).is_pending(), "the returned permit is left for the turn");
+        let admitted = bound.try_or_return_as(Some(page), &mut turn).ok().expect("test: the turn takes it"); // expect: the test's own precondition
+        assert!(turn.is_none(), "holding a permit, she no longer waits");
+        assert!(futures::poll!(&mut dream).is_pending(), "the turn holds it");
+        drop(admitted);
+        drop(dream.await);
+        assert_eq!(available(&endpoint), 1);
     }
 }

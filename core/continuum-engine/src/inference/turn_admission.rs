@@ -397,7 +397,7 @@ async fn admit(
     // Taken BEFORE the permit: a permit taken only to drop it for the lane woke the next waiter (6742aad1).
     let dream_lane = |pool: Option<&Arc<KvSlotPool>>| class == SlotClass::Dream && (keyed_dream || pool.is_some_and(|pool| pool.scratch_slot().is_none()));
     let mut needs_lane = dream_lane(pool.as_ref());
-    let mut lane: Option<ServingLanePermit> = None;
+    let (mut lane, mut turn_waiting): (Option<ServingLanePermit>, _) = (None, None);
     'admit: loop {
         if caller_lane.is_none() {
             if let Some(authority) = &reacquire {
@@ -411,7 +411,7 @@ async fn admit(
         //    TRIES: when the adapter is full it lets the lane go, waits for a permit to RETURN
         //    holding nothing (never handed one it could only drop), and takes both again (#5786).
         let _permit = if lane.is_some() || caller_lane.is_some() {
-            match concurrency.try_or_return() {
+            match concurrency.try_or_return_as(key.filter(|_| class == SlotClass::Turn), &mut turn_waiting) {
                 Ok(permit) => permit,
                 Err(returned) => {
                     lane = None;

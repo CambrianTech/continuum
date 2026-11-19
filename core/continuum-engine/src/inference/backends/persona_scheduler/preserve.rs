@@ -14,7 +14,7 @@
 //! own blocks. A mind whose write fails this stop keeps her entry from the last complete generation,
 //! so a failed save never drops her.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use continuum_saved_state::{OwnedFile, Retention, SavedState, Singleton, Store};
