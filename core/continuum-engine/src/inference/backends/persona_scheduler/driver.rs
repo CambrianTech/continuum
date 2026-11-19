@@ -640,8 +640,14 @@ impl Driver<'_, '_> {
         turn.spent.shared_prefix_tokens = reuse::common_prefix(&her.parts().tokens.held, &turn.prompt);
         let decided = reuse_for(her, &turn.prompt, &basis);
         let shared = turn.spent.shared_prefix_tokens;
-        if matches!(decided, reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint))
-            && her.parts().genome == basis && shared > 0 && turn.boundaries[0].is_some_and(|view| shared < view) {
+        // Prefill will cross this matching prefix again. Take a native checkpoint there
+        // so the next turn can use it if both token history and recurrent lineage match.
+        let can_learn = match decided {
+            reuse::Reuse::Rewind { from } => shared > from,
+            reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint) => shared > 0,
+            _ => false,
+        };
+        if can_learn && her.parts().genome == basis && turn.boundaries[0].is_some_and(|view| shared < view) {
             turn.boundaries[1] = Some(shared);
         }
         let (from, start) = match decided {
