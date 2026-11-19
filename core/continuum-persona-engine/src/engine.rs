@@ -39,7 +39,8 @@ mod tests;
 
 use crate::persona::{MindId, PersonaId};
 use crate::pipeline::{HandoffRefusal, Identified, Refused, RetireRefusal, Roles, StageRefusal};
-use crate::residency::{Carries, Completion, Direction, Execute, Native, TierRefusal};
+use crate::residency::{Completion, Direction, Execute, Native, TierRefusal};
+use crate::persona::Carries;
 
 /// Why a mind was not staged. Either way she is handed back.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

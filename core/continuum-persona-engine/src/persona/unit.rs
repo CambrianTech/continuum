@@ -36,8 +36,14 @@ impl<B, T, G, L, D> PersonaUnit<B, T, G, L, D> {
     }
 }
 
+/// A unit that carries her own blocks: the tier moves the blocks it is handed and holds no copy of
+/// them (CONTINUUM-ENGINE §2). The persona owns this, and residency depends on it, never the reverse.
+pub trait Carries<B> {
+    fn blocks_mut(&mut self) -> &mut B;
+}
+
 /// A unit carries her own blocks: the tier is handed them to move.
-impl<B, T, G, L, D> crate::residency::Carries<B> for PersonaUnit<B, T, G, L, D> {
+impl<B, T, G, L, D> Carries<B> for PersonaUnit<B, T, G, L, D> {
     fn blocks_mut(&mut self) -> &mut B {
         &mut self.parts.blocks
     }

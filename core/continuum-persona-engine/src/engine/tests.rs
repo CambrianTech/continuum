@@ -83,7 +83,7 @@ impl Execute for Recording {
     }
     type Checkpoint = Option<u32>;
     fn checkpoint(&mut self, _mind: MindId, into: &mut Option<u32>) -> Result<u32, TierRefusal> {
-        let at = u32::try_from(self.decodes.borrow().len()).unwrap_or(u32::MAX); // unwrap_or: a test log never holds 4 billion steps
+        let at = self.decodes.borrow().len() as u32; // a test log never holds 4 billion steps
         *into = Some(at);
         Ok(at)
     }

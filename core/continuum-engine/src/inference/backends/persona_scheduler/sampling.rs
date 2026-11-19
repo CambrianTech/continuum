@@ -1,6 +1,6 @@
 //! A turn's sampler chain from its [`SamplingConfig`].
 
-use llama::{Model, Sampler};
+use llama::{ChatRefusal, Model, Sampler};
 
 use super::super::SamplingConfig;
 
@@ -9,13 +9,13 @@ use super::super::SamplingConfig;
 /// grammar come first, so their constraints apply before probabilistic sampling could pick a token
 /// they reject. A think bound llama.cpp refuses fails the turn by name, never a turn left to think
 /// unbounded.
-pub(super) fn sampler(model: &Model, sampling: &SamplingConfig) -> Result<Sampler, String> {
+pub(super) fn sampler(model: &Model, sampling: &SamplingConfig) -> Result<Sampler, ChatRefusal> {
     if sampling.temperature <= 0.0 && sampling.grammar.is_none() && sampling.think.is_none() {
         return Ok(Sampler::greedy());
     }
     let mut chain = Sampler::chain();
     if let Some(bound) = sampling.think.as_ref() {
-        chain = chain.reasoning_budget(model, bound).map_err(|refusal| refusal.to_string())?;
+        chain = chain.reasoning_budget(model, bound)?;
     }
     if let Some(grammar) = sampling.grammar.as_ref() {
         chain = chain.grammar(model, grammar, "root");

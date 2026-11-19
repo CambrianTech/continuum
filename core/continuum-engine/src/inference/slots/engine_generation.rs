@@ -700,7 +700,7 @@ impl SlotDirectory {
     /// inserts: a lookup alone made an `Unprobed` entry the stop then claimed custody of (Codex,
     /// the M5's phantom :58057). Only discovery, launch and latching register an endpoint.
     fn existing(&self, root: &str) -> Option<Arc<EndpointSlots>> {
-        self.endpoints.get(root.trim_end_matches('/')).map(|entry| entry.value().clone())
+        self.endpoints.get(root.trim_end_matches('/')).map(|entry| Arc::clone(entry.value()))
     }
 
     /// The pool at `root` as far as it was probed: `NotAsked` (the caller discovers it, probing
