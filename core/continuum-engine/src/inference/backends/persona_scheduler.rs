@@ -72,8 +72,6 @@ pub struct SchedulerConfig {
     pub n_ctx: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
-    pub fused_gdn_ar: bool,
-    pub fused_gdn_ch: bool,
     pub type_k: KvCacheType,
     pub type_v: KvCacheType,
 }

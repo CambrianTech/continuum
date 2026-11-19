@@ -257,8 +257,15 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
             // deliberations, build 4aefe5131a, 2026-11-18 22:26Z). Flash attention keeps V
             // untransposed; a backend without it refuses this context by name (`Refused`).
             flash_attn: FlashAttn::Enabled,
-            fused_gdn_ar: config.fused_gdn_ar,
-            fused_gdn_ch: config.fused_gdn_ch,
+            // The fused Gated Delta Net graphs, the fork's defaults (llama-context.cpp:3601-3602)
+            // and what llama-bench measures: Qwen3.6 is mostly GDN layers. The launch had turned
+            // them off ("their fused Metal kernels threw across FFI", no receipt); with them off the
+            // M5 decoded ~31-38 ms/token (8 ms of it CPU in the forward call) where llama-bench
+            // with them on decodes the same GGUF and Q4_0 KV at ~20.5 ms at 15k (a990358854 vs
+            // fork a58c3b4cf, 2026-11-19 01:44-01:51Z). The fork probes support and falls back
+            // where a backend lacks the op (llama-context.cpp:565-566).
+            fused_gdn_ar: true,
+            fused_gdn_ch: true,
             type_k: config.type_k,
             type_v: config.type_v,
             embeddings: false,
