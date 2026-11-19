@@ -100,6 +100,17 @@ impl EmbedResidency {
     fn claim_on(daemon: Option<Arc<ResourceDaemon>>, need: EmbedNeed) -> Self {
         let residency = Self { need, daemon };
         residency.restate(|floor| floor);
+        if residency.daemon.is_some() {
+            continuum_base::probe!(
+                class = "embed.residency.reserved",
+                consumer = EMBED_LANE_CONSUMER_ID,
+                weights_device_bytes = need.weights.device,
+                weights_host_bytes = need.weights.host,
+                window_device_bytes = need.context.device,
+                window_host_bytes = need.context.host,
+                "embedder reserved its weights and maximum embedding context in their respective pools"
+            );
+        }
         residency
     }
 
