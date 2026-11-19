@@ -17,6 +17,15 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 ---
 
+## Runtime and storage design authorities
+
+| For a change to | Start with | Design owner |
+|---|---|---|
+| Runtime workers, subscriptions, serving, GPU scheduling, streaming, KV and mind-state caches, or mind swaps | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) | Fable |
+| Rust persistence, entity schemas, migrations, typed queries or native data storage | [Rust ORM Architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) | Codex |
+
+The engine chapter tracks merged design. [Engine design review #6092](https://github.com/CambrianTech/continuum/pull/6092) covers proposed swap and transfer contracts. Disk cache retention belongs to the [disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs).
+
 ## Where things live — EVERY directory, with counts
 
 595 markdown files. This table is the map; it is the thing to fix first when it goes
