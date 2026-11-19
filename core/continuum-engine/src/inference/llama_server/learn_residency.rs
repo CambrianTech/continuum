@@ -191,13 +191,22 @@ pub struct LearningPlan {
     pub served_window: u32,
 }
 
+/// The native planner distinguishes existing serving storage from new learning allocations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlannedKind {
+    OptimizerStaticRequired,
+    OptimizerHostRequired,
+    SharedComputeRequired,
+    SharedComputeHeld,
+}
 /// A preflight row: `*_required` is what learning would allocate, `shared_compute_held` is what
 /// serving holds now (evidence, never a lease row).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct PlannedRow {
     pub device: String,
     pub buffer_type: String,
-    pub kind: String,
+    pub kind: PlannedKind,
     pub bytes: u64,
     pub host: bool,
 }

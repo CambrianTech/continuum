@@ -31,7 +31,7 @@ impl std::fmt::Display for TrainingWait {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Serving(refusal) => write!(f, "the serving lifecycle refuses training admission now ({})", refusal.name()),
-            Self::Capacity { kind, needed, available, .. } => write!(f, "{available} of {needed} governed {kind:?} bytes are free"),
+            Self::Capacity { consumer, kind, needed, available } => write!(f, "{consumer}: {available} of {needed} governed {kind:?} bytes are free"),
         }
     }
 }
