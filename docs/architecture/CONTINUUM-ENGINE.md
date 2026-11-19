@@ -2766,6 +2766,19 @@ view, rendering, tokenizing and submitting. Twice the GPU waited on the same min
 `Record` publishes the GPU's busy share and its longest idle gap every window in the snapshot. That is the gate, read
 live, not reconstructed from rows afterwards.
 
+**Nothing waits on anything: it is all threads and handles** (Joel, 2026-11-19: "Never wait on anything. It's all threads
+and handles"). Every operation returns a handle at once, and its completion is an event the next stage reacts to. That
+holds for minds, stages and the engine thread itself:
+- a mind's tool call, a tokenize, a disk restore and a learning step each return a handle; completion is published and
+  whoever consumes it reacts, as bgfx's `createTexture` hands back a handle whose work lands in a later frame;
+- the engine thread never blocks on the GPU. Today it calls `synchronize()` after every token (`unified_tier.rs` `settle`,
+  plus a990358854's explicit `settle()`, added only to time the GPU and deleted in S1). Instead a forward pass returns a
+  fence. While it runs the thread encodes the next work it has: another stream's prefill chunk, a bind, a checkpoint.
+  The logits are read when the fence has signalled, and GPU time comes from the fence's timestamps, not from a blocking
+  call;
+- no `spawn_blocking` held for a result, no `recv()` on a hot path, no `.await` on another stage's whole work, no lock
+  held across a seam. A stage that must react to a result subscribes to it.
+
 **One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
 artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
 below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
