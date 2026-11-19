@@ -2742,13 +2742,17 @@ view, renders, tokenizes and submits again has made herself the bottleneck, and 
 - *A mind is always running.* Her thinking is one continuous stream in the engine (her `MindProxy`), not a series of
   requests. Whatever she perceives (a message, a tool's output, a file she opened) is appended to that stream as it
   arrives and prefilled then. Nothing waits for her to "ask".
-- *A tool is I/O she started, not a pause.* `Emit` sees the call while she is still decoding and the tool starts then.
-  While it runs she is **blocked on I/O** for that call only, and the engine runs another mind immediately: the swap is
-  the OS running the next runnable process, in milliseconds (4.14). When the result arrives it is appended to her
-  stream and she is runnable again.
-- *The engine runs whichever minds are runnable.* There is no queue of turns to wait in. If every resident is blocked
-  on I/O at once, that is a measured fact to fix in her I/O (a slow tool, a serial step in perception), never a reason
-  to idle the engine by design.
+- *She never blocks; she is a multi-activity mind* (Joel, 2026-11-19: "Blocking on io is dumb anyway. These are
+  multi activity mind. She should be wondering"). Each activity she holds (a card, a conversation, a review, her own
+  reflection) is a stream of her thinking with its own context; her identity and memory are the prefix they share
+  (`seq_cp`, never re-prefilled). `Emit` sees a tool call while she is still decoding and the tool starts then. Its
+  result is an event that lands in that activity's stream whenever it arrives. Meanwhile she goes on: in the same
+  activity (planning, anticipating what the result will show) or in another one (another card, a conversation, an open
+  question she is wondering about). "Waiting for a tool" is not a state she has.
+- *The engine runs thinking, not turns.* Between her activities and other minds' activities the switch is the same 4.14
+  bind, in milliseconds. Which stream runs next is the scheduler's pure policy (`frame::pick`, goal 9): what is
+  addressed to someone first, then what has new input, then what she chooses to pursue. There is no turn queue, and no
+  design state in which the engine idles while a resident is awake.
 - *Learning is one of her activities.* Her in-place LoRA step on her own reviewed work (4.11.6) is something an active
   mind does, scheduled like her other work; it does not wait for an idle node.
 - *A restart is not a dark minute.* The engine comes up first and minds restore their blocks from disk (S4).
