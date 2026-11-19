@@ -1,9 +1,10 @@
 //! The driver thread: a frame loop over one context (CONTINUUM-ENGINE 4.15). Each frame advances one
 //! turn by one step, so no mind waits behind another's whole prompt; one mind decodes at a time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::num::NonZeroUsize;
 use std::sync::mpsc::Receiver;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -16,7 +17,9 @@ use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
-use super::{frame, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
+use continuum_flow::{PushError, StageInput};
+
+use super::{emit, frame, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -142,7 +145,17 @@ struct Driver<'c, 'm> {
     batch: NonZeroUsize,
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
+    /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
+    emit: StageInput<emit::Out>,
+    /// What Emit turned back while full, handed over in order before anything newer.
+    backlog: VecDeque<emit::Out>,
+    /// Answers opened by this engine, numbering each.
+    answers: u64,
 }
+
+/// How long the loop with no turn waits for a request while Emit is full, before handing the
+/// backlog over again.
+const EMIT_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
 
 /// What the driver thread starts with: the incarnation it serves as, where it publishes what the engine
 /// is, and its one queue.
@@ -150,12 +163,13 @@ pub(super) struct Start {
     pub(super) incarnation: Incarnation,
     pub(super) state: tokio::sync::watch::Sender<EngineState>,
     pub(super) requests: Receiver<GenerationRequest>,
+    pub(super) emit: StageInput<emit::Out>,
 }
 
 /// Run until every handle is dropped.
 pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
-    let Start { incarnation, state, requests } = start;
+    let Start { incarnation, state, requests, emit } = start;
     // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
     // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
     let _stops = StopsOnExit { state: &state, incarnation };
@@ -183,16 +197,39 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let geometry = EngineGeometry::applied(incarnation, &ctx, config);
     log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time)"));
     state.send_replace(EngineState::Ready(geometry));
-    let mut driver = Driver { model, batch, engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)), parked: HashMap::new() };
+    let mut driver = Driver {
+        model,
+        batch,
+        engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)),
+        parked: HashMap::new(),
+        emit,
+        backlog: VecDeque::new(),
+        answers: 0,
+    };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
-    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. It
-    // blocks only when no turn is left, on the queue itself: a wake, never a poll.
+    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. What
+    // it decodes goes to Emit (4.16) and the loop goes on. It blocks only when no turn is left, on
+    // the queue itself: a wake, never a poll.
     let mut turns: Vec<Turn> = Vec::new();
     loop {
+        driver.flush();
         if turns.is_empty() {
-            match requests.recv() {
-                Ok(req) => driver.admit(req, &mut turns),
-                Err(_) => return,
+            // Emit full with no turn left: the only wait with a bound, until Emit drains (its depth
+            // is thousands of tokens; this does not happen at the M5's decode rate).
+            let next = if driver.backlog.is_empty() {
+                requests.recv().map(Some).map_err(|_| ())
+            } else {
+                match requests.recv_timeout(EMIT_RETRY) {
+                    Ok(req) => Ok(Some(req)),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Ok(None),
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(()),
+                }
+            };
+            match next {
+                Ok(Some(req)) => driver.admit(req, &mut turns),
+                Ok(None) => continue,
+                // Every handle dropped: Emit ends once it has drained what it holds.
+                Err(()) => return,
             }
         }
         while let Ok(req) = requests.try_recv() {
@@ -203,12 +240,12 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             Ok(Advanced::Continues) => {}
             Ok(Advanced::Done(done)) => {
                 let turn = turns.remove(index);
-                let _ = turn.req.response_tx.send(done);
+                driver.emit(emit::Out::End { answer: turn.answer, event: done });
             }
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 let turn = turns.remove(index);
-                let _ = turn.req.response_tx.send(TokenEvent::Error(refused.to_string()));
+                driver.emit(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
             }
         }
     }
@@ -231,6 +268,11 @@ struct Turn {
     /// Where her view ends in `prompt` (CONTINUUM-ENGINE 4.15): a prefill chunk ends exactly there
     /// and she is checkpointed, so her next act resumes from it. `None` for a turn with no view.
     boundary: Option<usize>,
+    /// Her answer, as Emit numbers it.
+    answer: emit::AnswerSeq,
+    /// Raised by Emit when her answer has ended on a stop sequence or her caller hung up; read at
+    /// each step without a lock.
+    cancel: Arc<AtomicBool>,
 }
 
 /// Where a turn stands.
@@ -240,7 +282,7 @@ enum Phase {
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
-    Decoding { token: i32, pos: i32, generated: usize, output: String },
+    Decoding { token: i32, pos: i32, generated: usize },
 }
 
 /// Where a turn's time went, for its one probe row.
@@ -307,7 +349,38 @@ fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Cont
 impl Driver<'_, '_> {
     /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
     /// or sampler that cannot be built is refused at once, before it waits for a frame.
-    fn admit(&self, req: GenerationRequest, turns: &mut Vec<Turn>) {
+    /// Hand `out` to Emit without waiting. Emit full: it joins the backlog, which goes over in
+    /// order, before anything newer, at the next frame.
+    fn emit(&mut self, out: emit::Out) {
+        if !self.backlog.is_empty() {
+            self.backlog.push_back(out);
+            return;
+        }
+        match self.emit.push(out) {
+            Ok(_) => {}
+            Err(PushError::Full(out)) => self.backlog.push_back(out),
+            Err(PushError::Stopped(_)) => {} // Emit ended: its callers are gone with it
+        }
+    }
+
+    /// Hand the backlog to Emit, in order, until it is empty or Emit is full again.
+    fn flush(&mut self) {
+        while let Some(out) = self.backlog.pop_front() {
+            match self.emit.push(out) {
+                Ok(_) => {}
+                Err(PushError::Full(out)) => {
+                    self.backlog.push_front(out);
+                    return;
+                }
+                Err(PushError::Stopped(_)) => {
+                    self.backlog.clear();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn admit(&mut self, req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
@@ -331,7 +404,11 @@ impl Driver<'_, '_> {
                     .and_then(|stable| self.model.tokenize(stable, true, true).ok())
                     .map(|stable| reuse::common_prefix(&stable, &prompt))
                     .filter(|end| *end > 0 && *end < prompt.len());
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary });
+                self.answers += 1;
+                let answer = emit::AnswerSeq(self.answers);
+                let cancel = Arc::new(AtomicBool::new(false));
+                self.emit(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary, answer, cancel });
             }
             Err(refused) => {
                 let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
@@ -390,7 +467,7 @@ impl Driver<'_, '_> {
         let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
             Phase::Waiting => (Err(TurnError::NothingDecoded), false),
             Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
-            Phase::Decoding { token, pos, generated, output } => (self.decode_token(turn, token, pos, generated, output), true),
+            Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
         let took = stepping.elapsed();
         if decoding {
@@ -483,12 +560,12 @@ impl Driver<'_, '_> {
         self.record(|her| her.held.extend_from_slice(&chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
-        turn.phase = Phase::Decoding { token, pos, generated: 0, output: String::new() };
+        turn.phase = Phase::Decoding { token, pos, generated: 0 };
         Ok(())
     }
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
-    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize, mut output: String) -> Result<Advanced, TurnError> {
+    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize) -> Result<Advanced, TurnError> {
         let done = |turn: &Turn, generated: usize| {
             let took = turn.submitted.elapsed();
             Advanced::Done(TokenEvent::Done {
@@ -496,17 +573,15 @@ impl Driver<'_, '_> {
                 elapsed_ms: took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis())),
             })
         };
-        if self.model.is_eog_token(token) {
+        // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
+        // her blocks computed stays hers.
+        if self.model.is_eog_token(token) || turn.cancel.load(Ordering::Acquire) {
             return Ok(done(turn, generated));
         }
-        let piece = self.model.token_to_piece(token);
-        output.push_str(&piece);
-        // A caller that hung up has cancelled her turn: what her blocks computed stays hers.
-        if turn.req.response_tx.send(TokenEvent::Token(piece)).is_err() {
-            return Ok(done(turn, generated));
-        }
+        // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
+        self.emit(emit::Out::Token { answer: turn.answer, token });
         let generated = generated + 1;
-        if generated >= turn.req.max_tokens || turn.req.stop_sequences.iter().any(|stop| output.ends_with(stop)) {
+        if generated >= turn.req.max_tokens {
             return Ok(done(turn, generated));
         }
         let forward = Instant::now();
@@ -523,7 +598,7 @@ impl Driver<'_, '_> {
         let sampling = Instant::now();
         let next = self.engine.tier().sample(&mut turn.sampler, 0);
         turn.spent.sample += sampling.elapsed();
-        turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated, output };
+        turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated };
         Ok(Advanced::Continues)
     }
 

@@ -18,6 +18,7 @@
 //! synchronous today), and paging cold minds out of RAM.
 
 mod driver;
+mod emit;
 mod frame;
 mod reuse;
 mod geometry;
@@ -86,12 +87,18 @@ pub struct Scheduler {
 impl Scheduler {
     /// Spawn the driver thread. It runs until the last handle is dropped and its last turn ended.
     pub fn spawn(model: Arc<Model>, config: SchedulerConfig) -> Result<Self, SchedulerError> {
+        // Emit runs on the runtime's workers beside the driver thread: the driver hands it what it
+        // decoded and never waits on text, stop sequences or callers.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return Err(SchedulerError::NoRuntime);
+        }
+        let emit = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)));
         let (request_tx, request_rx) = std::sync::mpsc::channel();
         let incarnation = Incarnation::next();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         std::thread::Builder::new()
             .name("persona-scheduler".to_string())
-            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx }))
+            .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit }))
             .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
         Ok(Self { request_tx, state })
     }
@@ -115,4 +122,6 @@ pub enum SchedulerError {
     Spawn(Arc<std::io::Error>),
     #[error("the persona scheduler has stopped")]
     Closed,
+    #[error("the persona scheduler was started outside a tokio runtime, so its Emit stage has nowhere to run")]
+    NoRuntime,
 }
