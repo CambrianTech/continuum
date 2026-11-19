@@ -144,8 +144,7 @@ impl EmbeddingBatch {
 
     /// Embed every piece in one context sized to the widest; KV is cleared between pieces.
     pub(crate) fn embed(self, model: &Model) -> Result<Vec<Vec<f32>>, String> {
-        let mut ctx = model.new_context(llama::ContextParams {
-            embeddings: true,
+        let mut ctx = model.new_pooled_context(llama::ContextParams {
             pooling_type: llama::PoolingType::Last,
             n_ctx: self.widest,
             n_batch: self.widest,

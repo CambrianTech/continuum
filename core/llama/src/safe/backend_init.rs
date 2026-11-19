@@ -311,6 +311,17 @@ pub struct WeightAllocation {
     pub host: u64,
 }
 
+/// The native allocator refused the requested context.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create context")]
+pub struct ContextCreationRefused;
+
+impl From<ContextCreationRefused> for String {
+    fn from(error: ContextCreationRefused) -> Self {
+        error.to_string()
+    }
+}
+
 impl Model {
     pub fn weight_allocation(&self) -> WeightAllocation {
         // SAFETY: the model stays loaded throughout this immutable allocation query.
@@ -416,6 +427,16 @@ impl Model {
 
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
+        Ok(self.build_context(params, false)?)
+    }
+
+    /// Create a context that produces pooled embeddings without allocating logits.
+    pub fn new_pooled_context(&self, mut params: ContextParams) -> Result<Context<'_>, ContextCreationRefused> {
+        params.embeddings = true;
+        self.build_context(params, true)
+    }
+
+    fn build_context(&self, params: ContextParams, pooled_only: bool) -> Result<Context<'_>, ContextCreationRefused> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
@@ -431,6 +452,7 @@ impl Model {
         ffi.type_k = params.type_k.ggml_type();
         ffi.type_v = params.type_v.ggml_type();
         ffi.embeddings = params.embeddings;
+        ffi.embeddings_only = pooled_only;
         ffi.pooling_type = match params.pooling_type {
             PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
             PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,
@@ -453,7 +475,7 @@ impl Model {
         }
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
-        let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
+        let ctx = NonNull::new(raw).ok_or(ContextCreationRefused)?;
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,
@@ -484,14 +506,15 @@ impl Model {
     /// Tokenize a string.
     pub fn tokenize(&self, text: &str, add_bos: bool, special: bool) -> Result<Vec<i32>, String> {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
-        let c_text = CString::new(text).map_err(|e| format!("invalid text: {e}"))?;
-        let text_len = c_text.as_bytes().len() as i32;
+        let text_len = i32::try_from(text.len()).map_err(|_| "tokenizer input exceeds native length")?;
+        // llama_tokenize borrows exactly text_len bytes, including embedded NULs.
+        let bytes = text.as_ptr().cast();
 
         // First call with size 0 to get required size (negative = required)
         let required = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 std::ptr::null_mut(),
                 0,
@@ -499,12 +522,12 @@ impl Model {
                 special,
             )
         };
-        let size = required.unsigned_abs() as usize;
+        let size = required.checked_abs().ok_or("tokenizer output exceeds native capacity")? as usize;
         let mut tokens = vec![0i32; size];
         let n = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 tokens.as_mut_ptr(),
                 size as i32,

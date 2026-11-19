@@ -25,3 +25,6 @@ pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, P
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "embedding-model-tests"))]
+mod embedding_output_tests;
