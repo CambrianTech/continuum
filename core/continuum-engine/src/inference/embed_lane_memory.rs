@@ -88,6 +88,7 @@ impl fmt::Display for EmbedLeaseError {
 pub(crate) struct EmbedResidency {
     need: EmbedNeed,
     daemon: Option<Arc<ResourceDaemon>>,
+    _claim: Option<crate::resources::ResidencyGuard>,
 }
 
 impl EmbedResidency {
@@ -98,8 +99,12 @@ impl EmbedResidency {
     }
 
     fn claim_on(daemon: Option<Arc<ResourceDaemon>>, need: EmbedNeed) -> Self {
-        let residency = Self { need, daemon };
-        residency.restate(|floor| floor);
+        use crate::resources::ResidentFloor;
+        let claim = daemon.as_ref().map(|owner| owner.hold_residency(EMBED_LANE_CONSUMER_ID, vec![
+            ResidentFloor { kind: ResourceKind::Vram, resident: need.weights.device, headroom: need.context.device },
+            ResidentFloor { kind: ResourceKind::Ram, resident: need.weights.host, headroom: need.context.host },
+        ]));
+        let residency = Self { need, daemon, _claim: claim };
         if residency.daemon.is_some() {
             continuum_base::probe!(
                 class = "embed.residency.reserved",
@@ -112,18 +117,6 @@ impl EmbedResidency {
             );
         }
         residency
-    }
-
-    /// Each pool's floor, after `of` (the need's bytes, or zero at unload), restated to the board.
-    fn restate(&self, of: impl Fn(u64) -> u64) {
-        let Some(daemon) = &self.daemon else { return };
-        let ContextBytes { device, host } = self.need.weights;
-        for (pool, bytes) in [
-            (ResourceKind::Vram, device.saturating_add(self.need.context.device)),
-            (ResourceKind::Ram, host.saturating_add(self.need.context.host)),
-        ] {
-            daemon.reserve(EMBED_LANE_CONSUMER_ID, pool, of(bytes));
-        }
     }
 
     /// Lease each pool's part of one embedding context of `texts` texts, inside the resident claim.
@@ -141,12 +134,6 @@ impl EmbedResidency {
             guards.push(lease_part(daemon, pool, part, texts).await?);
         }
         Ok(EmbedLease { _guards: guards })
-    }
-}
-
-impl Drop for EmbedResidency {
-    fn drop(&mut self) {
-        self.restate(|_| 0);
     }
 }
 
@@ -321,6 +308,27 @@ mod tests {
         DEVICE - daemon.room_beside_others("serving", ResourceKind::Vram)
     }
 
+    // BigMama's loaded weights and a training request competing with an unused embed window.
+    #[tokio::test(start_paused = true)]
+    async fn resident_weights_leave_only_the_unused_window_reserved() {
+        let capacity = 34_190_917_632;
+        let used = 33_542_897_664;
+        let source = Arc::new(MockCapacitySource::new(ResourceKind::Vram, capacity));
+        source.set_used(used);
+        let daemon = ResourceDaemon::start(vec![source as Arc<dyn CapacitySource>], vec![], DaemonConfig::default());
+        let need = EmbedNeed {
+            weights: ContextBytes { device: 633_205_120, host: 0 },
+            context: ContextBytes { device: 352_370_816, host: 0 },
+        };
+        let first = EmbedResidency::claim_on(Some(Arc::clone(&daemon)), need);
+        let second = EmbedResidency::claim_on(Some(Arc::clone(&daemon)), need);
+        assert_eq!(daemon.available_for("training", ResourceKind::Vram), 0);
+        drop(first);
+        let free = daemon.available_for("training", ResourceKind::Vram);
+        assert!(free >= 12_058_624 && free <= capacity - used - need.context.device);
+        drop(second);
+        assert!(daemon.available_for("training", ResourceKind::Vram) > free);
+    }
     /// The engine sized into everything the board lets it have.
     fn engine_fills(daemon: &Arc<ResourceDaemon>) -> LeaseGuard {
         let serving = LeaseRequest {

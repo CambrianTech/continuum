@@ -355,6 +355,14 @@ impl ResourceDaemon {
         g.renew(lease_id, expires_at_ms, now)
     }
 
+    /// Hold native resident allocations and the additional headroom each needs.
+    /// Multiple loaded instances of the same consumer contribute independently.
+    pub fn hold_residency(self: &Arc<Self>, consumer: &'static str, pools: Vec<ResidentFloor>) -> ResidencyGuard {
+        let guard = ResidencyGuard { daemon: Arc::clone(self), consumer, pools };
+        guard.adjust(u64::saturating_add);
+        guard
+    }
+
     pub fn reserve(&self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
         let mut g = self.governor.lock();
         g.reserve(consumer_id, kind, min_bytes);
@@ -923,3 +931,31 @@ fn drift_should_report(drift: u64, last: &mut u64) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Native bytes already allocated and the unused window the owner must keep available.
+pub struct ResidentFloor {
+    pub kind: ResourceKind,
+    pub resident: u64,
+    pub headroom: u64,
+}
+
+/// Releases precisely this instance's contribution when its owner unloads.
+pub struct ResidencyGuard {
+    daemon: Arc<ResourceDaemon>,
+    consumer: &'static str,
+    pools: Vec<ResidentFloor>,
+}
+
+impl ResidencyGuard {
+    fn adjust(&self, change: fn(u64, u64) -> u64) {
+        let mut governor = self.daemon.governor.lock();
+        governor.adjust_residency(self.consumer, &self.pools, change);
+        self.daemon.publish_locked(&governor);
+    }
+}
+
+impl Drop for ResidencyGuard {
+    fn drop(&mut self) {
+        self.adjust(u64::saturating_sub);
+    }
+}

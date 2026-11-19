@@ -181,6 +181,23 @@ impl ResourceGovernor {
         self.ledger.release(lease_id)
     }
 
+    pub(super) fn adjust_residency(&mut self, consumer: &str, pools: &[super::daemon::ResidentFloor], change: fn(u64, u64) -> u64) {
+        let mut footprints = Vec::new();
+        for kind in ResourceKind::ALL {
+            let mut resident = self.ledger.measured_by(consumer, kind);
+            let mut floor = self.ledger.reservation(consumer, kind);
+            for pool in pools.iter().filter(|pool| pool.kind == kind) {
+                resident = change(resident, pool.resident);
+                floor = change(floor, pool.resident.saturating_add(pool.headroom));
+            }
+            self.ledger.reserve(consumer, kind, floor);
+            if resident > 0 {
+                footprints.push(ConsumerFootprint { kind, bytes: resident, detail: "native resident allocation".into() });
+            }
+        }
+        self.ledger.set_measured(consumer, footprints);
+    }
+
     pub fn reserve(&mut self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
         self.ledger.reserve(consumer_id, kind, min_bytes);
     }
