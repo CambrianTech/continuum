@@ -158,6 +158,9 @@ pub(crate) fn persisted_result_handles(
 pub(super) fn result_handles_at(
     path: &std::path::Path,
 ) -> std::io::Result<std::sync::Arc<std::collections::HashSet<String>>> {
+    // Archive retirement can reach this guard from inside a checkpoint write.
+    // A busy checkpoint protects the body until a later reclamation attempt.
+    let _lock = checkpoint_adoption::lock_checkpoint(path, false)?;
     type Cached = (std::time::SystemTime, std::sync::Arc<std::collections::HashSet<String>>);
     static CACHE: std::sync::OnceLock<
         parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, Cached>>,
@@ -176,7 +179,7 @@ pub(super) fn result_handles_at(
         }
     }
     let handles: std::sync::Arc<std::collections::HashSet<String>> = std::sync::Arc::new(
-        load_volatile_at(path)?
+        read_volatile(path)?
             .map(|persisted| persisted.wm.reachable_handles())
             .unwrap_or_default(), // unwrap_or_default: no checkpoint on disk names no handle (a read failure returned above)
     );
@@ -190,6 +193,10 @@ pub(super) fn load_volatile(persona_id: Uuid) -> std::io::Result<Option<Persiste
 
 pub(super) fn load_volatile_at(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
     let _lock = checkpoint_adoption::lock_checkpoint(path, true)?;
+    read_volatile(path)
+}
+
+fn read_volatile(path: &std::path::Path) -> std::io::Result<Option<PersistedVolatile>> {
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),

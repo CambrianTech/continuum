@@ -220,6 +220,16 @@ use super::*;
         write("fedcba9876543210", 10);
         let handles = result_handles_at(&path).unwrap();
         assert!(handles.contains("fedcba9876543210") && !handles.contains("0123456789abcdef"));
+        // Retiring archived bodies during a save must finish while the writer still
+        // owns the checkpoint, including when this process already cached its handles.
+        let writer = crate::cognition::persona_workspace::checkpoint_adoption::lock_checkpoint(&path, true).unwrap();
+        let guard_path = path.clone();
+        let (done, observed) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || done.send(result_handles_at(&guard_path).is_err()));
+        let refused = observed.recv_timeout(std::time::Duration::from_secs(2));
+        drop(writer);
+        reader.join().unwrap().unwrap();
+        assert_eq!(refused, Ok(true));
         std::fs::write(&path, b"not a checkpoint").unwrap();
         assert!(result_handles_at(&path).is_err(), "unreadable: the guard fails closed");
         assert!(result_handles_at(&dir.join("absent.json")).unwrap().is_empty());
