@@ -156,7 +156,10 @@ pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: Generat
     let message: ParsedMessage = serde_json::from_str(&render.parse(written, false)?)?;
     let written_text = |text: Option<String>| text.filter(|text| !text.is_empty());
     let raw = message.tool_calls.into_iter().flatten().map(|call| StreamToolAccum {
-        id: call.id.unwrap_or_default(), // unwrap_or_default: a call the template gave no id is still her call; the assembler keys on its name
+        // A template that names no call id (Qwen's) gets one minted here, as llama-server minted one
+        // for its /v1 reply: her result must answer an id, and an empty one is refused downstream
+        // (the M5 at 6d1396e62f, 06:21-06:26Z: 19 turns refused as mismatched call/result ids).
+        id: call.id.filter(|id| !id.is_empty()).unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4().simple())), // unwrap_or_else: an unnamed call gets a fresh unique id
         name: call.function.name.unwrap_or_default(), // unwrap_or_default: a nameless call is dropped by the assembler, never run
         arguments: call.function.arguments.unwrap_or_default(), // unwrap_or_default: no arguments parse as no JSON and are typed by the assembler
     });
