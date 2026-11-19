@@ -105,7 +105,11 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // sub-class an owner evicts: not in the catalog, not the active or pinned model.
         kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
-        kept(continuum, "citizens"),
+		kept(continuum, "citizens"),
+        // Peer jtag logs: `<continuum>/citizens/jtags/<label>/airc/` — writes agent-to-agent
+        // communication logs that can reach 8 GB (measured on the M5). Evicted by a JtagPool
+        // keyed on peer-relationship liveness, not age.
+        TrackedDir::new("jtags", continuum.join("citizens/jtags")),
         // Jtags: per-peer agent communication logs under citizens/jtags/<label>/airc/.
         // UNTRACKED until now — the M5 held 8 GB of jtag data with no reporter able to see
         // it and no pool able to evict it. Same law as every row above: a directory the

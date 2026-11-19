@@ -671,6 +671,45 @@
     }
 
 
+#[test]
+fn root_level_stray_files_fail() {
+    let continuum_home = std::env::var("CONTINUUM_HOME")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME").ok().map(|h| std::path::PathBuf::from(h).join(".continuum"))
+        })
+        .expect("no CONTINUUM_HOME or HOME set");
+
+    let home_root = &continuum_home;
+
+    if !home_root.is_dir() {
+        return; // nothing to check if the dir doesn't exist
+    }
+
+    let mut found: Vec<String> = Vec::new();
+
+    for entry in std::fs::read_dir(home_root).expect("cannot read home root") {
+        let entry = entry.expect("error reading home root entry");
+        let name = entry.file_name().to_string_lossy().into_owned();
+
+        // config.env.bak-* files (stale HF cache configs)
+        if name.starts_with("config.env.bak-") {
+            found.push(name);
+        }
+        // last*.jsonl files (stale prompt-capture outputs at home root)
+        else if name.starts_with("last") && name.ends_with(".jsonl") {
+            found.push(name);
+        }
+    }
+
+    assert!(
+        found.is_empty(),
+        "root-level stray files detected — these are invisible to all TrackedDirs and \
+         accumulate without any observer: {}", 
+        found.join(", ")
+    );
+}
     // what this catches: root-level stray files at the home directory are invisible to all
     // TrackedDirs (which track subdirectories) and therefore accumulate without any observer.
     // config.env.bak-* are leftover backups from config migrations; last*.jsonl are stale prompt-
