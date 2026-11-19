@@ -82,18 +82,19 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
     // Pre-allocate result
     let mut result = vec![0.0f32; num_pairs];
 
-    // Generate all (i,j) pairs where i < j
-    let pairs: Vec<(usize, usize)> = (0..n)
-        .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
-        .collect();
-
-    // Compute similarities in parallel with Rayon
-    pairs
-        .par_iter()
-        .zip(result.par_iter_mut())
-        .for_each(|((i, j), sim)| {
-            *sim = cosine_similarity(&embeddings[*i], &embeddings[*j]);
-        });
+    // Each row owns its disjoint output slice in upper-triangle order.
+    let mut remaining = result.as_mut_slice();
+    let mut rows = Vec::with_capacity(n - 1);
+    for width in (1..n).rev() {
+        let (row, rest) = remaining.split_at_mut(width);
+        rows.push(row);
+        remaining = rest;
+    }
+    rows.into_par_iter().enumerate().for_each(|(i, row)| {
+        for (sim, target) in row.iter_mut().zip(&embeddings[i + 1..]) {
+            *sim = cosine_similarity(&embeddings[i], target);
+        }
+    });
 
     result
 }
