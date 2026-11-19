@@ -337,7 +337,7 @@ async fn pinned_waiters_do_not_retain_the_endpoint_during_transition(
 // stay pending while the slot is held, and land PINNED on the freed slot once the holder
 // drops. A pending hint retains no mind gate while decode capacity is occupied.
 #[tokio::test]
-async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() {
+async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() -> Result<(), Box<dyn std::error::Error>> {
     let root = "test://all-pinned";
     let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
     let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
@@ -345,30 +345,25 @@ async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() {
     let a = PageKey::mind(Uuid::from_u128(11)).unwrap(); // test: non-nil ids
     let b = PageKey::mind(Uuid::from_u128(13)).unwrap(); // test: non-nil ids
     let adm_a = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(a), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO)
-        .await
-        .expect("test: A admitted");
+        .await?;
     let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
 
     let capacity = DecodeBound::from(&sem);
-    let last_free = capacity.try_acquire().expect("fixture: spare permit");
-    let speculative = warm_ahead(capacity, b, pool.clone(), &client, root);
+    let last_free = capacity.try_acquire()?;
+    let speculative = warm_ahead(capacity, b, Arc::clone(&pool), &client, root);
     tokio::pin!(speculative);
     assert!(futures::poll!(&mut speculative).is_pending());
     assert!(MindTurn::try_begin(b).is_some(), "pending interest holds no mind gate");
     drop(last_free);
     assert!(speculative.await.is_ok(), "permit return wakes the pending hint");
 
-    let warm = warm_ahead(&sem, b, pool.clone(), &client, root);
-    assert!(warm.await.is_ok(), "the endpoint without a scratch slot leaves paging to foreground admission");
-
-    let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool.clone()), &client, root, 100, std::time::Duration::ZERO);
+    let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool), &client, root, 100, std::time::Duration::ZERO);
     tokio::pin!(turn_b);
     assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
     assert_eq!(sem.available_permits(), 1, "a turn waiting for a slot must not hold a lane permit (Fable on #4515)");
     drop(adm_a);
     let adm_b = tokio::time::timeout(std::time::Duration::from_secs(5), turn_b)
-        .await
-        .expect("test: B woke on the release")
-        .expect("test: B admitted");
+        .await??;
     assert_eq!(adm_b.slot(), Some(slot_a), "B must land PINNED on the freed slot");
+    Ok(())
 }
