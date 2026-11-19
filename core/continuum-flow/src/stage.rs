@@ -159,6 +159,11 @@ impl<T> StageInput<T> {
         Ok(dropped)
     }
 
+    /// Resolves when the worker takes what waits, or the stage stops: the wake a held producer awaits.
+    pub(crate) fn space(&self) -> tokio::sync::futures::Notified<'_> {
+        self.inbox.space.notified()
+    }
+
     /// Put `item` in the pending slot, waiting while a `Reliable` stage's slot is taken: the
     /// backpressure a producer awaits instead of spinning or dropping. Hands the item back only
     /// when the stage has stopped.

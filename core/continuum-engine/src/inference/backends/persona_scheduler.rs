@@ -116,13 +116,13 @@ pub struct Suspended {
 /// Public handle. Cloneable; clones share the one driver thread and context.
 #[derive(Clone)]
 pub struct Scheduler {
-    request_tx: std::sync::mpsc::Sender<Submission>,
+    request_tx: tokio::sync::mpsc::UnboundedSender<Submission>,
     state: tokio::sync::watch::Receiver<EngineState>,
     snapshot: tokio::sync::watch::Receiver<continuum_persona_engine::protocol::EngineSnapshot>,
 }
 
 /// The engine the stop suspends: the last one spawned in this process.
-static SUSPENDS: std::sync::Mutex<Option<std::sync::mpsc::Sender<Submission>>> = std::sync::Mutex::new(None);
+static SUSPENDS: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Submission>>> = std::sync::Mutex::new(None);
 
 /// The engine's part in a stop (CONTINUUM-ENGINE 4.16, Codex on 2990b44831): its root suspend,
 /// through the kernel's `SettleBeforeStop`, before native contexts are released. Each mind leaves the
@@ -176,7 +176,7 @@ impl Scheduler {
         let (emit, emit_worker) = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)), capacity);
         let (snapshot_tx, snapshot) = tokio::sync::watch::channel(record::Record::empty(incarnation.get()));
         let (record, record_worker) = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx), capacity);
-        let (request_tx, request_rx) = std::sync::mpsc::channel();
+        let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         let runtime = tokio::runtime::Handle::current();
         std::thread::Builder::new()

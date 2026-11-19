@@ -411,3 +411,114 @@ async fn a_stalled_stage_holds_its_producer_and_drain_resumes_it_on_space_in_ord
     worker.join().await.expect("test: the worker drained");
     assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3, 4], "every item arrives once, in order"); // test: plain data
 }
+
+// what this catches (Codex, 2026-11-19: "completion, next turn and cancellation under one stalled
+// sink"): an answer's end overtaking its tokens, the next answer interleaving with the last, or a
+// cancellation the stalled consumer raised being missed by a held producer. Against one grant of one,
+// the producer (the engine thread's shape: send, and check the answer's cancel flag before each step)
+// hands over answer 1 whole, then answer 2 until the consumer cancels it, then answer 2's end.
+#[tokio::test(start_paused = true)]
+async fn a_stalled_sink_keeps_completion_next_turn_and_cancellation_whole_and_in_order() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Out {
+        Token(u8, u32),
+        End(u8),
+    }
+    struct Sink(Arc<Mutex<Vec<Out>>>, Arc<tokio::sync::Notify>, Arc<AtomicBool>);
+    impl Stage for Sink {
+        type Input = Out;
+        const QOS: Qos = Qos::Interactive;
+        async fn handle(&mut self, out: Out) {
+            self.1.notified().await; // a stalled caller: each item waits for the gate
+            if out == Out::Token(2, 1) {
+                self.2.store(true, Ordering::Release); // the caller hung up on answer 2: cancel
+            }
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(out); // test: plain data
+        }
+    }
+    let (got, gate, cancel) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()), Arc::new(AtomicBool::new(false)));
+    let (input, worker) = spawn_stage(Sink(Arc::clone(&got), Arc::clone(&gate), Arc::clone(&cancel)), one());
+    let mut outbox = crate::Outbox::new(input);
+    let release = async {
+        // Released one item at a time until the sink has handled answer 2's end: a Notify holds one
+        // permit, so a fixed count could coalesce and leave the sink waiting.
+        while !got.lock().unwrap_or_else(|e| e.into_inner()).contains(&Out::End(2)) { // test: plain data
+            gate.notify_one();
+            tokio::task::yield_now().await;
+        }
+    };
+    let produce = async {
+        for t in 0..3 {
+            outbox.send(Out::Token(1, t));
+        }
+        outbox.send(Out::End(1)); // completion: answer 1's end, behind its tokens
+        for t in 0..8 {
+            if cancel.load(Ordering::Acquire) {
+                break; // the engine reads the flag at its next step and decodes no more of her
+            }
+            outbox.send(Out::Token(2, t));
+            outbox.drain().await; // held while the sink is stalled; resumed on its space
+        }
+        outbox.send(Out::End(2));
+        outbox.drain().await;
+    };
+    tokio::join!(produce, release);
+    drop(outbox);
+    worker.join().await.expect("test: the worker drained");
+    let got = got.lock().unwrap_or_else(|e| e.into_inner()).clone(); // test: plain data
+    let end_1 = got.iter().position(|o| *o == Out::End(1)).expect("test: answer 1 ended");
+    assert_eq!(&got[..=end_1], &[Out::Token(1, 0), Out::Token(1, 1), Out::Token(1, 2), Out::End(1)], "answer 1 arrives whole, its end after its tokens");
+    assert!(got[end_1 + 1..].iter().all(|o| matches!(o, Out::Token(2, _) | Out::End(2))), "the next turn never interleaves with the last");
+    assert_eq!(got.last(), Some(&Out::End(2)), "a cancelled answer still ends, once, last");
+    let after_cancel = got.iter().filter(|o| matches!(o, Out::Token(2, t) if *t > 2)).count();
+    assert_eq!(after_cancel, 0, "the held producer saw the cancellation within one step of it");
+}
+
+// what this catches (Codex on f530b00670): a producer blocked in `drain` behind a stalled sink that
+// a new submission or the stop's Suspend cannot wake, and a drain dropped mid-wait losing an item.
+// The driver's wait is one `select!` over its queue and the stage's space; a submission arriving
+// after the drain began wakes it at once, and the items it held all arrive later, in order, once.
+#[tokio::test(start_paused = true)]
+async fn a_submission_wakes_a_producer_held_by_a_stalled_sink_and_the_drain_loses_nothing() {
+    use std::sync::{Arc, Mutex};
+    struct Sink(Arc<Mutex<Vec<u32>>>, Arc<tokio::sync::Notify>);
+    impl Stage for Sink {
+        type Input = u32;
+        const QOS: Qos = Qos::Interactive;
+        async fn handle(&mut self, item: u32) {
+            self.1.notified().await; // held until the test releases it
+            self.0.lock().unwrap_or_else(|e| e.into_inner()).push(item); // test: plain data
+        }
+    }
+    let (got, gate) = (Arc::new(Mutex::new(Vec::new())), Arc::new(tokio::sync::Notify::new()));
+    let (input, worker) = spawn_stage(Sink(Arc::clone(&got), Arc::clone(&gate)), one());
+    let mut outbox = crate::Outbox::new(input);
+    for item in 1..=4 {
+        outbox.send(item);
+    }
+    let (submit, mut queue) = tokio::sync::mpsc::unbounded_channel::<&'static str>();
+    let late = tokio::spawn(async move {
+        tokio::task::yield_now().await; // after the drain has begun waiting
+        submit.send("suspend").expect("test: the queue is open");
+    });
+    let woke = tokio::select! {
+        biased;
+        submission = queue.recv() => submission,
+        () = outbox.drain() => None,
+    };
+    late.await.expect("test: the submitter ran");
+    assert_eq!(woke, Some("suspend"), "the stop's suspend wakes the held producer while the sink is stalled");
+    assert!(got.lock().unwrap_or_else(|e| e.into_inner()).is_empty(), "the sink never moved: the wake was the submission"); // test: plain data
+    let release = async {
+        while got.lock().unwrap_or_else(|e| e.into_inner()).len() < 4 { // test: plain data
+            gate.notify_one();
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::join!(outbox.drain(), release);
+    drop(outbox);
+    worker.join().await.expect("test: the worker drained");
+    assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3, 4], "the cancelled drain lost nothing and kept the order"); // test: plain data
+}

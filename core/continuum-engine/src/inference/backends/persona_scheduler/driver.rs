@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
-use std::sync::mpsc::Receiver;
+use tokio::sync::mpsc::UnboundedReceiver as Receiver;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -237,7 +237,7 @@ pub(super) struct Start {
 /// Run until every handle is dropped.
 pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let log = runtime::logger("persona-scheduler");
-    let Start { incarnation, state, requests, emit, record, stages_on } = start;
+    let Start { incarnation, state, mut requests, emit, record, stages_on } = start;
     // However this thread ends (its last handle dropped, an early return, or a panic unwinding it),
     // a Starting or Ready it leaves becomes Stopped: serving never grants turns to a gone engine.
     let _stops = StopsOnExit { state: &state, incarnation };
@@ -246,8 +246,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         state.send_replace(EngineState::Refused { incarnation, reason: refused.to_string().into() });
     };
     // A start refused: every submission is answered with why (a suspend finds nothing to preserve).
-    let refuse_all = |why: String| {
-        for submission in &requests {
+    let mut refuse_all = |why: String| {
+        while let Some(submission) = requests.blocking_recv() {
             match submission {
                 Submission::Turn(req) => {
                     tell(&req.response_tx, TokenEvent::Error(why.clone()));
@@ -304,17 +304,26 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let mut turns: Vec<Turn> = Vec::new();
     loop {
         driver.flush();
-        if turns.is_empty() {
-            // A stage full with no turn left: nothing else needs this thread, so it hands over what
-            // waits, woken by the stage taking it (never a poll), then waits on the queue itself.
-            if driver.holding() {
-                stages_on.block_on(driver.drain());
-            }
-            match requests.recv() {
-                Ok(submission) => driver.take(submission, &mut turns),
+        // A stage full defers the producer: no step runs while what it decoded waits, so the backlog
+        // stays within the stage's grant plus one step (Codex on f530b00670). With nothing to step, or
+        // while deferred, the thread waits for EITHER a submission (a turn, or the stop's suspend) or
+        // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
+        let holding = driver.holding();
+        if holding || turns.is_empty() {
+            let woke = stages_on.block_on(async {
+                tokio::select! {
+                    biased;
+                    submission = requests.recv() => Some(submission),
+                    () = driver.drain(), if holding => None,
+                }
+            });
+            match woke {
+                Some(Some(submission)) => driver.take(submission, &mut turns),
                 // Every handle dropped: Emit ends once it has drained what it holds.
-                Err(_disconnected) => return,
+                Some(None) => return,
+                None => {} // the stages took what waited
             }
+            continue;
         }
         while let Ok(submission) = requests.try_recv() {
             driver.take(submission, &mut turns);
