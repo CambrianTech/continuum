@@ -366,6 +366,19 @@ impl LlmDeliberationFaculty {
             let observations = wm.active_action_observations(seq);
             let calls = wm.active_action_native_calls(seq);
             use crate::cognition::context_streams::tail::Results;
+            // A native exchange continues as native protocol only when its ids pair one to one. One
+            // stored without them (the M5, 2026-11-19 06:21Z: calls parsed with empty ids) cannot be
+            // answered natively, yet what she did and what came back are known: it is carried as its
+            // receipt, never refused on every act after (her mind stopped: Aiko refused 32 times,
+            // Benchy 12, on every build, 06:36-06:41Z) and never given ids it did not have.
+            let call_ids: Vec<&str> = calls.iter().map(|call| call.id.as_str()).collect();
+            let result_ids: Vec<&str> = observations.iter().map(|o| o.output.result.tool_use_id.as_str()).collect();
+            let uncorrelated = !calls.is_empty() && !super::types::native_ids_correlate(&call_ids, &result_ids);
+            if uncorrelated {
+                continuum_base::probe!(class = "delib.receipt.uncorrelated", seq = seq, calls = calls.len() as u64, results = observations.len() as u64, "a native exchange without paired ids is carried as its receipt");
+            }
+            // Her calls are carried only with the native exchange they belong to.
+            let calls = if uncorrelated { Vec::new() } else { calls };
             let results = if calls.is_empty() {
                 // Legacy receipts have no native IDs to echo. Whole: the one allocation
                 // pages it only past what her window holds beside every other hard limit
