@@ -416,6 +416,16 @@ impl Model {
 
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
+        self.build_context(params, false)
+    }
+
+    /// Create a context that produces pooled embeddings without allocating logits.
+    pub fn new_pooled_context(&self, mut params: ContextParams) -> Result<Context<'_>, String> {
+        params.embeddings = true;
+        self.build_context(params, true)
+    }
+
+    fn build_context(&self, params: ContextParams, pooled_only: bool) -> Result<Context<'_>, String> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
@@ -437,7 +447,7 @@ impl Model {
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
         };
         ffi.embeddings = params.embeddings;
-        ffi.embeddings_only = params.embeddings_only;
+        ffi.embeddings_only = pooled_only;
         ffi.pooling_type = match params.pooling_type {
             PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
             PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,
