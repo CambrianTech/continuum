@@ -513,8 +513,25 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 Ok(turn) => (turn.text, turn.reasoning, turn.tool_calls),
                 Err(refused) => return Err(refused.to_string()),
             },
-            None => (written, None, None),
+            None => (written.clone(), None, None),
         };
+        // Why a turn ended and what the parse kept: a turn that wrote only reasoning (Aiko, 20
+        // turns from 15:36Z 2026-11-19, `finish=stop`, text 0, reasoning ending "let me read it
+        // now") is told apart as a stop string firing where her call began, the model ending
+        // inside its thinking, or a call the parse dropped. The raw tail is the evidence.
+        if text.is_empty() && tool_calls.as_ref().is_none_or(|calls| calls.is_empty()) {
+            let tail: String = { let chars: Vec<char> = written.chars().collect(); chars[chars.len().saturating_sub(160)..].iter().collect() };
+            continuum_base::probe!(
+                class = "inference.turn.wrote_nothing",
+                tokens = tokens as u64,
+                end = ?end,
+                stop = stop_owned.iter().find(|stop| written.ends_with(stop.as_str())).map(String::as_str).unwrap_or("none"), // unwrap_or: no stop string ends the text, which is itself the reading
+                reasoning_chars = reasoning.as_ref().map_or(0, |r| r.chars().count()) as u64,
+                written_chars = written.chars().count() as u64,
+                tail = %tail,
+                "a turn ended with no text and no call: the raw tail and the stop it ended on"
+            );
+        }
         let content = crate::inference::native_tool_calls::content_blocks(&text, tool_calls.as_deref());
         let finish_reason = super::chat_turn::finish_reason(end, tool_calls.is_some());
 
