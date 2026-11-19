@@ -94,9 +94,35 @@ impl TrainingTriggerState {
     /// run_leased rechecks admission and owns preparation through caller disconnect.
     pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation) -> Result<Prepared, String> {
         let lease = self.submit_gates.acquire(&key).await;
-        let held = self.in_place.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+        let mut held = self.in_place.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
         self.run_leased(lease, key, move |state, key| async move {
-            state.in_place.prepare(&state, &key, &rows, engine, held).await
+            for row in rows.iter() {
+                let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
+                match seat(&state.in_place.authority, &state, &mut held, &key, row, &rows, engine).await? {
+                    Seating::Seated => {}
+                    Seating::NotNow => return Ok(Prepared::Deferred),
+                    Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
+                }
+                let EngineLearning { minds, workspace } = &mut *held;
+                let Some(seated) = minds.get_mut(&key) else {
+                    return Err(format!("the learner seated for {} left before its cover", key.persona_id));
+                };
+                let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
+                if learned >= total {
+                    continue;
+                }
+                let framed = learn_messages(&row.examples[learned as usize]);
+                return match seated.mind.cover(&state.in_place.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
+                    Ok(()) => Ok(Prepared::Ready),
+                    Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
+                    Err(failure) => {
+                        continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
+                            "her next example's memory was not covered; it is tried again on a later pass");
+                        Ok(Prepared::Deferred)
+                    }
+                };
+            }
+            Ok(Prepared::Nothing)
         }).await?
     }
 

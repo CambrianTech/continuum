@@ -199,39 +199,6 @@ impl InPlace {
         }
     }
 
-    /// Seat `key`'s learner if needed and cover her next pending example's memory, waiting for this
-    /// engine (holding no serving resource): the step that follows only revalidates. Seating's
-    /// embeddings, competence decision and leases all happen here, never under her serving guards.
-    async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation, mut held: engine_lock::EngineGuard) -> Result<Prepared, String> {
-        for row in rows {
-            let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
-            match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {
-                Seating::Seated => {}
-                Seating::NotNow => return Ok(Prepared::Deferred),
-                Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
-            }
-            let EngineLearning { minds, workspace } = &mut *held;
-            let Some(seated) = minds.get_mut(key) else {
-                return Err(format!("the learner seated for {} left before its cover", key.persona_id));
-            };
-            let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
-            if learned >= total {
-                continue;
-            }
-            let framed = learn_messages(&row.examples[learned as usize]);
-            return match seated.mind.cover(&self.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
-                Ok(()) => Ok(Prepared::Ready),
-                Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
-                Err(failure) => {
-                    continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
-                        "her next example's memory was not covered; it is tried again on a later pass");
-                    Ok(Prepared::Deferred)
-                }
-            };
-        }
-        Ok(Prepared::Nothing)
-    }
-
     /// The end of `key`'s pass: publish what her seated learner learned since its newest
     /// generation, then page her out (Joel 2026-11-11: "Why would you grab what you aren't actively
     /// using"). Her shadow unloads, which frees its optimizer, her leases release, and the engine's
