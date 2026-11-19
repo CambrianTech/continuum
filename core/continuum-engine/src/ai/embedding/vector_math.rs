@@ -82,18 +82,19 @@ pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
     // Pre-allocate result
     let mut result = vec![0.0f32; num_pairs];
 
-    // Generate all (i,j) pairs where i < j
-    let pairs: Vec<(usize, usize)> = (0..n)
-        .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
-        .collect();
-
-    // Compute similarities in parallel with Rayon
-    pairs
-        .par_iter()
-        .zip(result.par_iter_mut())
-        .for_each(|((i, j), sim)| {
-            *sim = cosine_similarity(&embeddings[*i], &embeddings[*j]);
-        });
+    // Each row owns its disjoint output slice in upper-triangle order.
+    let mut remaining = result.as_mut_slice();
+    let mut rows = Vec::with_capacity(n - 1);
+    for width in (1..n).rev() {
+        let (row, rest) = remaining.split_at_mut(width);
+        rows.push(row);
+        remaining = rest;
+    }
+    rows.into_par_iter().enumerate().for_each(|(i, row)| {
+        for (sim, target) in row.iter_mut().zip(&embeddings[i + 1..]) {
+            *sim = cosine_similarity(&embeddings[i], target);
+        }
+    });
 
     result
 }
@@ -161,7 +162,7 @@ pub fn top_k_similar(
         .collect();
 
     // Sort by similarity descending and take top k
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); // An unordered score cannot outrank its peer in this stable sort.
     sorted.truncate(k);
     sorted
 }
@@ -267,9 +268,9 @@ pub fn detect_clusters(
                         / (component.len() - 1).max(1) as f32;
                     (item, avg)
                 })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)) // Unordered averages tie when choosing the representative.
                 .map(|(item, _)| item)
-                .unwrap_or(component[0]);
+                .unwrap_or(component[0]); // The traversal seeds each component with a visited node before choosing its representative.
 
             clusters.push(Cluster {
                 indices: component,
@@ -283,7 +284,7 @@ pub fn detect_clusters(
     clusters.sort_by(|a, b| {
         b.strength
             .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
+            .unwrap_or(std::cmp::Ordering::Equal) // An unordered cohesion score leaves the clusters in their original order.
     });
     clusters
 }
