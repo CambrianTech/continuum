@@ -322,14 +322,16 @@ impl Execute for UnifiedTier<'_, '_> {
     fn checkpoint(&mut self, persona: PersonaId, epoch: Epoch, into: &mut PersonaCheckpoint) -> Result<u32, TierRefusal> {
         let stream = self.bound_at(persona, epoch)?;
         self.settle()?;
-        into.take(&mut *self.ctx, stream.seq()).map_err(|refusal| native(persona, "the fork refused her checkpoint", refusal))?;
+        let owner = self.owner_of(persona, epoch)?;
+        into.take(&mut *self.ctx, stream.seq(), owner).map_err(|refusal| native(persona, "the fork refused her checkpoint", refusal))?;
         into.pos().ok_or_else(|| refused(persona, "her checkpoint holds no position"))
     }
 
     fn rewind(&mut self, persona: PersonaId, epoch: Epoch, from: &PersonaCheckpoint) -> Result<(), TierRefusal> {
         let stream = self.bound_at(persona, epoch)?;
         self.settle()?;
-        from.rewind(&mut *self.ctx, stream.seq()).map_err(|refusal| native(persona, "the fork refused her rewind", refusal))
+        let owner = self.owner_of(persona, epoch)?;
+        from.rewind(&mut *self.ctx, stream.seq(), owner).map_err(|refusal| native(persona, "the fork refused her rewind", refusal))
     }
 }
 

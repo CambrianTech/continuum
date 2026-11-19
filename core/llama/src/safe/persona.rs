@@ -151,16 +151,16 @@ impl PersonaCheckpoint {
 
     /// Take sequence `seq`'s state at her current position. A refusal leaves no checkpoint (a later
     /// rewind refuses), never a stale one.
-    pub fn take(&mut self, ctx: &mut Context<'_>, seq: i32) -> Result<(), PersonaRefusal> {
+    pub fn take(&mut self, ctx: &mut Context<'_>, seq: i32, owner: PersonaOwner) -> Result<(), PersonaRefusal> {
         // SAFETY: both pointers are live; the fork reserves before copying and refuses whole.
-        status(unsafe { sys::llama_persona_checkpoint_take(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
+        status(unsafe { sys::llama_persona_checkpoint_take(ctx.as_ptr(), seq, owner.persona, owner.epoch, self.ptr.as_ptr()) })
     }
 
     /// Put sequence `seq` back at [`Self::pos`]: what she holds past it is cut. A refusal (nothing
     /// taken, or a checkpoint ahead of what she holds) leaves her exactly as she was.
-    pub fn rewind(&self, ctx: &mut Context<'_>, seq: i32) -> Result<(), PersonaRefusal> {
+    pub fn rewind(&self, ctx: &mut Context<'_>, seq: i32, owner: PersonaOwner) -> Result<(), PersonaRefusal> {
         // SAFETY: both pointers are live; the fork checks before writing and refuses whole.
-        status(unsafe { sys::llama_persona_checkpoint_rewind(ctx.as_ptr(), seq, self.ptr.as_ptr()) })
+        status(unsafe { sys::llama_persona_checkpoint_rewind(ctx.as_ptr(), seq, owner.persona, owner.epoch, self.ptr.as_ptr()) })
     }
 
     /// Her last position the checkpoint holds through; `None` when nothing is taken.
