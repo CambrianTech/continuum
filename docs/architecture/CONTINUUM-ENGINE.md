@@ -2730,6 +2730,29 @@ its Q4_0 KV): `llama-bench` decodes 49.5 tok/s at 12k and 34.8 at 46k. Live at 7
 3. *More tokens per forward pass.* The MTP draft (`mtp-Qwen3.6-35B-A3B-Q4_0.gguf` is on the M5) proposes tokens that
    one forward pass verifies (4.10). That is the only way past the chip's single-mind rate.
 
+**The GPU is never idle while anything could use it** (Joel, 2026-11-19: "Should be almost 2s between fully active GPU so
+like 80% or more on all the time or we have failed... No wait for no apparent reason... Why would we ever have a wait?").
+The gate: GPU busy at least 80% of every window, and no idle gap over 2 s while any mind is resident. A mind's turn may
+queue only behind GPU work; a turn waiting while the GPU idles is a defect.
+
+Measured on the M5 at a990358854, from the turn rows (each turn's prefill, decode and switch time merged into busy spans):
+from 01:42:00 to 01:49:20 the GPU was busy 74% of 440 s, with 18 idle gaps. The first was the 63.5 s boot. Six were
+3.0-6.9 s between turns, two of them a mind waiting on herself. At each gap no mind had GPU work submitted: from a turn's
+end to her next submission a mind takes 3.7 s at p50 (p90 181 s, 16 turns), serially running her tool, rebuilding her view,
+rendering, tokenizing and submitting. Three moves remove the gaps:
+1. *Her next turn is mostly prefilled before she asks.* `Emit` sees a tool call while the model is still decoding, so
+   the tool starts then. Its result, and every perception item, is appended and prefilled the moment it arrives, as
+   `Background` work. When she asks, only the tail remains.
+2. *There is always GPU work at a lower class.* The `continuum-flow` scheduler's classes run interactive and work turns
+   first. Background work fills every gap and yields at a token or chunk boundary: warm-ahead prefill of every resident's
+   appended items, and her learning steps on her own reviewed work (the in-place LoRA step, 4.11.6). Learning stops
+   being something that waits for an idle node; it fills the gaps.
+3. *A restart is not a dark minute.* The engine comes up first and minds restore their blocks from disk (S4); the 63.5 s
+   boot gap was the core booting with every mind cold.
+
+`Record` publishes the GPU's busy share and its longest idle gap every window in the snapshot. That is the gate, read
+live, not reconstructed from rows afterwards.
+
 **One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
 artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
 below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
