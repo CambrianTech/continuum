@@ -30,6 +30,7 @@
 //! ends at the Rust registry. TS is an explicit-API destination, not
 //! a silent dependency.
 
+use futures::FutureExt;
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -44,9 +45,36 @@ use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
 use super::message_bus::MessageBus;
 use super::{CommandResult, ModuleRegistry};
+use crate::sdk_codegen::{ActionCommand, Ctx};
 use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
+
+/// Errors that can occur during typed in-process command execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CallError {
+    /// The command name was not found in the registry.
+    NotRegistered(String),
+    /// An interceptor determined this command should be routed remotely.
+    RoutedRemote,
+    /// The command's host module is unavailable (e.g., failed admission).
+    Unavailable,
+    /// The command panicked during execution.
+    Panicked(String),
+}
+
+impl std::fmt::Display for CallError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotRegistered(name) => write!(f, "command not registered: {}", name),
+            Self::RoutedRemote => write!(f, "command routed remotely"),
+            Self::Unavailable => write!(f, "host module unavailable"),
+            Self::Panicked(msg) => write!(f, "command panicked: {}", msg),
+        }
+    }
+}
+
+impl std::error::Error for CallError {}
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
 
 /// Whether a failed dispatch can have had an effect. A caller that retries,
@@ -678,12 +706,60 @@ impl CommandExecutor {
         self.execute(command, params).await?.to_json_value()
     }
 
-    /// Execute a command ONLY via TypeScript (bypasses Rust registry).
-    /// Use this when a Rust module needs to forward to a TypeScript-implemented
-    /// command that shares the same prefix (avoids infinite recursion).
+    /// Execute a command using typed parameters; returns typed output without manual JSON
+    /// construction or parsing by the caller.
     ///
-    /// Slice P note: the URI's `path()` is forwarded over the TS bridge
-    /// as the conventional command name. Remote URIs are rejected.
+    /// The caller passes C::Params directly and receives Result<C::Output>. Internally this
+    /// method routes through the registry, downcasts to the concrete ActionCommand via Any,
+    /// and runs it with params BY VALUE — zero serde in the call path itself.
+    pub async fn call<C>(&self, params: C::Params) -> Result<C::Output, CallError>
+    where
+        C: ActionCommand,
+    {
+        let command_name = C::NAME;
+
+        // Interceptor name-only routing check (no serialization)
+        for interceptor in self.interceptors.read().unwrap().iter() {
+            if interceptor.would_route_remotely(command_name) {
+                return Err(CallError::RoutedRemote);
+            }
+        }
+
+        // Admit check — mirrors execute_inner's typed path: async, keyed on object_owner()
+        self.registry
+            .admit(self.registry.object_owner(command_name))
+            .await
+            .map_err(|_| CallError::Unavailable)?;
+
+        // Route to the concrete command object (Option — None means not found)
+        let obj = self.registry.route_object(command_name).ok_or_else(|| {
+            CallError::NotRegistered(command_name.to_string())
+        })?;
+
+        // Downcast to C via Any (the registered DynCommand IS the command struct)
+        let any_obj = obj.as_any();
+        let typed_cmd: &C = any_obj.downcast_ref::<C>()
+            .ok_or_else(|| CallError::NotRegistered(command_name.to_string()))?;
+
+        // Execute with panic guard (mirroring execute_inner's safety net)
+        let ctx = Ctx::default();
+        let future = typed_cmd.run(&ctx, params);
+        let result = std::panic::AssertUnwindSafe(future)
+            .catch_unwind()
+            .await;
+
+        match result {
+            Ok(Ok(output)) => Ok(output),
+            Ok(Err(_)) => Err(CallError::Unavailable), // CommandError → Unavailable
+            Err(panic_info) => {
+                let msg = panic_info.downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_info.downcast_ref::<&str>().copied())
+                    .unwrap_or("command panicked");
+                Err(CallError::Panicked(msg.to_string()))
+            }
+        }
+    }
     pub async fn execute_ts(
         &self,
         command: impl Into<CommandUri>,

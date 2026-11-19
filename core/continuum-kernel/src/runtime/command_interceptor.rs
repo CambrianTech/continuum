@@ -99,6 +99,12 @@ pub trait CommandInterceptor: Send + Sync {
 
     /// Static name for logging + telemetry. e.g. `"grid"`, `"airc"`.
     fn name(&self) -> &'static str;
+
+    /// Ask whether this interceptor would route a command remotely (typed, no serialization).
+    /// Called before any JSON work; default returns false so in-process commands stay local.
+    fn would_route_remotely(&self, _command: &str) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

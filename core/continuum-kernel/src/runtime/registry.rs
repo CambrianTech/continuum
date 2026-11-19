@@ -469,6 +469,9 @@ mod tests {
         fn descriptor(&self) -> Result<crate::sdk_codegen::CommandDescriptor, crate::sdk_codegen::CodegenDefect> {
             crate::sdk_codegen::CommandDescriptor::of::<StubSpec>()
         }
+
+        fn as_any(&self) -> &dyn std::any::Any { self }
+
         async fn invoke(
             &self,
             _params: Value,
