@@ -19,7 +19,7 @@ use uuid::Uuid;
 use super::geometry::StopsOnExit;
 use continuum_flow::{Outbox, StageInput};
 
-use super::{emit, frame, record, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, TokenEvent};
+use super::{emit, frame, preserve, record, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -150,6 +150,46 @@ struct Driver<'c, 'm> {
     record: Outbox<record::Fact>,
     /// Answers opened by this engine, numbering each.
     answers: u64,
+    /// Where the stop preserves minds and the start resumes them (`None`: this node has no home to
+    /// write them to, and its minds are dropped at a stop, said once at start).
+    store: Option<preserve::Store>,
+    /// The model this engine serves: preserved minds resume only on it.
+    model_id: String,
+    /// The stop has suspended every mind: no new turn is taken.
+    stopping: bool,
+}
+
+/// The root resume: every mind the last stop published, held Warm (in RAM, bound when scheduled),
+/// each verified first (her model through the manifest, her token history's length and checksum
+/// here, her owner, epoch and memory layout in the fork). A mind that does not verify is named and
+/// left on disk; she starts cold.
+fn resume(tier: &mut UnifiedTier<'_, '_>, store: &preserve::Store, model: &str, log: &runtime::ModuleLogger) -> HashMap<PersonaId, Mind> {
+    let manifest = match store.published(model) {
+        Ok(Some(manifest)) => manifest,
+        Ok(None) => return HashMap::new(),
+        Err(why) => {
+            log.warn(&format!("no preserved minds resume: {why}"));
+            return HashMap::new();
+        }
+    };
+    let mut parked = HashMap::new();
+    for entry in manifest.minds {
+        let id = PersonaId(entry.persona);
+        let epoch = Epoch(entry.epoch);
+        let restored = store.read_tokens(&entry).and_then(|held| {
+            tier.read_file(id, epoch, &store.blocks(entry.persona)).map_err(|refused| refused.to_string()).map(|()| held)
+        });
+        match restored {
+            Ok(held) => {
+                continuum_base::probe!(class = "persona.engine.resumed", persona = %entry.persona, tokens = held.len() as u64, "a mind came back from her preserved blocks");
+                parked.insert(id, Mind { id, epoch, held, basis: Basis { genes: entry.basis }, one_off: false, kept: None });
+            }
+            Err(why) => {
+                continuum_base::probe!(class = "persona.engine.resume_refused", persona = %entry.persona, why = %why, "a preserved mind did not verify; she starts cold");
+            }
+        }
+    }
+    parked
 }
 
 /// How long the loop with no turn waits for a request while a stage is full, before handing what
@@ -161,7 +201,7 @@ const EMIT_RETRY: std::time::Duration = std::time::Duration::from_millis(5);
 pub(super) struct Start {
     pub(super) incarnation: Incarnation,
     pub(super) state: tokio::sync::watch::Sender<EngineState>,
-    pub(super) requests: Receiver<GenerationRequest>,
+    pub(super) requests: Receiver<Submission>,
     pub(super) emit: StageInput<emit::Out>,
     pub(super) record: StageInput<record::Fact>,
 }
@@ -177,34 +217,57 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         log.error(&refused.to_string());
         state.send_replace(EngineState::Refused { incarnation, reason: refused.to_string().into() });
     };
+    // A start refused: every submission is answered with why (a suspend finds nothing to preserve).
+    let refuse_all = |why: String| {
+        for submission in &requests {
+            match submission {
+                Submission::Turn(req) => {
+                    let _ = req.response_tx.send(TokenEvent::Error(why.clone()));
+                }
+                Submission::Suspend(reply) => {
+                    let _ = reply.send(Suspended::default());
+                }
+            }
+        }
+    };
     let mut ctx = match context(model, config) {
         Ok(ctx) => ctx,
         Err(refused) => {
             refuse(&refused);
-            for req in &requests {
-                let _ = req.response_tx.send(TokenEvent::Error(refused.to_string()));
-            }
+            refuse_all(refused.to_string());
             return;
         }
     };
     let Some(batch) = usize::try_from(ctx.n_batch()).ok().and_then(NonZeroUsize::new) else {
         refuse(&StartError::ZeroBatch);
-        for req in &requests {
-            let _ = req.response_tx.send(TokenEvent::Error(StartError::ZeroBatch.to_string()));
-        }
+        refuse_all(StartError::ZeroBatch.to_string());
         return;
     };
     let geometry = EngineGeometry::applied(incarnation, &ctx, config);
-    log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time)"));
+    // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
+    // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
+    let mut tier = UnifiedTier::new(&mut ctx);
+    let store = preserve::Store::at_home();
+    let parked = match &store {
+        Ok(store) => resume(&mut tier, store, &config.model, &log),
+        Err(why) => {
+            log.warn(&format!("no preserved minds resume: {why}"));
+            HashMap::new()
+        }
+    };
+    log.info(&format!("persona scheduler ready: {geometry:?} (one mind decodes at a time; {} minds resumed)", parked.len()));
     state.send_replace(EngineState::Ready(geometry));
     let mut driver = Driver {
         model,
         batch,
-        engine: PersonaEngine::new(UnifiedTier::new(&mut ctx)),
-        parked: HashMap::new(),
+        engine: PersonaEngine::new(tier),
+        parked,
         emit: Outbox::new(emit),
         record: Outbox::new(record),
         answers: 0,
+        store: store.ok(),
+        model_id: config.model.clone(),
+        stopping: false,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
     // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. What
@@ -226,14 +289,14 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 }
             };
             match next {
-                Ok(Some(req)) => driver.admit(req, &mut turns),
+                Ok(Some(submission)) => driver.take(submission, &mut turns),
                 Ok(None) => continue,
                 // Every handle dropped: Emit ends once it has drained what it holds.
                 Err(()) => return,
             }
         }
-        while let Ok(req) = requests.try_recv() {
-            driver.admit(req, &mut turns);
+        while let Ok(submission) = requests.try_recv() {
+            driver.take(submission, &mut turns);
         }
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
@@ -356,6 +419,72 @@ impl Driver<'_, '_> {
     /// Whether anything still waits for a stage that was full.
     fn holding(&self) -> bool {
         self.emit.waiting() + self.record.waiting() > 0
+    }
+
+    /// Route what arrived: a turn into the frame loop (refused once the stop has suspended every
+    /// mind), or the stop's suspend.
+    fn take(&mut self, submission: Submission, turns: &mut Vec<Turn>) {
+        match submission {
+            Submission::Turn(req) if self.stopping => {
+                let _ = req.response_tx.send(TokenEvent::Error("the engine is stopping: her minds are preserved, and her turn starts after it restarts".into()));
+            }
+            Submission::Turn(req) => self.admit(req, turns),
+            Submission::Suspend(reply) => {
+                let suspended = self.suspend(turns);
+                let _ = reply.send(suspended); // the stop that asked has given up: its custody report is moot
+            }
+        }
+    }
+
+    /// The root suspend (CONTINUUM-ENGINE 4.16): no new turn is taken, turns in flight end (what her
+    /// blocks computed stays hers), and every mind is preserved: bound, rewound to her view's
+    /// checkpoint (so a restart resumes exactly at her view), retired through the pipeline, then her
+    /// blocks and token history written. The manifest naming every preserved mind is published last:
+    /// it is the commit point. A mind not preserved is reported, never silently dropped.
+    fn suspend(&mut self, turns: &mut Vec<Turn>) -> Suspended {
+        self.stopping = true;
+        for turn in turns.drain(..) {
+            self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
+        }
+        let Some(store) = self.store.take() else {
+            return Suspended { preserved: 0, retained: vec![(Uuid::nil(), "this node has no home to preserve minds in".into())] };
+        };
+        let mut minds: Vec<PersonaId> = self.parked.iter().filter(|(_, mind)| !mind.one_off).map(|(id, _)| *id).collect();
+        if let Some(active) = self.engine.active().filter(|id| self.engine.active_mut().is_some_and(|her| !her.one_off && her.id == *id)) {
+            minds.push(active);
+        }
+        let mut entries = Vec::new();
+        let mut retained = Vec::new();
+        for id in minds {
+            match self.preserve(id, &store) {
+                Ok(entry) => entries.push(entry),
+                Err(why) => retained.push((id.0, why)),
+            }
+        }
+        let preserved = entries.len();
+        if let Err(why) = store.publish(&self.model_id, entries) {
+            retained.push((Uuid::nil(), format!("the manifest was not published, so no mind resumes: {why}")));
+        }
+        continuum_base::probe!(class = "persona.engine.suspended", preserved = preserved as u64, retained = retained.len() as u64, "the engine's stop preserved its minds");
+        self.store = Some(store);
+        Suspended { preserved, retained }
+    }
+
+    /// One mind out to her file: bound, rewound to her view, retired through the pipeline, written.
+    fn preserve(&mut self, id: PersonaId, store: &preserve::Store) -> Result<preserve::Entry, String> {
+        self.switch_to(id, false).map_err(|e| e.to_string())?;
+        let end = self.engine.active_mut().and_then(|her| her.kept.as_ref().map(|kept| kept.end));
+        if let Some(end) = end {
+            self.rewind_to_checkpoint().map_err(|e| e.to_string())?;
+            self.record(|her| her.cut(end)).map_err(|e| e.to_string())?;
+        }
+        if self.engine.retire_active().map_err(|e| e.to_string())?.is_some() {
+            self.retire_previous().map_err(|e| e.to_string())?;
+        }
+        let her = self.parked.get(&id).ok_or("she did not come back from her retirement")?;
+        self.engine.tier().write_file(id, her.epoch, &store.blocks(id.0)).map_err(|refused| refused.to_string())?;
+        let checksum = store.write_tokens(id.0, &her.held)?;
+        Ok(preserve::Entry { persona: id.0, epoch: her.epoch.0, basis: her.basis.genes.clone(), tokens: her.held.len() as u64, checksum })
     }
 
     /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt

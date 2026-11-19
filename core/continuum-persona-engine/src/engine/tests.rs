@@ -274,3 +274,20 @@ fn a_mind_is_forgotten_only_after_she_left_the_pipeline() {
     assert_eq!(h.engine.forget(id(1)), Ok(()));
     assert_eq!(*released.borrow(), vec![id(1)], "the tier was asked once, after she left");
 }
+
+// what this catches (CONTINUUM-ENGINE 4.16, restore is the norm): a stop that cannot take the last
+// mind out of the stream without staging another, so her suspend would move her blocks behind the
+// pipeline's back. With nobody to follow, the active mind retires through the same copy-out a
+// handoff begins, and is given back once it lands; nobody is active after.
+#[test]
+fn the_active_mind_retires_with_nobody_to_follow_through_the_same_copy_out() {
+    let mut h = with_one_active();
+    assert_eq!(h.engine.retire_active(), Ok(Some(id(1))));
+    assert_eq!(h.engine.active(), None);
+    let last = h.moves.borrow().last().map(|(tag, _)| *tag);
+    assert_eq!(last, Some(FenceTag { persona: id(1), epoch: Epoch(1), direction: Direction::Out }), "her copy-out began");
+    assert!(matches!(h.engine.release_retired(), Err(RetireRefusal::NotLanded { .. })));
+    land_last(&h.moves);
+    assert_eq!(h.engine.release_retired().map(|unit| unit.id()), Ok(id(1)));
+    assert_eq!(h.engine.retire_active(), Ok(None), "nobody active: nothing retires");
+}

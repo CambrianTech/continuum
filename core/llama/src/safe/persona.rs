@@ -53,6 +53,12 @@ fn status(code: i32) -> Result<(), PersonaRefusal> {
     Err(PersonaRefusal { status: code, name })
 }
 
+/// A file path as the fork takes it; a path with an interior NUL is refused by name.
+fn path_c(path: &std::path::Path) -> Result<std::ffi::CString, PersonaRefusal> {
+    std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| PersonaRefusal { status: -1, name: format!("path {} holds a NUL byte", path.display()) })
+}
+
 /// One persona's blocks and token history, owned once (freed with her).
 pub struct PersonaBlocks {
     ptr: NonNull<sys::llama_persona>,
@@ -99,6 +105,25 @@ impl PersonaBlocks {
         owner_matches(self.owner(), expected)?;
         // SAFETY: both pointers are live; the fork validates before writing and refuses whole.
         status(unsafe { sys::llama_persona_bind(ctx.as_ptr(), seq, self.ptr.as_ptr()) }).map_err(BindRefusal::Native)
+    }
+
+    /// Write the blocks her last completed save holds to `path` (through `<path>.tmp` and a rename,
+    /// so a crash never leaves a torn file that reads as hers): her raw rows and records, never
+    /// re-serialized. A restart demotes her to this file instead of dropping her (CONTINUUM-ENGINE
+    /// 4.16, restore is the norm).
+    pub fn write_file(&self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: `self.ptr` is live; the fork only reads her blocks and writes the file.
+        status(unsafe { sys::llama_persona_write_file(self.ptr.as_ptr(), path.as_ptr()) })
+    }
+
+    /// Fill these blocks (made by [`Self::new`] for the same owner on a context of the same layout)
+    /// from her file; bind her afterwards as after a save. A file of another owner, another epoch of
+    /// her, or another memory layout is refused and leaves these blocks as they were.
+    pub fn read_file(&mut self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: `self.ptr` is live; the fork checks the whole file before committing anything.
+        status(unsafe { sys::llama_persona_read_file(self.ptr.as_ptr(), path.as_ptr()) })
     }
 
     /// The owner stamped by the last completed save; `None` before one.

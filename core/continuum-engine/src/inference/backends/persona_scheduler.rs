@@ -19,6 +19,7 @@
 
 mod driver;
 mod emit;
+mod preserve;
 mod record;
 mod frame;
 mod reuse;
@@ -88,6 +89,9 @@ pub struct GenerationRequest {
 /// untransposed V, so its context is always flash attention ([`driver`] owns that, not its caller).
 #[derive(Debug, Clone)]
 pub struct SchedulerConfig {
+    /// The model this engine serves, as its owner names it: preserved minds resume only on the
+    /// model they ran on (CONTINUUM-ENGINE 4.16).
+    pub model: String,
     pub n_ctx: u32,
     pub n_batch: u32,
     pub n_ubatch: u32,
@@ -95,12 +99,63 @@ pub struct SchedulerConfig {
     pub type_v: KvCacheType,
 }
 
+/// What reaches the driver thread, in order: a turn, or the stop's suspend.
+pub(super) enum Submission {
+    Turn(GenerationRequest),
+    Suspend(tokio::sync::oneshot::Sender<Suspended>),
+}
+
+/// What a suspend preserved (CONTINUUM-ENGINE 4.16): how many minds it published, and every mind it
+/// could not preserve, with why. A mind it could not preserve is held only by the live process.
+#[derive(Debug, Clone, Default)]
+pub struct Suspended {
+    pub preserved: usize,
+    pub retained: Vec<(Uuid, String)>,
+}
+
 /// Public handle. Cloneable; clones share the one driver thread and context.
 #[derive(Clone)]
 pub struct Scheduler {
-    request_tx: std::sync::mpsc::Sender<GenerationRequest>,
+    request_tx: std::sync::mpsc::Sender<Submission>,
     state: tokio::sync::watch::Receiver<EngineState>,
     snapshot: tokio::sync::watch::Receiver<continuum_persona_engine::protocol::EngineSnapshot>,
+}
+
+/// The engine the stop suspends: the last one spawned in this process.
+static SUSPENDS: std::sync::Mutex<Option<std::sync::mpsc::Sender<Submission>>> = std::sync::Mutex::new(None);
+
+/// The engine's part in a stop (CONTINUUM-ENGINE 4.16, Codex on 2990b44831): its root suspend,
+/// through the kernel's `SettleBeforeStop`, before native contexts are released. Each mind leaves the
+/// stream through the pipeline and is written; the manifest is the commit point. A mind not preserved
+/// is reported held, so the stop knows ending the process loses her.
+struct EngineSettle;
+
+impl crate::runtime::extensions::SettleBeforeStop for EngineSettle {
+    fn name(&self) -> &'static str {
+        "persona_engine"
+    }
+
+    fn settle(&self, cap: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
+        let sender = SUSPENDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone(); // a poisoned slot still holds its sender
+        Box::pin(async move {
+            let held = |why: &str| {
+                vec![crate::runtime::HeldCustody { endpoint: format!("persona_engine: {why}"), process: None, state: crate::runtime::CustodyState::Retained }]
+            };
+            let Some(sender) = sender else { return Vec::new() }; // no engine ever ran here: nothing held
+            let (reply, suspended) = tokio::sync::oneshot::channel();
+            if sender.send(Submission::Suspend(reply)).is_err() {
+                return Vec::new(); // the engine already ended, and with it every mind it held
+            }
+            match tokio::time::timeout(cap, suspended).await {
+                Ok(Ok(suspended)) if suspended.retained.is_empty() => {
+                    vec![crate::runtime::HeldCustody { endpoint: format!("persona_engine: {} minds preserved", suspended.preserved), process: None, state: crate::runtime::CustodyState::Saved }]
+                }
+                Ok(Ok(suspended)) => held(&format!("{} minds not preserved: {:?}", suspended.retained.len(), suspended.retained)),
+                Ok(Err(_)) => held("the engine ended before it reported its suspend"),
+                Err(_) => held("the suspend did not finish within the stop's cap"),
+            }
+        })
+    }
 }
 
 impl Scheduler {
@@ -122,6 +177,8 @@ impl Scheduler {
             .name("persona-scheduler".to_string())
             .spawn(move || driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record }))
             .map_err(|spawn| SchedulerError::Spawn(Arc::new(spawn)))?;
+        *SUSPENDS.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(request_tx.clone()); // a poisoned slot is replaced whole
+        crate::runtime::extensions::install_settle_before_stop(Arc::new(EngineSettle));
         Ok(Self { request_tx, state, snapshot })
     }
 
@@ -139,7 +196,7 @@ impl Scheduler {
 
     /// Enqueue a turn. Refused once the driver thread has exited.
     pub fn enqueue(&self, req: GenerationRequest) -> Result<(), SchedulerError> {
-        self.request_tx.send(req).map_err(|_| SchedulerError::Closed)
+        self.request_tx.send(Submission::Turn(req)).map_err(|_| SchedulerError::Closed)
     }
 }
 

@@ -49,14 +49,41 @@ impl Fence for Landed {
 pub enum Rebind {
     SameSequence,
     OtherSequence,
+    /// Her blocks came back from her file after a restart (CONTINUUM-ENGINE 4.16).
+    FromFile,
 }
 
-/// One mind this tier holds: her blocks (in RAM, or bound), the epoch they belong to, and the stream
-/// she was last saved from.
+/// What her blocks hold beyond their preparation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Saved {
+    /// Nothing: she starts on a stream as it is.
+    Never,
+    /// Saved out of this stream.
+    From(Stream),
+    /// Read back from her file after a restart.
+    Restored,
+}
+
+/// One mind this tier holds: her blocks (in RAM, or bound), the epoch they belong to, and what they
+/// hold.
 struct Mind {
     blocks: PersonaBlocks,
     epoch: Epoch,
-    saved_from: Option<Stream>,
+    saved: Saved,
+}
+
+/// Her owner stamp for the fork: a fold of her 128-bit id, the same in every process, so the blocks
+/// she wrote before a restart are hers after it (a per-process counter would refuse her own file as
+/// another owner's). The tier keys minds by the full id; the stamp is the fork's check that blocks
+/// are bound only under the owner they were saved for.
+fn owner_stamp(persona: PersonaId) -> u64 {
+    let (high, low) = persona.0.as_u64_pair();
+    high ^ low
+}
+
+/// The owner her blocks at `epoch` must carry to bind.
+fn owner_of(persona: PersonaId, epoch: Epoch) -> PersonaOwner {
+    PersonaOwner { persona: owner_stamp(persona), epoch: epoch.0 }
 }
 
 /// The persona engine's tier over one context's native persona blocks.
@@ -65,9 +92,6 @@ pub struct UnifiedTier<'c, 'm> {
     /// Who occupies each execution stream: occupancy is the streams', never a scan of every mind.
     streams: [Option<PersonaId>; STREAMS],
     minds: HashMap<PersonaId, Mind>,
-    /// Each persona's owner stamp for the fork, issued once per persona by this tier: exact within the
-    /// process the RAM tier lives in (a persona is a 128-bit id; the fork stamps 64 bits).
-    handles: HashMap<PersonaId, u64>,
     last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
@@ -77,7 +101,7 @@ pub struct UnifiedTier<'c, 'm> {
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>) -> Self {
-        Self { ctx, streams: [None; STREAMS], minds: HashMap::new(), handles: HashMap::new(), last_rebind: None, in_flight: None, applied_genes: None }
+        Self { ctx, streams: [None; STREAMS], minds: HashMap::new(), last_rebind: None, in_flight: None, applied_genes: None }
     }
 
     /// The stream `persona` is bound to, if she is in the execution stream.
@@ -147,33 +171,32 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         // blocks only once the move is known to succeed, so a refusal keeps the blocks she had.
         let rebind_from = match self.minds.get(&persona) {
             Some(held) if epoch < held.epoch => return Err(refused(persona, "a stale epoch: her newer blocks are kept")),
-            Some(held) if epoch == held.epoch => held.saved_from,
+            Some(held) if epoch == held.epoch => held.saved,
             // a mind never seen, or a newer epoch of her, starts over on this stream
-            _ => None,
+            _ => Saved::Never,
         };
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the
         // evidence, never this tier's bookkeeping.
-        if rebind_from.is_none() && self.ctx.memory_seq_pos_max(stream.seq()) >= 0 {
+        if rebind_from == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()) >= 0 {
             return Err(refused(persona, "her stream already holds another sequence's state"));
         }
         self.hold(persona, epoch)?;
-        let owner = self.owner_of(persona, epoch)?;
+        let owner = owner_of(persona, epoch);
         let mind = self.minds.get_mut(&persona).ok_or_else(|| refused(persona, "not held here"))?;
         self.last_rebind = None;
-        if let Some(from) = rebind_from {
+        if rebind_from != Saved::Never {
             mind.blocks.bind(self.ctx, stream.seq(), owner).map_err(|e| bind_refused(persona, e))?;
-            self.last_rebind = Some(if from == stream { Rebind::SameSequence } else { Rebind::OtherSequence });
+            self.last_rebind = Some(match rebind_from {
+                Saved::From(from) if from == stream => Rebind::SameSequence,
+                Saved::Restored => Rebind::FromFile,
+                _ => Rebind::OtherSequence,
+            });
         }
         self.streams[slot] = Some(persona);
         Ok(())
     }
 
-    /// The owner stamp issued to `persona`, at `epoch`: what her blocks must carry to bind.
-    fn owner_of(&self, persona: PersonaId, epoch: Epoch) -> Result<PersonaOwner, TierRefusal> {
-        let handle = *self.handles.get(&persona).ok_or_else(|| refused(persona, "no owner stamp issued to her"))?;
-        Ok(PersonaOwner { persona: handle, epoch: epoch.0 })
-    }
 
     fn move_out(&mut self, persona: PersonaId, epoch: Epoch) -> Result<(), TierRefusal> {
         // her save reads her cells: whatever was submitted for her must have landed first
@@ -185,7 +208,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
             return Err(refused(persona, "another epoch of her is bound"));
         }
         mind.blocks.save(self.ctx, stream.seq()).map_err(|e| native(persona, "the fork refused her save", e))?;
-        mind.saved_from = Some(stream);
+        mind.saved = Saved::From(stream);
         self.streams[slot] = None;
         Ok(())
     }
@@ -203,11 +226,35 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
                 return Err(refused(persona, "a stale epoch: her newer blocks are kept"));
             }
         }
-        let next = self.handles.len() as u64 + 1;
-        let handle = *self.handles.entry(persona).or_insert(next);
-        let owner = PersonaOwner { persona: handle, epoch: epoch.0 };
-        let blocks = PersonaBlocks::new(self.ctx, owner).ok_or_else(|| refused(persona, "this context's memory has no persona move"))?;
-        self.minds.insert(persona, Mind { blocks, epoch, saved_from: None });
+        let blocks = PersonaBlocks::new(self.ctx, owner_of(persona, epoch)).ok_or_else(|| refused(persona, "this context's memory has no persona move"))?;
+        self.minds.insert(persona, Mind { blocks, epoch, saved: Saved::Never });
+        Ok(())
+    }
+
+    /// Demote `persona` to `path` (CONTINUUM-ENGINE 4.16): the blocks her last copy-out saved, written
+    /// as raw rows. Refused while she is bound: she leaves the stream through the pipeline
+    /// (`PersonaEngine::retire_active` or a handoff), never behind its back. She stays held in RAM as
+    /// well; the file is what a restart reads her back from.
+    pub fn write_file(&self, persona: PersonaId, epoch: Epoch, path: &std::path::Path) -> Result<(), TierRefusal> {
+        if self.stream_of(persona).is_some() {
+            return Err(refused(persona, "bound: she retires through the pipeline before her file is written"));
+        }
+        let mind = self.minds.get(&persona).ok_or_else(|| refused(persona, "not held here"))?;
+        if mind.epoch != epoch {
+            return Err(refused(persona, "another epoch of her is held"));
+        }
+        mind.blocks.write_file(path).map_err(|e| native(persona, "the fork refused to write her blocks", e))
+    }
+
+    /// Hold `persona` at `epoch` from her file: her blocks back in RAM, bound when she is next
+    /// scheduled. A file of another owner, epoch or memory layout is refused and nothing is held.
+    pub fn read_file(&mut self, persona: PersonaId, epoch: Epoch, path: &std::path::Path) -> Result<(), TierRefusal> {
+        if self.minds.contains_key(&persona) {
+            return Err(refused(persona, "already held: a restore never replaces blocks she holds"));
+        }
+        let mut blocks = PersonaBlocks::new(self.ctx, owner_of(persona, epoch)).ok_or_else(|| refused(persona, "this context's memory has no persona move"))?;
+        blocks.read_file(path).map_err(|e| native(persona, "the fork refused her file", e))?;
+        self.minds.insert(persona, Mind { blocks, epoch, saved: Saved::Restored });
         Ok(())
     }
 }
@@ -327,7 +374,7 @@ impl Execute for UnifiedTier<'_, '_> {
     fn checkpoint(&mut self, persona: PersonaId, epoch: Epoch, into: &mut PersonaCheckpoint) -> Result<u32, TierRefusal> {
         let stream = self.bound_at(persona, epoch)?;
         self.settle()?;
-        let owner = self.owner_of(persona, epoch)?;
+        let owner = owner_of(persona, epoch);
         into.take(&mut *self.ctx, stream.seq(), owner).map_err(|refusal| native(persona, "the fork refused her checkpoint", refusal))?;
         into.pos().ok_or_else(|| refused(persona, "her checkpoint holds no position"))
     }
@@ -335,7 +382,7 @@ impl Execute for UnifiedTier<'_, '_> {
     fn rewind(&mut self, persona: PersonaId, epoch: Epoch, from: &PersonaCheckpoint) -> Result<(), TierRefusal> {
         let stream = self.bound_at(persona, epoch)?;
         self.settle()?;
-        let owner = self.owner_of(persona, epoch)?;
+        let owner = owner_of(persona, epoch);
         from.rewind(&mut *self.ctx, stream.seq(), owner).map_err(|refusal| native(persona, "the fork refused her rewind", refusal))
     }
 }

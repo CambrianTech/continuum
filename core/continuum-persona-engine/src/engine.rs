@@ -211,6 +211,23 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
         Ok(previous)
     }
 
+    /// Retire the active mind with nobody to follow her (a stop's suspend): once her decode has
+    /// landed, begin her copy-out. Returns who retired (`None` when nobody was active); bring it to
+    /// its end with [`Self::finish_retirement`].
+    pub fn retire_active(&mut self) -> Result<Option<PersonaId>, HandoffError> {
+        if !self.decode_landed() {
+            if let Some(active) = self.active() {
+                return Err(HandoffError::DecodeInFlight { active });
+            }
+        }
+        let previous = self.roles.retire()?;
+        self.decoding = None;
+        if previous.is_some() {
+            self.retry_retire()?;
+        }
+        Ok(previous)
+    }
+
     /// Begin the copy-out of the mind awaiting it (after a handoff whose copy-out was refused). Does
     /// nothing when no copy-out awaits.
     pub fn retry_retire(&mut self) -> Result<(), HandoffError> {

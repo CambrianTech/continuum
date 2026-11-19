@@ -442,6 +442,7 @@ impl LlamaCppBackend {
                 Scheduler::spawn(
                     self.model.clone(),
                     SchedulerConfig {
+                        model: self.config.model_path.display().to_string(),
                         n_ctx: total_n_ctx,
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,

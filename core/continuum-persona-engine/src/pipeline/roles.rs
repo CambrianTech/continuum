@@ -185,6 +185,19 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         Ok(retired)
     }
 
+    /// Retire the active mind with nobody to follow her (a stop's suspend, CONTINUUM-ENGINE 4.16):
+    /// she awaits her copy-out as after a handoff. Returns who retired (`None` when nobody was
+    /// active). Refused while another retirement is in flight.
+    pub fn retire(&mut self) -> Result<Option<PersonaId>, HandoffRefusal> {
+        if let Some(retiring) = self.retiring() {
+            return Err(HandoffRefusal::RetireInFlight { retiring });
+        }
+        let previous = self.active.take();
+        let retired = previous.as_ref().map(Identified::persona);
+        self.retiring = previous.map(Retiring::AwaitingCopyOut);
+        Ok(retired)
+    }
+
     /// Attach the copy-out begun after the handoff. A refusal returns the fence.
     pub fn begin_retire(&mut self, fence: F) -> Result<(), Refused<RetireRefusal, F>> {
         let check = match self.retiring.as_ref() {

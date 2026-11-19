@@ -154,7 +154,8 @@ fn main() -> Result<(), String> {
             match rebind {
                 Some(Rebind::SameSequence) => same_seq.push(switched),
                 Some(Rebind::OtherSequence) => other_seq.push(switched),
-                None => {}
+                // this example never restores from a file; a restored bind is not a switch it measures
+                Some(Rebind::FromFile) | None => {}
             }
         }
 
