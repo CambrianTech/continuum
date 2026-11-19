@@ -24,7 +24,7 @@ impl LlamaCppBackend {
                 use_mmap: true,
             },
         )?;
-        let weights = model.weight_allocation()?;
+        let weights = model.weight_allocation();
         let caps = ModelCapabilities::from_model(&model);
         log.info(&format!(
             "Loaded {} in {:.2}s (vocab={}, n_ctx_train={}, n_layer={}, \
