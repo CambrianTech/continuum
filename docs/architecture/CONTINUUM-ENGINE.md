@@ -2845,8 +2845,21 @@ row deletes the copies it names; nothing is added beside them.
 | The engine as a `Lifecycle` node | `prepare` (start, resume minds), `suspend` (preserve minds), `release`; its children are its minds; folded by the kernel (Codex) | `EngineSettle`, the static `SUSPENDS` sender (the driver then exits on disconnect again), `Driver::suspend`'s own report type, the three refusal paths (one `stopping` state), both `StopsOnExit` (one, in continuum-flow) |
 | One `Stage` base | kernel `StageRunner` and `continuum-flow::Stage` as one, adapters for the difference (Codex's lane) | two traits |
 
+**Step 1 in detail: the unit is the mind, and where she is is which container owns her.** `PersonaUnit`
+(`persona/unit.rs`, "her five parts as one value; a move is whole by type") already exists and is unused; it becomes the
+one value that travels: `blocks` (the native blocks, with whether they were saved from a stream), `tokens` (her
+history), `genome` (her genes and their signature), `learning`, `decode` (her marks' checkpoints). Her place is not a
+field kept in sync: she is in the warm table, or in `Roles` as next, active or retiring, or on disk (`PreservedMinds`).
+- `MindId { persona, epoch }` replaces every persona+epoch pair: `FenceTag { mind, direction }`,
+  `Execute::submit(mind, ..)`, `checkpoint`/`rewind(mind, ..)`, `TierRefusal.mind`.
+- `Tier` gets `type Blocks` and `begin(mind, &mut Blocks, direction)`: it moves the blocks it is handed and keeps only
+  which stream holds which `MindId` (context occupancy, which is its own state). `Roles` gains `retiring_mut` so the
+  engine hands the retiring unit's blocks to the copy-out.
+- Deleted: the driver's `Mind` and `parked` (now the warm table of units), the tier's `Mind`, `minds` map, `Saved` (moves
+  into the blocks part) and `Rebind` (diagnostic only; the example measures from the blocks part).
+
 **Order (each step deploys on the M5 through the guard, read before the next; each deletes what its row names):**
-1. `MindId` and `MindTable` with `Place`: the driver's `parked`, the tier's minds/streams and `Saved`/`Rebind` collapse
+1. `MindId` and the unit-as-mind: the driver's `parked`, the tier's minds/streams and `Saved`/`Rebind` collapse
    into it; `Roles` keeps ids. Gate: the turn and switch rows unchanged in value, the three location owners gone.
 2. `EngineConfig` / `EngineGeometry`: one resolution, every context built from it; the contradicting values gone.
 3. `Answer` + `Emit` own stops and streams end to end: the backend collector, its sleep-spin and `spawn_blocking` gone;
