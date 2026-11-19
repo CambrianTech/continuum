@@ -331,20 +331,42 @@ pub struct ContextBufferBytes {
     pub device: u64,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum ModelLoadError {
+    #[error("invalid path: {0}")]
+    InvalidPath(#[from] std::ffi::NulError),
+    #[error("failed to load model from {}", .0.display())]
+    LoadRefused(std::path::PathBuf),
+}
+
+impl From<ModelLoadError> for String {
+    fn from(error: ModelLoadError) -> Self { error.to_string() }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ContextQuoteError {
+    #[error(transparent)]
+    Model(#[from] ModelLoadError),
+    #[error(transparent)]
+    Context(#[from] ContextCreationRefused),
+    #[error("llama could not account for the pooled context buffers")]
+    BufferAccounting,
+}
+
 impl PooledContextPlanner {
-    pub fn open(path: &Path, n_gpu_layers: i32) -> Result<Self, String> {
+    pub fn open(path: &Path, n_gpu_layers: i32) -> Result<Self, ModelLoadError> {
         let params = ModelParams { n_gpu_layers, use_mmap: false };
         Model::load_impl(path, params, true).map(Self)
     }
 
-    pub fn quote(&self, params: ContextParams) -> Result<ContextBufferBytes, String> {
+    pub fn quote(&self, params: ContextParams) -> Result<ContextBufferBytes, ContextQuoteError> {
         let context = self.0.new_pooled_context(params)?;
         let mut bytes = sys::llama_context_buffer_bytes { host: 0, device: 0 };
         // SAFETY: the context and writable result both outlive this synchronous query.
         if unsafe { sys::llama_context_get_buffer_bytes(context.ptr.as_ptr(), &mut bytes) } {
             Ok(ContextBufferBytes { host: bytes.host, device: bytes.device })
         } else {
-            Err("llama could not account for the pooled context buffers".into())
+            Err(ContextQuoteError::BufferAccounting)
         }
     }
 }
@@ -358,14 +380,13 @@ impl Model {
 
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
-        Self::load_impl(path.as_ref(), params, false)
+        Self::load_impl(path.as_ref(), params, false).map_err(String::from)
     }
 
-    fn load_impl(path: &Path, params: ModelParams, no_alloc: bool) -> Result<Self, String> {
+    fn load_impl(path: &Path, params: ModelParams, no_alloc: bool) -> Result<Self, ModelLoadError> {
         backend_init();
 
-        let c_path = CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("invalid path: {e}"))?;
+        let c_path = CString::new(path.to_string_lossy().as_bytes())?;
 
         let mut ffi_params = unsafe { sys::llama_model_default_params() };
         ffi_params.n_gpu_layers = params.n_gpu_layers;
@@ -380,7 +401,7 @@ impl Model {
 
         let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
         let ptr = NonNull::new(raw)
-            .ok_or_else(|| format!("failed to load model from {}", path.display()))?;
+            .ok_or_else(|| ModelLoadError::LoadRefused(path.to_owned()))?;
 
         Ok(Self { ptr })
     }

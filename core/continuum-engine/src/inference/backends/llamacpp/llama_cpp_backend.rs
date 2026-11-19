@@ -1,5 +1,17 @@
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EmbedPlanError {
+    #[error(transparent)]
+    Quote(#[from] llama::ContextQuoteError),
+    #[error("{0}")]
+    NoWindow(&'static str),
+}
+
+impl From<EmbedPlanError> for String {
+    fn from(error: EmbedPlanError) -> Self { error.to_string() }
+}
+
 impl LlamaCppBackend {
     /// Load a GGUF model.
     pub fn load(config: LlamaCppConfig) -> Result<Self, String> {
@@ -55,19 +67,22 @@ impl LlamaCppBackend {
         })
     }
 
-    pub(crate) fn pooled_bytes(&self, width: u32) -> Result<super::ContextBytes, String> {
-        if self.embed_planner.get().is_none() {
-            let planner = llama::PooledContextPlanner::open(&self.config.model_path, self.config.n_gpu_layers)?;
-            let _ = self.embed_planner.set(planner);
-        }
-        let planner = self.embed_planner.get().ok_or("embedding planner unavailable")?;
+    pub(crate) fn pooled_bytes(&self, width: u32) -> Result<super::ContextBytes, EmbedPlanError> {
+        let planner = match self.embed_planner.get() {
+            Some(planner) => planner,
+            None => {
+                let planner = llama::PooledContextPlanner::open(&self.config.model_path, self.config.n_gpu_layers)
+                    .map_err(llama::ContextQuoteError::from)?;
+                self.embed_planner.get_or_init(|| planner)
+            }
+        };
         let bytes = planner.quote(super::embedding_batch::pooled_params(width))?;
         Ok(super::ContextBytes { host: bytes.host, device: bytes.device })
     }
 
-    pub(crate) fn embed_residency(&self) -> Result<&crate::inference::embed_lane_memory::EmbedResidency, String> {
+    pub(crate) fn embed_residency(&self) -> Result<&crate::inference::embed_lane_memory::EmbedResidency, EmbedPlanError> {
         if let Some(residency) = self.embed_residency.get() { return Ok(residency); }
-        let window = super::EmbedWindow::for_model(self.caps.n_ctx_train).ok_or(super::NO_TRAINED_CONTEXT)?;
+        let window = super::EmbedWindow::for_model(self.caps.n_ctx_train).ok_or(EmbedPlanError::NoWindow(super::NO_TRAINED_CONTEXT))?;
         let need = crate::inference::embed_lane_memory::EmbedNeed {
             weights: super::ContextBytes { device: self.weights.device, host: self.weights.host },
             context: self.pooled_bytes(window.tokens())?,
