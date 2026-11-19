@@ -174,7 +174,7 @@ struct Driver<'c, 'm> {
 /// each verified first (her model through the manifest, her token history's length and checksum
 /// here, her owner, epoch and memory layout in the fork). A mind that does not verify is named and
 /// left on disk; she starts cold.
-fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &preserve::Preserved, model: &str, log: &runtime::ModuleLogger) -> HashMap<PersonaId, Mind> {
+fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, model: &str, log: &runtime::ModuleLogger) -> HashMap<PersonaId, Mind> {
     // The saved-state contract's verdict: anything but a matched (or upgraded) value resumes nobody,
     // and the store probes which verdict it was (`state.load.<outcome>`). Every outcome is also
     // logged: at boot the probe sink may not be up yet (none of these probes reached the probe file
@@ -187,11 +187,13 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &preserve::Preserved, model
             return HashMap::new();
         }
     };
+    // the last complete generation: what a mind whose next write fails keeps (preserve.rs)
+    preserved.remember(minds.clone());
     let mut parked = HashMap::new();
     for mind in minds {
         let id = PersonaId(mind.persona);
         let epoch = Epoch(mind.epoch);
-        match tier.read_file(MindId { persona: id, epoch }, &preserved.blocks(mind.persona)) {
+        match tier.read_file(MindId { persona: id, epoch }, &preserved.path(&mind.blocks)) {
             Ok(blocks) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
                 let parts = Parts { blocks, tokens: History { held: mind.held, kept: None }, genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
@@ -261,8 +263,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
     let mut tier = UnifiedTier::new(&mut ctx);
-    let store = preserve::Preserved::at_home();
-    let parked = match &store {
+    let mut store = preserve::Preserved::at_home();
+    let parked = match &mut store {
         Ok(store) => resume(&mut tier, store, &config.model, &log),
         Err(why) => {
             log.warn(&format!("no preserved minds resume: {why}"));
@@ -460,25 +462,31 @@ impl Driver<'_, '_> {
         for turn in turns.drain(..) {
             self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
         }
-        let Some(store) = self.store.take() else {
+        let Some(mut store) = self.store.take() else {
             return Suspended { preserved: 0, retained: vec![(Uuid::nil(), "this node has no home to preserve minds in".into())] };
         };
         let mut minds: Vec<PersonaId> = self.parked.iter().filter(|(_, mind)| resident(mind)).map(|(id, _)| *id).collect();
         if let Some(active) = self.engine.active().filter(|id| self.engine.active_mut().is_some_and(|her| resident(her) && her.id() == *id)) {
             minds.push(active);
         }
+        // This stop's generation: every mind's blocks go to a file no published manifest names, and the
+        // manifest naming them is published only once every write has landed (preserve.rs).
+        let generation = preserve::Generation::fresh();
         let mut entries = Vec::new();
         let mut retained = Vec::new();
         for id in minds {
-            match self.preserve(id, &store) {
+            match self.preserve(id, &store, &generation) {
                 Ok(entry) => entries.push(entry),
                 Err(why) => retained.push((id.0, why)),
             }
         }
         let preserved = entries.len();
+        let failed: Vec<Uuid> = retained.iter().map(|(persona, _)| *persona).collect();
+        let manifest = preserve::next_manifest(store.last(), entries, &failed);
         let served = preserve::ServedModel { model: self.model_id.clone() };
-        if let Err(why) = store.store.save(&continuum_saved_state::Singleton, &served, &entries) {
-            retained.push((Uuid::nil(), format!("the preserved minds were not saved, so none resumes: {why}")));
+        match store.publish(&served, manifest) {
+            Ok(unremoved) => retained.extend(unremoved.into_iter().map(|(path, why)| (Uuid::nil(), format!("an unnamed block file {} was not removed: {why}", path.display())))),
+            Err(why) => retained.push((Uuid::nil(), format!("this stop's manifest was not saved, so the last complete generation stands: {why}"))),
         }
         continuum_base::probe!(class = "persona.engine.suspended", preserved = preserved as u64, retained = retained.len() as u64, "the engine's stop preserved its minds");
         // logged too: a stop's probes can be lost as the process ends (none reached the probe file on
@@ -488,8 +496,9 @@ impl Driver<'_, '_> {
         Suspended { preserved, retained }
     }
 
-    /// One mind out to her file: bound, rewound to her view, retired through the pipeline, written.
-    fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved) -> Result<preserve::PreservedMind, String> {
+    /// One mind out to her file in `generation`: bound, rewound to her view, retired through the
+    /// pipeline, written. Her entry names that file; it is published with the stop's manifest.
+    fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, String> {
         self.switch_to(id, false).map_err(|e| e.to_string())?;
         let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.as_ref().map(|kept| kept.end));
         if let Some(end) = end {
@@ -501,8 +510,9 @@ impl Driver<'_, '_> {
         }
         let her = self.parked.get(&id).ok_or("she did not come back from her retirement")?;
         let parts = her.parts();
-        parts.blocks.write_file(&store.blocks(id.0)).map_err(|refused| format!("the fork refused to write her blocks: {refused:?}"))?;
-        Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone() })
+        let file = generation.file(id.0);
+        parts.blocks.write_file(&store.path(&file)).map_err(|refused| format!("the fork refused to write her blocks: {refused:?}"))?;
+        Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone(), blocks: file })
     }
 
     /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
