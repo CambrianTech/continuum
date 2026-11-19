@@ -2779,6 +2779,24 @@ holds for minds, stages and the engine thread itself:
 - no `spawn_blocking` held for a result, no `recv()` on a hot path, no `.await` on another stage's whole work, no lock
   held across a seam. A stage that must react to a result subscribes to it.
 
+**Restore is the norm: a consumer of lifecycle, not a feature** (Joel, 2026-11-19: "Restore is supposed to be the norm.
+Built into everything as a consumer of lifecycle. This is why we made everything objects"). Measured at 5b510543d5 on
+the M5: right after a deploy the engine was busy 97% yet delivered 10.5 tok/s, because 102 s of a 271 s window went
+to prefilling 62,873 tokens, most of them minds starting cold after the restart. A restart must demote, never drop:
+- `Lifecycle` (continuum-persona-engine `persona/lifecycle.rs`) gains `resume` beside `suspend`, folded over a
+  persona's parts by the same macro. A parent's operation is its children's, in dependency order.
+- A mind's `suspend` preserves each part: her blocks as raw rows (the fork's native layout, never re-serialized), her
+  token history, her marks' checkpoints. Her `resume` reads them back as a Cold mind; she binds when next scheduled.
+- The engine's stop is the root `suspend`, fanned out to every mind (bound and parked); its start is the root `resume`.
+  A deploy is a stop and a start, with no restore path of its own.
+- The fork gains block files: `llama_persona_write_file` / `llama_persona_read_file` (and the same for checkpoints)
+  write the rows and records the move already copies, and refuse on read when the owner, epoch or layout fingerprint
+  differs. Disk speed (GB/s), not the 8-13 s serialize the old `llama_state_seq_save_file` path measured.
+- The directory is a tracked class with a decided eviction (`disk_reporters::standard_tracked_dirs`,
+  `disk_eviction`): a mind's files are hers, removed when she is released or her epoch ends.
+Gate: after a deploy, no cold first act; delivered tok/s in the first window after boot within 10% of the window
+before it.
+
 **One base, not two.** `continuum-kernel::runtime::stage` (brain functions: provenance, publication, produced-once
 artifacts) and `continuum-flow::Stage` (the queue thread) are two halves of one concept. Plan rule 5 applies: one owner
 below both, adapters for the difference. Until then, the engine's stages are `continuum-flow` stages, and none
