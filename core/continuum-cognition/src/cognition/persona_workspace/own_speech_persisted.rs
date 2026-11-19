@@ -80,8 +80,10 @@ pub(super) fn save_volatile(
     wm: &super::super::working_memory::WorkingMemory,
 ) -> std::io::Result<Checkpointed> {
     let path = volatile_path(persona_id)?;
-    let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
+    // The registry checkpoint gate serializes this tick. Archive retirement reads the
+    // previous checkpoint to protect live bodies, so finish it before locking the replacement.
     let archive = wm.tick_archive()?;
+    let _checkpoint_lock = checkpoint_adoption::lock_checkpoint(&path, true)?;
     let generation = wm.checkpoint_generation();
     // THE HANDOFF (card 49b5e806): composed from what her turns already stamped (rooting,
     // work/note, the seam walk) plus the two things only the seam knows — what tears this
