@@ -8,7 +8,7 @@
 //! wait for the device), so the share is the engine's occupancy. A window closes on the first step
 //! after it ends; a fully idle engine reports its gap with its next step, measured exactly.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use continuum_flow::{Qos, Stage};
 use continuum_persona_engine::protocol::EngineSnapshot;
@@ -99,11 +99,10 @@ impl Record {
     fn close_window(&mut self, now: Instant) {
         let length = now.saturating_duration_since(self.window_start);
         let permille = if length.is_zero() { 0 } else { (self.busy.as_micros() * 1000 / length.as_micros()).min(1000) };
-        let observed_at_ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |since| u64::try_from(since.as_millis()).unwrap_or(u64::MAX)); // map_or: a clock before 1970 reads as 0; unwrap_or: past u64 ms reads as the most
         let snapshot = EngineSnapshot {
             incarnation: self.incarnation,
             frame: self.steps,
-            observed_at_ms,
+            observed_at_ms: continuum_base::time::EpochMs::now().millis(),
             gpu_busy_permille: u16::try_from(permille).unwrap_or(1000), // unwrap_or: clamped to 1000 above
             longest_idle_ms: u32::try_from(self.longest_idle.as_millis()).unwrap_or(u32::MAX), // unwrap_or: a gap past u32 ms reads as the longest
             minds: Vec::new(),
