@@ -1,5 +1,6 @@
 //! Control impl responsibility of the llama-server process owner.
 use super::*;
+use crate::inference::llama_server::smoke::smoke_slots;
 #[async_trait]
 impl LlamaServerControl for LlamaServerProcess {
     fn paging_recovery_required(&self) -> bool {
@@ -86,14 +87,13 @@ impl LlamaServerControl for LlamaServerProcess {
     async fn adopt_genome_in_place(
         &self,
         target: &ServingTarget,
-        operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         // an unasked binary is asked, never read as no; another binary's answer is not this one's
         let takes = self.engine_takes_train_dir().await?;
         let Some(dir) = engine_train_dir().filter(|_| takes) else {
             return Ok(GenomeInPlace::Unsupported);
         };
-        self.converge_genome(&dir, target, operation).await
+        self.converge_genome(&dir, target).await
     }
 
     async fn served_context_window(&self) -> Result<u32, LlamaServerError> {
@@ -245,13 +245,9 @@ impl LlamaServerControl for LlamaServerProcess {
         // the heartbeat only, and the reconciler re-probed an adopted engine every ensure
         // tick, wiping a resident's slot each time (M5, 2026-10-25). With no free seat the
         // lane's own `/slots` answering is the proof, and the residents' deliveries carry it.
-        let slots_url = format!("{}/slots", self.root);
-        let slots = match self.client.get(&slots_url).timeout(PROBE_TIMEOUT).send().await {
-            Ok(resp) if resp.status().is_success() => resp.json::<serde_json::Value>().await.ok(),
-            _ => None,
-        };
-        let Some(slots) = slots else {
-            return false;
+        let slots = match smoke_slots(&self.client, &self.root).await {
+            Ok(slots) => slots,
+            Err(failure) => return self.smoke_failed(&failure),
         };
         if smoke_seat(scratch_slot_for(&self.v1_url), &slots) == SmokeSeat::Occupied {
             continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.deferred_to_delivery",
@@ -266,20 +262,41 @@ impl LlamaServerControl for LlamaServerProcess {
             .smoke_proven_thinking
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
-                == Some(SmokeVerdict::Alive);
+            let verdict = smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await;
+            return match verdict {
+                Ok(SmokeVerdict::Alive) => true,
+                Err(f) => self.smoke_failed(&f),
+                Ok(SmokeVerdict::ThinkStarved | SmokeVerdict::Dead) => {
+                    continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.verdict_unhandled",
+                        root = %self.root,
+                        "smoke_proven_thinking path returned a non-Alive verdict — lane is not healthy"
+                    );
+                    false
+                }
+            };
         }
-        let Some(answer_tokens) = smoke_answer_tokens(&self.client, &self.root).await else {
-            return false;
+        let answer_tokens = match smoke_answer_tokens(&self.client, &self.root).await {
+            Ok(n) => n,
+            Err(failure) => return self.smoke_failed(&failure),
         };
         let quick = SmokeCap::Answer(answer_tokens);
-        let Some((tok, visible, rlen)) = smoke_attempt(&self.client, &self.v1_url, quick).await
-        else {
-            return false;
+        let (tok, visible, rlen) = match smoke_attempt(&self.client, &self.v1_url, quick).await {
+            Ok(result) => result,
+            Err(failure) => return self.smoke_failed(&failure),
         };
         match smoke_verdict(quick, tok, &visible, rlen) {
             SmokeVerdict::Alive => true,
-            SmokeVerdict::Dead => false,
+            SmokeVerdict::Dead => {
+                continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.dead_verdict",
+                    root = %self.root,
+                    completion_tokens = tok,
+                    visible_len = visible.len() as u64,
+                    reasoning_len = rlen as u64,
+                    "/chat/completions returned a parseable response but the visible content contains no ascending integers — \
+                     captured for diagnosis: is this CUDA garbage output, ~2-token wedge, or empty?"
+                );
+                false
+            }
             SmokeVerdict::ThinkStarved => {
                 self.smoke_proven_thinking
                     .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -293,8 +310,17 @@ impl LlamaServerControl for LlamaServerProcess {
                      LATCHING: this lane's checks start there from now on (one discovery \
                      per lane, not one per tick)"
                 );
-                smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await
-                    == Some(SmokeVerdict::Alive)
+                match smoke_attempt_verdict(&self.client, &self.v1_url, SmokeCap::EngineBound).await {
+                    Ok(SmokeVerdict::Alive) => true,
+                    Err(f) => return self.smoke_failed(&f),
+                    Ok(SmokeVerdict::ThinkStarved | SmokeVerdict::Dead) => {
+                        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.verdict_unhandled",
+                            root = %self.root,
+                            "retry at engine bound returned a non-Alive verdict — lane is not healthy"
+                        );
+                        false
+                    }
+                }
             }
         }
     }
@@ -358,10 +384,6 @@ impl LlamaServerControl for LlamaServerProcess {
 
     fn follow_engine_log(&self) {
         self.follow_served_engine();
-    }
-
-    fn publish_served_lane(&self) {
-        crate::inference::lane_registry::sync_live();
     }
 
     fn served_incarnation(&self) -> Option<crate::inference::engine_residency::EngineIncarnation> {
@@ -613,5 +635,19 @@ impl LlamaServerControl for LlamaServerProcess {
             })?;
         self.launch_prepared(prepared.clone(), current, Some(session), reservation)
             .await
+    }
+}
+
+
+impl LlamaServerProcess {
+    /// Probe once on any smoke failure, then return false so the caller knows the lane is wedged.
+    fn smoke_failed(&self, failure: &crate::inference::llama_server::smoke::SmokeFailure) -> bool {
+        continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.smoke.failed",
+            root = %self.root,
+            endpoint = ?failure.endpoint(),
+            failure = ?failure,
+            "smoke probe failed"
+        );
+        false
     }
 }
