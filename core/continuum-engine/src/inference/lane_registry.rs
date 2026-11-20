@@ -42,6 +42,9 @@ use super::lane_process;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+mod recovery;
+pub(crate) use recovery::restore_owned;
+
 /// What a lane is FOR — the axis `sweep_orphans` reaps on. A fresh boot never has
 /// an in-flight eval, so every recorded [`LaneRole::Ephemeral`] is an orphan to
 /// reap; the [`LaneRole::Live`] record is deferred to `lane_pidfile`'s

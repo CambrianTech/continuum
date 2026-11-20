@@ -388,6 +388,7 @@ impl LlamaServerProcess {
                 placement: Some(target.placement),
                 weights,
             };
+            self.retain_registration(&generation, rec.clone());
             // Record + release under the page-dir guard (one critical section); a
             // failed write keeps the reservation for the lane's lifetime.
             if let Err(e) = page_dir_reservation.handoff(&rec) {
