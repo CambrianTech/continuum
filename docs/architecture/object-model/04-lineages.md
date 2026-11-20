@@ -166,6 +166,11 @@ Part
       └─ Course           an Academy activity: lessons, exams, a grader (4.8)
 ```
 
+An activity declares what its results are worth (chapter 0.3): its essential parts (for a call,
+hearing, speaking and seeing), what counts as progress (for programming, an edit landed, a test run,
+a commit), and the quality that can step down. The governor reads that declaration when it prices
+the activity's work. A preemption inside an activity checkpoints its progress and never rolls it back.
+
 A room is also the world's sector (chapter 0, "The world is sectors"):
 - **Streaming.** It is streamed around its streaming sources (the citizens acting in it, the people
   watching it) at a level of detail set by how much attention it has.

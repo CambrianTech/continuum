@@ -505,6 +505,27 @@ essential part to fit, and steps quality down instead:
 - a lesson's labelled rows admitted as a whole piece (IN-PROCESS-LEARNING §3);
 - no placement that sums memory across nodes ("never a pool").
 
+**What is essential, and what counts as progress, belong to the activity.** The engine cannot know
+what a result is worth; the activity does, and its recipe declares it:
+- **Programming.** Progress is an edit landed, a test run, a commit. An act that ends with no edit is
+  spend with nothing to show, unless it is design work whose output is the design. So is an act
+  stopped or aborted before it lands anything. A programming act must finish, or leave durable
+  progress that the next act continues from.
+- **A live call.** The essentials are hearing, speaking and seeing. A call where she cannot hear,
+  speak or see has no point, whatever else is served. Avatar detail, how deeply she thinks before
+  answering, and how often a stream is analysed in depth are quality, and step down first.
+
+Joel: "We can obviously progress incrementally but rollback is bad." Work may be paused, and work may
+advance in pieces, but work already paid for is never thrown away:
+- **Preemption is a checkpoint.** A mind preempted mid-act keeps what she has done (her edits, her
+  context, her place in the task stack) and resumes from it.
+- **Partial progress lands.** An edit that compiles is saved, a lesson's committed steps count, and a
+  turn interrupted by a higher-salience event leaves the rest of its stack resumable.
+- **Restarting from scratch is the defect.** Re-running a turn from the beginning, re-prefilling a
+  context that could have been restored, or discarding a learning step that had committed is
+  rollback, and rollback is the costliest outcome there is. The governor prices a preemption by what
+  it would throw away, which is nothing when the work checkpoints.
+
 **Quality of service is part of the price.** The same answer is worth more sooner. A voice's next
 frame is worth everything before its deadline and nothing after; a reply is worth most at the moment
 a person stops speaking; a lesson is worth about the same today or in an hour. Each consumer's value
