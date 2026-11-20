@@ -26,7 +26,6 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use candle_core::quantized::gguf_file;
 use candle_core::{DType, Device};
 use safetensors::tensor::TensorView;
 use safetensors::Dtype as StDtype;
@@ -91,8 +90,11 @@ fn dequantize(gguf_path: &Path, output_dir: &Path) -> Result<(), String> {
     // Phase 1: Read GGUF metadata
     let mut meta_file =
         std::fs::File::open(gguf_path).map_err(|e| format!("Cannot open GGUF: {e}"))?;
-    let content = gguf_file::Content::read(&mut meta_file)
-        .map_err(|e| format!("Cannot read GGUF metadata: {e}"))?;
+    let content = continuum_engine::inference_capability::gguf_keys::read_bounded_header(
+        &mut meta_file,
+        &|| false,
+    )
+    .map_err(|e| format!("Cannot read GGUF metadata: {e}"))?;
     drop(meta_file);
 
     let tensor_names: Vec<String> = content.tensor_infos.keys().cloned().collect();

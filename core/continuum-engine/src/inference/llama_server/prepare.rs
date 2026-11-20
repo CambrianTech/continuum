@@ -215,7 +215,8 @@ impl LlamaServerProcess {
         // the sidecar); none → the main lane wears the projector and pays the reuse
         // cost, named in the probe. A citizen is never blind because of a cache knob
         // (CLAUDE.md, Sensory Architecture).
-        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar);
+        let decision = main_lane_mmproj_decision_for(&target.model, target.vision_sidecar)
+            .map_err(LlamaServerError::Spawn)?;
         let mmproj: Option<std::path::PathBuf> = if decision.wears() {
             resolved_mmproj.clone()
         } else {
@@ -492,7 +493,10 @@ impl LlamaServerProcess {
         let ambiguous_adapter = lora_paths
             .iter()
             .any(|p| p.to_str().is_none_or(|p| p.contains(',')));
-        let local_inputs = if !cfg!(windows) || engine_install.is_none() {
+        // The install owner returns a receipt only for a supported, verified
+        // application contract. Consume that capability here; duplicating its
+        // platform decision would let preparation and receipt support diverge.
+        let local_inputs = if engine_install.is_none() {
             Err(
                 "exact restoration requires original Windows application and local input pins"
                     .into(),

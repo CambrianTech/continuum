@@ -24,7 +24,7 @@ use sha2::{Digest, Sha256};
 /// handle it proved to be the file it means (`WeightsStamp::read_verified`).
 pub fn lora_base_fingerprint<R: std::io::Read + std::io::Seek>(reader: &mut R) -> Result<String, String> {
     reader.seek(std::io::SeekFrom::Start(0)).map_err(|e| e.to_string())?;
-    let content = Content::read(reader).map_err(|e| format!("not a readable GGUF header: {e}"))?;
+    let content = super::gguf_keys::read_bounded_header(reader, &|| false).map_err(|e| format!("not a readable GGUF header: {e}"))?;
     fingerprint_of(&content)
 }
 

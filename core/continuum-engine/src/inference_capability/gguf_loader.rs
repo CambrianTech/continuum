@@ -28,11 +28,9 @@
 //!   value all return `Err` — never a guessed default. Same posture as
 //!   `backends::read_gguf_metadata` (Joel's 2026-04-23 fix removed all
 //!   the silent-llama-fallback paths there).
-//! - **`general.parameter_count` is OPTIONAL** with a typed fallback
-//!   that LOGS the inference (file_size × bytes-per-param-inverse).
-//!   The fallback path is loud — every caller sees "parameter_count
-//!   estimated from file size, not GGUF metadata" so a future PR can
-//!   tighten when canon files start carrying the field reliably.
+//! - **`general.parameter_count` is OPTIONAL** for a complete tensor table:
+//!   tensor dimensions supply the count when the declaration is absent.
+//!   A partial shard without a declaration cannot establish the model total.
 //! - **Unknown architecture**: not blocked here — the residency gate's
 //!   `unsupported_layer_kinds_on_backend` already filters per backend.
 //!   PR-2's job is to extract data, not gate. Returns `Ok` with an
@@ -58,19 +56,14 @@ use std::path::Path;
 pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String> {
     let mut file = std::fs::File::open(path)
         .map_err(|e| format!("Failed to open GGUF at {}: {e}", path.display()))?;
-    let content = gguf_file::Content::read(&mut file)
+    let content = crate::inference_capability::gguf_keys::read_bounded_header(&mut file, &|| false)
         .map_err(|e| format!("Failed to read GGUF at {}: {e}", path.display()))?;
 
-    let file_size_bytes = std::fs::metadata(path)
-        .map(|m| m.len())
-        .map_err(|e| format!("Failed to stat GGUF {}: {e}", path.display()))?;
-    let fallback_name = path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    // A display label names the actual artifact even for a non-UTF8 basename.
+    // It does not supply architecture, dimensions, or residency evidence.
+    let artifact_label = path.display().to_string();
 
-    parse_qwen_metadata_from_content(&content, fallback_name, file_size_bytes, path)
+    parse_qwen_metadata_from_content(&content, artifact_label, path)
 }
 
 /// Pure parser — extracts `QwenModelMetadata` from already-parsed
@@ -81,54 +74,18 @@ pub fn read_qwen_model_metadata(path: &Path) -> Result<QwenModelMetadata, String
 /// scope, by checking the helper-level behavior separately).
 fn parse_qwen_metadata_from_content(
     content: &gguf_file::Content,
-    fallback_name: String,
-    file_size_bytes: u64,
+    artifact_label: String,
     path: &Path,
 ) -> Result<QwenModelMetadata, String> {
-    // architecture: required (same posture as backends::read_gguf_metadata).
-    // Read through the ONE shared canonical-key reader; this consumer's
-    // policy is "refuse if absent".
-    let architecture =
-        crate::inference_capability::gguf_keys::architecture(content).ok_or_else(|| {
-            format!(
-                "GGUF {} is missing required 'general.architecture' — refuse rather than \
-                 guess. Same rule as backends::read_gguf_metadata (2026-04-23).",
-                path.display()
-            )
-        })?;
-
-    // model_name: optional; fall back to file stem (recoverable, doesn't
-    // affect gate correctness; only display).
+    let facts = crate::inference_capability::gguf_keys::residency(content, path)?;
+    let architecture = facts.architecture;
+    let layer_count = facts.layer_count;
+    let file_type = facts.file_type;
+    // The display label comes from the artifact's declared name or its path.
     let model_name =
-        crate::inference_capability::gguf_keys::general_name(content).unwrap_or(fallback_name);
+        crate::inference_capability::gguf_keys::general_name(content)
+            .unwrap_or(artifact_label); // Optional display name only; the path identifies the actual artifact.
 
-    // block_count: required. The {arch}.block_count key is the canonical
-    // GGUF layer count. Without it, the residency gate's layer-count
-    // evidence is missing — refuse rather than fake.
-    let layer_count = crate::inference_capability::gguf_keys::block_count(content, &architecture)
-        .ok_or_else(|| {
-        format!(
-            "GGUF {} (arch={architecture}) is missing required '{architecture}.block_count' \
-                 — residency gate cannot report gpu_layer_count without it. Refuse rather \
-                 than guess.",
-            path.display()
-        )
-    })?;
-
-    // file_type: required. Maps to bytes_per_parameter. Unknown enum
-    // value returns Err — better to refuse than guess wrong quantization
-    // (caller would over- or under-estimate VRAM).
-    let file_type = content
-        .metadata
-        .get("general.file_type")
-        .and_then(|v| v.to_u32().ok())
-        .ok_or_else(|| {
-            format!(
-                "GGUF {} is missing required 'general.file_type' — bytes-per-param mapping \
-                 needs the quantization tag to estimate VRAM.",
-                path.display()
-            )
-        })?;
     let bytes_per_parameter_quantized = file_type_to_bytes_per_param(file_type).map_err(|e| {
         format!(
             "GGUF {} has unsupported file_type={file_type}: {e}. Add the mapping or fix \
@@ -137,20 +94,7 @@ fn parse_qwen_metadata_from_content(
         )
     })?;
 
-    // parameter_count: prefer metadata, fall back to file_size/bytes_per_param.
-    // The fallback is loud — comment in the QwenModelMetadata field documents
-    // that bytes_per_parameter_quantized is the input to the estimate, so a
-    // user who sees "30B Q4_K_M = 17GB" can sanity-check.
-    let parameter_count_billions = crate::inference_capability::gguf_keys::parameter_count(content)
-        .map(|n| n as f64 / 1.0e9)
-        .unwrap_or_else(|| {
-            // Fallback: derive from file size. Approximate — GGUF includes
-            // metadata overhead, token-embedding tables, output projection,
-            // etc., which aren't pure parameter bytes. Off by ~5-10% on
-            // large models; close enough for the gate's coarse decision.
-            let est_params = file_size_bytes as f64 / bytes_per_parameter_quantized;
-            est_params / 1.0e9
-        });
+    let parameter_count_billions = facts.parameter_count as f64 / 1.0e9;
 
     let layer_kinds_needing_check = layer_kinds_for_architecture(&architecture);
 
@@ -163,6 +107,9 @@ fn parse_qwen_metadata_from_content(
         layer_kinds_needing_check,
     })
 }
+
+#[cfg(test)]
+use super::gguf_keys::artifact_parameter_count;
 
 /// Map the GGUF `general.file_type` enum value to bytes-per-parameter
 /// for VRAM estimation. Values match llama.cpp's `ggml_ftype` enum.
@@ -245,6 +192,33 @@ pub(crate) fn layer_kinds_for_architecture(arch: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn parameter_total_uses_shapes_and_rejects_partial_or_malformed_evidence() -> Result<(), String> {
+        use candle_core::quantized::{gguf_file::{Content, TensorInfo, Value, VersionedMagic}, GgmlDType};
+        let mut content = Content {
+            magic: VersionedMagic::GgufV3,
+            metadata: Default::default(),
+            tensor_infos: [("weight".into(), TensorInfo {
+                ggml_dtype: GgmlDType::F32,
+                shape: candle_core::Shape::from(vec![3, 7]),
+                offset: 0,
+            })].into_iter().collect(),
+            tensor_data_offset: 0,
+        };
+        // Actual elements do not depend on quantization bytes or header padding.
+        assert_eq!(super::artifact_parameter_count(&content)?, 21);
+        content.metadata.insert("split.count".into(), Value::U16(2));
+        assert!(super::artifact_parameter_count(&content).is_err());
+        content.metadata.insert("general.parameter_count".into(), Value::U64(42));
+        assert_eq!(super::artifact_parameter_count(&content)?, 42);
+        content.metadata.insert("general.parameter_count".into(), Value::String("42".into()));
+        assert!(super::artifact_parameter_count(&content).is_err());
+        content.metadata.clear();
+        content.tensor_infos.clear();
+        assert!(super::artifact_parameter_count(&content).is_err());
+        Ok(())
+    }
+
     use super::*;
 
     // ===== file_type_to_bytes_per_param =====

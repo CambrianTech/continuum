@@ -6,7 +6,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use crate::inference_capability::gguf_keys::{split_count, split_index, split_tensor_count};
+use crate::inference_capability::gguf_keys::split;
 use candle_core::quantized::gguf_file::Content;
 use sha2::{Digest, Sha256};
 
@@ -67,15 +67,23 @@ impl LocalLaunchInputs {
         // per-header limits. Charge before cloning into the cross-shard set.
         for first in ggufs {
             let (pin, metadata) = InputFile::open_gguf(first, cancelled)?;
-            let count = split_count(&metadata)?;
+            let declaration = split(&metadata)?;
             for name in metadata.tensor_infos.keys() {
                 charge_tensor_name(name, &mut tensor_names_remaining)?;
             }
-            if count <= 1 {
+            let Some(declaration) = declaration else {
+                files.push(pin);
+                continue;
+            };
+            let count = declaration.count;
+            if count == 1 {
+                if metadata.tensor_infos.len() as u64 != declaration.tensors {
+                    return Err("GGUF tensor count disagrees with split declaration".into());
+                }
                 files.push(pin);
                 continue;
             }
-            if count > 1024 || split_index(&metadata)? != 0 {
+            if count > 1024 || declaration.index != 0 {
                 return Err("invalid first GGUF split index/count".into());
             }
             let name = first
@@ -87,13 +95,19 @@ impl LocalLaunchInputs {
                 .strip_suffix(&suffix)
                 .ok_or("GGUF split filename disagrees with metadata")?;
             let mut tensors: BTreeSet<String> = metadata.tensor_infos.keys().cloned().collect();
-            let expected = split_tensor_count(&metadata)?;
+            let expected = declaration.tensors;
             files.push(pin);
             for index in 1..count {
                 let path =
                     first.with_file_name(format!("{prefix}-{:05}-of-{count:05}.gguf", index + 1));
                 let (pin, metadata) = InputFile::open_gguf(&path, cancelled)?;
-                if split_index(&metadata)? != index || split_count(&metadata)? != count {
+                if split(&metadata)?
+                    != Some(crate::inference_capability::gguf_keys::GgufSplit {
+                        count,
+                        index,
+                        tensors: expected,
+                    })
+                {
                     return Err("inconsistent GGUF shard index/count".into());
                 }
                 for name in metadata.tensor_infos.keys() {
@@ -297,6 +311,8 @@ mod tests {
         shard(&second, 0, 2, 2, "second.weight");
         assert!(LocalLaunchInputs::read(&[first.clone()], &[], &|| false).is_err());
         shard(&second, 1, 3, 2, "second.weight");
+        assert!(LocalLaunchInputs::read(&[first.clone()], &[], &|| false).is_err());
+        shard(&second, 1, 2, 9, "second.weight");
         assert!(LocalLaunchInputs::read(&[first.clone()], &[], &|| false).is_err());
         shard(&second, 1, 2, 2, "first.weight");
         assert!(LocalLaunchInputs::read(&[first.clone()], &[], &|| false).is_err());

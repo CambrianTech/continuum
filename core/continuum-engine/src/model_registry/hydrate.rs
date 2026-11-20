@@ -50,7 +50,6 @@
 
 use super::types::{Arch, Capability, Model};
 use crate::inference_capability::gguf_keys;
-use candle_core::quantized::gguf_file;
 use std::path::Path;
 
 /// The subset of GGUF header facts the registry hydrates from. Each is
@@ -151,16 +150,7 @@ fn hydrate_sensory_caps_from_mmproj(model: &mut Model) -> Result<(), String> {
     Ok(())
 }
 
-/// Which raw-input encoders a multimodal projector carries. Each maps to the
-/// [`Capability`] the model gains: a vision encoder ⇒ [`Capability::Vision`],
-/// an audio encoder ⇒ [`Capability::AudioInput`]. Output modalities
-/// ([`Capability::AudioOutput`]) are NOT a projector fact — a projector is an
-/// input adapter — so they stay catalog-authored until validated.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ProjectorEncoders {
-    has_vision: bool,
-    has_audio: bool,
-}
+use crate::inference_capability::gguf_keys::ProjectorEncoders;
 
 /// Fold a projector's declared encoders into the model's capability set.
 /// Pure and additive — the single place the projector's input modalities
@@ -181,19 +171,9 @@ fn apply_projector_encoders(model: &mut Model, encoders: ProjectorEncoders) {
 /// unknown to guess around.
 fn read_projector_encoders(path: &Path) -> Result<ProjectorEncoders, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open projector: {e}"))?;
-    let content =
-        gguf_file::Content::read(&mut file).map_err(|e| format!("read projector: {e}"))?;
-    let flag = |key: &str| {
-        content
-            .metadata
-            .get(key)
-            .and_then(|v| v.to_bool().ok())
-            .unwrap_or(false)
-    };
-    Ok(ProjectorEncoders {
-        has_vision: flag("clip.has_vision_encoder"),
-        has_audio: flag("clip.has_audio_encoder"),
-    })
+    let content = gguf_keys::read_bounded_header(&mut file, &|| false)
+        .map_err(|e| format!("read projector: {e}"))?;
+    gguf_keys::projector_encoders(&content)
 }
 
 /// Translate a GGUF `general.architecture` string into the registry's
@@ -218,7 +198,8 @@ pub fn arch_from_gguf_string(arch: &str) -> Arch {
 /// individual key is just `None` (the catalog field, if set, stands).
 fn read_gguf_facts(path: &Path) -> Result<GgufFacts, String> {
     let mut file = std::fs::File::open(path).map_err(|e| format!("open GGUF: {e}"))?;
-    let content = gguf_file::Content::read(&mut file).map_err(|e| format!("read GGUF: {e}"))?;
+    let content = gguf_keys::read_bounded_header(&mut file, &|| false)
+        .map_err(|e| format!("read GGUF: {e}"))?;
 
     // Every canonical key is read through the ONE shared reader
     // ([`gguf_keys`]) so the coercion + the `context_length` fallback policy
@@ -246,6 +227,30 @@ mod tests {
     use crate::model_registry::types::Capability;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
+
+    #[test]
+    fn projector_rejects_wrong_typed_encoder_flags() -> Result<(), Box<dyn std::error::Error>> {
+        use candle_core::quantized::gguf_file::{self, Value};
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("projector.gguf");
+        let invalid = Value::String("true".into());
+        let mut output = std::fs::File::create(&path)?;
+        gguf_file::write(&mut output, &[("clip.has_vision_encoder", &invalid)], &[])?;
+        drop(output);
+        assert!(read_projector_encoders(&path)
+            .is_err_and(|error| error.contains("clip.has_vision_encoder")));
+        let mut output = std::fs::File::create(&path)?;
+        gguf_file::write(&mut output, &[], &[])?;
+        drop(output);
+        assert_eq!(
+            read_projector_encoders(&path)?,
+            ProjectorEncoders {
+                has_vision: false,
+                has_audio: false,
+            }
+        );
+        Ok(())
+    }
 
     fn model_with(arch: Arch, context_window: u32, chat_template: Option<&str>) -> Model {
         Model {
