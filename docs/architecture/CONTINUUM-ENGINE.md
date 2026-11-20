@@ -107,12 +107,20 @@ Emit a transition when the reason changes. Carry the turn's identity through fir
 delivery so admission delay, GPU work and downstream delay can be measured independently.
 
 **Required handoff under contention.** Keep decoding while no other ready turn needs service.
+While multiple turns are eligible, give each repeated service during long prefills and answers.
+Reconsider after each landed prefill chunk or decoded token. Use observed handoff time and
+per-stream latency budgets to group useful work between switches. A warm resume continues
+from the next unprocessed prompt position or the next sampled token. Charge prefill only for
+tokens the engine must actually process.
 When a foreground turn becomes ready, the scheduler compares its time to first output with the
 cost of interrupting the current stream, including both transfers and the next audio deadline
 when speaking. Stage the selected successor while the current step runs. At a landed step,
 the existing residency owner can hand off the stream. The interrupted turn retains its
 sampler, token history, stop matcher and pending output in order. Its next frame resumes
-from the landed token. Give a suspended decode an explicit next service deadline. Its
+from the landed token. An unfinished one-off needs this same custody through a pause; its
+blocks can be dropped once its turn completes or cancellation lands. Verify interleaved
+resident and one-off turns against uninterrupted token sequences at a fixed seed.
+Give a suspended decode an explicit next service deadline. Its
 remaining prefill is zero, so ranking it by prefill cost would immediately select it again.
 Reconsider at each landed frame and on readiness changes. Keep same-mind successors ordered.
 Measure the longest gap in each active stream and the oldest ready
