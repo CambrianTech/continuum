@@ -48,8 +48,15 @@ Population                           the genes published on the grid and mesh, w
   content-addressed, and referenced by every resident who wears it. Its identity and lineage are
   today's `GeneSignature` (its corpus, its parent, its region). Its lifecycle is today's
   `TrialState`: `Trial`, then `Promoted` or `Retired`.
-- **`GeneSet`** is the set she wears. Each turn it selects the genes the turn needs by importance
-  (chapter 0.3) and binds them as her phenotype for that turn: the blend of small learned motions.
+- **`GeneSet`** is the set she wears, and her phenotype is a mix, not a pick. Many genes are hosted at
+  once, and each has a contribution (its weight in the blend) and a priority (its claim on
+  residency). Both are re-estimated continuously from her focus, salience and each gene's fitness.
+  Choosing which genes are present is assembly; adjusting how much each one counts is the
+  continuous part, as RAGE's mission music turns each stem up or down by what is happening.
+- **The mixing is learned too.** How much each gene should contribute in which situation is itself
+  learned from outcomes, so the mix improves along with the genes.
+- **Mix changes land at boundaries.** A change of weight alters what her cached context was computed
+  under, so it lands at a turn boundary and is priced like any change of phenotype (6.4).
 - **`Shadow`** is a small trainable layer above her frozen stable genes, never a copy of them. Its
   `LearningContext` is held by a `Loaded` holding: promoted when a labelled row needs it, kept warm
   while it pays, demoted under pressure (IN-PROCESS-LEARNING §4).
@@ -152,7 +159,7 @@ publications:
 |---|---|---|
 | Gap sensor (a `Region`) | her receipts, review verdicts, corrections, prediction error on what she perceives | gaps, each weighted by salience |
 | Scout (a `Region`) | gaps, her focus | candidate genes, found by demand-aligned recall: locally first, then the hub and the grid, each search a ticket |
-| Composer (a `FusionRegion`) | her focus and recall, candidates, fitness | her phenotype: which genes she wears and each gene's scalar contribution |
+| Composer (a `FusionRegion`) | her focus and recall, candidates, fitness, outcomes | her phenotype: which genes she hosts, each gene's contribution and its priority, continuously re-estimated, with the mixing itself learned from outcomes |
 | Residency (a `Holder`) | the phenotype, the scheduler's next mind | genes promoted ahead of need and demoted when cold |
 | Lessons | gaps, corrections, the repo's history, distilled sessions | lessons as demands, trained as the duty allows |
 | Examiner | snapshots and inherited candidates | verdicts: promoted or retired |
