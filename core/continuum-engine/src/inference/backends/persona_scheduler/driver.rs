@@ -109,7 +109,7 @@ impl Footprint for Bound<'_, '_, '_> {
 }
 
 /// Where `prompt` under `basis` would start for `her`.
-fn reuse_for(her: &Mind, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+fn reuse_for(her: &Mind, prompt: &[i32], basis: &Basis) -> reuse::Decision {
     her.parts().tokens.reuse(&her.parts().genome, prompt, basis)
 }
 
@@ -541,7 +541,7 @@ impl Driver<'_, '_> {
                 let (decoding, remaining) = match &turn.phase {
                     Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
-                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).reused() } else { 0 }; // a mind never seen reuses nothing
+                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
                         turn.prompt.len().saturating_sub(reused)
                     })),
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
@@ -605,9 +605,8 @@ impl Driver<'_, '_> {
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
         let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-        turn.spent.shared_prefix_tokens = reuse::common_prefix(&her.parts().tokens.held, &turn.prompt);
-        let decided = reuse_for(her, &turn.prompt, &basis);
-        let shared = turn.spent.shared_prefix_tokens;
+        let reuse::Decision { shared, action: decided } = reuse_for(her, &turn.prompt, &basis);
+        turn.spent.shared_prefix_tokens = shared;
         // Prefill will cross this matching prefix again. Take a native checkpoint there
         // so the next turn can use it if both token history and recurrent lineage match.
         let can_learn = match decided {
