@@ -226,13 +226,14 @@ content, shared by every mind in the call; only attention and relevance are each
   still, a new slide, or a new face is an event, and the stage that cares takes priority there;
   other minds asking for the same frame share the work.
 
-**She sees with a dynamic fusion.** Her sight is a living estimate of the scene that is never
-finished and never blank. It starts rough and refines continuously as better knowledge becomes
+**She sees with all of it, dynamically fused.** The cheap signals, the deep networks, her own
+model's vision layers and the fusion that ties them together are all her seeing; none excludes the
+others, and each also tells the others when they are needed. Her sight is a living estimate of the
+scene that is never finished and never blank. It starts rough and refines continuously as better knowledge becomes
 available. Every source (cheap tracking every frame, a deep network's result seconds later, her own
 model's vision layers, a closer or clearer view) updates it where it applies, weighted by its
 confidence and its age. Better knowledge replaces weaker estimates region by region, and knowledge
-that has gone stale loses weight until something fresher arrives. No single stage is her sight.
-Nothing waits for a final answer: at every moment she sees the best estimate there is. This comes
+that has gone stale loses weight until something fresher arrives. Nothing waits for a final answer: at every moment she sees the best estimate there is. This comes
 from CBAR, Joel's real-time perception engine:
 
 - **Slow results are brought into real time.** A deep analysis may take seconds. Its result is
