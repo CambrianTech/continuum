@@ -25,7 +25,7 @@ How the whole thing composes. Read these first; on architecture questions they w
 |---|---|
 | How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
 | How do the parts of one mind run independently and respond to events? | [Concurrent mind and governor](architecture/CONCURRENT-MIND-AND-GOVERNOR.md). The [stage contract](architecture/STAGE-CONTRACT.md) specifies proposed inputs, outputs, wakeups and completion. |
-| How is every running part built, and how does it start, suspend and stop? | [Parts](architecture/parts/README.md): one family tree, its lineage, the one lifecycle, model parts, and where the code stands. |
+| How is every running part built, and how does it start, suspend and stop? | [Parts](architecture/PARTS.md): one lineage and one lifecycle for every long-lived component, with typed reports and one composite walk. |
 | How does a governor share capacity among consumers? | [Shared resources](architecture/SHARED-RESOURCES.md): the common owner, resource-specific adapters, residency of bytes and device time by deadline, latency and throughput (avatars, decode, learning). |
 | How do minds take turns decoding while transfers and preparation proceed? | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) covers admission, the memory model and context reuse. |
 | How does a resident learn while she works? | [In-process learning](architecture/IN-PROCESS-LEARNING.md): labelled rows in her ordinary decode, a duty cycle per Core, her learning context paged like any cache, and learning across the grid. The dedicated form is the Academy ([continuous evolution](architecture/ACADEMY-AS-CONTINUOUS-EVOLUTION.md), [repo courses](architecture/REPO-GENOME-AND-COURSES.md)). |

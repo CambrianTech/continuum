@@ -519,8 +519,8 @@ really share or substitute the verb, never one trait per verb, never dynamic dis
 
 **Lifecycle composes through the tree.** Every part has a lifetime, and the parent, not the caller,
 knows its children, their order and their outstanding work. The trait, its typed outcomes and the
-composite walk are specified once in [parts/LIFECYCLE.md](parts/LIFECYCLE.md); any other shared
-method or logic composes the same way ([parts](parts/README.md)).
+composite walk are specified once in [PARTS.md](PARTS.md); any other shared
+method or logic composes the same way.
 
 `persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
 order and combines what each reports. "Shut down this engine" is `shutdown` on its incarnation,
@@ -741,8 +741,7 @@ One concrete audit target is the genome extraction. The genome has its own crate
 
 ### Specialization in Rust
 
-How to find a type's parent, and the tree the core's parts form, are in [parts](parts/README.md)
-([finding the lineage](parts/LINEAGE.md), [where the code stands](parts/SURVEY.md)).
+How to find a type's parent, and the tree the core's parts form, are in [PARTS.md](PARTS.md).
 
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
 
