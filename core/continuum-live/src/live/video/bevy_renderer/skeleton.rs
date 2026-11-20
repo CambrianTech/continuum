@@ -52,13 +52,26 @@ pub(super) fn dump_bone_names(
 /// Reference head Y for VRM standard models (~1.50m).
 pub(super) const REFERENCE_HEAD_Y: f32 = 1.50;
 
-/// Baseline camera Z distance for the reference head height.
-pub(super) const REFERENCE_CAMERA_Z: f32 = -0.55;
-
+/// Baseline camera Z distance for full-body framing of a reference-height avatar (head_y ≈ 1.5 m).
+///
+/// Derived from Bevy's default ~59° vertical FOV and a standard VRM body height:
+///   d ≥ head_y / (2 * tan(fov/2)) → ≈ 1.34 m for fov=59°, rounded to -1.4 m
+///   to leave a small margin above/below the frame edges.
+pub(super) const REFERENCE_CAMERA_Z: f32 = -1.4;
 /// Compute camera Z distance from head world-Y position.
 pub(super) fn camera_z_for_head(head_y: f32) -> f32 {
     let scale = (head_y / REFERENCE_HEAD_Y).clamp(0.5, 2.0);
     REFERENCE_CAMERA_Z * scale
+}
+
+/// Compute the torso Y position for camera look-target and framing.
+///
+/// Returns spine-world-y when a measured bone is available (runtime),
+/// otherwise one documented proportion of head height — mid-torso ≈ 60 %
+/// of head_y in standard VRM models.  This single function is the owner
+/// of that fact; both birther.rs and animate_idle call it.
+pub(super) fn torso_target_y(head_y: f32, spine_y: Option<f32>) -> f32 {
+    spine_y.unwrap_or_else(|| head_y * 0.6)
 }
 
 /// Find a bone entity by matching against a list of known names.

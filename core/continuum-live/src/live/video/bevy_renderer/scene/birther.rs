@@ -43,17 +43,27 @@ pub fn birth_scene_for_identity(
 ) -> SceneDescription {
     let backdrop = room_color_from_identity(identity).into();
 
-    // Default portrait framing — matches the pre-data-driven `build_scene`
-    // default: eye-level, pulled back on -Z, looking at just below the head.
-    // Computed with Bevy's `looking_at` then projected to the neutral
-    // `TransformDesc` so the framing is baked into the description as data.
+    // Default full-body framing — the avatar's camera pulls back far enough
+    // (REFERENCE_CAMERA_Z) and aims at mid-torso so the entire figure fits
+    // within Bevy's ~59° vertical FOV. Previously this was a tight headshot
+    // that excluded the body entirely.
+    //
+    // Camera Y is set to ~chest height (head_y * 2/3): in a standard VRM model
+    // the head top is at ~1.5 m and the chest midpoint sits around 1.0 m,
+    // giving a natural downward angle toward the torso.
+    // Look target targets mid-spine (head_y / 2), halfway between head top
+    // and feet — this places it in the upper-torso region for any avatar height.
+    // The camera Z is derived from FOV math and scales proportionally at runtime.
+    let torso_y = skeleton::torso_target_y(skeleton::REFERENCE_HEAD_Y, None);
+    // Camera Y: midway between head top and mid-torso for natural downward angle.
+    let cam_y = (skeleton::REFERENCE_HEAD_Y + torso_y) / 2.0;
+
     let camera_xf: TransformDesc = Transform::from_xyz(
-        0.0,
-        skeleton::REFERENCE_HEAD_Y,
-        skeleton::REFERENCE_CAMERA_Z,
+        0.0, cam_y,
+        skeleton::REFERENCE_CAMERA_Z, // Z = -1.4 — full-body distance (FOV-derived, see skeleton.rs)
     )
     .looking_at(
-        Vec3::new(0.0, skeleton::REFERENCE_HEAD_Y - 0.02, 0.0),
+        Vec3::new(0.0, torso_y, 0.0), // look at mid-torso — ONE OWNER via torso_target_y
         Vec3::Y,
     )
     .into();
