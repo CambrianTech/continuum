@@ -86,7 +86,7 @@ and writes one function:
 
 The function is its update rule: given what changed, what it now publishes. The substrate's triplet
 (the `Region` base, a derive for the declarations, and a scaffold generator,
-CBAR-SUBSTRATE-ARCHITECTURE) supplies everything else. Two consequences follow:
+[CONTINUUM-ENGINE.md](../CONTINUUM-ENGINE.md) §3, "The For Free Triplet") supplies everything else. Two consequences follow:
 - **Residents can author parts of their own minds.** A part is ordinary code behind a generator, so
   a resident can propose one, test it against its validators, and submit it like any other change.
 - **A part's model can be a gene.** Where a part uses a small learned model (the amygdala, turn-taking,
