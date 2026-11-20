@@ -204,6 +204,53 @@ The mixer sees AI audio streams identically to human mic streams.
 
 ---
 
+## A Mind in the Call: Everyone Perceived Together, a Fast Voice Augmented by Deep Thought
+
+Status: proposed, 2026-11-20. Joel: "she's seeing and hearing all of them together ... fast low
+latency speaking and seeing while not losing deeper thinking models. Just augmented."
+
+A resident in a call is a citizen in the room, not a voice behind `speak(text)`. She hears and sees
+every participant at once: the humans, and the other residents' avatars. She answers at
+conversational speed, and her full mind keeps thinking underneath. The fast layers augment her
+deep mind and never replace it.
+
+**Everyone perceived together, computed once.** Each stream's perception is a property of the
+content, shared by every mind in the call; only attention and relevance are each mind's own
+([CONCURRENT-MIND-AND-GOVERNOR.md](../architecture/CONCURRENT-MIND-AND-GOVERNOR.md) §3.3):
+
+- per audio stream: voice activity and transcription, once, whoever listens;
+- per video stream: cheap change detection on every frame (motion, a YOLO-class detector), once;
+  a mind pulls a full frame or an expensive analysis only when the change feed shows something she
+  cares about (a new slide, a new speaker), and other minds asking for the same frame share it;
+- slow results are carried forward between observations (a mask warped by the motion history), with
+  their observation time and confidence exposed, so 30 fps presentation never pretends to be fresh
+  perception.
+
+**A fast voice, augmented by deep thought.** A turn starts two things under one turn identity: her
+quick voice (a small, fast model speaking as her, from her context) and her deep mind on the
+served base. The quick voice opens: an acknowledgement, the first clause, a backchannel. The deep
+reply merges in behind it. The output owner tracks what has been spoken, revises the continuation
+not yet spoken, and speaks a correction if the deep reply changes a claim already delivered. A new
+turn supersedes speech not yet spoken. The deep reply always arrives unless superseded: the fast
+layer buys latency, never replaces depth. Her avatar's visemes and gestures follow the audio
+actually going out, so her face moves with the quick voice from the first syllable. Seeing works
+the same way: the cheap per-frame layer answers "what changed" now, and the deep look answers
+"what it means" when it lands.
+
+**All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
+deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
+use the slack ([SHARED-RESOURCES.md, "Time"](../architecture/SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)).
+Under pressure, levels of detail step down (an unwatched avatar, a lower analysis rate) before any
+deadline is missed, and nothing about the call stops her deep mind or her learning outright.
+Codex's worked example in SUBSTRATE.md (#6170) traces one call under memory pressure.
+
+Measured on the same stimulus and context: first audible response; avatar frame interval; age of
+the last genuine observation; duplicate perception computed across residents (target zero); the
+deep reply's quality with the quick voice against the deep reply alone (the augmentation must not
+degrade it); and decode and learning throughput with the call against without.
+
+---
+
 ## Command Buffer Pattern
 
 **Problem:** Synchronous RPC for each action = latency, no batching
