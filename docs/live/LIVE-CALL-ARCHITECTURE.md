@@ -226,9 +226,13 @@ content, shared by every mind in the call; only attention and relevance are each
   still, a new slide, or a new face is an event, and the stage that cares takes priority there;
   other minds asking for the same frame share the work.
 
-**She sees with the fusion.** No single stage is her sight: not the detectors, not a deep network,
-not her model's vision layers. What she sees is the fused percept: every stage's result, cheap and
-deep, slow and fast, combined into one continuous scene in the present. How that fusion works comes
+**She sees with a dynamic fusion.** Her sight is a living estimate of the scene that is never
+finished and never blank. It starts rough and refines continuously as better knowledge becomes
+available. Every source (cheap tracking every frame, a deep network's result seconds later, her own
+model's vision layers, a closer or clearer view) updates it where it applies, weighted by its
+confidence and its age. Better knowledge replaces weaker estimates region by region, and knowledge
+that has gone stale loses weight until something fresher arrives. No single stage is her sight.
+Nothing waits for a final answer: at every moment she sees the best estimate there is. This comes
 from CBAR, Joel's real-time perception engine:
 
 - **Slow results are brought into real time.** A deep analysis may take seconds. Its result is
@@ -254,7 +258,7 @@ turn supersedes speech not yet spoken. The deep reply always arrives unless supe
 layer buys latency, never replaces depth. Her avatar's visemes and gestures follow the audio
 actually going out, so her face moves with the quick voice from the first syllable. Seeing works
 the same way: the cheap signals say where to look now, and her deep look says what it means when
-it lands, and both arrive as one fused percept.
+it lands, refining the estimate she already sees.
 
 **All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
 deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
