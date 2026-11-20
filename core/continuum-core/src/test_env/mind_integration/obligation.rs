@@ -173,7 +173,7 @@ async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
         panic!("a healthy store confirms admission");
     };
     let gate = obligations.gate_for(turn);
-    let batch = Effect::ToolBatch { calls: vec![("toolu_1".into(), "code/edit".into())] };
+    let batch = Effect::ToolBatch { calls: vec![(crate::ai::types::ToolCallId::fixture("toolu_1"), "code/edit".into())] };
     gate.0.before(&batch).await.unwrap(); // unwrap: the mark under test
     gate.0.before(&Effect::Speech).await.unwrap(); // unwrap: the mark under test
     let row = find(&substrate_connection(&executor), name, turn).await.unwrap().unwrap(); // unwrap: the store under test
@@ -181,7 +181,7 @@ async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
     assert_eq!(
         row.effects,
         Some(vec![
-            RecordedEffect::ToolBatch { calls: vec![("toolu_1".into(), "code/edit".into())] },
+            RecordedEffect::ToolBatch { calls: vec![(crate::ai::types::ToolCallId::fixture("toolu_1"), "code/edit".into())] },
             RecordedEffect::Speech
         ]),
         "every effect, in order, with the batch's call ids"

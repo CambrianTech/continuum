@@ -391,7 +391,7 @@ pub(super) async fn perception_grade(
         },
     };
     let observe_call = crate::ai::types::ToolCall {
-        id: "eval-perception-observe".to_string(),
+        id: crate::ai::types::ToolCallId::mint(),
         name: "perception/observe".to_string(),
         input: serde_json::json!(params),
     };

@@ -230,7 +230,7 @@ pub mod test_support {
         };
         Observation {
             call: ToolCall {
-                id: "c".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"c"),
                 name: name.into(),
                 input: input.clone(),
             },
@@ -238,7 +238,7 @@ pub mod test_support {
                 image: None,
                 additional_images: None,
                 result: ToolResult {
-                    tool_use_id: "c".into(),
+                    tool_use_id: crate::ai::types::ToolCallId::fixture(&"c"),
                     content: "ok".into(),
                     is_error: None,
                 custody: crate::ai::types::ResultCustody::Unsaved,
@@ -449,7 +449,7 @@ pub mod test_support {
     /// The one act every fixture faculty reaches for: run a tiny Rust program.
     pub fn tool_call() -> ToolCall {
         ToolCall {
-            id: "call-1".into(),
+            id: crate::ai::types::ToolCallId::fixture(&"call-1"),
             name: "code/run".into(),
             input: serde_json::json!({ "lang": "rust", "code": "fn main() { println!(\"{}\", 2 + 2); }" }),
         }

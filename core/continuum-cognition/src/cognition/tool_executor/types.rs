@@ -194,7 +194,7 @@ pub struct CallVerdict {
     /// Remaining frames from the same call (for example, other video participants).
     #[serde(default)]
     pub additional_images: Option<Vec<crate::media::artifact::ImageArtifact>>,
-    pub tool_use_id: String,
+    pub tool_use_id: crate::ai::types::ToolCallId,
     pub verdict: ActVerdict,
     pub dispatch_handle: Option<Uuid>,
     /// The commands a refusal of this call names as her next moves, by canonical name, from the

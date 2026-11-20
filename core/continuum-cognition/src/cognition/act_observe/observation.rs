@@ -422,7 +422,7 @@ mod tests {
         fn obs(verdict: ActVerdict, is_error: Option<bool>, content: &str) -> Observation {
             Observation {
                 call: ToolCall {
-                    id: "c1".into(),
+                    id: crate::ai::types::ToolCallId::fixture(&"c1"),
                     name: "code/shell".into(),
                     input: serde_json::json!({ "command": "cargo test" }),
                 },
@@ -430,7 +430,7 @@ mod tests {
                     image: None,
                     additional_images: None,
                     result: ToolResult {
-                        tool_use_id: "c1".into(),
+                        tool_use_id: crate::ai::types::ToolCallId::fixture(&"c1"),
                         content: content.into(),
                         is_error,
                         custody: crate::ai::types::ResultCustody::Unsaved,

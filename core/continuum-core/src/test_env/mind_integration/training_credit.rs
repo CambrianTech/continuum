@@ -163,7 +163,7 @@ pub(super) fn settlement_acts(count: usize) -> Vec<(String, Vec<crate::ai::types
                     "Inspect source file {n} and verify its behavior against the regression."
                 ),
                 vec![crate::ai::types::ToolCall {
-                    id: format!("read-{n}"),
+                    id: crate::ai::types::ToolCallId::fixture(&format!("read-{n}")),
                     name: "code/read".into(),
                     input: json!({"path":format!("src/file_{n}.rs")}),
                 }],

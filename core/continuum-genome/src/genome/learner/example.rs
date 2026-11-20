@@ -35,7 +35,7 @@ pub fn learn_messages(example: &TrainingExample) -> LearnMessages {
         message["train"] = json!(false);
     }
     let reply = &call.response;
-    let calls: Vec<Value> = reply.tool_calls.iter().flatten().map(|c| wire_tool_call(&c.id, &c.name, &c.input)).collect();
+    let calls: Vec<Value> = reply.tool_calls.iter().flatten().map(|c| wire_tool_call(c.id.as_str(), &c.name, &c.input)).collect();
     let mut answer = json!({"role": "assistant", "content": reply.text});
     if let Some(reasoning) = reply.reasoning.as_deref().filter(|s| !s.is_empty()) {
         answer["reasoning_content"] = json!(reasoning);

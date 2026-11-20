@@ -23,7 +23,7 @@ use crate::model_registry::Capability;
 use continuum_base::secrets::get_secret;
 
 use super::adapter::{AIProviderAdapter, AdapterCapabilities, ApiStyle};
-use super::types::{
+use super::types::{ToolCallId, 
     ChatMessage, ContentPart, FinishReason, HealthState, HealthStatus, MessageContent, ModelInfo,
     TextGenerationRequest, TextGenerationResponse, ToolCall, ToolChoice, UsageMetrics,
 };
@@ -435,6 +435,7 @@ impl AIProviderAdapter for AnthropicAdapter {
                     content_blocks.push(ContentPart::Text { text: t.clone() });
                 }
                 AnthropicContentBlock::ToolUse { id, name, input } => {
+                    let id = ToolCallId::from_wire_or_mint(Some(id.clone()));
                     tool_calls.push(ToolCall {
                         id: id.clone(),
                         name: name.clone(),

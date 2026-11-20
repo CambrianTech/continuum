@@ -25,7 +25,7 @@ impl ToolCallFormat for NarratedWriteFormat {
             return Vec::new();
         };
         vec![ToolCall {
-            id: format!("jip-{}", Uuid::new_v4()),
+            id: crate::ToolCallId::mint(),
             name: "code/write".to_string(),
             input: serde_json::json!({ "file_path": path, "content": content }),
         }]
@@ -95,7 +95,7 @@ impl ToolCallFormat for NarratedScriptFormat {
             if let Some(path) = extract_created_file_name(&narration) {
                 if !fence.body.trim().is_empty() {
                     out.push(ToolCall {
-                        id: format!("jip-{}", Uuid::new_v4()),
+                        id: crate::ToolCallId::mint(),
                         name: "code/write".to_string(),
                         input: serde_json::json!({ "file_path": path, "content": fence.body }),
                     });
@@ -111,7 +111,7 @@ impl ToolCallFormat for NarratedScriptFormat {
                 && !fence.body.trim().is_empty()
             {
                 out.push(ToolCall {
-                    id: format!("jip-{}", Uuid::new_v4()),
+                    id: crate::ToolCallId::mint(),
                     name: "code/shell".to_string(),
                     input: serde_json::json!({ "cmd": fence.body.trim() }),
                 });
@@ -140,7 +140,7 @@ impl ToolCallFormat for NarratedScriptFormat {
                 && !fence.body.trim().is_empty()
             {
                 out.push(ToolCall {
-                    id: format!("jip-{}", Uuid::new_v4()),
+                    id: crate::ToolCallId::mint(),
                     name: "code/run".to_string(),
                     input: serde_json::json!({ "lang": "rust", "code": fence.body }),
                 });
@@ -186,7 +186,7 @@ pub(super) fn recover_call_from_fence_body(body: &str, resolve_name: ResolveName
             if let Ok(v) = serde_json::from_str::<serde_json::Value>(after[..obj_end].trim()) {
                 if v.is_object() {
                     return Some(ToolCall {
-                        id: format!("jip-{}", Uuid::new_v4()),
+                        id: crate::ToolCallId::mint(),
                         name: name.to_string(),
                         input: v,
                     });

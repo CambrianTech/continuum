@@ -330,11 +330,11 @@ fn capacity_floored_at_one() {
 fn act(name: &str, input: serde_json::Value, content: String) -> crate::cognition::act_observe::Observation {
     use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
     Observation {
-        call: crate::ai::types::ToolCall { id: name.into(), name: name.into(), input },
+        call: crate::ai::types::ToolCall { id: crate::ai::types::ToolCallId::fixture(&name), name: name.into(), input },
         output: ToolOutput {
             image: None,
             additional_images: None,
-            result: crate::ai::types::ToolResult { tool_use_id: name.into(), content, is_error: None, custody: Default::default() },
+            result: crate::ai::types::ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&name), content, is_error: None, custody: Default::default() },
             verb: ToolVerb::classify(name),
             paths: Vec::new(),
             verdict: Default::default(),

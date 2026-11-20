@@ -14,7 +14,7 @@ fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
 
     let obs = Observation {
         call: ToolCall {
-            id: "call-42".into(),
+            id: crate::ai::types::ToolCallId::fixture(&"call-42"),
             name: "code/search".into(),
             input: serde_json::json!({ "query": "needle" }),
         },
@@ -22,7 +22,7 @@ fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
             image: None,
             additional_images: None,
             result: ToolResult {
-                tool_use_id: "call-42".into(),
+                tool_use_id: crate::ai::types::ToolCallId::fixture(&"call-42"),
                 content: "match at foo.rs:42".into(),
                 is_error: None,
                 custody: crate::ai::types::ResultCustody::Unsaved,
@@ -70,7 +70,7 @@ fn typed_receipt_threads_the_act_by_field_and_keeps_text_byte_stable() {
     // Native visual feedback must carry ALL calls of the same active batch,
     // never the last call alone or an earlier screenshot after settlement.
     let mut second = obs.clone();
-    second.call.id = "call-43".into();
+    second.call.id = crate::ai::types::ToolCallId::fixture("call-43");
     second.output.result.tool_use_id = second.call.id.clone();
     let room = Uuid::new_v4();
     let original_calls = vec![obs.call.clone(), second.call.clone()];
@@ -125,7 +125,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
 
     let observation = |id: &str, name: &str, handle: Option<&str>| Observation {
         call: ToolCall {
-            id: id.into(),
+            id: crate::ai::types::ToolCallId::fixture(&id),
             name: name.into(),
             input: serde_json::json!({}),
         },
@@ -133,7 +133,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
             image: None,
             additional_images: None,
             result: ToolResult {
-                tool_use_id: id.into(),
+                tool_use_id: crate::ai::types::ToolCallId::fixture(&id),
                 content: "same result".into(),
                 is_error: None,
                 custody: handle.map_or(crate::ai::types::ResultCustody::Unsaved, |h| {

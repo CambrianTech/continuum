@@ -154,12 +154,12 @@ fn a_receipt_s_per_call_results_stay_reachable_as_long_as_the_receipt() {
     use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
     let id = || format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     let act = |handle: &str| Observation {
-        call: ToolCall { id: handle.into(), name: "code/read".into(), input: serde_json::json!({}) },
+        call: ToolCall { id: crate::ai::types::ToolCallId::fixture(&handle), name: "code/read".into(), input: serde_json::json!({}) },
         output: ToolOutput {
             image: None,
             additional_images: None,
             result: ToolResult {
-                tool_use_id: handle.into(),
+                tool_use_id: crate::ai::types::ToolCallId::fixture(&handle),
                 content: format!("[saved as output `{handle}`]"),
                 is_error: None,
                 custody: ResultCustody::Pointer { handle: handle.to_owned() },
@@ -270,12 +270,12 @@ fn each_call_s_saved_result_is_live_once_its_receipt_is_recorded() {
     use crate::cognition::act_observe::{ActStatus, Observation, ToolOutput, ToolVerb};
     let call_handle = format!("{:016x}", Uuid::new_v4().as_u128() as u64);
     let act = Observation {
-        call: ToolCall { id: "c1".into(), name: "code/read".into(), input: serde_json::json!({}) },
+        call: ToolCall { id: crate::ai::types::ToolCallId::fixture(&"c1"), name: "code/read".into(), input: serde_json::json!({}) },
         output: ToolOutput {
             image: None,
             additional_images: None,
             result: ToolResult {
-                tool_use_id: "c1".into(),
+                tool_use_id: crate::ai::types::ToolCallId::fixture(&"c1"),
                 content: format!("[saved as output `{call_handle}`]"),
                 is_error: None,
                 custody: ResultCustody::Pointer { handle: call_handle.clone() },

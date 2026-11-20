@@ -766,7 +766,7 @@ impl LlmDeliberationFaculty {
                     wm.record_fact(&cut_act_fact(&composing));
                 }
                 let call = crate::ai::types::ToolCall {
-                    id: "tool-attempt-cut-at-limit".to_string(),
+                    id: crate::ai::types::ToolCallId::mint(),
                     name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.to_string(),
                     input: serde_json::json!({}),
                 };
@@ -807,7 +807,7 @@ impl LlmDeliberationFaculty {
                     wm.record_fact(&cut_act_fact(&resp.text));
                 }
                 let call = crate::ai::types::ToolCall {
-                    id: "tool-attempt-cut-at-limit".to_string(),
+                    id: crate::ai::types::ToolCallId::mint(),
                     name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL
                         .to_string(),
                     input: serde_json::json!({}),
@@ -869,7 +869,7 @@ impl LlmDeliberationFaculty {
                 crate::ai::json_in_prompt_tools::attempted_tool_name(&resp.text)
             {
                 let call = crate::ai::types::ToolCall {
-                    id: "tool-attempt".to_string(),
+                    id: crate::ai::types::ToolCallId::mint(),
                     name: crate::ai::tool_dialect::from_wire_name(&attempted).to_string(),
                     input: serde_json::json!({}),
                 };
@@ -891,7 +891,7 @@ impl LlmDeliberationFaculty {
             if let Some(snippet) = crate::ai::json_in_prompt_tools::nameless_args_fence(&resp.text)
             {
                 let call = crate::ai::types::ToolCall {
-                    id: "tool-attempt-nameless".to_string(),
+                    id: crate::ai::types::ToolCallId::mint(),
                     name: crate::cognition::tool_executor::command_executor::NAMELESS_ARGS_SENTINEL
                         .to_string(),
                     input: serde_json::json!({ "emitted": snippet }),
@@ -927,7 +927,7 @@ impl LlmDeliberationFaculty {
                         "the generation reached the output limit mid-thought: nothing lifted, the decision is hers"
                     );
                     let call = crate::ai::types::ToolCall {
-                        id: "tool-attempt-thought-cut".to_string(),
+                        id: crate::ai::types::ToolCallId::mint(),
                         name: crate::cognition::tool_executor::command_executor::THOUGHT_CUT_SENTINEL
                             .to_string(),
                         input: serde_json::json!({}),
@@ -972,7 +972,7 @@ impl LlmDeliberationFaculty {
                             "generation ended inside the reasoning channel — no answer, no act; routing the think-only teacher"
                         );
                         let call = crate::ai::types::ToolCall {
-                            id: "tool-attempt-think-only".to_string(),
+                            id: crate::ai::types::ToolCallId::mint(),
                             name: crate::cognition::tool_executor::command_executor::THINK_ONLY_SENTINEL
                                 .to_string(),
                             input: serde_json::json!({}),

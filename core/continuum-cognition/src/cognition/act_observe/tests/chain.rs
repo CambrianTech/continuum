@@ -38,7 +38,7 @@ async fn a_settle_chain_links_each_act_caused_by_its_predecessor() {
     // Act 2 — a DIFFERENT call (the repeat guard short-circuits identical
     // batches; a chain is made of distinct steps).
     let second_call = ToolCall {
-        id: "call-2".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"call-2"),
         name: "code/read".into(),
         input: serde_json::json!({ "file_path": "src/main.rs" }),
     };

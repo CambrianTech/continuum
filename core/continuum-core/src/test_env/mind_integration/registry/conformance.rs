@@ -111,7 +111,7 @@ async fn dispatch_verdict(
 ) {
     let exec = stateless_surface_hands();
     let calls = vec![NativeToolCall {
-        id: "vp".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"vp"),
         name: name.to_string(),
         input: json!({ "mode": mode }),
     }];
@@ -262,7 +262,7 @@ async fn dispatch_input(input: serde_json::Value) -> (Option<bool>, String, crat
 /// One call to `name` through the real batch path: (is_error, content, verdict).
 async fn dispatch_call(name: &str, input: serde_json::Value) -> (Option<bool>, String, crate::sdk_codegen::ActVerdict) {
     let exec = stateless_surface_hands();
-    let calls = vec![NativeToolCall { id: "vp".to_string(), name: name.to_string(), input }];
+    let calls = vec![NativeToolCall { id: crate::ai::types::ToolCallId::fixture(&"vp"), name: name.to_string(), input }];
     let out = exec.execute_native_batch(&crate::ai::types::CallBatch::classify(calls.iter().cloned(), crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished)), &ctx()).await.expect("batch itself succeeds");
     let r = out.results.iter().find(|r| r.tool_use_id == "vp").expect("result correlates by tool_use_id");
     let v = out.verdicts.iter().find(|v| v.tool_use_id == "vp").map(|v| v.verdict).unwrap_or_default(); // JUSTIFIED: absence means unprojected
@@ -388,7 +388,7 @@ async fn valid_json_from_an_uncommitted_generation_never_runs_through_the_live_e
         (GenerationEnd::Unreported, "did not say why"),
     ] {
         let token = format!("held-{end:?}-{}", uuid::Uuid::new_v4());
-        let call = NativeToolCall { id: "ep".into(), name: "test/effect-probe".into(), input: json!({ "token": token }) };
+        let call = NativeToolCall { id: crate::ai::types::ToolCallId::fixture(&"ep"), name: "test/effect-probe".into(), input: json!({ "token": token }) };
         let out = exec.execute_native_batch(&CallBatch::classify([call], CallOrigin::Generated(end)), &ctx()).await.expect("batch itself succeeds");
         assert!(!ran(&token), "{end:?}: the held call ran");
         assert_eq!(out.results[0].is_error, Some(true), "{end:?}");
@@ -396,7 +396,7 @@ async fn valid_json_from_an_uncommitted_generation_never_runs_through_the_live_e
         assert!(out.verdicts.iter().all(|v| v.verdict.failed()), "{end:?}: a held call is a failure");
     }
     let token = format!("committed-{}", uuid::Uuid::new_v4());
-    let call = NativeToolCall { id: "ep".into(), name: "test/effect-probe".into(), input: json!({ "token": token }) };
+    let call = NativeToolCall { id: crate::ai::types::ToolCallId::fixture(&"ep"), name: "test/effect-probe".into(), input: json!({ "token": token }) };
     exec.execute_native_batch(&CallBatch::classify([call], CallOrigin::Generated(GenerationEnd::Finished)), &ctx()).await.expect("batch itself succeeds");
     assert!(ran(&token), "a committed call runs: the probe records it");
 }

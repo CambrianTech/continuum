@@ -183,7 +183,7 @@ pub async fn apply_act(
     // (ONE-ACT 6b): a held call (cut, errored, unreported, malformed) is no effect, is never
     // dispatched in the background, and reaches the executor only to be answered with why.
     let batch = crate::ai::types::CallBatch::classify(calls.iter().cloned(), origin);
-    let effect_calls: Vec<(String, String)> = batch
+    let effect_calls: Vec<(crate::ai::types::ToolCallId, String)> = batch
         .committed()
         .map(|committed| committed.call())
         .filter(|call| !crate::cognition::tool_executor::command_executor::is_reported_sentinel(&call.name))
@@ -787,7 +787,7 @@ mod tests {
     // backgrounded — so a `code/read` still returns synchronously in the same turn.
     #[test]
     fn long_running_set_matches_real_command_names() {
-        let call = |id: &str| ToolCall { id: id.into(), name: "code/cargo/test".into(), input: serde_json::json!({}) };
+        let call = |id: &str| ToolCall { id: crate::ai::types::ToolCallId::fixture(&id), name: "code/cargo/test".into(), input: serde_json::json!({}) };
         let mut receipts = Vec::new();
         append_dispatched_observations(&mut receipts, &[call("existing")]);
         append_dispatched_observations(&mut receipts, &[call("new-dispatch")]);

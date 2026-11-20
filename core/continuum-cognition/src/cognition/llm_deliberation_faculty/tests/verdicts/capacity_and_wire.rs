@@ -452,7 +452,7 @@ async fn tool_use_response_becomes_an_act_verdict() {
     let memory = Arc::new(crate::cognition::working_memory::WorkingMemory::new(16));
     memory.set_scope(Some("task-a".into()));
     let call = ToolCall {
-        id: "t1".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"t1"),
         name: "code/read".to_string(),
         input: json!({ "path": "deploy.md" }),
     };
@@ -741,7 +741,7 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     let _native = crate::paths::NativeHomeOverride::install(home.path());
     let persona = Uuid::new_v4();
     let write = ToolCall {
-        id: "call-write".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"call-write"),
         name: "code/write".into(),
         input: crate::ai::types::UnparsedArguments::Cut {
             raw: "{\"path\":\"src/accounts.rs\",\"content\":\"pub fn create_accounts(".into(),
@@ -780,7 +780,7 @@ async fn a_tool_call_cut_at_the_limit_is_an_answer_cut_held_for_the_retry() {
     // parse whole. Finish `length` means the model did not commit the call (the reply was cut by
     // the window, as the typed IrreducibleShortfall lets an act proceed with a reply at what is
     // left): it is reported as the cut-act sentinel, never run.
-    let parsed = ToolCall { id: "call-read".into(), name: "code/read".into(), input: json!({ "file_path": "src/accounts.rs" }) };
+    let parsed = ToolCall { id: crate::ai::types::ToolCallId::fixture(&"call-read"), name: "code/read".into(), input: json!({ "file_path": "src/accounts.rs" }) };
     let adapter = Arc::new(ScriptedAdapter::new(vec![make_response(FinishReason::Length, "", Some(vec![parsed]))]));
     let faculty = LlmDeliberationFaculty::new(Uuid::new_v4(), "Aiko", "You are Aiko.", adapter)
         .with_context_window(40_960)

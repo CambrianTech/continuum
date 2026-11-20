@@ -83,7 +83,7 @@ impl Faculty for Investigator {
 /// its own intent.
 fn probe(what: &'static str) -> ToolCall {
     ToolCall {
-        id: "probe-1".into(),
+        id: crate::ai::types::ToolCallId::fixture(&"probe-1"),
         name: "code/search".into(),
         input: serde_json::json!({ "query": what }),
     }
@@ -200,7 +200,7 @@ async fn repeated_reads_and_scoped_discovery_reach_the_executor() {
         ("code/tree", serde_json::json!({"path":"a"}), "tree one"),
         ("code/tree", serde_json::json!({"path":"b"}), "tree two"),
     ].into_iter().enumerate() {
-        let call = ToolCall { id: format!("call-{i}"), name: name.into(), input };
+        let call = ToolCall { id: crate::ai::types::ToolCallId::fixture(&format!("call-{i}")), name: name.into(), input };
         let acts = acts_of(apply_act(&cycle, &[call], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "inspect", room, &chain, None, None).await);
         assert!(matches!(acts[0].status, ActStatus::Executed));
         assert!(acts[0].output.result.content.contains(expected));
@@ -219,7 +219,7 @@ async fn repeated_request_keeps_current_room_and_returns_fresh_evidence() {
         .with_acting(body_with_wm(exec.clone(), admission(), wm.clone()));
     let rooms = [Uuid::new_v4(), Uuid::new_v4()];
     for (i, room) in rooms.into_iter().enumerate() {
-        let id = format!("read-{i}");
+        let id = crate::ai::types::ToolCallId::fixture(&format!("read-{i}"));
         let call = ToolCall {
             id: id.clone(),
             name: "code/read".into(),

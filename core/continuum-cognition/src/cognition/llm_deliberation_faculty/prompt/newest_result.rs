@@ -21,13 +21,13 @@
 //! refuses her act. Only a store that refuses the write leaves a slot whole (probed).
 
 use super::*;
-use crate::ai::types::{ContentPart, MessageContent};
+use crate::ai::types::{ContentPart, MessageContent, ToolCallId};
 use crate::cognition::tool_executor::tool_output::Reopen;
 use continuum_context::allocation::Newest;
 
 /// One text slot of the newest result group: a native tool result's content or a legacy
 /// receipt's text.
-fn slots(group: &mut [ChatMessage]) -> Vec<(Option<String>, &mut String)> {
+fn slots(group: &mut [ChatMessage]) -> Vec<(Option<ToolCallId>, &mut String)> {
     let mut out = Vec::new();
     for message in group {
         match &mut message.content {
@@ -246,7 +246,7 @@ impl LlmDeliberationFaculty {
         let observations = active.map(|(memory, seq)| memory.active_action_observations(seq)).unwrap_or_default(); // unwrap_or_default: no active action has no observations; its slots are saved below
         let act_handle = active.and_then(|(memory, seq)| memory.saved_handle(seq).ok());
         let label = active.map_or_else(|| "result".to_owned(), |(_, seq)| format!("result #{seq}")); // map_or_else: a result with no active action is labelled by what it is
-        let handle_of = |id: &Option<String>| -> Option<String> {
+        let handle_of = |id: &Option<ToolCallId>| -> Option<String> {
             match id {
                 Some(id) => observations
                     .iter()

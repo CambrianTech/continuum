@@ -54,7 +54,7 @@ fn a_path_or_a_symbol_where_the_tool_name_goes_is_named_as_the_slip_it_is() {
 async fn an_unprojected_command_is_untouched_at_the_executor() {
     let exec = stateless_surface_hands();
     let calls = vec![NativeToolCall {
-        id: "u".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"u"),
         name: "ping".to_string(),
         input: json!({}),
     }];

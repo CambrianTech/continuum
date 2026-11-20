@@ -147,7 +147,7 @@ mod tests {
     use super::*;
 
     fn parsed(id: &str) -> ToolCall {
-        ToolCall { id: id.into(), name: "code/write".into(), input: serde_json::json!({"file_path": "a.rs", "content": "x"}) }
+        ToolCall { id: crate::ToolCallId::fixture(&id), name: "code/write".into(), input: serde_json::json!({"file_path": "a.rs", "content": "x"}) }
     }
 
     // what this catches: a batch whose calls are complete JSON committed although the engine never

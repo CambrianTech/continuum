@@ -84,7 +84,7 @@ mod the_newest_result_over_her_window {
     fn faculty_at(content: &str, adapter: Arc<dyn crate::ai::adapter::AIProviderAdapter>, window: u32) -> LlmDeliberationFaculty {
         let wm = Arc::new(WorkingMemory::new(8));
         let room = Uuid::new_v4();
-        let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
+        let call = ToolCall { id: crate::ai::types::ToolCallId::fixture(&"call-aris"), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
         wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
         let observation = Observation {
             call,
@@ -92,7 +92,7 @@ mod the_newest_result_over_her_window {
                 image: None,
                 additional_images: None,
                 // Saved whole under its handle, as the executor saves every call (`whole_or_handle`).
-                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: ResultCustody::Whole { handle: HANDLE.into() } },
+                result: crate::ai::types::ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&"call-aris"), content: content.into(), is_error: None, custody: ResultCustody::Whole { handle: HANDLE.into() } },
                 verb: ToolVerb::classify("work/submission"),
                 paths: Vec::new(),
                 verdict: Default::default(),
@@ -126,7 +126,7 @@ mod the_newest_result_over_her_window {
             })
             .flatten()
             .filter_map(|part| match part {
-                ContentPart::ToolResult { tool_use_id, content, .. } => Some((tool_use_id.clone(), content.clone())),
+                ContentPart::ToolResult { tool_use_id, content, .. } => Some((tool_use_id.to_string(), content.clone())),
                 _ => None,
             })
             .collect()
@@ -142,14 +142,14 @@ mod the_newest_result_over_her_window {
         let wm = Arc::new(WorkingMemory::new(8));
         wm.set_scope(scope.map(str::to_owned));
         let room = Uuid::new_v4();
-        let call = ToolCall { id: "call-aris".into(), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
+        let call = ToolCall { id: crate::ai::types::ToolCallId::fixture(&"call-aris"), name: "work/submission".into(), input: json!({ "include_staged_evidence": true }) };
         wm.record_native_action_statement("Reading the staged evidence for my submission.", room, std::slice::from_ref(&call));
         let observation = Observation {
             call,
             output: ToolOutput {
                 image: None,
                 additional_images: None,
-                result: crate::ai::types::ToolResult { tool_use_id: "call-aris".into(), content: content.into(), is_error: None, custody: custody.clone() },
+                result: crate::ai::types::ToolResult { tool_use_id: crate::ai::types::ToolCallId::fixture(&"call-aris"), content: content.into(), is_error: None, custody: custody.clone() },
                 verb: ToolVerb::classify("work/submission"),
                 paths: Vec::new(),
                 verdict: Default::default(),

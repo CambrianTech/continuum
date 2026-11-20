@@ -451,7 +451,7 @@ fn rows_under(rows: &[StagedCredit], claim: Option<airc_work::ClaimId>) -> Vec<V
 fn act(name: &str) -> (String, Vec<crate::ai::types::ToolCall>) {
     (
         format!("Do {name} for the card and check the result against the regression it fixes."),
-        vec![crate::ai::types::ToolCall { id: format!("call-{name}"), name: name.into(), input: json!({}) }],
+        vec![crate::ai::types::ToolCall { id: crate::ai::types::ToolCallId::fixture(&format!("call-{name}")), name: name.into(), input: json!({}) }],
     )
 }
 

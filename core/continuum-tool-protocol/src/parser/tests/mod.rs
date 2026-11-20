@@ -132,7 +132,7 @@
         .expect("a tool call");
         assert_eq!(tc.name, "data/list");
         assert_eq!(tc.input["collection"], "rooms");
-        assert!(tc.id.starts_with("jip-"));
+        assert!(tc.id.as_str().starts_with("call_"), "a parsed call gets a minted id");
     }
 
     // what this catches: THE real-model mess — prose + <think> + a ```json fence

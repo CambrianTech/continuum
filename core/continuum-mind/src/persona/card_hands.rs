@@ -213,7 +213,7 @@ pub async fn bind_card(
     };
     // Rooted ONCE: a context's place is fixed for its life, so a later turn finds it there.
     if acting_root_in(peer_id, Some(context)).as_deref() != Some(ws.as_path()) {
-        if let Err(e) = drive_create_workspace(&hands, &ws.to_string_lossy(), &[], "bind-card-hands", false).await {
+        if let Err(e) = drive_create_workspace(&hands, &ws.to_string_lossy(), &[], &crate::ai::types::ToolCallId::mint(), false).await {
             tracing::warn!(error = %e, "could not root the card claim's hands at its checkout");
             // Nothing may act on the card, but the turn is still card-linked: it stages.
             return HeldCardTurn::unrooted(credit, peer_id, focus.card_id.as_uuid());

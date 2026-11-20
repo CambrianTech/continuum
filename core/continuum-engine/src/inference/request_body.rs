@@ -349,7 +349,7 @@ pub(crate) fn wire_messages_marking(
                     let tool_calls: Vec<Value> = parts
                         .iter()
                         .filter_map(|p| match p {
-                            ContentPart::ToolUse { id, name, input } => Some(wire_tool_call(id, name, input)),
+                            ContentPart::ToolUse { id, name, input } => Some(wire_tool_call(id.as_str(), name, input)),
                             _ => None,
                         })
                         .collect();
@@ -610,7 +610,7 @@ mod tests {
         let mut second = message.clone();
         if let MessageContent::Parts(parts) = &mut second.content {
             if let ContentPart::ToolResult { tool_use_id, .. } = &mut parts[0] {
-                *tool_use_id = "capture-2".into();
+                *tool_use_id = crate::ai::types::ToolCallId::fixture("capture-2");
             }
         }
         let batch = wire_messages(&[message.clone(), second], None, true, true, "test");

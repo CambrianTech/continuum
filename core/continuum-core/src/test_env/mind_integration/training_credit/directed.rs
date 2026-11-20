@@ -53,7 +53,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
             request_id: format!("provider-{n}"),
             content: None,
             tool_calls: Some(vec![ToolCall {
-                id: format!("call-{n}"),
+                id: crate::ai::types::ToolCallId::fixture(&format!("call-{n}")),
                 name: "code/read".into(),
                 input: serde_json::json!({"path":format!("src/{n}.rs")}),
             }]),
@@ -165,7 +165,7 @@ async fn directed_credit_survives_partial_cancellation_and_atomic_retry() {
             (
                 format!("act {n}"),
                 vec![ToolCall {
-                    id: format!("a{n}"),
+                    id: crate::ai::types::ToolCallId::fixture(&format!("a{n}")),
                     name: "code/read".into(),
                     input: serde_json::json!({"path":n}),
                 }],

@@ -121,7 +121,7 @@ pub mod test_support {
                 request_id: receipt.submitted_request_id.clone(),
                 content: None,
                 tool_calls: Some(vec![crate::ai::ToolCall {
-                    id: receipt.submitted_request_id.clone(),
+                    id: crate::ai::types::ToolCallId::from_wire_or_mint(Some(receipt.submitted_request_id.clone())),
                     name: "code/read".into(),
                     input: serde_json::json!({"path": format!("src/{}.rs", receipt.submitted_request_id)}),
                 }]),

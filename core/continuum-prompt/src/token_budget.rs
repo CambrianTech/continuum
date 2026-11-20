@@ -36,14 +36,14 @@ pub fn estimate_message_content_tokens(
         MessageContent::Parts(parts) => parts.iter().fold(0usize, |total, part| {
             let tokens = match part {
                 ContentPart::Text { text } => estimate(text),
-                ContentPart::ToolUse { id, name, input } => estimate(id)
+                ContentPart::ToolUse { id, name, input } => estimate(id.as_str())
                     .saturating_add(estimate(name))
                     .saturating_add(estimate(&input.to_string())),
                 ContentPart::ToolResult {
                     tool_use_id,
                     content,
                     ..
-                } => estimate(tool_use_id).saturating_add(estimate(content)),
+                } => estimate(tool_use_id.as_str()).saturating_add(estimate(content)),
                 ContentPart::Image { .. }
                 | ContentPart::Audio { .. }
                 | ContentPart::Video { .. } => 0,
@@ -178,12 +178,12 @@ mod tests {
         use continuum_engine::ai::types::{ContentPart, ImageInput, MessageContent};
         let parts = MessageContent::Parts(vec![
             ContentPart::ToolUse {
-                id: "call".into(),
+                id: continuum_tool_protocol::ToolCallId::fixture(&"call"),
                 name: "code/read".into(),
                 input: serde_json::json!({"path": "日本語訳.rs"}),
             },
             ContentPart::ToolResult {
-                tool_use_id: "call".into(),
+                tool_use_id: continuum_tool_protocol::ToolCallId::fixture(&"call"),
                 content: "payload".repeat(100),
                 is_error: Some(true),
             },

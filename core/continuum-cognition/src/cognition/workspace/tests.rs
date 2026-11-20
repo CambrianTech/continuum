@@ -475,7 +475,7 @@
     #[tokio::test]
     async fn deliberation_can_emit_an_act_decision() {
         let call = ToolCall {
-            id: "toolu_run_1".to_string(),
+            id: crate::ai::types::ToolCallId::fixture(&"toolu_run_1"),
             name: "code/run".to_string(),
             input: serde_json::json!({ "lang": "rust", "code": "fn main() { println!(\"{}\", (0..5).sum::<i32>()); }" }),
         };

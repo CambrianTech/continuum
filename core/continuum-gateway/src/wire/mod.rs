@@ -11,6 +11,7 @@ pub(crate) mod responses;
 
 use continuum_engine::ai::adapter::GenerationChunk;
 use continuum_engine::ai::{ChatMessage, ContentPart, FinishReason, MessageContent, TextGenerationRequest, TextGenerationResponse};
+use continuum_engine::ai::types::ToolCallId;
 use serde_json::Value;
 
 /// One decoded call: the engine's request, and whether the agent wants it streamed.
@@ -82,7 +83,7 @@ pub(crate) fn event(name: Option<&str>, data: &Value) -> Frame {
 }
 
 /// The tool calls of an answer as (id, name, input), from either place the engine puts them.
-pub(crate) fn tool_calls(response: &TextGenerationResponse) -> Vec<(String, String, Value)> {
+pub(crate) fn tool_calls(response: &TextGenerationResponse) -> Vec<(ToolCallId, String, Value)> {
     if let Some(calls) = &response.tool_calls {
         return calls.iter().map(|c| (c.id.clone(), c.name.clone(), c.input.clone())).collect();
     }

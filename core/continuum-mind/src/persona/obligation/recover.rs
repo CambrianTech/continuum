@@ -79,8 +79,8 @@ fn began(effect: &RecordedEffect) -> String {
             let mut runs: Vec<(&str, Vec<&str>)> = Vec::new();
             for (call, tool) in calls {
                 match runs.iter_mut().find(|(seen, _)| *seen == tool.as_str()) {
-                    Some((_, ids)) => ids.push(call),
-                    None => runs.push((tool, vec![call])),
+                    Some((_, ids)) => ids.push(call.as_str()),
+                    None => runs.push((tool, vec![call.as_str()])),
                 }
             }
             runs.iter()
@@ -281,7 +281,7 @@ mod tests {
                         0 => row,
                         1 => PersonaObligation { effect_at_ms: Some(at), effects: Some(vec![RecordedEffect::Speech]), ..row },
                         _ => {
-                            let calls = (0..if at == n - 1 { 500 } else { 2 }).map(|i| (format!("toolu_{at}_{i}"), "code/shell".to_owned())).collect();
+                            let calls = (0..if at == n - 1 { 500 } else { 2 }).map(|i| (crate::ai::types::ToolCallId::fixture(&format!("toolu_{at}_{i}")), "code/shell".to_owned())).collect();
                             PersonaObligation { effect_at_ms: Some(at), effects: Some(vec![RecordedEffect::ToolBatch { calls }]), ..row }
                         }
                     }
@@ -363,7 +363,7 @@ mod tests {
             },
             PersonaObligation {
                 effect_at_ms: Some(21),
-                effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![("toolu_1".into(), "code/edit".into())] }]),
+                effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![(crate::ai::types::ToolCallId::fixture("toolu_1"), "code/edit".into())] }]),
                 ..PersonaObligation::admitted(persona, room, &acted, None, 20)
             },
         ];
@@ -421,7 +421,7 @@ mod tests {
         );
         let row = PersonaObligation {
             effect_at_ms: Some(2),
-            effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![("toolu_9".into(), "code/shell".into())] }]),
+            effects: Some(vec![RecordedEffect::ToolBatch { calls: vec![(crate::ai::types::ToolCallId::fixture("toolu_9"), "code/shell".into())] }]),
             ..PersonaObligation::admitted(persona, room, &trigger(room, "run the tests"), None, 1)
         };
         let obligations = Obligations::new(&executor, persona, name);

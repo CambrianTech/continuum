@@ -115,7 +115,7 @@ impl<'de> Deserialize<'de> for ToolCallJson {
 impl From<ToolCallJson> for ToolCall {
     fn from(j: ToolCallJson) -> Self {
         ToolCall {
-            id: format!("jip-{}", Uuid::new_v4()),
+            id: crate::ToolCallId::mint(),
             name: j.name.trim().to_string(),
             input: match j.arguments {
                 Value::Null => serde_json::json!({}),
@@ -436,7 +436,7 @@ impl ToolCallFormat for BbcodeCallFormat {
                 continue;
             };
             out.push(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: name.to_string(),
                 input: serde_json::Value::Object(args),
             });
@@ -548,7 +548,7 @@ impl ToolCallFormat for BracketTagFormat {
                 continue; // require ≥1 key="value" so path citations stay inert
             }
             out.push(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: tool.to_string(),
                 input: serde_json::Value::Object(args),
             });
@@ -647,7 +647,7 @@ impl ToolCallFormat for SelfClosingTagFormat {
                 }
             }
             out.push(ToolCall {
-                id: format!("jip-{}", Uuid::new_v4()),
+                id: crate::ToolCallId::mint(),
                 name: name.to_string(),
                 input: serde_json::Value::Object(args),
             });

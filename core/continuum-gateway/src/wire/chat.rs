@@ -3,7 +3,7 @@
 use super::decode::{self, present};
 use super::{event, place_system, stopped_for_tools, text_of, tool_calls, BadRequest, Call, ErrorKind, Finish, Frame, Wire};
 use continuum_engine::ai::adapter::GenerationChunk;
-use continuum_engine::ai::types::ImageInput;
+use continuum_engine::ai::types::{ImageInput, ToolCallId};
 use continuum_engine::ai::{ChatMessage, ContentPart, MessageContent, NativeToolSpec, TextGenerationRequest, TextGenerationResponse, ToolChoice};
 use serde_json::{json, Value};
 
@@ -136,7 +136,7 @@ fn usage(response: &TextGenerationResponse) -> Value {
     usage
 }
 
-fn function_call((id, name, input): &(String, String, Value)) -> Value {
+fn function_call((id, name, input): &(ToolCallId, String, Value)) -> Value {
     json!({"id": id, "type": "function", "function": {"name": name, "arguments": input.to_string()}})
 }
 
@@ -157,7 +157,7 @@ fn conversation(messages: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
                     let function = call.get("function").ok_or_else(|| BadRequest("a tool call has no `function`".into()))?;
                     let arguments = function.get("arguments").and_then(Value::as_str).unwrap_or("{}"); // unwrap_or: a call with no arguments
                     parts.push(ContentPart::ToolUse {
-                        id: call.get("id").and_then(Value::as_str).unwrap_or_default().to_owned(), // unwrap_or_default: an unnamed call keeps an empty id
+                        id: call.get("id").and_then(Value::as_str).and_then(ToolCallId::from_wire).ok_or_else(|| BadRequest("a tool call has no `id`".into()))?,
                         name: function.get("name").and_then(Value::as_str).ok_or_else(|| BadRequest("a tool call has no name".into()))?.to_owned(),
                         input: serde_json::from_str(arguments).unwrap_or_else(|_| Value::String(arguments.to_owned())), // unwrap_or_else: arguments that are not JSON pass through as written
                     });
@@ -167,7 +167,7 @@ fn conversation(messages: &[Value]) -> Result<Vec<ChatMessage>, BadRequest> {
             "tool" => out.push(ChatMessage {
                 role: "tool".into(),
                 content: MessageContent::Parts(vec![ContentPart::ToolResult {
-                    tool_use_id: m.get("tool_call_id").and_then(Value::as_str).ok_or_else(|| BadRequest("a tool message has no `tool_call_id`".into()))?.to_owned(),
+                    tool_use_id: m.get("tool_call_id").and_then(Value::as_str).and_then(ToolCallId::from_wire).ok_or_else(|| BadRequest("a tool message has no `tool_call_id`".into()))?,
                     content: text_of(content),
                     is_error: None,
                 }]),

@@ -30,7 +30,7 @@ use super::*;
             request_id: "req-lived".into(),
             content: None,
             tool_calls: Some(vec![crate::ai::ToolCall {
-                id: "t1".into(),
+                id: crate::ai::types::ToolCallId::fixture(&"t1"),
                 name: "code/read".into(),
                 input: json!({"path": "src/lib.rs"}),
             }]),

@@ -37,7 +37,7 @@ pub async fn root_acting_workspace(
         &hands,
         root,
         path_prepend,
-        "root-acting-workspace",
+        &crate::ai::types::ToolCallId::mint(),
         refuse_inert_edits,
     )
     .await?;

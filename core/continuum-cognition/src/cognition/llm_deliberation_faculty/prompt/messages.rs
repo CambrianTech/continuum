@@ -373,12 +373,12 @@ impl LlmDeliberationFaculty {
                 Results::Receipt(message)
             } else {
                 for observation in &observations {
-                    field(&mut input, observation.output.result.tool_use_id.as_bytes());
+                    field(&mut input, observation.output.result.tool_use_id.as_str().as_bytes());
                     field(&mut input, observation.output.result.content.as_bytes());
                     input.update([match observation.output.result.is_error { None => 0, Some(false) => 1, Some(true) => 2 }]);
                 }
                 for call in &calls {
-                    field(&mut input, call.id.as_bytes());
+                    field(&mut input, call.id.as_str().as_bytes());
                     field(&mut input, call.name.as_bytes());
                     field(&mut input, call.input.to_string().as_bytes());
                 }

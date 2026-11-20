@@ -28,7 +28,7 @@ async fn persona_executes_ping_via_typed_object_path() {
     let exec = exec_over(registry, Uuid::new_v4());
 
     let calls = vec![NativeToolCall {
-        id: "p1".to_string(),
+        id: crate::ai::types::ToolCallId::fixture(&"p1"),
         name: "ping".to_string(),
         input: json!({}),
     }];

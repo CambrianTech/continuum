@@ -158,14 +158,14 @@ mod tests {
         assert_eq!((kinds.result.high, kinds.result.low), (13, 5), "native results: highest 13, spread 8");
         let call = |name: &str, input: serde_json::Value| ChatMessage {
             role: "assistant".into(),
-            content: MessageContent::Parts(vec![ContentPart::ToolUse { id: "c1".into(), name: name.into(), input }]),
+            content: MessageContent::Parts(vec![ContentPart::ToolUse { id: crate::ai::types::ToolCallId::fixture(&"c1"), name: name.into(), input }]),
             name: None,
         };
         let conversation = [
             ChatMessage::text("system", "You are Aiko."),
             ChatMessage::text("user", "Read main.rs please."),
             call("code_read", serde_json::json!({ "path": "main.rs" })),
-            ChatMessage::tool_result("c1", "fn main() {\n    println!(\"hi\");\n}\n", false),
+            ChatMessage::tool_result(crate::ai::types::ToolCallId::fixture("c1"), "fn main() {\n    println!(\"hi\");\n}\n", false),
             ChatMessage::text("assistant", "It prints hi."),
             ChatMessage::text("user", "了解しました。次は？"),
         ];

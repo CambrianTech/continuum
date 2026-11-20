@@ -184,7 +184,7 @@
     async fn routes_native_tool_call_to_the_command() {
         let exec = executor_with_echo();
         let calls = vec![NativeToolCall {
-            id: "t1".to_string(),
+            id: crate::ai::types::ToolCallId::fixture(&"t1"),
             name: "test/echo".to_string(),
             input: json!({ "path": "deploy.md" }),
         }];
@@ -208,7 +208,7 @@
     async fn maps_underscore_tool_name_to_slash_command() {
         let exec = executor_with_echo();
         let calls = vec![NativeToolCall {
-            id: "t1".to_string(),
+            id: crate::ai::types::ToolCallId::fixture(&"t1"),
             name: "test_echo".to_string(),
             input: json!({ "ok": true }),
         }];
@@ -230,7 +230,7 @@
         crate::cognition::tool_executor::spill::prepare_store_fixture();
         let exec = executor_with_echo();
         let calls = vec![NativeToolCall {
-            id: "t1".to_string(),
+            id: crate::ai::types::ToolCallId::fixture(&"t1"),
             name: "test/nonexistent".to_string(),
             input: json!({}),
         }];
@@ -297,7 +297,7 @@
         let registry = Arc::new(ModuleRegistry::new());
         registry.register(Arc::new(ToolsTrap(reached.clone())));
         let exec = exec_over(registry, Uuid::new_v4());
-        let calls = vec![NativeToolCall { id: "cut".into(), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
+        let calls = vec![NativeToolCall { id: crate::ai::types::ToolCallId::fixture(&"cut"), name: THOUGHT_CUT_SENTINEL.into(), input: json!({}) }];
         let batch = crate::ai::types::CallBatch::classify(calls, crate::ai::types::CallOrigin::Substrate);
         let out = exec.execute_native_batch(&batch, &ctx()).await.expect("batch itself succeeds");
         assert_eq!(reached.load(std::sync::atomic::Ordering::SeqCst), 0, "the router never saw the note");

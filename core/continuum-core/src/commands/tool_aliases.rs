@@ -11,7 +11,7 @@ mod tests {
     use crate::sdk_codegen::ext::command_registry_live;
 
     fn call(name: &str, input: serde_json::Value) -> ToolCall {
-        ToolCall { id: "t1".into(), name: name.into(), input }
+        ToolCall { id: crate::ai::types::ToolCallId::fixture(&"t1"), name: name.into(), input }
     }
 
     fn spec(n: &str) -> NativeToolSpec {

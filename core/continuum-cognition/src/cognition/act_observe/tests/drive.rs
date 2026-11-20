@@ -292,7 +292,7 @@ impl Faculty for VaryingAct {
         Some(Contribution::verdict(
             Decision::Act {
                 calls: vec![ToolCall {
-                    id: format!("call-{n}"),
+                    id: crate::ai::types::ToolCallId::fixture(&format!("call-{n}")),
                     name: "code/read".into(),
                     input: serde_json::json!({ "path": format!("src/file_{n}.rs") }),
                 }],
@@ -534,7 +534,7 @@ async fn fixed_point_requires_available_finished_result_evidence() {
     );
     let original = batch_evidence(&[call.clone()], &acts);
     assert!(original.is_some());
-    call.id = "new-attempt".into();
+    call.id = crate::ai::types::ToolCallId::fixture("new-attempt");
     acts[0].call.id = call.id.clone();
     acts[0].output.result.tool_use_id = call.id.clone();
     assert!(original == batch_evidence(&[call.clone()], &acts));

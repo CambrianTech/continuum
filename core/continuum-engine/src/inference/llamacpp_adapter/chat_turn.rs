@@ -98,7 +98,7 @@ pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: Generat
     let message: ParsedMessage = serde_json::from_str(&render.parse(written, false)?)?;
     let written_text = |text: Option<String>| text.filter(|text| !text.is_empty());
     let raw = message.tool_calls.into_iter().flatten().map(|call| StreamToolAccum {
-        id: call.id.unwrap_or_default(), // unwrap_or_default: a call the template gave no id is still her call; the assembler keys on its name
+        id: call.id.unwrap_or_default(), // unwrap_or_default: an unnamed call reaches the assembler empty, which mints its id (ToolCallId::from_wire_or_mint)
         name: call.function.name.unwrap_or_default(), // unwrap_or_default: a nameless call is dropped by the assembler, never run
         arguments: call.function.arguments.unwrap_or_default(), // unwrap_or_default: no arguments parse as no JSON and are typed by the assembler
     });

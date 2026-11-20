@@ -37,6 +37,7 @@ ts-rs.workspace = true  # TypeScript type generation
 tempfile = { workspace = true, optional = true }  # test-fixtures: the job board's test storage
 
 [dev-dependencies]
+continuum-tool-protocol = { path = "../continuum-tool-protocol", features = ["test-fixtures"] }
 continuum-saved-state = { path = "../continuum-saved-state", features = ["test-fixtures"] } # every kind runs the one round trip
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
