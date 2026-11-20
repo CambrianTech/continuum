@@ -79,6 +79,14 @@ pub struct TrackedDir {
     /// whether or not the root file itself exists (a log between rotation and
     /// reopen is all predecessor). Empty for a directory class.
     companions: &'static [&'static str],
+    /// Cumulative size delta observed via filesystem events since the last full walk.
+    /// Updated by [`EventWatcher`] on budgeted stat calls; reset to zero when a walk
+    /// completes. Negative values mean files were deleted/shrunk; positive means growth.
+    net_delta: std::sync::atomic::AtomicI64,
+    /// Number of filesystem events observed since the last full walk. Even when the
+    /// budget is exhausted this counter keeps rising, so reporters can say "N changes
+    /// since last scan" alongside the estimate.
+    event_count: AtomicU64,
 }
 
 impl TrackedDir {
@@ -99,9 +107,10 @@ impl TrackedDir {
             walk_ms: AtomicU64::new(0),
             next_due_ms: AtomicU64::new(0),
             companions,
+            net_delta: std::sync::atomic::AtomicI64::new(0),
+            event_count: AtomicU64::new(0),
         })
     }
-
     /// Everything this class holds: its root's walk plus each declared companion's.
     pub(crate) fn walk(&self) -> TreeWalk {
         let mut total = walk_tree(&self.path);
@@ -185,6 +194,10 @@ impl TrackedDir {
         self.walk_ms.store(took.as_millis() as u64, Ordering::Relaxed);
         self.next_due_ms
             .store(now_ms.saturating_add(next_scan_delay(took).as_millis() as u64), Ordering::Relaxed);
+        // Walk completes: reset the event-driven accumulator so future deltas
+        // are measured against this new truth, not a stale baseline.
+        self.net_delta.store(0, Ordering::Relaxed);
+        self.event_count.store(0, Ordering::Relaxed);
     }
 
     /// Is this dir due for a walk on the scanner's clock? Always true before the
@@ -210,6 +223,28 @@ impl TrackedDir {
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 Some(cur.saturating_sub(freed))
             });
+    }
+
+    /// Record a size delta observed from a filesystem event (create/modify/delete).
+    /// The event watcher calls this on budgeted stat calls when it detects a change.
+    /// Negative `delta` means files were deleted or shrunk; positive means growth.
+    pub(crate) fn observe_event(&self, delta: i64) {
+        self.net_delta.fetch_add(delta, Ordering::Relaxed);
+        self.event_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Return an estimated current size based on the last full walk plus all
+    /// observed event deltas. When no events have been seen since the last walk,
+    /// returns the raw `bytes()` value (the scanner's measurement). The estimate
+    /// is clamped to 0 — it never goes negative.
+    pub fn estimate_bytes(&self) -> u64 {
+        let delta = self.net_delta.load(Ordering::Relaxed);
+        if delta == 0 && self.event_count.load(Ordering::Relaxed) == 0 {
+            // No events observed: trust the scanner's measurement directly.
+            return self.bytes.load(Ordering::Relaxed);
+        }
+        let base = self.bytes.load(Ordering::Relaxed);
+        (base as i64).saturating_add(delta).max(0) as u64
     }
 }
 
@@ -274,20 +309,42 @@ impl DiskReporter for TrackedDir {
             };
         }
         let scanned = self.scanned.load(Ordering::Relaxed);
+        let event_count = self.event_count.load(Ordering::Relaxed);
+        let has_events = event_count > 0;
+
+        // Use estimate_bytes when events have been observed; otherwise raw bytes.
+        let bytes = if has_events {
+            self.estimate_bytes()
+        } else {
+            self.bytes.load(Ordering::Relaxed)
+        };
+
+        let detail = match (scanned, self.walk_cost()) {
+            (false, _) => "first scan pending".to_string(),
+            (true, None) if has_events => format!(
+                "estimated cached recursive size (set directly + {} observed changes)",
+                event_count
+            ),
+            (true, None) => "cached recursive size (set directly, not walked)".to_string(),
+            (true, Some((entries, took))) if has_events => format!(
+                "estimated cached recursive size (walk {:.1} s over {} entries; +{} observed changes)",
+                took.as_secs_f64(),
+                entries,
+                event_count
+            ),
+            (true, Some((entries, took))) => format!(
+                "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
+                took.as_secs_f64(),
+                entries,
+                next_scan_delay(took).as_secs()
+            ),
+        };
+
         DiskPathReport {
             name: self.name.to_string(),
             path: self.path.clone(),
-            bytes: self.bytes.load(Ordering::Relaxed),
-            detail: match (scanned, self.walk_cost()) {
-                (false, _) => "first scan pending".to_string(),
-                (true, None) => "cached recursive size (set directly, not walked)".to_string(),
-                (true, Some((entries, took))) => format!(
-                    "cached recursive size (walk {:.1} s over {} entries; next walk no sooner than {} s after it)",
-                    took.as_secs_f64(),
-                    entries,
-                    next_scan_delay(took).as_secs()
-                ),
-            },
+            bytes,
+            detail,
         }
     }
 }
