@@ -293,6 +293,18 @@ impl WorkspaceCycle {
         self.genome.load().as_ref().clone()
     }
 
+    /// Adopt the genome the composer answered for this turn ([`GeneAdoption`]): a new set pages in
+    /// (moved, never copied), the same set changes nothing, and an unknown genome keeps what she
+    /// holds or defers her act. Compared against her held genes in place, never a snapshot copy.
+    pub fn adopt_genes(&self, composition: crate::genome::composer::Composition) -> super::GeneAdoption {
+        let held = self.genome.load();
+        let (adoption, paged) = super::GeneAdoption::decide(held.as_slice(), composition);
+        if let Some(genes) = paged {
+            self.page_in(genes);
+        }
+        adoption
+    }
+
     /// This mind's monotonic service-tick count — how many `Workspace::cycle`
     /// ticks it has serviced since spawn. The DELTA of this over an interval is
     /// the persona's live "thinking tempo" (the roster **ACT** vital): a rising

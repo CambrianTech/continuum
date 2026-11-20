@@ -21,6 +21,7 @@ pub mod gene_residency;
 pub mod gene_trial;
 pub mod learner;
 pub mod composer;
+pub mod persona_genome;
 pub mod signature;
 pub mod recall;
 pub mod recall_trait;

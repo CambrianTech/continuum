@@ -618,3 +618,66 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             assembled.system_message
         );
     }
+
+    // what this catches (Codex on #6117): a room turn whose genome is unknown either running on the
+    // base model or losing the message that woke her. Through the real caller (`run_turn_cycle`,
+    // the step the loop runs per trigger) with her trial file unreadable: no request reaches the
+    // engine, her input stays retained so the loop keeps its obligation open; once the file reads,
+    // the loop's retry of that input is served, and nothing is left owed to serve again.
+    #[tokio::test]
+    pub(super) async fn an_unknown_genome_defers_her_room_turn_and_the_retry_serves_it_once() {
+        let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let genome = crate::paths::ContinuumLayout::home().unwrap().genome(); // unwrap: the guard set the home
+        std::fs::create_dir_all(&genome).unwrap(); // unwrap: test fixture
+        let trials = genome.join("trials.json");
+        std::fs::write(&trials, "not a trial file").unwrap(); // unwrap: test fixture
+
+        let persona = Uuid::new_v4();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let _cycle = crate::persona::obligation::resident_with(
+            persona,
+            HeuristicInferenceAdapter::new().with_canned_response("Here.").with_request_recorder(Arc::clone(&requests)),
+        );
+        let hosted = hosted_with_heuristic(persona);
+        const ASKED: &str = "@Paige are you there?";
+        let room = Uuid::new_v4();
+        let msg = IncomingMessage {
+            work: None,
+            media: Vec::new(),
+            event_id: Uuid::new_v4(),
+            lamport: 1,
+            peer_id: Uuid::new_v4(),
+            text: ASKED.into(),
+            room_id: room,
+        };
+        let activity = crate::identity::ActivityRoom::from_uuid(room).unwrap(); // unwrap: a fresh uuid is a valid room
+        let mut conversation = ScriptedConversation::new();
+        conversation.prime().await.unwrap(); // unwrap: test fixture
+        let mut outcome = ServeOutcome::default();
+        let mut pending = crate::persona::wake_backlog::PendingInput::for_persona(persona);
+        let input = || CycleInput {
+            workspace_burst: crate::cognition::workspace::Burst::raw_in(activity, ASKED.into()),
+            wake_engram: None,
+        };
+
+        let first = run_turn_cycle(
+            &hosted, &mut conversation, &mut outcome, &mut pending, &mut PhaseTimings::default(),
+            TurnTrigger { msg: &msg, room: activity, admitted_retry: false }, input(),
+        )
+        .await;
+        assert!(matches!(first, CycleVerdict::Skip), "an unknown genome: her turn waits");
+        assert!(requests.lock().unwrap().is_empty(), "no request reached the engine: never the base model"); // unwrap: test fixture
+        assert_eq!(pending.message(), Some(&msg), "the message that woke her is retained");
+        assert!(pending.keep_obligation(&msg, Some(Uuid::new_v4())), "so the loop keeps its obligation open");
+
+        std::fs::write(&trials, "[]").unwrap(); // unwrap: test fixture
+        pending.resume_input(&msg); // what the loop does on a Wake::Retry
+        run_turn_cycle(
+            &hosted, &mut conversation, &mut outcome, &mut pending, &mut PhaseTimings::default(),
+            TurnTrigger { msg: &msg, room: activity, admitted_retry: true }, input(),
+        )
+        .await;
+        assert!(!requests.lock().unwrap().is_empty(), "the retried turn reached the engine"); // unwrap: test fixture
+        assert_eq!(pending.message(), None, "served: nothing is owed to serve again");
+    }

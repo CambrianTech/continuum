@@ -43,6 +43,8 @@ mod held_work;
 pub use held_work::*;
 mod arbiter;
 pub use arbiter::*;
+mod gene_adoption;
+pub use gene_adoption::*;
 mod workspace_cycle;
 mod workspace_cycle_2;
 

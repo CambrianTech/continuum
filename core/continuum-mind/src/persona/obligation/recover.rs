@@ -232,29 +232,7 @@ mod tests {
         resident_with(persona, crate::ai::HeuristicInferenceAdapter::new())
     }
 
-    fn resident_with(persona: Uuid, adapter: crate::ai::HeuristicInferenceAdapter) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
-        let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
-            persona_id: persona,
-            persona_name: "Rhea".into(),
-            system_prompt: "You are Rhea.".into(),
-            admission: Arc::new(crate::cognition::admission_state::AdmissionState::new(Arc::new(
-                crate::cognition::recall_metadata::RecallMetadataRegistry::new(),
-            ))),
-            adapter: Arc::new(adapter),
-            grounding_sources: Vec::new(),
-            embedder: None,
-            tool_executor: Some(Arc::new(crate::cognition::act_observe::test_support::ScriptedExecutor::new(["ok"]))),
-            experience: None,
-            // Roomy enough for framing + tools + a reply: a refused prompt is not what these test.
-            context_window: 65_536,
-            defer_recall: false,
-            defer_grounding: false,
-            suppress_recall: false,
-            forked: false,
-            read_receipt: None,
-        };
-        crate::cognition::persona_workspace::global().register_from_cfg(cfg).unwrap() // unwrap: test fixture
-    }
+    use crate::persona::obligation::resident_with;
 
     fn interrupted_notices(cycle: &crate::cognition::workspace::WorkspaceCycle) -> Vec<String> {
         let body = cycle.acting().unwrap(); // unwrap: the fixture registers her hands

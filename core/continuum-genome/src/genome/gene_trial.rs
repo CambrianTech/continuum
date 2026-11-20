@@ -322,6 +322,17 @@ impl Adoption {
 }
 
 /// The trial file.
+/// A genome store whose location did not resolve, with the resolver's cause: her genome is unknown,
+/// never empty, until it does.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreUnresolved(pub String);
+
+impl std::fmt::Display for StoreUnresolved {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "genome store unresolved: {}", self.0)
+    }
+}
+
 pub struct GeneTrials {
     path: PathBuf,
 }
@@ -331,11 +342,14 @@ impl GeneTrials {
         Self { path: path.into() }
     }
 
-    /// `~/.continuum/genome/trials.json`; `None` without a home directory.
+    /// `~/.continuum/genome/trials.json`, or why this node's home did not resolve.
+    pub fn resolve() -> Result<Self, StoreUnresolved> {
+        crate::paths::ContinuumLayout::home().map(|layout| Self::at(layout.genome().join("trials.json"))).map_err(StoreUnresolved)
+    }
+
+    /// [`Self::resolve`] without its cause, for callers that refuse on their own terms.
     pub fn default_store() -> Option<Self> {
-        crate::paths::ContinuumLayout::home()
-            .ok()
-            .map(|layout| Self::at(layout.genome().join("trials.json")))
+        Self::resolve().ok()
     }
 
     pub fn path(&self) -> &Path {

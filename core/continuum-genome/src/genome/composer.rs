@@ -34,8 +34,7 @@ use std::collections::BTreeMap;
 use uuid::Uuid;
 
 use crate::ai::types::ActiveAdapterRequest;
-use crate::genome::gene_trial::Standing;
-use crate::genome::signature::{GeneSignature, SignatureStore};
+use crate::genome::signature::GeneSignature;
 
 /// How many σ above the space's unrelated null a region edge must sit: the same 2σ
 /// discipline recall gates with (`recall_faculty`'s significance ranker).
@@ -217,78 +216,18 @@ fn route(candidate: &Candidate<'_>, need: Option<&Need<'_>>, was_on: bool) -> Ro
     Route::Distance { similarity, floor, leave, weight, inside }
 }
 
-/// Her phenotype for the next turn, composed from `perception` (what her mind is on: the turn's
-/// focused line). `None` when her genome cannot be read (no serving base, an unreadable trial
-/// file): the caller then keeps the genome she has, and the reason is on the probe stream.
-pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
-    let base = crate::inference::llama_server::current_serving().active_model?;
-    let store = crate::genome::gene_trial::GeneTrials::default_store()?;
-    let trials = match store.load() {
-        Ok(trials) => trials,
-        Err(error) => {
-            continuum_base::probe!(
-                class = "genome.trial.unreadable",
-                persona = %persona,
-                error = error.as_str(),
-                "the gene trial file did not read: this turn keeps the genome she has"
-            );
-            return None;
-        }
-    };
-    let residency = crate::genome::gene_residency::GeneResidency::global();
-    let now_ms = continuum_base::time::EpochMs::now().millis();
-    let all = crate::genome::gene_trial::her_genes(&trials, persona, &base);
-    let pending = all.iter().filter(|(_, standing)| *standing == Standing::Pending).count();
-    let genes: Vec<ActiveAdapterRequest> =
-        all.into_iter().filter(|(_, standing)| standing.may_run()).map(|(gene, _)| gene).collect();
-    if genes.is_empty() {
-        residency.record_turn(persona, &Phenotype::default(), now_ms);
-        return Some(Phenotype::default());
-    }
-    let signatures = match crate::genome::signature::signature_store_path().and_then(|p| SignatureStore::load_at(&p)) {
-        Ok(store) => store,
-        Err(error) => {
-            continuum_base::probe!(
-                class = "genome.select.signatures_unreadable",
-                persona = %persona,
-                error = error.as_str(),
-                "the signature sidecar did not read: her genes run unrouted this turn"
-            );
-            SignatureStore::default()
-        }
-    };
-    let candidates: Vec<Candidate<'_>> = genes
-        .into_iter()
-        .map(|gene| {
-            let signature = signatures.by_path.get(&gene.path);
-            Candidate { gene, signature }
-        })
-        .collect();
-    let embedded = if candidates.iter().any(|c| c.signature.is_some()) && !perception.trim().is_empty() {
-        let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
-        Some((embedder.id().to_string(), embedder.embed(perception).await, embedder.unrelated_null()))
-    } else {
-        None
-    };
-    let need = embedded.as_ref().map(|(id, vector, null)| Need {
-        embedder_id: id,
-        vector,
-        unrelated_null: *null,
-    });
-    let previous = residency.previous(persona);
-    // Capacity: every gene she may run. Each is loaded in the engine (her trial loaded it), and
-    // one in host RAM pages back in on demand; the residency owner keeps her current ones on the
-    // device and pages the cold ones out under the one device budget.
-    let selection = select(need.as_ref(), &candidates, candidates.len(), &previous);
-    probe_selection(persona, &selection, pending);
-    residency.record_turn(persona, &selection.phenotype, now_ms);
-    residency.schedule_reconcile();
-    Some(selection.phenotype)
+/// What her genome is for the next turn: genes composed (possibly none: she has none, or none fit),
+/// or UNKNOWN with the reason. Unknown is never the same as no genes: the caller keeps the genome
+/// she holds or waits, never runs her on the base model in its place (the M5, 2026-11-17).
+#[derive(Debug)]
+pub enum Composition {
+    Genes(Phenotype),
+    Unknown(&'static str),
 }
 
 /// `genome.select`: every gene considered, its similarity, floor, leave edge, depth and the
 /// scale it runs at; and, when the set changed, what the change costs her.
-fn probe_selection(persona: Uuid, selection: &Selection, pending: usize) {
+pub(crate) fn probe_selection(persona: Uuid, selection: &Selection, pending: usize) {
     let rows: Vec<String> = selection
         .considered
         .iter()
