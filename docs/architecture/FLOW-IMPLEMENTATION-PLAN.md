@@ -87,19 +87,27 @@ pub trait Stage: Send + 'static {
     const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
     async fn handle(&mut self, input: Self::Input);
 }
-// spawn_stage(stage) -> StageInput<Input>: a stage holds one input in hand and one pending (CBAR's
-// double buffer); push() fills the pending slot, or hands the input back / replaces it when full, and signals.
-// A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
 ```
 
-The module owns every concern that today is copied into each subsystem:
-- the queue and its bound;
-- keep-latest and coalescing;
-- wake-on-signal (no polling);
-- class and aging;
-- yield;
-- shutdown drain;
-- probes.
+`spawn_stage(stage, capacity)` returns a producer handle and a worker handle. The owner
+supplies the admitted capacity. The worker takes the ready batch under the queue lock,
+releases the lock and calls `handle_all`. Its default preserves input order within that
+stage. Override it for a native batch operation. Other stages run independently. An idle
+worker parks until signaled. Its owner can request stop, let accepted inputs drain, and join
+when it needs confirmation of shutdown.
+
+Choose delivery semantics per input. For a reliable result, a full queue returns ownership
+to the producer. A replaceable wake can use `KeepNewest` when its underlying data lives
+elsewhere. Even that policy can return `Full` while displaced items await disposal.
+At fan-out, one slow consumer must retain its own pending delivery while ready siblings
+continue. A producer awaiting each subscriber in sequence defeats that contract.
+
+Stages needing a shared device submit to its `Flow`, which owns admission order, aging
+and yield requests. A long operation that can finish independently publishes its completion
+to the interested stage. This keeps the receiver available for unrelated stimuli.
+The [perception surface](PERCEPTION-SURFACE.md#4-diff-is-the-highest-value-signal)
+describes what can be observed or requested. The [capacity governor](CAPACITY-FABRIC-AND-GOVERNOR.md)
+describes where work can run. Their live-call scenarios exercise this same contract.
 
 A stage is its handler and nothing else. **The rule for every migration in §5:** the migrated code
 holds no lock across an await, no timer, no backoff, no limiter and no queue of its own. The receipt
