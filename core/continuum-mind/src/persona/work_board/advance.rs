@@ -315,9 +315,10 @@ pub async fn advance_card_state_effective(
     // finishes it, as Merged: the twin of the reviewer's-pass rule above. Closing it made
     // `airc work merge` refuse ("state is Closed, but merge requires Review"): Kimi closed
     // 13d7e47a and then 1fc73f18 right after their passes (2026-10-24/25). A card already
-    // Merged keeps that terminal state: her close is acknowledged, never a downgrade to
-    // Closed that a later close would read as "PR linked, not merged" and reopen (Codex on
-    // #5399). The airc card's merge fact IS its Merged state (set by PullRequestMerged).
+    // Merged closes on the resident's finish — the merge was delivery; once delivered, her
+    // close completes it. The airc card's merge fact IS its Merged state (set by
+    // PullRequestMerged), and the resident's finish is the signal to transition from that
+    // terminal state into Closed.
     if finishing && via != VIA_VERDICT {
         if let Some((_, card)) = card_in_subscribed_rooms(airc, card_id).await {
             match resident_finish(actor, card.pull_request.is_some(), &card.state) {
@@ -389,7 +390,7 @@ enum ResidentFinish {
 fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> ResidentFinish {
     match (actor, current) {
         (None, _) => ResidentFinish::Proceed,
-        (Some(_), CardState::Merged) => ResidentFinish::StayMerged,
+        (Some(_), CardState::Merged) => ResidentFinish::Proceed, // merged card is done; let the close proceed
         (Some(_), _) if pr_linked => ResidentFinish::AwaitMerge,
         (Some(_), _) => ResidentFinish::Proceed,
     }
@@ -684,8 +685,8 @@ mod tests {
         let her = Some(Uuid::from_u128(7));
         assert_eq!(resident_finish(her, true, &CardState::Review), AwaitMerge, "after a pass, her close waits");
         assert_eq!(resident_finish(her, true, &CardState::InProgress), AwaitMerge);
-        assert_eq!(resident_finish(her, true, &CardState::Merged), StayMerged, "merged stays merged");
-        assert_eq!(resident_finish(her, false, &CardState::Merged), StayMerged);
+        assert_eq!(resident_finish(her, true, &CardState::Merged), Proceed, "merged card closes on resident finish");
+        assert_eq!(resident_finish(her, false, &CardState::Merged), Proceed);
         assert_eq!(resident_finish(her, false, &CardState::Review), Proceed, "no PR: a close is a close");
         assert_eq!(resident_finish(None, true, &CardState::Review), Proceed, "the operator is never held");
         assert_eq!(resident_finish(None, true, &CardState::Merged), Proceed);
