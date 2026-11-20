@@ -517,7 +517,8 @@ really share or substitute the verb, never one trait per verb, never dynamic dis
 | `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
 | `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
 
-**Lifecycle composes through the tree (the one verb that is a shared trait).** Every part has a
+**Lifecycle composes through the tree (the first example; any shared method or logic composes the
+same way, §12).** Every part has a
 lifetime, and the parent, not the caller, knows its children, their order and their outstanding
 work:
 
@@ -542,7 +543,7 @@ call is idempotent: a repeated `suspend` on a suspended part reports the same pr
 preservation rules are written once, inside the part that owns the state, and every caller gets
 them for free.
 
-**Capacity composes through the tree too (`Footprint`, the second shared capability).** Every part
+**Capacity composes through the tree too (`Footprint`, a second example).** Every part
 answers for its memory, so admission reads the objects instead of guessing from the whole machine.
 Two things are kept apart, as with ownership and location: **allocation** (a physical allocation,
 identified once by its existing lease or custody claim, held by the service that holds the bytes)
@@ -754,8 +755,11 @@ through a lineage of abstractions, and each generation holds only its difference
 the logic is written once at the narrowest ancestor that all its users share, and each descendant
 adds only its subtle variation, down to the leaf. Skipping a generation (a leaf implementing straight
 from the root) is the defect, because the shared middle is then rewritten in every leaf. Composition
-is the other axis: an object is made of objects, and a common method (shutdown, suspend, footprint)
-is written once in the base and walks the children (§9.4), so no object writes its own cascade. The
+is the other axis: an object is made of objects. This holds for any method and any logic, not only
+the lifecycle: validation, measurement, pressure response, serialization, health, perception,
+learning, a transition of state. Whatever several objects share is written once at their common
+ancestor and, where it concerns parts, walks the children (§9.4); each object writes only its own
+direct answer, and no object writes its own cascade. The
 organization follows the same tree: many crates, many modules, many small files, each holding little
 and each shaped like its siblings.
 
