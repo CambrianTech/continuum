@@ -501,7 +501,7 @@ impl LlamaCppBackend {
     }
 
     /// Prepare and enqueue on a blocking worker. The caller owns the returned event receiver.
-    pub(crate) fn submit_for_persona(
+    pub fn submit_for_persona(
         &self,
         allocation: GenerationAllocation,
         persona_id: Option<uuid::Uuid>,
@@ -574,7 +574,7 @@ impl LlamaCppBackend {
 }
 
 /// Dropping a turn drops its receiver even when the native driver is busy.
-pub(crate) struct TurnAnswer {
+pub struct TurnAnswer {
     events: tokio::sync::mpsc::UnboundedReceiver<TokenEvent>,
     started: Instant,
     prompt_chars: usize,
@@ -582,7 +582,7 @@ pub(crate) struct TurnAnswer {
 }
 
 impl TurnAnswer {
-    pub(crate) async fn collect(mut self) -> Result<(String, usize), String> {
+    pub async fn collect(mut self) -> Result<(String, usize), String> {
         let mut output = String::new();
         loop {
             match self.events.recv().await {
