@@ -24,6 +24,7 @@ use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -288,16 +289,17 @@ impl Default for PocketTTS {
     }
 }
 
+impl Part for PocketTTS {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "pocket",
+            description: "Pocket-TTS (100M, Candle) — fast CPU TTS with voice cloning from reference audio",
+        }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for PocketTTS {
-    fn name(&self) -> &'static str {
-        "pocket"
-    }
-
-    fn description(&self) -> &'static str {
-        "Pocket-TTS (100M, Candle) — fast CPU TTS with voice cloning from reference audio"
-    }
-
     fn is_initialized(&self) -> bool {
         POCKET_MODEL.is_loaded()
     }
@@ -426,7 +428,7 @@ mod tests {
     #[test]
     fn test_pocket_tts_basics() {
         let adapter = PocketTTS::new();
-        assert_eq!(adapter.name(), "pocket");
+        assert_eq!(adapter.identity().name, "pocket");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "alba");
     }

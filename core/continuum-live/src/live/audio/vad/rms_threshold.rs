@@ -9,6 +9,7 @@
 //! - Simple volume gating
 
 use super::{VADError, VADResult, VoiceActivityDetection};
+use continuum_base::part::{Identity, Part};
 
 /// RMS Threshold VAD
 ///
@@ -45,15 +46,13 @@ impl Default for RmsThresholdVAD {
     }
 }
 
+impl Part for RmsThresholdVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "rms_threshold", description: "Fast RMS energy threshold (cannot reject background noise)" }
+    }
+}
+
 impl VoiceActivityDetection for RmsThresholdVAD {
-    fn name(&self) -> &'static str {
-        "rms_threshold"
-    }
-
-    fn description(&self) -> &'static str {
-        "Fast RMS energy threshold (cannot reject background noise)"
-    }
-
     fn is_initialized(&self) -> bool {
         true // No initialization needed
     }

@@ -14,6 +14,7 @@ use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use ndarray;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -410,16 +411,14 @@ impl From<ort::Error> for TTSError {
     }
 }
 
+impl Part for KokoroTTS {
+    fn identity(&self) -> Identity {
+        Identity { name: "kokoro", description: "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)" }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for KokoroTTS {
-    fn name(&self) -> &'static str {
-        "kokoro"
-    }
-
-    fn description(&self) -> &'static str {
-        "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)"
-    }
-
     fn is_initialized(&self) -> bool {
         KOKORO_SESSION.is_loaded()
     }
@@ -564,11 +563,11 @@ mod tests {
     #[test]
     fn test_kokoro_adapter_basics() {
         let adapter = KokoroTTS::new();
-        assert_eq!(adapter.name(), "kokoro");
+        assert_eq!(adapter.identity().name, "kokoro");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "af");
         assert_eq!(
-            adapter.description(),
+            adapter.identity().description,
             "Local Kokoro TTS (82M params, ONNX, espeak-ng phonemizer)"
         );
     }

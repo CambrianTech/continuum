@@ -11,6 +11,7 @@
 use super::{STTError, SpeechToText, TranscriptResult};
 use crate::{clog_debug, clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -317,16 +318,17 @@ impl Default for OpenAIRealtimeSTT {
     }
 }
 
+impl Part for OpenAIRealtimeSTT {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "openai-realtime",
+            description: "OpenAI Realtime API with streaming transcription and semantic VAD",
+        }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for OpenAIRealtimeSTT {
-    fn name(&self) -> &'static str {
-        "openai-realtime"
-    }
-
-    fn description(&self) -> &'static str {
-        "OpenAI Realtime API with streaming transcription and semantic VAD"
-    }
-
     fn is_initialized(&self) -> bool {
         *self.initialized.lock() && self.api_key.is_some()
     }

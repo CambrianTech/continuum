@@ -19,6 +19,7 @@ use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use ndarray::{Array2, ArrayD, IxDyn};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -493,16 +494,17 @@ impl Default for MoonshineStt {
     }
 }
 
+impl Part for MoonshineStt {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "moonshine",
+            description: "Moonshine STT (ONNX, Useful Sensors) — fast local inference, 5-15x faster than Whisper on short audio",
+        }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for MoonshineStt {
-    fn name(&self) -> &'static str {
-        "moonshine"
-    }
-
-    fn description(&self) -> &'static str {
-        "Moonshine STT (ONNX, Useful Sensors) — fast local inference, 5-15x faster than Whisper on short audio"
-    }
-
     fn is_initialized(&self) -> bool {
         MOONSHINE_MODEL.is_loaded()
     }
@@ -606,7 +608,7 @@ mod tests {
     #[test]
     fn test_moonshine_creation() {
         let adapter = MoonshineStt::new();
-        assert_eq!(adapter.name(), "moonshine");
+        assert_eq!(adapter.identity().name, "moonshine");
         assert!(!adapter.is_initialized());
     }
 

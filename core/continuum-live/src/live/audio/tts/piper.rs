@@ -11,6 +11,7 @@ use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use ndarray;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -149,16 +150,14 @@ impl Default for PiperTTS {
 
 // Note: From<ort::Error> for TTSError already implemented in kokoro.rs
 
+impl Part for PiperTTS {
+    fn identity(&self) -> Identity {
+        Identity { name: "piper", description: "Piper TTS (high-quality, ONNX-based)" }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for PiperTTS {
-    fn name(&self) -> &'static str {
-        "piper"
-    }
-
-    fn description(&self) -> &'static str {
-        "Piper TTS (high-quality, ONNX-based)"
-    }
-
     fn is_initialized(&self) -> bool {
         PIPER_SESSION.is_loaded()
     }
@@ -276,7 +275,7 @@ mod tests {
     #[test]
     fn test_piper_adapter() {
         let adapter = PiperTTS::new();
-        assert_eq!(adapter.name(), "piper");
+        assert_eq!(adapter.identity().name, "piper");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "default");
     }

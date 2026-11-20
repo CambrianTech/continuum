@@ -15,6 +15,7 @@
 //! - Good for: Low-latency, resource-constrained, or high-throughput scenarios
 
 use super::{VADError, VADResult, VoiceActivityDetection};
+use continuum_base::part::{Identity, Part};
 use earshot::{VoiceActivityDetector, VoiceActivityProfile};
 use parking_lot::Mutex;
 use std::sync::Arc;
@@ -85,15 +86,13 @@ impl Default for WebRtcVAD {
     }
 }
 
+impl Part for WebRtcVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "webrtc", description: "WebRTC VAD (earshot, ultra-fast rule-based)" }
+    }
+}
+
 impl VoiceActivityDetection for WebRtcVAD {
-    fn name(&self) -> &'static str {
-        "webrtc"
-    }
-
-    fn description(&self) -> &'static str {
-        "WebRTC VAD (earshot, ultra-fast rule-based)"
-    }
-
     fn is_initialized(&self) -> bool {
         // No initialization needed - pure algorithm
         true
@@ -160,7 +159,7 @@ mod tests {
     #[test]
     fn test_webrtc_vad_creation() {
         let vad = WebRtcVAD::new();
-        assert_eq!(vad.name(), "webrtc");
+        assert_eq!(vad.identity().name, "webrtc");
         assert!(vad.is_initialized());
         assert_eq!(vad.aggressiveness, 3); // Default is very aggressive
     }

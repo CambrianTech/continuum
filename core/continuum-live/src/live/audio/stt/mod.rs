@@ -21,6 +21,7 @@ pub use stub::StubSTT;
 
 use crate::clog_info;
 use async_trait::async_trait;
+use continuum_base::part::Part;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
 use std::collections::HashMap;
@@ -70,13 +71,7 @@ pub struct TranscriptSegment {
 ///
 /// Implement this for each STT backend (Whisper, Deepgram, etc.)
 #[async_trait]
-pub trait SpeechToText: Send + Sync {
-    /// Adapter name (e.g., "whisper", "deepgram")
-    fn name(&self) -> &'static str;
-
-    /// Human-readable description
-    fn description(&self) -> &'static str;
-
+pub trait SpeechToText: Part + Send + Sync {
     /// Check if adapter is ready for use
     fn is_initialized(&self) -> bool;
 
@@ -137,7 +132,7 @@ impl STTRegistry {
 
     /// Register an adapter
     pub fn register(&mut self, adapter: Arc<dyn SpeechToText>) {
-        let name = adapter.name();
+        let name = adapter.identity().name;
         clog_info!("STT: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
 
@@ -278,7 +273,7 @@ pub async fn initialize() -> Result<(), STTError> {
         };
         match adapter.initialize().await {
             Ok(()) => {
-                get_registry().write().set_active(adapter.name())?;
+                get_registry().write().set_active(adapter.identity().name)?;
                 if !misses.is_empty() {
                     clog_info!(
                         "STT: '{}' active (earlier engines unavailable: {})",

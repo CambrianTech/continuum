@@ -7,6 +7,7 @@ use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use crate::live::audio::reloadable::ReloadableModel;
 use parking_lot::Mutex;
 use std::path::PathBuf;
@@ -247,16 +248,14 @@ impl Default for WhisperSTT {
     }
 }
 
+impl Part for WhisperSTT {
+    fn identity(&self) -> Identity {
+        Identity { name: "whisper", description: "Local Whisper inference (whisper.cpp)" }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for WhisperSTT {
-    fn name(&self) -> &'static str {
-        "whisper"
-    }
-
-    fn description(&self) -> &'static str {
-        "Local Whisper inference (whisper.cpp)"
-    }
-
     fn is_initialized(&self) -> bool {
         WHISPER_RT.is_loaded()
     }
@@ -355,7 +354,7 @@ mod tests {
     #[test]
     fn test_whisper_adapter_creation() {
         let adapter = WhisperSTT::new();
-        assert_eq!(adapter.name(), "whisper");
+        assert_eq!(adapter.identity().name, "whisper");
         assert!(!adapter.is_initialized());
     }
 

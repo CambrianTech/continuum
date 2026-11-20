@@ -13,6 +13,8 @@
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
+use continuum_base::part::Part;
+
 pub(crate) mod normalize;
 mod kokoro;
 mod orpheus;
@@ -132,13 +134,7 @@ pub struct SynthesisResult {
 ///
 /// Implement this for each TTS backend (Kokoro, ElevenLabs, etc.)
 #[async_trait]
-pub trait TextToSpeech: Send + Sync {
-    /// Adapter name (e.g., "kokoro", "elevenlabs")
-    fn name(&self) -> &'static str;
-
-    /// Human-readable description
-    fn description(&self) -> &'static str;
-
+pub trait TextToSpeech: Part + Send + Sync {
     /// Check if adapter is ready for use
     fn is_initialized(&self) -> bool;
 
@@ -238,7 +234,7 @@ impl TTSRegistry {
 
     /// Register an adapter (order matters — first registered = highest priority)
     pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
-        let name = adapter.name();
+        let name = adapter.identity().name;
         clog_info!("TTS: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
         self.priority.push(name);
@@ -415,7 +411,7 @@ pub async fn synthesize(
         voice,
         resolved,
         gender_hint.unwrap_or("any"),
-        adapter.name()
+        adapter.identity().name
     );
     match adapter.synthesize(text, &resolved).await {
         Ok(mut result) => {
@@ -434,7 +430,7 @@ pub async fn synthesize(
             // are for tests, not for a persona's mouth.
             let candidates = ["kokoro", "pocket", "orpheus", "piper"];
             for name in candidates {
-                if name == adapter.name() {
+                if name == adapter.identity().name {
                     continue;
                 }
                 let Some(next) = get_registry().read().get(name) else {
@@ -453,7 +449,7 @@ pub async fn synthesize(
                 if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
                     continuum_base::probe!(
                         class = "tts.fallthrough",
-                        from = adapter.name(),
+                        from = adapter.identity().name,
                         to = name,
                         error = %active_err,
                         "active TTS adapter failed — utterance served by the next local adapter"
@@ -501,8 +497,8 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
         if let Some(adapter) = adapter {
             match adapter.initialize().await {
                 Ok(()) => {
-                    // Use adapter.name() which returns &'static str
-                    let static_name = adapter.name();
+                    // Use adapter.identity().name which returns &'static str
+                    let static_name = adapter.identity().name;
                     clog_info!("TTS: '{}' initialized successfully", static_name);
                     let _ = registry.write().set_active(static_name);
                     return Ok(());
@@ -585,7 +581,7 @@ mod tests {
 
         // First registered adapter becomes active
         let active = registry.get_active().expect("Should have active adapter");
-        assert_eq!(active.name(), "silence");
+        assert_eq!(active.identity().name, "silence");
     }
 
     #[test]
@@ -598,10 +594,10 @@ mod tests {
         let silence = registry
             .get("silence")
             .expect("Should find silence adapter");
-        assert_eq!(silence.name(), "silence");
+        assert_eq!(silence.identity().name, "silence");
 
         let kokoro = registry.get("kokoro").expect("Should find kokoro adapter");
-        assert_eq!(kokoro.name(), "kokoro");
+        assert_eq!(kokoro.identity().name, "kokoro");
 
         // Unknown adapter returns None
         assert!(registry.get("nonexistent").is_none());
@@ -614,11 +610,11 @@ mod tests {
         registry.register(Arc::new(KokoroTTS::new()));
 
         // Initially silence is active (first registered)
-        assert_eq!(registry.get_active().unwrap().name(), "silence");
+        assert_eq!(registry.get_active().unwrap().identity().name, "silence");
 
         // Switch to kokoro
         registry.set_active("kokoro").expect("Should succeed");
-        assert_eq!(registry.get_active().unwrap().name(), "kokoro");
+        assert_eq!(registry.get_active().unwrap().identity().name, "kokoro");
 
         // Invalid adapter name
         assert!(registry.set_active("nonexistent").is_err());

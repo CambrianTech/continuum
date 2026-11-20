@@ -26,6 +26,7 @@ use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use candle_core::quantized::gguf_file;
 use candle_core::{Device, Tensor};
 use candle_transformers::generation::LogitsProcessor;
@@ -608,16 +609,17 @@ impl Default for OrpheusTts {
     }
 }
 
+impl Part for OrpheusTts {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "orpheus",
+            description: "Orpheus TTS (Llama-3B, GGUF) — expressive speech with emotion tags <laugh> <sigh> <gasp>",
+        }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for OrpheusTts {
-    fn name(&self) -> &'static str {
-        "orpheus"
-    }
-
-    fn description(&self) -> &'static str {
-        "Orpheus TTS (Llama-3B, GGUF) — expressive speech with emotion tags <laugh> <sigh> <gasp>"
-    }
-
     fn is_initialized(&self) -> bool {
         ORPHEUS_MODEL.is_loaded()
     }
@@ -780,7 +782,7 @@ mod tests {
     #[test]
     fn test_orpheus_creation() {
         let adapter = OrpheusTts::new();
-        assert_eq!(adapter.name(), "orpheus");
+        assert_eq!(adapter.identity().name, "orpheus");
         assert!(!adapter.is_initialized());
     }
 

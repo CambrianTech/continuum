@@ -76,7 +76,7 @@ impl VoiceModule {
             .map(|(name, initialized)| {
                 let desc = reg
                     .get(name)
-                    .map(|a| a.description().to_string())
+                    .map(|a| a.identity().description.to_string())
                     .unwrap_or_default();
                 serde_json::json!({
                     "name": name,
@@ -88,7 +88,7 @@ impl VoiceModule {
 
         let active = reg
             .get_active()
-            .map(|a| a.name().to_string())
+            .map(|a| a.identity().name.to_string())
             .unwrap_or_default();
 
         Ok(CommandResult::Json(serde_json::json!({

@@ -16,6 +16,7 @@
 use super::{VADError, VADResult, VoiceActivityDetection};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
+use continuum_base::part::{Identity, Part};
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -183,15 +184,13 @@ impl Default for SileroVAD {
     }
 }
 
+impl Part for SileroVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "silero", description: "ML-based Silero VAD (accurate background noise rejection)" }
+    }
+}
+
 impl VoiceActivityDetection for SileroVAD {
-    fn name(&self) -> &'static str {
-        "silero"
-    }
-
-    fn description(&self) -> &'static str {
-        "ML-based Silero VAD (accurate background noise rejection)"
-    }
-
     fn is_initialized(&self) -> bool {
         SILERO_SESSION.get().is_some()
     }
@@ -314,7 +313,7 @@ mod tests {
     #[test]
     fn test_silero_creation() {
         let vad = SileroVAD::new();
-        assert_eq!(vad.name(), "silero");
+        assert_eq!(vad.identity().name, "silero");
         assert!(!vad.is_initialized());
     }
 

@@ -7,6 +7,7 @@ use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Minimum audio duration for transcription (ms)
@@ -50,16 +51,14 @@ impl StubSTT {
     }
 }
 
+impl Part for StubSTT {
+    fn identity(&self) -> Identity {
+        Identity { name: "stub", description: "Stub STT adapter for testing (returns dummy text)" }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for StubSTT {
-    fn name(&self) -> &'static str {
-        "stub"
-    }
-
-    fn description(&self) -> &'static str {
-        "Stub STT adapter for testing (returns dummy text)"
-    }
-
     fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
     }
