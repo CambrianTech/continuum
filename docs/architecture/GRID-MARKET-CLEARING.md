@@ -54,7 +54,11 @@ A market is the **distributed algorithm** for this problem class, with proofs:
 transients and partitions. They compose — prices for placement, queues for the
 next dispatch.
 
-## 1a. The numeraire: one currency, and every claim's own value over time
+## 1a. The numeraire: one currency, and every demand's own value over time
+
+Named a **demand** in the object model ([object-model/03-roots.md](object-model/03-roots.md) §3.8):
+"claim" already names card claims, custody claims and the learning owner's claim. This section used
+"claim" before that rename.
 
 Joel, 2026-10-30: "find a way of pricing everything using the same metric. Experience is not as simple as raw RAM,
 time, slots, context... everything has a cost. Killing lanes, not having context. Maybe it's all just time." And:
@@ -77,7 +81,7 @@ Time is measured the same way on every machine. Two refinements:
 - **Whose time:** the one input a person sets (which activity matters now, which conversation is live) weights
   whose seconds count for more. Everything else is measured.
 
-**Every claim carries its own value function over time**, in that currency: what completing it is worth as a
+**Every demand carries its own value function over time**, in that currency: what completing it is worth as a
 function of when it completes. This is the time-utility function of real-time scheduling (Jensen and Locke, 1985;
 utility accrual scheduling), and the reason prices move by themselves:
 
@@ -89,20 +93,20 @@ utility accrual scheduling), and the reason prices move by themselves:
 | A refactor | flat for hours |
 | Dreaming | low, never zero, flat |
 
-**A resource's price is how far one more unit moves the claims along their curves.** A token of context, a
+**A resource's price is how far one more unit moves the demands along their curves.** A token of context, a
 lane-second, a byte of state, a page move and a relaunch are each priced by the expected change in value they
 cause: a unit that lets a live reply land before its curve falls is worth much; the same unit to a flat refactor
 is worth little; a unit after a curve has fallen to zero is worth nothing, so the market stops spending on a
 conversation that has moved on, with no rule written to say so.
 
 **The definition** (Codex on #5621: "weighted time" is not yet one dimensionally defined unit until this is
-stated). For each claim `i`:
+stated). For each demand `i`:
 - `U_i(t)`: the value of a **verified** completion at time `t`, in the common unit, weighted by the one human
-  input (whose outcome matters now) and normalized so every claim's weight is comparable;
+  input (whose outcome matters now) and normalized so every demand's weight is comparable;
 - `U_i(never)`: its value if it is not completed within its **horizon** `H_i` (usually zero; a commitment
   someone is counting on is negative: failing it costs);
 - `T_i`: its completion time, a random variable given the resources it holds, predicted from measurement;
-- **the marginal value of a resource bundle** `r` to claim `i` is `E[U_i(T_i | with r)] - E[U_i(T_i | without r)]`,
+- **the marginal value of a resource bundle** `r` to demand `i` is `E[U_i(T_i | with r)] - E[U_i(T_i | without r)]`,
   taken over the measured completion-time distribution and including the chance of not completing before `H_i`.
 
 That last clause is what keeps a flat job from being worth nothing: on its flat region, more resources do not
@@ -110,7 +114,7 @@ make it more valuable sooner, but they raise the probability it completes before
 nears, the marginal value of resources to it CAN rise, and a long, flat job then gains priority from its own
 curve, not from a fixed aging rule or a second scheduler. That is a possible measured result, never a theorem
 of the curve (Codex): once the horizon is unreachable even with the resource, both completion probabilities are
-zero, their difference is zero, and the claim gains nothing. Such a claim is a typed outcome, `Infeasible`
+zero, their difference is zero, and the demand gains nothing. Such a demand is a typed outcome, `Infeasible`
 before admission or `MissedCommitment` after it, reported, never left to bid at zero. Changing a utility cannot
 create capacity: admission proves a commitment feasible before it is accepted. Long-lived work enters as
 verified sub-outcomes (each passing test, each merged slice), each with its own `U(t)`, so progress counts
@@ -121,7 +125,7 @@ are not concave. The conversion from `U_i(t)` to solver increments is an explici
 and uncertainty:
 - an all-or-none outcome becomes an indivisible increment (whole or nothing; the solver reports its achieved
   value and relaxed upper bound, never claiming optimality);
-- complementary resources become a joint claim, solved as a bundle at the lowest common tier (slice 1 part 2);
+- complementary resources become a joint demand, solved as a bundle at the lowest common tier (slice 1 part 2);
 - a shape the conversion cannot represent is a typed `Unsupported` state, never approximated silently.
 
 Validators (none can be proved by a linearized copy of production policy): for an ADMITTED, FEASIBLE workload, a
@@ -134,7 +138,7 @@ typed outcome); an all-or-none deadline job
 - The curves' shapes come from the activity: a conversation's decay is measured from how long people and peers
   actually wait before moving on; a deadline is the medium's frame time.
 - The conversions ("how many seconds does this token of context save her") are learned by the policy loop from
-  controlled probes (HOW-A-MIND L7), never guessed. An unmeasured conversion is marked unmeasured, and its claim
+  controlled probes (HOW-A-MIND L7), never guessed. An unmeasured conversion is marked unmeasured, and its demand
   trades only its floor.
 - Gates stay outside the currency: privacy, permission and a live faculty working at all are never bought or sold
   (invariant 1).
@@ -158,9 +162,9 @@ on #5621 scoped it). A P2P grid has no one trusted in the middle:
   The retained accounting persists, through a partition too, until actual reclamation evidence arrives (the peer's
   report or the existing release-evidence and fencing contract); only then is the remote credit released.
 
-**In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a claim's `Value` is in this currency, and its
+**In the solver** (`cambrian-flex`, ONE-BUDGET slice 1), a demand's `Value` is in this currency, and its
 increments are the marginal change in expected value per unit of resource, evaluated on its curve at the
-current time. Re-clearing as time passes is what makes a stale claim's price fall to zero.
+current time. Re-clearing as time passes is what makes a stale demand's price fall to zero.
 
 ## 2. The nested market (one numeraire, three tiers)
 

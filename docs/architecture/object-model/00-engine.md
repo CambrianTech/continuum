@@ -481,7 +481,7 @@ The price is defined precisely in [GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEAR
 currency is weighted time to a verified outcome. Every piece of work carries its own value over
 time (a time-utility function, as in real-time scheduling), and a resource's price is how far one
 more unit moves that work along its curve. Each piece of work presents all of this to the governor
-as a **claim** (chapter 3.8): its activity, its value curve, its essentials, its quality ladder, its
+as a **demand** (chapter 3.8): its activity, its value curve, its essentials, its quality ladder, its
 progress so far, its expected completion and the cost of freezing it.
 
 **Value is not linear in what is given.** Joel: "half of a produced car is worthless." Most
