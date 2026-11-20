@@ -22,10 +22,12 @@ how today's code gets there. It reads in order: each chapter builds on the ones 
 | 3 | [The roots](03-roots.md) | The handful of general abstractions everything descends from |
 | 4 | [The lineages](04-lineages.md) | Each family, from its root down to its leaves, and what each generation adds |
 | 5 | [The persona](05-persona.md) | A resident as one tree of parts, with the type at every node |
-| 6 | [Crates](06-crates.md) | The crate layers from the floor to the node binary, and what each crate owns |
-| 7 | [Modules](07-modules.md) | How a crate is laid out inside: one object, one directory, general above specific |
-| 8 | [Coverage](08-coverage.md) | Every trait in the core today, and where it lands |
-| 9 | [The plan](09-plan.md) | The changes that get us there, in order, with owners and the ratchets that say done |
+| 6 | [The genome and learning](06-genome.md) | Every object of learning, from a labelled row to a gene a stranger adopts; how shared genes keep improving; what must be done |
+| 7 | [Live calls and embodiment](07-live.md) | Every object of a call and a shared world: streams, fusion, voice, avatar, demands; what must be done |
+| 8 | [Crates](08-crates.md) | The crate layers from the floor to the node binary, and what each crate owns |
+| 9 | [Modules](09-modules.md) | How a crate is laid out inside: one object, one directory, general above specific |
+| 10 | [Coverage](10-coverage.md) | Every trait in the core today, and where it lands |
+| 11 | [The plan](11-plan.md) | The changes that get us there, in order, with owners and the ratchets that say done |
 
 ## The model on one page
 
@@ -64,11 +66,11 @@ Source ........ feeds a view    Durable .... outlives a process
 
 The crates follow the same direction: a floor of leaf crates that know nothing of Continuum, a
 kernel that hosts parts, domain crates that each own a lineage (serving, media, perception, memory,
-hands, grid, learning, the mind), and one node binary that composes them (chapter 6).
+hands, grid, learning, the mind), and one node binary that composes them (chapter 8).
 
 ## How to use this book
 
 - Before adding a type, find its parent in chapter 4. If no family fits, the new root belongs in
   chapter 3, and that is a design change for review, never a quiet addition.
-- Before adding a crate or module, place it with chapters 6 and 7.
-- Chapter 8 is the checklist: a trait not on it is not yet placed.
+- Before adding a crate or module, place it with chapters 8 and 9.
+- Chapter 10 is the checklist: a trait not on it is not yet placed.

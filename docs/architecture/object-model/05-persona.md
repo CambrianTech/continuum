@@ -1,6 +1,6 @@
 # 5. The persona
 
-[The object model](README.md) · previous: [The lineages](04-lineages.md) · next: [Crates](06-crates.md)
+[The object model](README.md) · previous: [The lineages](04-lineages.md) · next: [The genome and learning](06-genome.md)
 
 A resident is one part made of parts. This chapter gives her tree with the type at every node, says
 which branches are durable and which are cache, and maps today's pieces of her onto it. How she runs

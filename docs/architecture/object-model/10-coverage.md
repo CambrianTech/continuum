@@ -1,12 +1,12 @@
-# 8. Coverage
+# 10. Coverage
 
-[The object model](README.md) · previous: [Modules](07-modules.md) · next: [The plan](09-plan.md)
+[The object model](README.md) · previous: [Modules](09-modules.md) · next: [The plan](11-plan.md)
 
 Every trait in the core on canary c819052ef7 (224, tests excluded), and where it lands. Grouped by
 destination, so each root and lineage shows everything that becomes it. A trait is covered when its
 implementors are on their destination and the trait is deleted or kept as named here.
 
-## 8.1 Traits with two or more implementors, or a supertrait
+## 10.1 Traits with two or more implementors, or a supertrait
 
 | Destination | Today's traits (crate) |
 |---|---|
@@ -30,7 +30,7 @@ implementors are on their destination and the trait is deleted or kept as named 
 | Client views (kept) | `StateSource`, `SessionSubstrate` (positron): the client-facing projection of `Published`, renamed `ViewSource` |
 | Outside the part model (kept where they are) | `IpcStream` (core, an OS stream: moves to host); `PublishedCoreSource`, `DeploySpawner` (CLI deploy, to `apps/cli`); `ToolCallFormat` (protocol parser); `SlotEngine` (serving-replay); `RefusalCause` (errors are values, not parts); `OwnRate`, `AsArg` (engine: deleted with the llama-server lane launcher) |
 
-## 8.2 Traits with one implementor or none
+## 10.2 Traits with one implementor or none
 
 A trait with one implementor is one of two things:
 - **a seam for a fixture or a second backend:** it stays at its owner, named for its capability, and
@@ -53,7 +53,7 @@ A trait with no implementor is deleted, or implemented by the change that needs 
 | persona-engine | `Identified`, `Completion`, `Fence`, `NextPolicy` (0) | `Completion` onto the root `Completion`; `NextPolicy` onto `Policy`; the others stay in serving |
 | others | client `ServeHandler`; FFI `EventCallback` (0); CLI `DeploySource`, `HeldCapability`; capture `PromptCaptureSink`; engram `RecallRanker`; grid `GridConnection`, `PeerTrustSource` (0); grounding `CriticalSource`; hands `CardBoards`; positron `CommandDispatch` (0); saved-state `Medium`; serving `PromptCacheControl`; llama `ExpertObserver`, `ReplyAdmission`, `OptimizerLease`; serving-replay `ServingTarget`; tool-working-set `Relevance` | each onto the root its verb names (`Sink`, `Policy`, `Search`, `Room`, `Durable`); the llama crate's three stay in the leaf crate where the native boundary needs them |
 
-## 8.3 What remains as roots afterwards
+## 10.3 What remains as roots afterwards
 
 `Part` with its subsystems, `Command`, `Policy`, `Check`, `Sink`, `Source`, `Durable`; the lineages of
 chapter 4; and a small number of narrow seams at their owners, each named for its capability. The

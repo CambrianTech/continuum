@@ -213,7 +213,7 @@ Part
 ```
 
 Module: `continuum-genome`, which absorbs `continuum-dreaming`'s gene training and the learning parts
-of `continuum-academy` (chapter 6). The Academy keeps its courses as activities (4.6).
+of `continuum-academy` (chapter 8). The genome's objects and how genes spread are chapter 6. The Academy keeps its courses as activities (4.6).
 
 ## 4.9 `Service`: parts that answer the outside
 

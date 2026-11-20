@@ -765,9 +765,11 @@ Each of these is a way the brief is failed, recognised by name:
 - **Parts** (chapters 2 to 4) are the engine's objects: each with a lineage, its own worker and its
   own state, talking by commands and publications.
 - **The persona** (chapter 5) is one character in the world: a tree of parts at levels of detail.
-- **Crates and modules** (chapters 6 and 7) are the engine's code layout, general below specific,
+- **The genome** (chapter 6) and **live calls and embodiment** (chapter 7) are the two domains this
+  ideal most depends on, each with its objects and what must be done.
+- **Crates and modules** (chapters 8 and 9) are the engine's code layout, general below specific,
   each domain runnable on its own node of the Grid.
-- **Coverage and the plan** (chapters 8 and 9) take today's code there.
+- **Coverage and the plan** (chapters 10 and 11) take today's code there.
 
 ## 0.9 Sources
 

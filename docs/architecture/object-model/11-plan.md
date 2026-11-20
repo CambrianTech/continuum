@@ -1,10 +1,26 @@
-# 9. The plan
+# 11. The plan
 
-[The object model](README.md) · previous: [Coverage](08-coverage.md)
+[The object model](README.md) · previous: [Coverage](10-coverage.md)
 
-How the core gets from chapter 1 to chapters 3 through 7, and how we know it is finished.
+How the core gets from chapter 1 to chapters 3 through 9, and how we know it is finished.
 
-## 9.1 Rules for every change
+## 11.0 Workstreams
+
+Work runs in parallel streams, each owning a domain of the book end to end: its chapter, its
+objects, its code, its validators and its live gate. The phases in 11.2 are shared foundations that
+every stream builds on.
+
+| Stream | Chapter | Owner | First deliverables |
+|---|---|---|---|
+| Minds and the genome | 5, 6 | Fable | #6203 lands; learning as a mode of her turn (`Step` labels, the duty, learning-context paging); the persona as one tree; the live learning gate |
+| Live calls and embodiment | 7 | a second agent focused on it, with BigMama (live and media) | the proof plan's stages 1 to 3: one speaker to one listener, interruption, rendered bodies with native vision; then shared attention, scale, and a shared world |
+| Resources, serving and the grid | 3.7, 3.8, 4.3, 4.4, 8 | Codex | `Demand` cleared by the governor; `Holder`; `Durable` media; the serving and grid crate cuts |
+| The learning acceptance test | 6.5 | Cormac | a reviewed correction learned in place, retained after a restart, on unseen tasks, against the base without the gene |
+
+Each stream reports its progress as its own validators and live receipts, plus the ratchets of 11.3
+that its changes move.
+
+## 11.1 Rules for every change
 
 - **Whole families, nothing left behind.** A lineage change moves every implementor of the family it
   names and deletes the old trait, its registrations and its callers' old paths in the same change.
@@ -18,7 +34,7 @@ How the core gets from chapter 1 to chapters 3 through 7, and how we know it is 
 - **Proven before it lands:** its validators, the hygiene ratchets, clippy with tests on the crates it
   touches, and for live behavior a matched read on the live node.
 
-## 9.2 Phases
+## 11.2 Phases
 
 Each phase lists its changes in order. Rows in one phase with different owners run in parallel.
 
@@ -31,7 +47,7 @@ Each phase lists its changes in order. Rows in one phase with different owners r
 | `continuum-flow::worker`: the stage with the control lane, topics, revisions and provenance | the kernel's `Stage`, `Inputs`, `DependentStage` (one production user moves) | Fable |
 | `continuum-saved-state`: `Durable` with media, the ORM as one medium | nothing yet | Codex |
 | `continuum-base::demand`: `Demand`, value curves, essentials, quality ladders, progress, switch cost; the governor clears demands into leases and typed outcomes ([GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md) §1a, the `cambrian-flex` solver) | request types move onto it family by family in phase D (`Holder`) | Codex, with Fable for the Core's scheduler |
-| Ratchets: one per old root (chapter 9.3), at today's counts, only falling | nothing | Fable |
+| Ratchets: one per old root (chapter 11.3), at today's counts, only falling | nothing | Fable |
 
 ### Phase B: the crate layers (pure moves)
 
@@ -40,7 +56,7 @@ feature closures of the headless CPU, Metal and CUDA builds. Each move compares 
 so that UI, remote and accelerator dependencies stay optional and nothing optional becomes default
 (Codex's review).
 
-One change per target crate (chapter 6.2), each moving whole modules with paths only, tests unchanged:
+One change per target crate (chapter 8.2), each moving whole modules with paths only, tests unchanged:
 
 1. The floor: `continuum-protocol` (three protocol crates), `continuum-context` absorbs prompt and
    grounding, the kernel drops its dependencies on the client library and the CLI lifecycle.
@@ -81,7 +97,7 @@ render; Cormac for the genome; Fable for the rest.
 | `Room` and its views; `ActivityAdapter` | `AircCitizen` and its readers, the board readers, the three suite adapters | Fable |
 | `Search` | `RecallLayer`, `CandidateSource`, `SearchAlgorithm` | Fable |
 | `Renderer` | `RenderBackend`, `AvatarRenderer` | BigMama |
-| `Policy`, `Check`, `Sink`, `Durable` leaves | the decision, judging, recording and persistence traits of chapter 8 | each family's owner |
+| `Policy`, `Check`, `Sink`, `Durable` leaves | the decision, judging, recording and persistence traits of chapter 10 | each family's owner |
 | `Source` only | `RagSource`, `CriticalSource`, `RagRenderable` and its two scopes | Fable |
 
 ### Phase E: the persona and services
@@ -91,17 +107,17 @@ render; Cormac for the genome; Fable for the rest.
 | `Persona` as one tree (chapter 5) | `PersonaCognition` and `PersonaAircRuntime` as separate roots; the node-wide hippocampus | Fable |
 | `Service`, family by family across the crates; the last change deletes the trait | `ServiceModule`, string command names, glob subscriptions, the runtime's tick loop | Fable for the trait, each crate's owner for its modules |
 
-## 9.3 Done
+## 11.3 Done
 
 The plan is finished when the ratchets added in phase A read zero on canary:
 
 - old roots: `ServiceModule`, `Daemon`, `BrainRegion`, both `Stage`s, `AIProviderAdapter`, `GridTransport`,
   `RagSource`, `ResourcePool`, `ResourceConsumer`, `MemoryReporter`, `EmbeddingProvider`, `RenderBackend`,
-  `AvatarRenderer`, `AircCitizen` and its readers, and every trait chapter 8 marks for deletion;
+  `AvatarRenderer`, `AircCitizen` and its readers, and every trait chapter 10 marks for deletion;
 - `fn shutdown` bodies outside the holdings' generic owners;
 - hand-written loops over a part's parts;
 - `static` model slots and other state in globals;
-- crates outside chapter 6's layers, and dependencies that point up a layer.
+- crates outside chapter 8's layers, and dependencies that point up a layer.
 
 Each ratchet only falls. Each phase's progress is its ratchets' numbers, reported on canary with the
 SHA and date, and recorded in the plan table of CLAUDE.md.

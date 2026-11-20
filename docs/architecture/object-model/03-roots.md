@@ -4,7 +4,7 @@
 
 Every type in the core descends from one of these roots. They are few on purpose: each is a concept
 the whole core shares. They live at the bottom of the crate layers, so every crate above can descend
-from them (chapter 6).
+from them (chapter 8).
 
 | Root | Kind | Module | Replaces (chapter 1.3) |
 |---|---|---|---|

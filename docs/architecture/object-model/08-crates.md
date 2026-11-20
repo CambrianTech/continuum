@@ -1,6 +1,6 @@
-# 6. Crates
+# 8. Crates
 
-[The object model](README.md) · previous: [The persona](05-persona.md) · next: [Modules](07-modules.md)
+[The object model](README.md) · previous: [Live calls and embodiment](07-live.md) · next: [Modules](09-modules.md)
 
 Crates are layered from the general at the bottom to the specific at the top. A crate depends only on
 crates in layers below it (the `layer_discipline` ratchet enforces this). Each domain crate owns one
@@ -8,7 +8,7 @@ lineage from chapter 4 and can run on its own node, as the placement map require
 (MODULE-ARCHITECTURE §9.2); domains talk to each other through commands and publications, never by
 reaching into each other's state.
 
-## 6.1 The layers
+## 8.1 The layers
 
 ```
 6  node            continuum-core (the composition and its binaries)
@@ -22,7 +22,7 @@ reaching into each other's state.
                    continuum-context, continuum-saved-state, llama, and the pure leaves
 ```
 
-## 6.2 Each crate
+## 8.2 Each crate
 
 ### Floor (layer 0): knows nothing of minds
 
@@ -84,7 +84,7 @@ reaching into each other's state.
 - **Tools:** `source-hygiene`, `serving-replay`, `tools/manifest-gen`, `airc-test-fixtures`.
   `continuum-proving-types` folds into `serving-replay`. `jtag-mcp` becomes `apps/mcp`, a client.
 
-## 6.3 What the layering removes
+## 8.3 What the layering removes
 
 - The upper chain (cognition, academy, mind, dreaming, serving, core) becomes three layers in the
   right order: the genome below minds, minds below the Academy that teaches them.

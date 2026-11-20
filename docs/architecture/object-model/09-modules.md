@@ -1,12 +1,12 @@
-# 7. Modules
+# 9. Modules
 
-[The object model](README.md) · previous: [Crates](06-crates.md) · next: [Coverage](08-coverage.md)
+[The object model](README.md) · previous: [Crates](08-crates.md) · next: [Coverage](10-coverage.md)
 
 Inside a crate, the module tree is the lineage tree. A reader finds a type by walking from the general
 down to the specific, and every directory holds one object or one family
 (MODULE-ARCHITECTURE §9.3: one object, one directory).
 
-## 7.1 The rules
+## 9.1 The rules
 
 - **A lineage is a directory.** Its `mod.rs` declares the family's trait and nothing else; its generic
   owners each have a file beside it; each leaf is a subdirectory (or one file, when it is small).
@@ -20,7 +20,7 @@ down to the specific, and every directory holds one object or one family
 - **No `utils`, `common` or `helpers`.** A function that does not belong to an object is a missing
   object or belongs to the floor crate whose one job it is.
 
-## 7.2 Example: the roots, `continuum-base`
+## 9.2 Example: the roots, `continuum-base`
 
 ```
 continuum-base/src/
@@ -46,7 +46,7 @@ continuum-base/src/
    └─ noop.rs, ring.rs, jsonl.rs, fanout.rs
 ```
 
-## 7.3 Example: a domain lineage, `continuum-media::speech`
+## 9.3 Example: a domain lineage, `continuum-media::speech`
 
 ```
 continuum-media/src/
@@ -73,7 +73,7 @@ A leaf directory such as `kokoro/` holds what only Kokoro needs: its phonemizer,
 `load`, its `synthesize`. It holds no lifecycle code (`Loaded` supplies it), no name or description
 outside its `Part` impl, and no registry.
 
-## 7.4 Example: the persona, `continuum-mind`
+## 9.4 Example: the persona, `continuum-mind`
 
 ```
 continuum-mind/src/

@@ -32,8 +32,8 @@ The workspace has 47 crates under `core/`, plus four outside it (`apps/cli`, `cl
     process modules;
   - home directories: `continuum-base::home`, the kernel's `paths`, and `continuum-engram::home`.
 
-What it means: crates are cut by ownership (chapter 6), and the merges and splits are part of the
-plan (chapter 9).
+What it means: crates are cut by ownership (chapter 8), and the merges and splits are part of the
+plan (chapter 11).
 
 ## 1.2 Traits
 
@@ -73,7 +73,7 @@ The clearest evidence. Each row is one concept the core declares several times.
 | Adapt an outside task suite | `SuiteAdapter`, `ActivityAdapter`, `BenchmarkAdapter` | 3 |
 
 What it means: each row becomes one root or one lineage, written once (chapters 3 and 4), and the
-other declarations are deleted (chapter 9).
+other declarations are deleted (chapter 11).
 
 ## 1.4 Long-lived components
 
