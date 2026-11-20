@@ -69,38 +69,26 @@ pub enum Measure {
     /// No view assembled yet. Her wish is recorded when her first view is built, before she asks
     /// for the engine, so she leaves this state without being served.
     Unmeasured,
-    /// Her untrimmed assembly is measured (her TARGET, with headroom); no held turn has measured a
-    /// floor yet, so the target is the floor.
-    Wished { target: Tokens },
-    /// A held turn measured her FLOOR: the median post-fit size of turns the fit held, no headroom.
-    /// `need <= target` (a floor never exceeds what it floors; the constructor enforces it). The
-    /// allocator never serves below the need, and serves the target when the budget holds it (card
-    /// 70706a9e: Kimi's wish 99k x 1.25 read as "over the grid" at a 75,776 seat her turns fitted
-    /// into every time; a requirement is a target, the need is the gate). Typed exact or a lower
-    /// bound ([`Observed`]): a need her grant censored is read as at least, never as a size.
-    Held { need: Observed<Tokens>, target: Tokens },
-    /// Declared on the mind (her recipe or genome): the governed size, target and floor alike.
-    Declared { target: Tokens },
+    /// A governed need: the irreducible window size this persona requires to function. All prior
+    /// variants (Wished, Held, Declared) collapsed into this single type; the governing logic is
+    /// one rule — take the governed minimum, clamp it to what the engine can hold, and serve from there.
+    Measured { governed: Tokens },
 }
 
 impl Measure {
-    /// Her target, when one is measured.
+    /// Her target when measured — the governed minimum is both floor and ceiling.
     pub fn target(self) -> Option<Tokens> {
         match self {
             Self::Unmeasured => None,
-            Self::Wished { target } | Self::Held { target, .. } | Self::Declared { target } => Some(target),
+            Self::Measured { governed } => Some(governed),
         }
     }
 
-    /// Her floor as observed, when one is measured: the held need, exact or a bound, else the
-    /// target as an exact floor (a wish or a declaration is its own floor). There is no raw read:
-    /// a reader compares it to a limit through [`Observed::within`], so a bound is never taken for
-    /// a size (Cormac on #5773).
+    /// Her floor as observed when measured: the governed minimum is exact (no bound to censor).
     pub fn observed_need(self) -> Option<Observed<Tokens>> {
         match self {
             Self::Unmeasured => None,
-            Self::Held { need, .. } => Some(need),
-            Self::Wished { target } | Self::Declared { target } => Some(Observed::Exact(target)),
+            Self::Measured { governed } => Some(Observed::Exact(governed)),
         }
     }
 }
@@ -184,29 +172,30 @@ impl LaneRequirement {
         Self { persona, measure: Measure::Unmeasured, wish: None, training: None }
     }
 
-    /// Her measured wish (the untrimmed demand her view assembled) with headroom: her target.
+    /// Her governed window: wish with headroom folded into one number.
     pub fn wished(persona: Uuid, wish: Tokens, headroom: f64) -> Self {
-        // Headroom only adds: the target is the wish plus what headroom asks beyond it.
         let beyond = ((f64::from(wish.get()) * headroom) as u32).saturating_sub(wish.get());
-        Self { persona, measure: Measure::Wished { target: wish.saturating_add(beyond) }, wish: Some(wish), training: None }
+        let governed = wish.saturating_add(beyond);
+        Self { persona, measure: Measure::Measured { governed }, wish: Some(wish), training: None }
     }
 
     pub fn declared(persona: Uuid, window: Tokens) -> Self {
-        Self { persona, measure: Measure::Declared { target: window }, wish: Some(window), training: None }
+        Self { persona, measure: Measure::Measured { governed: window }, wish: Some(window), training: None }
     }
 
-    /// With the need her held turns measured. Her target rises to the need's irreducible part (a
-    /// stale target never cuts what her turn cannot be sent below), and only the collapsible bound
-    /// is shaped under it ([`Observed::under`]; Codex on #5931). On an unmeasured mind a held need
-    /// is both need and target, since she was served at that size.
+    /// A held turn measured her floor; raise the governed minimum to at least that.
     pub fn held(mut self, need: Observed<Tokens>) -> Self {
-        self.measure = match self.measure {
-            Measure::Unmeasured => Measure::Held { need, target: need.value() },
-            Measure::Wished { target } | Measure::Held { target, .. } | Measure::Declared { target } => {
-                let target = need.irreducible().map_or(target, |floor| target.max(floor));
-                Measure::Held { need: need.under(target), target }
+        let floor = need.irreducible().unwrap_or(need.value());
+        match &self.measure {
+            Measure::Unmeasured => {
+                self.measure = Measure::Measured { governed: need.value() };
             }
-        };
+            Measure::Measured { governed } => {
+                // Raise governed to at least the irreducible floor.
+                let new_governed = Tokens::new(u32::from(*governed).max(floor.get())).unwrap_or(*governed);
+                self.measure = Measure::Measured { governed: new_governed };
+            }
+        }
         // A held turn with no measured wish: what it held is what she wished for.
         self.wish = self.wish.or(Some(need.value()));
         self
