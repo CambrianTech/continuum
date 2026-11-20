@@ -36,9 +36,27 @@ pub enum Prefill {
 /// (`Append { from: len - 1 }`, after the tier drops that one position). An empty prompt cannot be
 /// sampled from and restarts, as does a mind with nothing held.
 pub fn plan<B: PartialEq>(held: History<'_, B>, turn: History<'_, B>) -> Prefill {
-    let extends = held.basis == turn.basis && !held.tokens.is_empty() && turn.tokens.starts_with(held.tokens);
-    if !extends || turn.tokens.is_empty() {
-        return Prefill::Restart;
+    held.compare(&turn).prefill
+}
+
+/// One comparison of the native token vectors, used for planning and accounting.
+pub struct Compared {
+    pub shared: usize,
+    pub prefill: Prefill,
+}
+
+pub fn common_prefix(a: &[i32], b: &[i32]) -> usize {
+    a.iter().zip(b).take_while(|(left, right)| left == right).count()
+}
+
+impl<B: PartialEq> History<'_, B> {
+    pub fn compare(&self, next: &History<'_, B>) -> Compared {
+        let shared = common_prefix(self.tokens, next.tokens);
+        let prefill = if shared > 0 && shared == self.tokens.len() && self.basis == next.basis {
+            Prefill::Append { from: shared.min(next.tokens.len() - 1) }
+        } else {
+            Prefill::Restart
+        };
+        Compared { shared, prefill }
     }
-    Prefill::Append { from: held.tokens.len().min(turn.tokens.len() - 1) }
 }
