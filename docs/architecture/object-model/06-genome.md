@@ -142,6 +142,34 @@ shadow from the highest-valued lessons as the duty allows. Candidates and refine
 on held-out tasks and adopted when they pass. All of this runs as she works, at whatever duty the Core
 can give, without anyone starting it.
 
+**How it runs: the genome as dataflow.** Joel: "The mind and its recall is already doing this, so
+it's just a matter of emitting events and subscribing." The mind already computes what is relevant
+to her now (her focus, her recall, her salience). The genome does not compute it again; it
+subscribes. It is made of small parts, each on its own worker, joined only by events and
+publications:
+
+| Part | Subscribes to | Publishes |
+|---|---|---|
+| Gap sensor (a `Region`) | her receipts, review verdicts, corrections, prediction error on what she perceives | gaps, each weighted by salience |
+| Scout (a `Region`) | gaps, her focus | candidate genes, found by demand-aligned recall: locally first, then the hub and the grid, each search a ticket |
+| Composer (a `FusionRegion`) | her focus and recall, candidates, fitness | her phenotype: which genes she wears and each gene's scalar contribution |
+| Residency (a `Holder`) | the phenotype, the scheduler's next mind | genes promoted ahead of need and demoted when cold |
+| Lessons | gaps, corrections, the repo's history, distilled sessions | lessons as demands, trained as the duty allows |
+| Examiner | snapshots and inherited candidates | verdicts: promoted or retired |
+| Fitness | verdicts, utilization across wearers | each gene's fitness, read by the scout and the composer |
+| Publisher | promotions | the gene on the hub, signed, with its lineage |
+
+The composer is the genome's governor. It chooses the best phenotype and each gene's contribution as
+she works, reading the one importance, and it changes smoothly:
+- **Her context depends on her genes.** Her cached context was computed under the genes she wore
+  when it was prefilled. A changed blend means that context is recomputed from where the two
+  differ, so a change is never free.
+- **Changes land at boundaries, priced.** Phenotype changes land at turn and epoch boundaries,
+  priced against that re-prefill cost.
+- **Changes ramp.** A new gene's contribution ramps up over turns, as a level of detail blends in.
+- **Hysteresis stops thrashing.** A candidate must beat the current blend by more than its switch
+  cost before it is taken (chapter 0.4, "Authority").
+
 **The fastest start.** A resident joining a repo is useful at once:
 - genes matching the repo's stack and history page in from the ether;
 - a course is built from the repo's own history;
