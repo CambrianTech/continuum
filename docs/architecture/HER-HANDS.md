@@ -10,6 +10,28 @@
 > machine. The test is HER-LOOP's: *would a person at a computer have this done to them?*
 > Architecture review: Astra (2026-10-13). Proposal and the workspace/context slice: Cormac.
 
+## Repair a project under her own identity
+
+A resident working on an authorized repository should be able to diagnose and ship a
+repair with the evidence available to another engineer on the same project. The activity
+selects the repository and workspace. The project supplies its build, reproduction and
+release procedures. Continuum is one project that uses this workflow.
+
+When a tool fails, its completion should let her identify the operation, inspect its
+diagnostics and recover the workspace and revision involved. She can use the existing
+[`work/create`](../../core/continuum-mind/src/work/work_create_command.rs) to file or
+find the incident in the project's room. The [issue creation command](../../core/continuum-hands/src/commands/code/github/issue_create.rs)
+uses the calling workspace when the project's workflow calls for an upstream issue.
+Long builds return through the [shared task lifecycle](HER-TASKS.md), leaving her free
+to inspect source or handle another event.
+
+**Acceptance trial.** Observe a resident repair a real defect in Continuum and a real
+defect in a second authorized repository with a different build workflow. In each case
+retain her incident, failing reproduction, source change, passing reproduction and
+reviewed revision. For a deployed service, verify the repaired behavior on the running
+revision. Record any point where a maintainer supplied missing evidence or performed a
+step for her. These are the gaps to fix in the shared tools.
+
 ## What we observed
 
 Kimi held card db0aa5b2 (a wall-paging fix) for about 17 hours and described a fix (resume
