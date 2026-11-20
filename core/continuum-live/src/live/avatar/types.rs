@@ -30,6 +30,16 @@ pub struct AvatarModel {
     pub source_kind: &'static str,
     /// License identifier (all current models are CC0).
     pub license: &'static str,
+    /// Receipt frame — machine-readable documentation of known rendering characteristics
+    /// and issues for this model. Populated at compile time for static catalog entries;
+    /// discovered at runtime for dynamic entries via body-bounding-box validation.
+    ///
+    /// Format is a JSON-like string with fields:
+    ///   - "expected_render": what the model SHOULD render as (e.g., "full-body anime character")
+    ///   - "known_issues": array of documented issues (e.g., "vertex_color_strip causes black-on-black")
+    ///   - "body_present": whether mesh analysis confirms full-body geometry
+    ///   - "vertex_count_approx": approximate vertex count from inspection
+    pub receipt_frame: Option<&'static str>,
 }
 
 /// Dynamic avatar model — discovered at runtime from filesystem + manifest.
@@ -50,6 +60,10 @@ pub struct DynamicAvatarModel {
     pub voice_profile: VoiceProfile,
     /// Freeform tags for filtering (e.g., "fantasy", "sci-fi", "casual")
     pub tags: Vec<String>,
+    /// Receipt frame — machine-readable documentation of known rendering
+    /// characteristics and issues. Populated at runtime via body-bounding-box
+    /// validation during discovery.
+    pub receipt_frame: Option<String>,
 }
 
 /// Avatar art style categories.
