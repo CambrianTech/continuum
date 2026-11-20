@@ -828,6 +828,30 @@ done below).
      - Parents hand-write their child loops: STT then TTS shutdown appears twice almost line for line (`continuum-live/src/live/audio/resource_lifecycle.rs:212-250`, `continuum-core/src/modules/live/voice_module/resources.rs:75-105`), and the grid loops over its transports in four places (`continuum-grid/src/grid/mod.rs:266, 292, 337, 517`).
    - **What already exists:** the only folding base is `Lifecycle` (`continuum-persona-engine/src/persona/lifecycle.rs:6`), used only inside that crate. The runtime does fan drain, save and shutdown over its modules (`runtime/runtime/runtime.rs:52-68`).
    - **Target:** one lineage. A `Part` root (identity, children) carries the composed methods (lifecycle, health, footprint), each written once and walking the children. A long-lived component and a model adapter specialize it, and each backend (whisper, kokoro, llama.cpp, anthropic) supplies only its device-specific body. Location (Codex and Fable, 2026-11-20): `continuum-base::part` (`core/continuum-base/src/part/`), on the dependency floor with arrows downward. `Part` owns identity and the traversal of owned children, walking ownership edges only, so two backends borrowing one model never count or release its allocation twice. It lifts the persona `Lifecycle` preservation rule: a pending or failed child keeps custody. Capability hooks stay on their narrowest ancestor; the resource governor keeps admission, and the lease owner confirms release. First cut: the identity shared by `SpeechToText` and `TextToSpeech` moves to one owner and its consumers migrate, with Whisper transcribing and Kokoro and Piper synthesizing as leaves.
+     That cut landed as identity only (#6204, approved).
+
+     **The one lifecycle (proposed, for review before any code).** Today there are three lifecycle shapes:
+     - persona-engine's `Lifecycle`: `suspend` only, with a typed `Preservation { Preserved, Pending, Failed }` and a composite that joins its five parts (`continuum-persona-engine/src/persona/lifecycle.rs`);
+     - each component root's own `initialize` and `shutdown` returning `Result`;
+     - the §9.4 specification: `prepare`, `suspend`, `resume`, `shutdown`.
+
+     A fourth, an audio `Backend` trait (#6205), was a mistake and is withdrawn. All of them become one trait on the root:
+
+     - **Where:** `continuum-base::part`, beside `Part`. It is `Lifecycle: Part`, with the four §9.4 verbs.
+     - **Outcome:** each verb returns one typed outcome, `Outcome<P, E> { Done, Pending(P), Failed(E) }`. `Preservation` is this type, renamed.
+     - **Receiver:** `&self`. Components are shared by handle (`Arc`) while they run, and each keeps its state behind its own synchronization.
+     - **Defaults:** a verb gets a default body only where every implementer may safely inherit it. `Done` is safe only for a part that holds nothing, so state holders implement every verb.
+     - **Composite:** one generic fold written once in `part`, for a fixed set of fields (today's `persona_parts!`) and for a dynamic set (a registry's children). It snapshots the children, then fans out the independent ones concurrently. It reports a typed outcome per child keyed by its identity, and a pending or failed child keeps custody of its bytes. Direction follows dependencies: `prepare` and `resume` run self then children; `suspend` and `shutdown` run children then self.
+     - **Ownership:** a composite owns one child per key. Re-registering a key replaces that child in place and keeps its order.
+     - **What stays narrower:** audio parameters and registry selection policy stay in the audio owner, and configured per-instance provider ids stay distinct from static kind names (Codex's review of #6205).
+
+     **Migration:**
+     - persona-engine's `Lifecycle` and `Preservation` move to `part`, and their copies are deleted.
+     - The speech backends implement `Lifecycle`. Their `initialize` and `shutdown` are deleted. VAD joins them, since a synchronous body inside an async verb is not a difference.
+     - One audio registry owns them as children, and the release walks become one composite `shutdown`.
+     - Then `AIProviderAdapter`, the grid transports and `ServiceModule`, each in its own change.
+
+     **Validators:** one slow child and one failing child in a composite (the others progress and the failure is reported, not lost); repeated registration (one child, order kept); suspend then resume preserving state; shutdown during prepare.
 2. **Pressure, footprint, leases and admission: parallel models.**
    - **Overlapping bases:** `ResourcePool` (16 implementors; `paging/pool.rs:188`), `ResourceConsumer` (10; `resources/consumer.rs:126`), `FootprintSource` (1), `EvictionRegistry` (`gpu/eviction_registry.rs:101`) and `BrainRegion::pressure_profile`.
    - **The resulting copies:**
