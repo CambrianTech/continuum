@@ -104,6 +104,23 @@
             );
         }
 
+        // The 5090 had 302 MiB free, less than the embedding context's outstanding floor.
+        // Releasing serving's incumbent must pay that deficit before sizing its successor.
+        #[test]
+        fn a_replacement_honors_a_floor_that_exceeds_current_free_memory() {
+            let mut l = ResourceLeaseLedger::new();
+            let kind = ResourceKind::Vram;
+            l.set_capacity(kind, 34_190_917_632);
+            l.set_physical_used(kind, 33_874_247_680);
+            let resident = |bytes| vec![ConsumerFootprint { kind, bytes, detail: "resident".into() }];
+            l.set_measured("serving", resident(28_963_869_824));
+            l.set_measured("embed", resident(633_205_120));
+            l.reserve("embed", kind, 633_205_120 + 352_370_816);
+
+            assert_eq!(l.available_for("learning", kind), 0);
+            assert_eq!(l.budget_for_replacing("serving", kind), 28_928_168_960);
+        }
+
         // what this catches: someone reaching for the replace-myself budget on the ACQUIRE
         // path. A lease granted against bytes not yet released is a real over-commit — the
         // add-back is only valid for a DECISION about what to become next.

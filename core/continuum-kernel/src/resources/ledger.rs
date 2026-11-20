@@ -478,9 +478,12 @@ impl ResourceLeaseLedger {
         // planner `usable_gb=54` — a budget bigger than the card, which then sized a
         // window the card could not hold. A replace-myself budget is bounded by
         // capacity like every other number the ledger speaks.
-        self.available_for(consumer_id, kind)
+        // Return the incumbent's bytes before charging other consumers' unmet floors.
+        // A floor larger than today's free space still constrains the successor.
+        self.available(kind)
             .saturating_add(self.measured_by(consumer_id, kind))
             .min(self.capacity(kind))
+            .saturating_sub(self.reserved_headroom_excluding(consumer_id, kind))
     }
 
     /// The room `consumer_id` may size a successor into when it holds nothing on the board yet:
