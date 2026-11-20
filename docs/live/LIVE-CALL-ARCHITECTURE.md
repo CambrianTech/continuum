@@ -220,13 +220,16 @@ content, shared by every mind in the call; only attention and relevance are each
 
 - per audio stream: voice activity and transcription, once, whoever listens;
 - per video stream: cheap signals on every frame, once: frame differences, camera motion, and
-  detectors (YOLO-class, semantic segmentation). **These are not how she sees.** They only emit
-  events that tell the deeper vision stages, her own model's multimodal vision layers among them,
-  that they are needed and with what priority. A large region newly uncovered while the camera is
+  detectors (YOLO-class, semantic segmentation). These emit events that tell the deeper vision
+  stages, her own model's multimodal vision layers among them, that they are needed and with what
+  priority. A large region newly uncovered while the camera is
   still, a new slide, or a new face is an event, and the stage that cares takes priority there;
   other minds asking for the same frame share the work.
 
-How the deep results are used comes from CBAR, Joel's real-time perception engine:
+**She sees with the fusion.** No single stage is her sight: not the detectors, not a deep network,
+not her model's vision layers. What she sees is the fused percept: every stage's result, cheap and
+deep, slow and fast, combined into one continuous scene in the present. How that fusion works comes
+from CBAR, Joel's real-time perception engine:
 
 - **Slow results are brought into real time.** A deep analysis may take seconds. Its result is
   attached to the frame it came from, then carried forward by continuous feature tracking and
@@ -251,7 +254,7 @@ turn supersedes speech not yet spoken. The deep reply always arrives unless supe
 layer buys latency, never replaces depth. Her avatar's visemes and gestures follow the audio
 actually going out, so her face moves with the quick voice from the first syllable. Seeing works
 the same way: the cheap signals say where to look now, and her deep look says what it means when
-it lands, fused forward into the present.
+it lands, and both arrive as one fused percept.
 
 **All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
 deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
