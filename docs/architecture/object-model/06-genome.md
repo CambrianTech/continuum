@@ -55,8 +55,11 @@ Population                           the genes published on the grid and mesh, w
   continuous part, as RAGE's mission music turns each stem up or down by what is happening.
 - **The mixing is learned too.** How much each gene should contribute in which situation is itself
   learned from outcomes, so the mix improves along with the genes.
-- **Mix changes land at boundaries.** A change of weight alters what her cached context was computed
-  under, so it lands at a turn boundary and is priced like any change of phenotype (6.4).
+- **Adjusting the mix is free.** Changing a gene's contribution moves no weights and reloads nothing:
+  it is one number the next decode reads. So contributions are adjusted all the time. Her cached
+  context stays as it was encoded, under the mix she had when she read it, as a person's memories
+  carry the state they were laid down in, and new tokens are read under the new mix. Re-encoding
+  history is the exception, done only where measurement shows the straddled cache costs quality.
 - **`Shadow`** is a small trainable layer above her frozen stable genes, never a copy of them. Its
   `LearningContext` is held by a `Loaded` holding: promoted when a labelled row needs it, kept warm
   while it pays, demoted under pressure (IN-PROCESS-LEARNING §4).
@@ -167,15 +170,17 @@ publications:
 | Publisher | promotions | the gene on the hub, signed, with its lineage |
 
 The composer is the genome's governor. It chooses the best phenotype and each gene's contribution as
-she works, reading the one importance, and it changes smoothly:
-- **Her context depends on her genes.** Her cached context was computed under the genes she wore
-  when it was prefilled. A changed blend means that context is recomputed from where the two
-  differ, so a change is never free.
-- **Changes land at boundaries, priced.** Phenotype changes land at turn and epoch boundaries,
-  priced against that re-prefill cost.
-- **Changes ramp.** A new gene's contribution ramps up over turns, as a level of detail blends in.
-- **Hysteresis stops thrashing.** A candidate must beat the current blend by more than its switch
-  cost before it is taken (chapter 0.4, "Authority").
+she works, reading the one importance. Two kinds of change cost differently:
+- **Contributions change freely and continuously.** A gene's weight is one number the next decode
+  reads. Her cached context is kept as it was encoded, so adjusting the mix costs nothing, and a new
+  gene's contribution can ramp up over turns as a level of detail blends in.
+- **Assembly is what costs.** Paging a gene in or out moves bytes and binds the engine, so assembly
+  changes are priced and land at turn boundaries.
+- **Hysteresis stops thrashing.** A candidate must beat the current blend by more than what it costs
+  to bring in before it is taken (chapter 0.4, "Authority").
+- **Re-encoding is measured.** It is done only where a validator shows that a cache straddling two
+  mixes loses quality (the comparison: the same turn with the straddled cache against a cache
+  re-encoded under the new mix).
 
 **The fastest start.** A resident joining a repo is useful at once:
 - genes matching the repo's stack and history page in from the ether;
