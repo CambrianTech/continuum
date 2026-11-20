@@ -289,6 +289,23 @@ Under pressure, levels of detail step down (an unwatched avatar, a lower analysi
 deadline is missed, and nothing about the call stops her deep mind or her learning outright.
 Codex's worked example in SUBSTRATE.md (#6170) traces one call under memory pressure.
 
+**Revisions within a turn are typed, and only what was played counts as said** (Codex's review,
+2026-11-20). One turn spans many revisions: a partial transcript can change from "send" to "do not
+send" while a deep result or synthesized audio for the old revision is still in flight. So every
+contribution carries its source speaker, its origin (observed, planned or played), its utterance and
+its revision, through the existing stream and completion owner:
+
+- a media playout receipt is the audible boundary: what was played is said, what is only queued is
+  not;
+- superseded queued audio and its matching visemes are dropped or replaced together;
+- external actions are derived only from the current authorized intent, never from a superseded
+  revision;
+- a predicted or planned word is never counted as evidence that a participant said it.
+
+Replayed as tests: a negation within the same turn, a second speaker interrupting with audio
+buffered, and a late deep completion; each checks actual playout and side effects, plus
+first-audio latency.
+
 Measured on the same stimulus and context: first audible response; avatar frame interval; age of
 the last genuine observation; regions or participants with no estimate at all (target zero, as
 CBAR had no gaps); duplicate perception computed across residents (target zero); the
