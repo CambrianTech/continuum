@@ -3,16 +3,13 @@
 //! engine while a mind with a short tail waits behind her (the M5, 2026-11-18, build 88074d9300:
 //! turns served whole, back to back, waited 300-360 s behind one another's prefills).
 //!
-//! The rule, in order:
-//! 1. the active mind's turn that is decoding continues: one mind decodes until she stops, and a
-//!    switch mid-answer would only add a switch;
-//! 2. otherwise the turn with the least prefill left goes first, its remaining tokens discounted by
-//!    how long it has waited, so a short tail never waits behind a long prompt and a long prompt
-//!    still ages to the front;
-//! 3. ties go to the active mind (no switch).
-//!
-//! The policy is this one pure function, so the owner of goal 9's scheduler replaces it here and
-//! nowhere else.
+//! Eligible turns share a one-second service budget. The bound mind advances until another
+//! turn is due, then the oldest unserved turn gets the stream at the next landed frame.
+const SERVICE_BUDGET_MS: u64 = 1000;
+
+pub(super) fn share_ms(ready: usize) -> u64 {
+    (SERVICE_BUDGET_MS / ready.max(1) as u64).max(1)
+}
 
 /// A turn as the frame sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +20,7 @@ pub(super) struct Candidate {
     pub decoding: bool,
     /// Prompt tokens still to prefill (0 once decoding).
     pub remaining: usize,
-    /// Milliseconds since her turn was submitted.
+    /// Milliseconds since admission or her most recent completed frame.
     pub waited_ms: u64,
 }
 
@@ -36,8 +33,14 @@ impl Candidate {
 }
 
 /// The index of the turn the next frame advances, or `None` for no turns.
-pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
-    if let Some(decoding) = turns.iter().position(|turn| turn.active && turn.decoding) {
+pub(super) fn pick(turns: &[Candidate], bound_ms: u64) -> Option<usize> {
+    let share_ms = share_ms(turns.len());
+    if let Some((index, other)) = turns.iter().enumerate().filter(|(_, t)| !t.active).max_by_key(|(_, t)| t.waited_ms) {
+        if other.waited_ms >= SERVICE_BUDGET_MS || (other.waited_ms >= share_ms && bound_ms >= share_ms) {
+            return Some(index);
+        }
+    }
+    if let Some(decoding) = turns.iter().position(|turn| turn.active && (turn.decoding || (bound_ms < share_ms && turns.iter().any(|other| other.decoding)))) {
         return Some(decoding);
     }
     turns
@@ -60,18 +63,18 @@ mod tests {
     // mind's answer in progress is never cut for a switch; a long prompt still reaches the front by
     // waiting; equal costs keep the mind already bound.
     #[test]
-    fn a_short_tail_never_waits_behind_a_long_prompt_and_an_answer_is_never_cut() {
-        assert_eq!(pick(&[]), None);
+    fn a_short_tail_never_waits_behind_a_long_prompt_and_an_overdue_turn_can_preempt_decode() {
+        assert_eq!(pick(&[], 0), None);
         let long_active = turn(true, false, 60_000, 0);
         let short = turn(false, false, 300, 0);
-        assert_eq!(pick(&[long_active, short]), Some(1), "the short tail switches in at the chunk boundary");
+        assert_eq!(pick(&[long_active, short], 0), Some(1), "the short tail switches in at the chunk boundary");
 
         let answering = turn(true, true, 0, 0);
-        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering]), Some(1), "her answer finishes first");
+        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering], 500), Some(0), "an overdue turn interrupts an answer");
 
         let aged = turn(false, false, 60_000, 600_000);
-        assert_eq!(pick(&[turn(false, false, 1_000, 0), aged]), Some(1), "ten minutes of waiting brings a long prompt forward");
+        assert_eq!(pick(&[turn(false, false, 1_000, 0), aged], 0), Some(1), "ten minutes of waiting brings a long prompt forward");
 
-        assert_eq!(pick(&[turn(false, false, 500, 0), turn(true, false, 500, 0)]), Some(1), "a tie keeps the bound mind");
+        assert_eq!(pick(&[turn(false, false, 500, 0), turn(true, false, 500, 0)], 0), Some(1), "a tie keeps the bound mind");
     }
 }

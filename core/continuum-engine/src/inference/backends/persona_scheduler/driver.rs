@@ -90,6 +90,7 @@ type Parts = PersonaParts<Blocks, History, Basis, (), Tenure>;
 enum Tenure {
     Resident,
     OneOff,
+    FinishedOneOff,
 }
 
 /// The tokens her blocks hold, and her checkpoint at her last view's end while what she holds still
@@ -184,6 +185,8 @@ struct Driver<'c, 'm> {
     model_id: String,
     /// The stop has suspended every mind: no new turn is taken.
     stopping: bool,
+    bound_since: Instant,
+    prefill_sample: Option<(usize, std::time::Duration)>,
 }
 
 /// The root resume: every mind the last stop published, held Warm (in RAM, bound when scheduled),
@@ -298,6 +301,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         store: store.ok(),
         model_id: config.model.clone(),
         stopping: false,
+        bound_since: Instant::now(),
+        prefill_sample: None,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
     // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. What
@@ -330,16 +335,18 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         while let Ok(submission) = requests.try_recv() {
             driver.take(submission, &mut turns);
         }
-        let Some(index) = driver.pick(&turns) else { continue };
-        match driver.step(&mut turns[index]) {
+        let Some((index, ready)) = driver.pick(&turns) else { continue };
+        match driver.step(&mut turns[index], ready) {
             Ok(Advanced::Continues) => {}
             Ok(Advanced::Done(done)) => {
                 let turn = turns.remove(index);
+                driver.finish_one_off(&turn);
                 driver.emit.send(emit::Out::End { answer: turn.answer, event: done });
             }
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 let turn = turns.remove(index);
+                driver.finish_one_off(&turn);
                 driver.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
             }
         }
@@ -390,6 +397,8 @@ struct Spent {
     start: &'static str,
     checkpoint_ms: u64,
     first_step: Option<std::time::Duration>,
+    last_landed: Option<Instant>,
+    longest_gap: std::time::Duration,
     switch: std::time::Duration,
     prefill: std::time::Duration,
     decode: std::time::Duration,
@@ -568,7 +577,7 @@ impl Driver<'_, '_> {
     /// candidate; among candidates, `frame::pick` decides. A waiting turn's prefill is what she
     /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
     /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
-    fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
+    fn pick(&mut self, turns: &[Turn]) -> Option<(usize, usize)> {
         let mut seen = std::collections::HashSet::new();
         let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
         let active = self.engine.active();
@@ -585,22 +594,25 @@ impl Driver<'_, '_> {
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
                     Phase::Decoding { .. } => (true, 0),
                 };
-                let waited_ms = record::whole_ms(turn.submitted.elapsed());
+                let waited_ms = record::whole_ms(turn.spent.last_landed.unwrap_or(turn.submitted).elapsed());
                 frame::Candidate { active: active == Some(turn.id), decoding, remaining, waited_ms }
             })
             .collect();
-        frame::pick(&candidates).map(|chosen| eligible[chosen])
+        frame::pick(&candidates, record::whole_ms(self.bound_since.elapsed())).map(|chosen| (eligible[chosen], eligible.len()))
     }
 
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
     /// one token).
-    fn step(&mut self, turn: &mut Turn) -> Result<Advanced, TurnError> {
+    fn step(&mut self, turn: &mut Turn, ready: usize) -> Result<Advanced, TurnError> {
+        let gap = turn.spent.last_landed.unwrap_or(turn.submitted).elapsed();
+        turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {
             turn.spent.first_step = Some(turn.submitted.elapsed());
         }
         if self.engine.active() != Some(turn.id) {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
+            self.bound_since = switching;
             turn.spent.switch += switching.elapsed();
             turn.spent.switches += 1;
         }
@@ -614,10 +626,11 @@ impl Driver<'_, '_> {
         let stepping = Instant::now();
         let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
             Phase::Waiting(_) => (Err(TurnError::NothingDecoded), false),
-            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos, ready).map(|()| Advanced::Continues), false),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
         let stepped = Instant::now();
+        turn.spent.last_landed = Some(stepped);
         let took = stepped.saturating_duration_since(stepping);
         if decoding {
             turn.spent.decode += took;
@@ -702,10 +715,17 @@ impl Driver<'_, '_> {
 
     /// One chunk of her prompt from `pos`. The last chunk asks for logits and samples her first
     /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
-    fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
+    fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize, ready: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
         let limit = turn.boundaries.iter().flatten().copied().filter(|boundary| *boundary > pos).min().unwrap_or(turn.prompt.len()); // unwrap_or: no view end ahead, the prompt's end bounds the chunk
-        let end = (pos + self.batch.get()).min(limit);
+        // A submission can arrive during this frame. Size the next native call from
+        // observed prefill time so a long prompt yields at the service boundary.
+        let started = Instant::now();
+        let allowance = u128::from(frame::share_ms(ready)) * 1_000_000;
+        let count = self.prefill_sample.map_or(1, |(tokens, elapsed)| {
+            ((tokens as u128 * allowance) / elapsed.as_nanos().max(1)).clamp(1, self.batch.get() as u128) as usize
+        });
+        let end = pos.saturating_add(count).min(limit);
         let chunk = turn.prompt[pos..end].to_vec();
         let last = end == turn.prompt.len();
         let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
@@ -717,6 +737,7 @@ impl Driver<'_, '_> {
             if let Some(index) = turn.boundaries.iter().position(|boundary| *boundary == Some(end)) {
                 self.keep_checkpoint(turn, index, end)?;
             }
+            self.prefill_sample = Some((len, started.elapsed()));
             turn.phase = Phase::Prefilling { pos: end };
             return Ok(());
         }
@@ -725,6 +746,7 @@ impl Driver<'_, '_> {
         self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
+        self.prefill_sample = Some((len, started.elapsed()));
         turn.phase = Phase::Decoding { token, pos, generated: 0 };
         Ok(())
     }
@@ -784,6 +806,7 @@ impl Driver<'_, '_> {
             learned_boundary: turn.boundaries[1].map(|end| end as u64),
             checkpoint_ms: turn.spent.checkpoint_ms,
             wait_ms: turn.spent.first_step.map(ms),
+            longest_service_gap_ms: ms(turn.spent.longest_gap),
             switches: turn.spent.switches,
             switch_ms: ms(turn.spent.switch),
             prefill_ms: ms(turn.spent.prefill),
@@ -830,10 +853,19 @@ impl Driver<'_, '_> {
         self.retire_previous()
     }
 
-    /// Park the mind whose retirement finishes. A one-off is dropped, and her blocks with her.
+    fn finish_one_off(&mut self, turn: &Turn) {
+        if turn.one_off {
+            self.parked.remove(&turn.id);
+            if let Some(mind) = self.engine.active_mut().filter(|mind| mind.id() == turn.id) {
+                mind.parts_mut().decode = Tenure::FinishedOneOff;
+            }
+        }
+    }
+
+    /// A paused one-off keeps her blocks until she finishes, just like a paused resident.
     fn retire_previous(&mut self) -> Result<(), TurnError> {
         let Some(previous) = self.engine.finish_retirement()? else { return Ok(()) };
-        if resident(&previous) {
+        if previous.parts().decode != Tenure::FinishedOneOff {
             self.parked.insert(previous.id(), previous);
         }
         Ok(())
