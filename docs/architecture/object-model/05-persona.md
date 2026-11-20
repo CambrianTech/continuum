@@ -77,6 +77,22 @@ and workers like CBAR and RAGE."
 | Genome parts | gaps, focus, verdicts | her phenotype, lessons, candidate genes (chapter 6.4) | arithmetic, the Core's slack | partly (chapter 6.5) |
 | Deliberation | a turn granted on the Core | her thought, her acts | the Core | exists (`LlmDeliberationFaculty`) |
 
+**Inventing a part is cheap, and that is the point.** A new part of her mind declares four things
+and writes one function:
+- what it subscribes to;
+- what it publishes;
+- its cost shape (deadline, latency or throughput);
+- where it sits in her tree.
+
+The function is its update rule: given what changed, what it now publishes. The substrate's triplet
+(the `Region` base, a derive for the declarations, and a scaffold generator,
+CBAR-SUBSTRATE-ARCHITECTURE) supplies everything else. Two consequences follow:
+- **Residents can author parts of their own minds.** A part is ordinary code behind a generator, so
+  a resident can propose one, test it against its validators, and submit it like any other change.
+- **A part's model can be a gene.** Where a part uses a small learned model (the amygdala, turn-taking,
+  metacognition), that model is a gene of hers, and improves through the same learning loop as
+  everything else she does (chapter 6).
+
 Each is a `Region` or a `Faculty` (chapter 4.2), reads the one importance (chapter 0.3), and is
 added to her tree as one more node. Adding a part costs only that part's own logic: subscription,
 caching, invalidation, governance and lifecycle come from the substrate. Each one makes her mind
