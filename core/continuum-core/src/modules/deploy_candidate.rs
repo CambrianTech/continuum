@@ -151,7 +151,7 @@ mod tests {
             selected_candidate(&["new-tip".into(), "published-ancestor".into()], source).await;
         let (tip_sha, source_error, checks) = match selected {
             Ok(Some(sha)) => (Some(sha), None, Checks::Green),
-            Ok(None) => (Some("new-tip".into()), None, Checks::Unknown),
+            Ok(None) => (Some("new-tip".into()), None, Checks::Unpublished),
             Err(why) => (None, Some(why), Checks::Unknown),
         };
         decide(&TickInputs {
@@ -196,7 +196,7 @@ mod tests {
             };
             assert!(matches!(
                 tick(&source).await,
-                DeployVerdict::SourceUnavailable { .. } | DeployVerdict::ChecksUnknown
+                DeployVerdict::SourceUnavailable { .. } | DeployVerdict::AwaitingPublication
             ));
             assert!(source.fetched.lock().unwrap().is_empty());
         }

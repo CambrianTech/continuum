@@ -32,7 +32,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::modules::deploy_actuator::{ActuateOutcome, DeployActuator};
-use continuum_cli_lifecycle::deploy_tracker::{decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome, TickInputs};
+use continuum_cli_lifecycle::deploy_tracker::{decide, Checks, DeployRequest, DeploySource, DeployVerdict, Hold, RequestOutcome, TickInputs, TrackerStanding, TRACKER_STANDING_FILE};
+use crate::system_resources::disk_reporters::ClassWriter;
 use crate::runtime::{CommandResult, ModuleConfig, ModulePriority, ServiceModule};
 
 /// The deploy tracker checks the tip on this cadence.
@@ -267,6 +268,27 @@ impl DeploySource for GitGhDeploySource {
         .flatten()
     }
 
+    async fn tree_dirty(&self) -> bool {
+        // Off the tick (it was a blocking git call on it): a join failure reads clean, and
+        // the consumer's own guard still refuses a dirty tree.
+        let read = tokio::task::spawn_blocking(|| {
+            // The same per-tick resolution the source uses; no checkout = nothing to be dirty.
+            let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
+                return false;
+            };
+            // TRACKED changes only (an untracked file cannot change what a detached checkout of the
+            // tip builds: the 5090 sat at RefuseDirty behind regenerated ts-rs bindings, 2026-09-19),
+            // judged by the consumer's own predicate, so a moved submodule pointer the consumer
+            // aligns is never dirt here (enrico read RefuseDirty on one for hours, card a1e1af51).
+            let mut args = vec!["-C", dir.as_str()];
+            args.extend(continuum_git::submodules::STATUS_ARGS);
+            let out = crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT);
+            out.stdout_if_ok().map(|s| continuum_git::submodules::has_operator_work(&s)).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
+        })
+        .await;
+        matches!(read, Ok(true))
+    }
+
     async fn tip(&self) -> Result<Option<(String, Checks)>, String> {
         let branch = self.branch.clone();
         let (repo_dir, tip) = tokio::task::spawn_blocking(move || {
@@ -305,7 +327,7 @@ impl DeploySource for GitGhDeploySource {
                 // waiting on CI to publish: named, with what was looked for (card 0129ec9e)
                 continuum_base::probe!(class = "deploy.track.unpublished", tip = %tip, running = running_sha(),
                     candidates = %candidates.join(","), "no deploy candidate has a published, authorized build for this platform yet: waiting for CI");
-                Ok(Some((tip, Checks::Unknown))) // no platform publication: wait
+                Ok(Some((tip, Checks::Unpublished))) // no platform publication: wait for CI, typed
             }
         }
     }
@@ -348,10 +370,9 @@ fn clear_deploy_request(state_dir: &std::path::Path) {
 /// Record `req` through the `state` disk class (`<continuum home>/state`, the directory
 /// [`read_deploy_request`] reads and the consumer's `deploy_request_path` names): replaced whole, so
 /// a reader sees the old request or the new one. A failed write is said; the next tick writes again.
-fn write_deploy_request(req: &DeployRequest) {
+fn write_deploy_request(state: std::io::Result<ClassWriter>, req: &DeployRequest) {
     let written = serde_json::to_vec_pretty(req).map_err(std::io::Error::other).and_then(|bytes| {
-        crate::system_resources::disk_reporters::ClassWriter::of("state")?
-            .replace(std::path::Path::new("deploy-request.json"), &bytes)
+        state?.replace(std::path::Path::new("deploy-request.json"), &bytes)
     });
     if let Err(error) = written {
         continuum_base::probe!(
@@ -377,6 +398,10 @@ pub struct DeployTrackerModule {
     /// Serving's snapshot, for the one fact the action reads off it: whether live work holds the
     /// engine (`held_for`), the hold a consumer's handoff would refuse.
     serving: tokio::sync::watch::Receiver<crate::inference::llama_server::ServingSnapshot>,
+    /// The running build's sha: the stamped constant, or a test's own.
+    running: &'static str,
+    /// `state_dir`'s disk class: `None` = the registered `state` class, resolved at the write.
+    state_writer: Option<ClassWriter>,
 }
 
 impl DeployTrackerModule {
@@ -391,6 +416,46 @@ impl DeployTrackerModule {
             stranded_reported: parking_lot::Mutex::new(None),
             actuator,
             serving,
+            running: running_sha(),
+            state_writer: None,
+        }
+    }
+
+    fn state_class(&self) -> std::io::Result<ClassWriter> {
+        match &self.state_writer {
+            Some(writer) => Ok(writer.clone()),
+            None => ClassWriter::of("state"),
+        }
+    }
+
+    /// Leave this tick's standing block on record for the health line (`deploy_health`), or
+    /// clear it when nothing is blocked. Written only when it changes: the verdict, or the build.
+    fn record_standing(&self, verdict: &DeployVerdict, now: u64) {
+        let path = self.state_dir.join(TRACKER_STANDING_FILE);
+        let existing = std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<TrackerStanding>(&text).ok());
+        let next = TrackerStanding::next(existing.as_ref(), verdict, self.running, now);
+        if next == existing {
+            return;
+        }
+        let written = match &next {
+            Some(standing) => serde_json::to_vec_pretty(standing)
+                .map_err(std::io::Error::other)
+                .and_then(|bytes| self.state_class()?.replace(std::path::Path::new(TRACKER_STANDING_FILE), &bytes)),
+            None => std::fs::remove_file(&path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }),
+        };
+        match written {
+            Ok(()) => continuum_base::probe!(
+                class = "deploy.track.standing",
+                verdict = ?next.as_ref().map(|standing| &standing.verdict),
+                since_ms = next.as_ref().map_or(now, |standing| standing.since_ms),
+                running = self.running,
+                "the tracker's standing block changed (None = cleared): the health line reads it while no request stands"
+            ),
+            Err(error) => continuum_base::probe!(
+                class = "deploy.track.standing_unwritten",
+                error = %error,
+                "the tracker's standing block could not be recorded; the next tick records it again"
+            ),
         }
     }
 
@@ -475,21 +540,6 @@ impl DeployTrackerModule {
         }
         Ok(())
     }
-
-    fn tree_dirty(&self) -> bool {
-        // The same per-tick resolution the source uses; no checkout = nothing to be dirty.
-        let Some(dir) = checkout_now().ok().map(|p| p.to_string_lossy().into_owned()) else {
-            return false;
-        };
-        // TRACKED changes only (an untracked file cannot change what a detached checkout of the
-        // tip builds: the 5090 sat at RefuseDirty behind regenerated ts-rs bindings, 2026-09-19),
-        // judged by the consumer's own predicate, so a moved submodule pointer the consumer
-        // aligns is never dirt here (enrico read RefuseDirty on one for hours, card a1e1af51).
-        let mut args = vec!["-C", dir.as_str()];
-        args.extend(continuum_git::submodules::STATUS_ARGS);
-        let out = crate::system_resources::bounded_command::probe("git", &args, GIT_TIMEOUT);
-        out.stdout_if_ok().map(|s| continuum_git::submodules::has_operator_work(&s)).unwrap_or(false) // unwrap_or: an unreadable git status = assume clean; a real dirty tree still refuses via the guard
-    }
 }
 
 #[async_trait]
@@ -510,7 +560,7 @@ impl ServiceModule for DeployTrackerModule {
         // The last actuation, graded against the build now running: landed / stale /
         // unknown, once per boot, on the receipt (`deploy.actuate.outcome`).
         // A pre-1970 clock reads 0 here: the decision degrades safely.
-        self.actuator.report_boot_outcome(running_sha(), EpochMs::now().millis());
+        self.actuator.report_boot_outcome(self.running, EpochMs::now().millis());
         Ok(())
     }
 
@@ -537,14 +587,14 @@ impl ServiceModule for DeployTrackerModule {
             None => None,
         };
         let inputs = TickInputs {
-            running_sha: Some(running_sha().to_string()),
+            running_sha: Some(self.running.to_string()),
             tip_sha,
             tip_build_key,
             source_error,
             checks,
             hold: read_hold(&self.state_dir),
             build_in_flight,
-            tree_dirty: self.tree_dirty(),
+            tree_dirty: self.source.tree_dirty().await,
             now_ms: now,
         };
 
@@ -567,7 +617,7 @@ impl ServiceModule for DeployTrackerModule {
         };
         match continuum_cli_lifecycle::deploy_tracker::reconcile_request(
             request.as_ref(),
-            running_sha(),
+            self.running,
             request_build_key.as_deref(),
             build_in_flight,
             now,
@@ -579,7 +629,7 @@ impl ServiceModule for DeployTrackerModule {
                 continuum_base::probe!(
                     class = "deploy.settled",
                     tip = tip_sha.as_str(),
-                    running = running_sha(),
+                    running = self.running,
                     waited_ms,
                     "the requested deploy is now the running build — request retired"
                 );
@@ -595,7 +645,7 @@ impl ServiceModule for DeployTrackerModule {
                     continuum_base::probe!(
                         class = "deploy.stranded",
                         tip = tip_sha.as_str(),
-                        running = running_sha(),
+                        running = self.running,
                         elapsed_ms,
                         "a deploy was requested, nothing is building, and the tip is NOT \
                          running — the request did not take (a detached build that died, or \
@@ -610,6 +660,7 @@ impl ServiceModule for DeployTrackerModule {
         }
 
         let verdict = decide(&inputs);
+        self.record_standing(&verdict, now);
         match &verdict {
             DeployVerdict::Deploy { tip_sha } => {
                 // Write ONLY when the tip changed. An unchanged tip keeps its original
@@ -624,11 +675,11 @@ impl ServiceModule for DeployTrackerModule {
                     now,
                 );
                 if let Some(req) = persisted.as_ref() {
-                    write_deploy_request(req);
+                    write_deploy_request(self.state_class(), req);
                     continuum_base::probe!(
                         class = "deploy.track.request_written",
                         tip = tip_sha.as_str(),
-                        running = running_sha(),
+                        running = self.running,
                         "deploy wanted — recorded a DeployRequest; the actuator acts on it unless another owner is installed"
                     );
                 }
@@ -648,11 +699,11 @@ impl ServiceModule for DeployTrackerModule {
                 if let Some(tip_sha) = deployable_tip {
                     let standing = read_deploy_request(state_dir);
                     if let Some(req) = continuum_cli_lifecycle::deploy_tracker::request_to_persist(standing.as_ref(), tip_sha, now) {
-                        write_deploy_request(&req);
+                        write_deploy_request(self.state_class(), &req);
                         continuum_base::probe!(
                             class = "deploy.track.request_moved_in_flight",
                             tip = tip_sha.as_str(),
-                            running = running_sha(),
+                            running = self.running,
                             "a newer green tip while a deploy is in flight — the request now names it; the consumer follows"
                         );
                     }
@@ -661,7 +712,7 @@ impl ServiceModule for DeployTrackerModule {
                     class = "deploy.track.decision",
                     verdict = custody_reason,
                     deployable_tip = deployable_tip.as_deref().unwrap_or(""), // "" = not deployable yet
-                    running = running_sha(),
+                    running = self.running,
                     "deploy not taken this tick — an existing consumer holds custody"
                 );
             }
@@ -678,7 +729,7 @@ impl ServiceModule for DeployTrackerModule {
                 continuum_base::probe!(
                     class = "deploy.track.decision",
                     verdict = ?other,
-                    running = running_sha(),
+                    running = self.running,
                     "deploy not taken this tick — the guard that applied"
                 );
             }
@@ -702,207 +753,4 @@ impl ServiceModule for DeployTrackerModule {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    // what this catches (the IntelMac, 2026-11-07, card fd833a10): a deploy launched while live
-    // work holds the engine. The consumer's handoff refuses then, but every launch spends one of
-    // the actuator's three attempts, so three refusals behind a training run gave the tip up for
-    // good after the run ended. While the hold names live work nothing is launched and no attempt
-    // is recorded; the first action after the release launches attempt one.
-    #[tokio::test]
-    async fn a_held_engine_launches_nothing_and_its_release_launches_attempt_one() {
-        use crate::inference::llama_server::serving_hold::{HeldWork, HoldCause, ServingHold};
-        use crate::inference::llama_server::ServingSnapshot;
-        use super::super::deploy_actuator::{DeploySpawner, RecordingSpawner, SpawnPlan, Spawned};
-        let Ok(dir) = tempfile::tempdir() else { panic!("a temp dir") };
-        let user_home = dir.path().join("home");
-        let root = user_home.join(".continuum");
-        assert!(std::fs::create_dir_all(&root).is_ok());
-        let spawner = Arc::new(RecordingSpawner::new(Some(4242)));
-        struct Shared(Arc<RecordingSpawner>);
-        impl DeploySpawner for Shared {
-            fn spawn(&self, plan: &SpawnPlan) -> Result<Spawned, String> {
-                self.0.spawn(plan)
-            }
-        }
-        let actuator = Arc::new(DeployActuator::with_spawner(user_home, root.clone(), None, Box::new(Shared(spawner.clone()))));
-        let training = ServingHold {
-            since_ms: 1,
-            by: HoldCause::Resident {
-                work: vec![HeldWork {
-                    job: uuid::Uuid::from_u128(0xf44e),
-                    consumer: "genome-train:f44eda06".into(),
-                    base_model: "continuum-ai/qwen2.5-coder-1.5b-instruct-GGUF".into(),
-                    engine_pid: 70964,
-                    engine_started_s: 1,
-                    port: 58057,
-                }],
-            },
-        };
-        let (serving_tx, serving) = tokio::sync::watch::channel(ServingSnapshot { held_for: Some(training), ..ServingSnapshot::empty() });
-        let tracker = DeployTrackerModule {
-            source: Box::new(GitGhDeploySource::from_env()),
-            state_dir: root.join("state"),
-            root,
-            stranded_reported: parking_lot::Mutex::new(None),
-            actuator: actuator.clone(),
-            serving,
-        };
-        let tip = "aef1f6b362201e84000702fd9f74e9eab31defc8";
-        let now = 1_794_000_000_000;
-        for tick in 0..3 {
-            assert!(tracker.actuate(DeployRequest::new(tip, now), tip, true, now + tick * 3_600_000).await.is_ok());
-        }
-        assert!(spawner.plans.lock().is_empty(), "held: nothing launched");
-        assert!(actuator.receipt().is_none(), "held: no attempt recorded");
-        serving_tx.send_modify(|snapshot| snapshot.held_for = None);
-        assert!(tracker.actuate(DeployRequest::new(tip, now), tip, false, now + 4 * 3_600_000).await.is_ok());
-        assert_eq!(spawner.plans.lock().len(), 1, "released: launched");
-        assert_eq!(actuator.receipt().map(|receipt| receipt.attempt), Some(1), "the first launch is attempt one");
-    }
-
-    fn verdict(check_runs: &str, workflow_runs: Option<&str>) -> Checks {
-        parse_tip_checks(check_runs, workflow_runs).checks
-    }
-
-    // what this catches: GitHub's check-runs body maps to the same verdict track-canary
-    // used — a hard-failed run is red, a not-completed run is pending, all-completed is
-    // green, and NO runs is unknown (a tip with no CI must WAIT, never deploy). With no
-    // workflow-runs read the rule is the all-checks rule it always was.
-    #[test]
-    fn check_runs_map_to_the_same_verdict_as_the_shell_owner() {
-        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"success"}]}"#, None), Checks::Green);
-        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"success"},{"status":"in_progress"}]}"#, None), Checks::Pending);
-        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"failure"}]}"#, None), Checks::Red);
-        assert_eq!(verdict(r#"{"check_runs":[{"status":"completed","conclusion":"cancelled"}]}"#, None), Checks::Red);
-        assert_eq!(verdict(r#"{"check_runs":[]}"#, None), Checks::Unknown, "no CI yet = wait, never green");
-        assert_eq!(verdict("not json", None), Checks::Unknown);
-    }
-
-    // what this catches (card 2d333f25; the canary tip 6d342745b, 2026-09-20 00:06Z): a
-    // weekly SCHEDULED audit failed and landed its check-run on the tip alongside the
-    // push's three green suites. The all-checks rule read RED and every deploy on the
-    // fleet refused. The tip's verdict is its OWN push's suites: the schedule's suite is
-    // excluded, the tip is green. The same body with the runs read absent still reads red
-    // (degraded, not a lie); a runs read that answers with NO own suite is unknown, never
-    // green by absence; and a failure in an OWN suite is still red. The shape is the live
-    // API's on that sha (7 check-runs, 4 workflow runs), abbreviated.
-    #[test]
-    fn a_scheduled_audits_failure_is_not_the_tips_verdict() {
-        let checks = r#"{"check_runs":[
-            {"name":"audit","status":"completed","conclusion":"failure","check_suite":{"id":96070172760}},
-            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":96068500514}},
-            {"name":"drift guard","status":"completed","conclusion":"success","check_suite":{"id":96068500520}},
-            {"name":"install smoke","status":"completed","conclusion":"success","check_suite":{"id":96068500507}}
-        ]}"#;
-        let runs = r#"{"workflow_runs":[
-            {"id":35477870572,"event":"schedule","check_suite_id":96070172760},
-            {"id":35477208032,"event":"push","check_suite_id":96068500520},
-            {"id":35477208024,"event":"push","check_suite_id":96068500507},
-            {"id":35477208029,"event":"push","check_suite_id":96068500514}
-        ]}"#;
-        let read = parse_tip_checks(checks, Some(runs));
-        assert_eq!(read, TipChecks { checks: Checks::Green, total: 4, excluded: 1, filtered: true }, "the schedule's failure is excluded: green");
-        assert_eq!(parse_tip_checks(checks, None), TipChecks { checks: Checks::Red, total: 4, excluded: 0, filtered: false }, "no runs read = every check counts, as before");
-        assert_eq!(parse_tip_checks(checks, Some("not json")), TipChecks { checks: Checks::Red, total: 4, excluded: 0, filtered: false }, "an unparseable runs read = degraded, not green");
-        assert_eq!(verdict(checks, Some(r#"{"workflow_runs":[{"id":1,"event":"schedule","check_suite_id":96070172760}]}"#)), Checks::Unknown, "only a schedule suite = no own suite yet = wait, never green by absence");
-        let own_failure = r#"{"check_runs":[{"status":"completed","conclusion":"failure","check_suite":{"id":96068500514}}]}"#;
-        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "a failure in the tip's own suite is the tip's verdict");
-        let pending = r#"{"check_runs":[{"status":"in_progress","check_suite":{"id":96068500514}},{"status":"completed","conclusion":"failure","check_suite":{"id":96070172760}}]}"#;
-        assert_eq!(verdict(pending, Some(runs)), Checks::Pending, "the schedule's failure does not pre-empt the push's pending suite");
-    }
-
-    // what this catches (card 7c0990b0): the promote-main workflow runs on the default
-    // branch and can be started by hand — `workflow_dispatch`, an OWN-suite event — so the
-    // event filter alone would let its failure read as the tip's. A run of that workflow
-    // is excluded by PATH whatever its event; the push's own suites still decide, and a
-    // sha whose only own suite is promote-main's is unknown, never green by absence.
-    #[test]
-    fn a_promote_main_run_is_never_the_tips_verdict_whatever_its_event() {
-        let checks = r#"{"check_runs":[
-            {"name":"promote-main","status":"completed","conclusion":"failure","check_suite":{"id":11}},
-            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        let runs = r#"{"workflow_runs":[
-            {"id":1,"event":"workflow_dispatch","path":".github/workflows/promote-main.yml","check_suite_id":11},
-            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
-        ]}"#;
-        assert_eq!(parse_tip_checks(checks, Some(runs)), TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true }, "a dispatched promote-main failure is excluded by path: green");
-        let in_flight = r#"{"check_runs":[
-            {"name":"promote-main","status":"in_progress","check_suite":{"id":11}},
-            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(verdict(in_flight, Some(runs)), Checks::Green, "a promote-main run in flight is not a pending tip");
-        let only_promote = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/promote-main.yml","check_suite_id":11}]}"#;
-        assert_eq!(verdict(checks, Some(only_promote)), Checks::Unknown, "promote-main as the only suite = no own suite = wait, never green by absence");
-        let own_failure = r#"{"check_runs":[{"name":"cargo test","status":"completed","conclusion":"failure","check_suite":{"id":22}}]}"#;
-        assert_eq!(verdict(own_failure, Some(runs)), Checks::Red, "the push's own failure is still the tip's verdict");
-    }
-
-    // what this catches (M5 2026-10-04, 01:36Z-04:00Z): the core-binaries workflow (#4691)
-    // runs 44-73 min per macOS leg on every canary push and cancels the previous tip's
-    // run; counted as the tip's verdict it held the tracker at ChecksPending across five
-    // merges and nothing deployed for 2.5 h. It publishes an artifact; it judges no code.
-    // A tip whose own suites are green is green while core-binaries is in flight or
-    // cancelled, and a sha whose only suite is core-binaries is unknown, never green.
-    #[test]
-    fn a_core_binaries_run_is_never_the_tips_verdict() {
-        let runs = r#"{"workflow_runs":[
-            {"id":1,"event":"push","path":".github/workflows/core-binaries.yml","check_suite_id":31},
-            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
-        ]}"#;
-        let in_flight = r#"{"check_runs":[
-            {"name":"core binaries (macos-arm64)","status":"in_progress","check_suite":{"id":31}},
-            {"name":"core binaries (macos-x86_64)","status":"in_progress","check_suite":{"id":31}},
-            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(
-            parse_tip_checks(in_flight, Some(runs)),
-            TipChecks { checks: Checks::Green, total: 3, excluded: 2, filtered: true },
-            "core-binaries in flight is not a pending tip"
-        );
-        let cancelled = r#"{"check_runs":[
-            {"name":"core binaries (macos-arm64)","status":"completed","conclusion":"cancelled","check_suite":{"id":31}},
-            {"name":"cargo test","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(verdict(cancelled, Some(runs)), Checks::Green, "a cancelled core-binaries run (the next push superseded it) is not a red tip");
-        let only_binaries = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/core-binaries.yml","check_suite_id":31}]}"#;
-        assert_eq!(verdict(in_flight, Some(only_binaries)), Checks::Unknown, "core-binaries as the only suite = no own suite = wait, never green by absence");
-    }
-
-    // what this catches (card 28463ba7, enrico 2026-10-27): the cache warm-up cancelled when a
-    // newer canary push queued behind it, read as a red commit, so a published build of it
-    // (791328aab, 8d6656f11) could never be authorized and the node ran stale code. The warm-up
-    // judges no code: a commit whose tests are green is green whether it is queued or cancelled.
-    #[test]
-    fn a_cancelled_cache_warm_up_is_never_the_tips_verdict() {
-        let runs = r#"{"workflow_runs":[
-            {"id":1,"event":"push","path":".github/workflows/rust-warm-cache.yml","check_suite_id":41},
-            {"id":2,"event":"push","path":".github/workflows/continuum-rust-tests.yml","check_suite_id":22}
-        ]}"#;
-        let cancelled = r#"{"check_runs":[
-            {"name":"Warm the shared Rust build cache","status":"completed","conclusion":"cancelled","check_suite":{"id":41}},
-            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(
-            parse_tip_checks(cancelled, Some(runs)),
-            TipChecks { checks: Checks::Green, total: 2, excluded: 1, filtered: true },
-            "a superseded cache warm-up is not a red commit"
-        );
-        let queued = r#"{"check_runs":[
-            {"name":"Warm the shared Rust build cache","status":"queued","check_suite":{"id":41}},
-            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"success","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(verdict(queued, Some(runs)), Checks::Green, "a queued cache warm-up is not a pending commit");
-        // The exclusion is the warm-up's own suite only: a REAL test cancelled still reads red.
-        let real_cancelled = r#"{"check_runs":[
-            {"name":"Warm the shared Rust build cache","status":"completed","conclusion":"success","check_suite":{"id":41}},
-            {"name":"cargo test -p continuum-core --lib","status":"completed","conclusion":"cancelled","check_suite":{"id":22}}
-        ]}"#;
-        assert_eq!(verdict(real_cancelled, Some(runs)), Checks::Red, "a cancelled real test is still a red commit");
-        // Nothing gating left once the warm-up is excluded: wait, never green by absence.
-        let warm_only = r#"{"workflow_runs":[{"id":1,"event":"push","path":".github/workflows/rust-warm-cache.yml","check_suite_id":41}]}"#;
-        assert_eq!(verdict(cancelled, Some(warm_only)), Checks::Unknown, "the warm-up as the only suite = unknown");
-    }
-}
+mod tests;

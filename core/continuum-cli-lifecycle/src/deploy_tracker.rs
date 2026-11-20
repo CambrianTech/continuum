@@ -77,6 +77,11 @@ pub enum Checks {
     Pending,
     Red,
     Unknown,
+    /// No candidate newer than the running build has a core CI published for this platform
+    /// yet. Not `Unknown`: the source answered, and the answer is "CI has not shipped it".
+    /// Until 2026-11-14 this read as `ChecksUnknown`, so a node waiting on publication and a
+    /// node that cannot reach gh were the same line.
+    Unpublished,
 }
 
 /// The seam between the DECISION (this module) and the ACTION (the supervisor, card
@@ -105,7 +110,8 @@ impl DeployRequest {
 /// What one tick of the tracker decides. Every non-deploy outcome names WHY, so the
 /// probe stream reads the whole decision history (never a silent skip — the class that
 /// paused the fleet for three days).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "verdict", rename_all = "snake_case")]
 pub enum DeployVerdict {
     /// The running build already matches the tip — nothing to do.
     UpToDate,
@@ -131,6 +137,8 @@ pub enum DeployVerdict {
     RefuseRed,
     /// The tip's checks are unknown (source reachable but no verdict) — wait.
     ChecksUnknown,
+    /// No newer build is published for this platform yet ([`Checks::Unpublished`]) — wait for CI.
+    AwaitingPublication,
     /// The deploy tree has uncommitted changes — the deploy tree is the deploy tree.
     RefuseDirty,
 }
@@ -193,6 +201,7 @@ pub fn decide(inp: &TickInputs) -> DeployVerdict {
         Checks::Pending => return DeployVerdict::ChecksPending,
         Checks::Red => return DeployVerdict::RefuseRed,
         Checks::Unknown => return DeployVerdict::ChecksUnknown,
+        Checks::Unpublished => return DeployVerdict::AwaitingPublication,
         Checks::Green => {}
     }
     if inp.tree_dirty {
@@ -363,6 +372,44 @@ pub trait DeploySource: Send + Sync {
     async fn build_key(&self, _tip: &str) -> Option<String> {
         None
     }
+
+    /// Whether the deploy checkout holds an operator's tracked work, which a deploy never
+    /// moves. The source owns the checkout, so it answers; a source with no checkout is clean.
+    async fn tree_dirty(&self) -> bool {
+        false
+    }
+}
+
+/// The tracker's standing reason for NOT requesting a deploy, recorded beside the request so
+/// the health line can say it (`state/deploy-track.json`). Until 2026-11-14 a tip that never
+/// became a request (no published core, a dirty deploy checkout) reached only an INFO probe
+/// every 300 s and the health line read "nothing owed", so the M5 was redeployed by hand.
+/// Where [`TrackerStanding`] is recorded, under `<continuum home>/state`.
+pub const TRACKER_STANDING_FILE: &str = "deploy-track.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TrackerStanding {
+    pub verdict: DeployVerdict,
+    /// The build this verdict was reached on: a standing record from another build is stale.
+    pub running: String,
+    /// When this verdict first stood: the only record of how long the node has been stuck.
+    pub since_ms: u64,
+}
+
+impl TrackerStanding {
+    /// What this tick should leave on record. `None` when nothing is blocked: a deploy is
+    /// wanted, the node is current, or a consumer holds custody (its request and receipt
+    /// speak for it). An unchanged verdict on the same build keeps its `since_ms`.
+    pub fn next(existing: Option<&Self>, verdict: &DeployVerdict, running: &str, now_ms: u64) -> Option<Self> {
+        if matches!(verdict, DeployVerdict::Deploy { .. } | DeployVerdict::UpToDate | DeployVerdict::BuildInFlight { .. }) {
+            return None;
+        }
+        let since_ms = match existing {
+            Some(standing) if &standing.verdict == verdict && same_commit(&standing.running, running) => standing.since_ms,
+            _ => now_ms,
+        };
+        Some(Self { verdict: verdict.clone(), running: running.to_string(), since_ms })
+    }
 }
 
 #[cfg(test)]
@@ -427,6 +474,10 @@ mod tests {
         let mut i = base();
         i.checks = Checks::Unknown;
         assert_eq!(decide(&i), DeployVerdict::ChecksUnknown);
+        // No published core yet is its own wait, never read as an unreachable source.
+        let mut i = base();
+        i.checks = Checks::Unpublished;
+        assert_eq!(decide(&i), DeployVerdict::AwaitingPublication);
         // A build in flight blocks (before checks), and names the tip that would deploy
         // otherwise so the request can follow it; a pending or dirty tip names nothing.
         let mut i = base();
@@ -706,5 +757,25 @@ mod tests {
             "bbbbbbbbb222",
             Some(key)
         ));
+    }
+
+    // what this catches (the M5, 2026-11-14): a tip that never became a request was said only
+    // in an INFO probe, so the health line read "nothing owed" while every deploy was by hand.
+    // A blocking verdict is recorded and keeps the moment it first stood; a wanted deploy, a
+    // current node and a consumer's custody record nothing; another build restarts the clock.
+    #[test]
+    fn a_standing_block_keeps_its_first_moment_and_a_deploy_clears_it() {
+        let waiting = DeployVerdict::AwaitingPublication;
+        let Some(first) = TrackerStanding::next(None, &waiting, "aaaaaaaaa111", NOW) else { panic!("a wait is recorded") };
+        assert_eq!(first.since_ms, NOW);
+        let later = TrackerStanding::next(Some(&first), &waiting, "aaaaaaaaa111", NOW + 600_000);
+        assert_eq!(later.map(|s| s.since_ms), Some(NOW), "the same wait on the same build keeps its first moment");
+        let dirty = TrackerStanding::next(Some(&first), &DeployVerdict::RefuseDirty, "aaaaaaaaa111", NOW + 600_000);
+        assert_eq!(dirty.map(|s| s.since_ms), Some(NOW + 600_000), "a different block starts its own clock");
+        let rebuilt = TrackerStanding::next(Some(&first), &waiting, "ccccccccc333", NOW + 600_000);
+        assert_eq!(rebuilt.map(|s| s.since_ms), Some(NOW + 600_000), "another running build starts its own clock");
+        for clear in [DeployVerdict::UpToDate, DeployVerdict::Deploy { tip_sha: "bbbbbbbbb222".into() }, DeployVerdict::BuildInFlight { deployable_tip: None }] {
+            assert_eq!(TrackerStanding::next(Some(&first), &clear, "aaaaaaaaa111", NOW), None, "{clear:?} records no block");
+        }
     }
 }
