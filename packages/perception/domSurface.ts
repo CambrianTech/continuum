@@ -213,31 +213,7 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
       console.error(`[page-error] ${String(err).slice(0, 400)}`);
     });
     await page.goto(opts.url, { waitUntil: 'networkidle' });
-    // networkidle is not "at rest": an app that routes on a websocket envelope
-    // (a deep link resolving once the nav state arrives) is still repainting
-    // after the network goes quiet — caught live 2026-09-03 as a frame of the
-    // landing room with the deep-linked page already in the structure. Wait
-    // for the DOM to stop mutating (a quiet window, bounded) before observing.
-    await page.evaluate(
-      ({ quietMs, capMs }) =>
-        new Promise<void>((resolve) => {
-          let timer = window.setTimeout(resolve, quietMs);
-          const cap = window.setTimeout(() => {
-            observer.disconnect();
-            resolve();
-          }, capMs);
-          const observer = new MutationObserver(() => {
-            window.clearTimeout(timer);
-            timer = window.setTimeout(() => {
-              observer.disconnect();
-              window.clearTimeout(cap);
-              resolve();
-            }, quietMs);
-          });
-          observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
-        }),
-      { quietMs: 600, capMs: 5000 },
-    );
+    await settle(page);
     return new DomSurface(browser, page);
   }
 
@@ -306,6 +282,7 @@ export class DomSurface implements Surface<DomViewSpec, DomAction> {
         // Navigate the SAME live page (session state such as cookies and storage kept),
         // settling like the initial open does.
         await this.page.goto(action.url, { waitUntil: 'networkidle' });
+        await settle(this.page);
         return;
       case 'injectCss':
         // Hot-swap: retheme/relayout the LIVE page, no redeploy — the fast-iteration seam.
@@ -413,4 +390,48 @@ function domWalk(maxDepth: number): unknown {
     };
   }
   return walk(document.body, 0);
+}
+
+/** The statuses an app declares on `<html data-feed-status>` while it is not yet showing its state.
+ *  Every other value (cached, live, closed, unreachable) is a state the page shows as it is. */
+const UNSETTLED_FEED = ['booting', 'connecting', 'reconnecting'];
+
+/**
+ * Wait until the page is at rest before it is observed. An app that declares its own state on
+ * `<html data-feed-status>` (the continuum desktop) is waited on by that signal, on DOM mutation,
+ * until it leaves booting/connecting/reconnecting: networkidle fires while its websocket is still
+ * connecting (WebSocket traffic is not network activity to it), and every capture taken there was
+ * a blank page (2026-11-14). A page that declares nothing gives no signal of its own, so it is
+ * observed once its DOM stops changing (a quiet window, bounded), as a person waits for a page.
+ */
+export async function settle(page: Page): Promise<void> {
+  const declared = await page.evaluate(() => document.documentElement.dataset.feedStatus !== undefined);
+  if (declared) {
+    await page.waitForFunction(
+      (unsettled: string[]) => !unsettled.includes(document.documentElement.dataset.feedStatus ?? ''),
+      UNSETTLED_FEED,
+      { polling: 'mutation', timeout: 0 },
+    );
+    return;
+  }
+  await page.evaluate(
+    ({ quietMs, capMs }) =>
+      new Promise<void>((resolve) => {
+        let timer = window.setTimeout(resolve, quietMs);
+        const cap = window.setTimeout(() => {
+          observer.disconnect();
+          resolve();
+        }, capMs);
+        const observer = new MutationObserver(() => {
+          window.clearTimeout(timer);
+          timer = window.setTimeout(() => {
+            observer.disconnect();
+            window.clearTimeout(cap);
+            resolve();
+          }, quietMs);
+        });
+        observer.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+      }),
+    { quietMs: 600, capMs: 5000 },
+  );
 }
