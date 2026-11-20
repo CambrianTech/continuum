@@ -763,6 +763,15 @@ direct answer, and no object writes its own cascade. The
 organization follows the same tree: many crates, many modules, many small files, each holding little
 and each shaped like its siblings.
 
+**How to find the lineage: read the code as language.** List the nouns (the types: a whisper
+backend, a grid transport, a KV slot lease) and the verbs (the methods: shutdown, reclaim, retry,
+estimate). Then ask each word for its parent, as language does: a truck is an automobile, a throw is
+an action. Nouns that share a parent word share a base; verbs that share a parent word share one
+implementation at that base. The copies in the survey below read this way: `KvSlotLease`,
+`EmbedLease` and `PortLease` are each a lease; `backoff_after`, `retry_delay` and `backoff_delay`
+are each a backoff. Picture the system as animated objects: things that are made of things and
+do things. Their family tree is the module tree.
+
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
 
 For example, the flow worker owns queueing and wakeup. A brain stage adds run identity, revision tracking and output provenance. A perception stage can add shared frame history and freshness rules. Segmentation then supplies the model operation; a second segmentation backend supplies only its device-specific implementation. The flow worker and brain-stage contracts exist today. Composing them into the perception lineage is planned. [Flow worker](../../core/continuum-flow/src/stage.rs) · [Brain stage](../../core/continuum-kernel/src/runtime/stage/stage.rs)
