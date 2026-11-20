@@ -58,31 +58,39 @@ pub(super) fn common_prefix(a: &[i32], b: &[i32]) -> usize {
     a.iter().zip(b).take_while(|(x, y)| x == y).count()
 }
 
-/// Her checkpoint as reuse sees it: the tokens it holds through (exclusive end) and its basis.
+/// One of her checkpoints as reuse sees it: the tokens it holds through (exclusive end) and its basis.
+#[derive(Clone, Copy)]
 pub(super) struct Kept<'a, B> {
     pub end: usize,
     pub basis: &'a B,
 }
 
-/// Where `prompt` (under `basis`) starts, given what she holds and her checkpoint.
-pub(super) fn choose<B: PartialEq>(held: History<'_, B>, kept: Option<Kept<'_, B>>, next: History<'_, B>) -> Reuse {
+/// Where `prompt` (under `basis`) starts, given what she holds and her checkpoints, in any order:
+/// the furthest one both histories hold unchanged under the same genes. Her head's checkpoint
+/// serves a turnover, which changes her view but not her head (the M5, 2026-11-19, 48a1dc80cd: 17
+/// of 30 turns re-prefilled from 0 behind an unchanged head, ~180k of 422,847 tokens).
+pub(super) fn choose<'a, B: PartialEq + 'a>(held: History<'_, B>, kept: impl IntoIterator<Item = Kept<'a, B>>, next: History<'_, B>) -> Reuse {
     let (held_tokens, prompt, basis) = (held.tokens, next.tokens, next.basis);
     // The prompt extends her whole held history (her own generated tokens included): append.
     if let continuum_persona_engine::turn::Prefill::Append { from } = continuum_persona_engine::turn::plan(held, next) {
         return Reuse::Append { from };
     }
     let held = held_tokens;
-    let Some(kept) = kept else {
+    let mut kept = kept.into_iter().peekable();
+    if kept.peek().is_none() {
         return Reuse::Restart(if held.is_empty() { Miss::Cold } else { Miss::NoCheckpoint });
-    };
-    if kept.basis != basis {
+    }
+    let mut same_genes = kept.filter(|kept| kept.basis == basis).peekable();
+    if same_genes.peek().is_none() {
         return Reuse::Restart(Miss::Basis);
     }
-    // Her checkpoint's end must be held unchanged by both, and leave a token to sample from.
-    if kept.end == 0 || kept.end >= prompt.len() || common_prefix(held, prompt) < kept.end {
-        return Reuse::Restart(Miss::Diverged);
-    }
-    Reuse::Rewind { from: kept.end }
+    // A checkpoint's end must be held unchanged by both, and leave a token to sample from.
+    let shared = common_prefix(held, prompt);
+    same_genes
+        .map(|kept| kept.end)
+        .filter(|end| *end > 0 && *end < prompt.len() && *end <= shared)
+        .max()
+        .map_or(Reuse::Restart(Miss::Diverged), |from| Reuse::Rewind { from })
 }
 
 #[cfg(test)]
@@ -104,20 +112,45 @@ mod tests {
         let held: Vec<i32> = (0..100).collect(); // her view (0..80), the old trailer, her generated tokens
         let mut next: Vec<i32> = (0..80).collect();
         next.extend([900, 901, 902]); // a new trailer and her call, rendered differently
-        let kept = || Some(Kept { end: 80, basis: &genes });
-        assert_eq!(choose(h(&held, &genes), kept(), h(&next, &genes)), Reuse::Rewind { from: 80 });
+        let kept = [Kept { end: 80, basis: &genes }];
+        assert_eq!(choose(h(&held, &genes), kept, h(&next, &genes)), Reuse::Rewind { from: 80 });
 
         let mut early: Vec<i32> = (0..40).collect();
         early.push(777); // her view itself changed (a new epoch): before her checkpoint
         early.extend(41..90);
-        assert_eq!(choose(h(&held, &genes), kept(), h(&early, &genes)), Reuse::Restart(Miss::Diverged));
+        assert_eq!(choose(h(&held, &genes), kept, h(&early, &genes)), Reuse::Restart(Miss::Diverged));
 
-        assert_eq!(choose(h(&held, &genes), kept(), h(&next, &"tuned")), Reuse::Restart(Miss::Basis));
-        assert_eq!(choose(h(&held, &genes), None, h(&next, &genes)), Reuse::Restart(Miss::NoCheckpoint));
-        assert_eq!(choose(h(&[], &genes), None, h(&next, &genes)), Reuse::Restart(Miss::Cold));
+        assert_eq!(choose(h(&held, &genes), kept, h(&next, &"tuned")), Reuse::Restart(Miss::Basis));
+        assert_eq!(choose(h(&held, &genes), [], h(&next, &genes)), Reuse::Restart(Miss::NoCheckpoint));
+        assert_eq!(choose(h(&[], &genes), [], h(&next, &genes)), Reuse::Restart(Miss::Cold));
 
         let mut extends = held.clone();
         extends.extend([5, 6]);
-        assert_eq!(choose(h(&held, &genes), kept(), h(&extends, &genes)), Reuse::Append { from: 100 });
+        assert_eq!(choose(h(&held, &genes), kept, h(&extends, &genes)), Reuse::Append { from: 100 });
+    }
+
+    // what this catches (the M5, 2026-11-19, 48a1dc80cd: 17 of 30 turns re-prefilled from 0 behind
+    // an unchanged head): a turnover changes her view after her head, so the prompt diverges
+    // before her view's checkpoint but after her head's, and it rewinds to her head instead of
+    // starting over. The furthest checkpoint both hold wins, whatever order they are kept in.
+    #[test]
+    fn a_turnover_rewinds_to_her_head_and_the_furthest_held_checkpoint_wins() {
+        let genes = "base";
+        let held: Vec<i32> = (0..100).collect(); // her head (0..20), her view (20..80), the trailer
+        let kept = [Kept { end: 80, basis: &genes }, Kept { end: 20, basis: &genes }];
+        let mut turned: Vec<i32> = (0..20).collect();
+        turned.extend(500..560); // a new epoch: her view re-rendered behind the same head
+        assert_eq!(choose(h(&held, &genes), kept, h(&turned, &genes)), Reuse::Rewind { from: 20 });
+
+        let mut trailer: Vec<i32> = (0..80).collect();
+        trailer.push(900);
+        assert_eq!(choose(h(&held, &genes), kept, h(&trailer, &genes)), Reuse::Rewind { from: 80 });
+
+        let mut head_changed: Vec<i32> = vec![777];
+        head_changed.extend(1..90);
+        assert_eq!(choose(h(&held, &genes), kept, h(&head_changed, &genes)), Reuse::Restart(Miss::Diverged));
+
+        let mixed = [Kept { end: 80, basis: &"tuned" }, Kept { end: 20, basis: &genes }];
+        assert_eq!(choose(h(&held, &genes), mixed, h(&trailer, &genes)), Reuse::Rewind { from: 20 }, "only her checkpoints under these genes count");
     }
 }

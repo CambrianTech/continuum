@@ -97,7 +97,7 @@ enum Tenure {
 #[derive(Default)]
 struct History {
     held: Vec<i32>,
-    kept: Option<KeptCheckpoint>,
+    kept: [Option<KeptCheckpoint>; 2],
 }
 
 /// Her checkpoint and what makes it valid: she held exactly `held[..end]` under `basis` when it was
@@ -119,7 +119,7 @@ impl Footprint for KeptCheckpoint {
 /// binds them; [`Bound`] is that child's view.
 impl Footprint for History {
     fn held(&self) -> Held {
-        self.held.held() + self.kept.held()
+        self.kept.iter().fold(self.held.held(), |bytes, kept| bytes + kept.held())
     }
 }
 
@@ -139,8 +139,10 @@ impl History {
     /// Keep only her first `len` tokens; a cut below her checkpoint's end drops the checkpoint.
     fn cut(&mut self, len: usize) {
         self.held.truncate(len);
-        if self.kept.as_ref().is_some_and(|kept| kept.end > len) {
-            self.kept = None;
+        for slot in &mut self.kept {
+            if slot.as_ref().is_some_and(|kept| kept.end > len) {
+                *slot = None;
+            }
         }
     }
 
@@ -148,7 +150,7 @@ impl History {
     /// (`reuse::choose`), deciding nothing and moving nothing: the bind uses it to resume her, the
     /// frame to size her turn's prefill.
     fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
-        let kept = self.kept.as_ref().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
+        let kept = self.kept.iter().flatten().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
         reuse::choose(reuse::History { basis: under, tokens: &self.held }, kept, reuse::History { basis, tokens: prompt })
     }
 }
@@ -210,7 +212,7 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match tier.read_file(MindId { persona: id, epoch }, &preserved.path(&mind.blocks)) {
             Ok(blocks) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
-                let parts = Parts { blocks, tokens: History { held: mind.held, kept: None }, genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+                let parts = Parts { blocks, tokens: History { held: mind.held, kept: Default::default() }, genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -360,7 +362,7 @@ struct Turn {
     spent: Spent,
     /// Where her view ends in `prompt` (CONTINUUM-ENGINE 4.15): a prefill chunk ends exactly there
     /// and she is checkpointed, so her next act resumes from it. `None` for a turn with no view.
-    boundary: Option<usize>,
+    boundaries: [Option<usize>; 2],
     /// Her answer, as Emit numbers it.
     answer: emit::AnswerSeq,
     /// Raised by Emit when her answer has ended on a stop sequence or her caller hung up; read at
@@ -382,6 +384,7 @@ enum Phase {
 #[derive(Default)]
 struct Spent {
     reused: usize,
+    shared_prefix_tokens: usize,
     /// How her prefill started: append, rewind, or the restart's reason.
     start: &'static str,
     checkpoint_ms: u64,
@@ -519,9 +522,9 @@ impl Driver<'_, '_> {
     /// pipeline, written. Her entry names that file; it is published with the stop's manifest.
     fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, PreserveError> {
         self.switch_to(id, false)?;
-        let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.as_ref().map(|kept| kept.end));
+        let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.iter().flatten().map(|kept| kept.end).max());
         if let Some(end) = end {
-            self.rewind_to_checkpoint()?;
+            self.rewind_to_checkpoint(end)?;
             self.record(|her| her.tokens.cut(end))?;
         }
         if self.engine.retire_active()?.is_some() {
@@ -552,7 +555,7 @@ impl Driver<'_, '_> {
                 let answer = emit::AnswerSeq(self.answers);
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundary, answer, cancel });
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundaries: [boundary, None], answer, cancel });
             }
             Err(refused) => {
                 tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
@@ -633,10 +636,17 @@ impl Driver<'_, '_> {
     /// from zero for the reason named in her probe row. A rewind the engine refuses restarts her.
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
-        let decided = reuse_for(self.engine.active_mut().ok_or(TurnError::NoneActive)?, &turn.prompt, &basis);
+        let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
+        turn.spent.shared_prefix_tokens = reuse::common_prefix(&her.parts().tokens.held, &turn.prompt);
+        let decided = reuse_for(her, &turn.prompt, &basis);
+        let shared = turn.spent.shared_prefix_tokens;
+        if matches!(decided, reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint))
+            && her.parts().genome == basis && shared > 0 && turn.boundaries[0].is_some_and(|view| shared < view) {
+            turn.boundaries[1] = Some(shared);
+        }
         let (from, start) = match decided {
             reuse::Reuse::Append { from } => (from, "append"),
-            reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint() {
+            reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint(from) {
                 Ok(()) => (from, "rewind"),
                 Err(_) => (0, "rewind_refused"),
             },
@@ -652,19 +662,21 @@ impl Driver<'_, '_> {
 
     /// Rewind the active mind to her kept checkpoint (taken out and put back, so the engine can read
     /// it while it moves her).
-    fn rewind_to_checkpoint(&mut self) -> Result<(), TurnError> {
-        let kept = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept.take();
+    fn rewind_to_checkpoint(&mut self, end: usize) -> Result<(), TurnError> {
+        let slots = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept;
+        let index = slots.iter().position(|slot| slot.as_ref().is_some_and(|kept| kept.end == end)).ok_or(TurnError::NoneActive)?;
+        let kept = slots[index].take();
         let Some(kept) = kept else { return Err(TurnError::NoneActive) };
         let rewound = self.engine.rewind_active(&kept.blocks);
-        self.record(|her| her.tokens.kept = Some(kept))?;
+        self.record(|her| her.tokens.kept[index] = Some(kept))?;
         Ok(rewound?)
     }
 
     /// Checkpoint the active mind at her view's end (`end` tokens held), reusing her checkpoint's
     /// buffers. A refused take keeps none, so a later act restarts instead of rewinding to a stale one.
-    fn keep_checkpoint(&mut self, turn: &mut Turn, end: usize) -> Result<(), TurnError> {
+    fn keep_checkpoint(&mut self, turn: &mut Turn, index: usize, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
-        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept.take();
+        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept[index].take();
         let mut blocks = match previous.map(|kept| kept.blocks).or_else(llama::PersonaCheckpoint::new) {
             Some(blocks) => blocks,
             None => return Ok(()), // the host could not allocate a checkpoint: she restarts next act, named in its row
@@ -672,12 +684,12 @@ impl Driver<'_, '_> {
         let taken = self.engine.checkpoint_active(&mut blocks);
         let basis = turn.basis.clone();
         self.record(|her| {
-            her.tokens.kept = match taken {
+            her.tokens.kept[index] = match taken {
                 Ok(pos) if pos as usize + 1 == end => Some(KeptCheckpoint { blocks, end, basis }),
                 _ => None,
             }
         })?;
-        turn.spent.checkpoint_ms = record::whole_ms(taking.elapsed());
+        turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
         Ok(())
     }
 
@@ -685,7 +697,7 @@ impl Driver<'_, '_> {
     /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
-        let limit = turn.boundary.filter(|boundary| *boundary > pos).unwrap_or(turn.prompt.len()); // unwrap_or: no view end ahead, the prompt's end bounds the chunk
+        let limit = turn.boundaries.iter().flatten().copied().filter(|boundary| *boundary > pos).min().unwrap_or(turn.prompt.len()); // unwrap_or: no view end ahead, the prompt's end bounds the chunk
         let end = (pos + self.batch.get()).min(limit);
         let chunk = turn.prompt[pos..end].to_vec();
         let last = end == turn.prompt.len();
@@ -695,8 +707,8 @@ impl Driver<'_, '_> {
         if !last {
             self.engine.settle()?;
             self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
-            if turn.boundary == Some(end) {
-                self.keep_checkpoint(turn, end)?;
+            if let Some(index) = turn.boundaries.iter().position(|boundary| *boundary == Some(end)) {
+                self.keep_checkpoint(turn, index, end)?;
             }
             turn.phase = Phase::Prefilling { pos: end };
             return Ok(());
@@ -759,8 +771,10 @@ impl Driver<'_, '_> {
             one_off: turn.one_off,
             prompt_tokens: turn.prompt.len() as u64,
             reused_tokens: turn.spent.reused as u64,
+            shared_prefix_tokens: turn.spent.shared_prefix_tokens as u64,
             start: turn.spent.start,
-            boundary: turn.boundary.map(|end| end as u64),
+            boundary: turn.boundaries[0].map(|end| end as u64),
+            learned_boundary: turn.boundaries[1].map(|end| end as u64),
             checkpoint_ms: turn.spent.checkpoint_ms,
             wait_ms: turn.spent.first_step.map(ms),
             switches: turn.spent.switches,
