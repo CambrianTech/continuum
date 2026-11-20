@@ -42,18 +42,3 @@ fn a_frozen_counter_is_not_progress() {
     last = advanced;
     assert_eq!(last, 14336);
 }
-
-/// what this catches: the two silences collapsing back into one budget.
-/// Queue wait (measured 115s on a 1-slot lane for a 2,237-token prompt) is
-/// contention, not death; only silence AFTER the slot starts working is a
-/// wedge. If these budgets are ever made equal, healthy turns die under
-/// normal multi-citizen load.
-#[test]
-fn queue_budget_outlives_the_liveness_budget() {
-    assert!(
-        PRE_STREAM_HEADER_TIMEOUT_SECS > STREAM_IDLE_TIMEOUT_SECS,
-        "the pre-start (queue) budget must be strictly larger than the \
-         post-start liveness budget: {PRE_STREAM_HEADER_TIMEOUT_SECS} vs \
-         {STREAM_IDLE_TIMEOUT_SECS}"
-    );
-}

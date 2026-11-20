@@ -17,14 +17,14 @@ fn wedge_patience_scales_with_inflight_investment() {
 }
 
 // what this catches (2026-08-15, round-killer #2 of the day): a never-started
-// stream timeout stamped `note_real_decode_failure` unconditionally, so an
+// stream timeout historically stamped a failure unconditionally, so an
 // OVERSUBSCRIBED lane (4 demand lanes, 1-2 slots, multi-minute thinking turns)
 // hit the relaunch threshold from queue starvation alone — the health monitor
 // killed a lane whose own log showed 11k-token completions at 17.5 t/s, every
 // 2 minutes, forever. The classifier reads the lane's own delivery record:
-// tokens for ANYONE within the wait = Starved (alive, no stamp); no delivery
-// across the whole wait, or none ever observed = WedgeEvidence (stamp — the
-// #363 undersized/dead class this counter exists for).
+// tokens for ANYONE within the wait = Starved; no delivery
+// across the whole wait, or none ever observed = WedgeEvidence (diagnostic only;
+// neither classification authorizes retiring the engine).
 #[test]
 fn never_started_timeout_on_a_delivering_lane_is_starvation_not_wedge_evidence() {
     use super::{classify_never_started_timeout, NeverStartedClass};
@@ -241,8 +241,7 @@ fn smoke_probe_is_sized_by_its_own_answer() {
 // a well-formed SSE body with ZERO deltas, so no transport-failure stamp fires and the
 // lane reads healthy while every citizen on it gets an empty turn. Measured on the M5
 // 2026-09-22: 2 root Metal OOMs latched the backend, 113 tasks ran prefill and never
-// generated, 73 empty-completion faults landed on six citizens — and `REAL_DECODE_FAILS`
-// stayed 0 the whole time.
+// generated, and 73 empty-completion faults landed on six citizens.
 //
 // The finish reason is load-bearing and was missing from the first cut of this fix
 // (Cormac's review of #4344). The IntelMac's empties the same hour were `Length` on a
@@ -254,22 +253,20 @@ fn only_an_empty_that_stopped_is_the_lanes_failure() {
     use super::{classify_real_decode, RealDecodeOutcome};
     use crate::ai::types::FinishReason;
 
-    // Nothing produced at all: the relaunch is the cure.
+    // Nothing produced: report the typed empty-completion outcome.
     assert_eq!(
         classify_real_decode(true, false, FinishReason::Stop),
         RealDecodeOutcome::DeliveredNothing,
-        "an empty local-lane generation that STOPPED must count AGAINST the lane — \
-         this is the evidence the heartbeat relaunches on"
+        "an empty local-lane generation that STOPPED must remain observable"
     );
-    // The cap ended it. The backend generated; the allowance ran out. Relaunching
-    // would bounce a working lane and fix nothing — the output allowance owns this.
+    // The cap ended it: report the distinct output-allowance outcome.
     assert_eq!(
         classify_real_decode(true, false, FinishReason::Length),
         RealDecodeOutcome::CappedBeforeOutput,
         "an empty that hit the OUTPUT CAP is an allowance fault on healthy hardware, \
          never lane wedge evidence"
     );
-    // Real output is still proof of life whatever ended it, and still ends the streak.
+    // Real output is still proof of life whatever ended it.
     assert_eq!(
         classify_real_decode(true, true, FinishReason::Stop),
         RealDecodeOutcome::ProofOfLife

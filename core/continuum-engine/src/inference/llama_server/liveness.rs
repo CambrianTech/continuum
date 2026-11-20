@@ -17,56 +17,16 @@
 pub(super) static LAST_REAL_DECODE_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 
-/// Consecutive REAL generations that FAILED on the served lane since the last success —
-/// the other half of "delivery beats probing" (#363). The 2026-08-07 blackout proved a
-/// wedge class the 1-token smoke probe cannot see: an UNDERSIZED slot rejects the
-/// fleet's real 12k-token prompts (every citizen turn dies mid-stream) while a tiny
-/// synthetic probe still passes — "can generate" is not "can serve the actual working
-/// set". Sustained real-turn failure is the honest wedge evidence, symmetric with real
-/// tokens being the honest liveness evidence above.
-pub(super) static REAL_DECODE_FAILS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-
-/// Record that a real generation FAILED terminally on the served lane (stream read
-/// error, mid-stream silence, transport death). Called from the adapter's error paths —
-/// gated by the caller on the request actually targeting the LOCAL serving lane, so a
-/// cloud provider's 529 can never smear the local lane's record.
-pub fn note_real_decode_failure() {
-    REAL_DECODE_FAILS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-}
-
-
-/// Consecutive real-generation failures since the last success. The serving daemon's
-/// heartbeat treats `>= HEALTH_FAILS_TO_RELAUNCH` as wedge evidence that OUTRANKS both
-/// the recent-decode trust window and a passing smoke probe.
-pub fn consecutive_real_decode_failures() -> u64 {
-    REAL_DECODE_FAILS.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-
-/// Reset the failure streak — called when the lane is declared wedged (so the freshly
-/// relaunched lane starts clean instead of being instantly re-condemned by its
-/// predecessor's record) and implicitly by every successful decode.
-pub fn reset_real_decode_failures() {
-    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
-}
-
-
 /// What a FINISHED real generation says about the served lane's health.
 ///
 /// The classification is pure so it can be tested without touching the process-global
-/// counters it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
+/// delivery stamps it drives ([[a-daemon-test-owns-its-inputs-process-globals-cross-tests]]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RealDecodeOutcome {
-    /// Tokens reached the citizen: proof of life, and it ends any failure streak.
+    /// Tokens reached the citizen: proof of life.
     ProofOfLife,
-    /// The generation finished CLEANLY and delivered nothing — no content, no reasoning,
-    /// no tool call — and the engine said it STOPPED. This is the latched-backend class
-    /// (a Metal compute context that has gone bad still answers 200 and streams a
-    /// well-formed body with zero deltas), and it is the one wedge the liveness record
-    /// could not previously see: the transport never failed, so nothing stamped a
-    /// failure, so `REAL_DECODE_FAILS` stayed 0 while every citizen on the lane got an
-    /// empty turn. A relaunch IS the cure, so this counts against the lane.
+    /// Clean EOF with no content, reasoning or tool call and a Stop finish reason.
+    /// Report the empty completion to its caller; it does not establish engine death.
     DeliveredNothing,
     /// Empty, but the engine said the OUTPUT CAP ended it. The lane is healthy — it
     /// generated until the allowance ran out and the whole budget went to a reasoning
@@ -88,11 +48,8 @@ pub enum RealDecodeOutcome {
 /// `delivered_something` is the OR of content, reasoning and tool calls: a native tool
 /// turn legitimately carries empty text, so text alone is not the test.
 ///
-/// The FINISH REASON separates two empties that read identically in a receipt and have
-/// opposite cures (Cormac's review of #4344, measured across two nodes the same hour):
-/// an empty that STOPPED is a backend that produced nothing and wants a relaunch; an
-/// empty that hit LENGTH is a healthy backend whose output cap ended it, and relaunching
-/// it would bounce a working lane and change nothing. Only the first is the lane's fault.
+/// Finish reason distinguishes a clean empty completion from exhausted output allowance.
+/// Neither outcome authorizes an engine restart.
 pub fn classify_real_decode(
     local_lane: bool,
     delivered_something: bool,
@@ -119,8 +76,6 @@ pub fn classify_real_decode(
 /// Record that a real generation produced tokens on the served lane. Called from the adapter's
 /// success path — the one place that knows tokens actually came out.
 pub fn note_real_decode() {
-    // A success ends the failure streak regardless of clock readability below.
-    REAL_DECODE_FAILS.store(0, std::sync::atomic::Ordering::Relaxed);
     // A clock we cannot read must NOT be stored: 0 is this atomic's "never decoded"
     // sentinel, so `.unwrap_or(0)` here would erase a real decode rather than record
     // one. Leave the last good stamp in place and say so.
@@ -154,11 +109,8 @@ pub enum NeverStartedClass {
     /// completions at 17.5 t/s between the kills. The round died to its own
     /// health monitor.
     Starved,
-    /// No real decode landed for anyone across the whole window we waited (or
-    /// none has ever been observed) — the timeout IS evidence the lane cannot
-    /// serve, and it must count toward the relaunch threshold (#363: an
-    /// undersized/dead lane rejecting the fleet's real prompts is exactly what
-    /// the real-turn counter exists to catch).
+    /// No real decode was observed during the wait: a diagnostic stall outcome.
+    /// Absence of observed progress does not authorize retiring the engine.
     WedgeEvidence,
 }
 

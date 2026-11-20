@@ -355,16 +355,6 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
     let _attempt = super::convergence_attempt::ConvergenceAttempt::new(ctrl, convergence_pair);
     match ctrl.serve_if_current(target, current).await {
         Ok(()) => {
-            // A fresh lane starts with a CLEAN failure record. `serve` kills the old
-            // child, which murders its in-flight turns; their deaths stamp
-            // `note_real_decode_failure` DURING the load window — after the reset
-            // `declare_lane_wedged` did — so without this the corpses of the turns OUR
-            // kill created condemn the replacement on its first heartbeat and the
-            // relaunch loops (measured 2026-08-16: wedge 10:19:04 → kill → 4 stamped
-            // fails by 10:19:49 → wedged again; 23 min of self-fighting). The reset
-            // comment on `reset_real_decode_failures` always promised "the freshly
-            // relaunched lane starts clean" — this is the site that makes it true.
-            reset_real_decode_failures();
             mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
             observe_launched_engine(ctrl, target.model_id()).await;
             EnsureOutcome::Spawned {
@@ -383,7 +373,6 @@ async fn serve_or_adopt<C: LlamaServerControl + ?Sized>(
         Err(reason) if roll_back_engine_after_failed_launch(&reason) => {
             match ctrl.serve_if_current(target, current).await {
                 Ok(()) => {
-                    reset_real_decode_failures();
                     mark_engine_proven(ctrl.owned_serving_target().map(|t| t.engine_program));
                     observe_launched_engine(ctrl, target.model_id()).await;
                     EnsureOutcome::Spawned {

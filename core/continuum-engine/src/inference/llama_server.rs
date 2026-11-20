@@ -46,9 +46,9 @@ pub use configuration::{
 mod liveness;
 mod readiness;
 pub use liveness::{
-    classify_never_started_timeout, classify_real_decode, consecutive_real_decode_failures,
+    classify_never_started_timeout, classify_real_decode,
     judge_smoke_miss, ms_since_real_decode, ms_since_real_work, note_real_decode,
-    note_real_decode_failure, note_real_prefill_progress, reset_real_decode_failures,
+    note_real_prefill_progress,
     slots_activity_fingerprint_of, slots_max_inflight_prompt_tokens_of, wedge_miss_threshold,
     NeverStartedClass, RealDecodeOutcome, SmokeMissVerdict,
 };

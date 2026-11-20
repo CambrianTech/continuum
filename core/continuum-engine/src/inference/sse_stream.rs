@@ -44,15 +44,6 @@ pub(crate) struct OpenAITimings {
     pub(crate) predicted_per_second: f64,
 }
 
-/// How long the inference lane may stay SILENT mid-stream before we declare it
-/// dead. This is a LIVENESS watchdog, not a deadline: a slow-but-producing decode
-/// (a 4B model on CPU emitting a token every few hundred ms) stays alive
-/// indefinitely as long as it keeps streaming. Only true silence — the backend
-/// stuck, crashed, or the socket wedged — trips it, and then we fail loud naming
-/// the cause ([[fallbacks-are-illegal-fail-loud]]). Replaces the old wall-clock
-/// total-request timeout that killed legitimately-long generations.
-pub(crate) const STREAM_IDLE_TIMEOUT_SECS: u64 = 90;
-
 // Lane-send constants live in `crate::inference::lane_send` (S3b decompose).
 
 
@@ -244,10 +235,11 @@ pub(crate) struct StreamToolAccum {
 }
 
 /// Fold one streamed tool-call fragment into the per-index accumulator.
-pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) {
-    let idx = tc.index.unwrap_or(0);
+pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: OpenAIStreamToolCall) -> Result<(), String> {
+    let idx = tc.index.ok_or_else(|| "streamed tool call is missing its index".to_string())?;
     if acc.len() <= idx {
-        acc.resize_with(idx + 1, StreamToolAccum::default);
+        let len = idx.checked_add(1).ok_or_else(|| "streamed tool-call index overflows".to_string())?;
+        acc.resize_with(len, StreamToolAccum::default);
     }
     let slot = &mut acc[idx];
     if let Some(id) = tc.id {
@@ -265,6 +257,7 @@ pub(crate) fn accumulate_stream_tool_call(acc: &mut Vec<StreamToolAccum>, tc: Op
             slot.arguments.push_str(&a);
         }
     }
+    Ok(())
 }
 
 /// Everything the stream accumulated, handed back to the caller's post-processing
@@ -317,42 +310,17 @@ pub(crate) async fn consume_sse_stream(
 ) -> Result<StreamOutcome, String> {
     // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives, and its
     // consumer gets the turn before the next is parsed (`stream_sinks::deliver`).
-    // Liveness is the per-token idle watchdog ([`STREAM_IDLE_TIMEOUT_SECS`]) —
-    // silence means the backend died, NOT that generation is simply long.
+    // Request waits share the existing turn-bound owner; silence is not engine death.
     use futures::StreamExt;
     let mut byte_stream = response.bytes_stream();
-    // QUEUE WAIT IS NOT SILENCE. Two different things were being policed by one
-    // budget. MEASURED 2026-08-13 on the live 1-slot lane: a TINY (2,237-token)
-    // request got its first byte of any kind at t=115.2s — not because prefill
-    // was slow (it finished within the same second) but because the slot was
-    // busy with a co-tenant's turn for 115s first. llama-server says nothing
-    // while a task is queued; there is no frame to send until a slot picks it
-    // up. So the 90s liveness budget was being spent on CONTENTION, and with
-    // total_slots=1 and four citizens it expires routinely on a healthy lane.
-    //
-    // Split by what the silence MEANS. Before the server shows any sign of
-    // working on THIS request, the bound is the same one the header wait
-    // already uses and justifies — queue wait is a capacity fact, minutes are
-    // legitimate, and the job is releasing eternal holds, not policing slow
-    // ones. Once the slot IS working (a prefill-progress frame or a token),
-    // the tight liveness budget applies: from then on, silence really is the
-    // backend dying, which is what #385 was always about.
-    //
-    // The queue bound is the header wait's FLOOR or the turn's own measured bound
-    // above it (`TextGenerationRequest::turn_bound`, card ba82d0a0): a request queued
-    // behind a co-tenant's 30k prefill on a 25 tok/s box hears nothing for ~1200 s,
-    // and a constant 300 s read every such turn as dead.
+    // Queue, prefill and decode waits use the same effective request bound.
+    // Progress still refreshes the wait; a missing observation is a request failure,
+    // never authority to retire the engine.
     let (queue_budget, queue_source) = crate::inference::turn_bound::effective_bound_with_source(
         std::time::Duration::from_secs(PRE_STREAM_HEADER_TIMEOUT_SECS),
         request.turn_bound,
     );
-    let live_budget = std::time::Duration::from_secs(STREAM_IDLE_TIMEOUT_SECS);
-    // #363: real-delivery accounting for the LOCAL lane only. A terminal stream
-    // death on the local lane is wedge evidence the smoke probe cannot see (an
-    // undersized slot passes a tiny probe while rejecting real prompts); a
-    // completed stream is proof of life. Both stamps are gated on this request
-    // actually targeting the published serving lane.
-
+    let live_budget = queue_budget;
     let mut sse_buf: Vec<u8> = Vec::new();
     // Each raw event, kept only when a capture armed this request (card fb6d7912).
     let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
@@ -460,19 +428,14 @@ pub(crate) async fn consume_sse_stream(
                 }
                 if local_lane {
                     if started {
-                        // Started-then-stopped is per-slot evidence about OUR
-                        // generation — always counts toward the relaunch threshold.
-                        // Every count gets a row: 2026-09-05 four of these relaunched
-                        // a lane (12 citizens re-prefilled cold) with nothing naming
-                        // which generation or why (absence-read-as-a-value class).
+                        // Report this request's stalled progress without retiring the lane.
                         continuum_base::probe!(
                             class = "inference.decode.failed",
                             kind = "started_then_stopped",
                             name = %cfg.name,
                             idle_secs = idle.as_secs(),
-                            "generation started then stopped past the idle budget — counted toward relaunch"
+                            "generation started then stopped past the idle budget — request failed"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     } else {
                         // Never-started is ambiguous: dead backend vs oversubscribed
                         // queue. Judge it by the lane's own delivery record — if real
@@ -490,9 +453,8 @@ pub(crate) async fn consume_sse_stream(
                                     name = %cfg.name,
                                     idle_secs = idle.as_secs(),
                                     ms_since_real_work = crate::inference::llama_server::ms_since_real_work(),
-                                    "generation never started and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                                    "generation never started and the lane delivered nothing to anyone meanwhile — request failed"
                                 );
-                                crate::inference::llama_server::note_real_decode_failure();
                             }
                             NeverStartedClass::Starved => {
                                 // The capacity shortfall stays LOUD on its own channel
@@ -504,7 +466,7 @@ pub(crate) async fn consume_sse_stream(
                                     waited_s = idle.as_secs(),
                                     "never-started timeout on a lane that delivered real \
                                      tokens within the wait — oversubscription, not wedge \
-                                     evidence; no real-turn failure stamped",
+                                     evidence; the lane remains intact",
                                 );
                             }
                         }
@@ -533,7 +495,7 @@ pub(crate) async fn consume_sse_stream(
             if local_lane && waits_on(class, stream_opened.elapsed()) {
                 // BUSY IS NOT DEAD (card 115f9a14): our counters stalled because the batch
                 // served another slot; the lane is working, so the bound is a checkpoint,
-                // with no failure probe and no relaunch strike.
+                // with no failure probe.
                 continuum_base::probe!(
                     class = "inference.stream.busy_not_dead",
                     provider = cfg.name.as_str(),
@@ -565,7 +527,7 @@ pub(crate) async fn consume_sse_stream(
                 // evidence relaunched a fresh, delivering lane on the IntelMac (2026-09-27
                 // 21:23Z: two stamps, `real_turn_failures`, while health read ok via real_work
                 // and slot_progress seconds earlier). The turn still fails either way; only a
-                // lane that delivered nothing to anyone in the window counts toward relaunch.
+                // lane that delivered nothing to anyone in the window is reported separately.
                 use crate::inference::llama_server::NeverStartedClass;
                 // WHICH request, HOW FAR it got, and whether the lane was working for anyone
                 // else meanwhile (card 18d306f8): a reader must tell "starved behind a
@@ -591,9 +553,8 @@ pub(crate) async fn consume_sse_stream(
                             prefill_processed,
                             prefill_total,
                             ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
-                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — counted toward relaunch"
+                            "stream carried bytes but neither prefill nor decode advanced, and the lane delivered nothing to anyone meanwhile — request failed"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     }
                     NeverStartedClass::Starved => {
                         continuum_base::probe!(
@@ -607,7 +568,7 @@ pub(crate) async fn consume_sse_stream(
                             prefill_processed,
                             prefill_total,
                             ms_since_lane_work = since_work.unwrap_or(u64::MAX), // probe field: MAX = the lane never delivered work this process
-                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; no real-turn failure stamped",
+                            "this request's progress stalled on a lane that delivered real work within the wait — oversubscription, not wedge evidence; the lane remains intact",
                         );
                     }
                 }
@@ -632,9 +593,8 @@ pub(crate) async fn consume_sse_stream(
                     kind = "stream_read_error",
                     name = %cfg.name,
                     error = %e,
-                    "stream read error mid-generation — counted toward relaunch"
+                    "stream read error mid-generation — request failed"
                 );
-                crate::inference::llama_server::note_real_decode_failure();
             }
             format!("{}: stream read error: {e}", cfg.name)
         })?;
@@ -664,8 +624,7 @@ pub(crate) async fn consume_sse_stream(
                     Ok(p) => p,
                     Err(_) => continue, // keepalive / comment / non-JSON line
                 };
-                // A failure frame ends the act as a failure, with the server's words. It
-                // counts toward the lane's relaunch the same way a broken stream does.
+                // A failure frame ends the act as a failure, with the server's words. The caller receives the failure.
                 if let Some(error) = parsed.error {
                     if local_lane {
                         continuum_base::probe!(
@@ -677,7 +636,6 @@ pub(crate) async fn consume_sse_stream(
                             error = %error.message,
                             "the server sent an error frame mid-stream: the act failed, never an empty completion"
                         );
-                        crate::inference::llama_server::note_real_decode_failure();
                     }
                     return Err(format!(
                         "{}: server error {}{}: {}",
@@ -728,11 +686,11 @@ pub(crate) async fn consume_sse_stream(
                             provider = cfg.name.as_str(),
                             elapsed_s = elapsed.as_secs(),
                             queued_s = first_frame.duration_since(stream_opened).as_secs(),
-                            old_budget_s = live_budget.as_secs(),
+                            request_budget_s = live_budget.as_secs(),
                             processed = p.processed,
                             total = p.total,
                             cached = p.cache,
-                            "prefill outlived the OLD decode watchdog and is STILL \
+                            "prefill outlived the request watchdog and is STILL \
                              advancing — under the previous flat budget this turn \
                              would have been killed here and retried forever",
                         );
@@ -826,7 +784,7 @@ pub(crate) async fn consume_sse_stream(
                         }
                         if let Some(tcs) = delta.tool_calls {
                             for tc in tcs {
-                                accumulate_stream_tool_call(&mut acc_tools, tc);
+                                accumulate_stream_tool_call(&mut acc_tools, tc)?;
                                 last_progress = Instant::now();
                             }
                         }
@@ -859,6 +817,20 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    #[test]
+    fn missing_tool_index_is_rejected_without_overwriting_a_call() {
+        let mut acc = vec![StreamToolAccum {
+            id: "held".into(), name: "work/read".into(), arguments: "{}".into(),
+        }];
+        let tc: OpenAIStreamToolCall = serde_json::from_str(
+            r#"{"id":"wrong","function":{"name":"work/write","arguments":"bad"}}"#,
+        ).expect("test: fragment without index");
+        assert!(accumulate_stream_tool_call(&mut acc, tc).is_err());
+        assert_eq!(acc.len(), 1);
+        assert_eq!(acc[0].id, "held");
+        assert_eq!(acc[0].name, "work/read");
+        assert_eq!(acc[0].arguments, "{}");
+    }
     // what this catches (Astra on #4978): a captured retry replayed as one stream. The
     // accumulator starts fresh on every attempt, so an interrupted attempt's index-0
     // arguments merged with its retry's would replay arguments the response never held.
@@ -878,7 +850,7 @@ mod tests {
                     let chunk: OpenAIStreamChunk = serde_json::from_str(data).expect("test: chunk");
                     for choice in chunk.choices {
                         for tc in choice.delta.and_then(|d| d.tool_calls).unwrap_or_default() {
-                            accumulate_stream_tool_call(&mut acc, tc);
+                            accumulate_stream_tool_call(&mut acc, tc).expect("test: indexed tool fragment");
                         }
                     }
                 }
