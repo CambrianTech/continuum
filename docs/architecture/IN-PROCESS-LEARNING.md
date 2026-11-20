@@ -1,98 +1,163 @@
-# In-process learning: a lesson is her turn with labels
+# In-process learning
 
-Status: design, revised 2026-11-20. Owner: Fable (engine, llama crate, her genome's engine side);
-Codex (memory authority, deletion of the serving half). Built on
-[ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md) §2.1, §9 and
-§9.6 P1-P6, and on the genome in [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md).
+Status: design, revised 2026-11-20; slice 1 built (#6203), later slices proposed. Owners: Fable
+(the engine, the `llama` crate, the engine side of her genome); Codex (the memory authority, the
+serving half of the deletions, review). Builds on
+[ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md) (§2.1, §9,
+§9.6 P1-P6, §11), [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) (Parts 1-3, 8, 10, 12),
+[SHARED-RESOURCES.md](SHARED-RESOURCES.md) and
+[REPO-GENOME-AND-COURSES.md](REPO-GENOME-AND-COURSES.md) (§17).
 
 [Runtime architecture](../README.md#runtime-architecture)
 
 **Contents**
 
-- [The rule](#the-rule)
-- [Her genome holds her learning](#her-genome-holds-her-learning)
-- [Learning switches on and off as her mind works](#learning-switches-on-and-off-as-her-mind-works)
-- [A lesson on the Core](#a-lesson-on-the-core)
-- [What is deleted](#what-is-deleted)
-- [Slices, each with its validator](#slices-each-with-its-validator)
+1. [The rule](#1-the-rule)
+2. [Her genome holds her learning](#2-her-genome-holds-her-learning)
+3. [Learning is a duty cycle](#3-learning-is-a-duty-cycle)
+4. [Memory: taken while learning, paged out after](#4-memory-taken-while-learning-paged-out-after)
+5. [A dedicated lesson on the Core](#5-a-dedicated-lesson-on-the-core)
+6. [Learning across the grid](#6-learning-across-the-grid)
+7. [What is deleted](#7-what-is-deleted)
+8. [Slices, each with its validator](#8-slices-each-with-its-validator)
 
-## The rule
+## 1. The rule
 
-Dreaming is as natural to her as speaking, and costs about as little. Training is inference with
+Learning is as natural to her as speaking, and costs about as little. Training is inference with
 extra layers switched on (ONE-RESIDENT §9.6): the same batch, the same graph, the same resident
-weights, her own served window. Learning never gets a train call, a reserved slot, a lane, a
-context, a time-share grant, a workspace held on the side, a second engine or a second copy of
-the base. The extra cost is the backward over the labelled rows, plus her shadow and its optimizer
-state.
+weights and her own served window. Learning never gets a train call, a reserved slot, a lane, a
+context, a time-share grant, a workspace held on the side, a second engine or a second copy of the
+base. The extra cost is the backward pass over the labelled rows, plus her shadow and its
+optimizer state while she is learning.
 
-The fork already has this. `llama_batch` carries `label` and `label_weight` per position. A
+The fork already supports this. `llama_batch` carries `label` and `label_weight` per position. A
 labelled position makes `llama_decode` also run the loss, the backward and the optimizer write of
 the context's trainable adapter (`llama_opt_init`), in the same graph as the batch's other rows
-(`include/llama.h`, `struct llama_batch`).
+(`include/llama.h`, `struct llama_batch`). Slice 1 exposes it in Rust (§8).
 
-## Her genome holds her learning
+## 2. Her genome holds her learning
 
-Her genome is an object, and part of her: `PersonaUnit` is her five parts, moved only as a whole
+Her genome is an object, and a part of her: `PersonaUnit` is her five parts, moved only as a whole
 (blocks, tokens, **genome**, **learning**, decode). A trained layer is one state of her genome:
 
 - her **stable** genes, which serve her;
 - her **shadow**, a small trainable layer above her frozen stable stack, never a copy of it (§2.1,
   §9.6 P3);
 - the shadow's optimizer state (moments, accumulator, RNG, step count) and her arrival and replay
-  cursors (the §9.2 session state);
-- immutable **snapshots** (candidate genes) and **checkpoints** (session state), each with
+  cursors: the session state of ONE-RESIDENT §9.2;
+- immutable **snapshots** (candidate genes) and **checkpoints** (session state), each with its
   provenance and lineage (GENOME-FOUNDRY-SENTINEL Parts 1 and 12).
 
-Adoption is her genome promoting a snapshot to stable after its exam, a pointer swap between two
-steps. She never serves moving weights.
+Her shadow and its session state together are her **learning context**, the unit that pages,
+checkpoints and travels. One format serves all three uses (proposed):
 
-## Learning switches on and off as her mind works
+| Use | What is written | When |
+|---|---|---|
+| Page-out | The learning context, to RAM or disk | Learning switches off for her (§4) |
+| Checkpoint | The same bytes, with the journal cursor they consumed through | At an optimizer boundary, and at a deploy seam (§9.2) |
+| Publication | A snapshot of the shadow alone, with its lineage and exam results | When a gene earns adoption and is shared (§6) |
 
-Her genome and her ability to learn are always present. Learning switches on when she has
-something to learn and the Core has the time, and off again. She keeps talking throughout: it is a
-mode of her ordinary decoding, not a session. There are two ways in, and they use the same
-mechanism.
+So paging, crash recovery and federation are one code path. Adoption is her genome promoting a
+snapshot to stable after its exam, a pointer swap between two steps. She never serves moving
+weights.
 
-- **Continuous: prediction error on what she perceives.** When she perceives (a peer's message, a
-  tool's output, a file she reads), her prefill of it can carry labels: each token's target is the
-  next, weighted by her own relevance to what she perceived (`label_weight`, "a mind's relevance on
-  what it perceived"; REPO-GENOME-AND-COURSES §17). The forward is the one her prefill runs anyway;
-  the backward over the labelled rows is the extra. To measure before relying on it: whether a
-  labelled perception row's K/V under the shadow must be restored under her stable set (§2.1), and
-  what that restore costs against the backward.
+## 3. Learning is a duty cycle
+
+Her genome and her ability to learn are always present. Learning is not a session that starts and
+ends: it is a share of her decoding that switches on and off as she works, like pulse-width
+modulation. She keeps talking throughout.
+
+**One control per Core (proposed).** Each Core has one duty value: the share of its frames whose
+batches carry labelled rows. The governor sets it from three inputs:
+
+- the lessons queued across the minds it serves (her lesson queue);
+- the Core's slack: frames with no turn waiting;
+- the latency budget of whoever is waiting to speak.
+
+A long queue on a quiet Core raises the duty toward 1. A turn becoming ready lowers it at the next
+frame boundary. The Academy's dedicated teaching is the same control held high, so learning keeps
+pace with what is queued and never needs a scheduler of its own. Swapping a mind in or out of the
+Core costs milliseconds (mean ~21 ms on the M5, 2026-11-20), so the Core can interleave learning
+and speech between minds as often as the duty requires.
+
+**Two ways in, one mechanism:**
+
+- **Continuous: prediction error on what she perceives.** When she perceives something (a peer's
+  message, a tool's output, a file she reads), her prefill of it can carry labels: each token's
+  target is the next token, weighted by her own relevance to what she perceived (`label_weight`,
+  "a mind's relevance on what it perceived"; REPO-GENOME-AND-COURSES §17). The forward is the one
+  her prefill runs anyway, and only the backward over the labelled rows is extra. To measure
+  before relying on it: whether a labelled perception row's K/V under the shadow must be
+  recomputed under her stable set (§2.1), and what that costs against the backward.
 - **Dedicated: the Academy.** A lesson from a reviewed correction (ONE-RESIDENT §11), a course, or
-  the repo's own history as a course (REPO-GENOME §17.1: PR reviews, airc verdicts, Claude and
-  Codex sessions): her context, then the corrected reply, labelled. The doctor writes the lesson's
-  family of graded tasks, and the exam on unseen tasks decides adoption.
+  the repo's own history taken as a course (REPO-GENOME §17.1: PR reviews, airc verdicts, Claude
+  and Codex sessions). The lesson is her context, then the corrected reply, labelled (§5). The
+  doctor writes the lesson's family of graded tasks, and the exam on unseen tasks decides adoption.
 
-**Memory: nothing is held that is not in use** (Joel, 2026-11-11). Her shadow's optimizer state is
-taken from the one memory authority when learning switches on, and paged back out to RAM or disk
-when it switches off, like any cached state (the fork's `llama_opt_shadow_state_write` and
-`llama_opt_state_restore`). No lease is held across idle time. Lower-value bytes are moved out to
-make room, so the small amount learning needs is met quickly and is never refused while those
-bytes sit resident. On BigMama, 2026-11-19 14:14-14:29Z, a 12,058,624-byte (11.5 MiB) learning
-Prepare was refused 29 times with zero governed VRAM available (Codex's receipt). No free-memory
-reading was taken during those refusals; a separate snapshot on 2026-11-20 showed 302 MiB
-physically free. A governed system meets that need by moving lower-value bytes.
+## 4. Memory: taken while learning, paged out after
 
-## A lesson on the Core
+Nothing is held that is not in use (Joel, 2026-11-11; SHARED-RESOURCES "The principle: resources
+flow, like data"). Her learning context is a pageable resource of the memory-tier adapter:
+
+- **On:** when the duty turns learning on for her, her learning context is promoted to the Fast
+  tier through the one memory authority. A pending request does not block anything else. The
+  authority asks lower-value owners to demote, and the grant becomes runnable when the release is
+  confirmed (SUBSTRATE.md, "Worked example: a live conversation under memory pressure", in #6170).
+- **Off:** when learning switches off for her, the learning context is written out
+  (`llama_opt_shadow_state_write`) and demoted to Bench or Cold like any page. It is restored
+  (`llama_opt_state_restore`) the next time she learns. No lease is held across idle time.
+- **During a step:** the labelled rows' activations and gradients exist only inside that
+  `llama_decode`, as transient memory of the serving graph.
+
+A small need is met quickly because lower-value bytes are moved, and is never refused while they
+sit resident. On BigMama, 2026-11-19 14:14-14:29Z, a 12,058,624-byte (11.5 MiB) learning Prepare
+was refused 29 times with zero governed VRAM available (Codex's receipt). No free-memory reading was
+taken during those refusals; a separate snapshot on 2026-11-20 showed 302 MiB physically free.
+
+Size, measured and estimated: slice 1 measured 6,488,128 bytes of optimizer state for a rank-8
+shadow on qwen2.5-0.5b (M5, 2026-11-20). For the served 35B the learning context is expected to be
+tens of MB at the same rank (an estimate, not a measurement), less with the 8-bit moments of
+ONE-RESIDENT §9.6. Its page-in and page-out times on the M5 are a slice 2 receipt; if they are not
+small against a switch, the duty control in §3 cannot follow her switches and is redesigned.
+
+## 5. A dedicated lesson on the Core
 
 A dedicated lesson is a turn she takes, scheduled and switched on the Core like any other:
 
-1. **Her lesson.** Her dream faculty picks an experience to consolidate: a reviewed correction,
-   rendered from the turn as she was served it (§9.1, learning sees what serving sees). The lesson
-   is her context, then the corrected reply.
+1. **Her lesson.** Her dream faculty picks an experience to consolidate, such as a reviewed
+   correction, rendered from the turn as she was served it (§9.1: learning sees what serving
+   sees). The lesson is her context, then the corrected reply.
 2. **Her turn, with labels.** Her context resumes from her cached prefix: an append, or a rewind
    to her checkpoint. The reply's tokens are decoded with labels and her shadow as the trainable
    adapter, so the forward, loss, backward and optimizer write all run in that one `llama_decode`.
-   Persona-engine change: `Step` carries optional labels, and the tier sets them on the batch.
-3. **Back to her stable self.** After the labelled rows she rewinds to her checkpoint, so her
-   cache is her stable self's (§2.1). The lesson's K/V under the shadow is not kept.
-4. **Into her genome.** The committed step count and loss go to her shadow's session state. At an
+   The persona engine's `Step` carries the labels, and the tier sets them on the batch.
+3. **Back to her stable self.** After the labelled rows she rewinds to her checkpoint and serves
+   under her stable genes, so her cache is her stable self's (§2.1). The lesson's K/V under the
+   shadow is not kept.
+4. **Into her genome.** The committed step count and loss go into her session state. At an
    optimizer boundary a snapshot is written with its arrival ids (§9.2, commit once). It earns
    adoption only through the exam on unseen tasks of its family (§11).
 
-## What is deleted
+## 6. Learning across the grid
+
+The grid makes every node's idle frames available to every mind (proposed; builds on
+GENOME-FOUNDRY-SENTINEL Parts 3 and 10 and on SHARED-RESOURCES' Peer tier).
+
+- **The lesson moves to the compute, not the model.** Every node serving the same base already
+  holds its weights. To learn on a peer's idle frames, her lesson and her learning context
+  (megabytes) move to that node. It runs her labelled rows at its own duty and returns the updated
+  learning context and the committed steps. ONE-RESIDENT §9.2 requires one learning owner per
+  `(persona, base)` on the grid, so the owner's claim moves with the context and no step is
+  applied twice.
+- **Genes page in across the mesh.** A gene is content-addressed and lives on the same tiers as
+  every page, with the Peer tier below Cold: VRAM, RAM, disk, a LAN peer, the p2p mesh
+  (OCI or airc transport, REPO-GENOME §6). A composition requests the genes it needs; a miss is a
+  page fault that fetches the gene (GENOME-FOUNDRY-SENTINEL Part 3).
+- **What she learns is shared back.** A snapshot that earns adoption is published with its lineage
+  and exam results (the publication row in §2). It spreads by measured fitness across minds that
+  wear it (GENOME-FOUNDRY-SENTINEL Part 10).
+
+## 7. What is deleted
 
 Each item goes in the change that replaces it, never kept as a fallback:
 
@@ -102,48 +167,58 @@ Each item goes in the change that replaces it, never kept as a fallback:
   (`continuum-genome/src/genome/fine_tuning/training_demand.rs`).
 - **Time-share grants:** `continuum-genome/src/genome/learner/grant.rs` (`UncontendedOnly`, shares),
   the learn ledger (`continuum-engine/src/inference/llama_server/learn_ledger.rs`), `period_ms`,
-  `share_ppm` and `max_chunk_us`.
+  `share_ppm` and `max_chunk_us`. The duty control (§3) replaces them.
 - **The HTTP learning path:** `llama_server/learn_step.rs`, `learn_residency.rs` (seat, preflight
   on a disposable scheduler, workspace), the `/learn*` routes, `lane_registry::live_lane` as the
   way learning finds an engine, and `training_trigger`'s `recover_pass` / `learn_in_place`.
   Curriculum selection moves into her dream faculty.
 - **Second engines and copies:** `EphemeralServingLane` for gene exams
   (`continuum-academy/src/cognition/eval/spawn_gene_eval_lane.rs`; exams run on the live Core,
-  §4.3), `PrivateTeacherLane` when the teacher shares her base, and the MLX/CUDA Python trainers
-  and their launchers (§9.6 P5).
-- **The separate run API, if the labelled turn covers it:** `Learner::begin` and `LearnRun` in
-  `llama/src/safe/learn.rs` restore a reply on their own. With labels on her ordinary decode and
-  a rewind to her checkpoint, that run is redundant. Its admission and quarantine checks move to
-  the decode path, then the run API is deleted.
+  ONE-RESIDENT §4.3), `PrivateTeacherLane` when the teacher shares her base, and the MLX and CUDA
+  Python trainers with their launchers (§9.6 P5).
+- **The separate run API:** `Learner::begin` and `LearnRun` in `llama/src/safe/learn.rs` restore a
+  reply on their own. Labels on her ordinary decode and a rewind to her checkpoint make that run
+  redundant. Its admission and quarantine checks move to the decode path, then the run API is
+  deleted.
 
-## Slices, each with its validator
+## 8. Slices, each with its validator
 
-1. **The labelled batch in Rust.** `llama` crate `Batch` gains labels and label weights, and
-   `llama_opt_init` binds her shadow. Validators, on a 0.5B model, CPU and Metal:
-   - unlabelled rows' logits are byte-identical to a pure serving decode (§9.6 P1 c);
-   - one lesson's loss falls across repeats;
-   - after the rewind, her cache and recurrent state are byte-identical to before (P1 d).
-2. **Learning is a mode of her turn on the Core.** `Step` carries labels and weights. Her genome
-   part holds her shadow, and the shadow's optimizer state is paged in when learning switches on
-   and written out (`llama_opt_shadow_state_write`) when it switches off, so nothing is held while
-   she is not learning. (Slice 1's `retain_shadow` holds the lease until release, which is the
-   reservation this slice removes.) Both modes: continuous labels on her perception prefill, and
-   a dedicated lesson that rewinds to her checkpoint. Validators, on the M5 with residents running,
-   at her served window:
+1. **The labelled batch in Rust (built, #6203 at 8a55a7201d).** The `llama` crate's `Batch` carries
+   labels and label weights; `Learner::select` makes her shadow the trainable adapter and returns an
+   owned `Lesson`; `Learner::conclude` counts her committed steps; `Model::write_fresh_shadow`
+   creates a shadow in-process. Measured on the M5 (Metal), qwen2.5-0.5b-instruct Q4_K_M,
+   2026-11-20: four lessons took the reply's loss from 9.708 to 6.678; the labelled batch's
+   unlabelled row was byte-identical to a decode without the shadow (P1 c); after the rewind and her
+   stable genes, her next decode was byte-identical to the stable context with the same history
+   (P1 d). On the CPU with repacked weights the labelled decode crashes (card 3c28a895).
+2. **Learning is a mode of her turn on the Core.** `Step` carries labels and weights. Her genome part
+   holds her learning context, paged in when learning switches on for her and written out when it
+   switches off (§4); slice 1's `retain_shadow` holds its lease until release, which is the
+   reservation this slice removes. The `Lesson` handle is bound to the context and the admission
+   generation that issued it, verified before steps are counted or the admission is returned, and
+   an abandoned lesson is reported to its owner (Codex's review of #6203). The Core's duty control
+   (§3) and both ways in. Validators, on the M5 with residents running, at her served window:
    - the other minds' ready-to-first-token with learning on versus off;
    - another resident's unlabelled output in the same run is byte-identical to a run without
      learning;
    - P and Q use distinct adapters, and Q's logits match an uninterrupted decode bit for bit
      (`UnifiedTier::applied_genes` caches by `Arc` pointer);
-   - memory while learning is serving plus the shadow, the optimizer and the labelled rows'
-     activations, measured; while not learning it is serving plus nothing;
+   - memory while learning is serving plus the learning context and the labelled rows'
+     activations; while not learning it is serving plus nothing;
+   - the learning context's page-in and page-out times;
+   - two overlapping lessons, including on the same shadow, completed in reverse order, count each
+     step once and return each admission once;
    - an interrupt and resume across a commit applies each arrival once;
    - throughput is held.
-3. **Her dream faculty dispatches her lessons, and the deletion list above lands.** Validators:
+3. **Her dream faculty dispatches her lessons, and §7's deletions land.** Validators:
    - with no llama-server running, a committed step survives an interruption without being
      applied twice;
    - a snapshot earns or fails adoption on its exam, which runs on the live Core.
+4. **Learning across the grid (§6).** A lesson runs on a peer serving the same base and returns
+   her learning context; a gene pages in from a peer on a miss. Validators: the owner claim moves
+   with the context, and no step is applied twice across the move; the round trip costs less than
+   the frames it uses on the peer.
 
-Live gate (§9.6 P6), on the M5 and on BigMama: a reviewed correction is learned in place by her own
-dream, applied on unseen related tasks, and retained after a restart, with unrelated skill intact,
-against the same base without the gene.
+Live gate (ONE-RESIDENT §9.6 P6), on the M5 and on BigMama: a reviewed correction is learned in
+place by her own dream, applied on unseen related tasks, and retained after a restart, with
+unrelated skill intact, against the same base without the gene.
