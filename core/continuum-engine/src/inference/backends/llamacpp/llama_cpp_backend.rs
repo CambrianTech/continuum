@@ -325,7 +325,7 @@ impl LlamaCppBackend {
             start.elapsed().as_millis()
         ));
 
-        // Sample-until-done loop. Mirrors LlamaCppBackend::generate but
+        // Sample-until-done loop. Uses the native sampler and
         // single-seq, no scheduler. EOG / max_tokens / stop-sequence are
         // the three exit conditions, same shape.
         let mut sampler = if sampling.temperature <= 0.0 && sampling.grammar.is_none() {
@@ -498,35 +498,6 @@ impl LlamaCppBackend {
         allocation: GenerationAllocation,
     ) -> Result<tokio::sync::watch::Receiver<super::super::persona_scheduler::EngineState>, String> {
         Ok(self.scheduler(allocation)?.state())
-    }
-
-    /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
-    /// time, the next waits its turn) and tokens stream back as they are sampled. Concurrent
-    /// generate() calls are served one after another on the one context.
-    ///
-    /// `active_loras` is `(id, scale)` pairs naming genes previously paged
-    /// in via [`ensure_adapter`]. They are resolved to live adapter handles
-    /// and applied context-level by the scheduler before decode (genome
-    /// paging). A requested id that was never `ensure_adapter`'d is a hard
-    /// error — never a silent base-model run (Rule 2: fail loud).
-    pub fn generate(
-        &self,
-        allocation: GenerationAllocation,
-        prompt: &str,
-        max_tokens: usize,
-        sampling: SamplingConfig,
-        stop_sequences: &[&str],
-        active_loras: &[(String, f32)],
-    ) -> Result<(String, usize), String> {
-        futures::executor::block_on(self.submit_for_persona(
-            allocation,
-            None,
-            TurnPrompt { text: prompt, stable_prefix: None },
-            max_tokens,
-            sampling,
-            stop_sequences,
-            active_loras,
-        )?.collect())
     }
 
     /// Prepare and enqueue on a blocking worker. The caller owns the returned event receiver.
