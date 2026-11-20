@@ -259,13 +259,13 @@ impl ResourceLeaseLedger {
     /// grants together. So each grant, on either axis, spends the shared headroom the moment it is
     /// made, once, and the next sample takes over as its bytes land (Codex on #6124).
     pub fn committed(&self, kind: ResourceKind) -> u64 {
-        self.remaining_commitment(&self.pool_kinds(kind), self.physical_used(kind), 0, 0)
+        self.remaining_commitment(&self.pool_kinds(kind), self.physical_used(kind), 0)
     }
 
-    fn remaining_commitment(&self, kinds: &[ResourceKind], resident: u64, released: u64, released_grant: u64) -> u64 {
+    fn remaining_commitment(&self, kinds: &[ResourceKind], resident: u64, released_grant: u64) -> u64 {
         let promised = kinds.iter().map(|k| self.granted(*k)).fold(0u64, u64::saturating_add);
         let landing = kinds.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, u64::saturating_add);
-        promised.saturating_sub(released_grant).max(resident.saturating_sub(released).saturating_add(landing))
+        promised.saturating_sub(released_grant).max(resident.saturating_add(landing))
     }
 
     /// The pool `kind` draws on: the kind it is backed by, or itself.
@@ -319,17 +319,18 @@ impl ResourceLeaseLedger {
     /// its backing's availability, so the shared bytes are never spent twice and a process outside
     /// ours is charged to the host, never to the GPU's working set.
     pub fn available(&self, kind: ResourceKind) -> u64 {
-        self.headroom_after_release(kind, 0, 0)
+        self.headroom_after_release(kind, 0, |_, resident| resident)
     }
 
-    fn headroom_after_release(&self, kind: ResourceKind, released: u64, released_grant: u64) -> u64 {
+    fn headroom_after_release(&self, kind: ResourceKind, released_grant: u64, project: impl Fn(&[ResourceKind], u64) -> u64) -> u64 {
         let root = self.pool_root(kind);
-        let host = self.remaining_commitment(&self.pool_kinds(root), self.physical_used(root), released, released_grant);
+        let pool = self.pool_kinds(root);
+        let host = self.remaining_commitment(&pool, project(&pool, self.physical_used(root)), released_grant);
         let host_room = self.capacity(root).saturating_sub(host);
         if root == kind {
             return host_room;
         }
-        let device = self.remaining_commitment(&[kind], self.measured(kind), released, released_grant);
+        let device = self.remaining_commitment(&[kind], project(&[kind], self.measured(kind)), released_grant);
         self.capacity(kind).saturating_sub(device).min(host_room)
     }
 
@@ -474,7 +475,14 @@ impl ResourceLeaseLedger {
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         let resident = self.measured_by(consumer_id, kind);
         let landed_grant = self.granted_to(consumer_id, kind).min(resident);
-        self.headroom_after_release(kind, resident, landed_grant)
+        self.headroom_after_release(kind, landed_grant, |axes, used| {
+            // A footprint estimate can exceed the physical sample. Each constrained
+            // pool retains the other measured allocations that actually draw from it.
+            let retained = self.measured.iter().flat_map(|(owner, footprints)| {
+                footprints.iter().filter(move |f| axes.contains(&f.kind) && (owner != consumer_id || f.kind != kind))
+            }).map(|f| f.bytes).fold(0u64, u64::saturating_add);
+            used.saturating_sub(resident).max(retained)
+        })
             .saturating_sub(self.reserved_headroom_excluding(consumer_id, kind))
     }
 

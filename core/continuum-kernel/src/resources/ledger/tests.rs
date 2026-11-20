@@ -138,6 +138,23 @@
             }
         }
 
+        #[test]
+        fn inflated_residency_cannot_reclaim_a_peers_measured_bytes() {
+            let gpu = ResourceKind::Vram;
+            for backing in [None, Some(ResourceKind::Ram)] {
+                let root = backing.unwrap_or(gpu);
+                let mut ledger = ResourceLeaseLedger::new();
+                ledger.set_capacity(gpu, 100);
+                ledger.set_capacity(root, 100);
+                ledger.set_backing(gpu, backing);
+                ledger.set_physical_used(root, 90);
+                ledger.set_measured("serving", vec![ConsumerFootprint { kind: gpu, bytes: 100, detail: "model estimate".into() }]);
+                ledger.set_measured("embed", vec![ConsumerFootprint { kind: root, bytes: 10, detail: "embedding".into() }]);
+                ledger.reserve("embed", root, 10);
+                assert_eq!(ledger.budget_for_replacing("serving", gpu), 90);
+            }
+        }
+
         // what this catches: someone reaching for the replace-myself budget on the ACQUIRE
         // path. A lease granted against bytes not yet released is a real over-commit — the
         // add-back is only valid for a DECISION about what to become next.
