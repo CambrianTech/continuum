@@ -13,6 +13,19 @@ Companions (precedence-winning on their topics): [CONTINUUM-ENGINE](CONTINUUM-EN
 
 ---
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. Invariants (the bar — hold every line to these)](#1-invariants-the-bar--hold-every-line-to-these)
+- [2. Biology → RTOS → Rust (the realization, not metaphor)](#2-biology--rtos--rust-the-realization-not-metaphor)
+- [3. Architecture](#3-architecture)
+- [3.1 Information flow: enrichment, not pipelines](#31-information-flow-enrichment-not-pipelines)
+- [3.2 Cause and effect: invalidation propagation, not servicing](#32-cause-and-effect-invalidation-propagation-not-servicing)
+- [3.3 Consolidation + shared elements: the channel as a reference-passed frame](#33-consolidation--shared-elements-the-channel-as-a-reference-passed-frame)
+- [4. Slice plan](#4-slice-plan)
+- [5. Code map](#5-code-map)
+
 ## 1. Invariants (the bar — hold every line to these)
 
 These are not goals; they are constraints. A change that violates one is wrong.

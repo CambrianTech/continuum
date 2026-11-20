@@ -2,6 +2,16 @@
 
 The ORM owns entity schemas, queries, durable representations and storage migrations. The [engine manual](../architecture/CONTINUUM-ENGINE.md) owns execution, resource scheduling and mind residency.
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [Request routing](#request-routing)
+- [Schema and row decoding](#schema-and-row-decoding)
+- [Database concurrency](#database-concurrency)
+- [Migration and verification](#migration-and-verification)
+- [Design history](#design-history)
+
 ## Request routing
 
 External callers pass an opaque database handle to a data or vector command. The host resolves that handle against its storage configuration. The command handler decodes its typed parameters and delegates to the storage adapter. Rust callers working with typed entities can use the ORM store directly. This keeps backend paths and SQL inside their owners.

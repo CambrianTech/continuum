@@ -14,6 +14,27 @@
 
 ---
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. The Principle](#1-the-principle)
+- [2. What A Module Is](#2-what-a-module-is)
+- [3. Addressing: Two Names, Two Purposes](#3-addressing-two-names-two-purposes)
+- [4. The Kernel Surface](#4-the-kernel-surface)
+- [5. Composition: Commands Call Commands](#5-composition-commands-call-commands)
+- [6. The Daemon: Where The Module's State Lives](#6-the-daemon-where-the-modules-state-lives)
+- [7. Events: The Side Channel](#7-events-the-side-channel)
+- [8. Trust Through Tests](#8-trust-through-tests)
+- [9. Distribution: Pure-Rust For Built-Ins, WASM For Shipped](#9-distribution-pure-rust-for-built-ins-wasm-for-shipped)
+- [10. The Recursive Bootstrap](#10-the-recursive-bootstrap)
+- [11. Lifecycle, Dependencies, And Boot](#11-lifecycle-dependencies-and-boot)
+- [12. Migration Path From Today](#12-migration-path-from-today)
+- [13. Open Questions](#13-open-questions)
+- [14. What This Replaces, Defers To, And Is Replaced By](#14-what-this-replaces-defers-to-and-is-replaced-by)
+- [15. Glossary](#15-glossary)
+- [16. Authoring Rules (Tl;dr)](#16-authoring-rules-tldr)
+
 ## 1. The Principle
 
 > Everything is a module. Everything you do to a module is a command. The kernel has zero privileged operations.

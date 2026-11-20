@@ -7,6 +7,15 @@ migration), Cormac (the dream and learning consumer; chunk yield and wake semant
 (shared task lifetime and terminal delivery; admission and the physical grant). Each owner
 reviews the other two boundaries. THE-WHOLE-MIND §1b is the why; this is the what.
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. Types (owned by `continuum-kernel/src/runtime/stage/`)](#1-types-owned-by-continuum-kernelsrcruntimestage)
+- [2. Contracts at the three boundaries](#2-contracts-at-the-three-boundaries)
+- [3. First migrations (Fable)](#3-first-migrations-fable)
+- [4. The shared validator (all three owners)](#4-the-shared-validator-all-three-owners)
+
 ## 1. Types (owned by `continuum-kernel/src/runtime/stage/`)
 
 ```rust

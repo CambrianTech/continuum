@@ -5,10 +5,30 @@ mind's context, the engine-facing data path) and the plan that gets it built. It
 documents that overlapped: `CBAR-SUBSTRATE-ARCHITECTURE.md` (sections 2, 3, 7), `SERVING-ENGINE.md`
 (section 4) and `MIND-CONTEXT-AND-ENGINE-CONFIG.md` (section 5). Their text is carried here whole,
 once; their order-of-work and gap sections are merged into section 8. ORM and database schema design
-is not part of this document; it is `docs/infrastructure/RUST-ORM-ARCHITECTURE.md` (section 6 names the boundary).
+belongs to the [Rust ORM manual](../infrastructure/RUST-ORM-ARCHITECTURE.md). Section 6 describes the boundary.
 
 **Scope:** fast LLM serving and cache work: multi-persona streaming, KV paging and fast context
 switches, prefix reuse, the context codec, admission, and embeddings as GPU work.
+
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. Thesis](#1-thesis)
+- [2. Non-negotiable: every optimization, exhausted](#2-non-negotiable-every-optimization-exhausted)
+- [3. The substrate](#3-the-substrate)
+- [4. The serving engine](#4-the-serving-engine)
+  - [4.1a MindMemory, sequence tables and paging](#41a-mindmemory-the-seq_table-and-pager-owner-over-todays-llama-server-2026-10-27)
+  - [4.1c Queues and readiness signals](#41c-the-engine-is-fed-by-queues-and-signals-never-held-by-permits-2026-10-28)
+  - [4.7 Memory accounting across minds](#47-memory-is-conserved-across-minds-and-the-engine-says-what-it-holds-2026-11-03)
+  - [4.8 Admission ownership (proposed)](#48-a-mind-is-never-refused-one-admission-owner-2026-11-11-proposed)
+  - [4.9 Mind switching (design for review)](#49-minds-share-the-engine-by-switching-never-by-shares-2026-11-15-design-for-review)
+  - [4.10 Optimization order](#410-fast-minds-concurrently-every-optimization-its-state-and-the-order-2026-11-15)
+- [5. A mind's context and the engine it runs on](#5-a-minds-context-and-the-engine-it-runs-on)
+- [6. The data path (engine-facing)](#6-the-data-path-engine-facing)
+- [7. Measurement and validators](#7-measurement-and-validators)
+- [8. The plan](#8-the-plan)
+- [See also](#see-also)
 
 ## 1. Thesis
 
