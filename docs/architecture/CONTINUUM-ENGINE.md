@@ -1348,1404 +1348,599 @@ tiers and the rest) converge on it and are deleted; the gate goes to zero.
 
 Items 0-5 are plan rows CX-2, CX-3, CX-4, SV-CK, SV-LEDGER and SV-S7 (sections 8.2 and 8.3).
 
-### 4.8 A mind is never refused: one admission owner (2026-11-11, proposed)
+#### 4.7.6 The engine's host memory is one streaming pool, never two heaps (2026-11-16, for review)
 
-Joel, 2026-11-11: "These refusals are supposed to be impossible"; "either expand for it or collapse
-budget"; "clamps are evil"; "All across the board dumb decision making to remedy or clip for the current
-bug. Zero understanding of big picture." Measured the same day: BigMama 13:42Z, 0 acts in an hour,
-Sahar 183 turns asked and 0 served, Kimi 55 and 0 (`NeedAboveCeiling 116240/58112` while her view
-fit 29,056). Four patches that week (#5926, #5931 and its three follow-ups) each shaped her need one
-more way: wish, target, headroom, held need, floor, bound, per-sequence ceiling. The stack of shaping
-layers is the defect.
+Joel, 2026-11-16: "you need to focus on the graphics engine level design". A game engine never lets a resource
+class grow until the OS swaps: textures stream inside one pool of a fixed size, a request that would overflow it
+evicts the least valuable page first, the pool reports what it holds every frame, and exceeding the budget is a bug a
+validator catches, never a cost the frame pays. Section 2.3 already maps this (virtual texturing), and ONE-BUDGET
+slice 3b already designs the solver that values every holder. What was never built is the pool itself in the engine,
+so the running engine still has two independent heaps.
 
-#### 4.8.1 From her side
+**What happened** (the M5, 2026-11-16, canary 73d999387 then 33b21b8cf, engine pid 64859 up since 11-15):
 
-She wants to act. The engine holds some memory now. She is given what she needs if it exists, and
-otherwise all that exists, and her view collapses to fit what she was given (the codec's levels, oldest
-first, never her newest). Nothing refuses her and nothing parks her. When every byte is held by minds
-mid-act, her request waits in the engine's own queue for the next freed memory (the engine batches;
-no gate in front of it, section 4.1c), never a refusal.
+| When (Z) | Engine compressed | Swap used | Decode | A resident's act |
+|---|---|---|---|---|
+| 08:49 | 9.2 GB (RSS 33 GB) | 5.9 GB | 2.6 tok/s, expected 56 | Atlas: 1,508 s, 998 s of it decoding 2,593 tokens |
+| 12:56 | 12 GB | 8.7 of 9.2 GB | 1.7 tok/s | median 811 s, p90 1,362 s over the hour |
 
-#### 4.8.2 One owner, two inputs
+The residents' own path was healthy at the same time (0 lane-starved, 0 dropped, prefix reuse 72-84%): the loss was
+the decode step waiting on decompression and swap. A stop and fresh engine at 13:00:18Z (`continuum stop --engine`,
+`continuum start`) freed it; the KV each mind held was the price (4.9 is the stop that keeps it).
 
-- **Her need, measured** (`Observed`): an irreducible part (what her newest turn cannot be sent below)
-  and a collapsible part above it. A wish no turn has measured is a collapsible part, nothing more.
-- **What the engine can give her now**, as the engine reports it (`max_tokens_per_sequence`, free
-  cells, section 4.7): never a launch-time division of the pool by a slot count.
+**Why: two holders, sized apart, each a pool that never evicts against the other.** The engine relaunched at 13:01Z
+runs `--cache-ram 9494` (the prompt cache, 9.5 GB of host RAM) and `--ctx-checkpoints 32 --parallel 5` (up to 160
+checkpoints at the ~95 MB each of 4.7.1, ~15 GB). Each is sized by its own derivation (`host_prompt_cache_mib`, the
+checkpoint count), neither knows the other, and nothing holds their sum: with the weights (20.7 GB), draft (3.15 GB),
+projector (0.90 GB), KV and graph, the engine may claim ~53 GB of a 64 GB machine that also runs the core and the
+user's own programs. The core also cannot see what it got: its launch probe says "applied limit and serialized-state
+telemetry are not exposed by current engine API" (`serving.prompt_cache.launch`, 13:01:01Z).
 
-The owner grants `min(need, available)` and never below the irreducible part. Growth past her need
-comes from spare memory by predicted use, and shrinks the same way (computed once, phased out by
-usage and prediction).
+**The design: one pool, one budget, eviction by value at the allocation, reported every request.**
+1. *One host pool in the fork.* Prompt-cache entries, checkpoints and RAM pages are resource kinds of ONE host pool
+   with ONE byte budget. There is no per-holder size and no count: `--cache-ram` and `--ctx-checkpoints` as separate
+   limits are deleted (slice 3b already lists their derivations for deletion). RAM pages join the accounting contract
+   now as a kind; allocating them stays with the pager that owns paging (4.1a), never a second pager or heap here.
+2. *Bytes are reserved before they exist.* A checkpoint save or cache store first reserves its full peak in the pool:
+   the serialized size, its temporary serialization buffers, the overlap while a replacement and the entry it
+   replaces are both alive, and the allocator capacity it will hold. Reserving evicts the lowest-valued evictable
+   residents until the reservation fits; the copy runs only inside a granted reservation, the reservation is rolled
+   back on failure, and the old valid entry stays until its replacement is committed. A size check after serializing
+   would already have allowed the peak that swaps. This runs on the engine's thread at the allocation, the way a
+   texture streamer evicts before it uploads, never by a later sweep. The pool owns reservations and eligibility; the
+   engine thread owns native state mutation; disk work, when it comes, goes through the existing asynchronous
+   completion owner, never blocking decode.
+3. *Pinned is not evictable.* A checkpoint being restored, a cache entry an act is resuming from, and a save in
+   flight are pinned. An allocation that cannot fit after legal eviction of every unpinned resident is a typed refusal
+   (oversized, or pinned pressure), counted, never an overflow. A shrink below what pinned residents hold cannot apply
+   at once: it returns a typed outcome naming the target, the committed, pinned and reserved bytes (applied, pending,
+   or refused), and the pending part completes through the existing owner as physical custody ends.
+4. *One value unit: expected seconds saved per byte kept.* A checkpoint's value is the prefill time it saves (the
+   tokens from its position to its sequence's end, at the measured prefill rate) times the measured chance its
+   sequence resumes from it, per byte it holds; a cache entry's is its measured restores times the prefill time each
+   saved, per byte. Each value carries its provenance; an unmeasured resident is in an explicit `Unmeasured` state,
+   never a guessed number; ties break deterministically (oldest use first, then id). This is the one ordering until
+   the core's solver supplies values (slice 3b): no second, independent sizing policy in the meantime.
+5. *The budget is the core's, and it moves live.* The authority's device tier grants serving's host pool its bytes
+   (the machine's measured memory less every other claim, the user's own programs included, ONE-BUDGET acceptance);
+   the core sets it over the engine's control seam and may raise or lower it at any time without a relaunch (S2's
+   `reconfigure`, 4.5), each grant carrying a generation.
+6. *The pool says what it holds, keyed by instance and generation.* `/props` (and `/slots` per sequence) reports the
+   budget as applied with its grant generation and the engine instance, the committed, reserved and pinned bytes by
+   kind (cache, checkpoint, page), the count per kind, and the evictions and typed refusals since start. The core
+   matches each readback to the engine instance and grant generation it sent (through a concurrent resize or a
+   restart) and refuses to treat an unreported or stale limit as applied.
+7. *Two invariants, measured separately.* (a) The pool's accounting: committed plus reserved bytes stay at or under
+   the grant at every allocation, asserted in the fork. (b) The process: its private, resident, compressed and swapped
+   bytes are measured on their own, because logical pool bytes do not bound them (scratch and graph allocations,
+   allocator-retained capacity, mapped weights and the OS's compression are outside the pool); a process that grows
+   past its fixed holders plus the grant is a defect with a probe (`serving.host_pool.over_budget`), never a cost. The
+   simulator (7.0) proves admission and accounting: a day of the four residents' captured requests against a grant a
+   quarter of their unbounded need, every allocation within the grant, everything served that fits the grant after
+   legal eviction of unpinned residents, and only oversized or pinned-pressure refusals. Decode at par and a flat
+   process footprint are proven by native replay and the live read, not by the simulator.
 
-#### 4.8.3 What this deletes
+**What this makes of the pieces already in flight.** Placed checkpoints (fork #121) stop making the worthless ones;
+the pool makes even a wrong placement unable to swap the machine. The safe stop (4.9, #6042) keeps a mind's KV across a
+restart; the pool removes the reason a restart was the only relief. Slice 3b's solver later supplies the values and
+the budget; the pool is the primitive it drives, the way a renderer drives a streaming pool it does not reimplement.
 
-- The per-slot ceiling branch (`continuum-serving` `grants.rs`: `served_context_window` when the pool
-  is not shared): the limit is what the engine reports for one sequence.
-- `Waiting::NeedAboveCeiling` / `NeedAbovePool` as parked states: a collapsible need never waits on
-  them. An irreducible part larger than anything the engine can hold is a typed condition she and the
-  human see (a placement on a bigger node or the grid, or a pool that grows), never silence.
-- Wish versus held versus declared as separate admission paths, the target/headroom shaping and the
-  clamps between them: one need type, one rule.
+**Order and owners** (agreed with Codex on #6081, 2026-11-16). (1) Fable: the fork's pool (reservations, pinning,
+eviction by value per byte, typed outcomes, the instance- and generation-keyed report), proven by native tests that
+fill a small grant with checkpoints and cache entries under concurrent saves and restores, and assert the accounting
+invariant at every allocation, the highest value per byte kept, and only typed refusals. (2) Codex: the core's
+authority grant to the pool, applying it live with its generation and reading it back by instance, and the deletion of
+both independent sizers (`host_prompt_cache_mib`'s figure and the checkpoint-count derivation). (3) The simulator
+scenario above as the accounting gate; then native replay for decode at par, and the live read: an engine up 24 h on
+the M5 with its process footprint flat, swap not growing, and decode at par.
 
-#### 4.8.4 Expand first, collapse second: memory ebbs and flows with the minds' demand
+**Wire contract (fork half, for Codex's core half; same control seam as `POST /engine/decode-set`, #120).**
+- *Identity.* An engine instance is `{pid, started_s}` (the core's `EngineIncarnation`). Every request names the
+  instance it means and the grant generation it carries; a request for another instance is refused, never applied.
+- *Launch.* `--host-pool-bytes N` is the startup fact: the instance's generation-0 grant, set by the core from the
+  authority at launch. There is no other size: `--cache-ram` and `--ctx-checkpoints` as limits are gone. An engine
+  launched without it refuses to start (typed), never picks a default.
+- *Set.* `POST /engine/host-pool` with `{"instance": {"pid", "started_s"}, "generation": g, "budget_bytes": B}`.
+  `B = 0` is legal: every unpinned resident is evicted and pinned bytes drain as they release. Generations rise
+  strictly: `g` below the applied generation is refused `stale_generation`; `g` equal to it with the same `B` is an
+  idempotent repeat that returns the current state without acting; `g` equal with a different `B` is refused
+  `generation_conflict`.
+- *Outcome (the reply, and `/props.host_pool` at any time).* `{"instance", "generation", "outcome", "target_bytes",
+  "ceiling_bytes", "committed_bytes", "reserved_bytes", "pinned_bytes", "by_kind", "since_start"}` where:
+  - `outcome` is `applied` (committed + reserved <= target; ceiling = target), `pending` (pinned or in-flight reserved
+    bytes exceed the target; ceiling = the bytes still held above it, falling as custody ends; the same generation
+    reports `applied` once reached), or `refused` with `{"kind": "wrong_instance" | "stale_generation" |
+    "generation_conflict"}` and the state left exactly as it was;
+  - `pinned_bytes` is a subset of `committed_bytes`, never added to it;
+  - `by_kind` has `cache`, `checkpoint` and `page`, each `{committed, reserved, pinned, count}`;
+  - `since_start` counts `evicted` per kind and `refused` per cause (`oversized`, `pinned_pressure`).
+- *Per sequence.* `/slots` gives each slot's checkpoints with their bytes and whether each is pinned, beside the
+  positions #121 reports.
+- *The core's reading.* The core applies a grant only when the reply (or a later `/props`) names the same instance
+  and generation; anything else is not applied. A restart is a new instance, so its generation 0 is the launch grant.
 
-Joel, 2026-11-11: "If context switching and caching of tokens already translated is fast and using a
-graphics pipelined approach, the cost of taking more of the pool should be negligible, if it's
-necessary to solve the problem. Yeah collapsing is important too, very much per our flexbox, but as
-you know, pulling off disk cache is ms fast. It ebbs and flows as the demand of the minds require."
+**Revision: where the bytes live, and no allocation or lock on the path** (Joel, 2026-11-16: "Strings are the
+enemy. Memory allocation and locking is the enemy. We don't have a data center man."; "It's graphics engine running
+ml efficiently, not some gigantic 1.5tb vram device and rack"). The contract above stands; its first cut (fork #136)
+held each resident in its own heap vector behind a `shared_ptr`, returned a fresh eviction list per reservation, kept
+residents in a node-allocating map and locked the pool on every call. A texture streamer does none of that:
+- *One arena, carved once.* The grant is one host region the pool maps at launch (on unified memory the same
+  physical pages the GPU reads), carved into fixed blocks. A resident is a typed handle `{block, count, generation}`
+  into it, never an owning container; a stale handle (its generation moved on) resolves to nothing. Raising or
+  lowering the grant remaps the region's tail; it never reallocates what lives below.
+- *Fixed tables, no per-call allocation.* Residents, reservations and the free list are fixed arrays sized from
+  the grant at launch; eviction candidates come from an intrusive order kept on the residents themselves; a
+  reservation's evictions are written into storage the caller owns. Nothing on the allocation path touches the heap.
+- *One owner thread, no lock.* The pool belongs to the engine thread that mutates native state (as above). Other
+  threads (page IO, the control seam) send it request frames and receive completions over the frame rings of
+  4.7.12; nobody else touches its tables, so there is no mutex to take.
+- *Typed outcomes, no strings.* Every result is a status enum of the API that returns it (admitted, oversized,
+  pinned_pressure, awaiting_release; applied, pending, wrong_instance, stale_generation, generation_conflict;
+  committed, unknown_reservation, larger_than_reserved). Names are rendered only at the export edge (`/props`).
+- *Proof.* The native test fills a small grant under concurrent save and restore requests over the rings, asserts
+  the accounting invariant at every allocation, and counts heap allocations on the path with an interposed
+  allocator: zero after launch.
 
-So "available" in 4.8.2 is not only the free cells: it is the free cells plus everything held by minds
-that are not acting now, because their state pages to RAM or disk (`llama_state_seq_*`, the page
-store) and back in milliseconds, and their prefix stays cached. When her need exceeds the free cells,
-the owner pages out the coolest holders (by measured activity temperature, goal 9: aging means none is
-starved) until her need fits, and she is granted it. Her view collapses only when the minds holding
-memory are all acting at once and the pool still cannot hold her need: a flexbox grows items into free
-space first and shrinks them only when the container is full. The cost of a page-out and its later
-page-in is measured per node and is the only thing that can make collapsing cheaper than expanding.
+**Receipt since the stopgap restart.** The fresh engine (pid 97364, 13:01Z) decoded at 17.4 and 39.1 tok/s on its first
+acts, against 1.7 before; five minutes after launch it already held 7.6 GB compressed as the minds re-prefilled cold.
+A restart buys hours, not the fix.
 
-Taken to its end (Joel, 2026-11-11: "expanding the next persona in that lane isn't a huge cost either.
-So if you shrink the others, pull what you need to move forward with the persona needing it, next
-context switch for any of those reduced persona can get it back. They could all get the whole pool if
-you were smart"): a grant is not a standing share. It is held for the act that uses it: the mind
-acting now may take up to the whole pool, the minds not acting page out, and each gets her memory
-back at her own next context switch, in milliseconds, the way a GPU time-slices contexts. Only minds
-acting at the same moment share the pool (the engine batches them, section 4.1c); a mind acting alone
-has all of it. So every mind can have the whole pool, one act at a time, and nothing holds memory
-between its acts except what predicted reuse keeps cached.
+#### 4.7.7 The decode thread only submits; bytes move by DMA (2026-11-16, for review)
 
-#### 4.8.5 Gate
+Joel, 2026-11-16: "We should target 100 or more tok/sec ... Every wait considered suspect. Like we are building
+unreal engine. Consider anything the cpu is doing and whether it can be avoided. Anything contesting"; "That you
+have contention means you're not coding correctly. DMA too." The M5 Pro has 18 CPU cores (6 performance, 12
+efficiency), a 20-core GPU and 64 GB of unified memory. Contention on it is a defect of the code, never of the
+machine.
 
-On BigMama and the M5 over an hour: capacity refusals 0; every mind with a turn asked takes an act;
-no grant below a mind's irreducible part; no view collapsed while another mind's idle state held
-the memory she needed; the admission code is smaller than before it.
+**Measured** (the live engine pid 97364, `sample` for 8 s at 13:2xZ, three slots processing): the decode thread
+(`server_context_impl::update_slots`) was busy 4,304 samples. About 55% was the GPU working (`ggml_metal_synchronize`
+inside `llama_decode`); the rest was CPU work in series while the GPU waited: building and splitting the graph and the
+attention mask (`set_input_kq_mask_impl`, `ggml_backend_sched_split_graph`, `ggml_gallocr_alloc_graph`) about 20%,
+sampling (`common_sampler_sample`: the penalties pass and a partial sort of the 150k-token vocabulary, per token, per
+sequence) about 14%, `create_checkpoint` serializing state about 8%, and `seq_rm`, batch setup and log formatting
+(`vfprintf` on the hot path). The ggml CPU thread pool spent 3,257 samples spin-polling (`--poll` defaults to 50) for
+work it almost never gets, burning the power budget the CPU and GPU share; its only real op was `get_rows`.
+~~The GPU idles for roughly 40-45% of the decode loop.~~ **Retracted 2026-11-16** (Codex's review of 9d001e9a4): a CPU
+stack sampled in `ggml_metal_synchronize` measures the host waiting at that call, not GPU busy time, and command
+buffers execute while `llama_decode` is still encoding. The CPU percentages above are host observations only; GPU
+utilization is measured from command-buffer timestamps (4.7.9, `/props.gpu_time`).
 
-### 4.9 Minds share the engine by switching, never by shares (2026-11-15, design for review)
+**The rule, for every engine-side concern** (each one an `engine_module`, server-module.h, never a hand-built thread):
+1. *The decode thread only submits.* It hands the GPU step N; step N+1's inputs (batch, mask, graph) are built while
+   step N runs, the way a render thread records the next frame during the current one.
+2. *CPU work fans out and stays off the critical path.* Sampling runs per sequence on its own worker module, or as a
+   GPU top-k so only k candidates return; tokenizing, templating and JSON never run on the decode thread; logging is
+   off the hot path; the CPU pool sleeps instead of spinning (`--poll 0`, threads sized to the CPU work that remains).
+3. *Bytes move by DMA, never by CPU `memmove`.* On unified memory the KV already lives where both sides see it. A
+   checkpoint or a cache entry is a GPU blit into a pool-owned buffer, enqueued on the command stream and overlapped
+   with compute, committed to the host pool (4.7.6) when it completes; where nothing has to move, the pool holds a
+   reference-counted handle to the pages instead of a copy. The CPU decides what moves; it never moves it.
 
-Joel, 2026-11-15: "We try to be as simultaneous as possible and this is done with fast context
-switching with efficiency in mind. From the perspective of these minds it's all mostly simultaneous
-if we've done our jobs right"; "It's like a cpu. You switch them out and they get full speed";
-"Stopping is supposed to preserve caches and therefore not be any slowdown"; "design it PRIOR TO
-CODING IT". This section is that design. No grant, admission or stop code changes until Joel and
-Codex have reviewed it (Fable and Codex agreed on airc, 17:55Z).
+**Gate.** The GPU-idle share of the decode loop, sampled the same way, falls from ~45% toward the time the GPU needs
+between steps, and decode tok/s per stream rises with it, measured before and after each item on the same node, one
+item per change. Each item lands with its own before/after numbers; the per-stream ceiling for this model on this chip
+is measured first with `llama-bench` at the residents' depths, so "at par" is a measured number, not an assumption.
 
-#### 4.9.1 What happened (receipts; the M5 unless named)
+#### 4.7.8 What a graphics engine already solved: bgfx, read in its source (2026-11-16)
 
-| # | Fact | Receipt | Mechanism (file:line at canary) |
-|---|---|---|---|
-| F1 | Three minds queued for a window grant, positions 2-4 of 4, while 439,705 of 587,707 pool tokens were free and 3 of 5 slots idle; Aiko waited 15:20:48-15:45:06Z for one act | ba52dd603, 15:20-15:53Z: `delib.window.waiting` 1,177; `serving.grants` minds=1 granted=148,002; `serving.grants.queue_custody` holder Atlas `unresolved: 1` | `window_grant/lease/fair.rs` head-of-line protection (the oldest waiter was Atlas growing under her own act); grants are standing shares for every measured mind (`serving_daemon/grants.rs` `grant_inputs`) |
-| F2 | A ready mind without a grant waits for the publisher's next tick | `GrantEvaluation::cadence` = serving's `TICK`; the publisher woke on pool moves and the 5 s tick only | `serving_daemon/tick.rs:88`, `live_pool.rs` `publish_grants_when_the_pool_moves`, `mind_window.rs` `decide_window` |
-| F3 | The stop saved no resident: the engine had been adopted from a previous core, so the stop skipped its checkpoint; `--engine` then ended the engine and the four minds' newest KV with it | 16:48:43Z `inference.kv_page.stop_checkpoint_skipped reason=Adopted residents=Known(4)` | `inference/slots/page_io.rs:106`, `StopCheckpointSkip::Adopted` (:188): "this core holds no launch contract for it, so its residents' KV is not saved here" |
-| F4 | After the restart the minds' pages restored (7 restores, ~2.0-2.4 s each). The `restored_turn` probe then reported them cold, `cached=0`, but it fires 5-7 s BEFORE the stream's `prefill.complete` for the same prompt, which reported 12,220 of 12,221 cached (Aiko, 19:55Z) and 11,514 of 11,515 (Aris, 19:56Z): restores are warm and the probe reads the counts before they exist. The earlier "Aris, 0 of 79,185" is that probe and is not a receipt. What is real: the first act after a restart re-prefilled cold for Benchy (12,283 tokens, 26 s) and Aris (11,515, 69 s) | 16:52-17:55Z and 19:54-19:57Z: `kv_page.action` Restore 7; `restored_turn` vs `inference.prefill.complete` per prompt | the probe's timing (`openai_adapter::stream`); the cold first acts are 4.7.2's "her view is not carried over a restart" (CX-3) |
-| F5 | Four minds decoded at once at 6.1-9.6 tok/s each; the engine had already measured a decode knee of 2 | 16:58-17:31Z `serving.throughput.degraded` inflight 3-4; `serving.decode_knee.clamped knee=2 roster_lanes=5`; engine `--parallel 5`, prompts 45-85k tokens | the knee clamps the PLAN's lanes; the running engine keeps its launch slots (no live `reconfigure`, `POST /reconfigure` 404), and nothing else consumes the knee |
-| F6 | (Windows, Codex) a stop with training in flight did not drain cleanly; a launch whose geometry changed while loading keeps its original ReadyTail with no checkpointable ledger (the defect is that custody, not the mismatch itself); a GPU-detect timeout panicked the boot | 2026-11-15 15:08Z `drainIncomplete/saveJoinTimedOut`; `late_ready.rs:180/210` vs `launch.rs:93/116`; `memory_manager.rs:813` | Codex's custody slice (`late-ready-custody-repair-proposal.txt`) |
-| F7 | A fresh core over a live engine published a 0-lane NoFit plan and seated nobody all night (Windows, e7ef) | Codex 04:38Z receipt | fixed in #6037 (`adopt_inherited`) |
+Joel, 2026-11-16: "Study unreal engine or bgfx ... I am serious about graphics engines. They're the same problems."
+bgfx (read-only clone at `~/.continuum/reference/bgfx`, 3aab320) solves the serving engine's problems in a renderer.
+What it does, where, and what each becomes here:
 
-What these say together: every slowdown today was a wait or a loss the design already forbids (4.1a: every
-retirement is a pause that saves; 4.1c: no permit in front of the engine; 4.8.4: a grant is held for the
-act that uses it). The mechanisms each hold a piece of a standing-share model that the design replaced.
-
-#### 4.9.2 The model
-
-A CPU, and the graphics pipeline's residency (section 2.3):
-- A mind is a process. Her KV and recurrent state are its saved context. A context switch saves and
-  restores it in milliseconds on unified memory (4.1b: 0.22 s save, 0.1 s restore isolated).
-- A mind that is ready runs now. Nothing makes her wait for permission; she waits only for the engine
-  itself, and only while every byte is held by minds mid-act (4.8.1).
-- Nobody holds memory between acts. What stays resident between acts is CACHE, kept by predicted reuse
-  (activity temperature) and evicted coolest first the moment a ready mind needs the room (4.8.4).
-- A stop is a pause: every resident is saved, and the next engine restores her where she was, so a
-  restart costs the restore, seconds, not a re-prefill (section 7.0 restart scenario: ~5.6 s against
-  ~401 s cold) whenever her input is unchanged.
-- From her side all of this is simultaneous. Any wait she can perceive is a defect.
-
-#### 4.9.3 Invariants (each a simulator assertion before it is code)
-
-- **I1, a stop saves every resident, and never ends a live engine it did not save.** Every endpoint
-  this core serves goes through ONE checkpoint owner: an owned engine through its generation's
-  checkpoint, an adopted one through `EndpointTransition::checkpoint_adopted_before_replacement`
-  (`slots/engine_generation.rs:330`, already used by adopted retirement), which verifies the live
-  incarnation and the ledger and never invents ownership of the process (Codex). The lifecycle intent
-  is explicit in that owner: a stop stays suspended after any outcome; a replacement may hand readiness
-  back after a terminal refusal (`:360`). The checkpoint returns typed evidence (saved, refused, uncertain,
-  per resident) to the authority that may end the engine; a log line is not evidence. A failed or
-  uncertain save on a live engine refuses its destructive retirement and keeps custody; a resident is
-  named lost only after the engine's death is verified or a destructive stop was explicitly authorized.
-- **I2, a restart restores her newest state.** The page restored is her newest saved version, its
-  native bytes under a compatible engine, model and adapter identity. Separately: for unchanged input
-  her first act reuses the longest matching prefix; when her input differs (her view turned over, her
-  adapter or the model changed) the act carries the typed invalidation cause, never a silent `cached=0`
-  (Codex).
-- **I3, a ready mind is dispatched at once.** No queue position, no grant state, no tick. At her act
-  she takes free cells; if short, the coolest NON-acting holders are paged out (Codex's reclaim seam,
-  #6040: `reclaim_grant` returns `Busy` instead of waiting, so dispatch moves to the next holder). Only
-  when every holder is mid-act does she wait, in the engine's own queue, woken by an act's end. Every
-  other no-room case is a typed outcome with its own event (pages still saving, a generation not yet
-  verified, paging uncertain, a need no sequence can hold), never free capacity pretended or a queue
-  standing in for unknown custody (Codex).
-- **I4, a CLAIM is held for an act; KV occupies until its erase is verified.** A grant exists from her
-  dispatch to her act's end (`ActHold`/reservation). Between acts her KV is cache, reclaimable by
-  temperature, but it still occupies its cells until the engine confirms the save and erase: dropping
-  a logical lease never frees physical cells (Codex; #6040's sealed receipts).
-- **I5, every wait is an event.** Grants are evaluated when demand moves (a ready mind, an act's end,
-  a pool step), never on a tick (RTOS rule 10).
-
-#### 4.9.4 Target shape and what each piece deletes
-
-| Piece | Owner | Builds on | Deletes |
-|---|---|---|---|
-| P1 Stop saves adopted engines (I1) | Fable (stop path), Codex (review; adopted custody is his) | the one checkpoint owner: `checkpoint_endpoint` (owned) and `checkpoint_adopted_before_replacement` (adopted) behind one entry with an explicit `Stop` intent; typed evidence returned to the engine-stop authority | `StopCheckpointSkip::Adopted`; the log-only `checkpoint_every_endpoint` result |
-| P2 Event-woken grant evaluation (I5) | Fable | `window_grant::demand_moved` (commit 2aaa7909a on #6038, unmerged) | the tick as the waiting minds' heartbeat, `GrantEvaluation::cadence` |
-| P3 Admission at the act (I3, I4) | Fable (admission), Codex (reclaim, #6040) | `ActHold`, reservations, `GrantHandoff` sealed receipts | `FairGrantState` waiters, head-of-line, idle-two-evaluations, `yield_after`; `Waiting::Queued`; standing grants for minds not acting |
-| P4 A restart's first act stays warm; `restored_turn` reads the stream's counts (I2) | Fable | `prefill.complete`'s cached/fresh counts; CX-3 (her view durable beside her page) | the probe's early read |
-| P5 Decode concurrency chosen by measured act latency (F5, Q1) | Fable (fork) | fork `update_slots`, SV-S3 per-task priority, the measured knees as inputs | the core-side lane permits (`resource_admission/lanes.rs`, 4.1c's "Left" list), once the engine owns it |
-
-**P1 in detail** (three existing owners, no new mechanism):
-1. *Evidence.* `SettleBeforeStop::settle` (`continuum-kernel` `runtime/extensions.rs:35`) returns a typed
-   durability outcome instead of `()`; `ShutdownReceipt` (`runtime/service_profile.rs:165`) carries the
-   participants' outcomes beside its modules', and `state_is_durable()` counts them. The kernel type stays
-   generic (durable, custody retained, lost, each with its participant); the per-resident detail stays in
-   the engine's ledger and probe.
-2. *One save path.* `page_io::checkpoint_every_endpoint` saves an owned endpoint through
-   `checkpoint_endpoint` and an adopted one through `checkpoint_adopted_before_replacement`, its live
-   incarnation read from `lane_registry::live_lane()` exactly as `adopted_retirement.rs` reads it. The
-   owner takes an explicit intent (`Stop`: stays suspended after every outcome; `Replace`: may hand
-   readiness back after a terminal refusal, `:360` today). `StopCheckpointSkip::Adopted` is deleted.
-3. *The engine-stop authority refuses.* `continuum stop --engine` (`bin/continuum/stop.rs`) already holds
-   the receipt before it commits; when the KV participant is not durable it leaves the engine up, says why,
-   and reaps it only on an explicit operator instruction to discard the residents' newest KV.
-
-#### 4.9.5 Simulator first (section 7.0)
-
-| Scenario | Proves | State |
+| bgfx (file: symbol) | What it does | Here |
 |---|---|---|
-| stop over an adopted engine saves every resident; a failed, cancelled or uncertain save keeps custody and the engine is not signalled; PID reuse is refused; a second stop after an adoption (slots `tests/adopted_checkpoint.rs`, the lifecycle validator, 4.1a) | I1 | to write, red today |
-| restart restores the newest page: dyno `restart.rs` with the 2026-11-15 receipts | I2 | to write |
-| `simultaneous::a_mind_growing_under_her_own_act_never_queues_the_others` (dyno service) | F1 | written, green with #6038 |
-| `simultaneous::memory_follows_the_mind_that_is_acting` (dyno service) | I3, I4 | written, known-red |
-| `a_demand_move_publishes_the_grants_without_a_tick` (serving) | I5 | written |
-| the engine's choice of concurrency follows measured act latency at recorded context lengths (dyno `batch`, 45-85k), up and down | Q1 | to write |
+| `bgfx.cpp: Context::frame`, `swap`, `renderFrame`; `renderSemWait` / `apiSemPost` | Two `Frame`s in flight: the API thread records `m_submit` while the render thread executes `m_render`; `frame()` waits for the render thread to finish the previous frame, swaps the two, releases it. Recording N+1 always overlaps executing N | A decode step is a frame. While the GPU runs step N, workers build step N+1 (batch, mask, graph inputs, sampled tokens); the decode thread swaps and submits. The ~20% of the decode loop spent building inputs (4.7.7) moves off the GPU's critical path |
+| `bgfx_p.h: FreeHandle`, `m_freeIndexBuffer.queue`; `bgfx.cpp: freeAllHandles(frame)` | Destroying a resource queues its handle in the frame that submitted it; the real free runs after that frame has rendered. Nothing is freed while the GPU may read it | A step keeps a reference to every resident its commands touch (a checkpoint a restore reads, a buffer a blit writes) and drops them when the step retires (its GPU completion). `host_bytes`' immediate RAII release is correct while copies are on the CPU, and becomes a step-retired release when copies move to GPU blits (4.7.7 rule 3) |
+| `bgfx_p.h: m_encoder[]`; `bgfx.cpp: encoderApiWait` | Many threads record into the same frame through their own encoders; `frame()` waits for every encoder to end before the swap | Per-sequence workers (sampling, a stop check, a tool-call parse) record into step N+1 through their own encoder; the swap waits for them. No sequence's CPU work runs on the decode thread |
+| `bgfx_p.h: kSortKey*` (64-bit sort key: view, draw type, blend, program, depth) | One key per draw and one sort per frame, so the GPU changes state as rarely as possible | One key per sequence in a step (adapter set, then sequence, then position), one sort per step: sequences sharing an adapter set run together (the decode-set cohort of #120 becomes a sort key, never a scheduler branch) |
+| `bgfx_p.h: m_iboffset` / `m_vboffset` reset per frame; `createTransientIndexBuffer` | Transient vertex/index data comes from a per-frame bump allocator reset at the frame's end: no malloc or free per draw | Per-step scratch (token arrays, sampler candidates, JSON fragments, mask rows) from a per-step arena reset when the step retires: no allocator on the hot path |
+| `bgfx.cpp: rendererExecCommands(m_cmdPre / m_cmdPost)` | Resource creation and changes are commands queued into the frame and run in order on the render thread at the frame boundary, never locked against the frame in flight | The core's control (a host-pool grant, a decode width, an adapter attach) is a command queued into the next step and applied at the step boundary on the decode thread: no lock held against a running step, and the applied outcome is reported from the same place |
+| `bgfx_p.h: HandleAllocT` | Resources are 16-bit handles into fixed tables, never raw pointers | Residents are pool ids; slots, sequences and adapters are typed ids; nothing crosses a thread boundary as a raw pointer |
 
-#### 4.9.6 Open questions (answer before P4/P5 code)
+Unreal, from its documented engine design rather than source here: the Render Dependency Graph (passes declare what
+they read and write; the graph orders them, inserts barriers and aliases transient memory), the RHI thread (command
+translation off the render thread), async compute queues, and the texture streaming pool (already 4.7.6). The step
+graph above is the RDG in miniature: a step declares its reads (KV, checkpoints, adapters) and writes (KV, new
+checkpoints), and that declaration is what lets prefill run on its own queue beside decode (the prefill-blocks-decode
+stall, 9-12 tok/s per stream while a 134k-token prefill runs).
 
-- **Q1, answered by the system, never by us** (Joel, 2026-11-15: "The whole point of a self optimizing
-  system is to not hard code it. It measures latency."). How many sequences decode at once, who stays
-  resident and how large the host cache is are each a choice the engine makes from its own measured
-  act latency (per-step decode and prefill cost at the contexts it is actually serving), and keeps
-  re-making as the measurement moves (both ways, so a downward move is always re-tested upward). No
-  author picks a count, a cap or a threshold; the knee measurement that exists (`decode_knee`) is an
-  input to that choice, never a clamp. The open part is only where the choice is applied: the engine's
-  own scheduler (fork priority, SV-S3), never a core permit.
-- **Q2, answered (F4).** Restored pages are reused; the `restored_turn` probe reads its counts before
-  the stream reports them. P4 becomes: the probe reads the stream's own counts, and the first act after
-  a restart stays warm once her view survives the restart (CX-3).
-- **Q3, answered (Codex).** A core-only stop uses the same checkpoint owner as a safety copy; while the
-  engine stays alive no loss is claimed.
+**Order** (each with its before/after on the M5, one per change): the per-step frame and its step-retired release;
+encoders for sampling; the per-step arena; control as step commands (`POST /engine/host-pool` lands this way, so the
+core half needs no engine lock); sort keys for the cohort; then prefill on its own queue.
 
-#### 4.9.7 Order
+#### 4.7.9 Proving it: every stall is a number the engine reports (2026-11-16)
 
-1. P1 (I1): the largest harm per change and the smallest change; its validator first.
-2. P2 (I5), then P3 (I3, I4) against #6040, dyno red-then-green, one deploy, core-only stop.
-3. P4 (with CX-3); Q1 then P5.
+Joel, 2026-11-16: "Put it in the design document and make sure we measure and prove we aren't having these same
+problems." A one-off `sample` is not proof; a stall must be a counter that is always on, read the same way on every
+node, so a regression shows the step it happens and every change in 4.7.7-4.7.8 carries its own before/after.
 
-Each deploy chooses the lifecycle its changed artifact needs (a core change keeps the engine up for
-adoption; an engine change stops it) and proves the exact save and restore per resident (I1, I2). Each step posts the section 2.5 measurements before and
-after: act latency median and p90, waits (`delib.window.waiting`), restore outcomes, decode tok/s, memory.
+**What the source showed** (fork #121, read 2026-11-16):
+- `llama_decode` does not wait for the GPU. It submits (`ggml_backend_sched_graph_compute_async`,
+  src/llama-context.cpp) and starts the logits copy back (`ggml_backend_tensor_get_async`); the wait is
+  `llama_synchronize`, which the server calls right after decode for any batch with outputs
+  (tools/server/server-context.cpp, the `yield_to_queue` lambda) and which `llama_get_logits_ith` would otherwise do.
+  So the GPU's idle time per step is exactly: the CPU building and submitting the graph, plus everything between
+  the sync and the next submit (sampling, slot bookkeeping, checkpoints, the next batch).
+- GPU sampling exists in the fork (`--backend-sampling`, `llama_set_sampler`) and covers every sampler the core
+  requests (temperature, the penalties, top-k/p, min-p, dist, logit bias). Only a contiguous PREFIX of a chain runs on
+  the GPU (`llama_sampler_chain_backend_init`); grammar and DRY have no GPU path, and a disabled sampler becomes
+  `empty`, which does, so the default chain qualifies. It is off for the target model (on for drafts). A first A/B on
+  the 0.8B validator with the live engine sharing the GPU was noise (77/55 tok/s CPU vs 66/50 GPU, drifting with the
+  shared load): **not adopted**; it is measured in the serving-down window below, never switched on by inference.
 
-#### 4.9.9 Glass box of the live M5 (2026-11-15 19:54-20:41Z, build 1e31e03c5) and its pieces
+**Two instruments, kept apart** (fork `fable/host-pool` 659abf7e1, after Codex's review of 6651dcb65, which had
+published a host-timing ratio as `gpu_idle_share`):
+- *GPU busy time, measured by the device.* Every graph command buffer records its `GPUStartTime`/`GPUEndTime` into
+  the Metal device (overlap counted once), exposed through ggml's backend extension point as the generic proc
+  `ggml_backend_gpu_time`, so any backend that can time its own work answers the same call. `/props.gpu_time` gives
+  per device `{busy_us, command_buffers, clock_us}`; **utilization = delta busy_us / delta clock_us**. It is the
+  engine's utilization only where the engine is the GPU's sole client: another process's work interleaved with ours
+  is counted while our buffers are in flight.
+- *Host timings per step* (`tools/server/server-step-budget.h`, validator `tests/test-server-step-budget.cpp`):
+  `decode_call_us` (llama_decode called to returned), `sync_wait_us` (host blocked until outputs are readable),
+  `inter_step_us` (host work between steps while work is pending), and `unsynced_us` for prefill chunks without
+  outputs (counted only there). These say where the host spends a step, never what the GPU does. Cumulative relaxed
+  atomics in `/props.step_budget`, decode-only and prefill-carrying steps apart; a reader differences two reads, so
+  the engine holds no window or threshold. They replace upstream's compile-time `DEBUG_TIMINGS` (deleted).
 
-Joel, 2026-11-15: "glass box and examine for stupid tool clipping, hard coded constants (forbidden just
-like fallbacks/legacy), and invalid feedback"; "You guys have to be constantly reminded not to code like
-JavaScript". Read from the core log and the residents' prompt captures (`fixtures/prompt-captures`).
+**First receipt, and what it is not** (qwen35-0.8b, 659abf7e1, M5, two streams of 300 tokens): MTL0 busy 7,188 ms
+over 7,600 ms wall (602 command buffers); host per decode step: call 695 us, sync wait 23,592 us, between steps
+909 us. This is **not** a utilization result: the live 35B engine shared the GPU, so our buffers were in flight while
+its work ran (23.6 ms per step is far above this model's own time). The first real number is the live engine's own
+`/props.gpu_time` once this build is deployed there.
 
-| # | Finding | Receipt | Piece | Owner | Deletes |
-|---|---|---|---|---|---|
-| G1 | Every tool result reaches her as a raw JSON dump (`ok code/git/status()` then `{"added":[],"branch":..,"success":true,..}`), never text rendered from the typed result | Aiko's capture, result #9215 | each tool's typed output renders through its `ToolContract` (the one renderer, [[her-text-is-rendered-from-typed-data]]); a JSON body only where the tool's own output IS a document | Fable | the generic JSON pretty-print of tool outputs |
-| G2 | Her working-memory depth is a constant: `WORKING_MEMORY_STEPS` = `TRAIL_HEAD_DENOM / TRAIL_TOTAL_DENOM` (16), "window-independent by construction"; her prompt says "Among my 16 most recent retained calls ... Older calls may have aged out" | `continuum-prompt/src/context_budget.rs:343`; Aiko's capture | the depth is a claim in the one allocation (goal 7, CX-9), sized from her measured need and the window she is granted | Fable | the two denominators and the constant |
-| G3 | `const POINTER_INDEX: usize = 12`, documented as serving "the legacy results ring" | `working_memory/action_log.rs:17` | the legacy ring goes; the view's fold (5, "one codec") already lists her collapsed results | Fable | the ring, the constant, `indexed_pointers` |
-| G4 | A shedder that sheds nothing: working memory is asked for 72,700 on every ~6 s pressure tick and answers `before=365202 after=365202`, 460 times in 47 min | `wm.results.shed` | a shedder reports what it can give back before it is asked; the pressure owner asks only owners that can give, and a no-op is a typed `NothingToGive`, never a repeated success | Fable (shedder), Codex (pressure owner) | the no-op loop |
-| G5 | A grant wait ended her act: `no window granted after her measure ... Reclaiming` then `settle.inference_failed` (Aiko); on BigMama Kimi `Reclaiming`, Sahar `Queued 1 of 1` for an hour with a slot idle | `delib.window.refused`; Codex 20:19Z | P3 (I3, I4) | Fable, Codex | `FairGrantState` queue rules |
-| G6 | Raw `pid as pid_t` casts on process calls in five places across four crates, two of them `SIGKILL` (a wrapped id signals a group) | `continuum-host` process_exit, process_presence; kernel `eye_reaper.rs:193`, `bounded_command.rs:176`; `continuum-process/owned.rs:17,49` | one host owner addresses a process by `continuum_host::process_id::ProcessId` (#6042); the raw `libc` calls leave the kernel and `continuum-process` | Fable | every `as libc::pid_t` and the inline OS branches around them |
-| G7 | Decode 2.0-3.5 tok/s per stream: four sequences at 45-49k tokens decoding at once, engine 33.2 GB, swap 6.6 GB | `delib.turn.output_allowance measured_tps`; `/slots`; `vm.swapusage` | P5 (Q1: the engine chooses concurrency from measured act latency) | Fable | the core-side lane permits |
+**The target is 90% GPU busy while work is pending**, and three things stand between it and today, in measured order:
+(1) the engine is starved of work: minds wait at core-side lanes while engine slots are free (4.7.10), so the GPU
+decodes one or two streams instead of every mind's; (2) the CPU runs in series between steps (4.7.7: ~20% building
+inputs, ~14% sampling, ~8% checkpoint copies on the M5 sample), removed by the frame pipeline (4.7.8); (3) host memory
+pressure (swap, compression) stalls everything, removed by the pool (4.7.6).
 
-No clipping was found: her newest result arrives whole, output room is 32k-200k tokens against needs
-under 1,500, and older results fold behind expand handles by design.
+**Gates, each read from `/props.step_budget` and the core's per-act receipts, before and after every change:**
 
-#### 4.9.8 What was wrong in today's code (so a reviewer can hold it to this section)
-
-#6038's first commit tuned the head-of-line rule instead of removing the queue (F1 is fixed by P3, not by
-the tweak); a "decoding cores" cap was a permit in front of the engine (4.1c) and is reverted
-(aa46cb886); and the 16:48Z deploy used `stop --engine`, which with F3 lost every mind's newest KV.
-
-### 4.10 Fast minds, concurrently: every optimization, its state, and the order (2026-11-15)
-
-Joel, 2026-11-15: "We need to take all optimizations of continuum-engine.md and get this fast. The entire
-project depends on fast minds working concurrently (yes I refer to how single core cpus did this in os,
-later multi core which we also have in cases)"; "It should quickly learn to settle at one lane ... or start
-there and go up". The model: an OS scheduler. Each mind is a process; her KV is its saved context; the
-engine is a core that runs whichever sequences the scheduler picks this step; a switch costs nothing while
-her KV stays resident and milliseconds when it pages (4.1b). A node with more GPU or more nodes is
-multi-core: placement (goal 9) spreads minds, the same scheduler runs on each.
-
-**Where the time goes today (the M5, Qwen3.6-35B-A3B, 2026-11-15):**
-
-| | Measured | This model on this chip (4.1b, receipts) | Gap |
-|---|---|---|---|
-| decode per stream | 2.0-5.6 tok/s, 4 sequences at 45-68k tokens | 57-59 alone, 80 with MTP | 10-40x |
-| aggregate decode | ~8-22 tok/s | 59-80 one at a time | 3-8x |
-| prefill | 65-196 tok/s on residents' prompts | 190-475 on this engine | 2-5x |
-| first act after a restart | 150-267 s, 0 of 12-68k cached | ~1 s restore, then the appended tail | 100x+ |
-| grant wait | BigMama: 0 of 98 asked turns served in an hour | 0 | total |
-| memory | 6.6 GB swap in use, engine 33 GB | no swap (unified memory: swap slows the GPU) | |
-
-**Every optimization in this document, its state:**
-
-| # | Optimization (section) | State, receipt | Next |
-|---|---|---|---|
-| O1 | Batch across minds, never queue them (2.4, 4.1c) | WRONG SHAPE: all sequences batch together at long context, where per-sequence KV reads do not amortize (4.1b SV-F5); the decode knee samples only the concurrency it runs (always 4) and one sample moved it 2 to 5 | P5 below |
-| O2 | One event-woken dispatcher; no permits (4.1c, SV-DISP) | PARTIAL: lane permits remain (`resource_admission/lanes.rs`), admission sized to all slots (`desired=5`) | folded into P5 |
-| O3 | A mind is never refused; grant at her act; expand first (4.8, P3) | MISSING: standing grants + FIFO; BigMama starved an hour; M5 acts failed `Reclaiming` | P3 (Codex page-out seam #6040 ready) |
-| O4 | KV pages GPU<->RAM<->disk by temperature (4.3, SV-MM) | WORKS for stop/start: 4 residents saved in 21.7 s, restores ~1 s | P4 |
-| O5 | A restart pages minds back warm (4.3 "a relaunch is a pause", CX-3) | BROKEN: the core restores pages over KV the slots still hold, then the first act reuses 0 (Aris 12,199 / 150 s, Aiko 68,065 / 267 s) though her prompt text is 94% identical | P4 |
-| O6 | Prefill only the appended tail; epoch view (5, CX-1) | WORKS: 85-90% reuse; Aiko's prompt identical for 135,154 of 144,402 chars across a restart | keep; measure fresh tokens per act |
-| O7 | The streaming pool: the cache gives memory back under pressure (2.3, 2.6, SV-POOL) | PARTIAL: the prompt cache shrinks and regrows, but the node still swaps 6.6 GB and embeddings are refused VRAM | P6 |
-| O8 | Live reconfigure, no relaunch (4.5 S2) | MISSING: `POST /reconfigure` 404; the running engine keeps its launch `--parallel 5` | after P5 shows the target geometry |
-| O9 | MTP only while a sequence decodes alone (4.1b) | PRESENT in the engine (`draft acceptance 1.0` on solo tasks); value depends on P5 running one at a time | measure under P5 |
-| O10 | Shared prefix held once, `seq_cp` (4.1, 4.7.3, S7) | NOT YET: minds share only ~6k chars of system prompt | after P5, P4 |
-| O11 | Prefill during her tool call (2.3 RDG row, SB-10) | PRESENT (`delib.prefill.during_tool`) | measure submit-to-first-token |
-| O12 | Page IO off the engine's main loop (SV-F3) | NOT YET: save/restore run on the server loop and stall every stream (4.1b: 4.6-5.6 tok/s during page IO) | with P4 |
-| O13 | Every wait is an event (rule 10) | PARTIAL: grants evaluate on a 5 s tick (event wake written, #6038 unmerged); a no-op shedder fires every ~6 s (4.9.9 G4) | merge the wake with P3; fix G4 |
-| O14 | Decisions are pluggable learned policies (Joel; plan line 14) | MISSING: ~12 private `*Policy` traits, none learns | P5 is the first user |
-
-**The pieces, in order of gain per change:**
-
-- **P5, the scheduler (O1, O2, O9, O14).** Two decisions, both measured, neither a count anyone picks:
-  - *Memory follows the acting minds (4.8.4).* No mind holds a standing share or a fixed slot of a fixed
-    `--parallel`. The mind acting now may take the whole pool if her need is the whole pool; minds not
-    acting page out (RAM in milliseconds, disk behind it) and page back at their own next act. What stays
-    resident between acts is cache, kept while its predicted reuse beats re-prefilling it (computed once,
-    phased out by usage and prediction).
-  - *Concurrency follows measured act time.* How many sequences decode in one engine step is one decision
-    behind the pluggable policy interface: observation = the ready sequences, their context lengths, the
-    measured per-step cost curve at those lengths; action = which sequences run this step; reward =
-    measured act latency and resident-perceived wait. Its starting point is the measured curve (the step
-    count it predicts minimizes act time at the contexts being served), never a constant; it keeps
-    re-testing both directions, and a learned policy replaces the curve's argmin only by beating it on the
-    replay. A memory-bound engine at long context and a compute-bound one at short context land on
-    different answers by measurement alone.
-  Mechanism: the fork's `update_slots` runs the chosen set; the rest wait with their KV wherever residency
-  put it (per-task priority, SV-S3); slots are sequence handles sized by the pool, not one per mind. The
-  core's lane permits are deleted.
-  *Recording production is a capture, never a script.* The dyno's batch fixture of 2026-11-06 was made by
-  three Python scripts over the engine log (`batches2.py`, `solo_chunks.py`, `extract_steps.py`): not
-  repeatable, Python load-bearing, and a parse of a log our fork should report typed (4.7.3). Instead the
-  fork reports each engine step typed (sequences in the batch, each one's depth, prompt and decode tokens,
-  accepted draft tokens, the step's duration) and the core records them through the CaptureSink pattern
-  (OBSERVABILITY-AS-SUBSTRATE: Noop by default, a bounded ring that drains) as the load fixture the dyno's
-  `Evidence` reads. The simulator and production read one instrument (7.0). Owner: Fable (capture,
-  replay), Codex (fork report review).
-  The capture is the WORKLOAD, not only the chosen steps (Codex review, comment 6904421902): steps
-  alone hide the runnable work the live policy did not pick, so no other policy could be compared on
-  them. Every event carries the sequence and mind identity, the engine incarnation and a monotonic time:
-  arrival and readiness, blocked and resumed, completion and cancellation, page-out and page-in, and each
-  engine step with its chosen set. Replay rebuilds the ready set at every instant and each resident's wait
-  and progress, so an alternative policy is scored on the same arrivals, starvation included.
-  A capture records its own interval and its loss (dropped events, gaps); an incomplete interval is a
-  typed state that cannot enter the live-versus-replay gate. Capture is Noop by default, so "an hour" is
-  an interval that was actually recorded, never arbitrary history. The gate compares context-matched
-  solo and batched steps and keeps per-resident progress, preserved memory and output quality beside
-  aggregate speed. Simulator:
-  the dyno `batch` replay at the recorded 45-68k contexts must show act time falling at one-at-a-time
-  before the M5 sees it. Owner: Fable (fork mechanism, policy), Codex (review, Windows).
-- **P3, grants at the act (O3, O13).** As 4.9 P3; the Windows starvation (Kimi `Reclaiming`, Sahar
-  `Queued 1 of 1`, 98 asked, 0 served) is its first recorded scenario. Owner: Fable (admission), Codex
-  (page-out, #6040).
-- **P4, a restart is warm (O5, O12).** Adoption keeps a slot's live KV as resident (no restore over it);
-  a restored page that reuses 0 is found by its token-level divergence and fixed; page IO leaves the main
-  loop. Simulator: the dyno restart replay with today's two restarts. Owner: Fable.
-- **P6, no swap (O7).** The engine's KV, host cache and checkpoints share one measured budget with the
-  OS's own pressure verdict, so the node never swaps; the no-op shedder (G4) goes. Owner: Codex (pressure
-  owner), Fable (shedder).
-- **Then O8 (reconfigure to the geometry P5 settles on), O10 (shared prefix), O11 measured.**
-
-- **P4a, genes change in place through their one owner (prerequisite of P4; Codex's Windows cutover
-  blocker, airc 00:29Z).** `llama_server/genome.rs::converge_genome` is a second, untyped path for adapter
-  catalog changes: it unloads by bare id with no engine identity (`lora_post("unload", {id})`, the fork
-  refuses: "engine incarnation required", the 03:27 adoption failure that relaunched over retained KV)
-  and loads with no residency (the fork requires `claim_weight_residency`). The typed owner already
-  exists: `learn_residency` (`plan_load`, `register_residency`, `unseat` bound to the loading
-  incarnation) under the genome's custody, and `GeneResidency` is the node's one owner of where loaded
-  genes live (a `DeviceTenant` of the lanes' pool, paging device and host). Catalog membership is the tier
-  above that paging, so it moves there: a load is plan, lease from the one authority into custody,
-  register the residency, load inside it; an unload is `unseat` with the engine identity captured BEFORE
-  the catalog read and carried unchanged, so a replaced engine (or a reused id) refuses instead of
-  unloading the wrong engine's adapter. The engine crate sits below the genome, so its reconcile asks
-  through a trait it declares (`GenomeCatalog`: converge to a target set, answering Adopted, Busy,
-  Refused{typed reason}) and the genome implements it; a refusal surfaces Degraded, never a relaunch
-  (Codex's prerequisite). `converge_genome`, `lora_post` and `LoraPost` are deleted. Gate: a native
-  replay of unload+load on an adopted engine preserves every resident's KV, and an engine replaced
-  between catalog read and mutation refuses with no unload. Owner: Fable (move and caller), Codex (review,
-  the Degraded rail).
-
-**Gate (the whole section):** on the M5 with four residents, median act under 60 s (plan path step 1); the
-live act time matches what the replay predicted for the chosen policy on the same recorded load (the
-simulator and production agree, section 7.0); 0 turns refused or starved; 0 swap; a restart's first act
-warm; on BigMama, every asked turn served. Each piece lands with its simulator
-scenario red then green, then a live read against a restart-only control.
-
-## 5. A mind's context and the engine it runs on
-
-**Focus boundary:** [Focus contract](FOCUS-CONTRACT.md) defines one allocation,
-full demand versus granted detail, learnable attention and node conformance.
-This document retains ownership of physical capacity and KV continuity.
-
-**Status:** DESIGN, co-authored (Fable, Codex), 2026-10-19. Nothing here is built.
-Supersedes nothing yet; it consolidates four designs that each named part of this and
-were built in pieces: [PERSONA-CONTEXT-PAGING](PERSONA-CONTEXT-PAGING.md),
-[KV-CACHE-ECONOMY](KV-CACHE-ECONOMY.md), [KV-CACHE-AS-SHARED-BASE-LAYER](KV-CACHE-AS-SHARED-BASE-LAYER.md),
-[CONTEXT-IS-A-CAPABILITY-AXIS](CONTEXT-IS-A-CAPABILITY-AXIS.md).
-
-### Why
-
-Joel, 2026-10-19: "Feels like it's just rigging up another way each time and not good
-architecture." The receipts that day, on the M5 (one 27B, four residents):
-
-| What the substrate did | Measured |
-|---|---|
-| Restored a mind's KV page, then reused none of it | `inference.restored_turn` cached 0 of 24,670 / 29,999 |
-| Restore itself | `serving/cache-probe --roundtrip` 661 of 662 reused |
-| Prompt head between consecutive acts | 31-60% shared; the results ring present one act, absent the next |
-| Engine prefill / decode on the 27B | 105-115 tok/s / 2-13 tok/s per request |
-| Same binary with the GPU matrix units enabled | prefill roughly doubled |
-
-#### Where we fail, per act (M5 Pro 64 GB, Qwen3.8-27B Q4_K_M, 10-19)
-
-| Stage | Expected on this machine | Ours (13:48-14:48Z, d90006023) | Verdict |
-|---|---|---|---|
-| Prefill speed at depth | ~400 tok/s short, 190-250 at 64k (published, same model and chip, IQ3_S/Q8_0) | 107 tok/s per request, 2 concurrent | about par |
-| Decode speed | 10-20 tok/s, 23-29 with MTP (published, same) | 13.2 tok/s per request, 2 concurrent | about par per stream |
-| Prefix reuse per act | ~90%+ for an append-only chat loop (inference) | 35% | fail |
-| Fresh tokens per act | ~1-3k (inference) | 13-30k | fail, ~10x |
-| Queue wait for the GPU | ~0 for one user | 0-20 min, acts cancelled | fail |
-| Act end to end | ~10-40 s | 5-20 min | fail |
-
-The mechanism, from the live `delib.prompt.reuse_split` probe (10-19 15:11-15:27Z): every act
-first differs where the old prompt had the results ring's "Older results, collapsed to
-pointers" index and the new one has a fresh `[result #N]`. The ring sits mid-prompt (message
-17 / 32) and grows by one result per act ahead of its index, so everything after it
-re-prefills: 16,669-28,803 tokens per act, while the cache holds only the 7,452 / 15,066
-tokens before it (the nearest checkpoint). A log that grows each act must be the last
-segment; that is what the epoch materialization makes structural.
-
-The engine is not the bottleneck; what we feed it is. Published reference:
-github.com/eltoncarr/mac-mini-benchmarks. The "inference" rows describe any chat agent
-that appends to one conversation against llama.cpp; no tool-specific number was found.
-
-Each fix of the past week (sticky collapse, churn ordering, ring scope labels, a launcher
-env var, lane-queue aging) patched a symptom of two faults. This document names the two
-and the one owner each gets. It must hold on every machine we ship to: a 24 GB MacBook
-Pro, the M5, a 5090, a phone. No number in it is a constant for one machine.
-
-### The governing law: a context is a FIFO
-
-Joel, 2026-10-27: "The linear nature of an LLM, fifo, makes it fairly obvious what kinds of
-memory and data architectures make the most sense during this period. Optimization is the
-difference between many minds and many slots and breakdowns."
-
-An engine reuses a prompt up to the first token that differs from the last one, and
-recomputes everything after it. So every rule below follows from where a change lands:
-
-1. **Order by stability.** An immutable head (identity, tools, policy), an append-only middle
-   (her history, results, what reached her rooms), and a tail that alone may change (this
-   act's facts, the clock, the newest result). Whatever can change sits after everything
-   that cannot.
-2. **Never re-place what exists.** An item already sent stays where it was sent. Moving it,
-   reordering it, or re-rendering it in new words re-sends everything behind it.
-3. **Page by position.** The head is one copy shared by every mind; the middle is cold and
-   pages to RAM and disk; the tail is hot and stays in VRAM.
-4. **Collapse only the oldest end, and only at a restart.** A collapse anywhere else rewrites
-   what follows it (goal 7 states why the newest end is never cut).
-5. **One health number: re-processed tokens per act against appended tokens.** Healthy is
-   about 1:1. Every change to what a mind perceives reports it before and after.
-
-Every regression of this kind broke rule 2:
-
-| When | What moved | Cost per act |
+| Problem | Number | Gate |
 |---|---|---|
-| 10-19 | the results ring grew ahead of its own index, mid-prompt | 16,669-28,803 tokens re-prefilled |
-| 10-24 | the substrate's notices, re-rendered after her view | ~3.6k chars (Benchy, Aiko) |
-| 10-24 | the kanban's claim column and count, ahead of her history | 30% of turns broke the prefix |
-| 10-27 | room updates of a drive, re-placed below every act (#5526) | 12-13k tokens re-prefilled while ~1k was appended (Aris, 12:1) |
+| Host work between steps (sampling, bookkeeping) | `decode.inter_step_us / steps` | falls with sampling encoders (4.7.8) and, if the window proves it, GPU sampling |
+| Host building and encoding a step | `decode.decode_call_us / steps` (overlaps GPU work; read with `gpu_time`) | falls with N+1 recorded during N (4.7.8 frame) |
+| Prefill stalling decode | `with_prefill.*` against `decode.*`; per-stream tok/s while a long prefill runs | prefill on its own queue (4.7.8) |
+| Host memory and swap | `/props.host_pool`, the node's swap in use | swap flat under load (4.7.6) |
+| Minds queued in front of the engine | the core's lane-wait per act ("lane-starved" in the health line) | zero lane wait while engine slots are free (4.7.10) |
+| The whole loop | `gpu_time` busy over wall while work is pending; decode tok/s per stream against the `llama-bench` ceiling | **the GPU busy at least 90% of the time work is pending** (Joel, 2026-11-16: "It's insane that it's not 90% utilization"), measured from command-buffer timestamps on every node, and aggregate tok/s rising with the minds served, never flat while minds wait |
 
-The ratio is the difference this law names: at 12:1 the engine spends most of each act
-re-reading, so four residents saturate it; at 1:1 the same machine seats many minds. Work
-on the engine's memory architecture (a fixed-size recurrent state per mind, one shared head
-state for every mind) is measured against the clean 1:1 baseline, never against a feed that
-violates this law.
+**The serving-down window** (one short window, Joel's rule: build or bench with serving down, never beside it):
+`llama-bench` for the per-stream ceiling at the residents' depths, then the backend-sampling A/B on the 35B with
+nothing else on the GPU. Both results land here with build SHA and time.
 
-### Fault 1: a mind's context is re-rendered every act
+#### 4.7.11 By reference, never encoded (2026-11-16)
 
-Today each act assembles the prompt from about fifteen sources (results ring, workspace
-map, board, roster, working memory, perception, open views) and we chase byte-stability
-between renders. Any source that changes moves the prefix and the warm KV is lost. The
-existing docs already asked for a deterministic head (KV-CACHE-ECONOMY §3.1) and declared
-slot affinity (§3.2); both were built, and the render kept finding new ways to move.
+Joel, 2026-11-16: "Pass raw memory by reference or if caching save as its binary never encode decode ever. It's
+useless slop unless you're uploading or something like that. Pass textures by id don't rasterize." Inside the engine
+and between the core and the engine, a value moves as the bytes it already is: a handle or id to memory that stays
+where it is, or its own binary when it must be kept (a cache file is the bytes, never a re-encoding). Text and JSON
+exist only at a boundary to a person or a foreign program (an external OpenAI driver, a debug page).
 
-#### Revision, 2026-10-21: sources are streams, not snapshots
+**Where an act encodes and decodes today** (canary 15664c6ad, read 2026-11-16):
 
-The first build (#5210, six deploys on 10-20) wired the `Epoch` below and never beat canary
-live. The `Epoch` was right; what fed it was not. Every source still rendered a whole
-snapshot each act, so a source that changed at all was appended as a whole new version.
-The epoch overflowed within a few acts, and each turnover re-prefilled everything (live
-reuse 0.37). A time bound on live epochs then made it worse (0 turns in 42 min).
-
-Measured on the M5 on 10-21 (canary 69b63f7df), from the prompt captures of Aiko
-(43 consecutive requests) and Aris (42):
-
-| Source | Median chars | Changed between requests | What it really is |
+| Hop | Today | Cost measured | By reference |
 |---|---|---|---|
-| results ring | 18-37k | 38-39 of 41-42 | one new result per act: an append-only log |
-| steps taken this session | 2.3k | 38 of 41-42 | one new action per act: the same log |
-| working memory | 4.4-4.9k | 39-40 of 41-42 | a rolling window over the same log, plus thoughts |
-| notices | 3.0-3.5k | 36-41 of 41-42 | newly posted notices: append-only |
-| open views | 16-17k | 2-16 of 41-42 | per-file read ranges: grows by ranges |
-| wall, board, workspace map, active work, recall, roster | ~12k together | 0-3 of 41-42 | stable |
-
-Only 4-8% of each request matched the previous one up to its first changed byte, because
-the ring sits first and grows at its end, ahead of everything else. A prefill of 80 s and
-a decode of 74 s made each act about 160 s, so the M5's residents managed 8 acts and
-1 write an hour.
-
-Two facts decide the design:
-
-1. **Every volatile source is an append-only stream rendered as a snapshot.** Asked for
-   "what is new since my cursor", each one produces a small delta, and the view grows
-   only at its end.
-2. **Her actions are rendered three times**: the ring, "steps taken" and working memory.
-   That's one fact with three renderers, and it gets one owner.
-
-#### The design
-
-- **A source is a stream.** `fn since(&self, cursor) -> (Vec<Event>, Cursor)` yields what
-  happened after the cursor, and `fn snapshot(&self, Resolution) -> Event` renders its
-  current state at a requested resolution (full, or collapsed to a re-openable pointer)
-  for an epoch start. A source that cannot say "what is new" (the clock, the ask of this
-  act) is not in the epoch: it rides the fresh tail, after the epoch, every act.
-- **The epoch is the log.** Head (identity, policy, tool schemas), then each source's
-  snapshot in a fixed order, stable first, then every delta in arrival order. A
-  superseding delta ("view X now covers lines 1-400") is appended; nothing earlier is
-  rewritten.
-- **One action log** owns her acts and their results. The ring, "steps taken" and the
-  action half of working memory become one stream. Working memory keeps only what is not
-  an act: her thoughts and beliefs.
-- **One flexbox decides the epoch start, and nothing else cuts.** At turnover every
-  source is a participant with a priority, a floor (its pointer resolution) and a want
-  (its full resolution). `flex_allocate` grants each a resolution so the start leaves
-  room for growth, measured as the median tokens appended per act times the acts the
-  epoch should live. Collapse happens there, in place and at the start; mid-epoch nothing
-  is cut, shed or capped. The act-latency fill cap and sticky ring collapse are deleted.
-  The latency target becomes the turnover rule instead: turn over when the fresh-prefill
-  cost of the next act would exceed it, which by construction is rare.
-- **Turnover is the only re-prefill.** It triggers on window fill (with the growth
-  reserve), revocation or a stale prerequisite, never on a timer. Its receipt names the
-  trigger and the tokens re-prefilled.
-
-#### Modules (divide and conquer)
-
-| Module | Owns | Depends on |
-|---|---|---|
-| `continuum-context` crate: `epoch` | head plus append-only events (exists, 238 lines, tested) | nothing |
-| `continuum-context`: `stream` | the `Stream` trait, cursors, `Resolution` | nothing |
-| `continuum-context`: `view` | one mind's epoch, its streams, turnover; renders head, events, then the fresh tail | `epoch`, `stream`, `flex` |
-| `continuum-context`: `flex` | the one allocator (`flex_allocate` moves here from `cognition::rag_budget`) | nothing |
-| `cognition/context_streams/*` (core) | one adapter per source: action log, open views, notices, board, wall, map, recall, roster, room messages | the source's existing owner |
-| `llm_deliberation_faculty/prompt/view.rs` | asks the view for messages; deletes its own fill, cap and collapse logic | `view` |
-
-The crate is pure: no tokio, no I/O, so its tests run in seconds on any machine, and each
-adapter is a small, separately ownable module. The adapters are the parallel work.
-
-#### Gates, in order
-
-1. **Offline**: a replay over synthetic streams shaped like the table above. Prefix
-   shared between consecutive requests at or above 90% within an epoch, a turnover only
-   on fill, and every source still reachable (a pointer reopens to its body).
-   **Result, 2026-10-21** (`continuum-context/examples/replay.rs`, run over the M5's real
-   captures from 69b63f7df, 13:34-17:11Z, instead of synthetic streams). Units are
-   characters. Pointers are modelled as each item's first line, and the start allocation
-   as a priority fill to half the window. Mean prefill per act:
-
-   | Resident | As sent | Through the view | Each request matching the one before |
-   |---|---|---|---|
-   | Aiko (75ece751, 34 requests) | 70,296 | 27,815 | 74% |
-   | Aris (8044b75b, 34 requests) | 51,505 | 15,998 | 89% |
-   | 2f50b223 (19 requests) | 65,961 | 31,730 | 63% |
-
-   The 90% bar is **not met**, and the replay says why. What remains each act is mostly
-   new content, which no layout avoids: the newest result (~12k chars), her new thoughts
-   (1-6k), new recall (~2k). Turnovers, each a full re-prefill, are the rest. The design
-   holds: it cuts prefill 2-3x. The bar was set on a share that includes unavoidable new
-   content, so gate 2 is judged on engine reuse and seconds, not on this share.
-2. **One mind on the M5**, against today's receipts (canary 69b63f7df, 13:34-14:28Z: 8 acts
-   and 0-1 writes per resident-hour, about 160 s per act, 29% engine reuse). Bar: engine
-   reuse at or above 80%, prefill under 15 s per act, and more acts and writes per hour.
-3. Then every resident, then the other nodes. A regression on any receipt is a rollback,
-   not a patch on top.
-
-#### The original design (Codex's correction 1; its principles stand, revised above)
-
-- **History is append-only.** Perception, tool results and her own acts are events with
-  source, version and supersession references.
-- **The model view is an explicit, versioned materialization by epoch**, never an
-  ever-growing transcript: a stable identity / policy / tool-schema prefix, then the
-  ordered events of the current epoch.
-- **A new epoch** is started by compaction, retrieval replacement, privacy revocation or
-  a stale action prerequisite. Its invalidation is recorded once. Revocation and stale
-  prerequisites never wait for a scheduled compaction.
-- **Only deltas become tokens.** Ready artifacts are shared handles.
-- **Generated boundary tokens are kept exactly**, including a cancelled generation's
-  accepted prefix.
-- **Identity is token-level, not string-level**: the same strings can tokenize
-  differently when a chat template re-renders, so the materializer owns tokenization of
-  its prefix.
-
-Within an epoch the logical input adds only new segments. Backend reuse is measured
-against its accepted token frontier; it may also replay a checkpoint tail. Her slot's
-KV and recurrent state materialize that frontier, not merely a history event count.
-
-#### Continuation contract (Codex)
-
-The existing cognition workspace owns the materialization; existing durable history
-and experience remain the history owners. Do not add another event database. A segment
-names its source event/version, dependencies and exact token span. Cache representations
-once and share handles, including between consumers of the same perception artifact.
-
-A continuation receipt binds the materialization epoch, engine epoch, exact model,
-tokenizer, template and adapter identities, accepted token frontier, and recurrent/KV
-state identity. Event and token frontiers differ: template boundaries, multimodal inputs
-and speculative acceptance are not one-token-per-event operations. Retain the accepted
-output exactly; cancellation must reconcile the recorded prefix with the engine state.
-Already spoken output belongs in the continuing conversation. Private reasoning is not
-published merely because its token identity is retained by the backend.
-
-In the inspected fork, `tools/server/server-context.cpp` around 3780 selects reuse using
-the common token prefix and retained memory position; hybrid/SWA rollback can restore a
-checkpoint or reset to zero. Around 4144 checkpoints explicitly precede the current decode
-batch. Live append from the accepted frontier can avoid rollback; reconstructed chat that
-omits or reformats output cannot assume that. Record new-token prefill and replay-token
-prefill separately. Cheap append is a contract to demonstrate, not a zero-replay promise.
-
-Superseding an observation need not rewrite history: append its versioned replacement when
-the old observation can remain visibly historical. Start a new epoch when the model view
-must remove or replace prior tokens. An action validates its required dependency versions
-before committing effects; merely appending a correction does not validate an old plan.
-Privacy revocation invalidates affected views/caches immediately and follows the existing
-retention/deletion policy; append-only history is not a prohibition on authorized erasure.
-
-#### Small windows and limited memory
-
-The same contract applies on a phone and a large GPU. Allocate a bounded view from the
-existing measured memory and context budget; keep durable source artifacts outside that
-view. Compaction publishes a replacement epoch with source references, unresolved work
-and provenance retained, rather than silently trimming the head. Reserve capacity for the
-next action/result through the existing common budget owner. Measure epoch turnover cost,
-replayed tokens and useful-response latency under pressure. Do not introduce a fixed
-phone context cap, fixed turnover interval or universal minimum residency count.
-
-#### What this deletes (to confirm while designing)
-
-Sticky ring collapse, the churn meter's ordering, per-workspace ring filtering and its
-labels as a stability device, and the block-ordering code whose only job is stability.
-Added by the 2026-10-21 revision: the act-latency fill cap (`delib.fill.latency_capped`,
-`history_fill_cap`) and its front-drop of history, and the two duplicate renderings of her
-actions ("steps taken this session" and the action half of working memory).
-
-#### Revision, 2026-10-25: one codec for every layer, owned by positron and the view
-
-Joel (10-25): "It's like any compression algorithm"; "like video it's time dependent ... prediction
-is a lot easier when you understand what changes between frames"; "make this more systematic in
-positron just like KV caching and collapsing to prevent this kind of thing."
-
-What happened without it: on the M5 (canary a59c2bf15) Aiko read one 51,827-char file whole 9
-times in 43 acts with 11 epoch turnovers, because three owners each decided a piece of what she
-sees. Working memory collapsed results against its own share. A hand table (`churn_of`) set the
-restart order. The view's start ended its keep-whole run at the first item too large. Every
-incident was fixed where it happened, so the next one appeared somewhere else.
-
-**The contract.** Every layer a mind or a human perceives is a positron layer, and every positron
-layer is a context `Source`:
-- **Keyed items, never one block.** Each item has a stable key naming its whole subject (one
-  result, one open file, one card, one roster per room). A change appends that item's new version.
-- **Levels of detail on every item:** `full`, `summary` (an outline, a digest, a thumbnail: a
-  mipmap level) and `pointer`. A `pointer` is an EXPAND HANDLE that a positron command resolves
-  back to `full`. An item whose pointer cannot be expanded is a defect, not a level.
-- **A fold below the pointer** (`Source::fold`, optional): the contiguous OLDEST run of a source's
-  items as ONE block naming its range and count (O(1) in the run, never a list of ids). The
-  source's floor is that block, not the sum of its pointers, so a floor never grows with every
-  act she takes (Aris, the M5, 2026-10-29: ~95 pointers at ~190 chars before anything whole fit).
-  The block is fixed at its start; folded items never arrive mid-epoch; a later start restores
-  them only for a rise to summary or whole, never for a pointer the block already covers. Like a
-  pointer, a fold must name how one of its items reopens (her acts: `tool/output` with `act`).
-- **The same items for humans and minds.** A human renderer and a mind's view consume one layer at
-  the level each can afford. Screen frames, video and 3D state follow later as items too.
-
-**The one owner of the invariants**, `continuum-context` (`View`, `Epoch`, `Motion`). No layer and
-no faculty re-implements them:
-1. Within an epoch the prompt only appends. A rewrite is a turnover, and turnover is the only
-   place collapse happens. That includes the act's tail (the clock, the ask, her call and its
-   result): once served it joins the epoch in the bytes it was sent (`View::append_sent`), and
-   what it showed never arrives again from its source. Before 2026-11-06 the tail was re-rendered
-   every act (her newest result native at one prompt's end, a `[result #n]` item in the next): on
-   the hybrid M5 model that re-prefilled every act's tail (2,822 s over 78 acts in 3 h). Facts are
-   a source of states (`Source::states`, `Source::ended`): appended once, ended once.
-2. The newest arrival stays whole unless it alone exceeds what a start would grant it. In that
-   case it arrives at its summary (admission, `View::readmit`); otherwise the view turns over and
-   shrinks the oldest first (goal 7). The same rule covers her newest native tool result
-   (`prompt/newest_result.rs`): when it alone exceeds what the window leaves it after the
-   irreducible parts (#5481's `required_parts`), it is shown at its summary level with its handle
-   and a note saying how to read the rest, never dropped. Kept whole, it made every request
-   overflow and she could not act at all (Aris, 2026-10-26: a 340,832-char result, 0 acts for a
-   day). A result that fits is never touched.
-3. A start gives each item the most detail that fits, newest first. One oversized item never
-   collapses the others (`levels`).
-4. Restart order comes from measured motion (`kept / (1 - p)` per source), never a label.
-5. The engine's held references (slot prefixes, checkpoints, the shared head of ~38.8k chars that
-   every resident already sends identically) are known to the encoder (`references()`, Codex), and
-   every miss is a probe with its cause.
-6. Every decision (start, lease size, order, prefetch) is an explicit action with an exact cost
-   (prefill tokens, seconds). Replaying captures is the simulator in which a learned policy must
-   beat the hand rule before it runs live (plan line 14).
-
-**Gates (source-hygiene ratchets; counts on canary a59c2bf15 + #5422, 2026-10-25):**
-
-| Gate | Today | Done |
-|---|---|---|
-| prompt messages built outside the view and the fresh tail's one renderer (`ChatMessage::text`/`tool_results` in `llm_deliberation_faculty/prompt`) | 13 | the tail's single renderer only |
-| collapse outside the view (`collapse_over` / `collapse_results_over_cap` callers) | 4 | 0: working memory bounds RAM by handle, never what she sees |
-| hand churn labels (`churn_of` callers; production lines, ratchet `hand_churn_labels`) | 0 since 2026-11-09 (the table is deleted; the ratchet is a zero gate) | 0: `Motion` orders every start |
-| positron `ViewState` kinds that are not context `Source`s | 13; 10 on 2026-11-07 (the kanban, the wall and the roster declare their shape through `continuum_context::nav`; one keyed item per card, post and member) | 0: one adapter, items with levels and expand handles |
-
-**Media is the same codec** (Joel, 2026-10-26: "Should be positron. This is common across so
-much."). A frame (a screen, a camera, a room the minds share, an image in chat) is a positron
-item with LEVELS by image-token budget: a glance (low tokens: faces, rooms, live calls),
-grounding (at least 1,024 tokens: the Qwen-VL floor for pointing at UI elements, which the M5's
-engine warns about on every load), full, and an unchanged frame as its content hash alone. The
-view chooses the level per mind, task and budget through the same allocation as text levels;
-the engine only honours the per-request token budget it is handed. Measured 2026-10-26 on the M5:
-an avatar at ~200 image tokens was described correctly (prefill 2.5 s, decode 2.8 s), the
-grounding level is what desktop and UI work needs.
-
-These are OPEN VIEWS, multimedia (Joel: "like our views from before, but multimedia. Then audio
-too"): a mind keeps open views of the streams she is in (a screen, a camera, her avatar's eye in a
-3D world, a call, a room), keyed by stream and time, paged like a file she reads. Audio is the same
-codec: keyed segments by time with levels: a glance ("someone spoke", or the transcript), closer
-(the transcript with speaker and tone), full (the audio tokens, for a model that hears natively),
-and silence as nothing. Her body and voice are her hands: actions through the same command
-surface, observed back through her eyes and ears.
-
-**How to add a layer (the whole recipe; everything else is free):**
-1. Implement `continuum_context::source::Source` for it. `name` and `priority` are required;
-   set `required` only for input she must read.
-2. `items()` returns one `Item` per subject, under a key that names that whole subject. Build its
-   `summary` with `continuum_context::levels::summarize(full, Shape::…)` (`Code` with the producer's
-   line parser, `Output`, `List`). Its `pointer` names the handle that expands it. A source
-   whose items accumulate (her acts) implements `fold` so its floor is one block.
-   A view a mind and a person both navigate (a board, a wall, a roster, an activity's controls)
-   declares only its SHAPE as `continuum_context::nav::Entry`s: a typed key, its whole, an optional
-   summary (else derived by `levels`), its pointer, and what it is to her: `Need::Focus`, or a
-   member of a `Group { label, expand, fold }` with its recency. `nav::collapse` does the rest for
-   every view alike: her focus whole and last; each group's most recently changed
-   `nav::standing(n)` entries (the geometric mean of 1 and n) on their own and the rest ONE
-   `nav::Node` (label, count, the typed command that opens it); a `Fold::All` group (history) only
-   its node. A source's folded oldest run is a `Node` too (`Source::fold`). In continuum-mind a
-   view returns its entries and calls `viewstate_rag::rag_items`; it never collapses on its own.
-3. Add the source to the view's source list. Never push a prompt message, never collapse, never
-   pick an order: the view appends, levels, admits, orders by measured motion and turns over.
-4. Prove it with a fixture in the source's test mod, then with the replay validator.
-
-What you get for free: append-only caching within an epoch, levels of detail that never
-collapse the newest, admission instead of turnovers, a restart order measured per mind, and
-(with Codex's engine verbs) the shared head across minds.
-
-**Owners:** Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure,
-slot/seed), Cormac (checkpoints at the head boundary and on turnover). The replay validator
-(`continuum-context` `examples/replay.rs`) and the live 15-minute read are the receipts for each slice.
-
-#### Revision, 2026-11-11: her act's tail is a source, judged and rendered by the view before it is sent
-
-**The failure.** Her act's tail (the stimulus, her statement and calls, their results, the volatile
-framing, the world state when the room is empty) is built by hand in `prompt/messages.rs` and
-`prompt/view.rs` (`prompt_messages_outside_the_view`: 7 sites), sent, and only then appended to her view
-as opaque blocks (`View::append_sent`, `SENT_TAIL`) that cover the act's item. So the codec never
-governs the one act that matters most: invariant 4 never judged an act on its arrival (three IntelMac
-residents reopened one saved output 20+ times, 2026-11-11; patched by `View::repeat_of_newest`, a
-second entry to the same judgement), levels and admission never apply to it, and every tail defect
-became a leaf fix (the newest-end clip, the head cuts, the repeat label).
-
-**The design.** The tail is one `Source` (`context_streams::tail::Tail`), one renderer of her native
-protocol, its items keyed by what they are:
-- `act/{seq}/call`: her statement and calls as she wrote them (one assistant native message);
-- `act/{seq}/result`: their results as the engine's tool results, cause `Of(call)`, with the act's
-  identity and outcome hash, so `repeat::resolve` judges it on arrival like any item; its
-  `RepeatRun` rides in its rendering;
-- `turn/{key}/stimulus`: the ask, required, whole (the empty room's world state is this item too);
-- `context/{hash}`: the room's working-context block ("[What you are working with right now]"),
-  ahead of the framing, where it sits today;
-- `framing/{hash}`: the act's framing (the `[now ...]` clock, `[In force this turn]`), an item
-  like the rest, in its place before the ask (the parrot-fix order). Revised after the code read
-  (2026-11-11): made the mutable end and never kept, it would break the cached prefix at every act
-  (act k's framing gone from act k+1's prompt re-prefills act k's call and result each time).
-  A framing line was true when sent ("[now 03:12Z]"): kept, it is append-only history, and its
-  growth folds with its act like any item. Prefix stability wins over compactness. Keyed by content
-hash (with `context/{hash}`), an identical line already shown is the same element and is not shown
-twice, which is exactly today's `drop_what_she_was_sent`.
-The newest result's paging (`Newest::Pageable`) becomes a level of its item, `Level::Page`, decided by
-the allocation (`newest.shown`) as today and passed into the view's admission for that one item; the
-source renders it with today's page renderer (`prompt/newest_result.rs`, moved into the source).
-
-**Where it joins: after the allocation, before the send** (the code read, 2026-11-11). The tail is a
-`Source` for rendering, keys, element identity and repeat judgement, but NOT one of the view's start
-sources: `advance` runs before the allocation that decides her result's level (`newest.shown`), a start
-needs one view grant per source and the tail's claims are REQUIRED/NEWEST/LAST_MOVE, and a start must
-never collapse her newest result. It joins the epoch through `View::append_tail(source, levels)` after
-the allocation and `fit_view`: `repeat::resolve` and one-element-one-occurrence run there, the
-allocation's page decision is the result item's level, and today's tail budget and capacity refusal
-stay the admission. A turnover starts from the view's sources, then appends this act's tail. An act is
-rendered several times before one is served (refits, a changed grant, uncounted admission), so judging
-and joining are two steps: `View::judge_tail` judges and renders the tail with no side effect, every
-render calling it afresh (a refit can re-page her result), and `View::append_tail` adds exactly the
-judged items when the request is served (`view_served`, where `append_sent` is today; `sent()` moves
-there too). So `append_sent`'s untyped after-send join becomes a judged, keyed join of the same items.
-Media: a result's text and tool-result parts are its item; its image parts attach at render only while
-it is newest (as today), and the next act holds it as text (`ContextMessage::holdable` refuses media).
-
-**One allocation, no double count.** The arriving tail keeps its own claims in the one allocation:
-REQUIRED (the ask and her statement), NEWEST (her result) and LAST_MOVE, as today. Once sent, its items
-are held view items, counted by the view's claims (their held basis) from the next act on, which is
-exactly today's accounting after `append_sent`. The source keeps that split; it adds no claim.
-`View::advance` appends the tail's new items at the end of the epoch like every source's; the prompt is
-`view.render()`; `sent()` marks them held. One occurrence, one element: the tail's result item and
-her actions source's item for the same act share the element id (`element(persona, Act, seq)`), and the
-view treats an arriving item whose element id the epoch already holds as already shown, so an act never
-shows twice; this typed identity replaces the `covers` bookkeeping. What goes away: `append_sent`,
-`SENT_TAIL`, `covers`, `repeat_of_newest`, and every hand-built prompt message (the ratchet goes 7 -> 0).
-
-**One prompt owner, learning included** (Cormac). The learner's example is already framed from the served
-request's own messages through the same `wire_messages` serving uses (`genome/learner/example.rs`), so
-the learned prefix equals the served prefix by construction; nothing reroutes it. A learn step's restored-tail
-proof (#5905 `served_tail_restored`) compares the tail items' keys and outcome hashes, never byte counts.
-
-**Restart.** A checkpointed view restores her call and result items; the engine's KV for them is gone,
-so her first act after a restart re-prefills them: classified as an intentional cold start (#5188),
-never read as a fast-path miss.
-
-**Proof before deploy.** The faculty replay (`fable/faculty-replay`) runs the captured acts through the
-old and new paths: bytes identical for every act that is not a repeat, the shared prefix between
-consecutive acts no shorter, a repeated reopen arriving as its repeat block, and across a replayed
-restart the render byte-identical to the one before it, framing aside (Cormac). The engine sees
-identical bytes only if the render keeps the exact typed message sequence (Codex, from
-`request_body.rs`, which expands a tool use into assistant `tool_calls` and a tool result into
-`role=tool` with its `tool_call_id`): roles, ordering, content-part boundaries, call ids, names and
-argument bytes, which call each result answers, the framing's position, and no same-role coalescing
-across native tool boundaries. So the replay gates at BOTH the rendered messages and the final wire
-request's token prefix (same tools, template and generation flags), never text length or item hashes
-alone: keys and hashes prove provenance, not that the engine's KV holds the same tail. Then the live read.
-
-**Owners.** Fable (the source, the view, the deletions); Codex (the engine's view of the tail: what
-the KV cache holds across it); Cormac (checkpoints: the tail's items persist as the view's do).
-
-#### Revision, 2026-10-30: causality is in the type, so nothing can loop as if it were progress
-
-**The failure.** On the M5 (build ab0466601, 2026-10-30) residents read the same file up to 8 times an hour
-and made 2 edits in 75 reads. Every act's turnover collapsed her earlier results to one-line notes, so her
-next input looked like her last and she repeated the act. Every loop we have recorded has this one shape:
-the next input equals the last, because a cause lost its effect or an effect lost its cause. Patching the
-budget that caused today's instance (ONE-BUDGET slice 6) does not make the next instance impossible. The
-data type has to.
-
-**The design** (Joel: "pointers into a linked list ... we already built into engrams ... handle it
-generically ... at a fundamental and centralized level"). Every element she perceives is a node in a causal
-chain: an act, its result, a message and its reply, a game move, a perception fact, an event from any
-activity. Engrams already link provenance (`EngramOrigin::ToolInvocation`, the parent of a reflection) and
-reply edges. The view's `Item` gains the same link.
-
-- **`Item { key, cause, content, ... }`.**
-  - `cause` is a typed, stable id assigned by the producer that persists the element (the engram id), never
-    an in-view position. That lets edges cross sources, epochs and restarts. The view resolves a cause to
-    whatever level it holds. A cause it cannot resolve (outside the epoch, evicted) is the typed
-    `CauseNotHeld`. It renders a durable, resolvable handle with typed availability, so the cause stays
-    reachable across an epoch. A `CauseNotHeld` does not count as demonstrated closure; the validator
-    reports it separately.
-  - `Root` exists only for a genuine origin (an external message, the start of an activity), and the ratchet
-    counts `Root` constructions per source.
-  - `content` is the hash of the whole, computed once where the whole is stored (`StoredWhole` gains it at
-    spill time), so a deferred whole is never re-read to compare.
-  - The constructor requires `cause` and `content`, so a source cannot build an item without causality.
-    Engram provenance and the view's link become one type: the view holds a chain within an epoch, and
-    engrams persist it.
-- **The view enforces it, centrally, for every source.** No source can opt out:
-  1. **Causal closure.** An element renders only if its cause is represented: whole, summarized, or folded
-     with its outcome. Nothing appears as an effect without its cause, and "read X" never appears without
-     what X said or how it ended.
-  2. **Every chain's head is whole.** This generalizes "never clip the newest end" (goal 7) from the newest
-     message to the newest element of each causal thread. Her work in hand is part of that end: a source
-     marks an item `Item::in_hand` (the read of a file she is editing, her first thought after each edit's
-     result), a start keeps it whole while its source's grant holds it beside the rest at their floor
-     (`view::allot`, charged like any item, the oldest given up first), the claim's newest end counts it,
-     and the oldest run folds around it (`working_memory::in_hand`; Aris on the M5, 2026-11-14: two
-     turnovers collapsed the file she was editing and she read it whole again after each).
-  3. **Collapse folds a chain segment; it never breaks a chain.** A contiguous run becomes one node that
-     keeps its outcome and a pointer back. The chain shortens and stays linked.
-  4. **A cycle cannot be presented as progress.** Repeat identity is (action fingerprint, outcome content).
-     The fingerprint is the normalized request: the verb and its arguments as the tool saw them. No
-     argument is excluded by default; an exclusion is named only by the tool's own schema, never by the
-     view. (Key plus cause cannot catch the loop: each re-read's result is caused by a new act. Cormac's
-     review.) A new act whose fingerprint matches a prior act in its chain, and whose outcome content is
-     unchanged, renders as "repeat of #n, outcome unchanged", never as a fresh element, but only while
-     #n's whole is in front of her (Codex and Fable on the design, 2026-10-31):
-     - the view chooses it on the act's first arrival in an epoch, and only when #n is held whole in
-       that epoch (not folded, collapsed, summarized or itself a repeat). Otherwise she needs the
-       content again and it arrives whole, so a repeat never points at what her view lacks and her
-       reopen never answers another repeat;
-     - a turnover re-renders every item as itself; an explicit reopen (`tool/output`) is always whole;
-     - a repeat is never a read of a whole: it never discharges a whole-result obligation;
-     - the effect is the command's own declaration (`CommandSpec::EFFECT`: `Observes`, `Changes`,
-       `Reopens`, `Undeclared`), read from the descriptor of the command the call resolved to, never
-       from a name or an output. `Undeclared` authorizes nothing, and an act mixing effects takes the
-       strongest (a read plus a write is a change).
-     - **Same output is not the same effect** (Codex). Two appends or sends can both return "OK" and still
-       cause two effects. Every occurrence keeps its own id, order and side-effect receipt, and is never
-       erased. Repeated content renders by reference to the earlier occurrence. "Outcome unchanged" is
-       claimed only on the producer's evidence: a read whose content hash is unchanged qualifies; an "OK"
-       from a write does not.
-     - This is perception, not a gate and never an injected instruction. It makes progression visible.
-       Whether she stops repeating is behavior: only live useful work proves it.
-  5. **Asking again for a folded ancestor is a measured miss.** The measurement is the existing
-     handle-expand request on a folded node, counted in that one place. It raises that chain's claim in
-     the one allocation (ONE-BUDGET), so what she keeps needing stays whole, decided by her own misses
-     rather than a constant.
-- **Overflow, in ONE-BUDGET terms.**
-  - A finished chain (its outcome settled) folds whole into one node holding its outcome; only live chains
-    hold a skeleton.
-  - If the live chains' skeletons still exceed the grant (a small window, the 8 GB case), the allocation
-    returns the typed refusal or abstention of contract 5 ("demand, feasibility and allocation are three
-    things"). It never breaks a chain to fit.
-- **The flexbox allocates chains.** A chain is the claim unit:
-  - floor: its causal skeleton (head plus fold nodes);
-  - want: the whole chain;
-  - grow pass: most-missed and most-recent segments first.
-
-  The allocator is unchanged; its claims are now causally whole.
-- **One owner.** `continuum-context` owns the item type and the five invariants. Sources supply cause
-  links. Engrams reuse the link type. #5604's proprioception for unfulfilled acts becomes one consumer of
-  invariant 4, not a separate mechanism.
-- **Enforcement.**
-  - A ratchet: no item is constructed without a cause.
-  - A replay validator, in seconds and with no live peers. It proves visible progression and retained
-    outcomes, not behavior:
-    - across captured traces, a repeated (action fingerprint, outcome) renders as a repeat, never as fresh;
-    - every rendered effect has its cause represented, with `CauseNotHeld` counted separately;
-    - fixtures: an unchanged-read repeat (renders as a repeat), a repeated write with identical output
-      (two occurrences, both kept), and a cause across a restart (resolves through its durable id).
-
-    The M5 2026-10-30 read loops are an acceptance case, not a universal diagnosis.
-  - Live, on the health line: repeats per resident-hour.
-
-**Build order and owners:**
-1. The item type, typed causes, `CauseNotHeld`, the `Root` ratchet and invariants 1-3, in
-   `continuum-context`, with every source supplying causes. Owner: Fable.
-2. Invariant 4's fingerprint and its replay validator, which builds on the deferred-whole and fold code.
-   Owner: Cormac. The validator replays the M5 2026-10-30 captures and must fire on the 8-reads-an-hour case.
-   Built (card dcf95bce): `cause::Fingerprint` over `ToolCall::canonical_input`; `ToolEffect` in
-   `continuum-base`, declared per command (`code/read`, `code/search` observe; `tool/output` reopens);
-   the view's repeat rule (`view/repeat.rs`) and `Source::repeat`; the replay's invariant-4 line
-   (`examples/replay/validate.rs`). On IntelMac's own captures it fires: 8 exact re-reads, 8 unchanged,
-   6 rendered as repeats. The M5 run is Fable's.
-3. Invariant 5 and the overflow rule, together with ONE-BUDGET slice 6's measured claims. Owner: Fable.
-
-Each step lands with its validator and a 15-minute live read.
-
-**The render receipt: what was actually sent** (Codex on #5585 and #5611, 2026-10-30). An item's id, cause
-and content hash say what it IS. Nothing yet says what the render SENT, so no consumer can know whether she
-perceived a result or only that it was delivered. Codex's task wakes need exactly that: a wake may
-discharge only when the whole result was actually in a prompt she was sent.
-
-- **A render is not a send** (Codex). The view (`continuum-context`), the only place that decides levels,
-  produces a candidate receipt with each render. It becomes THE receipt only at the successful submission
-  boundary, bound to the submitted request's id, epoch and allocation (FOCUS-CONTRACT rule 8). A render that is
-  discarded (a refit, a refusal) or a send that fails produces no receipt and discharges nothing. It is not
-  assembled by sources or consumers.
-- **Per item:** its `ElementId`; the level actually sent (`Whole`, `Summary`, `Pointer`, or folded into a named
-  run); the content hash of the body actually sent; and its load outcome:
-  - `Resident`: the whole was in memory;
-  - `Loaded`: a stored whole was read back for this render;
-  - a stored whole that cannot be read is never silently replaced by its pointer (that would be an automatic
-    fallback). The load returns a typed `Unavailable { handle, kind }` to the one allocator: a mandatory whole
-    refuses or defers explicitly (a capacity outcome); an optional item's lower level is an explicit
-    decision by the allocator, which yields a fresh render and a fresh candidate receipt (Codex).
-- **Consumers read the receipt, never the prompt text.** A task wake discharges only when all hold: the
-  request was actually submitted; its result's item was sent at level `Whole` with load `Resident` or
-  `Loaded`; and the sent content hash and memory incarnation match the task result it is for. Delivery, durable checkpoints and ACKs are separate
-  facts and never imply she saw it (Codex).
-- **The receipt is the source of the signals** in HOW-A-MIND-GETS-WHAT-SHE-NEEDS section 7: faults (a
-  re-read of an item whose last receipt said folded), repeats (whole, unchanged), and the allocation
-  receipt the proving ground reduces.
-- **No per-source clipping and no second allocator:** the receipt reports the one allocation's outcome;
-  nothing downstream re-decides levels.
-- Owner: Fable (the receipt, in the view), after #5611 lands. Codex consumes it for task wakes and owns the
-  task source on top of it.
-
-### Fault 2: engine configuration is decided in five places
-
-`lane_args`, `llama_server`, `backend_receipt`, `serving_plan` and `kv_cache_plan` each
-decide part of the launch, with defaults and fallbacks between them. That is how the
-GPU matrix units stayed off (opt-in in our engine build), draft placement stayed on the
-engine's `auto`, a hung device probe moved a 27B lane to the CPU, and an explicit
-`--parallel` silently turned off the shared KV pool.
-
-#### The design
-
-- **One typed `EngineConfig`**, derived from (a) what the engine REPORTS about the device
-  through a query, never a parsed log (KV-CACHE-ECONOMY §6b) and never a chip name, and
-  (b) the seated minds and the measured memory budget.
-- **It covers every launch decision**: supported compute operations/dtypes, placement of
-  base and draft, KV layout, sequence capacity and checkpoint policy. Sequence capacity
-  and active compute capacity differ. An extra slot needs a declared purpose and memory
-  budget; `seated minds + 1` is not a universal rule.
-- **The engine's own startup receipt is checked against it.** Any mismatch refuses the
-  launch, with its cause. There is no fallback path: a miss is a failure.
-- **The engine's continuous batching is the decode scheduler.** The core keeps every
-  admitted resident's state warm when its budget permits and feeds it. One admission owner, not two in series (today:
-  `resource_admission` and `turn_admission`).
-
-#### Owner and capability contract (Codex)
-
-Put the resolved serving configuration under existing `inference/planning`. Canonical
-model metadata, engine capability evidence, measured resource budget and workload demand
-are inputs. Existing serving and KV planners contribute facts/constraints to that owner;
-they do not independently overwrite resolved choices. `lane_args` serializes the result,
-`llama_server` launches it, and `backend_receipt` checks observed adoption. No sixth policy
-layer or duplicate device classifier. Trace each migrated decision and remove its old
-default/override in the same change.
-
-Capabilities distinguish compiled support, support for this operation/model/dtype/device,
-selected configuration, and observed execution. A `has_tensor` boolean cannot express
-that contract. Unknown or unsupported REQUIRED capability refuses with a typed cause.
-Optional alternatives are chosen explicitly during resolution with their reason; never
-silently substitute CPU or a smaller model after launching. Failure to reuse state that
-was promised compatible is a DEFECT EVENT: failure-severity health, explicit cause and
-replay cost, and zero accepted unexplained misses. Correct re-prefill may keep the mind
-alive, but cannot mark the plan healthy or become a path the planner relies on. Intentional
-first load, a declared new epoch or revocation are distinct lifecycle transitions, not
-reuse promises; classify them before execution so permanent alarms do not hide defects.
-
-The inspected `/props` implementation (`get_res_props`, around 5161) reports total slots,
-weight buffers, memory breakdown, build info and chat-template capabilities. It does not
-provide the complete compute-operation capability matrix needed here. Extend the engine's
-typed report, with a prelaunch probe form where selection depends on capabilities and a
-postlaunch realized-config receipt. Do not infer adoption from flags or log substrings.
-
-Admission owns resource commitments, while continuous batching schedules admitted
-sequences. Independent CPU/I/O/tool/artifact preparation does not hold a whole-turn GPU
-lease. Phase-specific transient resources release at a backend-confirmed safe frontier;
-KV/state residency lasts until its own eviction/release boundary. These are different
-lifetimes, not two queues serializing the same turn.
-
-#### Evidence schema to agree before implementation
-
-These are proposed additions to the existing engine report, not a second probe service.
-Source inspected: engine revision `50b02b8bb55102665500327b2152fe7e3348e1bc`.
-
-| Evidence | Minimum identity and meaning |
-|---|---|
-| Device snapshot | Engine build/probe version, stable device identity when available, sample time, free/total memory, backend type, allocator/buffer capabilities. Unknown identity remains explicit. |
-| Operation support | Model/operation signature including dtype and shape constraints, device, supported/unsupported/unknown, reason. This describes eligibility, not speed or actual kernel selection. |
-| Resolved plan | Configuration identity and input snapshot identities, required choices, selected alternatives and reasons, residency/compute commitments. |
-| Adoption receipt | Engine instance identity, resolved-plan identity, actual placement/allocation and execution evidence; each observation says whether it is selected configuration or measured execution. |
-| Continuation receipt | View and engine epochs, model/tokenizer/template/adapter identities, source/artifact identities for multimodal spans, accepted token frontier and state handle, reused/new/replayed counts and miss reason. |
-
-The fork already exposes native primitives in `ggml/include/ggml-backend.h`:
-`ggml_backend_dev_get_props` supplies memory, type and allocator/asynchrony capabilities;
-`ggml_backend_dev_supports_op` takes an actual tensor operation, rather than a universal
-device feature flag; `ggml_backend_dev_supports_buft` reports buffer compatibility.
-Use these sources for the typed report. They do not prove tensor-unit selection or
-latency. A backend-specific execution receipt may still be needed for that claim.
-The current server's weight-buffer and memory-breakdown fields are measured allocations;
-retain them instead of inventing duplicate placement estimates.
-
-A memory snapshot is not a reservation. The admission owner must validate/commit against
-current pressure before launch; a changed budget returns a typed replan/refusal outcome.
-The plan cannot manufacture stable device identity from a marketing name. Likewise a
-state handle is not transferable across engine instances unless its compatibility and
-restore contract explicitly establish that transfer.
-
-## 6. The data path (engine-facing)
-
-This section only says how data meets the engine. The rules it applies are section 2.1 (what the CPU
-does per byte), the transfer rows of the checklist in section 2.4, and section 3's handles and leases.
-
-- **The store is the librarian behind ring buffers, off the act's path.** Writers are drained behind
-  ring buffers, never on the request path (section 2.4, "Transfers and I/O"); everything that
-  accumulates drains (section 2.4, "Data and memory").
-- **Storage boundary, one sentence:** a payload is stored as the producer's native BLOB beside a typed
-  descriptor (element type, shape, byte order, producer identity), with no normalization, element
-  decoding or precision conversion in storage (section 2.1). Everything else about the store is
-  the ORM/storage design (owned by Codex): `docs/infrastructure/RUST-ORM-ARCHITECTURE.md` (PR #5954).
-- **Payloads reach the engine as native bytes.** A load is one bulk memcpy or zero copies; translation,
-  when unavoidable, happens on the GPU inside the consuming kernel (section 2.1).
-- **Embeddings are GPU work.** On unified memory (the M5) the stored pages are the GPU buffer (mmap plus
-  a no-copy Metal buffer); on a discrete GPU (the 5090) one asynchronous DMA upload, overlapped and
-  double-buffered. Search is one GPU dispatch over the resident matrix: sketch cull, exact dot on
-  survivors, in-kernel top-k, and only k indices and scores come back (sections 2.1-2.3). Vectors are
-  unit vectors normalized once at write, so similarity is a dot product (section 2.2). The build is
-  row DP-1 in section 8.
-
-## 7. Measurement and validators
-
-### 7.0 Simulation first: every design section has its simulator, every fault becomes a scenario
-
-Joel, 2026-11-13: "Simulation needs to be part of each document and our iteration. We can run
-realistic load testing using what we learn from our own systems faults or architecture in general."
-A live node under real residents is a road test in traffic; the simulator is the dyno. A change is
-iterated on the simulator until its numbers move, then confirmed live, and what the live node teaches
-goes back into the simulator as a new scenario. No section of this design is complete without the
-simulator that exercises it.
-
-**The loop** (Joel, 2026-11-13: "iteration with prod and replicating that in simulation, fixing code to
-maximize speed and limit resources, trying and measuring prod again, replicating in simulation"):
-1. Measure production: act time, stage times, memory, quality, every mind's progress.
-2. Replicate it in simulation: the recorded load and the fault reproduce there, with the same numbers.
-3. Fix the code to maximize speed and limit resources, iterating on the simulator until the numbers move.
-4. Try it in production and measure again with the same instruments.
-5. Replicate what production showed back in simulation, including anything it missed, and repeat.
-
-**The simulator carries every level of production's monitoring.** The same probe classes, the same
-health line, the same prompt captures and the same per-stage timings run in simulation as in
-production, so a simulated number and a live number are read by one instrument and compared
-directly. A metric that exists only in production cannot be tuned; a metric that exists only in
-simulation cannot be confirmed.
-
-**The simulators (one per layer; real policy code, recorded inputs, seconds, any machine, no residents):**
-- **Admission and capacity: the dyno** (`core/continuum-engine/src/capacity/dyno`). The real
-  allocator, grants and conservation (weights + resident KV + staging <= device) driven by a recorded
-  day (`fixtures/dyno/<date>.json`, every value beside its receipt). Each recorded failure is a
-  failing assertion of the design's invariant; the fixing slice turns it green.
-- **Serving: `serving-replay`** (`core/serving-replay`, section 4.5, plan row SV-S0). Captured act
-  sequences against a small hybrid model: reuse, fresh prefill, page-ins by kind, evictions with
-  page-out and restore milliseconds, relaunches.
-- **A mind's context: the context replay** (`core/continuum-context/examples/replay`). Captured
-  prompts replayed through the codec: the token prefix shared by consecutive acts, fresh tokens per
-  act, levels chosen, collapses.
-- **Data path: the vector search bench** (to build with plan step 2 of section 2.6): a recorded
-  corpus at 10k/100k/1M vectors, search latency, recall@k against the exact answer, CPU time and
-  bytes moved per search.
-
-**A run is a fair comparison or it is not evidence** (shared with the ORM design's section 8): baseline
-and candidate run the identical recorded load with identical seeds; latency is measured from arrival
-and includes every queue wait; quality and custody are gated, not only speed; and every mind's
-progress is reported, because a gain for one mind that starves its neighbours is a regression.
-
-**Load is realistic because it is ours.** Scenarios are recorded from the live nodes: the minds,
-their act shapes and prompt sizes, the node's memory and its other residents. A synthetic load is
-allowed only as a sweep around a recorded one (more minds, longer contexts, a smaller machine).
-
-**The scenario library (each a recorded fault; the simulator must reproduce it before the fix and
-pass after):**
-
-| Scenario | Recorded | Layer | What the simulator must show |
+| A KV checkpoint | `llama_state_seq_get_data` serializes KV out of device memory into a host blob, restored by parsing it back | host profile: `create_checkpoint` ~8% of the decode thread's samples (a host observation, 4.7.7) plus the host memory of every copy (4.7.6: ~10 GB compressed in the 13:01-13:56 receipt) | a page kept or copied on the device (`seq_cp`, a blit into a pool buffer), named by id; serialization only to persist a page to disk, as its own bytes |
+| The prompt, core to engine | OpenAI JSON messages of the whole context (`request_body.rs`, 47 serde_json sites); the engine parses, renders the chat template and re-tokenizes everything to find the prefix it already holds as tokens | qwen35-0.8b tokenizer on this M5, CPU: a 521,065-char 40-message context templates in 10-20 ms and tokenizes to 126,373 tokens in 80 ms per call over HTTP JSON (fork 659abf7e1) | the context codec already knows the appended items (`continuum-context`): send the appended token ids for the mind's epoch, binary, against the slot's known prefix; in process (line 3b), a span by reference |
+| Tokens, engine to core | SSE `data:` JSON per chunk, parsed per chunk | not yet measured | token ids as binary frames, detokenized once where text is shown |
+| Control and telemetry | JSON `/props`, `/slots`, `POST /engine/host-pool` (this branch added `step_budget` and `gpu_time` there) | not yet measured | one typed binary snapshot the core reads (fixed layout, versioned); JSON kept only as the human/debug view of the same snapshot |
+
+**The checkpoint by id, proven** (fork 7b-series `tests/test-seq-park.cpp`, qwen35-0.8b hybrid, M5 Metal,
+2026-11-16). The fork's memory already has the by-id form: `llama_memory_seq_cp` shares attention KV cells by sequence
+id, and recurrent state is copy-on-write on the device (`llama_memory_recurrent::find_slot` moves a sharing sequence to
+an empty cell with `src` = the shared one; the step graph gathers it through `s_copy`). So a checkpoint is a PARKED
+SEQUENCE: park = `seq_cp(live, parked)`; restore = `seq_rm(live)` then `seq_cp(parked, live)`. Measured on a 300-token
+sequence: today's serialize 23,894,492 bytes in 1,783 us; parked 0 bytes moved, park 13 us, restore 40 us; the restored
+sequence's next-token logits equal a cold run's (argmax equal, max |diff| 0.0044 from batch shape). The costs move from
+host memory to the device: one recurrent state cell per parked checkpoint (the recurrent cache is sized by `n_seq_max`
+at load, so parked ids are provisioned up front and become the pool's device-side `checkpoint` kind), and attention
+cells a parked id still references stay allocated until it is released. The serializing path remains only to persist a
+page to disk, as its own bytes.
+
+*The server's form* (fork, same test): the server's checkpoints hold only the partial state (`PARTIAL_ONLY`: recurrent
+/ SWA) and trim attention by position, so a checkpoint parks ONLY the recurrent cell: `seq_cp(live, parked, 0, 0)`
+(an empty attention range copies no KV cells); restore is `seq_cp(parked, live, 0, 0)` then `seq_rm(live, N, -1)`,
+the server's own order. Measured: today's partial serialize 20,201,932 bytes in 1,190 us per checkpoint on the 0.8B;
+parked 0 bytes, no attention cells held (`seq_pos_max(parked) = -1`), park 3 us, restore 29 us, logits equal a cold
+run. Honest cost: on unified memory a parked cell occupies the same bytes as the copy, in device memory; what goes is
+the copy, the duplicate host buffer and the compressor churning on it. The count of parked cells is the pool's budget,
+provisioned at load (`n_seq_max` = slots + parked cells). Integration: each slot's checkpoint list names parked ids
+(a free list owned by the pool), evicting one is `seq_rm(parked, -1, -1)`, and the draft context's partial state and
+the speculative stash follow the same form once measured.
+
+*Live sizes, measured* (the M5's engine log `~/.continuum/logs/llama-server-58057.log`, 2026-11-16, Qwen3.6-35B-A3B,
+`--parallel 5 --ctx-checkpoints 32 --cache-ram 9953 --kv-unified -c 717385`): one checkpoint is 80.573 MiB at 9,005
+tokens and 141.330 MiB at 39,812 tokens, about 62 MiB fixed plus ~2 KiB per token. Five slots of 32 checkpoints can
+therefore hold on the order of 16 GiB of host copies, outside `--cache-ram`'s bound: the measured source of the
+swap and compression in 4.7.6's receipt. Parked, the fixed part is one recurrent cell on the device and no copy; the
+per-token part must be identified before the count is set (if it is the draft's or a sliding window's KV, parking
+shares those cells by id and it costs nothing; if it is per-token recurrent history, it is the cell's own size). The
+number of parked cells is then a budget the pool grants from measured value per byte, never a fixed 32 per slot. Measured
+next (fork `test-seq-park`, `TEST_SEQ_PARK_N`, qwen35-0.8b): the TARGET's partial state is constant, 20,201,932 bytes
+at 300, 1,500 and 3,000 tokens, so it is the recurrent cell alone and parks for one fixed cell. The live checkpoints'
+per-token growth therefore comes from the other parts a server checkpoint copies (`data_dft`, the draft context's
+state, and `data_spec`); identifying which, and whether it is KV that parking shares by id, is the next measurement
+before the count is set.
+
+*Wired into the server* (fork `--parked-checkpoints N`, 2026-11-16): `n_seq_max` = slots + N; `copy_checkpoint` parks,
+`load_tgt` restores by `seq_cp` (every restore site unchanged), exhaustion refuses the checkpoint (never a copy),
+slot saves write a parked checkpoint's own bytes from its id; refused at load without `--kv-unified` or on a model
+whose partial state is not one recurrent cell. Receipt on the 0.8B (two engines, same requests, temperature 0):
+identical text, restores at prompt_n 514 / cache_n 3,009 in both, parked 2 -> 4 -> 6, refused 0. Cost, measured: RSS
+1.26 GB copied vs 1.55 GB parked at N = 16, because parked cells and one output row per sequence id are provisioned
+at load while copies grow with use; N therefore comes from the pool's budget and the measured value per byte. Next:
+the per-token part of live checkpoints (draft/spec), the output-row floor, then the live A/B on the 35B in a
+serving-down window (host memory, swap, act latency, identical outputs).
+
+*The draft, and the cost it exposed* (fork, 2026-11-16). The per-token part is the MTP draft context: a plain KV cache
+ignores `PARTIAL_ONLY` (only the iswa and dsv4 caches read it), so a copied checkpoint serializes the draft's whole
+sequence. Parked ids now hold it by id too; with `--spec-type draft-mtp` the copied and parked engines produce
+identical text and the draft accepts the same 31 of 47 after a restore. But `/props.memory_breakdown` shows the target
+context at 363 MB copied vs 1,656 MB parked with N = 16: ~81 MB per parked id, because the recurrent memory gives every
+cell `1 + n_rs_seq` rows for speculative rollback (`llama-memory-recurrent.cpp`, `n_rows = mem_size * (1 + n_rs_seq)`),
+and parked cells never decode. **Not deployable until fixed in the memory:** (1) partition the cells: rollback rows only
+for the live slots' range, parked cells in their own range with one row; (2) reverse the copy-on-write: when a live
+sequence advances off a cell it shares with a parked id, the live sequence KEEPS its cell (and its rollback rows) and the
+parked state is copied once, on the device, into a parked-range cell (today `find_slot` moves the live sequence and
+strands the parked state in a live cell). Gate: parked memory per id equals one state row, then the 35B A/B.
+
+*Revised design, for review before it is built (2026-11-16):* each half of a checkpoint by the mechanism that fits it,
+and no allocator surgery. (a) The TARGET's recurrent state: a device snapshot. The fork's `LLAMA_STATE_SEQ_FLAGS_ON_DEVICE`
+already copies a sequence's state tensors into device-side copy tensors with ggml ops (`llama_io_write_device`; the
+host receives only a header) and copies only the current row, not the rollback planes; but its storage is keyed by
+sequence id (`llama_context::mem_storage[seq_id]`), so each snapshot replaces the last. Keyed instead by a SNAPSHOT id
+the pool issues, a checkpoint is a GPU blit into a pool-owned device buffer, named by handle (Joel's texture-id rule):
+one state row of device memory per checkpoint, no extra sequence ids, no rollback rows, and the target's `n_seq_max`
+stays the slot count. (b) The MTP DRAFT: on hybrid Qwen its context is a plain KV cache (`!mtp_on_hybrid_qwen` takes the
+non-hybrid branch in `llama-model.cpp`), so extra sequence ids cost only bitsets there; parked ids live in the DRAFT
+context only and share its cells by id (0 bytes; the growing per-token part). Gate: target device memory per
+checkpoint = one state row (~20 MB on the 0.8B, ~62 MB on the 35B), draft memory per parked id ~0, identical outputs
+and draft acceptance against copied checkpoints, then the 35B A/B.
+
+**Order**, by measured cost: checkpoints as parked sequences first (memory and copies, and the pool's largest kind);
+then the prompt as appended token ids; then binary token frames; then the control snapshot. Each lands with its
+before/after (host memory, act latency, the step budget).
+
+**The binary seam, core to engine** (revised 2026-11-16 after Joel and Codex). Joel: "This is bytes of memory. We
+have control over both llama cpp and rust ... Blocks of memory either straight up copied or passed entirely by
+reference, why would you even go into something intermediate? Boundaries can use bytes and streaming just fine ...
+Any serde in these important paths is suspect. Any string." So nothing on the act path is re-represented: no JSON, no
+String built around bytes, no token ids computed by the core.
+- *Transport.* Bytes never cross the socket. Item bytes and piece bytes live in a shared-memory segment both
+  processes map (a ring of byte blocks, written by one side, read by the other); the engine's Unix socket carries only
+  small fixed frames that NAME them with a `buffer_ref` (segment, offset, length; fork `server-frames.h`) and the
+  doorbell that wakes the reader. In process (line 3b) the segment is simply memory and the refs are pointers.
+  Each connection negotiates its maximum frame length and protocol version first; an unknown kind or version is a
+  typed refusal; a partial frame at EOF is a typed failure of that request only (Codex's review).
+- *An item crosses once, as its own bytes.* A new context item is its raw UTF-8 block plus a typed header (item key
+  u128, role enum u8, tool/reasoning flags, length). The ENGINE is the one owner of model, tokenizer and template
+  version (Codex: per-item token concatenation is not equivalent to tokenizing the rendered conversation): it renders
+  and tokenizes the new bytes once, on arrival, and keeps the result against the item key. The model's input layer
+  consuming token ids is the one inherent conversion, done once where the vocabulary lives, like a texture upload;
+  the core never tokenizes.
+- *An act names, it does not resend.* `act {request id u64, engine incarnation, model/adapter/template epochs, slot,
+  page u128, the item keys of the prefix the core believes the slot holds, the keys of new items (their bytes sent
+  once), a fixed sampling struct}`. The engine checks the prefix by item keys against what its slot holds; a mismatch
+  is a typed refusal naming the longest prefix it does hold (by key), never a blind reuse of a hash.
+- *Out.* `piece` frames stream the sampled tokens' bytes (the core appends them as-is; the bytes are the text), each
+  with its typed metadata (token id, logprob when asked, reasoning/tool channel); `done {request id, stop enum,
+  timings, usage}` and `refusal {request id, code}` are fixed structs. Cancellation is a frame; custody of a cancelled
+  request ends with its terminal frame.
+- *Everything else is memory blocks:* KV, parked checkpoints, pages and pool state move by reference or by a straight
+  copy through `memory_mover` (4.7.12), never re-encoded.
+- *Gate.* Per act: bytes on the wire (the whole context as JSON today, only new items' bytes after), engine CPU before
+  the first decode (template + tokenize of the whole context today; only new items after), act latency; a replay of
+  captured acts through both seams must produce identical token ids and output bytes.
+
+#### 4.7.12 Streams of frames, bytes by reference, moved in parallel (2026-11-16)
+
+Joel: "Fast tokenless memory transfer and DMA must be encoded into a pattern or parent class, reused"; "Streaming not
+promises"; "Memory transfer is usually not a serial system though. Remember DMA and that we have 20 cores?" One
+pattern, fork `tools/server/server-frames.h`, validator `tests/test-server-frames.cpp`, to be mirrored in
+`continuum-base` for the core once proven:
+- `frame_ring<T>`: lock-free SPSC ring of trivially copyable frames (ids, references, counters), fixed capacity, full =
+  immediate backpressure, empty = atomic wait (the closed flag lives in the waited word). Fan-in from several
+  producers is one ring each plus a doorbell counter; no lock anywhere.
+- `buffer_ref`: bytes named (domain, pool, buffer, offset, length), never carried.
+- `memory_mover`: the one base for moving bytes. Lanes (CPU copy threads, GPU blit queues, disk readers) each complete
+  into their own ring; `pump()` starts what the engines have room for and returns, never waits; a move within one
+  physical domain is aliased (no copy); an unsupported pair is refused typed, never copied by the CPU behind the
+  caller's back. `parallel_copier` is the host backend: chunks across lanes, many transfers in flight, the last chunk
+  publishes completion.
+- *Measured (M5 Pro, 18 cores = 6P + 12E):* memcpy of 1 GiB: 61 GB/s on 1 thread, 116 on 8, 119 on 12, 109 on 18.
+  `parallel_copier`, 16 x 64 MiB: 1 lane 39.1 GB/s, 4 lanes 83.5, 8 lanes 98.0, 12 lanes 118.9. Lane count comes from
+  this curve's knee on each node at startup, never a constant; the FIRST guess is the node's efficiency-core count
+(Joel; on the M5 Pro the knee is exactly its 12 E-cores), leaving the performance cores to the decode thread.
+- *Across a boundary: a handle and a GPU fence, never bytes* (Joel, 2026-11-16: "instead of copying across a domain I'd
+  use a framebuffer/renderbuffer ... pass the texture id and have the GPU itself coordinate ... I'd NEVER pass bytes for
+  video frames, across unity, av foundation, cpp"). Device memory crosses a process or API boundary as a handle the
+  other side maps (Apple: IOSurface / MTLBuffer handle; CUDA: IPC memory handle; Linux: dma-buf fd), and ordering is a
+  GPU-side fence (MTLSharedEvent, CUDA IPC event): the producer's queue signals, the consumer's queue waits, the CPU
+  neither waits nor touches the bytes. `buffer_ref` gains the device-handle kind; a GPU lane's completion is that fence
+  value, not a CPU doorbell. KV pages, parked state and checkpoints therefore never come down to host memory to cross
+  between the engine, the core or another node's process on the same machine. Next backends: the GPU blit lane (Metal blit encoder on
+  its own queue; CUDA async copy on the 5090) for checkpoints and pages, and the disk lane for paged KV.
+
+**No string, no serde on the hot paths: enforced, not advised.** In the engine's act path (the socket handler, the
+step loop, checkpoints, the pool) and the core's (`continuum-engine/src/ai/openai_adapter/`, `inference/`, the
+context codec), a `String`, `format!`, `serde_json` or `to_string` site is counted by source-hygiene and may only
+fall; a new one fails the build. A path that reaches zero gets a compile-time ban (the dependency removed from the
+crate). Text exists only where a person reads it or an external program speaks it.
+
+**No promises, no futures** (Joel, 2026-11-16: "Promises and other idiocy. I wish you never saw JavaScript"). Work
+off the decode thread is a job system: a job writes its result into storage its owner already owns, completion is a
+monotonic ticket counter waited on with an atomic wait, cancellation is the job called once as cancelled, and queues
+are fixed rings sized by their owner (fork `server-module.h`, ae8b41925's successor). A per-job heap-allocated shared
+state with a mutex and a blocking `get()` is the JavaScript reflex this rule forbids, in C++ and in Rust alike.
+
+**Ratchet** (Joel: "I wish I'd prohibited serde in some areas"): `serde_json` sites on the act path
+(`continuum-engine/src/ai/openai_adapter/`, `continuum-engine/src/inference/request_body.rs`, `stream`/`lane_send`,
+`continuum-context`) are counted by source-hygiene and may only fall; a new one fails the build. A crate that is
+clean of it gets a compile-time ban (no `serde_json` dependency) so the reflex cannot return.
+
+#### 4.7.13 Concurrent minds are processes; switching is a context switch (2026-11-16)
+
+Joel, 2026-11-16: "Strive to 80tok/s and search for clogs in unnecessary serial work and also any strings for no
+reason, copies and especially any needless conversions, even math per. Anything that iterates on large data really ...
+Especially the appearance of concurrent minds, where we're not thrashing and it acts more like cpu context switching,
+in cases literally that. You have to look at it as if we are lead engineer at rockstar games."
+
+**The model.** A mind is a process; its KV and recurrent state are its address space; a device snapshot (4.7.11) or a
+page is its saved context; the engine's slots are cores; the scheduler (goal 9) time-slices minds by measured activity
+the way an OS does, so a hot mind keeps its state resident and a cooling one is switched out, never thrashed. The
+switch cost is what makes this real, and it is now measured: restoring a mind's recurrent state from a device snapshot
+takes 0.4-0.8 ms on the 0.8B (one 20 MB row) against a cold re-prefill of its whole context (654 s for 134k tokens on
+the M5, 4.7.6). Every speed item below serves two numbers: decode tok/s per stream (target 80 on the M5 Pro) and switch
+time per mind.
+
+**The audit, run on every hot path (and repeated whenever it changes):**
+1. *Per token, not GPU:* any loop over the vocabulary (sampling, probabilities, bias, penalties), any string built or
+   formatted, any allocation, lock or log line, anything O(context) per step.
+2. *Per act over the whole context:* re-templating, re-tokenizing, copying the token list, prefix matching over every
+   token, JSON of the whole request or response, serializing state.
+3. *Conversions:* tokens to text to tokens, bytes to strings to bytes, JSON for internal values, element-wise math that
+   could be skipped, batched or done once.
+4. *Serial work that could overlap:* CPU between GPU steps (4.7.8 frames), core work that waits on what it does not need.
+5. *Copies:* anything moved that could be named (4.7.11-4.7.12).
+Each finding lands as a cited row (file:line, cost per what, how it scales, the by-reference / batched / off-thread /
+incremental form) and is fixed one change at a time against the step budget, `gpu_time` and per-act receipts.
+
+**Prepare the next mind ahead, concurrently** (Joel, 2026-11-16: "you're preparing for the next mind, other work
+that's needed for that context switch, ahead of time, concurrently ... there's 16 cores of cpu. It's not just memory
+but most of the throughput is related to this"). While mind A decodes, the scheduler's prediction of who runs next (its
+activity temperature, goal 9) starts B's switch on spare cores and the copy lanes, as a CPU prefetches or a game
+streamer loads the next cell: B's device snapshot is paged in, B's new items' bytes are delivered and templated and
+tokenized once in the engine (4.7.11), and B's appended tail is prefilled on its own queue (4.7.8). When B is
+scheduled the switch is the restore (0.4-0.8 ms measured on the 0.8B), not a cold start. A wrong prediction costs
+spare-core work, never the running mind's frame. Gate: switch time measured per switch, and decode tok/s of the
+running mind unchanged while the next one is prepared.
+
+**No timer kills a mind** (Joel: "so often it's some dumb mistake and abort because of JavaScript web dev styled
+promise or timeout architecture rather than streaming that sabotaged the mind"). Liveness comes from the stream: a
+mind's act is alive while tokens arrive or the engine reports progress on it, however long it thinks. A wall-clock
+bound that aborts an act, drops its stream, refuses it or relaunches the engine while progress continues is a defect
+(the record has one: five generations killed at the act deadline on the M5 on 2026-09-20, 1.2-1.5 million ms in). A
+bound that remains fires only on the absence of progress for a measured interval, and what it does is typed and
+reported, never a silent kill. The audit of every such bound on the act path is recorded below as it lands.
+
+*The bounds that can end a mind's work, audited on canary 15664c6ad (2026-11-16; "verified" = read by me):*
+
+| # | Bound | What it does | Progress-aware? | Status / owner |
+|---|---|---|---|---|
+| 1 | Act deadline `until_act_stalls` (`tick_deadline.rs`), `ACT_EXTENSIONS = 2` | drops the step's generation (no retry, its prefill cancelled by the engine) | partly: extends only on a pinned local slot advancing, at most twice; remote lanes end at the first deadline | **verified; ceiling removed in #6084** (Fable). Remote lanes need the engine's per-generation progress (row 3) |
+| 2 | Serving health `HEALTH_FAILS_TO_RELAUNCH = 2` (`serving_daemon/health.rs`) | kills and relaunches the engine: every resident's act ends | indirectly; counts failures produced by the timers in rows 3-4 | Codex: relaunch only on the frozen-`/slots` rule (row 10's model), strikes only when the lane delivered nothing to anyone |
+| 3 | Stream idle `STREAM_IDLE_TIMEOUT_SECS = 90` (`sse_stream.rs`), "busy, not dead" only on local lanes, capped at 75 min | drops the stream, counts a relaunch strike, re-prefills | mostly (resets on deltas and prefill progress) | Codex: busy-not-dead for remote lanes from peer progress frames; no ceiling while frames arrive |
+| 4 | Remote `REMOTE_INFERENCE_DEADLINE` (`airc_remote/transport.rs`) | times out and cancels on the serving peer | idle part yes; the end-to-end airc deadline appears not (unverified) | Codex: idle-based deadline reset by progress frames |
+| 6 | Header wait (`lane_send.rs`), remote is a pure `timeout` | abandons as "hung prefill" | local yes (one quiet checkpoint), remote no | Codex |
+| 8 | `TURN_READINESS_PATIENCE` 240 s (`engine_generation.rs`) | refuses held turns during a slow relaunch | no | Codex: wait on the relaunch's own progress |
+| 11 | `TOOL_BATCH_CEILING` 30 min (`act_observe/apply.rs`) | a long tool batch becomes an error she perceives | no | Fable: bound by silence on the tool's output, not total time |
+
+Rows 5, 7, 9, 10, 12-15 are already progress-gated, off the generation path, or unused (`t_max_predict_ms` is never
+set; the engine itself has no wall-clock kill, but every client-side drop cancels the request in the engine).
+
+**The first audit, ranked (2026-11-16; canary 15664c6ad and fork `fable/host-pool`; "verified" = read and measured by
+me, otherwise read by the audit agent and to be verified before it is fixed):**
+
+| # | Clog | Cost, scaling | Status |
 |---|---|---|---|
-| 2026-11-04 the M5 day | dyno fixture `2026-11-04.json` | admission | each failure of the day as a failing invariant, green after its slice |
-| A share bounds an admitted act | M5 2026-11-11 16:06-16:21Z, 9 of 15 acts refused (#5947) | admission | 0 refusals of an act within its grant |
-| A reply sized from the estimate overshoots the grant | M5 2026-11-11 17:47-18:02Z, 7 refusals (#5950) | admission | the reply sized from the measured prompt; 0 refusals when the prompt fits |
-| A fixed host cache starves the engine | M5 2026-11-13: 60 MB free, 34 GB compressed, prefill 92 tok/s against ~190 | serving | prefill and decode tok/s held as memory pressure rises; the cache gives memory back (fork #110) |
-| Standing starvation reads as clean | M5 2026-11-13 23:40Z: 0.4 GB free, compressor flat at 42 GB, swap 14.5 of 15 GB, kernel critical, deficit 0, cache lever never asked (dyno 11, `serving_daemon/tests/dyno.rs`) | memory + serving | deficit > 0 while the kernel says pressure; the cache (Batch) asked first and lowered; taken back to its grant after two OS-normal polls |
-| A reopen too large for the view loops | Eitan, IntelMac, 2026-11-11 to 11-13 (#5966) | context | consecutive reopens of one output advance through its pages |
-| A per-element store codec and per-pair norms | 2026-11-13 review of #5954, `similarity::cosine` | data path | bytes moved and CPU time per search fall to the copy and the GPU dispatch |
-| A Windows core's private commit runs away | BigMama 2026-11-13, 10.8 to 32.7 GB in 8 min | serving | resident memory flat over a recorded day |
-| A restart re-prefills every mind | M5 2026-11-13 23:45Z deploy: ledger restored 0, every first act `cold_turn cause="no_page"`; 29 paged-out minds' pages taken by the page store at volume 0.85 (store 3% of its budget), 22:40Z-00:50Z | serving | dyno fixture `2026-11-13-restart.json`: four recorded residents restore in ~5.6 s (0 tokens re-prefilled) against ~401 s and 253,321 tokens cold; saves and restores issued at once, so on an engine that overlaps page tasks the stop costs its largest save (~4.9 s, not the ~13.5 s sum) and each mind waits only on her own restore (largest ~2.0 s); the pinned fork runs one page task at a time (server-queue.cpp:138-153); a paged-out mind keeps her page under the recorded pressure |
+| 1 | Penalties sampler: an `unordered_map::find` per vocabulary entry (248,320) though at most `penalty_last_n` can match; the core always sends `repeat_penalty` | 294-379 us per token, O(vocab) | **Fixed** (fork e3824bba8): walk the history, in place while candidates are id-ordered; 0.7-1.2 us, bit-identical |
+| 2 | `set_logits` builds a vocabulary-sized candidate array (~3 MB) every token, then top-k etc. run over it on the CPU | **measured after row 1's fix** (model-free bench, V = 248,320, the core's default chain: penalties 256, top-k 40, top-p 0.95, min-p 0.05, temp 0.8, dist): fill 32-36 us + chain 69-80 us = **102-116 us per token per sequence**, under 1% of a 12.5 ms frame; ~0.5 ms per step with five sequences in series | Lower priority than estimated (row 1 was most of it). Cheapest remaining win: sample a step's sequences in parallel (job modules, 4.7.7), ~0.5 ms -> ~0.1 ms per step. **Ballpark first, shipped after reasoning (fork, 2026-11-16):** the post-penalty top-k lies inside the raw top-(k+h), so the chain runs on the logits above a carried threshold. A first version was exact but slower and was wrongly reverted on the timing alone (Joel: "Think about why something might be slower first"); reasoning from counters found a non-vectorized max loop, a threshold carried relative to the spiky max instead of the stable bulk quantile, an expensive per-candidate penalties hash (now a binary search on the id-sorted subset), and a crawling widen step. Now: identical tokens on every step, 77.5-78.0 us vs 112-114 us per token (~30% less), the threshold's rank balanced online between a rescan (~23 us) and candidates (~27 ns each before the fix). Remaining floor: the one scan over the logits (~23 us now; ~10 us at memory bandwidth with an explicit SIMD loop) |
+| 3 | GPU sampling is force-disabled whenever a grammar or a reasoning budget exists, and every act carries a reasoning budget | keeps row 2 on the CPU (~0.1 ms per token per sequence, measured) | **Design verified in code, deferred by measurement**: the reasoning-budget sampler is a passthrough except while forcing (then it alone decides the token, so the CPU substitutes it); a lazy grammar is a passthrough until triggered (then the slot detaches its GPU sampler, `llama_set_sampler(ctx, seq, nullptr)`, for full logits); the GPU penalties upload their history from the CPU's `token_count` every step (`backend_set_input`), so CPU overrides cannot diverge them. Worth building only if a quiet-GPU A/B shows the graph-side sampling beats ~0.1 ms of parallel CPU sampling |
+| 4 | Each streamed chunk re-parses the whole generated text (`update_chat_msg` -> `common_chat_parse`) | O(n_gen) per token, O(n_gen^2) per act; on the HTTP thread, so off the decode loop but contending its queue lock | To verify; incremental parse from the last committed offset |
+| 5 | Exact prompt quote: a separate request templates and tokenizes the whole prompt, then the real request does it again | est. 30-150 ms per act, O(context) x2 | To verify; the seam of 4.7.11 removes it |
+| 6 | Page save writes KV synchronously on the engine's main loop between steps (`SERVER_TASK_TYPE_SLOT_SAVE`: `llama_state_seq_save_file` + checkpoint sidecar) | **measured** (fork, qwen35-0.8b, `--parallel 2 --kv-unified --no-cache-idle-slots`, slot 0 holding 14,694 tokens = a 201 MB page + 40 MB sidecar, slot 1 streaming 400 tokens, saves back to back): each save 114-135 ms on the main loop; slot 1's median inter-token gap 7.0 ms -> 103-131 ms, p99 42-188 ms -> 1.7-2.0 s, max -> 2.1-2.3 s. A 100k-token 35B page scales that per save | **Verified; next fix**: the main thread takes only a device snapshot of the sequence (4.7.11, a GPU copy, ~1 ms here) and returns to decoding; a writer module writes the standard state file from the immutable snapshot (on unified memory its buffer is CPU-readable in place; tensor bytes spliced into the header at the positions the writer recorded), then frees it. Gate: slot 1's gaps during saves equal its gaps without |
+| 7 | Speculative verify reruns the full CPU sampler per draft position; the ngram draft copies the whole context per step | O(n_draft x vocab), O(context) per step | To verify; rows 1-3 remove most of it; a persistent span for the draft |
+| 8 | Core: 7-9 full-context passes per act (clones, format + char counts, serde per message, `json!` clones), prompt capture with sync write+flush under a mutex on a tokio worker | est. 1-3 ms per act plus blocking I/O | To verify; borrowed wire bytes built once (4.7.11), capture on a writer task |
+| 9 | One condvar `notify_all` per partial result wakes every HTTP reader; per-token JSON tree building | O(streams) wakes per token; 5-20 us per token | To verify |
 
-Every row of the plan (section 8) names the scenario that proves it, alongside its gate and
-validator. A fault found live and not yet a scenario is the next scenario to record.
+**Ballpark first, precision on the few** (Joel, 2026-11-16: "your first goal is to get the size down that you need the
+more expensive sorting, filtering or calculation on. Get in the ballpark first ... avoid square roots"). Two measured
+outcomes the same day show where it pays. In sampling it does not: llama's top-k is already the ballpark cut (248k ->
+40) running near the one-pass floor, and an extra estimate step was slower (row 2). In vector search it pays heavily:
+`top_k_similar` (`continuum-engine/src/ai/embedding/vector_math.rs:134`) computes, for every query and every target, a
+dot product plus the target's norm, a `sqrt` and a divide, then FULLY sorts all passing items to keep k, over
+`Vec<Vec<f32>>`. An algorithm receipt (C++, single-threaded, 50,000 x 768 random Gaussian vectors, k = 10, best of 7,
+M5 Pro; random data is the cut's worst case): today's method 29.4 ms; unit vectors normalized once at insert, one
+contiguous matrix, `nth_element` 15.1 ms (2x, identical top-10); an INT8 coarse cut (integer dot over all, keep 80) then
+exact unit dot on those 80: **0.65 ms (45x), recall 10/10**, and 10/10 at every buffer up to 10,000 (4.2 ms); a 1-bit
+sign-code cut is too coarse here (2/10 at 80, 8/10 at 2,000, 10/10 only at 10,000). Owner: Codex (#5189, "revisioned
+vector corpus + BLAS + cascade"). The buffer is sized by MEASURED recall on the real embeddings (a validator sweeping
+the buffer against the exact answer), never by this synthetic run.
+
+**Reusable patterns pay everywhere.** The patterns of 4.7.7-4.7.12 (job-system modules, frame rings with atomic waits,
+memory_mover lanes sized from the node's own measured curve, device handles plus GPU fences, device snapshots) serve
+training and learning (Dreaming) as much as serving: a training step's batches, a gene's weights and a dream's state
+move by the same lanes and the same handles, so the next consumer inherits them instead of rebuilding them.
+
+#### 4.7.10 No semaphore where nothing is scarce (2026-11-16)
+
+Joel, 2026-11-16: "there's semaphores and other nonsense where they make no sense." The engine batches continuously
+across its slots and assigns them itself; a core-side permit that bounds the same thing only queues minds in front of
+an idle engine. The health line shows exactly that: residents "lane-starved" while the GPU has room.
+
+**One act's path, traced on current canary** (15664c6ad, read-only worktree, 2026-11-16; an earlier trace from a
+checkout 509 commits behind was retracted after Codex's review; the central claim below re-read by hand at
+`turn_admission.rs:543`). Paths under `core/continuum-engine/src/` unless marked `cognition/`. The prefill-fit permit
+and the ambient turn permit no longer exist (#5582).
+
+| # | Gate (file:line) | Bounds | Held while waiting | Verdict |
+|---|---|---|---|---|
+| 1 | measured hold, `cognition/.../admission.rs:57` -> `inference/measured_hold.rs:239` | background work in a hold | nothing | real |
+| 2 | lane: non-directed budget (Notify loops, `lanes.rs:462-525`) then the physical FIFO semaphore (`lanes.rs:240`) | engine `--parallel`; non-directed = lanes - 1 | nothing | priority policy is real; the COUNT duplicates 5c and the engine |
+| 5a | one act per mind, `turn_admission.rs:376-391`, `slots/mind_gate.rs:72` | a mind's page | nothing (lane dropped at :385, only if the first poll is Pending) | real |
+| 5b | lane re-taken, `turn_admission.rs:398` | as 2 | the mind gate and its custody read | churn: rejoins at the BACK of the queue |
+| 5c | decode permit, `turn_admission.rs:409-421`, `slots/endpoint_concurrency.rs:142` | the engine's slot count | the mind (lane dropped :413), then back to 5b | **duplicate of 2 and the engine** (same number, two sources) |
+| 5d | endpoint readiness + RwLock read, `turn_admission.rs:428`, `engine_generation.rs:110,154` | engine transitions | lane, decode permit, mind | real (drain before a transition) |
+| 5e | slot lease, `turn_admission.rs:483-520`, `kv_slot_pool.rs:184` | citizen slots | mind only (`drop(admission)` :516) | real |
+| 5g | per-slot permit, `turn_admission.rs:543` `pool.acquire_slot(slot).await` | 1 per slot | **lane, decode permit, endpoint read, pin, mind** | real (the core's record of which page a slot holds; the evicted page saved before overwrite), but must wait holding only the pin |
+| 5h | paging ledger, `kv_slot_pool.rs:346` -> `saved_ledger.rs:145` | — | everything | **sync `sync_all` of file and directory on an async worker** |
+| 5i | KV save/restore, `turn_admission.rs:598-649`, `paging_lifetime.rs:35` | the page | everything | real; `sleep(bound)` checkpoints with `/slots` probes |
+| 6 | LoRA catalog, `stream.rs:365` | catalog miss | everything | HTTP on the act path |
+| 7, 8 | residency guard, `stream.rs:491`, `lane_send.rs:230-261` (twice) + `/input_tokens` quote | model identity | everything | real once; **three guards collapse to one** |
+| 9 | POST, `lane_send.rs:329` | the request | everything | a `/slots` probe beside every POST |
+| 10 | 503 / refused, `lane_send.rs:401-451` | a relaunch | **everything, including the endpoint read guard** | watch with a 120 s deadline; holding the read guard can stall the relaunch drain that needs the write guard (to be checked against relaunch ordering) |
+
+**What it proves.** (a) The lane and the decode permit are held across every wait from 5d to 10 (readiness, the
+per-slot permit, paging, the LoRA probe, three residency guards, the POST, a relaunch wait) and across an unresolved
+page's custody (`turn_admission.rs:162-166`): none of those needs a lane, and every one blocks a mind that could decode.
+(b) Two gates count the engine's slots (2's physical semaphore and 5c), and dropping/re-taking between them costs the
+waiter its queue position (5b). (c) A sync fsync (5h) runs on a runtime worker while all of it is held.
+(`config.env` is not read per act on current canary; `current_serving()` is a watch clone.)
+
+**The plan** (Codex takes the inference cuts, one measured change each: lane wait per act, engine slots busy, tok/s):
+1. Take the lane and decode permit LAST: readiness, the per-slot permit, paging and the residency check run holding
+   only the pin, the slot permit and the endpoint guard; the lane is held only while the engine generates.
+2. One count of engine slots: 5c goes, 2 keeps the priority policy (directed reserve, work before ambient) with the
+   count read from the engine.
+3. One residency guard instead of three; the `/slots` probe beside every POST and the LoRA probe leave the act path.
+4. The paging ledger's durable write moves to its owner task (off the async worker, never under held permits).
+5. A relaunch wait holds no endpoint read guard (or listens for condemnation), so a drain never waits on it.
+6. Revisit 2's lanes - 1 reserve with measured directed demand, never a fixed reserve that halves a 2-slot engine.
 
 
-Frame time is act time (section 2.5). Every workstream proves itself first on a validator that runs
-in seconds with no live residents, then on the live node. This table indexes what each layer measures
-and where its validator is specified; the specifications themselves are in the sections named.
+#### 4.7.14 Sampling the minds of one step in parallel (plan, 2026-11-16)
 
-| Layer | What it measures | Validator (where specified) |
-|---|---|---|
-| Every change | act latency (median, p90), the targeted stage (prefill tok/s, decode tok/s, search latency, store op p50/p99), memory (free, compressed, swap, phys_footprint), output quality (recall@k, review outcome) | replay validator plus a live node (section 2.5) |
-| Substrate | the Standard VDD Record per module and job | trace data from the substrate; replay fixture per scaffolded module (section 3, the "for free" triplet; 7.1 below) |
-| Substrate dataflow | orphan subscriptions and emissions; undeclared published names | the graph test and the `runtime.event_graph` / `runtime.event_graph.undeclared` probes (section 3, "The Declared Dataflow Graph") |
-| Serving | reuse, fresh tokens, page-ins, relaunches = 0 | `serving-replay` (S0), captured act sequences against a small hybrid GGUF (section 4.5; plan row SV-S0) |
-| Serving, memory owner | where every mind resumes across turns, stop, boot, relaunch, adoption, idle retirement, gene change, transient borrowing | `MindMemory` lifecycle validator (section 4.1a) |
-| Serving, reconfigure | token-identical generations across a reconfigure; flat footprint over 100 grow/shrink cycles; weights never reloaded | S2 validator (section 4.5, "S2 in detail") |
-| Serving, speed levers | per lever: replay reuse, page-in ms, aggregate tok/s, RAM vs disk restore ms, MTP acceptance, submit-to-first-token, first-act prefill tokens, footprint and quality A/B | section 4.4 |
-| Serving, admission | capacity refusals 0; every mind with a turn asked takes an act | section 4.8.5 |
-| Context | re-processed tokens per act against appended tokens (healthy about 1:1) | section 5, "The governing law", rule 5 |
-| Context, codec | prefix shared between consecutive requests; turnovers; reachability of every pointer; invariant-4 repeats | `continuum-context` `examples/replay.rs` and `examples/replay/validate.rs`; the faculty replay (`fable/faculty-replay`); source-hygiene ratchets (section 5, gates tables) |
-| Context, live | repeats per resident-hour; the 15-minute live read | section 5, causality revision |
-| Data path | 10k/100k search latency and recall@k | plan row DP-1 (section 2.6) |
+**Today.** After a decode, the server samples each generating sequence one after another on the main
+thread (`server-context.cpp`, the per-slot `common_sampler_sample` and, under MTP, the
+`common_sampler_sample_and_accept_n` pass). With fork #122 a sampled token costs ~85 us (was ~120 us;
+penalties ~1 us, was ~367 us). At four to five residents with one to two accepted tokens each, that is
+an estimated 0.4-1 ms per step against a ~12 ms step at 80 tok/s: 3-8% of the step, serial, while the
+GPU waits for the next submit. This is an estimate from the per-token receipts, not a live measurement.
 
-### 7.1 Timing, logging and VDD for free
+**Shape.** The step splits into three stages, as a graphics frame does:
+1. gather (main thread): each generating slot's logits row index; one `llama_synchronize` first, so every
+   row is readable and no lane calls into the context to wait;
+2. sample (lanes): each slot's sampler is its own state, so slots sample in parallel on the
+   efficiency-core lanes (`parallel_for` over the gathered slots; the frames/lanes pattern of 4.7.12),
+   writing each result into the slot's own output cell: no shared state, no lock;
+3. emit (main thread, slot order): detokenize, stop checks, stream the partial, exactly as today.
+Output is identical by construction: each slot's sampler sees the same logits and RNG in the same order.
 
-Timing and logging are substrate behavior, not instrumentation added after a
-bug. Every runtime concern should inherit the same observability contract that
-CBAR gave threads through names, FPS timing, queue ownership, and lifecycle.
-
-Every module/job must automatically emit:
-
-- module name, job id, turn/frame key, resource class, target silicon, and
-  dependency keys
-- queued-at, admitted-at, started-at, first-output-at, completed-at, and
-  dropped/deferred-at timestamps
-- queue depth, queue wait, execution time, first-output latency, and total
-  latency
-- coalesced count, stale-drop count, retry count, deferred reason, and silence
-  reason
-- CPU/RSS deltas where available
-- GPU backend, GPU layer count, residency estimate, VRAM/unified-memory deltas,
-  and unsupported layers for inference work
-- structured success/error state suitable for command callers and replay tests
-
-TDD proves the contract. VDD proves the behavior. The runtime should make both
-cheap: each module gets trace spans, logs, counters, timing samples, and replay
-hooks by implementing the common trait. A PR that adds a new runtime concern
-without this evidence path is adding an unobservable subsystem, even if the
-feature appears to work.
-
-#### Standard VDD Record
-
-All agents and platforms should report the same record shape. Do not invent a
-new timing table per machine.
-
-```text
-scenario:
-platform:
-hardware:
-backend:
-git_sha:
-command:
-model:
-gpu_layers:
-unsupported_layers:
-cold_start_ms:
-first_token_ms:
-first_response_ms:
-all_responses_ms:
-responses_expected:
-responses_observed:
-silence_reasons:
-tok_per_sec:
-cpu_pct_avg:
-cpu_pct_peak:
-rss_mb:
-gpu_util_pct_avg:
-gpu_memory_mb:
-queue_wait_ms:
-execution_ms:
-coalesced_count:
-deferred_count:
-stale_drop_count:
-error_count:
-degraded_reason:
-log_refs:
-next_bottleneck:
-```
-
-The runtime should be able to emit this as JSONL from the same trace data used
-by tests. Humans can paste the text form into PR comments, but the canonical
-machine-readable output should come from the Rust substrate.
-
-#### One-Line Instrumentation API
-
-The substrate should expose tiny helpers so module authors do not hand-roll
-timers. The target ergonomics should feel like C/C++ one-line macros while
-still producing structured Rust data:
-
-```rust
-let _span = vdd_scope!(ctx, "persona.generate", ResourceClass::LocalGeneration);
-vdd_mark!(ctx, "first_token");
-vdd_counter!(ctx, "tokens", generated_tokens);
-vdd_residency!(ctx, backend = "metal", gpu_layers = n_gpu_layers, vram_mb = vram_mb);
-vdd_defer!(ctx, "gpu_pressure", retry_after_ms = 250);
-vdd_fail!(ctx, "unsupported_qwen_layer", layer = layer_name);
-```
-
-Those calls should feed the same `Standard VDD Record` fields automatically.
-The common helpers must be available to persona, inference, memory, media,
-render, ORM/data, grid, and Docker-adapter code. Iterative optimization should
-be a tight loop:
-
-1. run one standard command
-2. compare CPU, GPU, memory, power, queue time, first token, tok/s, and
-   response count against the prior run
-3. make the bottleneck visible
-4. repeat until CPU drops, GPU residency rises, memory/power stay bounded, and
-   throughput increases
-
-If a performance PR requires custom scripts to discover basic timings, the
-substrate is not doing its job.
-
-### 7.2 Tests are contracts
-
-- A required capability is resolved and adopted, or the launch refuses with its cause.
-- Appending an event never changes the token prefix of the current epoch.
-- A new epoch records its invalidation exactly once.
-- Every broken reuse promise reports a defect, cause, replay cost and recovery outcome;
-  successful re-prefill never clears the defect. Declared cold transitions remain distinct.
-- Cancellation preserves the accepted frontier; incompatible minds/adapters cannot reuse state.
-- Resolve, serialize, launch and observe agree on the same configuration identity.
-- Late artifacts retain source identity; effects reject changed required dependencies.
-
-Machine numbers belong in receipts on the cards, never in tests.
-
-## 8. The plan
-
-Every optimization workstream, by layer. Rows are built only from what the source documents already
-state: the order-of-work and gap sections of the three merged documents, section 2.6, and CLAUDE.md's
-"Goal 11 workstreams" table, its order-of-work lines 2, 3, 3b, 5, 6 and 13, and plan goals 2, 7, 9, 10
-and 11. Owners and gates are as those sources state them; "gate: to set" and "validator: to set" mean
-the source states none. "Not stated" in the owner column means the same.
-
-Every row is proven on its simulator (section 7.0) before it reaches a live node: a row names the
-recorded scenario that shows its gain, iterates there until the numbers move, then confirms live,
-and a live finding that the simulator missed becomes a new scenario (Joel, 2026-11-13).
-
-Rules that apply to every row (from the sources): each step deletes what it replaces in the same PR
-(section 4.1a); each step lands with its validator and a 15-minute live read (section 5); each change
-posts the section 2.5 measurements; a regression on any receipt is a rollback, not a patch on top
-(section 5, "Gates, in order", gate 3).
-
-### 8.1 Substrate
-
-The eight substrate rows SB-1 to SB-8 are the genuinely missing pieces of the substrate, each
-cross-linked to its lane in [ALPHA-GAP-ANALYSIS](../planning/ALPHA-GAP-ANALYSIS.md) (formerly CBAR's
-"Substrate Gap Analysis" table; the primitives already shipped are listed in section 3, "What is
-already shipped").
-
-| # | What it changes | Design section | Owner | Gate | Validator |
-|---|---|---|---|---|---|
-| SB-1 | `RuntimeFrame` / `CognitionTurnFrame` on top of the existing `ResourceClass` + `TargetSilicon` + `ThroughputLease` + `PressureBroker` primitives. Owns stable keys and lazy artifacts for one unit of work (chat trigger, room snapshot, RAG bundle, model selection, media handles, KV/LoRA leases, response envelopes, trace). | 3, Runtime Frame | Lane D | substrate-done acceptance criteria (section 3) | required tests per module and per substrate change (section 3, acceptance criteria) |
-| SB-2 | Typed artifact subscription, cadence, and dependency declarations on the module contract (`ArtifactSelector`, `CadencePolicy`). Extends `ServiceModule` to the proposed `RuntimeModule` trait; does not discard the runtime registry. | 3, Continuum Translation | Lane D | substrate-done acceptance criteria | Unit TDD: dependency wakeups, lane admission, cadence, coalescing, `Deferred` / `Failed` return paths |
-| SB-3 | The "for free" triplet: `RuntimeModule` base trait, `#[derive(RuntimeModule)]` macro, and `just scaffold-module` generator, so a new concern is four lines plus a handler body (worked example in section 3). Without SB-3, even after SB-1 and SB-2 land each module still hand-rolls the boilerplate, which is the same friction Lane D was created to remove. | 3, The "For Free" Triplet | Lane D (companion to SB-2; lands in the same PR series) | the derive-macro acceptance gate: thin, contract-preserving, inspectable, tested, no hidden behavior | golden-file or trybuild tests of every supported attribute permutation, including failure modes |
-| SB-4 | Move chat turn fanout onto `CognitionTurnFrame` so all personas share one room/RAG/model/prompt artifact set instead of rebuilding it per persona per event. This is the consumer-side migration that proves SB-1 to SB-3 actually pay off. | 3, Runtime Frame | Lane D | N personas handling one room event share one `CognitionTurnFrame` (acceptance criteria) | Performance VDD (section 7.1) |
-| SB-5 | Attach VDD metrics to existing lanes/classes: queue depth, queue time, execution time, coalesced count, deferred count, GPU residency, CPU/GPU utilization, and first-response/all-response latency, fed into the Standard VDD Record schema. The triplet's derive macro should be what emits these; the module author should not call `vdd_*!` macros by hand for the inherited fields. | 7.1 | Lane C (substrate); Lane D (frame integration) | gate: to set | the Standard VDD Record emitted as JSONL from the same trace data used by tests |
-| SB-6 | Qwen GPU residency gate for local generation: selected Qwen model, backend, GPU layer count, unsupported layers, residency estimate, and platform backend evidence must be available before the turn runs. Required happy paths: Mac → Metal, NVIDIA → CUDA, AMD/Intel → Vulkan. CPU graph splits or unsupported Qwen layers are blockers unless the turn is explicitly degraded with a visible reason. | 3, RTOS Rules (rule 5, rule 8) | Lane A (registry & admission); Lane E (admission gate) | the required happy paths above | Residency VDD and Qwen VDD (section 3, acceptance criteria); No-CPU-fallback contract across the whole workers tree |
-| SB-7 | Sequential consumer migration: persona chat → embeddings → memory consolidation → media/WebRTC → render/avatar output. Each consumer move is its own PR. | 3 | Lane D (sequencing); Lanes B/C/E (per-consumer support) | each move shows VDD evidence that the post-move path is at least as fast as the pre-move path and emits the Standard VDD Record | Performance VDD |
-| SB-8 | Pre-broker concurrency-hack deletion. Each module today that picks a worker count from `~/.continuum/config.env` or from system memory at startup (current concrete example: `core/inference-grpc/src/main.rs::get_num_workers()`) is a violation of the "we do not hard code" rule and must be deleted in favor of `PressureBroker` leases. | 3, Resource Classes | Lane E | gate: to set | validator: to set |
-| SB-9 | The declared dataflow graph, slices 1-4: `emissions()` and the graph builder; the bus reports undeclared names; the graph test in CI; the generator emits `emissions()` (first module: `DeployTrackerModule`, replacing the 5-minute bash poll). | 3, The Declared Dataflow Graph | not stated | the CI graph test fails on new orphans, with a baseline for existing ones that shrinks over time | unit tests on the builder; the graph test |
-| SB-10 | The act as a dependency graph with transient arenas and prefill overlapped with tools (section 2.6, item 3); prefill during tool calls and the instant voice (CLAUDE.md line 13; goal 11 workstream "Prefill during the tool call; the amygdala's instant voice", card 377d4afa); speed lever 6 (section 4.4). Line 13 starts after lines 2-3. | 2.3 (RDG row), 2.4, 4.4 | Fable, Codex | submit-to-first-token (CLAUDE.md line 13) | submit-to-first-token per act; stimulus-to-first-token (goal 11) |
-
-### 8.2 Serving
-
-| # | What it changes | Design section | Owner | Gate | Validator |
-|---|---|---|---|---|---|
-| SV-3b | One live engine, minds' memory moved by us (CLAUDE.md line 3b): weights load once; context and slots resize live; each mind's KV pages GPU <-> RAM <-> disk per sequence (`llama_state_seq_*`); shared prefixes are copied (`seq_cp`), never re-prefilled; one memory budget; llama-server becomes the OpenAI-compatible adapter for external drivers; relaunch only a dead engine. State in CLAUDE.md: FIRST (10-27): MindMemory, the one owner of every mind's KV (API published, Codex accepted): seat/pause/retire/resume/attach/forget replace 41 paths; Fable builds seat + its stop, Codex moves relaunch/academy/idle/adopt onto pause (rows SV-MM1 to SV-MM3). Then the fork verbs S1-S3, proven over today's endpoint, then a separate `continuum-serving` process hosts it with Rust policy (S5). | 4 | Fable (engine, paging), Codex (admission, relaunch call sites) | median act at 4 residents beats llama-server, reuse >= 80%, no relaunch while serving, footprint flat over 100 resize cycles | slices S0-S7 each land with a seconds-scale validator |
-| SV-S0 | `serving-replay` validator: captured act sequences against a small hybrid GGUF, in seconds, with no residents | 4.5 | Fable | gate: to set | reuse, fresh tokens, page-ins, relaunches = 0 |
-| SV-S1 | Fork: RAM page verbs, checkpoint budget, `.dft` sidecar | 4.2, 4.3 | Fable | gate: to set | S0, plus restore ms |
-| SV-S2 | Fork: `reconfigure` without reloading the model | 4.5, "S2 in detail" | Fable | gate: to set | 100 resize cycles with flat footprint (the full S2 validator in section 4.5) |
-| SV-S3 | Fork: per-task priority and aging in slot selection; `CapacityReport` | 4.1, 4.3 | Fable (mechanism), Codex (policy) | gate: to set | starvation fixture |
-| SV-S4 | Core: admission consumes `CapacityReport`; relaunch call sites (serving_daemon/launch.rs:221, reconcile.rs) call `reconfigure` | 4.5 | Codex | gate: to set | no relaunch while serving |
-| SV-S5 | `continuum-serving` host and `ServingPort`; M5 side-by-side against llama-server (4 minds, growing contexts) | 4.1, 4.2 | Fable | gate: to set | act time, wait, reuse, footprint |
-| SV-S6 | Per-node `EngineConfig.engine` switch; llama-server stays the adapter for external drivers until S5 wins | 4.2, 5 (Fault 2) | Codex (config), Fable | line 3b gate | line 3b gate |
-| SV-S7 | Prefix share; shared head: constitution and tools ahead of identity, one copy for all minds (section 4.7.5 item 5) | 4.1 (prefix sharing), 4.7.3 | Fable | gate: to set | first-act prefill |
-| SV-MM1 | `MindMemory` with `seat` and its own stop, with turn, warm-ahead and transient moved onto it | 4.1a | Fable | gate: to set | the lifecycle validator gains this step's scenario first |
-| SV-MM2 | `pause` and `resume`, with relaunch, academy, idle and adopted retirement moved onto them (the relaunch call sites are S4's) | 4.1a | Codex | gate: to set | the lifecycle validator, driving the actual retirement callers, including a second stop after an adoption |
-| SV-MM3 | `forget` on gene change | 4.1a | Fable | gate: to set | the lifecycle validator's in-place gene change scenario |
-| SV-EC | `EngineConfig` and KV capacity (#5188), incl. unrecorded backend -> f16/no-FA/half budget (Cormac's item 10): one `EngineConfig` from what the engine reports; KV layout and sequence capacity from the measured contract in #5188; one admission owner. Resolve-then-adopt owner in inference/planning. Cards 9b9f3b59, 172a886f. Section 5's build order puts it first (small, measurable on every node), before the epoch materializer. | 5, Fault 2 | Fable (line 3); Fable + Codex (goal 11 workstream) | no queue wait; warm-ahead runs | resolve-then-adopt contract on every node class; refuse on mismatch |
-| SV-POOL | The streaming pool: fork #110 (live `/prompt-cache/limit`) + the host deficit's shed path, so the engine's cache gives memory back first under pressure (section 2.6 item 1; cards 494c99f1, 0f631c46) | 2.3 (virtual texturing row), 4.3 | not stated | gate: to set | measured on the M5: prefill tok/s, decode tok/s, free memory, act latency |
-| SV-F1 | Size the prompt cache and checkpoint retention from one measured memory budget, so the engine never pushes the machine into swap | 4.1b, 4.3 | not stated | gate: to set | validator: to set |
-| SV-F2 | Pages carry only the checkpoints a resume needs | 4.1b, 4.7.3 | not stated | gate: to set | validator: to set |
-| SV-F3 | Page IO goes RAM-first and off the main loop (S1), so a switch never stalls the other minds | 4.1b | see SV-S1 | gate: to set | see SV-S1 |
-| SV-F4 | Expert paging for capacity on unified memory (card 5eedda3e) | 4.1b | not stated | gate: to set | validator: to set |
-| SV-F5 | A long-context sweep: per-sequence KV reads are what batching cannot amortize | 4.1b | not stated | gate: to set | validator: to set |
-| SV-DISP | The dispatcher: the adapter's concurrency permit and the slot pool become one event-woken dispatcher per engine, the ambient anti-stampede permit becomes a class in it, and the act clock's queue-time registration goes with the lane (done so far on `fable/lanes-flow`) | 4.1c | not stated | gate: to set | validator: to set |
-| SV-ADM | One admission owner: a mind is never refused; expand first, collapse second | 4.8 | not stated (proposed 2026-11-11) | section 4.8.5: on BigMama and the M5 over an hour, capacity refusals 0; every mind with a turn asked takes an act; no grant below a mind's irreducible part; no view collapsed while another mind's idle state held the memory she needed; the admission code is smaller than before it | validator: to set |
-| SV-CK | Fork: the boundary checkpoint verb (keep one at the stable end the request names) replaces `--ctx-checkpoints N` / `--checkpoint-min-step`; per-sequence holdings on `/slots` (`resident_state` and slot `checkpoints`, fork #91, are the first part) (section 4.7.5 item 3) | 4.7.3 | not stated | gate: to set | validator: to set |
-| SV-LEDGER | Core: serving's memory is claims and items on the base, fed by the engine's live holdings (`ResidentReport`); every seated mind is a sequence; the hand-rolled allocators and the process-footprint inference (`lane_footprint`, `fixed_per_lane_bytes`) are deleted. `Motion` over token runs, fed by the divergence point the engine reports per request, places checkpoints and finds what minds share (section 4.7.5 item 4) | 4.7.3, 4.7.4 | not stated | the hand-rolled allocator gate goes to zero (section 4.7.4) | validator: to set |
-| SV-G9 | One scheduler, the whole grid (plan goal 9): every mind on every node (residents and minds leased in from other nodes) is served by ONE RTOS scheduler; one measured activity temperature per mind is its priority; aging means no mind is ever starved; hot minds keep warm KV and cooling minds page to RAM; windows never shrink to seat more; how many minds share the engine at once is the measured admission and sequence-capacity contract of #5188, never a fixed count | 4.1 (`scheduler`), 4.3 | Codex, proposed (card b4eed65c) | the goal 9 statement | validator: to set |
-| SV-MISS | Every fast-path miss loud, never a quiet slower path; an intentional cold start (new epoch, revocation) is classified separately (#5188). #5190: count resident_prefix_lost; #5191: probe wording; then the rest of the 24 (CLAUDE.md line 6; card f3ba3b56) | 5, Fault 2 (defect events) | Cormac | each miss class has a fixture | each miss class has a fixture that raises it |
-| SV-FORK | Our fork's switching work (KV pages to disk, checkpoints, host cache) actually exercised; inventory in progress (goal 11 workstream) | 4 | Fable | gate: to set | per-optimization probe on the live node |
-
-Speed levers (section 4.4) and their rows: lever 1 is CX-1; lever 2 is SV-MM1 to SV-MM3 with SV-S1;
-lever 3 is measured in SV-S5; lever 4 is SV-S1; lever 6 is SB-10; lever 7 is SV-S7. Levers 5 (MTP) and
-8 (KV quantization below q8_0) have no row; each is measured as section 4.4 states.
-
-Unresolved: CLAUDE.md line 3b says "Serving drives libllama in-process (`continuum-engine`
-`llamacpp_scheduler`)"; section 4.2 (from SERVING-ENGINE) keeps `llamacpp_scheduler` "for small and
-embedding models" and section 4.6 says "run the engine as a separate process, not inside the core",
-hosted by a separate `continuum-serving` process (S5), which CLAUDE.md line 3b's own state column also names.
-
-### 8.3 A mind's context
-
-| # | What it changes | Design section | Owner | Gate | Validator |
-|---|---|---|---|---|---|
-| CX-1 | A mind's context as an epoch (CLAUDE.md line 2; goal 11 workstream: a mind's context is an epoch-versioned materialization; acts prefill only the appended tail; card 3c9fda87). State in CLAUDE.md: continuum-context slices 1-2 pushed (replay: 92-95% reuse, ~3x less fresh); next: wire the faculty's render path into Epoch. Includes speed lever 1, the [actions] move to the tail (section 4.4), which runs in parallel on the mind side. Section 5's gate 2: one mind on the M5, bar engine reuse at or above 80%, prefill under 15 s per act, and more acts and writes per hour; gate 3: then every resident, then the other nodes. | 5 | Fable + Codex | live reuse >= 80% | replay captured prompts, measure the token prefix shared by consecutive acts (35% today; append-only agents ~90%+) |
-| CX-2 | The base: the prompt's callers move to `cambrian-flex` and `flex_allocate` is deleted (ONE-BUDGET slice 1) (section 4.7.5 item 0) | 4.7.4 | not stated | gate: to set | validator: to set |
-| CX-3 | Her view survives a restart: the epoch (its start, its items' levels, its appends) is durable state beside her KV page, so a deploy pages her back in where she was instead of starting her over (section 4.7.5 item 1) | 4.7.2, 5 | not stated | turnovers at a restart go to 0 | replay the captures across the day's restarts |
-| CX-4 | Mind side: no live value in a stable block. The kanban counter, the wall, the workspace map and recall arrive as appended item versions (the keyed-item contract), never as an in-place rewrite; a ratchet refuses one. Her activities stay one view: a move between rooms appends (section 4.7.5 item 2) | 4.7.2, 5 | not stated | in-place early changes to 0 | rerun section 4.7.2's analysis on fresh captures |
-| CX-5 | One codec for every layer: the source-hygiene ratchets `prompt_messages_outside_the_view`, `collapse_outside_the_view`, `hand_churn_labels`, and positron `ViewState` kinds that are not context `Source`s | 5, "one codec for every layer" | Fable (the view, the adapter, the deletions), Codex (`references()`, head/ensure, slot/seed), Cormac (checkpoints at the head boundary and on turnover) | the "Done" column of section 5's gates table | the replay validator (`continuum-context` `examples/replay.rs`) and the live 15-minute read |
-| CX-6 | Causality in the type: step 1 the item type, typed causes, `CauseNotHeld`, the `Root` ratchet and invariants 1-3; step 2 invariant 4's fingerprint and its replay validator (built, card dcf95bce; the M5 run is Fable's); step 3 invariant 5 and the overflow rule with ONE-BUDGET slice 6's measured claims | 5, causality revision | step 1 Fable; step 2 Cormac; step 3 Fable | gate: to set (live: repeats per resident-hour on the health line) | the replay validator must fire on the M5 2026-10-30 8-reads-an-hour case |
-| CX-7 | The render receipt: what was actually sent | 5, causality revision | Fable, after #5611 lands; Codex consumes it for task wakes | gate: to set | validator: to set |
-| CX-8 | Her act's tail is a source, judged and rendered by the view before it is sent | 5, 2026-11-11 revision | Fable (the source, the view, the deletions); Codex (the engine's view of the tail); Cormac (checkpoints) | `prompt_messages_outside_the_view` ratchet 7 -> 0 | the faculty replay (`fable/faculty-replay`) at both the rendered messages and the final wire request's token prefix; then the live read |
-| CX-9 | One budget (plan goal 7): everything in a prompt (history, grounding, tools, reasoning, results) is a claim in ONE flex allocation; no fixed number; positron/RAG sources too. Never clip the newest end; keep the newest interaction whole and the full result reachable; shrink oldest-first to a handle she can expand | 5 | Sneasel | `source-hygiene::head_cuts` (179 on 10-20) falls | validator: to set |
-| CX-10 | Tools are working sets (plan goal 10): the native tool surface is the command-namespace subtrees the activity declares (code/**, work/**, a game's controls); stable within a phase, a switch is a cached prefix, the long tail appends via help | 4.7.2 (tool surface changed: 9 pairs), 5 | Sneasel (card ecd5dff3) | tool share of the prompt measured before/after (44% on 10-18) | validator: to set |
-
-Unresolved: section 5 (from MIND-CONTEXT-AND-ENGINE-CONFIG, 2026-10-21) says `flex_allocate` "moves
-here from `cognition::rag_budget`" into the `continuum-context` `flex` module and is "the one
-allocator"; section 4.7.4/4.7.5 (from SERVING-ENGINE, 2026-11-03) says the base is `cambrian-flex`
-(airc `crates/flex`) and "`flex_allocate` is deleted". (`docs/architecture/ONE-ACT.md` records a ruling that the former wins; `core/continuum-context/src/flex.rs` says it was moved there.)
-
-### 8.4 Data path
-
-| # | What it changes | Design section | Owner | Gate | Validator |
-|---|---|---|---|---|---|
-| DP-1 | GPU-driven vector culling: unit vectors at write as raw f16/f32 bytes, a no-copy GPU buffer, one GEMV dispatch with fused top-k and a popcount prefilter (section 2.6 item 2) | 2.1-2.3, 6 | not stated | gate: to set | 10k/100k search latency and recall@k |
-| DP-2 | The core's CPU around inference (CLAUDE.md line 5; goal 11 workstream, card 452b7885): cosine owner (#5189), revisioned vector corpus + BLAS + cascade, rayon spin; #5189 first drops the two re-exports, then the corpus. Profiled on deployed d90006023; check each against current source (canary ca2907d5c already moves SQLite to spawn_blocking): no rayon spin, embeddings as one revisioned BLAS matrix, no tree re-walks or spawned ps | 2.2, 6 | Codex | idle-core sample near zero | 10 s sample of an idle core is near zero; vector search at 1k/10k/100k, old vs new |
-
-### 8.5 Measurement
-
-| # | What it changes | Design section | Owner | Gate | Validator |
-|---|---|---|---|---|---|
-| MS-1 | Residents code at pace (plan goal 2) | 7 | Sneasel (M5), BigMama (5090), proposed | per resident: ≥40 tool calls/h, median act <60 s, prefix reuse ≥80%; ≥1 resident PR merged per day; on a capable model (27B class), several at once | validator: to set |
-| MS-2 | Speed is ours (plan goal 11): every workstream has a validator that runs in seconds on any machine (no live residents) and proves its speed-up before the live node does; the live receipt follows | 7 | see each row | every row above carries a validator | each row's validator |
-
-### 8.6 Open questions (Codex)
-
-1. Do appends land past the fork's last recurrent checkpoint cheaply on hybrid models, or
-   does checkpoint spacing (today `--checkpoint-min-step 4028`) bound reuse per act?
-2. Which backend APIs can populate each required operation capability, and how are unknown
-   values represented before load? The current props fields alone are insufficient.
-3. A small window (a 24 GB Pro, a phone): how often must an epoch turn over, and what does
-   that cost per act?
-
-### 8.7 Build order of the context and engine configuration
-
-Not before both authors sign off. Then: `EngineConfig` first (small, measurable on every
-node we have), then the epoch materializer with slots kept warm. Each step ships with
-before/after receipts on every node class we can reach.
-
-Unresolved: section 5's status line (MIND-CONTEXT-AND-ENGINE-CONFIG, 2026-10-19) says "Nothing here is
-built" and the build waits for both authors' sign-off; later revisions in the same section record
-built pieces (invariant 4, card dcf95bce; the `Epoch`, #5210; the replay validator; the deleted churn
-table), and CLAUDE.md line 2 records continuum-context slices 1-2 pushed.
-
-## See also
-
-- [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) — the
-  artifact-sharing economy layered on top of this substrate contract.
-  This document specifies what every cell inherits; that document
-  specifies what every cell *recalls*, *composes*, and *evolves*
-  through. The two are paired: the substrate is the floor, the genome
-  economy is what runs on it. Lane H in ALPHA-GAP converges on the
-  genome doc; Lanes C/D/E converge here.
-- [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — the planning
-  document. Plan rows SB-1 to SB-8 (section 8.1) are the authoritative
-  mapping between the eight numbered missing pieces here and the lane
-  structure (A–H) there. If the two ever disagree on the substrate contract
-  (concurrency, scheduling, memory, pressure, telemetry, artifact handles),
-  this document wins per the precedence rule in ALPHA-GAP.
-- `core/continuum-core/src/runtime/` — shipped substrate primitives
-  this document refines and extends.
-- `core/continuum-core/src/paging/broker.rs` — `PressureBroker`
-  shipping point. The example in section 3, "The For Free Triplet", shows how a new module
-  inherits pressure-response from the broker without owning a private hook.
+**Order (measured, not assumed).** (a) Deploy #122; read `/props.step_budget` `inter_step_us` and
+`gpu_time` on the live M5 at four residents. (b) If the host gap between GPU steps is larger than the
+sampling share above, build stage 2 with a validator: same tokens as the serial path over every slot
+count 1-8, and step host time before/after. (c) If it is not, the gap is elsewhere (4.7.13's audit rows,
+the result-queue wakes of row 15) and this waits. Owner: Fable (stage 2), Codex reviews the server loop.
