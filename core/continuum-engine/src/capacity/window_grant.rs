@@ -288,10 +288,6 @@ pub struct GrantEvaluation {
 /// Why a demand the publisher received holds no grant after its evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waiting {
-    /// Her need is above what one sequence holds: no grant can seat her.
-    NeedAboveCeiling { need: u32, ceiling: u32 },
-    /// Her need is above the whole pool.
-    NeedAbovePool { need: u32, pool: u32 },
     /// Her own grant is being reclaimed: she is regranted after its receipt.
     Reclaiming,
     /// Cells are being reclaimed for her from holders that are not acting: she is granted after the
