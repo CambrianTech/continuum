@@ -48,7 +48,7 @@ impl History {
     /// Where `prompt` under `basis` would start for her, whose blocks were computed under `under`
     /// (`reuse::choose`), deciding nothing and moving nothing: the bind uses it to resume her, the
     /// frame to size her turn's prefill.
-    pub(super) fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+    pub(super) fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Decision {
         let kept = self.kept.iter().flatten().map(|kept| reuse::Kept {
             end: kept.end,
             basis: &kept.basis,
