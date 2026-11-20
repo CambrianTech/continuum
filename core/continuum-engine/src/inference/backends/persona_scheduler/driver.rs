@@ -450,6 +450,13 @@ impl Driver<'_, '_> {
             self.finish_one_off(&turn);
             self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
         }
+        // A refused copy-out still owns native state outside the parked inventory. Finish it
+        // before enumerating minds, or leave the store and last complete generation in custody.
+        if let Some(id) = self.engine.retiring() {
+            if let Err(why) = self.retire_previous() {
+                return Suspended { preserved: 0, retained: vec![(id.0, why.to_string())] };
+            }
+        }
         let Some(mut store) = self.store.take() else {
             return Suspended { preserved: 0, retained: vec![(Uuid::nil(), "this node has no home to preserve minds in".into())] };
         };
