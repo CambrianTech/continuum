@@ -191,6 +191,12 @@ contributed, and how the turn turned out. That history is the selection signal:
 - **Given more.** A gene whose larger contribution goes with better outcomes earns a larger share,
   more residency priority, and wider spread.
 
+The same history sets the curriculum and chooses what trains. Where a gene carries heavy weight and
+outcomes still fall short, that gap becomes lessons, valued by how much the gap costs her. The gene
+carrying it becomes the parent those lessons refine as a child. Where no hosted gene covers the gap,
+the lessons mint a new one (the reuse, fork or mint decision of 6.5). Nobody chooses a curriculum by
+hand: what her genes do and fail to do chooses it.
+
 The quality before and after each change of contribution is a measurement taken continuously,
 beside the examiner's exams, and both feed one fitness (6.6, ruling 3). Contributions rise in the
 situations a gene suits, so a raw correlation can credit the gene for the situation. To separate
