@@ -108,6 +108,11 @@ Part
    └─ Cache               derived values, shed coolest first (today's ShedLru, MemoryReporter implementors)
 ```
 
+Every page a holder keeps moves through typed states: on a tier, requested, moving, resident, and
+pinned while a holder's completion is outstanding. Holders refer to pages by handle, so the
+governor can demote, promote or compact a page without invalidating any reference to it, and
+compaction runs as throughput work (chapter 0, "Every page has a lifecycle").
+
 Replaces `ResourcePool`, `ResourceConsumer`, `MemoryReporter`, `DeviceTenant`, `StagingResidency`,
 `RenderSurface`'s shed, `VoiceReclaimLever` and `DiskReporter`: one lineage with three generic
 owners. The governor drives every holder through the same two calls

@@ -111,6 +111,21 @@ a citizen acting, a person watching, a call in progress.
 - **Sectors are hierarchical.** An activity contains its rooms, and a room contains its threads and
   artifacts. Each level streams on its own.
 
+Three more details from the same analyses sharpen this.
+- **Archetypes are separate from instances.** RAGE's world is split into archetype definitions
+  (shared shape, collision, textures) and placement maps (where each instance stands, with its LOD
+  links). Here the archetypes are what many share: a base model, a gene, a recipe, a shared prompt
+  head. They are stored once and referenced by every instance that uses them. The instances are what
+  is particular: a persona's identity and cursors, an activity's state.
+- **What many depend on streams first.** A streaming request is scored by distance and direction, and
+  also by how many visible things depend on it: a texture needed by fifteen entities outranks a
+  unique prop. Here a gene several minds wear, or a prefix every mind shares, is promoted before one
+  only a single mind needs.
+- **Interiors sit behind portals.** An interior has its own coordinate space, joined to the city
+  through doorways, and stays dormant unless a portal is in view. Here a private room, a direct
+  conversation or a thread is an interior: dormant until a member's attention passes through to it,
+  and costing nothing until then.
+
 ### Bubbles of fidelity around every focal point
 
 The same analyses describe entities living in rings of fidelity around the player:
@@ -133,6 +148,24 @@ Entities move between rings as the focus moves.
 Promotion and demotion follow attention, never a timer. Nothing about her is lost at any level,
 because each level keeps her durable branches (chapter 5); only her caches move.
 
+### Every page has a lifecycle, and handles let it move
+
+RAGE's streaming is reported to move every block through fixed states (unloaded, requested,
+loading, loaded) and to lock a block while an active job pins it. Its allocator hands out
+relocatable handles, so that in idle slices of a frame a background pass can move blocks together
+to close gaps and update the handles atomically. This lets a fixed-memory console run for hours
+without fragmenting and without stopping the simulation.
+
+**Here:**
+- **Pages have typed states.** Every page (KV, gene, model, learning context, derived cache) has
+  typed states: on a tier, requested, moving, resident, and pinned while a holder's completion is
+  outstanding.
+- **Holders hold handles, not addresses.** That is the rule that content travels by handle. The
+  governor can then demote, promote or compact a page between tiers without invalidating anyone who
+  refers to it.
+- **Compaction runs in the slack.** It runs as throughput work, never on the critical path. A
+  long-running node then stays as fast on its hundredth hour as on its first.
+
 ### Slots, hydrated from descriptors
 
 RAGE avoids heap churn by keeping pools of preallocated slots for people, vehicles and objects. An
@@ -143,6 +176,14 @@ descriptor.
 **Here:** a persona entering the Core claims a resident slot and is hydrated from her descriptor:
 her durable state, her genes, her saved pages. Switching minds is swapping the descriptor bound to
 the Core's active role. This is why a switch costs milliseconds (0.4).
+
+RAGE's descriptors are reported to include an agent's whole behavioral profile: its personality,
+perception thresholds, reaction latencies and relationship group. These are reflected from C++
+types into data blocks, so that identical world states produce different behavior from different
+agents, and a profile can be swapped by rebinding a pointer. Here a citizen's descriptor is the
+same kind of data, and much more: her genome, her traits, her attention dial and her
+relationships. Two citizens facing the same room act differently because they are different
+people, not because the code branches.
 
 **Where we differ.** RAGE partitions memory into hard, fixed pools per subsystem: physics, audio,
 geometry, entities. That suits a console game, whose content is authored and fixed before it ships.
@@ -245,10 +286,15 @@ because nobody can see more detail there.
 Red Dead Redemption 2 keeps a hidden image of footprints, hoof prints and wheel tracks, so the mud
 remembers where you went.
 
+GTA 6 is reported to extend this into persistent surface maps that also decay: ruts, mud and wear
+are written into light control maps that fade over time.
+
 **Here:** the world remembers what happened even where no one is looking. A room's history, a
 citizen's engrams and a turn's receipts are cheap durable traces, and their detail comes back when
 someone attends to them. The fact that something happened persists; how much of it enters a mind
-depends on what she is doing now.
+depends on what she is doing now. Traces also decay as RAGE's ruts do. A memory that is never
+rehearsed weakens, and one that proves misleading can be let go, as the README's cognitive
+hierarchy says. Engrams are a living map, not an archive.
 
 ### Sound is stems, mixed by the moment
 
@@ -274,6 +320,28 @@ twice. Its behaviors (brace for impact, catch fall, teeter) are switched on per 
 recall, the workspace) run live on what she perceives, and behaviors such as interrupting, asking,
 deferring or digging deeper are switched on by her own state, not scripted by the caller. No two
 turns are replayed, because each is computed from her present.
+
+Analyses of RAGE add four structures that make simulated behavior affordable. Each is reported, not
+confirmed by Rockstar.
+- **A closed loop at the joints.** The animation system sets target poses, Euphoria executes them,
+  and the forces the world returns (slope, impact, momentum) change the motion at every sub-step.
+  Here that is the README's settlement loop: she intends, acts, the world answers with a receipt,
+  and the answer changes her next step. Nothing is pre-scripted for each case the world might
+  return.
+- **A stack of interruptible tasks.** An agent's behavior is a stack of composable tasks: combat
+  delegates to seeking cover, which pushes moving along the navmesh and aiming. Each yields while it
+  waits. A higher-priority event in the agent's bounded event queue interrupts the stack without
+  unwinding the agent. Here her turn is the same kind of stack (activity, card, step, tool call),
+  each level yielding while it waits on a completion. An event of higher salience interrupts her at
+  the top of the stack and leaves the rest of it resumable.
+- **Two layers of decision, macro and micro.** GTA 6 is reported to separate a slow layer for intent
+  and route from a fast layer for local reaction, each informing the other. Here that is her deep
+  mind and her fast layers: the amygdala, the quick voice, the reflexes of her hands. They run at
+  their own rates and inform each other, under one turn identity.
+- **Amortized sensing.** Of two hundred agents in a sector, only a few are reported to run full
+  perception each frame, while the rest act on cached targets a few frames old. Here deep
+  perception of a shared stream rotates by salience across the minds that need it, and every mind
+  acts on the fused estimate meanwhile. That estimate always names its age.
 
 ### Stimuli are scoped, queries are tickets, affordances are baked in
 
@@ -324,6 +392,22 @@ measured:
 - reuse that rose from 41% to 91.7% once checkpoints were reused.
 
 The health number is re-processed against appended, and healthy is about 1:1.
+
+### Bubbles merge and split; persistence never stalls the frame
+
+Take-Two's session architecture is reported to drop fixed lobbies for spatial stitching. Isolated
+simulation bubbles merge as players converge and split as they part, with no loading screen. World
+persistence (inventory, transactions, social state) runs as small asynchronous services, apart from
+the real-time loop, so saving never stalls a frame.
+
+**Here:**
+- **Bubbles follow activities across the Grid.** When participants on different nodes converge on
+  one activity (a call, a shared room), their bubbles merge: the activity's sector is hosted where
+  its participants and their compute are, and the parts it needs are placed by capability. When
+  they part, it splits. Placement follows the activity, not a fixed assignment of nodes.
+- **Persistence is never on the frame.** Durable state (her `MindState`, her engrams, her genome's
+  checkpoints, a room's history) is written by its own parts as throughput work, from state already
+  published. A save never makes a voice stutter or a body drop a frame.
 
 ### Own the engine
 

@@ -34,6 +34,10 @@ Persona: Part                               a fixed set of branches (parts!)
 └─ presence: Presence: Part                 her membership in rooms (airc)                   durable
 ```
 
+Her workspace runs a turn as a stack of tasks: activity, card, step, tool call. Each level yields
+while it waits on a completion. An event of higher salience interrupts at the top of the stack and
+leaves the rest resumable (chapter 0, "Simulate behavior").
+
 Every branch answers the lifecycle commands and the same queries through the tree. Suspending her
 is one broadcast: each branch saves its durable state, demotes its pages, and answers `Done` or
 `Pending` on what it is still writing.
