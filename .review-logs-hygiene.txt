@@ -1,0 +1,45 @@
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3016779Z   continuum-live                      12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017117Z waits_that_decide_flow_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017411Z   continuum-engine                    83       83
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017718Z   continuum-core                      60       60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018029Z   continuum-kernel                    45       45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018357Z   continuum-cognition                 19       19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018691Z   continuum-mind                      13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019005Z   continuum-hands                     12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019285Z writes_outside_a_class
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019568Z   continuum-core                      38       38
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019894Z   continuum-academy                   23       23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020229Z   continuum-engine                    21       21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020546Z   continuum-kernel                    13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020856Z   continuum-mind                      13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3021201Z   continuum-genome                     9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3487255Z ##[error]Process completed with exit code 1.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3578657Z Post job cleanup.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.4610381Z Post job cleanup.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5323501Z [command]/usr/bin/git version
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5356179Z git version 2.56.1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5387872Z Temporarily overriding HOME='/home/runner/work/_temp/b142c617-883f-4dd8-b39e-5169f0667025' before making global git config changes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5388510Z Adding repository directory to the temporary git global config as a safe directory
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5392036Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/continuum/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5426349Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5465221Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5649824Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5685563Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5744793Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5768027Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5781746Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5803234Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5989073Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6009289Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6044206Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6062023Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6098727Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6123549Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6306008Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6319930Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/llama.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6337033Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6352519Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/whisper.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6380591Z [command]/usr/bin/git config --file /home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/llama.cpp/config --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6405115Z [command]/usr/bin/git config --file /home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/whisper.cpp/config --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6546926Z Cleaning up orphan processes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6802495Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/

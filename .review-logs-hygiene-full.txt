@@ -1,0 +1,1391 @@
+source-hygiene ratchets (fast)	UNKNOWN STEP	﻿2026-11-18T10:07:40.6971050Z Current runner version: '2.338.2'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.6999025Z ##[group]Runner Image Provisioner
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.6999849Z Hosted Compute Agent
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7000450Z Version: 20261103.629
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7001093Z Commit: 15dbd9ccb5dbf34fae002b6ed1a2670f52df37bc
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7001832Z Build Date: 2026-11-03T17:26:59Z
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7002856Z Worker ID: {c58fbb9e-380c-4658-a7b4-5a6f70ec2d0d}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7003558Z Region: us-east-1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7004183Z Cloud: AWS
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7004709Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7006332Z ##[group]Operating System
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7006964Z Ubuntu
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7007499Z 26.04.1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7008146Z LTS
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7008668Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7009242Z ##[group]Runner Image
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7009897Z Image: ubuntu-26.04
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7010537Z Version: 20261111.82.6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7011817Z Included Software: https://github.com/actions/runner-images/blob/ubuntu26/20261111.82/images/ubuntu/Ubuntu2604-Readme.md
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7013704Z Image Release: https://github.com/actions/runner-images/releases/tag/ubuntu26%2F20261111.82
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7014751Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7018071Z ##[group]GITHUB_TOKEN Permissions
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7020800Z Actions: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7021444Z ArtifactMetadata: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7022010Z Attestations: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7022823Z Checks: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7023357Z CodeQuality: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7023868Z Contents: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7024430Z CopilotRequests: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7025009Z Deployments: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7025663Z Discussions: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7026182Z Drives: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7026662Z Issues: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7027314Z Metadata: read
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7027939Z Models: read
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7028439Z Packages: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7028972Z Pages: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7029479Z PullRequests: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7030104Z RepositoryProjects: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7030767Z SecurityEvents: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7031342Z Statuses: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7031889Z VulnerabilityAlerts: read
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7032731Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7034972Z Secret source: Actions
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7035933Z Cache mode: write
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7036671Z Prepare workflow directory
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7382150Z Prepare all required actions
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.7424246Z Getting action download info
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:40.8893547Z Download action repository 'actions/checkout@v4' (SHA:11d5960a326750d5838078e36cf38b85af677262)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:43.5537116Z Download action repository 'actions/setup-node@v4' (SHA:49933ea5288caeca8642d1e84afbd3f7d6820020)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:43.7965315Z Download action repository 'Swatinem/rust-cache@v2' (SHA:d1527c8f67ef9af357290475d4af4b0fab8f12e0)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.0807461Z Complete job name: source-hygiene ratchets (fast)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1594528Z ##[group]Run actions/checkout@v4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1595722Z with:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1596462Z   submodules: recursive
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1597319Z   fetch-depth: 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1598141Z   repository: CambrianTech/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1604967Z   token: ***
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1605757Z   ssh-strict: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1606522Z   ssh-user: git
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1607456Z   persist-credentials: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1608360Z   clean: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1609226Z   sparse-checkout-cone-mode: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1610173Z   fetch-tags: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1610994Z   show-progress: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1611826Z   lfs: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1612766Z   set-safe-directory: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1613733Z   allow-unsafe-pr-checkout: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:44.1614889Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7090573Z Syncing repository: CambrianTech/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7091728Z ##[group]Getting Git version info
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7092185Z Working directory is '/home/runner/work/continuum/continuum'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7093848Z [command]/usr/bin/git version
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7099683Z git version 2.56.1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7112753Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7121530Z Temporarily overriding HOME='/home/runner/work/_temp/89a539db-23d4-4bd5-a7d2-83f5b8af1091' before making global git config changes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7122266Z Adding repository directory to the temporary git global config as a safe directory
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7125413Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/continuum/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7622302Z Deleting the contents of '/home/runner/work/continuum/continuum'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7625709Z ##[group]Initializing the repository
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.7631134Z [command]/usr/bin/git init /home/runner/work/continuum/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8529558Z hint: Using 'master' as the name for the initial branch. This default branch name
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8530208Z hint: will change to "main" in Git 3.0. To configure the initial branch name
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8530661Z hint: to use in all of your new repositories, which will suppress this warning,
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8531045Z hint: call:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8531240Z hint:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8531534Z hint: 	git config --global init.defaultBranch <name>
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8531817Z hint:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8532106Z hint: Names commonly chosen instead of 'master' are 'main', 'trunk' and
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8532715Z hint: 'development'. The just-created branch can be renamed via this command:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8533039Z hint:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8533254Z hint: 	git branch -m <name>
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8533500Z hint:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8533800Z hint: Disable this message with "git config set advice.defaultBranchName false"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8551954Z Initialized empty Git repository in /home/runner/work/continuum/continuum/.git/
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8563666Z [command]/usr/bin/git remote add origin https://github.com/CambrianTech/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8634941Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8635359Z ##[group]Disabling automatic garbage collection
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8638061Z [command]/usr/bin/git config --local gc.auto 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8661939Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8662563Z ##[group]Setting up auth
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8667624Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:47.8691140Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1234883Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1261704Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1446980Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1471050Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1653797Z [command]/usr/bin/git config --local http.https://github.com/.extraheader AUTHORIZATION: basic ***
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1679708Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1680338Z ##[group]Fetching the repository
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:48.1687095Z [command]/usr/bin/git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=2 origin +6cf5efdbd9e92e70573a45cc14d5c63599992172:refs/remotes/pull/5953/merge
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9488168Z From https://github.com/CambrianTech/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9488619Z  * [new ref]         6cf5efdbd9e92e70573a45cc14d5c63599992172 -> pull/5953/merge
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9492675Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9493367Z ##[group]Determining the checkout info
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9494845Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9499170Z [command]/usr/bin/git sparse-checkout disable
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9556391Z [command]/usr/bin/git config --local --unset-all extensions.worktreeConfig
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9578166Z ##[group]Checking out the ref
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:52.9581044Z [command]/usr/bin/git checkout --progress --force refs/remotes/pull/5953/merge
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6745471Z Note: switching to 'refs/remotes/pull/5953/merge'.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6745730Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6745913Z You are in 'detached HEAD' state. You can look around, make experimental
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6746270Z changes and commit them, and you can discard any commits you make in this
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6746613Z state without impacting any branches by switching back to a branch.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6746818Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6746955Z If you want to create a new branch to retain commits you create, you may
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747282Z do so (now or later) by using -c with the switch command. Example:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747471Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747608Z   git switch -c <new-branch-name>
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747747Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747835Z Or undo this operation with:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6747963Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6748037Z   git switch -
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6748178Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6748339Z Turn off this advice by setting config variable advice.detachedHead to false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6748554Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6748798Z HEAD is now at 6cf5efd Merge abfab027d41ddbe000c269af246df39c86faa3ae into e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6786810Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6787348Z ##[group]Setting up auth for fetching submodules
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6788001Z [command]/usr/bin/git config --global http.https://github.com/.extraheader AUTHORIZATION: basic ***
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6826387Z [command]/usr/bin/git config --global --unset-all url.https://github.com/.insteadOf
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6850787Z [command]/usr/bin/git config --global --add url.https://github.com/.insteadOf git@github.com:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6875295Z [command]/usr/bin/git config --global --add url.https://github.com/.insteadOf org-13053095@github.com:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6894326Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6894773Z ##[group]Fetching submodules
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.6899644Z [command]/usr/bin/git submodule sync --recursive
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.7103759Z [command]/usr/bin/git -c protocol.version=2 submodule update --init --force --depth=2 --recursive
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.7293991Z Submodule 'src/workers/vendor/llama.cpp' (https://github.com/CambrianTech/llama.cpp) registered for path 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.7295020Z Submodule 'src/workers/vendor/whisper.cpp' (https://github.com/ggerganov/whisper.cpp) registered for path 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:53.7324002Z Cloning into '/home/runner/work/continuum/continuum/core/vendor/llama.cpp'...
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:55.7302833Z Cloning into '/home/runner/work/continuum/continuum/core/vendor/whisper.cpp'...
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:57.5113649Z From https://github.com/CambrianTech/llama.cpp
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:57.5114197Z  * branch            5e4163402559c587b71cccc1ef67ea9a41a4a2ca -> FETCH_HEAD
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:58.0364604Z Submodule path 'core/vendor/llama.cpp': checked out '5e4163402559c587b71cccc1ef67ea9a41a4a2ca'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.2149949Z From https://github.com/ggerganov/whisper.cpp
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.2150327Z  * branch            371b5a7561823ab2bb32142d2751e35e7534727b -> FETCH_HEAD
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3601684Z Submodule path 'core/vendor/whisper.cpp': checked out '371b5a7561823ab2bb32142d2751e35e7534727b'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3629240Z [command]/usr/bin/git submodule foreach --recursive git config --local gc.auto 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3818123Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3849225Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3885645Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3886109Z ##[group]Persisting credentials for submodules
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.3891941Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'url\.https\:\/\/github\.com\/\.insteadOf' && git config --local --unset-all 'url.https://github.com/.insteadOf' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4069351Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4104892Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4147728Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local 'http.https://github.com/.extraheader' 'AUTHORIZATION: basic ***' && git config --local --show-origin --name-only --get-regexp remote.origin.url"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4319973Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4349567Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/llama.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4365416Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4394706Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/whisper.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4426265Z [command]/usr/bin/git submodule foreach --recursive git config --local --add 'url.https://github.com/.insteadOf' 'git@github.com:'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4598794Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4630043Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4670646Z [command]/usr/bin/git submodule foreach --recursive git config --local --add 'url.https://github.com/.insteadOf' 'org-13053095@github.com:'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4843819Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4874914Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4909422Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4956745Z [command]/usr/bin/git log -1 --format=%H
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.4973524Z 6cf5efdbd9e92e70573a45cc14d5c63599992172
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5170562Z ##[group]Run if [ "pull_request" = "pull_request" ]; then
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5171112Z [36;1mif [ "pull_request" = "pull_request" ]; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5171443Z [36;1m  base=$(git rev-parse HEAD^1)[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5171863Z [36;1melif [ "refs/pull/5953/merge" != "refs/heads/canary" ] && [ "refs/pull/5953/merge" != "refs/heads/main" ]; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5172665Z [36;1m  # A work branch is judged against canary (the ratchets take the merge base): its own[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5173281Z [36;1m  # change only. Its previous push is no base once canary has been merged in, the repo's[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5173816Z [36;1m  # rule: every canary file the merge brought would read as touched by the branch[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5174296Z [36;1m  # (#5936, #5939 on 2026-11-11: continuum-academy benchmark_*.rs, never edited by them).[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5174688Z [36;1m  git fetch --no-tags --depth=1 origin canary[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5175106Z [36;1m  base=$(git rev-parse FETCH_HEAD)[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5175359Z [36;1melse[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5175638Z [36;1m  base="95887bc48484e8b0e35cb640428199a5a6be770c"[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5176017Z [36;1m  if [ -n "$base" ] && [ "$base" != "0000000000000000000000000000000000000000" ] \[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5176439Z [36;1m     && ! git cat-file -e "${base}^{commit}" 2>/dev/null; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5176793Z [36;1m    git fetch --no-tags --depth=1 origin "$base" || true[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5177083Z [36;1m  fi[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5177385Z [36;1m  if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ] \[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5177767Z [36;1m     || ! git cat-file -e "${base}^{commit}" 2>/dev/null; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5178248Z [36;1m    echo "::notice::push base '${base}' is absent or unreachable (new branch or force push); judging ratchets against canary"[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5178763Z [36;1m    git fetch --no-tags --depth=1 origin canary[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5179111Z [36;1m    base=$(git rev-parse FETCH_HEAD)[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5179413Z [36;1m  fi[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5179623Z [36;1mfi[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5179954Z [36;1m# The ratchets take the merge base of this and HEAD (ratchets.rs), so the history between[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5180427Z [36;1m# them must be here. A PR's base is HEAD's parent already; a push's base can be many[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5180902Z [36;1m# commits back (a main promotion) or fetched alone (canary's tip), so the head's history is[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5181563Z [36;1m# fetched back to the base commit's own date, and in full only if that still cannot join them[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5181951Z [36;1m# (Cormac on #5738).[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5182244Z [36;1mif ! git merge-base "$base" HEAD >/dev/null 2>&1; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5182971Z [36;1m  git fetch --no-tags --shallow-since="$(git show -s --format=%cI "$base")" origin "$GITHUB_SHA" || true[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5183377Z [36;1mfi[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5183670Z [36;1mif ! git merge-base "$base" HEAD >/dev/null 2>&1; then[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5183993Z [36;1m  git fetch --no-tags --unshallow origin[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5184290Z [36;1mfi[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5184536Z [36;1mgit merge-base "$base" HEAD >/dev/null[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5184835Z [36;1mecho "RATCHET_BASE=$base" >> "$GITHUB_ENV"[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5207510Z shell: /usr/bin/bash -e {0}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5207862Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5394368Z ##[group]Run actions/setup-node@v4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5394579Z with:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5394737Z   node-version: 22
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5394897Z   always-auth: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5395064Z   check-latest: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5396776Z   token: ***
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5396932Z env:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5397114Z   RATCHET_BASE: e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.5397336Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.8267268Z (node:2676) [DEP0040] DeprecationWarning: The `punycode` module is deprecated. Please use a userland alternative instead.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.8268008Z (Use `node --trace-deprecation ...` to show where the warning was created)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.8269089Z Found in cache @ /opt/hostedtoolcache/node/22.23.4/x64
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:07:59.8269635Z ##[group]Environment details
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0869825Z node: v22.23.4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0870100Z npm: 10.9.9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0870278Z yarn: 1.22.22
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0871284Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0953556Z ##[group]Run tools/scripts/tests/oversized-edits.test.sh
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0953895Z [36;1mtools/scripts/tests/oversized-edits.test.sh[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0954173Z [36;1mtools/scripts/oversized-edits.sh "$RATCHET_BASE"[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0990318Z shell: /usr/bin/bash -e {0}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0990533Z env:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0990736Z   RATCHET_BASE: e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.0990967Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.1878845Z oversized-edits gate: 5/5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2163642Z ##[group]Run rustup show active-toolchain || rustup show
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2163977Z [36;1mrustup show active-toolchain || rustup show[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2182524Z shell: /usr/bin/bash -e {0}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2182757Z env:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2182961Z   RATCHET_BASE: e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:03.2183198Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:04.2490517Z info: syncing channel updates for 1.95-x86_64-unknown-linux-gnu
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:04.4714993Z info: latest update on 2026-04-16 for version 1.95.0 (59807616e 2026-04-14)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:04.4719091Z info: downloading 5 components
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8622865Z warn: the missing active toolchain `1.95-x86_64-unknown-linux-gnu` has been auto-installed
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8624143Z 1.95-x86_64-unknown-linux-gnu (overridden by '/home/runner/work/continuum/continuum/rust-toolchain.toml')
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8624698Z warn: auto-installation is deprecated for most `rustup` commands
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8625260Z warn: scripts relying on this behavior in `rustup` may stop working in the future
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8625709Z warn: to install the active toolchain, use `rustup install` instead
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8626176Z warn: see <https://github.com/rust-lang/rustup/issues/4836> for more info
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8780930Z ##[group]Run Swatinem/rust-cache@v2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8781155Z with:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8781320Z   shared-key: source-hygiene
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8781661Z   save-if: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8781834Z   cache-on-failure: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8782017Z   prefix-key: v0-rust
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8782185Z   add-job-id-key: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8782616Z   add-rust-environment-hash-key: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8782840Z   cache-targets: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783015Z   cache-all-crates: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783220Z   cache-workspace-crates: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783413Z   cache-provider: github
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783588Z   cache-bin: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783750Z   lookup-only: false
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8783915Z   cmd-format: {0}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8784066Z env:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8784247Z   RATCHET_BASE: e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:11.8784478Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6049623Z ##[group]Cache Configuration
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6050347Z Cache Provider:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6050638Z     github
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6050839Z Workspaces:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6051122Z     /home/runner/work/continuum/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6051464Z Cache Paths:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6051717Z     /home/runner/.cargo/bin
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6052028Z     /home/runner/.cargo/.crates.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6052563Z     /home/runner/.cargo/.crates2.json
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6052913Z     /home/runner/.cargo/registry
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6053197Z     /home/runner/.cargo/git
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6053532Z     /home/runner/work/continuum/continuum/target
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6053841Z Restore Key:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6054121Z     v0-rust-source-hygiene-Linux-x64-4fc47538
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6054406Z Cache Key:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6054666Z     v0-rust-source-hygiene-Linux-x64-4fc47538-451d2fec
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6054984Z .. Prefix:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6055286Z   - v0-rust-source-hygiene-Linux-x64
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6055664Z .. Environment considered:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6055937Z   - Rust Versions:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6056342Z     - 1.95.0 x86_64-unknown-linux-gnu 59807616e1fa2540724bfbac14d7976d7e4a3860
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6056997Z     - 1.99.1 x86_64-unknown-linux-gnu 58cf8f9c35b355199727627d07ae34a4e2846d67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6057379Z   - CARGO_INCREMENTAL
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6057660Z .. Lockfiles considered:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6058025Z   - /home/runner/work/continuum/continuum/.cargo/config.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6058504Z   - /home/runner/work/continuum/continuum/apps/cli/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6058912Z   - /home/runner/work/continuum/continuum/Cargo.lock
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6059428Z   - /home/runner/work/continuum/continuum/client/continuum-client-ffi/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6060030Z   - /home/runner/work/continuum/continuum/client/continuum-client/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6060602Z   - /home/runner/work/continuum/continuum/core/airc-test-fixtures/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6061148Z   - /home/runner/work/continuum/continuum/core/continuum-academy/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6061709Z   - /home/runner/work/continuum/continuum/core/continuum-airc-protocol/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6062203Z   - /home/runner/work/continuum/continuum/core/continuum-base/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6062996Z   - /home/runner/work/continuum/continuum/core/continuum-capture/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6063496Z   - /home/runner/work/continuum/continuum/core/continuum-cli-lifecycle/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6063894Z   - /home/runner/work/continuum/continuum/core/continuum-cognition/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6064278Z   - /home/runner/work/continuum/continuum/core/continuum-context/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6064650Z   - /home/runner/work/continuum/continuum/core/continuum-core/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6065034Z   - /home/runner/work/continuum/continuum/core/continuum-dreaming/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6065417Z   - /home/runner/work/continuum/continuum/core/continuum-embedding/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6066130Z   - /home/runner/work/continuum/continuum/core/continuum-engine/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6066520Z   - /home/runner/work/continuum/continuum/core/continuum-engram/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6067009Z   - /home/runner/work/continuum/continuum/core/continuum-experience/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6067400Z   - /home/runner/work/continuum/continuum/core/continuum-flow/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6067786Z   - /home/runner/work/continuum/continuum/core/continuum-gateway/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6068159Z   - /home/runner/work/continuum/continuum/core/continuum-genome/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6068534Z   - /home/runner/work/continuum/continuum/core/continuum-git/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6068887Z   - /home/runner/work/continuum/continuum/core/continuum-grid/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6069258Z   - /home/runner/work/continuum/continuum/core/continuum-grounding/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6069632Z   - /home/runner/work/continuum/continuum/core/continuum-hands/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6069989Z   - /home/runner/work/continuum/continuum/core/continuum-host/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6070343Z   - /home/runner/work/continuum/continuum/core/continuum-kernel/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6070705Z   - /home/runner/work/continuum/continuum/core/continuum-live/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6071055Z   - /home/runner/work/continuum/continuum/core/continuum-memory/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6071407Z   - /home/runner/work/continuum/continuum/core/continuum-mind/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6071758Z   - /home/runner/work/continuum/continuum/core/continuum-models/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6072131Z   - /home/runner/work/continuum/continuum/core/continuum-orm-derive/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6072970Z   - /home/runner/work/continuum/continuum/core/continuum-perception/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6073388Z   - /home/runner/work/continuum/continuum/core/continuum-persona-engine/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6073800Z   - /home/runner/work/continuum/continuum/core/continuum-positron/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6074172Z   - /home/runner/work/continuum/continuum/core/continuum-process/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6074533Z   - /home/runner/work/continuum/continuum/core/continuum-prompt/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6074927Z   - /home/runner/work/continuum/continuum/core/continuum-proving-types/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6075306Z   - /home/runner/work/continuum/continuum/core/continuum-rooms/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6075726Z   - /home/runner/work/continuum/continuum/core/continuum-saved-state/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6076253Z   - /home/runner/work/continuum/continuum/core/continuum-sentinel/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6076649Z   - /home/runner/work/continuum/continuum/core/continuum-service/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6077016Z   - /home/runner/work/continuum/continuum/core/continuum-serving/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6077374Z   - /home/runner/work/continuum/continuum/core/continuum-store/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6077759Z   - /home/runner/work/continuum/continuum/core/continuum-text-analysis/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6078168Z   - /home/runner/work/continuum/continuum/core/continuum-tool-protocol/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6078546Z   - /home/runner/work/continuum/continuum/core/continuum-vitals/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6078915Z   - /home/runner/work/continuum/continuum/core/expert-pager-policy/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6079268Z   - /home/runner/work/continuum/continuum/core/jtag-mcp/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6079604Z   - /home/runner/work/continuum/continuum/core/livekit-bridge/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6079963Z   - /home/runner/work/continuum/continuum/core/livekit-protocol/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6080300Z   - /home/runner/work/continuum/continuum/core/llama/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6080631Z   - /home/runner/work/continuum/continuum/core/serving-replay/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6080969Z   - /home/runner/work/continuum/continuum/core/source-hygiene/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6081451Z   - /home/runner/work/continuum/continuum/core/tool-working-set/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6081809Z   - /home/runner/work/continuum/continuum/rust-toolchain.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6082138Z   - /home/runner/work/continuum/continuum/tools/manifest-gen/Cargo.toml
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6082891Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6082990Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.6083099Z ... Restoring cache ...
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7088375Z No cache found.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7163611Z ##[group]Run cargo run --locked -q -p source-hygiene --bin ratchets -- "$RATCHET_BASE"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7164042Z [36;1mcargo run --locked -q -p source-hygiene --bin ratchets -- "$RATCHET_BASE"[0m
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7181973Z shell: /usr/bin/bash -e {0}
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7182175Z env:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7182834Z   RATCHET_BASE: e09225cb77e64b144497c921ce0ba31942e289a1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7183346Z   CACHE_ON_FAILURE: true
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7183525Z   CARGO_INCREMENTAL: 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:15.7183699Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:23.8486528Z ratchets: base e09225cb77e64b144497c921ce0ba31942e289a1 (e09225cb77e64b144497c921ce0ba31942e289a1) at /tmp/source-hygiene-base-2879
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:26.3326872Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:26.3327690Z running 133 tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:39.7173635Z ....................................................................................... 87/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:49.3275181Z ..............................................
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:49.3275897Z test result: ok. 133 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 22.99s
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:49.3277138Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:49.5299562Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:49.5300352Z running 133 tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:51.4693283Z ....... 7/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:51.4734885Z budget_discipline::tests::writes_outside_a_class_fall_and_touched_files_have_none --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:57.7863573Z .......................................... 50/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:57.7864336Z budget_discipline::tests::self_sized_consumers_fall_and_touched_files_have_none --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:59.2303739Z ............... 66/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:08:59.2313393Z os_branches::tests::os_branches_in_logic_never_increase --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:03.0094027Z .................. 85/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:03.0123644Z shapes::contract_shape::tests::contract_shape_only_falls --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:04.5063884Z .......... 96/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:04.5093423Z shapes::stringly_errors::tests::stringly_errors_only_fall --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:07.3353902Z .......... 107/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:07.3395880Z subprocess_spawn::tests::spawn_sites_only_fall_and_library_answered_programs_never_rise --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:10.8961784Z ....................... 131/133
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:10.8962569Z unwrap_justification::tests::the_unjustified_unwrap_count_never_rises --- FAILED
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2624112Z .
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2624377Z failures:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2627900Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2628486Z ---- budget_discipline::tests::writes_outside_a_class_fall_and_touched_files_have_none stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2628848Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2629425Z thread 'budget_discipline::tests::writes_outside_a_class_fall_and_touched_files_have_none' (3164) panicked at core/source-hygiene/src/ratchet.rs:161:5:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2630091Z writes_outside_a_class: 6 site(s) remain in files this change touches; a touched file leaves with none.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2630432Z In files this change touches:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2630958Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:17  writes with `OpenOptions::new()`: std::fs::OpenOptions::new().create(true).append(true).open(path).ok()
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2631747Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:29  writes with `OpenOptions::new()`: let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2632846Z   core/continuum-core/src/bin/continuum/deploy_ledger.rs:180  writes with `OpenOptions::new()`: let lease = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2633710Z   core/continuum-core/src/bin/continuum/deploy_ledger.rs:228  writes with `OpenOptions::new()`: let mut file = std::fs::OpenOptions::new().write(true).create_new(true).open(&temporary)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2634906Z   core/continuum-core/src/modules/deploy_actuator.rs:273  writes with `OpenOptions::new()`: let mut file = std::fs::OpenOptions::new().create(true).write(true).open(path)?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2635738Z   core/continuum-core/src/modules/deploy_actuator.rs:453  writes with `fs::write(`: if std::fs::write(&tmp, bytes).is_ok() {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2636237Z How to fix it (any sample below is from the whole tree and may include these):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2636866Z writes_outside_a_class Write through the class handle for the directory (a TrackedDir with a claim) or through the ORM. The contract: docs/architecture/ONE-BUDGET.md.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2637356Z First 20 of 149 (not necessarily new):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2637830Z   core/continuum-academy/src/cognition/benchmark_algotune.rs:170  writes with `fs::write(`: std::fs::write(repo.join("algotune_harness.py"), HARNESS_PY)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2638533Z   core/continuum-academy/src/cognition/benchmark_mirrorcode.rs:499  writes with `fs::write(`: std::fs::write(repo.join("mirrorcode_harness.py"), HARNESS_PY)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2639232Z   core/continuum-academy/src/cognition/benchmark_mirrorcode.rs:557  writes with `fs::write(`: std::fs::write(&tmp, visible_lines.join("\n") + "\n")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2640004Z   core/continuum-academy/src/cognition/benchmark_terminalbench.rs:622  writes with `fs::write(`: std::fs::write(seed.join("run.py"), RUNNER_PY).map_err(|e| format!("stage runner: {e}"))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2640827Z   core/continuum-academy/src/cognition/coursework.rs:111  writes with `fs::write(`: std::fs::write(&partial, &text).map_err(|e| format!("cannot write {}: {e}", partial.display()))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2641529Z   core/continuum-academy/src/cognition/experience.rs:549  writes with `OpenOptions::new()`: let mut f = std::fs::OpenOptions::new()
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2642191Z   core/continuum-academy/src/cognition/gym.rs:260  writes with `fs::write(`: std::fs::write(&tmp, lines.join("\n") + "\n").map_err(|e| format!("write: {e}"))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2643042Z   core/continuum-academy/src/cognition/gym.rs:262  writes with `fs::write(`: std::fs::write(path.with_extension("jsonl.fingerprint"), fingerprint)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2643687Z   core/continuum-academy/src/cognition/gym/content.rs:84  writes with `OpenOptions::new()`: let mut file = OpenOptions::new()
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2644277Z   core/continuum-academy/src/cognition/swe_bench/build_env_from_scratch.rs:380  writes with `fs::write(`: std::fs::write(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2644985Z   core/continuum-academy/src/cognition/swe_bench/diff_target_paths.rs:55  writes with `fs::write(`: std::fs::write(&path, text).map_err(|e| format!("could not stage {what} patch: {e}"))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2645750Z   core/continuum-academy/src/cognition/swe_bench/diff_target_paths.rs:270  writes with `fs::write(`: let _ = std::fs::write(&marker, format!("{extra}\n"));
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2646449Z   core/continuum-academy/src/cognition/swe_bench/diff_target_paths.rs:553  writes with `fs::write(`: std::fs::write(&cfg, "[libs]\nsystem_freetype = true\n")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2647142Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:115  writes with `File::create(`: if let Ok(mut out) = std::fs::File::create(&cache) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2647824Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:133  writes with `File::create(`: let mut out = std::fs::File::create(&tmp)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2648540Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:277  writes with `fs::write(`: let _ = std::fs::write(&cache, serde_json::to_vec(&rows).unwrap_or_default());
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2649483Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:601  writes with `fs::write(`: let _ = std::fs::write(repo_dir.join(".git").join("continuum-base"), &instance.base_commit);
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2650284Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:647  writes with `fs::write(`: if std::fs::write(&cp, patched).is_ok() {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2650952Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:693  writes with `fs::write(`: if let Err(e) = std::fs::write(&exclude, merged) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2651775Z   core/continuum-academy/src/cognition/swe_bench/log_parser.rs:320  writes with `fs::write(`: if let Err(e) = std::fs::write(&path, src) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2652304Z note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2652772Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2653058Z ---- budget_discipline::tests::self_sized_consumers_fall_and_touched_files_have_none stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2653309Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2653720Z thread 'budget_discipline::tests::self_sized_consumers_fall_and_touched_files_have_none' (3163) panicked at core/source-hygiene/src/ratchet.rs:161:5:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2654295Z self_sized: 1 site(s) remain in files this change touches; a touched file leaves with none.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2654611Z In files this change touches:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2655291Z   core/continuum-core/src/modules/deploy_actuator.rs:60  sized constant `CONSUME_MAX_ATTEMPTS`: pub const CONSUME_MAX_ATTEMPTS: u32 = 3;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2655874Z How to fix it (any sample below is from the whole tree and may include these):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2656590Z self_sized Take the size from the consumer's grant: claim it (floor = measured need, max = measured want) in the one allocation. The contract: docs/architecture/ONE-BUDGET.md.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2657194Z First 20 of 338 (not necessarily new):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2657687Z   core/continuum-academy/src/cognition/coursework.rs:28  sized constant `SHA_HEX_LEN`: const SHA_HEX_LEN: usize = 12;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2658416Z   core/continuum-academy/src/cognition/dream_consolidation/region.rs:46  sized constant `DEFAULT_RECALL_WINDOW`: const DEFAULT_RECALL_WINDOW: usize = 64;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2659235Z   core/continuum-academy/src/cognition/dream_consolidation/region.rs:53  sized constant `SUPERSESSION_REVIEW_LIMIT`: pub(super) const SUPERSESSION_REVIEW_LIMIT: usize = 6;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2660077Z   core/continuum-academy/src/cognition/dream_consolidation/region.rs:106  sized constant `DEFAULT_MIN_CLUSTER`: const DEFAULT_MIN_CLUSTER: usize = 2;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2660909Z   core/continuum-academy/src/cognition/dream_consolidation/region.rs:220  sized constant `REVIEW_BOUNDARY_CAPACITY`: pub(super) const REVIEW_BOUNDARY_CAPACITY: usize = 64;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2661756Z   core/continuum-academy/src/cognition/swe_bench/build_env_from_scratch.rs:402  a literal ceiling via `.take(`: s.lines().rev().take(3).collect::<Vec<_>>().join(" | ")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2662761Z   core/continuum-academy/src/cognition/swe_bench/build_env_from_scratch.rs:485  sized constant `MAX_ERA_OVERRIDES`: pub(super) const MAX_ERA_OVERRIDES: usize = 8;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2663606Z   core/continuum-academy/src/cognition/swe_bench/build_env_from_scratch.rs:600  a head cut via `.chars().take(`: stderr_head = %stderr.trim().chars().take(200).collect::<String>(),
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2664576Z   core/continuum-academy/src/cognition/swe_bench/build_env_from_scratch.rs:607  a literal ceiling via `.take(`: let last: String = stderr.trim().chars().rev().take(300).collect::<Vec<_>>().into_iter().rev().collect();
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2665490Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:43  sized constant `MAX_ROWS`: pub(super) const MAX_ROWS: usize = 25_000;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2666242Z   core/continuum-academy/src/cognition/swe_bench/fetch_hf_rows.rs:591  a literal ceiling via `[..`: &instance.base_commit[..12.min(instance.base_commit.len())],
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2667052Z   core/continuum-academy/src/cognition/swe_bench/split_node_outcome.rs:178  sized constant `FAILURE_EXCERPT_MAX`: pub(super) const FAILURE_EXCERPT_MAX: usize = 2000;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2667803Z   core/continuum-academy/src/cognition/swe_bench/split_node_outcome.rs:218  sized constant `NAME_CAP`: const NAME_CAP: usize = 10;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2668496Z   core/continuum-academy/src/cognition/swe_bench/split_node_outcome.rs:269  sized constant `MAX_TESTS`: const MAX_TESTS: usize = 3;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2669318Z   core/continuum-academy/src/cognition/swe_bench/split_node_outcome.rs:270  sized constant `MAX_LINES`: const MAX_LINES: usize = 40;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2670075Z   core/continuum-academy/src/cognition/swe_bench/split_node_outcome.rs:321  sized constant `MAX_LINES`: const MAX_LINES: usize = 14;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2670766Z   core/continuum-academy/src/cognition/swe_verdict_sweep.rs:33  a head cut via `.chars().take(`: reason: reason.chars().take(400).collect(),
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2671355Z   core/continuum-academy/src/hf/mod.rs:152  sized constant `MAX_TAGS`: const MAX_TAGS: usize = 8;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2671923Z   core/continuum-academy/src/hf/mod.rs:153  sized constant `MAX_LIMIT`: const MAX_LIMIT: u32 = 50;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2672667Z   core/continuum-academy/src/hf/mod.rs:154  sized constant `DEFAULT_LIMIT`: const DEFAULT_LIMIT: u32 = 10;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2672942Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2673223Z ---- os_branches::tests::os_branches_in_logic_never_increase stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2673473Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2673826Z thread 'os_branches::tests::os_branches_in_logic_never_increase' (3219) panicked at core/source-hygiene/src/ratchet.rs:161:5:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2674434Z os_branches_in_logic: 8 site(s) remain in files this change touches; a touched file leaves with none.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2674917Z In files this change touches:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2675280Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:89  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2675734Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:96  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2676173Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:169  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2676602Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:175  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2677121Z   core/continuum-core/src/bin/continuum/deploy_consume.rs:182  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2677670Z   core/continuum-core/src/modules/deploy_actuator.rs:250  let name = if cfg!(windows) { "continuum.exe" } else { "continuum" };
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2678298Z   core/continuum-core/src/modules/deploy_actuator.rs:280  #[cfg_attr(unix, path = "spawner_callbacks_unix.rs")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2678904Z   core/continuum-core/src/modules/deploy_actuator.rs:281  #[cfg_attr(windows, path = "spawner_callbacks_windows.rs")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2679483Z How to fix it (any sample below is from the whole tree and may include these):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2680293Z OS branches in logic rose to 349. An OS difference belongs in its capability's adapter in continuum-host (mod.rs holds the logic once, unix.rs/windows.rs only the calls that differ), never interleaved here.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2680880Z First 20 of 349:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2681305Z   core/continuum-academy/src/cognition/eval/spawn_gene_eval_lane.rs:604  if cfg!(target_os = "macos") {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2681831Z   core/continuum-academy/src/cognition/gym/content.rs:115  #[cfg(unix)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2682285Z   core/continuum-academy/src/cognition/gym/content.rs:121  #[cfg(not(unix))]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2682959Z   core/continuum-academy/src/cognition/swe_bench/diff_target_paths.rs:621  let py = env_dir.join(if cfg!(windows) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2683469Z   core/continuum-base/src/shell_portable.rs:19  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2683904Z   core/continuum-base/src/shell_portable.rs:77  if !cfg!(windows) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2684375Z   core/continuum-cognition/src/cognition/persona_workspace/checkpoint_adoption.rs:300  #[cfg(unix)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2685025Z   core/continuum-cognition/src/cognition/persona_workspace/checkpoint_adoption.rs:306  #[cfg(not(unix))]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2685631Z   core/continuum-core/src/airc/daemon_endpoint.rs:29  #[cfg(unix)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2686034Z   core/continuum-core/src/airc/daemon_endpoint.rs:50  #[cfg(not(unix))]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2686515Z   core/continuum-core/src/airc/daemon_supervisor.rs:245  #[cfg(target_os = "macos")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2686982Z   core/continuum-core/src/airc/daemon_supervisor.rs:253  #[cfg(target_os = "macos")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2687567Z   core/continuum-core/src/airc/daemon_supervisor.rs:261  #[cfg(not(target_os = "macos"))]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2688095Z   core/continuum-core/src/airc/daemon_supervisor.rs:292  #[cfg(target_os = "macos")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2688586Z   core/continuum-core/src/airc/daemon_supervisor.rs:304  #[cfg(not(target_os = "macos"))]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2689153Z   core/continuum-core/src/bin/continuum.rs:49  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2689591Z   core/continuum-core/src/bin/continuum.rs:57  #[cfg(target_os = "macos")]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2690006Z   core/continuum-core/src/bin/continuum.rs:63  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2690421Z   core/continuum-core/src/bin/continuum.rs:66  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2690783Z   core/continuum-core/src/bin/continuum.rs:69  #[cfg(windows)]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2690986Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2691258Z ---- shapes::contract_shape::tests::contract_shape_only_falls stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2691532Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2691889Z thread 'shapes::contract_shape::tests::contract_shape_only_falls' (3240) panicked at core/source-hygiene/src/ratchet.rs:43:9:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2693292Z contract_shape rose from 2187 to 2190. Put what travels together in a struct (`PlanInput { ctx, floor, wish }`), give each primitive a newtype (`Tokens`, `Slot`) so a swap does not compile, borrow what the callee only reads (`&str`, `&[T]`, `&T`), and say mutability (`&mut`) and absence (`Option<T>`) in the signature.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2694147Z First 15 of 2190 (not necessarily new):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2694781Z   core/continuum-airc-protocol/src/command.rs:113  a pub fn taking an owned String or Vec: a reader borrows: pub fn new(path: String, kind: String, env: Option<String>, params: Value) -> Self {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2695748Z   core/continuum-airc-protocol/src/command.rs:113  a pub fn taking an owned String or Vec: a reader borrows: pub fn new(path: String, kind: String, env: Option<String>, params: Value) -> Self {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2696656Z   core/continuum-airc-protocol/src/refusal.rs:82  a pub fn taking an owned String or Vec: a reader borrows: pub fn calls(first: SuggestedCall, more: Vec<SuggestedCall>) -> Self {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2697446Z   core/continuum-airc-protocol/src/ws.rs:199  five or more parameters: values that travel together are a struct: pub fn stream_delta(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2698096Z   core/continuum-airc-protocol/src/ws.rs:200  a pub fn taking an owned String or Vec: a reader borrows: room_id: String,
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2698742Z   core/continuum-airc-protocol/src/ws.rs:201  a pub fn taking an owned String or Vec: a reader borrows: sender_id: String,
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2699372Z   core/continuum-airc-protocol/src/ws.rs:202  a pub fn taking an owned String or Vec: a reader borrows: stream_id: String,
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2699973Z   core/continuum-airc-protocol/src/ws.rs:204  a pub fn taking an owned String or Vec: a reader borrows: token: String,
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2700693Z   core/continuum-cli-lifecycle/src/launchd.rs:657  five or more parameters: values that travel together are a struct: pub async fn wait_owned<F, Fut>(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2701414Z   core/continuum-cli-lifecycle/src/launchd.rs:750  five or more parameters: values that travel together are a struct: pub fn install(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2702166Z   core/continuum-cli-lifecycle/src/deploy_provenance.rs:149  three or more consecutive parameters of one primitive type: swappable: pub fn cli_replaced_this_run(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2703100Z   core/continuum-cli-lifecycle/src/deploy_health.rs:157  five or more parameters: values that travel together are a struct: pub fn observe(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2703857Z   core/continuum-cli-lifecycle/src/deploy_tracker.rs:320  five or more parameters: values that travel together are a struct: pub fn reconcile_request(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2704686Z   core/continuum-cli-lifecycle/src/installed_release.rs:264  five or more parameters: values that travel together are a struct: pub fn exclude_receipts(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2705530Z   core/continuum-cli-lifecycle/src/installed_release.rs:278  five or more parameters: values that travel together are a struct: fn validate_receipt_inner(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2705924Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2706250Z ---- shapes::stringly_errors::tests::stringly_errors_only_fall stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2706474Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2706856Z thread 'shapes::stringly_errors::tests::stringly_errors_only_fall' (3255) panicked at core/source-hygiene/src/ratchet.rs:43:9:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2707976Z stringly_errors rose from 4247 to 4255. Give the failure a type the caller can match: an error enum whose variants carry the typed cause (`#[from] io::Error`, `VectorIndexError`) and the facts (`slot`, `kind`), with `Display` for the words. Wrap a typed error, never format it into a String.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2708846Z First 15 of 4255 (not necessarily new):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2709377Z   core/airc-test-fixtures/src/two_airc_loopback.rs:92  an error variant holding a bare String: AircSpawn(String),
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2710001Z   core/airc-test-fixtures/src/two_airc_loopback.rs:95  an error variant holding a bare String: Readiness(String),
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2710727Z   core/airc-test-fixtures/src/two_airc_loopback.rs:135  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_a open: {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2711578Z   core/airc-test-fixtures/src/two_airc_loopback.rs:138  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_b open: {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2712536Z   core/airc-test-fixtures/src/two_airc_loopback.rs:147  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("parse peer_a spec: {e:?}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2713495Z   core/airc-test-fixtures/src/two_airc_loopback.rs:151  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("parse peer_b spec: {e:?}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2714379Z   core/airc-test-fixtures/src/two_airc_loopback.rs:155  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_a trust peer_b: {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2715262Z   core/airc-test-fixtures/src/two_airc_loopback.rs:159  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_b trust peer_a: {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2716114Z   core/airc-test-fixtures/src/two_airc_loopback.rs:167  a failure built from formatted text: LoopbackError::AircSpawn(format!("own_account tier for {peer:?}: {e}"))
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2716899Z error: test failed, to rerun pass `-p source-hygiene --lib`
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2717534Z   core/airc-test-fixtures/src/two_airc_loopback.rs:170  a failure built from formatted text: LoopbackError::AircSpawn(format!("{peer:?} has no trust row to raise"))
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2718459Z   core/airc-test-fixtures/src/two_airc_loopback.rs:178  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_a join({FIXTURE_ROOM}): {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2719340Z   core/airc-test-fixtures/src/two_airc_loopback.rs:182  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_b join({FIXTURE_ROOM}): {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2720249Z   core/airc-test-fixtures/src/two_airc_loopback.rs:189  a failure built from formatted text: .map_err(|e| LoopbackError::AircSpawn(format!("peer_b listen_lan({LOOPBACK_BIND}): {e}")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2721048Z   core/airc-test-fixtures/src/two_airc_loopback.rs:194  a failure built from formatted text: LoopbackError::AircSpawn(format!(
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2721761Z   core/continuum-airc-protocol/src/command.rs:191  a failure typed as a String: pub fn into_result(self) -> Result<Value, String> {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2722099Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2722532Z ---- subprocess_spawn::tests::spawn_sites_only_fall_and_library_answered_programs_never_rise stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2722944Z spawn:airc: 3 -> 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2723200Z spawn:gh: 1 -> 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2723454Z spawn:curl: 1 -> 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2723773Z spawn:ps: 5 -> 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2723999Z spawn:which: 3 -> 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2724219Z spawn:tar: 1 -> 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2724454Z spawn:cp: 1 -> 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2724607Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2725083Z thread 'subprocess_spawn::tests::spawn_sites_only_fall_and_library_answered_programs_never_rise' (3348) panicked at core/source-hygiene/src/ratchet.rs:43:9:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2726678Z spawn_sites rose from 113 to 115. production spawn sites rose to 115. A subprocess is a liability the caller inherits (fds, PATH, stdio, a hang) — reach for the library, or route a real subprocess through system_resources::bounded_command. Newest-looking:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2727518Z   core/continuum-sentinel/src/steps/shell.rs:58  let mut command = Command::new(&actual_cmd);
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2728034Z   core/continuum-sentinel/src/executor.rs:793  let _ = std::process::Command::new("taskkill")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2728612Z   core/continuum-sentinel/src/executor.rs:776  let _ = std::process::Command::new("taskkill")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2729288Z   core/continuum-sentinel/src/executor.rs:524  std::process::Command::new("kill")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2729885Z   core/continuum-sentinel/src/executor.rs:413  let mut cmd = Command::new(&command);
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2730395Z   core/continuum-rooms/src/handoff.rs:324  let mut child = std::process::Command::new("git")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2730924Z   core/continuum-process/src/owned.rs:695  let out = std::process::Command::new("ps")
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2731814Z   core/continuum-mind/src/work/submission/latest_submission.rs:723  let out = std::process::Command::new("git").args(args).current_dir(checkout).output().map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2732510Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2732789Z ---- unwrap_justification::tests::the_unjustified_unwrap_count_never_rises stdout ----
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2733077Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2733512Z thread 'unwrap_justification::tests::the_unjustified_unwrap_count_never_rises' (3371) panicked at core/source-hygiene/src/ratchet.rs:161:5:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2734180Z unjustified_unwraps: 1 site(s) remain in files this change touches; a touched file leaves with none.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2734603Z In files this change touches:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2735035Z   core/continuum-core/src/modules/deploy_actuator/tree_owner.rs:163  .unwrap_or_default();
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2735537Z How to fix it (any sample below is from the whole tree and may include these):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2735964Z unjustified production unwraps rose to 1396.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2736398Z Every unwrap/expect/unwrap_or needs a same-line `//` comment saying WHY it is safe.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2737401Z `unwrap_or` especially: an Option means UNKNOWN, and a default turns unknown into a quantity the governor then budgets against — that is how the Metal free-VRAM lie happened (gpu::device_probe).
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2738818Z This scan cannot tell new from old. To find yours: diff your branch against its base and look for added `.unwrap`/`.expect`/`.unwrap_or` lines with no same-line `//` comment. Note a branch can be green alone and red on the merge — the ratchet's slack is shared, and two branches may each spend it.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2739693Z First 10 of 1396 in tree order (NOT necessarily new):
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2740281Z   core/continuum-academy/src/cognition/bench_round/review_parent.rs:58  .unwrap_or_default();
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2740856Z   core/continuum-academy/src/cognition/bench_task.rs:318  .unwrap_or_else(|_| statement.clone());
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2741423Z   core/continuum-academy/src/cognition/benchmark.rs:186  .unwrap_or_else(|p| p.into_inner())
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2742003Z   core/continuum-academy/src/cognition/benchmark.rs:195  .unwrap_or_else(|p| p.into_inner())
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2742709Z   core/continuum-academy/src/cognition/benchmark.rs:212  .unwrap_or_else(|p| p.into_inner())
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2743479Z   core/continuum-academy/src/cognition/dream_consolidation/consolidate.rs:299  if let Some(&last) = self.last_review_ms.lock().unwrap().get(&persona_id) {
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2744215Z   core/continuum-academy/src/cognition/dream_consolidation/consolidate.rs:308  .unwrap()
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2744856Z   core/continuum-academy/src/cognition/dream_consolidation/consolidate.rs:311  .unwrap_or_default();
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2745521Z   core/continuum-academy/src/cognition/dream_consolidation/consolidate.rs:326  self.last_review_ms.lock().unwrap().insert(persona_id, now);
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2746136Z   core/continuum-academy/src/cognition/dream_consolidation/consolidate.rs:366  .unwrap()
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2746509Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2746514Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2746601Z failures:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2747016Z     budget_discipline::tests::self_sized_consumers_fall_and_touched_files_have_none
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2747487Z     budget_discipline::tests::writes_outside_a_class_fall_and_touched_files_have_none
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2747897Z     os_branches::tests::os_branches_in_logic_never_increase
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2748251Z     shapes::contract_shape::tests::contract_shape_only_falls
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2748665Z     shapes::stringly_errors::tests::stringly_errors_only_fall
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2749117Z     subprocess_spawn::tests::spawn_sites_only_fall_and_library_answered_programs_never_rise
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2749591Z     unwrap_justification::tests::the_unjustified_unwrap_count_never_rises
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2749832Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2750104Z test result: FAILED. 126 passed; 7 failed; 0 ignored; 0 measured; 0 filtered out; finished in 21.73s
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2750391Z 
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2755615Z ratchet                          base     head
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2756045Z contract_shape                    2187     2190
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2756421Z spawn_sites                        113      115
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2756818Z stringly_errors                   4247     4255
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2757191Z cognition_names_persona              0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2757608Z collapse_outside_the_view            0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2758008Z commands_in_refusal_text           145      145
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2758365Z error_text_matches                  22       22
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2758760Z excess_test_mods                     7        7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2759125Z fixed_rooms                          1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2759813Z hand_built_homes                    14       14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2760197Z hand_churn_labels                    0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2760545Z lines_over                         269      269
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2760942Z load_then_filter_rows                1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2761313Z modules_in_cycles                   26       26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2761730Z nil_room_lines                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2762113Z orphan_ts_bindings                   0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2762637Z planner_floor_outside_the_planner      23       23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2763075Z private_probes                      66       66
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2763471Z prompt_messages_outside_the_view       0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2763903Z required_input_complaints           57       57
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2764314Z resident_stores_without_a_drain       0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2764717Z row_decode_outside_the_owner         0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2765165Z spawn:airc                           3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2765732Z spawn:continuum                      0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2766188Z spawn:cp                             1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2766669Z spawn:curl                           1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2767093Z spawn:gh                             1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2767533Z spawn:ps                             5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2767944Z spawn:tar                            1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2768358Z spawn:wget                           0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2768929Z spawn:which                          3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2769290Z sql_outside_the_orm                  0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2769818Z state_as_flags                     145      145
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2770135Z state_as_flags_in_tests              9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2770545Z string_composite_keys                0        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2770873Z string_identities                  839      839
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2771209Z string_identities_in_tests         184      184
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2771565Z swallowed_errors                   600      600
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2771875Z tenant_lines                         2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2772245Z unbounded_orm_selects               10       10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2772845Z underived_durations                 24       24
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2774048Z unjustified_serialization          174      174
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2774433Z unknown_as_value                   215      215
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2774985Z unknown_as_value_in_tests           34       34
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2775343Z unwired_machinery                   37       37
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2775753Z upward_imports                      33       33
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2776168Z waits_that_decide_flow             391      391
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2777016Z waits_that_decide_flow_in_tests     290      290
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2777690Z ##[group]every crate of every ratchet (ratchet@crate base head)
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2778211Z commands_in_refusal_text@continuum-academy 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2778630Z commands_in_refusal_text@continuum-cognition 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2779027Z commands_in_refusal_text@continuum-core 41 41
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2779442Z commands_in_refusal_text@continuum-dreaming 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2779825Z commands_in_refusal_text@continuum-engine 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2780240Z commands_in_refusal_text@continuum-hands 29 29
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2780698Z commands_in_refusal_text@continuum-kernel 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2781077Z commands_in_refusal_text@continuum-memory 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2781483Z commands_in_refusal_text@continuum-mind 37 37
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2781865Z commands_in_refusal_text@continuum-models 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2782260Z commands_in_refusal_text@continuum-serving 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2782849Z contract_shape@continuum-academy 74 74
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2783256Z contract_shape@continuum-airc-protocol 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2783663Z contract_shape@continuum-capture 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2784037Z contract_shape@continuum-cli-lifecycle 14 14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2784442Z contract_shape@continuum-cognition 252 252
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2784803Z contract_shape@continuum-context 60 60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2785227Z contract_shape@continuum-core 340 343
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2785583Z contract_shape@continuum-dreaming 47 47
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2785935Z contract_shape@continuum-embedding 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2786323Z contract_shape@continuum-engine 197 197
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2786669Z contract_shape@continuum-engram 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2787090Z contract_shape@continuum-experience 25 25
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2787453Z contract_shape@continuum-flow 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2787786Z contract_shape@continuum-gateway 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2788161Z contract_shape@continuum-genome 45 45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2788506Z contract_shape@continuum-git 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2788874Z contract_shape@continuum-grid 37 37
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2789272Z contract_shape@continuum-grounding 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2789606Z contract_shape@continuum-hands 44 44
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2789976Z contract_shape@continuum-host 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2790319Z contract_shape@continuum-kernel 206 206
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2790748Z contract_shape@continuum-live 174 174
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2791099Z contract_shape@continuum-memory 24 24
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2791477Z contract_shape@continuum-mind 367 367
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2791849Z contract_shape@continuum-models 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2792198Z contract_shape@continuum-perception 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2792782Z contract_shape@continuum-positron 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2793137Z contract_shape@continuum-process 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2793676Z contract_shape@continuum-prompt 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2794039Z contract_shape@continuum-rooms 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2794422Z contract_shape@continuum-saved-state 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2794882Z contract_shape@continuum-sentinel 40 40
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2795236Z contract_shape@continuum-service 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2795569Z contract_shape@continuum-serving 58 58
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2795971Z contract_shape@continuum-store 32 32
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2796363Z contract_shape@continuum-text-analysis 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2796759Z contract_shape@continuum-tool-protocol 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2797117Z contract_shape@continuum-vitals 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2797453Z contract_shape@expert-pager-policy 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2797822Z contract_shape@livekit-bridge 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2798184Z contract_shape@llama 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2798518Z contract_shape@serving-replay 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2798854Z contract_shape@source-hygiene 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2799207Z contract_shape@tool-working-set 19 19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2799591Z contract_shape_in_tests@continuum-academy 15 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2800015Z contract_shape_in_tests@continuum-cli-lifecycle 9 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2800489Z contract_shape_in_tests@continuum-cognition 206 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2800894Z contract_shape_in_tests@continuum-context 3 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2801281Z contract_shape_in_tests@continuum-core 292 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2801698Z contract_shape_in_tests@continuum-dreaming 42 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2802098Z contract_shape_in_tests@continuum-engine 213 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2802719Z contract_shape_in_tests@continuum-experience 14 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2803116Z contract_shape_in_tests@continuum-flow 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2803503Z contract_shape_in_tests@continuum-gateway 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2803933Z contract_shape_in_tests@continuum-genome 28 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2804308Z contract_shape_in_tests@continuum-grid 14 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2804756Z contract_shape_in_tests@continuum-grounding 3 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2805149Z contract_shape_in_tests@continuum-hands 14 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2805535Z contract_shape_in_tests@continuum-kernel 87 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2805944Z contract_shape_in_tests@continuum-live 65 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2806331Z contract_shape_in_tests@continuum-memory 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2806718Z contract_shape_in_tests@continuum-mind 135 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2807124Z contract_shape_in_tests@continuum-models 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2807547Z contract_shape_in_tests@continuum-perception 3 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2807967Z contract_shape_in_tests@continuum-positron 18 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2808446Z contract_shape_in_tests@continuum-process 5 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2808997Z contract_shape_in_tests@continuum-proving-types 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2809407Z contract_shape_in_tests@continuum-rooms 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2809859Z contract_shape_in_tests@continuum-saved-state 2 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2810288Z contract_shape_in_tests@continuum-service 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2810673Z contract_shape_in_tests@continuum-serving 43 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2811107Z contract_shape_in_tests@continuum-store 3 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2811478Z contract_shape_in_tests@continuum-vitals 25 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2811898Z contract_shape_in_tests@llama 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2812260Z contract_shape_in_tests@tool-working-set 2 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2812748Z error_text_matches@continuum-academy 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2813079Z error_text_matches@continuum-core 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2813371Z error_text_matches@continuum-grid 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2813663Z error_text_matches@continuum-kernel 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2814005Z error_text_matches@continuum-live 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2814286Z error_text_matches@continuum-process 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2814610Z error_text_matches@continuum-sentinel 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2814906Z excess_test_mods@continuum-core 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2815194Z excess_test_mods@continuum-dreaming 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2815532Z excess_test_mods@continuum-grid 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2815964Z excess_test_mods@continuum-live 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2816323Z fixed_rooms@continuum-core 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2816642Z hand_built_homes@continuum-academy 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2817010Z hand_built_homes@continuum-core 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2817299Z hand_built_homes@continuum-engine 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2817612Z hand_built_homes@continuum-live 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2817907Z load_then_filter_rows@continuum-mind 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2818195Z modules_in_cycles@ai 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2818479Z modules_in_cycles@airc 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2818741Z modules_in_cycles@capacity 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2818996Z modules_in_cycles@commands 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2819314Z modules_in_cycles@contracts 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2819610Z modules_in_cycles@experience 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2819883Z modules_in_cycles@forge 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2820147Z modules_in_cycles@governor 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2820386Z modules_in_cycles@gpu 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2820665Z modules_in_cycles@http 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2820976Z modules_in_cycles@identity 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2821309Z modules_in_cycles@inference 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2821651Z modules_in_cycles@inference_capability 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2821917Z modules_in_cycles@ipc 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2822203Z modules_in_cycles@model_registry 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2822656Z modules_in_cycles@modules 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2822957Z modules_in_cycles@orm 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2823210Z modules_in_cycles@paging 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2823456Z modules_in_cycles@paths 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2823730Z modules_in_cycles@recipe 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2824010Z modules_in_cycles@resources 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2824299Z modules_in_cycles@routing 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2824548Z modules_in_cycles@runtime 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2824806Z modules_in_cycles@sdk_codegen 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2825085Z modules_in_cycles@sensory 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2825375Z modules_in_cycles@system_resources 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2825659Z nil_room_lines@continuum-mind 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2826002Z os_branches_in_logic@continuum-academy 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2826293Z os_branches_in_logic@continuum-base 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2826618Z os_branches_in_logic@continuum-cognition 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2826955Z os_branches_in_logic@continuum-core 194 192
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2827270Z os_branches_in_logic@continuum-dreaming 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2827688Z os_branches_in_logic@continuum-engine 42 42
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2828003Z os_branches_in_logic@continuum-grid 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2828324Z os_branches_in_logic@continuum-hands 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2828644Z os_branches_in_logic@continuum-kernel 56 56
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2828955Z os_branches_in_logic@continuum-live 19 19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2829260Z os_branches_in_logic@continuum-mind 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2829581Z os_branches_in_logic@continuum-process 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2829939Z os_branches_in_logic@continuum-sentinel 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2830245Z os_branches_in_logic@continuum-serving 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2830590Z planner_floor_outside_the_planner@continuum-academy 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2830978Z planner_floor_outside_the_planner@continuum-cognition 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2831350Z planner_floor_outside_the_planner@continuum-core 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2831843Z planner_floor_outside_the_planner@continuum-mind 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2832195Z planner_floor_outside_the_planner@continuum-prompt 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2832686Z private_probes@continuum-core 26 26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2832984Z private_probes@continuum-engine 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2833265Z private_probes@continuum-git 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2833613Z private_probes@continuum-grid 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2833904Z private_probes@continuum-kernel 18 18
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2834204Z private_probes@continuum-mind 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2834487Z private_probes@continuum-sentinel 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2834794Z required_input_complaints@continuum-academy 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2835167Z required_input_complaints@continuum-capture 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2835630Z required_input_complaints@continuum-cognition 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2835981Z required_input_complaints@continuum-core 14 14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2836315Z required_input_complaints@continuum-dreaming 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2836706Z required_input_complaints@continuum-engine 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2837059Z required_input_complaints@continuum-grid 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2837409Z required_input_complaints@continuum-hands 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2837746Z required_input_complaints@continuum-kernel 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2838065Z required_input_complaints@continuum-live 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2838385Z required_input_complaints@continuum-mind 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2838713Z self_sized@continuum-academy 21 21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2838991Z self_sized@continuum-base 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2839301Z self_sized@continuum-capture 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2839586Z self_sized@continuum-cognition 34 34
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2839882Z self_sized@continuum-core 56 55
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2840183Z self_sized@continuum-dreaming 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2840681Z self_sized@continuum-embedding 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2840967Z self_sized@continuum-engine 51 51
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2841280Z self_sized@continuum-engram 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2841573Z self_sized@continuum-experience 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2841882Z self_sized@continuum-genome 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2842162Z self_sized@continuum-grid 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2842592Z self_sized@continuum-hands 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2842933Z self_sized@continuum-kernel 27 27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2843197Z self_sized@continuum-live 50 50
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2843493Z self_sized@continuum-memory 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2843761Z self_sized@continuum-mind 36 36
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2844032Z self_sized@continuum-models 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2844307Z self_sized@continuum-prompt 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2844611Z self_sized@continuum-rooms 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2844905Z self_sized@continuum-sentinel 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2845183Z self_sized@continuum-service 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2845462Z self_sized@continuum-serving 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2845765Z self_sized@continuum-store 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2846035Z self_sized@continuum-vitals 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2846355Z state_as_flags@continuum-academy 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2846659Z state_as_flags@continuum-cli-lifecycle 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2846981Z state_as_flags@continuum-cognition 26 26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2847314Z state_as_flags@continuum-context 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2847603Z state_as_flags@continuum-core 15 15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2847913Z state_as_flags@continuum-dreaming 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2848238Z state_as_flags@continuum-engine 26 26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2848542Z state_as_flags@continuum-experience 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2848977Z state_as_flags@continuum-genome 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2849276Z state_as_flags@continuum-grid 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2849592Z state_as_flags@continuum-grounding 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2849888Z state_as_flags@continuum-hands 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2850207Z state_as_flags@continuum-kernel 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2850525Z state_as_flags@continuum-live 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2850809Z state_as_flags@continuum-mind 27 27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2851118Z state_as_flags@continuum-orm-derive 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2851429Z state_as_flags@continuum-perception 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2851767Z state_as_flags@continuum-positron 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2852089Z state_as_flags@continuum-prompt 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2852535Z state_as_flags@continuum-rooms 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2852894Z state_as_flags@continuum-text-analysis 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2853202Z state_as_flags@continuum-vitals 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2853463Z state_as_flags@llama 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2853806Z state_as_flags@serving-replay 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2854116Z state_as_flags_in_tests@continuum-cognition 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2854457Z state_as_flags_in_tests@continuum-core 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2854774Z state_as_flags_in_tests@continuum-engine 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2855081Z state_as_flags_in_tests@continuum-kernel 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2855534Z string_identities@continuum-academy 42 42
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2855867Z string_identities@continuum-base 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2856190Z string_identities@continuum-capture 14 14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2856582Z string_identities@continuum-cli-lifecycle 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2856919Z string_identities@continuum-cognition 35 35
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2857258Z string_identities@continuum-context 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2857595Z string_identities@continuum-core 170 170
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2857919Z string_identities@continuum-dreaming 33 33
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2858230Z string_identities@continuum-engine 115 115
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2858566Z string_identities@continuum-experience 15 15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2858904Z string_identities@continuum-gateway 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2859210Z string_identities@continuum-genome 29 29
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2859551Z string_identities@continuum-grid 60 60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2859850Z string_identities@continuum-hands 14 14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2860157Z string_identities@continuum-kernel 65 65
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2860486Z string_identities@continuum-live 72 72
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2860784Z string_identities@continuum-memory 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2861118Z string_identities@continuum-mind 63 63
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2861448Z string_identities@continuum-perception 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2861756Z string_identities@continuum-positron 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2862100Z string_identities@continuum-saved-state 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2862591Z string_identities@continuum-sentinel 41 41
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2862923Z string_identities@continuum-service 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2863283Z string_identities@continuum-serving 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2863576Z string_identities@continuum-store 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2863888Z string_identities@jtag-mcp 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2864175Z string_identities@livekit-bridge 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2864466Z string_identities@serving-replay 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2864783Z string_identities@source-hygiene 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2865098Z string_identities@tool-working-set 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2865455Z string_identities_in_tests@continuum-academy 15 15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2865807Z string_identities_in_tests@continuum-cognition 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2866921Z string_identities_in_tests@continuum-core 40 40
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2867294Z string_identities_in_tests@continuum-dreaming 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2867653Z string_identities_in_tests@continuum-engine 45 45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2868022Z string_identities_in_tests@continuum-experience 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2868371Z string_identities_in_tests@continuum-grid 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2868703Z string_identities_in_tests@continuum-kernel 17 17
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2869062Z string_identities_in_tests@continuum-mind 20 20
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2869415Z string_identities_in_tests@continuum-perception 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2869802Z string_identities_in_tests@continuum-positron 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2870143Z string_identities_in_tests@continuum-sentinel 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2870469Z stringly_errors@airc-test-fixtures 14 14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2870814Z stringly_errors@continuum-academy 235 235
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2871150Z stringly_errors@continuum-airc-protocol 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2871499Z stringly_errors@continuum-base 21 21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2871793Z stringly_errors@continuum-capture 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2872105Z stringly_errors@continuum-cli-lifecycle 256 256
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2872624Z stringly_errors@continuum-cognition 134 134
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2872938Z stringly_errors@continuum-core 593 591
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2873273Z stringly_errors@continuum-dreaming 213 213
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2873604Z stringly_errors@continuum-embedding 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2873906Z stringly_errors@continuum-engine 782 782
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2874232Z stringly_errors@continuum-engram 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2874673Z stringly_errors@continuum-experience 59 59
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2875040Z stringly_errors@continuum-gateway 31 31
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2875364Z stringly_errors@continuum-genome 103 103
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2875763Z stringly_errors@continuum-git 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2876058Z stringly_errors@continuum-grid 109 109
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2876352Z stringly_errors@continuum-hands 147 147
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2876705Z stringly_errors@continuum-host - 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2876996Z stringly_errors@continuum-kernel 366 366
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2877337Z stringly_errors@continuum-live 331 331
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2877636Z stringly_errors@continuum-memory 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2877927Z stringly_errors@continuum-mind 462 462
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2878223Z stringly_errors@continuum-models 24 24
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2878518Z stringly_errors@continuum-perception 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2878870Z stringly_errors@continuum-positron 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2879179Z stringly_errors@continuum-process 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2879468Z stringly_errors@continuum-rooms 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2879769Z stringly_errors@continuum-sentinel 92 92
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2880084Z stringly_errors@continuum-serving 25 25
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2880368Z stringly_errors@continuum-store 69 69
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2880707Z stringly_errors@expert-pager-policy 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2881000Z stringly_errors@livekit-bridge 18 18
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2881282Z stringly_errors@llama 38 38
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2881577Z stringly_errors@serving-replay 21 21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2881850Z stringly_errors@source-hygiene 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2882159Z stringly_errors@tool-working-set 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2882625Z stringly_errors_in_tests@continuum-academy 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2882992Z stringly_errors_in_tests@continuum-cli-lifecycle 6 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2883367Z stringly_errors_in_tests@continuum-cognition 17 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2883685Z stringly_errors_in_tests@continuum-core 59 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2884033Z stringly_errors_in_tests@continuum-dreaming 3 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2884386Z stringly_errors_in_tests@continuum-engine 34 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2884733Z stringly_errors_in_tests@continuum-experience 4 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2885082Z stringly_errors_in_tests@continuum-genome 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2885393Z stringly_errors_in_tests@continuum-git 2 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2885728Z stringly_errors_in_tests@continuum-kernel 52 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2886046Z stringly_errors_in_tests@continuum-live 5 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2886396Z stringly_errors_in_tests@continuum-mind 43 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2886739Z stringly_errors_in_tests@continuum-perception 1 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2887064Z stringly_errors_in_tests@continuum-positron 6 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2887411Z stringly_errors_in_tests@continuum-store 25 0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2887725Z swallowed_errors@continuum-academy 53 53
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2888070Z swallowed_errors@continuum-base 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2888393Z swallowed_errors@continuum-capture 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2888780Z swallowed_errors@continuum-cognition 20 20
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2889136Z swallowed_errors@continuum-context 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2889438Z swallowed_errors@continuum-core 111 111
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2889742Z swallowed_errors@continuum-dreaming 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2890109Z swallowed_errors@continuum-engine 69 69
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2890396Z swallowed_errors@continuum-flow 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2890721Z swallowed_errors@continuum-gateway 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2891025Z swallowed_errors@continuum-genome 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2891322Z swallowed_errors@continuum-git 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2891643Z swallowed_errors@continuum-grid 24 24
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2891958Z swallowed_errors@continuum-hands 23 23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2892279Z swallowed_errors@continuum-kernel 67 67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2892742Z swallowed_errors@continuum-live 63 63
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2893048Z swallowed_errors@continuum-mind 53 53
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2893375Z swallowed_errors@continuum-models 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2893706Z swallowed_errors@continuum-perception 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2894040Z swallowed_errors@continuum-process 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2894345Z swallowed_errors@continuum-prompt 15 15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2894665Z swallowed_errors@continuum-rooms 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2895067Z swallowed_errors@continuum-saved-state 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2895389Z swallowed_errors@continuum-sentinel 27 27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2895744Z swallowed_errors@continuum-serving 26 26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2896113Z swallowed_errors@continuum-store 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2896413Z swallowed_errors@continuum-vitals 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2896717Z tenant_lines@continuum-core 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2897032Z unbounded_orm_selects@continuum-cognition 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2897388Z unbounded_orm_selects@continuum-experience 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2897759Z unbounded_orm_selects@continuum-hands 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2898070Z unbounded_orm_selects@continuum-mind 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2898393Z unbounded_orm_selects@continuum-store 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2898708Z underived_durations@continuum-academy 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2899033Z underived_durations@continuum-cognition 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2899400Z underived_durations@continuum-engine 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2899712Z underived_durations@continuum-kernel 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2900030Z underived_durations@continuum-mind 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2900357Z unjustified_serialization@continuum-academy 21 21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2900727Z unjustified_serialization@continuum-capture 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2901094Z unjustified_serialization@continuum-cognition 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2901475Z unjustified_serialization@continuum-core 40 40
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2901829Z unjustified_serialization@continuum-dreaming 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2902180Z unjustified_serialization@continuum-engine 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2902688Z unjustified_serialization@continuum-experience 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2903056Z unjustified_serialization@continuum-genome 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2903418Z unjustified_serialization@continuum-grid 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2903764Z unjustified_serialization@continuum-kernel 25 25
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2904106Z unjustified_serialization@continuum-live 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2904450Z unjustified_serialization@continuum-memory 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2904804Z unjustified_serialization@continuum-mind 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2905125Z unjustified_serialization@continuum-models 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2905521Z unjustified_serialization@continuum-perception 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2905874Z unjustified_serialization@continuum-sentinel 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2906232Z unjustified_serialization@continuum-store 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2906585Z unjustified_unwraps@continuum-academy 75 75
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2906894Z unjustified_unwraps@continuum-base 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2907272Z unjustified_unwraps@continuum-cognition 108 108
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2907608Z unjustified_unwraps@continuum-core 316 317
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2907941Z unjustified_unwraps@continuum-dreaming 23 23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2908287Z unjustified_unwraps@continuum-engine 179 179
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2908597Z unjustified_unwraps@continuum-engram 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2908944Z unjustified_unwraps@continuum-experience 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2909292Z unjustified_unwraps@continuum-genome 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2909635Z unjustified_unwraps@continuum-grid 67 67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2909944Z unjustified_unwraps@continuum-hands 49 49
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2910259Z unjustified_unwraps@continuum-kernel 120 120
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2910611Z unjustified_unwraps@continuum-live 146 146
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2910951Z unjustified_unwraps@continuum-memory 22 22
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2911295Z unjustified_unwraps@continuum-mind 114 114
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2911606Z unjustified_unwraps@continuum-models 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2911921Z unjustified_unwraps@continuum-perception 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2912274Z unjustified_unwraps@continuum-process 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2912756Z unjustified_unwraps@continuum-prompt 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2913134Z unjustified_unwraps@continuum-rooms 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2913440Z unjustified_unwraps@continuum-sentinel 67 67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2913745Z unjustified_unwraps@continuum-serving 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2914077Z unjustified_unwraps@continuum-store 34 34
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2914461Z unjustified_unwraps@continuum-vitals 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2914824Z unknown_as_value@continuum-academy 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2915128Z unknown_as_value@continuum-capture 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2915470Z unknown_as_value@continuum-cognition 52 52
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2915801Z unknown_as_value@continuum-context 26 26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2916118Z unknown_as_value@continuum-core 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2916419Z unknown_as_value@continuum-dreaming 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2916752Z unknown_as_value@continuum-engine 32 32
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2917032Z unknown_as_value@continuum-flow 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2917341Z unknown_as_value@continuum-gateway 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2917654Z unknown_as_value@continuum-genome 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2917945Z unknown_as_value@continuum-git 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2918248Z unknown_as_value@continuum-grid 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2918572Z unknown_as_value@continuum-hands 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2918887Z unknown_as_value@continuum-host 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2919209Z unknown_as_value@continuum-kernel 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2919507Z unknown_as_value@continuum-live 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2921733Z unknown_as_value@continuum-mind 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2922060Z unknown_as_value@continuum-prompt 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2922505Z unknown_as_value@continuum-saved-state 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2922837Z unknown_as_value@continuum-sentinel 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2923135Z unknown_as_value@continuum-service 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2923440Z unknown_as_value@continuum-serving 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2923731Z unknown_as_value@continuum-store 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2924063Z unknown_as_value@continuum-vitals 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2924416Z unknown_as_value@expert-pager-policy 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2924709Z unknown_as_value@serving-replay 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2924997Z unknown_as_value@source-hygiene 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2925285Z unknown_as_value@tool-working-set 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2925666Z unknown_as_value_in_tests@continuum-cognition 16 16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2926051Z unknown_as_value_in_tests@continuum-context 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2926374Z unknown_as_value_in_tests@continuum-core 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2926708Z unknown_as_value_in_tests@continuum-engine 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2927022Z unknown_as_value_in_tests@continuum-mind 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2927330Z unwired_machinery@continuum-academy 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2927678Z unwired_machinery@continuum-cognition 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2927978Z unwired_machinery@continuum-core 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2928275Z unwired_machinery@continuum-engine 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2928569Z unwired_machinery@continuum-engram 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2928993Z unwired_machinery@continuum-genome 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2929312Z unwired_machinery@continuum-grid 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2929637Z unwired_machinery@continuum-hands 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2929944Z unwired_machinery@continuum-kernel 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2930242Z unwired_machinery@continuum-live 16 16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2930595Z unwired_machinery@continuum-mind 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2930912Z upward_imports@continuum-engine 11 11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2931238Z upward_imports@continuum-kernel 16 16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2931543Z upward_imports@continuum-live 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2931859Z waits_that_decide_flow@airc-test-fixtures 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2932222Z waits_that_decide_flow@continuum-academy 27 27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2932744Z waits_that_decide_flow@continuum-airc-protocol 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2933093Z waits_that_decide_flow@continuum-cli-lifecycle 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2933490Z waits_that_decide_flow@continuum-cognition 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2933820Z waits_that_decide_flow@continuum-context 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2934171Z waits_that_decide_flow@continuum-core 118 118
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2934500Z waits_that_decide_flow@continuum-dreaming 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2934812Z waits_that_decide_flow@continuum-engine 67 67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2935177Z waits_that_decide_flow@continuum-flow 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2935491Z waits_that_decide_flow@continuum-genome 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2935930Z waits_that_decide_flow@continuum-git 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2936291Z waits_that_decide_flow@continuum-grid 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2936639Z waits_that_decide_flow@continuum-hands 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2936974Z waits_that_decide_flow@continuum-host 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2937340Z waits_that_decide_flow@continuum-kernel 45 45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2937671Z waits_that_decide_flow@continuum-live 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2937983Z waits_that_decide_flow@continuum-mind 41 41
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2938289Z waits_that_decide_flow@continuum-models 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2938637Z waits_that_decide_flow@continuum-positron 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2938987Z waits_that_decide_flow@continuum-process 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2939346Z waits_that_decide_flow@continuum-rooms 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2939669Z waits_that_decide_flow@continuum-sentinel 10 10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2939992Z waits_that_decide_flow@continuum-serving 5 5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2940334Z waits_that_decide_flow@continuum-vitals 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2940684Z waits_that_decide_flow@expert-pager-policy 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2941047Z waits_that_decide_flow@serving-replay 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2941388Z waits_that_decide_flow_in_tests@continuum-academy 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2941761Z waits_that_decide_flow_in_tests@continuum-cli-lifecycle 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2942180Z waits_that_decide_flow_in_tests@continuum-cognition 19 19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2942699Z waits_that_decide_flow_in_tests@continuum-core 60 60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2943103Z waits_that_decide_flow_in_tests@continuum-dreaming 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2943463Z waits_that_decide_flow_in_tests@continuum-engine 83 83
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2943810Z waits_that_decide_flow_in_tests@continuum-engram 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2944206Z waits_that_decide_flow_in_tests@continuum-experience 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2944588Z waits_that_decide_flow_in_tests@continuum-flow 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2944942Z waits_that_decide_flow_in_tests@continuum-gateway 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2945340Z waits_that_decide_flow_in_tests@continuum-genome 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2945671Z waits_that_decide_flow_in_tests@continuum-grid 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2946062Z waits_that_decide_flow_in_tests@continuum-grounding 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2946497Z waits_that_decide_flow_in_tests@continuum-hands 12 12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2946845Z waits_that_decide_flow_in_tests@continuum-host 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2947237Z waits_that_decide_flow_in_tests@continuum-kernel 45 45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2947575Z waits_that_decide_flow_in_tests@continuum-live 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2947957Z waits_that_decide_flow_in_tests@continuum-memory 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2948306Z waits_that_decide_flow_in_tests@continuum-mind 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2948662Z waits_that_decide_flow_in_tests@continuum-positron 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2949069Z waits_that_decide_flow_in_tests@continuum-process 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2949413Z waits_that_decide_flow_in_tests@continuum-sentinel 6 6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2949811Z waits_that_decide_flow_in_tests@continuum-serving 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2950175Z waits_that_decide_flow_in_tests@continuum-vitals 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2950502Z writes_outside_a_class@continuum-academy 23 23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2950840Z writes_outside_a_class@continuum-base 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2951170Z writes_outside_a_class@continuum-capture 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2951535Z writes_outside_a_class@continuum-cognition 2 2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2951859Z writes_outside_a_class@continuum-core 38 38
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2952174Z writes_outside_a_class@continuum-dreaming 4 4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2952674Z writes_outside_a_class@continuum-engine 21 21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2953008Z writes_outside_a_class@continuum-genome 9 9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2953364Z writes_outside_a_class@continuum-grid 8 8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2953673Z writes_outside_a_class@continuum-hands 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2953984Z writes_outside_a_class@continuum-kernel 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2954301Z writes_outside_a_class@continuum-live 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2954681Z writes_outside_a_class@continuum-mind 13 13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2955047Z writes_outside_a_class@continuum-models 3 3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2955359Z writes_outside_a_class@continuum-rooms 1 1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2955717Z writes_outside_a_class@continuum-sentinel 7 7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2956258Z ##[endgroup]
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2956695Z by crate (moved first, then largest)  base     head
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2957083Z commands_in_refusal_text
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2957356Z   continuum-core                      41       41
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2957695Z   continuum-mind                      37       37
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2958022Z   continuum-hands                     29       29
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2958329Z   continuum-models                     9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2958664Z   continuum-memory                     8        8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2958961Z   continuum-academy                    7        7
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2959260Z contract_shape
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2959535Z   continuum-core                     340      343
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2959838Z   continuum-mind                     367      367
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2960154Z   continuum-cognition                252      252
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2960474Z   continuum-kernel                   206      206
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2960795Z   continuum-engine                   197      197
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2961113Z   continuum-live                     174      174
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2961389Z contract_shape_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2961668Z   continuum-academy                   15        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2961993Z   continuum-cli-lifecycle              9        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2962439Z   continuum-cognition                206        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2962777Z   continuum-context                    3        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2963081Z   continuum-core                     292        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2963393Z   continuum-dreaming                  42        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2963689Z error_text_matches
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2963966Z   continuum-academy                    6        6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2964292Z   continuum-core                       4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2964585Z   continuum-grid                       3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2964895Z   continuum-kernel                     3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2965213Z   continuum-sentinel                   3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2965547Z   continuum-live                       2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2965816Z excess_test_mods
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2966070Z   continuum-grid                       4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2966375Z   continuum-core                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2966717Z   continuum-dreaming                   1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2967103Z   continuum-live                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2967416Z fixed_rooms
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2967664Z   continuum-core                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2967935Z hand_built_homes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2968187Z   continuum-core                       5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2968539Z   continuum-live                       4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2968937Z   continuum-academy                    3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2969260Z   continuum-engine                     2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2969552Z load_then_filter_rows
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2969820Z   continuum-mind                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2970152Z modules_in_cycles
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2970408Z   ai                                   1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2970706Z   airc                                 1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2971008Z   capacity                             1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2971309Z   commands                             1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2971662Z   contracts                            1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2971966Z   experience                           1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2972239Z nil_room_lines
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2972678Z   continuum-mind                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2973040Z os_branches_in_logic
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2973355Z   continuum-core                     194      192
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2973651Z   continuum-kernel                    56       56
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2973995Z   continuum-engine                    42       42
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2974304Z   continuum-live                      19       19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2974624Z   continuum-process                   11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2974957Z   continuum-mind                       6        6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2975251Z planner_floor_outside_the_planner
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2975533Z   continuum-mind                       8        8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2975839Z   continuum-core                       5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2976157Z   continuum-prompt                     5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2976474Z   continuum-cognition                  3        3
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2976803Z   continuum-academy                    2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2977062Z private_probes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2977323Z   continuum-core                      26       26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2977637Z   continuum-kernel                    18       18
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2977949Z   continuum-engine                    11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2978320Z   continuum-grid                       4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2978620Z   continuum-sentinel                   4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2978929Z   continuum-git                        2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2979234Z required_input_complaints
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2979525Z   continuum-core                      14       14
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2979843Z   continuum-engine                    12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2980138Z   continuum-kernel                     9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2980468Z   continuum-capture                    5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2980764Z   continuum-mind                       5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2981075Z   continuum-academy                    4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2981367Z self_sized
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2981608Z   continuum-core                      56       55
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2981930Z   continuum-engine                    51       51
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2982230Z   continuum-live                      50       50
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2982701Z   continuum-mind                      36       36
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2983030Z   continuum-cognition                 34       34
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2983338Z   continuum-kernel                    27       27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2983635Z state_as_flags
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2983886Z   continuum-mind                      27       27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2984230Z   continuum-cognition                 26       26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2984561Z   continuum-engine                    26       26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2984856Z   continuum-core                      15       15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2985178Z   continuum-kernel                     6        6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2985481Z   continuum-academy                    5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2985776Z state_as_flags_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2986044Z   continuum-engine                     5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2986369Z   continuum-core                       2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2986699Z   continuum-cognition                  1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2987004Z   continuum-kernel                     1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2987287Z string_identities
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2987538Z   continuum-core                     170      170
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2987864Z   continuum-engine                   115      115
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2988196Z   continuum-live                      72       72
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2988497Z   continuum-kernel                    65       65
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2988805Z   continuum-mind                      63       63
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2989098Z   continuum-grid                      60       60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2989420Z string_identities_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2989706Z   continuum-engine                    45       45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2990083Z   continuum-core                      40       40
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2990396Z   continuum-mind                      20       20
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2990735Z   continuum-kernel                    17       17
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2991080Z   continuum-academy                   15       15
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2991393Z   continuum-positron                  10       10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2991664Z stringly_errors
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2991927Z   continuum-core                     593      591
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2992230Z   continuum-host                       -       10
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2992727Z   continuum-engine                   782      782
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2993037Z   continuum-mind                     462      462
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2993340Z   continuum-kernel                   366      366
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2993642Z   continuum-live                     331      331
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2993939Z stringly_errors_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2994238Z   continuum-academy                    1        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2994557Z   continuum-cli-lifecycle              6        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2994869Z   continuum-cognition                 17        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2995180Z   continuum-core                      59        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2995495Z   continuum-dreaming                   3        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2995826Z   continuum-engine                    34        0
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2996098Z swallowed_errors
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2996349Z   continuum-core                     111      111
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2996658Z   continuum-engine                    69       69
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2996977Z   continuum-kernel                    67       67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2997302Z   continuum-live                      63       63
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2997613Z   continuum-academy                   53       53
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2997911Z   continuum-mind                      53       53
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2998181Z tenant_lines
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2998446Z   continuum-core                       2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2998711Z unbounded_orm_selects
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2999019Z   continuum-store                      5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2999328Z   continuum-cognition                  2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2999649Z   continuum-experience                 1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.2999970Z   continuum-hands                      1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3000252Z   continuum-mind                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3000609Z underived_durations
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3000871Z   continuum-kernel                     8        8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3001178Z   continuum-mind                       8        8
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3001496Z   continuum-engine                     5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3001787Z   continuum-academy                    2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3002134Z   continuum-cognition                  1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3002538Z unjustified_serialization
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3002855Z   continuum-core                      40       40
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3003156Z   continuum-kernel                    25       25
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3003453Z   continuum-academy                   21       21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3003981Z   continuum-engine                    12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3004274Z   continuum-mind                      11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3004605Z   continuum-sentinel                  11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3004881Z unjustified_unwraps
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3005153Z   continuum-core                     316      317
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3005478Z   continuum-engine                   179      179
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3005774Z   continuum-live                     146      146
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3006099Z   continuum-kernel                   120      120
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3006403Z   continuum-mind                     114      114
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3006720Z   continuum-cognition                108      108
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3007020Z unknown_as_value
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3007385Z   continuum-cognition                 52       52
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3007705Z   continuum-engine                    32       32
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3008013Z   continuum-context                   26       26
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3008379Z   continuum-kernel                    13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3008833Z   continuum-serving                   12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3009176Z   continuum-genome                    11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3009477Z unknown_as_value_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3009764Z   continuum-cognition                 16       16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3010081Z   continuum-engine                     9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3010383Z   continuum-core                       6        6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3010732Z   continuum-context                    2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3011047Z   continuum-mind                       1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3011326Z unwired_machinery
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3011597Z   continuum-live                      16       16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3011926Z   continuum-kernel                     5        5
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3012259Z   continuum-core                       4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3012761Z   continuum-engine                     4        4
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3013077Z   continuum-mind                       2        2
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3013405Z   continuum-academy                    1        1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3013704Z upward_imports
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3013988Z   continuum-kernel                    16       16
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3014302Z   continuum-engine                    11       11
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3014607Z   continuum-live                       6        6
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3014900Z waits_that_decide_flow
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3015181Z   continuum-core                     118      118
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3015520Z   continuum-engine                    67       67
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3015835Z   continuum-kernel                    45       45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3016140Z   continuum-mind                      41       41
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3016458Z   continuum-academy                   27       27
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3016779Z   continuum-live                      12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017117Z waits_that_decide_flow_in_tests
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017411Z   continuum-engine                    83       83
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3017718Z   continuum-core                      60       60
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018029Z   continuum-kernel                    45       45
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018357Z   continuum-cognition                 19       19
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3018691Z   continuum-mind                      13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019005Z   continuum-hands                     12       12
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019285Z writes_outside_a_class
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019568Z   continuum-core                      38       38
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3019894Z   continuum-academy                   23       23
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020229Z   continuum-engine                    21       21
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020546Z   continuum-kernel                    13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3020856Z   continuum-mind                      13       13
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3021201Z   continuum-genome                     9        9
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3487255Z ##[error]Process completed with exit code 1.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.3578657Z Post job cleanup.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.4610381Z Post job cleanup.
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5323501Z [command]/usr/bin/git version
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5356179Z git version 2.56.1
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5387872Z Temporarily overriding HOME='/home/runner/work/_temp/b142c617-883f-4dd8-b39e-5169f0667025' before making global git config changes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5388510Z Adding repository directory to the temporary git global config as a safe directory
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5392036Z [command]/usr/bin/git config --global --add safe.directory /home/runner/work/continuum/continuum
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5426349Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5465221Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5649824Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5685563Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5744793Z [command]/usr/bin/git config --local --name-only --get-regexp http\.https\:\/\/github\.com\/\.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5768027Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5781746Z [command]/usr/bin/git config --local --unset-all http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5803234Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.https\:\/\/github\.com\/\.extraheader' && git config --local --unset-all 'http.https://github.com/.extraheader' || :"
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.5989073Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6009289Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6044206Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6062023Z http.https://github.com/.extraheader
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6098727Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6123549Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6306008Z Entering 'core/vendor/llama.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6319930Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/llama.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6337033Z Entering 'core/vendor/whisper.cpp'
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6352519Z file:/home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/whisper.cpp/config	remote.origin.url
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6380591Z [command]/usr/bin/git config --file /home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/llama.cpp/config --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6405115Z [command]/usr/bin/git config --file /home/runner/work/continuum/continuum/.git/modules/src/workers/vendor/whisper.cpp/config --name-only --get-regexp ^includeIf\.gitdir:
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6546926Z Cleaning up orphan processes
+source-hygiene ratchets (fast)	UNKNOWN STEP	2026-11-18T10:09:11.6802495Z ##[warning]Node.js 20 is deprecated. The following actions target Node.js 20 but are being forced to run on Node.js 24: actions/checkout@v4, actions/setup-node@v4. For more information see: https://github.blog/changelog/2025-09-19-deprecation-of-node-20-on-github-actions-runners/
