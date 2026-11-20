@@ -45,7 +45,7 @@
 
 > Everything is a module. Everything you do to a module is a command. The kernel has zero privileged operations.
 
-That is the entire design in one sentence. The rest of this document spells out the structural consequences.
+The core runtime is Rust only. Rust owns command execution, event delivery, state, scheduling, resource policy, inference orchestration and recovery. TypeScript is confined to the interface and desktop, including their generated client bindings. Shell and Python are prohibited as implementations of core behavior, including subprocesses launched by Rust to perform that behavior. The headless core must operate with the desktop closed and without Node.js, a shell interpreter or Python installed.
 
 Concretely:
 
@@ -57,7 +57,7 @@ Concretely:
 - The CI that verifies modules is a module.
 - `commands/list`, `module/install`, `generate/module`, `audit/anti-patterns`, `ci/run`, `kernel/health` — all commands, all dispatched through the same Map-based kernel.
 
-There is no "build system" separate from runtime. There is no "CLI" separate from the API. There is no "internal tooling" separate from the product surface. Every operation a human or an AI ever wants to perform on the system is a call to `Commands.execute(name, params)`. The kernel itself is a few hundred lines — Commands, Events, Lifecycle, Logger, Session, Health — and that is the entire privileged surface. Everything else is a module loaded on top.
+Build and packaging tools run outside the core runtime. The CLI dispatches through the public API. Every operation a human or an AI ever wants to perform on the system is a call to `Commands.execute(name, params)`. The kernel itself is a few hundred lines — Commands, Events, Lifecycle, Logger, Session, Health — and that is the entire privileged surface. Everything else is a module loaded on top.
 
 This is not novel. Lisp had `(eval (read))`. Smalltalk had "everything is an object." Unix had "everything is a file." Continuum has "everything is a command." The principle is well-trodden; the discipline is what's hard.
 
@@ -147,7 +147,7 @@ A command has **two stable identifiers** that serve different audiences:
 | **Kernel name** | `chat/send` | `Commands.execute(name, params)` | Stable across versions; renaming breaks every caller |
 | **Package identity** | `@continuum-modules/chat@1.4.0` | `npm install`, `module/install`, mesh registry | Versioned (semver); content-addressable optionally |
 
-Callers — both human and AI — write `Commands.execute('chat/send', { ... })`. They do not write the package identity at call sites. The kernel resolves the name through its in-memory `Map<&str, Box<dyn Command>>`; the resolution is `O(1)`, the same primitive whether the chat module is locally compiled, dynamically loaded from a `.wasm` artifact, or routed over the grid to a peer machine. Same call, four possible transports, identical syntax.
+Callers — both human and AI — write `Commands.execute('chat/send', { ... })`. They do not write the package identity at call sites. The kernel resolves the name through its in-memory `Map<&str, Box<dyn Command>>`; the resolution is `O(1)`, the same primitive whether the chat module is locally compiled, dynamically loaded from a `.wasm` artifact, or routed over the grid to a peer machine. The operation keeps its identity across placement.
 
 The package identity exists for installation, versioning, publishing, and dependency resolution. It is what `module/install` consumes, what `npm publish` writes, what the mesh registry indexes, what cryptographic signatures attach to.
 
@@ -168,11 +168,11 @@ The kernel is small, fixed, and cannot be replaced by a module:
 
 | Primitive | Responsibility | Implemented in |
 |---|---|---|
-| `Commands` | Map-based dispatch; grid interceptor for remote routing; result wrapping | `continuum-core` Rust + TS mirror |
-| `Events` | Pub/sub bus; wildcard subscriptions; cross-process bridging | `continuum-core` Rust + TS mirror |
+| `Commands` | Map-based dispatch; grid interceptor for remote routing; result wrapping | `continuum-core` Rust |
+| `Events` | Pub/sub bus; wildcard subscriptions; cross-process bridging | `continuum-core` Rust |
 | `Lifecycle` | Module load/unload; dependency resolution; daemon startup ordering; health gating | `continuum-core` Rust |
-| `Logger` | Structured logging; per-module log streams; level filtering | `continuum-core` Rust + TS mirror |
-| `Session` | Identity, scope, authn/authz; session ID propagation through every command call | `continuum-core` Rust + TS mirror |
+| `Logger` | Structured logging; per-module log streams; level filtering | `continuum-core` Rust |
+| `Session` | Identity, scope, authn/authz; session ID propagation through every command call | `continuum-core` Rust |
 | `Health` | Readiness + liveness probes for modules; kernel exposes its own health under `kernel/health` | `continuum-core` Rust |
 
 That is the whole privileged surface. Everything else — chat, data, ai, airc, generator, audit, ci, install, persona, inference, voice, vision, grid, file ops, the lot — is a module. The kernel does not contain business logic of any kind. It contains dispatch, pub/sub, lifecycle, logging, security context, and health. Six concerns, all of which exist solely to make modules composable.
@@ -183,35 +183,21 @@ Note that `Commands` and `Events` are themselves the two universal primitives th
 
 ## 5. Composition: Commands Call Commands
 
-Continuum-core hosts a `Commands` singleton in Rust that mirrors the TS one exactly:
-
-```rust
-// Inside any Rust module's daemon
-let messages = commands::execute::<ChatGetMessagesParams, ChatGetMessagesResult>(
-    "chat/get-messages",
-    ChatGetMessagesParams { room_id, limit: 50 },
-    session_ctx,
-).await?;
-```
+A desktop control invokes a generated client method. Rust dispatches the command and owns its result. For example, the desktop can check the connection through the generated health API.
 
 ```typescript
-// Inside any TS caller — same shape
-const messages = await client.commands['chat/get-messages']<ChatGetMessagesResult>({
-  roomId,
-  limit: 50,
-});
+const health = await api.ping({ message: "desktop" });
 ```
 
-Internally, `commands::execute` is a `Map<&str, Box<dyn Command>>` lookup. The same Map underlies four routes:
+| Caller and target | Route |
+| --- | --- |
+| Desktop or interface to core | Generated client sends typed parameters to the Rust command handler. |
+| Core module to local core module | The Rust runtime dispatches to the registered owner in-process. |
+| Local core to remote core | The grid routes the operation to the peer's Rust owner and returns its completion. |
 
-| Caller → Target | Transport | Cost |
-|---|---|---|
-| Rust → Rust (same process) | Direct lookup + async dispatch | Lookup + future overhead |
-| Rust → TS | IPC to node-server (rare; TS commands should be UI/UX only) | One IPC round-trip |
-| TS → Rust | IPC to continuum-core (the existing mainline path) | One IPC round-trip |
-| Either → remote peer | Grid interceptor routes via the grid substrate | One grid hop |
+Every runtime operation has a Rust owner from admission through completion. It declares its resource demand, holds the grant while the allocation is live, receives pressure and cancellation events, and reports progress and the bytes actually released. When speech interrupts learning, the governor can ask the learner to yield at a safe boundary, schedule speech on confirmed capacity, and resume the pending learning operation when capacity returns. A subprocess exit status cannot supply that contract. An adapter that invokes a script to implement core work violates the boundary even if it measures process uptime or RSS.
 
-The caller writes the same call. The kernel picks the transport. This is what "transparent routing" means in [UNIVERSAL-PRIMITIVES.md](../UNIVERSAL-PRIMITIVES.md), now extended to the Rust side: any module, anywhere, can call any other command without knowing the implementation language or physical location.
+The interface consumes results and subscribes to events for display. Closing it releases its subscriptions. Resident execution, learning and recovery continue under their Rust owners. Check new entry points by running the headless workload without an interpreter on its execution path. A resident can invoke a shell as a user-requested tool when one is available; the Rust tool owner still governs the process and its completion. [Generated client](../../sdk/typescript/generated/CommandApi.ts) · [Rust command catalog](../../core/continuum-core/src/commands/catalog.rs)
 
 ### 5.1 Cell Return Shapes (The Composition Vocabulary)
 
