@@ -4,17 +4,10 @@
 //! platform-specific features (metal/cuda). This backend is the adapter
 //! between Continuum's TextGenerationRequest pipeline and the safe Rust API.
 //!
-//! Architecture: ONE shared `Context` driven by a continuous-batching
-//! scheduler (see `llamacpp_scheduler`). Each `generate()` call enqueues a
-//! request that becomes one sequence (`seq_id`) in the shared batch.
-//! Multiple sequences advance per decode step — weights are read once,
-//! used for N sequences at once. This replaces the prior per-call-context
-//! design where N concurrent generations created N independent contexts
-//! that fought for memory bandwidth (each got ~1/N throughput).
-//!
-//! Measured 67.8 tok/s on M5 Metal with forged Qwen3.5 Q4_K_M (single seq
-//! bench). With continuous batching across 3 seqs the per-stream cost
-//! drops only ~10% rather than dividing by 3.
+//! Architecture: ONE `Context` driven by the persona scheduler (see `persona_scheduler`): one mind
+//! decodes at a time, each persona keeps her blocks between turns, and a turn prefills only what her
+//! blocks do not hold. A switch is the persona engine's native bind. Measured on the M5: four minds
+//! decoding at once ran 2 tok/s each; one at a time runs at the full rate.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -23,7 +16,7 @@ use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
-use super::llamacpp_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, TokenEvent};
+use super::persona_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, SchedulerError, TokenEvent};
 use super::SamplingConfig;
 use crate::runtime;
 

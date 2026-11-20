@@ -77,6 +77,17 @@ pub enum HandoffError {
     CopyOut { previous: PersonaId, refusal: TierRefusal },
 }
 
+/// Why a retirement did not finish. She stays retiring, in the engine's custody.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RetireError {
+    /// Her copy-out could not begin.
+    #[error(transparent)]
+    CopyOut(#[from] HandoffError),
+    /// Her copy-out has not landed, or the pipeline refused the release.
+    #[error(transparent)]
+    Release(#[from] RetireRefusal),
+}
+
 /// One engine's decode, its three places, and the tier that moves minds between them and runs them.
 pub struct PersonaEngine<U, T: Execute> {
     roles: Roles<U, T::Fence>,
@@ -201,6 +212,27 @@ impl<U: Identified, T: Execute> PersonaEngine<U, T> {
     /// Give the previous mind back once her copy-out has landed.
     pub fn release_retired(&mut self) -> Result<U, RetireRefusal> {
         self.roles.release_retired()
+    }
+
+    /// Bring a retirement to its end: begin her copy-out if a refusal left it unbegun, then give her
+    /// back once it landed. `Ok(None)` when nobody is retiring. A driver calls this before it stages,
+    /// so a refused copy-out is retried rather than skipped, and the retiring mind is never handed
+    /// out twice (Codex on #6140).
+    pub fn finish_retirement(&mut self) -> Result<Option<U>, RetireError> {
+        if self.retiring().is_none() {
+            return Ok(None);
+        }
+        self.retry_retire()?;
+        Ok(Some(self.release_retired()?))
+    }
+
+    /// Give up the blocks of a mind that has left the pipeline (a one-off whose turn ended). Refused
+    /// while she is active, staged or retiring: custody of a present mind is never dropped.
+    pub fn forget(&mut self, persona: PersonaId) -> Result<(), TierRefusal> {
+        if self.present(persona) || self.staged() == Some(persona) {
+            return Err(TierRefusal { tier: self.tier.name(), persona, reason: "she is still in the pipeline", native: Native::NotAsked });
+        }
+        self.tier.release(persona)
     }
 
     fn present(&self, persona: PersonaId) -> bool {

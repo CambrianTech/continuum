@@ -6,13 +6,14 @@
 //!
 //! cargo run --release --features metal,test-fixtures --example persona_switch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use continuum_persona_engine::engine::PersonaEngine;
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::pipeline::Identified;
 use continuum_persona_engine::residency::{Direction, Execute, FenceTag, Tier};
-use continuum_persona_llama::{Rebind, Step, UnifiedTier};
+use continuum_persona_llama::{base_genes, Rebind, Step, UnifiedTier};
 use llama::{Batch, ContextParams, FlashAttn, Model, ModelParams};
 
 /// One mind in the run: who she is, where her history ends, and her last sampled token.
@@ -86,7 +87,7 @@ fn a_refused_newer_epoch_keeps_her_parked_blocks(model: &Model, ctx: &mut llama:
     let mut tier = UnifiedTier::new(ctx);
     tier.begin(tag(1, Direction::In)).map_err(|e| e.to_string())?;
     let seq = tier.stream_of(her).ok_or("replay: she is not bound")?.seq();
-    tier.submit(her, Epoch(1), Step { tokens: tokens.clone(), from: 0, logits_at_end: false }).map_err(|e| e.to_string())?;
+    tier.submit(her, Epoch(1), Step { tokens: tokens.clone(), from: 0, logits_at_end: false, genes: base_genes() }).map_err(|e| e.to_string())?;
     tier.settle().map_err(|e| e.to_string())?;
     let held_to = tier.position_of(her).ok_or("replay: she is not bound after her decode")?;
     tier.begin(tag(1, Direction::Out)).map_err(|e| e.to_string())?;
@@ -123,6 +124,7 @@ fn main() -> Result<(), String> {
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
     let mut engine: PersonaEngine<Mind, UnifiedTier<'_, '_>> = PersonaEngine::new(UnifiedTier::new(&mut ctx));
+    let genes = base_genes();
 
     let mut parked: Vec<Mind> = (0..minds)
         .map(|i| {
@@ -165,7 +167,7 @@ fn main() -> Result<(), String> {
         if !prompt.is_empty() {
             let t = Instant::now();
             for chunk in prompt.chunks(2048) {
-                engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true }).map_err(|e| e.to_string())?;
+                engine.submit(Step { tokens: chunk.to_vec(), from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
                 pos += chunk.len() as i32;
                 last = argmax(engine.tier().logits_ith(chunk.len() as i32 - 1));
             }
@@ -173,7 +175,7 @@ fn main() -> Result<(), String> {
         }
         let t = Instant::now();
         for _ in 0..decode_tokens {
-            engine.submit(Step { tokens: vec![last], from: pos, logits_at_end: true }).map_err(|e| e.to_string())?;
+            engine.submit(Step { tokens: vec![last], from: pos, logits_at_end: true, genes: Arc::clone(&genes) }).map_err(|e| e.to_string())?;
             pos += 1;
             last = argmax(engine.tier().logits_ith(0));
         }

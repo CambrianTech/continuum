@@ -8,10 +8,15 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use continuum_persona_engine::persona::{Epoch, PersonaId};
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, Context, PersonaBlocks, PersonaOwner, PersonaRefusal};
+use llama::{Batch, BindRefusal, Context, LoraAdapter, PersonaBlocks, PersonaOwner, PersonaRefusal, Sampler};
+
+/// Execution streams one context holds: the active mind's and the next mind's. The context is
+/// created with this many sequences; no more are ever decoded at once (one decodes, one binds).
+pub const STREAMS: usize = 2;
 
 /// One of the context's two execution streams, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,7 +63,7 @@ struct Mind {
 pub struct UnifiedTier<'c, 'm> {
     ctx: &'c mut Context<'m>,
     /// Who occupies each execution stream: occupancy is the streams', never a scan of every mind.
-    streams: [Option<PersonaId>; 2],
+    streams: [Option<PersonaId>; STREAMS],
     minds: HashMap<PersonaId, Mind>,
     /// Each persona's owner stamp for the fork, issued once per persona by this tier: exact within the
     /// process the RAM tier lives in (a persona is a 128-bit id; the fork stamps 64 bits).
@@ -66,11 +71,13 @@ pub struct UnifiedTier<'c, 'm> {
     last_rebind: Option<Rebind>,
     /// The last submitted decode's landed flag, until the device is known to have finished it.
     in_flight: Option<Rc<Cell<bool>>>,
+    /// The gene set on the context now (`None` before any step).
+    applied_genes: Option<Genes>,
 }
 
 impl<'c, 'm> UnifiedTier<'c, 'm> {
     pub fn new(ctx: &'c mut Context<'m>) -> Self {
-        Self { ctx, streams: [None, None], minds: HashMap::new(), handles: HashMap::new(), last_rebind: None, in_flight: None }
+        Self { ctx, streams: [None; STREAMS], minds: HashMap::new(), handles: HashMap::new(), last_rebind: None, in_flight: None, applied_genes: None }
     }
 
     /// The stream `persona` is bound to, if she is in the execution stream.
@@ -91,6 +98,21 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     /// The last position `persona`'s stream holds, while she is bound.
     pub fn position_of(&self, persona: PersonaId) -> Option<i32> {
         self.stream_of(persona).map(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
+    }
+
+    /// Sample her next token from output `i` of the last decode. Like [`Self::logits_ith`], reading the
+    /// logits synchronizes, so it also attests the last decode landed.
+    pub fn sample(&self, sampler: &mut Sampler, i: i32) -> i32 {
+        let token = sampler.sample(self.ctx, i);
+        if let Some(landed) = &self.in_flight {
+            landed.set(true);
+        }
+        token
+    }
+
+    /// The bytes `persona`'s stream holds, while she is bound (her footprint).
+    pub fn state_bytes_of(&self, persona: PersonaId) -> Option<u64> {
+        self.stream_of(persona).map(|stream| self.ctx.seq_state_bytes(stream.seq()))
     }
 
     /// The raw context, past every binding: only for custody replays that must put foreign state on a
@@ -199,15 +221,35 @@ impl Tier for UnifiedTier<'_, '_> {
         }
         Ok(Landed(what))
     }
+
+    fn release(&mut self, persona: PersonaId) -> Result<(), TierRefusal> {
+        if self.stream_of(persona).is_some() {
+            return Err(refused(persona, "bound: move her out before releasing her"));
+        }
+        self.minds.remove(&persona);
+        Ok(())
+    }
 }
 
 /// One step of the bound mind's decode: her tokens from position `from`, with the logits of the last
 /// one if `logits_at_end`. It names no sequence: the tier decodes on the stream she is bound to.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone)]
 pub struct Step {
     pub tokens: Vec<i32>,
     pub from: i32,
     pub logits_at_end: bool,
+    /// The gene set she decodes under. The tier applies it only when it differs from the set
+    /// already on the context, and only for her: no step is decoded under another mind's genes.
+    pub genes: Genes,
+}
+
+/// A gene set: adapter handles and their scales, shared so steps name it without copying. Empty is
+/// the base model.
+pub type Genes = Arc<[(Arc<LoraAdapter>, f32)]>;
+
+/// The base model's gene set (no adapters).
+pub fn base_genes() -> Genes {
+    Arc::from(Vec::new())
 }
 
 /// A decode this tier submitted. `llama_decode` may return while the device still runs it (libllama
@@ -233,6 +275,20 @@ impl Execute for UnifiedTier<'_, '_> {
         let held = self.minds.get(&persona).map(|mind| mind.epoch);
         if held != Some(epoch) {
             return Err(refused(persona, "another epoch of her is bound"));
+        }
+        // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart
+        // at 0, a failed turn's partial tail), so her stream never holds two tokens at one position.
+        if self.ctx.memory_seq_pos_max(stream.seq()) >= step.from {
+            self.settle()?;
+            if !self.ctx.memory_seq_rm(stream.seq(), step.from, -1) {
+                return Err(refused(persona, "the engine could not drop her positions"));
+            }
+        }
+        if !self.applied_genes.as_ref().is_some_and(|applied| Arc::ptr_eq(applied, &step.genes)) {
+            let genes: Vec<(&LoraAdapter, f32)> = step.genes.iter().map(|(adapter, scale)| (adapter.as_ref(), *scale)).collect();
+            let applied = if genes.is_empty() { self.ctx.clear_loras() } else { self.ctx.set_loras(&genes) };
+            applied.map_err(|message| TierRefusal { tier: TIER, persona, reason: "the engine refused her genes", native: Native::Reported(message) })?;
+            self.applied_genes = Some(Arc::clone(&step.genes));
         }
         let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(persona, "an empty step"))?;
         let count = i32::try_from(step.tokens.len()).map_err(|_| refused(persona, "a step longer than a batch can hold"))?;

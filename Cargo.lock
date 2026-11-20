@@ -3109,6 +3109,8 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
+ "continuum-persona-engine",
+ "continuum-persona-llama",
  "continuum-process",
  "continuum-saved-state",
  "continuum-service",

@@ -151,9 +151,9 @@ pub struct LlamaCppAdapter {
     /// Continuous-batching slot count. `None` = single-seq mode
     /// (the conservative qwen3.5 default — its recurrent /
     /// Gated-Delta-Net Metal graph aborts on multi-seq). When set,
-    /// the in-backend scheduler multiplexes N concurrent
-    /// generations through one shared model load via
-    /// `llamacpp_scheduler.rs`'s driver loop.
+    /// the in-backend scheduler admitted N concurrent generations. The
+    /// persona scheduler now serves one mind at a time whatever this says;
+    /// the field is removed with the lanes (serving integration S3).
     ///
     /// **Coordinator wiring:** `InferenceCoordinator::open_lane`
     /// admits up to `lane_budgets.max_concurrency` lanes against

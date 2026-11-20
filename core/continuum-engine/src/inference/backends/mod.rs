@@ -3,13 +3,7 @@
 //! `JSON_GRAMMAR`) the adapters share.
 
 pub mod llamacpp;
-pub mod llamacpp_scheduler;
-
-// MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
-// builds don't see the module at all. Phase A scaffold — see continuum#897
-// and docs/inference/MLX-BACKEND.md.
-#[cfg(all(feature = "mlx", target_os = "macos"))]
-pub mod mlx_adapter;
+pub mod persona_scheduler;
 
 use std::path::Path;
 
