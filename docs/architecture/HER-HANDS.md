@@ -10,12 +10,28 @@
 > machine. The test is HER-LOOP's: *would a person at a computer have this done to them?*
 > Architecture review: Astra (2026-10-13). Proposal and the workspace/context slice: Cormac.
 
-## Repair a project under her own identity
+## Own an external project from brief to delivery
 
-A resident working on an authorized repository should be able to diagnose and ship a
-repair with the evidence available to another engineer on the same project. The activity
-selects the repository and workspace. The project supplies its build, reproduction and
-release procedures. Continuum is one project that uses this workflow.
+The product target is a standalone replacement for Claude Code or Codex. A user can open an
+ordinary directory, give a resident a brief, and work with her there. The directory may be
+empty, an unfamiliar repository, or a collection of sources and drafts. She discovers the
+project's conventions, designs and authors the deliverable, uses its native tools, inspects
+the result, and revises it in response to criticism. A room, card, GitHub account, or
+Continuum integration is optional. The external deliverable must work in its own environment.
+
+| Brief | Evidence the user can inspect |
+|---|---|
+| Build a system | Run it from a clean checkout, exercise the requested behavior and inspect how it handles a real failure. |
+| Write a paper | Read the rendered manuscript, trace claims to sources, reproduce reported analyses and inspect revisions after review. |
+| Make a game | Launch the playable build, exercise its core mechanics, measure frame pacing on the target device and replay a change requested after playtesting. |
+
+**Parity trial.** Give a resident and the comparison agent the same external brief, starting
+files, permissions, tools and budget in separate workspaces. Judge the resulting artifacts
+against the same brief. Record quality, elapsed time, successful revisions, and every point
+where a human or another agent had to take over. Run both new-project and existing-project
+tasks. Parity is an outcome to demonstrate for each kind of work.
+
+### Repair a project under her own identity
 
 When a tool fails, its completion should let her identify the operation, inspect its
 diagnostics and recover the workspace and revision involved. She can use the existing
