@@ -121,6 +121,23 @@
             assert_eq!(l.budget_for_replacing("serving", kind), 28_928_168_960);
         }
 
+        #[test]
+        fn replacing_keeps_pending_peer_grants_on_each_pool() {
+            let gpu = ResourceKind::Vram;
+            for backing in [None, Some(ResourceKind::Ram)] {
+                let root = backing.unwrap_or(gpu);
+                let mut ledger = ResourceLeaseLedger::new();
+                ledger.set_capacity(root, 100);
+                ledger.set_capacity(gpu, 100);
+                ledger.set_backing(gpu, backing);
+                ledger.set_physical_used(root, 70);
+                ledger.acquire(&req("peer", root, 20, ReclaimPolicy::Graceful), "peer-lease".into(), 0).unwrap();
+                ledger.set_physical_used(root, 90);
+                ledger.set_measured("serving", vec![ConsumerFootprint { kind: gpu, bytes: 40, detail: "model".into() }]);
+                assert_eq!(ledger.budget_for_replacing("serving", gpu), 30);
+            }
+        }
+
         // what this catches: someone reaching for the replace-myself budget on the ACQUIRE
         // path. A lease granted against bytes not yet released is a real over-commit — the
         // add-back is only valid for a DECISION about what to become next.

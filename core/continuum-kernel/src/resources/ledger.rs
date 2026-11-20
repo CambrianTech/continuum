@@ -259,15 +259,13 @@ impl ResourceLeaseLedger {
     /// grants together. So each grant, on either axis, spends the shared headroom the moment it is
     /// made, once, and the next sample takes over as its bytes land (Codex on #6124).
     pub fn committed(&self, kind: ResourceKind) -> u64 {
-        let pool = self.pool_kinds(kind);
-        if pool.len() == 1 {
-            // A grant not yet resident is on top of what the device shows in use, never hidden in it
-            // (a new lease beside its owner's old residency, Codex on #6124).
-            return self.granted(kind).max(self.physical_used(kind).saturating_add(self.not_yet_resident(kind)));
-        }
-        let promised = pool.iter().map(|k| self.granted(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
-        let landing = pool.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, |acc, b| acc.saturating_add(b));
-        promised.max(self.physical_used(kind).saturating_add(landing))
+        self.remaining_commitment(&self.pool_kinds(kind), self.physical_used(kind), 0, 0)
+    }
+
+    fn remaining_commitment(&self, kinds: &[ResourceKind], resident: u64, released: u64, released_grant: u64) -> u64 {
+        let promised = kinds.iter().map(|k| self.granted(*k)).fold(0u64, u64::saturating_add);
+        let landing = kinds.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, u64::saturating_add);
+        promised.saturating_sub(released_grant).max(resident.saturating_sub(released).saturating_add(landing))
     }
 
     /// The pool `kind` draws on: the kind it is backed by, or itself.
@@ -321,14 +319,18 @@ impl ResourceLeaseLedger {
     /// its backing's availability, so the shared bytes are never spent twice and a process outside
     /// ours is charged to the host, never to the GPU's working set.
     pub fn available(&self, kind: ResourceKind) -> u64 {
-        match self.backing.get(&kind) {
-            Some(&backing) => {
-                // a grant not yet resident sits on top of our measured residency on the device too (Codex on #6124)
-                let ours = self.granted(kind).max(self.measured(kind).saturating_add(self.not_yet_resident(kind)));
-                self.capacity(kind).saturating_sub(ours).min(self.available(backing))
-            }
-            None => self.capacity(kind).saturating_sub(self.committed(kind)),
+        self.headroom_after_release(kind, 0, 0)
+    }
+
+    fn headroom_after_release(&self, kind: ResourceKind, released: u64, released_grant: u64) -> u64 {
+        let root = self.pool_root(kind);
+        let host = self.remaining_commitment(&self.pool_kinds(root), self.physical_used(root), released, released_grant);
+        let host_room = self.capacity(root).saturating_sub(host);
+        if root == kind {
+            return host_room;
         }
+        let device = self.remaining_commitment(&[kind], self.measured(kind), released, released_grant);
+        self.capacity(kind).saturating_sub(device).min(host_room)
     }
 
     /// Bytes of `kind` currently held by one specific consumer.
@@ -459,9 +461,8 @@ impl ResourceLeaseLedger {
     ///
     /// # The invariant it pins
     ///
-    /// *A machine already serving model X can always re-plan model X.* Anything else
-    /// can only decay, and no learned policy layered on top can recover — it would be
-    /// training against a signal that is wrong by the size of the resident model.
+    /// A resident model can be planned again while peer commitments and floors leave room for it.
+    /// Pending peer grants still consume capacity after the incumbent releases its residency.
     ///
     /// # What it does NOT do
     ///
@@ -471,18 +472,9 @@ impl ResourceLeaseLedger {
     /// planning; `acquire` must keep using `available_for`, or a consumer could grant
     /// itself bytes it has not yet released.
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
-        // Never above the device. The add-back is the caller's DECLARED footprint, and
-        // a declaration can exceed what the device holds: the 5090, 2026-09-17 — serving
-        // declared `peak_resident_bytes(144640 ctx)` = 67.5 GB (an f16-KV estimate) on a
-        // 33.6 GB card, the board's available fell to 2.3 GB, and this sum handed the
-        // planner `usable_gb=54` — a budget bigger than the card, which then sized a
-        // window the card could not hold. A replace-myself budget is bounded by
-        // capacity like every other number the ledger speaks.
-        // Return the incumbent's bytes before charging other consumers' unmet floors.
-        // A floor larger than today's free space still constrains the successor.
-        self.available(kind)
-            .saturating_add(self.measured_by(consumer_id, kind))
-            .min(self.capacity(kind))
+        let resident = self.measured_by(consumer_id, kind);
+        let landed_grant = self.granted_to(consumer_id, kind).min(resident);
+        self.headroom_after_release(kind, resident, landed_grant)
             .saturating_sub(self.reserved_headroom_excluding(consumer_id, kind))
     }
 
