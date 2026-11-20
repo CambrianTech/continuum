@@ -59,9 +59,15 @@ an open-world engine makes with every building in its city.
 
 ## 0.2 What RAGE learned, and what we build from it
 
-Rockstar has said little in public about RAGE. What follows comes from its developers' interviews
-and talks and from people who took the games apart. Each lesson is stated as RAGE met it, then as the
-mechanism it becomes here.
+Rockstar has said little in public about RAGE. What follows comes from its developers' talks and
+interviews, from modding documentation of the game files, and from people who took the games apart.
+Section 0.9 lists the sources. Each lesson is stated as RAGE met it, then as the mechanism it becomes
+here.
+
+Some mechanisms below are attributed to analyses of RAGE that no primary source or reverse-engineering
+record confirms: block load states, relocatable memory with background compaction, hierarchical task
+stacks, and round-robin perception. They stay in this chapter because they are right for us on their
+own merits, not because Rockstar is known to use them. Each says "reported" where that applies.
 
 ### The whole world draws, all the time
 
@@ -93,6 +99,13 @@ follows it (the context is a FIFO; [CONTINUUM-ENGINE.md](../CONTINUUM-ENGINE.md)
 checkerboard: a level change that never forces the rest to re-render. The codec that does this is
 `continuum-context` (chapter 3.6).
 
+Unreal's Nanite (Karis, SIGGRAPH 2021) adds the rule for when a coarser level may replace a finer
+one. Geometry is a hierarchy of clusters, simplified in groups with their shared boundaries locked so
+no cracks open. A coarser cluster is chosen only when its error on screen is under about a pixel,
+which is invisible. Here a summary replaces an item only when what is lost is below what her current
+task can notice: the item's boundaries (its key, its place in the order, its handle) are locked, so
+nothing around it shifts. The error bound is stated and checked, as the ballpark-math rule requires.
+
 ### The world is sectors, streamed around its sources
 
 Analyses of RAGE describe the world as a spatial grid of hierarchical sectors. A sector is kept in
@@ -111,18 +124,20 @@ a citizen acting, a person watching, a call in progress.
 - **Sectors are hierarchical.** An activity contains its rooms, and a room contains its threads and
   artifacts. Each level streams on its own.
 
-Three more details from the same analyses sharpen this.
+Three more details sharpen this.
 - **Archetypes are separate from instances.** RAGE's world is split into archetype definitions
   (shared shape, collision, textures) and placement maps (where each instance stands, with its LOD
-  links). Here the archetypes are what many share: a base model, a gene, a recipe, a shared prompt
+  links). Modding documentation of the game files confirms this as YTYP archetypes and YMAP
+  placements. Here the archetypes are what many share: a base model, a gene, a recipe, a shared prompt
   head. They are stored once and referenced by every instance that uses them. The instances are what
   is particular: a persona's identity and cursors, an activity's state.
-- **What many depend on streams first.** A streaming request is scored by distance and direction, and
-  also by how many visible things depend on it: a texture needed by fifteen entities outranks a
+- **What many depend on streams first.** A streaming request is reported to be scored by distance and
+  direction, and also by how many visible things depend on it: a texture needed by fifteen entities outranks a
   unique prop. Here a gene several minds wear, or a prefix every mind shares, is promoted before one
   only a single mind needs.
-- **Interiors sit behind portals.** An interior has its own coordinate space, joined to the city
-  through doorways, and stays dormant unless a portal is in view. Here a private room, a direct
+- **Interiors sit behind portals.** An interior (an MLO archetype, with rooms and portals, as the
+  modding documentation describes it) has its own space, joined to the city through doorways, and
+  stays dormant unless a portal is in view. Here a private room, a direct
   conversation or a thread is an interior: dormant until a member's attention passes through to it,
   and costing nothing until then.
 
@@ -175,7 +190,7 @@ descriptor.
 
 **Here:** a persona entering the Core claims a resident slot and is hydrated from her descriptor:
 her durable state, her genes, her saved pages. Switching minds is swapping the descriptor bound to
-the Core's active role. This is why a switch costs milliseconds (0.5).
+the Core's active role. This is why a switch costs milliseconds (0.6).
 
 RAGE's descriptors are reported to include an agent's whole behavioral profile: its personality,
 perception thresholds, reaction latencies and relationship group. These are reflected from C++
@@ -217,6 +232,21 @@ install disc on the hard drive and the play disc in the tray. Putting both on on
   GTA 5's two drives did.
 - **When the stream still loses, show a lower level, never a hole.** A mind whose pages have not
   arrived acts at a lower level of detail rather than not at all.
+
+Three other engines, from their own documentation, sharpen how the stream is run.
+- **Cell size follows traversal speed.** Insomniac's Spider-Man streams Manhattan as about 800 tiles
+  of 128 m, loading ahead and unloading behind, about one new tile a second at top speed. Here a
+  sector's granularity follows how fast attention moves through it: a fast chat streams at the
+  message, a slow design review at the thread.
+- **A cell takes the strongest need of any source.** In Unreal's World Partition, each streaming
+  source asks for cells to be loaded or active, and a cell takes the highest state and priority of
+  the sources covering it. Here a room's level of detail is the highest any of its streaming
+  sources needs: one speaking participant makes it active for everyone in it.
+- **Over budget, lower detail everywhere a little.** id Tech 5's virtual texturing raises a global
+  detail bias until the working set fits the physical pages, instead of thrashing. Here, when a
+  node's working set exceeds its memory, the governor raises one bias that lowers every sector's
+  level of detail a step. It does not evict whichever page was touched last and fault it straight
+  back in.
 
 ### Missions are scripts; the engine is natives
 
@@ -298,9 +328,15 @@ hierarchy says. Engrams are a living map, not an archive.
 
 ### Sound is stems, mixed by the moment
 
-Rage Audio splits a mission's music into eight stems played together. Each is turned up or down by
-what is happening, with changes timed to land on the beat. Car engines are not recordings: they are
-built from tiny slices of sound stitched together as the revs change.
+Rockstar's GDC 2014 talk "The Sound of Grand Theft Auto V" (Alastair MacGregor) describes several
+mechanisms:
+- a granular engine for nearby cars, synthesized from slices as the revs change;
+- engine and exhaust handled separately;
+- dynamic mixing by sound category;
+- ambient sound grown from 86 zones in GTA IV to 949 in GTA V.
+
+The mission music's split into stems that rise and fall with the action, landing on the beat, is
+described in a video about the engine, not in the talk.
 
 **Here:**
 - **Voice is layered.** Her quick voice opens at once. Her deep mind's thought merges into the speech
@@ -334,10 +370,12 @@ confirmed by Rockstar.
   unwinding the agent. Here her turn is the same kind of stack (activity, card, step, tool call),
   each level yielding while it waits on a completion. An event of higher salience interrupts her at
   the top of the stack and leaves the rest of it resumable.
-- **Two layers of decision, macro and micro.** GTA 6 is reported to separate a slow layer for intent
-  and route from a fast layer for local reaction, each informing the other. Here that is her deep
-  mind and her fast layers: the amygdala, the quick voice, the reflexes of her hands. They run at
-  their own rates and inform each other, under one turn identity.
+- **Two layers of decision, macro and micro.** Take-Two's patent US11684855B2 plans traffic routes
+  on a coarse graph built from a road network's forks, then expands the result back into the fine
+  road nodes. A coarse plan refined locally is the pattern. Here it applies to the mind: her deep
+  mind plans, and her fast layers (the amygdala, the quick voice, the reflexes of her hands) execute
+  and react. They run at their own rates and inform each other, under one turn identity. That
+  generalization is ours; the patent covers navigation.
 - **Amortized sensing.** Of two hundred agents in a sector, only a few are reported to run full
   perception each frame, while the rest act on cached targets a few frames old. Here deep
   perception of a shared stream rotates by salience across the minds that need it, and every mind
@@ -368,9 +406,12 @@ Analyses of RAGE describe three ways its agents perceive without paying for omni
 
 ### Many small motions, blended and fitted to the body
 
-Red Dead Redemption 2's people, horses and other animals share one movement system. It is built
-from about 6,300 small motions that the engine blends automatically by speed and turning. GTA 6 has
-over 600,000 animations, and a system that adapts them on the fly to characters of different heights.
+Rockstar's GDC 2021 talk on Red Dead Redemption 2's horses (Tobias Kleanthous) gives their
+locomotion as about 210 archetypes, 2,500 motion types and 6,300 unique motions. Each gait has a
+minimum, ideal and maximum speed, and motion follows the horse's exertion. Aaron Garbut, co-head of
+Rockstar North, put GTA 6 at over 600,000 animations against GTA V's about 55,000. Rockstar has
+described a system that retargets animations at runtime, and a Take-Two application on runtime
+retargeting was published in 2025.
 
 **Here:**
 - **Genes are small motions.** A citizen's genome is many small learned adaptations, composed per
@@ -469,7 +510,102 @@ frame is worth everything before its deadline and nothing after; a reply is wort
 a person stops speaking; a lesson is worth about the same today or in an hour. Each consumer's value
 is a curve over time, and the governor reads the curve, not a fixed priority.
 
-## 0.4 What CBAR learned
+## 0.4 One engine across many consoles: the grid and the mesh
+
+A **grid** is the machines of one household or team, under one governor that allocates by price
+directly. A **mesh** is machines of many owners: the same engine, with a negotiation, a price and a
+question of trust at every boundary between owners. Massively multiplayer worlds and peer-to-peer
+compute markets have met each of these problems. The lessons below come from their own
+documentation, talks and patents (sources in 0.9).
+
+### Interest: each mind subscribes to what it needs, at the rate it needs
+
+Improbable's patents give each entity an interest: a query of what it needs to see, and the frequency
+it needs updates at, both changeable at runtime. Unreal's replication graph divides the world into
+grid cells, each with a precomputed list of what is relevant to it, so a server never checks every
+object against every player.
+
+**Here:** a mind's senses are interest queries over rooms and perception streams, each with a rate
+set by her level of presence. Acting is full rate; present is her dial's rate. A node computes what
+is relevant to each sector once, not to each mind for each message, and a mind on another node
+receives only what her interest selects.
+
+### Authority: one writer for each piece of state, handed off without stopping
+
+Star Citizen's server meshing keeps the world's state in a replication layer, separate from the
+servers that simulate it:
+- every client and server connects to the layer rather than to each other;
+- one server has authority over each entity at a time, and authority can move;
+- dynamic meshing keeps re-evaluating the split, adding and removing servers;
+- a crashed server is rebuilt from the layer in under a minute.
+
+Improbable's patents hand entities from an overloaded worker to one whose region overlaps it.
+Authority regions overlap on purpose, for hysteresis, because "switching authority may have an
+associated cost."
+
+**Here:**
+- **One authority per piece of state.** Every part has one authority at a time: the node that owns
+  her learning, the node hosting an activity, the holder with custody of a page. Durable state
+  (chapter 3.7) and the airc event stream are the replication layer: separate from the nodes that
+  simulate, and enough to rebuild any of them.
+- **Authority moves when the price says so.** It moves when a node's load or a sector's
+  participants make it worth moving, with hysteresis priced by the cost of the switch (0.3), so
+  nothing thrashes between two nodes.
+- **A lost node is rebuilt from the layer.** Its parts resume elsewhere from their last checkpoints,
+  each step applied once.
+
+### Overload slows the clock; it does not drop work
+
+EVE Online's time dilation slows the game clock of an overloaded node, down to a tenth of normal,
+so its queue drains instead of lagging out. Battles players declare in advance are moved to
+dedicated nodes before they start, and a node that collapses mid-fight is remapped live.
+
+**Here:**
+- **Throughput work dilates.** A throughput activity under overload runs slower (fewer turns a
+  minute, a lesson spread over more frames) and says so to the people in it. Nothing is dropped.
+- **Deadline work keeps its deadlines.** A voice or a body keeps its deadline by stepping its level
+  of detail down instead (0.3: never cut what is essential).
+- **Heavy events are placed ahead.** A course, a large review, a call with many residents: what is
+  scheduled is placed ahead of time on nodes that can hold it.
+
+### On the mesh, every boundary is a negotiation
+
+On Akash a tenant posts an order and providers bid on it with a deposit, holding the resources
+while they bid; the tenant picks a bid by price, reputation and location, and a lease is formed.
+On Golem providers publish linear prices (per second, per CPU-second, a start fee), requestors
+publish demands with maximum prices, and they agree by proposal and counter-proposal. Spawn (1992)
+and Tycoon (2004) ran markets for idle machines, by auction and by proportional share.
+
+**Here:**
+- **Inside one household, no negotiation.** The governor allocates with the price directly.
+- **Across owners, a negotiation in the same price.** A demand is posted with its value curve: its
+  essential parts, the quality it can step down to, and its deadline. Providers answer with a price
+  and the quality of service they can give.
+- **An agreement is a lease.** It is renewed by heartbeat and expires if a node leaves, and a
+  deposit makes a promise costly to break.
+- **One scalar from frame to mesh.** It is λ, the price of a byte
+  ([GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md)). Money, where it is used, is one more input
+  to it.
+
+### Trust is earned by validated work
+
+BOINC runs each job on two unrelated hosts, adds a third when they disagree, and compares results
+with a tolerance for floating point. Its adaptive replication checks less and less of a host's work
+as its validated streak grows, bringing the overhead from double toward none, and grants credit only
+for validated results. Golem spot-checks a small sample of a large job; iExec stakes workers and
+requires them to commit to a result before revealing it.
+
+**Here:**
+- **Remote work carries its own proof.** It returns with its Forge-Alloy attestation: what was run,
+  where, and on what (README, "Proof should travel with the thing being proved").
+- **Untrusted results are checked, less as trust grows.** They are spot-checked or replicated, at a
+  rate that falls as a node's validated history grows.
+- **A gene's check is its exam.** It is adopted only after it passes on unseen tasks, wherever it
+  was trained.
+- **Only validated work earns.** Credit and reputation go only to validated work, and stake makes
+  cheating cost more than it could gain.
+
+## 0.5 What CBAR learned
 
 CBAR is Joel's real-time perception engine. Its lessons are the other half of the design.
 
@@ -493,7 +629,7 @@ CBAR is Joel's real-time perception engine. Its lessons are the other half of th
   and precise methods refine it as the camera approaches. Here: perception, comprehension and speech
   are living estimates that refine as better knowledge arrives (chapter 4.2, `FusionRegion`).
 
-## 0.5 The budgets
+## 0.6 The budgets
 
 The numbers the design is held to. Measured values carry their receipt; targets are labelled.
 
@@ -509,7 +645,7 @@ The numbers the design is held to. Measured values carry their receipt; targets 
 | A learning step's extra memory | the shadow and its optimizer, about 6.5 MB at rank 8 on a 0.5B model | measured, #6203 |
 | An idle core's CPU | near zero | target |
 
-## 0.6 What we refuse
+## 0.7 What we refuse
 
 Each of these is a way the brief is failed, recognised by name:
 - a mind that waits on another for permission;
@@ -523,7 +659,7 @@ Each of these is a way the brief is failed, recognised by name:
 - a constant where a measurement exists;
 - a second copy of an idea that already has a home.
 
-## 0.7 How the rest of this book builds it
+## 0.8 How the rest of this book builds it
 
 - **Parts** (chapters 2 to 4) are the engine's objects: each with a lineage, its own worker and its
   own state, talking by commands and publications.
@@ -531,3 +667,57 @@ Each of these is a way the brief is failed, recognised by name:
 - **Crates and modules** (chapters 6 and 7) are the engine's code layout, general below specific,
   each domain runnable on its own node of the Grid.
 - **Coverage and the plan** (chapters 8 and 9) take today's code there.
+
+## 0.9 Sources
+
+Primary sources are the developer's or owner's own talks, documentation and filings; secondary
+sources report or reverse-engineer them. Gathered 2026-11-20.
+
+RAGE and Rockstar:
+- Alastair MacGregor, "The Sound of Grand Theft Auto V", GDC 2014 (primary):
+  <https://gdcvault.com/play/1021165/The-Sound-of-Grand-Theft>
+- Fabian Bauer, "Creating the Atmospheric World of Red Dead Redemption 2", SIGGRAPH 2019 Advances
+  (primary): <https://advances.realtimerendering.com/s2019/index.htm>
+- Tobias Kleanthous, "AI Summit: Making the Believable Horses of Red Dead Redemption II", GDC 2021
+  (primary): <https://gdcvault.com/play/1027230/AI-Summit-Making-the-Believable>; coverage of its
+  numbers (secondary): <https://gamedeveloper.com/design/rockstar-s-quest-for-the-ultimate-video-game-horse>
+- Take-Two, US11684855B2, "System and method for virtual navigation in a gaming environment"
+  (primary): <https://patents.google.com/patent/US11684855B2/en>
+- YTYP archetypes, YMAP placements and MLO interiors, modding documentation (secondary):
+  <https://docs.sollumz.org/tutorials/creating-interiors/create-ytyp>,
+  <https://docs.altv.mp/gta/articles/references/game-files.html>
+- GTA 6 at 30 fps, reporting Rockstar's post (secondary):
+  <https://gameinformer.com/2026/11/10/grand-theft-auto-vi-will-run-at-30-fps-on-all-consoles-but-ps5-pro-will-feature-improved>
+- Aaron Garbut on 600,000 animations (secondary):
+  <https://www.pcgamer.com/games/grand-theft-auto/thanks-to-a-dedicated-team-art-directing-every-single-npc-gta-6-has-over-10-times-as-many-unique-animations-as-gta-5/>
+- Stephen Donkin, "everything speaks to everything else", and the retargeting filing (secondary):
+  <https://80.lv/articles/behind-the-incredible-new-tech-and-systems-rockstar-built-to-make-gta-6-feel-alive/>
+
+Streaming in other engines:
+- Insomniac, Spider-Man's tiles (primary):
+  <https://blog.playstation.com/2018/09/06/insomniac-interview-the-tech-behind-marvels-spider-man>
+- Unreal Engine 5 World Partition (primary):
+  <https://dev.epicgames.com/documentation/en-us/unreal-engine/world-partition-in-unreal-engine>
+- Brian Karis, Nanite, SIGGRAPH 2021 (primary):
+  <https://advances.realtimerendering.com/s2021/Karis_Nanite_SIGGRAPH_Advances_2021_final.pdf>
+- J.M.P. van Waveren, id Tech 5 virtual texturing, SIGGRAPH 2009 and GTC 2010 (primary):
+  <https://www.quaddicted.com/webarchive/mrelusive.com_20170131/publications/presentations/2009_siggraph/05-JP_id_Tech_5_Challenges.pdf>
+
+Distributed worlds:
+- Unreal's replication graph (primary):
+  <https://www.unrealengine.com/en-US/tech-blog/replication-graph-overview-and-proper-replication-methods>
+- Improbable patents on interest, load balancing and authority handover (primary):
+  <https://patents.google.com/patent/US10579434>
+- Cloud Imperium on server meshing and the replication layer (primary, via a fan mirror):
+  <https://api.star-citizen.wiki/comm-links/18397>
+- CCP Veritas, "Introducing Time Dilation" (primary):
+  <https://www.eveonline.com/news/view/introducing-time-dilation-tidi>
+
+Compute markets and verification:
+- Waldspurger et al., Spawn, IEEE TSE 1992 (primary): <https://waldspurger.org/carl/papers/spawn-ieee-tse-feb92.pdf>
+- Lai et al., Tycoon, 2004 (primary): <https://arxiv.org/abs/cs/0412038>
+- Akash bids and leases (primary): <https://akash.network/docs/getting-started/intro-to-akash/bids-and-leases>
+- Golem market module (primary): <https://docs.golem.network/docs/golem-js/reference/interfaces/market_market_module.MarketModule>
+- iExec proof of contribution (primary): <https://docs.iex.ec/protocol/proof-of-contribution>
+- David Anderson, BOINC, and its job replication (primary): <https://arxiv.org/pdf/1903.01699>,
+  <https://github.com/BOINC/boinc/wiki/Job-replication>
