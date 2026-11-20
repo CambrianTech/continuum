@@ -2349,6 +2349,35 @@ lease. Phase-specific transient resources release at a backend-confirmed safe fr
 KV/state residency lasts until its own eviction/release boundary. These are different
 lifetimes, not two queues serializing the same turn.
 
+**Unserved learning demand (planned).** A learner that releases its serving slot can
+still need device memory. Today `try_training_memory` returns
+`TrainingWait::Capacity { consumer, kind, needed, available }`. The in-place pass
+records the shortage and ends. Its next attempt can encounter the same serving layout
+indefinitely because the sizing owner never received the outstanding demand.
+
+Carry that typed need from the pending learning bucket into the next serving plan.
+The bucket owns its lifetime. Release it when the work completes, is withdrawn, or
+requires a different engine incarnation. Combine buckets that share a single learning
+workspace according to which allocations coexist. Summing every persona's queued
+steps would reserve multiple copies of a workspace that the engine runs once.
+The resource ledger owns the calculation, including existing grants, physical
+residency and unmet reservations. Its capacity-change event wakes eligible work.
+Only a successful lease admits execution. A serving lifecycle refusal belongs to the
+lifecycle owner's wakeup and carries no claim about free bytes.
+
+The 5090 provides a replay case. The embedding lane held 633,205,120 bytes of weights
+and reserved another 352,370,816 bytes for its context. With 316,669,952 physical
+bytes free, a 12,058,624-byte learning request needed 47,759,488 additional bytes.
+For the same snapshot, the serving successor can occupy 28,928,168,960 bytes
+while preserving the embedding floor. Start with physical free plus serving's
+releasable residency, cap at device capacity, then deduct other consumers'
+outstanding reservations. Clamping the admission balance to zero before adding
+back serving's bytes conceals a 35,700,864-byte deficit.
+
+A candidate plan must identify where the additional learning bytes can be released, keep resident
+contexts restorable and remeasure before granting. Track each transition from
+request through grant, learned example, durable checkpoint and evaluated adoption.
+
 #### Evidence schema to agree before implementation
 
 These are proposed additions to the existing engine report, not a second probe service.
