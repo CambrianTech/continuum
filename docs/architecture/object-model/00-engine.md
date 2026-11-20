@@ -550,6 +550,26 @@ frame is worth everything before its deadline and nothing after; a reply is wort
 a person stops speaking; a lesson is worth about the same today or in an hour. Each consumer's value
 is a curve over time, and the governor reads the curve, not a fixed priority.
 
+**One importance, computed over the tree, read by everything.** A game engine computes an importance
+for each object (from its distance, its size on screen, its visibility and what depends on it) by
+walking its scene hierarchy. That one number then decides several things at once:
+- what streams in;
+- which level of detail is drawn;
+- how often an object's animation and AI update;
+- in audio, which sounds get a real voice. Rockstar's GDC 2014 audio talk describes RAGE's voice
+  virtualisation: sounds below the cut are tracked but not rendered.
+
+Here that number is the demand's price, computed once over the part tree from attention, the
+activity's value curve, what depends on it, and the one human input of what matters now. It decides
+four things together:
+- **residency:** what stays warm;
+- **level of detail:** how much of each item enters a mind's context;
+- **level of presence and update rate:** acting, attentive, present or at rest (0.2);
+- **virtualization:** a resident below the cut is tracked, her durable self intact and her wake
+  condition set, but not computing, as a virtualized sound is.
+
+No subsystem keeps its own idea of what matters. Each reads the one importance its tree computed.
+
 ## 0.4 One engine across many consoles: the grid and the mesh
 
 A **grid** is the machines of one household or team, under one governor that allocates by price
