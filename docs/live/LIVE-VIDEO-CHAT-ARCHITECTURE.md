@@ -92,6 +92,14 @@ recent observations first. Compatible subscribers share the same feed and any in
 computation. Continuum already has source histories in `PerceptionBuffer` and per-frame
 derivatives in `MediaFrame` backed by `SharedCompute`. Keep those owners.
 
+A one-off read and a standing feed use the same request contract. The caller identifies the
+source and derivative and supplies either an exact frame handle or a capture-time window
+with its permitted error. The response deadline is separate from the age of acceptable
+evidence. The buffer owner resolves an acceptable cached observation immediately. On a miss
+it can join compatible work already in flight or submit fresh work through the capacity
+governor. The caller receives a completion handle and continues. If the deadline passes,
+the owner resolves that request as unavailable; other subscribers retain their own deadlines.
+
 In Joel's CBAR design, quarter-size grayscale optical flow was the one synchronous
 tracking step. Experiment with that as the per-frame budget here: use motion history to
 project a previously measured location to the requested time. Retain the original
