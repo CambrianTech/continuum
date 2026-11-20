@@ -31,6 +31,7 @@
 - [11. Lifecycle, Dependencies, And Boot](#11-lifecycle-dependencies-and-boot)
 - [12. Migration Path From Today](#12-migration-path-from-today)
   - [Contract ownership](#contract-ownership)
+  - [File, module and crate boundaries](#file-module-and-crate-boundaries)
   - [Specialization in Rust](#specialization-in-rust)
   - [Inventory and migration order](#inventory-and-migration-order)
   - [Closing a migration](#closing-a-migration)
@@ -746,6 +747,20 @@ Give each invariant to the narrowest ancestor shared by the implementations that
 
 Keep an owner, its private state and the methods that change that state in a small module named for the domain object. When two siblings repeat a transition, lift the transition to their common parent and remove both copies. When a file mixes policy, native operations and transport, move each responsibility to its owner and delete the emptied file. Moving free functions into a utility module leaves the ownership defect intact.
 
+### File, module and crate boundaries
+
+Inspect the containing file, parent module, crate manifest and reverse dependencies whenever behavior changes. Repair a boundary when the change exposes it. File length, an outage and a separate cleanup ticket are unnecessary triggers. The author of the change owns the move, caller migration and deletion.
+
+| Boundary | Signal visible during ordinary development | Action in the change |
+| --- | --- | --- |
+| File | A reader must understand two independent state machines to change one method, or numbered fragments and utility imports obscure who controls a transition. | Put each transition beside the type that owns it. Give the files domain names. Keep a module root focused on its public surface and composition. Remove the former definitions and fragments. |
+| Module | Siblings manipulate each other's private state, repeat the same lifecycle, or route through a broad facade to reach a leaf. | Lift shared behavior into the nearest common owner. Delegate specialized steps through required hooks. Narrow visibility and route every caller through the owning module. |
+| Crate | A capability has a separable public contract and lifecycle, yet callers must depend on unrelated backends, platform features or build dependencies to use it. | Extract the capability into a named workspace crate. Give it the smallest public API and dependency set that satisfy its consumers. Keep platform adapters at the leaves. Move registrations, generated bindings and callers together; delete the previous import path. |
+
+Before extraction, inspect the feature and reverse-dependency graph with `cargo tree -e features -i <package>`. Draw the intended dependency direction. If two proposed crates need each other's concrete types, identify the shared contract and place it at their common dependency. Check the resulting workspace membership with `cargo metadata --no-deps`. Build affected consumers for their supported targets and features, and verify that the dependency or feature that motivated the split actually disappeared. A directory move alone cannot establish that.
+
+One concrete audit target is the genome extraction. The genome has its own crate, while the mind crate still re-exports it. Inventory consumers of the former path, move them to the owning crate where they depend on genome behavior, then remove the forwarding export. Record any remaining coupling by symbol and consumer. [Genome manifest](../../core/continuum-genome/Cargo.toml) · [Mind crate root](../../core/continuum-mind/src/lib.rs)
+
 ### Specialization in Rust
 
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
@@ -771,7 +786,7 @@ trait ResizableAllocation: Send + Sync {
 // self.allocation.plan_reduction(request).apply().await
 ```
 
-The request identifies the resource and target bytes. A deferred reduction retains its operation identity and completion signal. Only confirmed released bytes count toward admission. Use typed variants for mutually exclusive states. A required identity, byte count or result belongs on the variant that needs it. Use an optional field only when absence has a defined domain meaning. [Existing consumer contract](../../core/continuum-kernel/src/resources/consumer.rs) · [Resource policy](SHARED-RESOURCES.md)
+The request identifies the resource and target bytes. Today the deferred outcome carries status only. In the planned contract the allocation owner retains the in-flight reduction; the governor retains the demand and subscribes to its keyed completion before dispatch. The acknowledgement identifies that operation so a later completion can be matched, including one published during dispatch. Only confirmed released bytes count toward admission. Use typed variants for mutually exclusive states. A required identity, byte count or result belongs on the variant that needs it. Use an optional field only when absence has a defined domain meaning. [Existing consumer contract](../../core/continuum-kernel/src/resources/consumer.rs) · [Resource policy](SHARED-RESOURCES.md)
 
 ### Inventory and migration order
 
@@ -797,39 +812,7 @@ For each family, follow both directions: start at every public entry point and f
 
 ### Command and module packaging
 
-The current TS-implemented commands ship as part of the monorepo, get scanned by `scripts/generate-structure.ts`, and end up in `SERVER_COMMANDS` / `BROWSER_COMMANDS`. The migration to "everything is a module, mostly Rust" proceeds incrementally:
-
-#### 12.1 Per-Command Migration (Existing Pattern)
-
-For a single command moving from TS-impl to Rust-impl, the pattern is already cut (PR #1198, `RustBackedCommand`):
-
-1. Existing TS command class extends `RustBackedCommand<Params, Result, RustResponse>`.
-2. Declares `requiredParams`, implements `callRust(client)`, implements `toResult(raw)`.
-3. Rust side: add handler in the relevant `ServiceModule`; add ts-rs derives on the response struct; add a mixin method in `bindings/modules/<name>.ts`.
-4. Wire the mixin into `RustCoreIPC.ts`.
-5. Run `scripts/generate-structure.ts`.
-
-The generated command adapter owns the IPC envelope. The Rust handler owns the operation.
-
-#### 12.2 Per-Module Migration (This Architecture)
-
-Going one level up, the migration target for a coherent group of commands is the module structure described in §2:
-
-1. Create `modules/<name>/` directory with manifest + daemon + commands + tests.
-2. Move the relevant `commands/<category>/*` directories into `modules/<name>/commands/`.
-3. Add the daemon under `modules/<name>/daemon/`, implementing `ServiceModule`.
-4. Move state ownership out of the kernel / shared singletons into the daemon.
-5. Declare dependencies on other modules in the manifest.
-6. Add unit + integration + trust test suites.
-7. Generator updates the manifests; kernel picks up the new module on next install or reload.
-
-The TS-side `*ServerCommand.ts` files become thin shims. Their content is generated from the Rust handler's signature; humans do not hand-edit them.
-
-#### 12.3 Source-Of-Truth Flip (Future Direction)
-
-Today the JSON spec at `generator/specs/<name>.json` and the Rust handler in `modules/<name>.rs` both describe the same command — dual sources of truth, drift target. The target shape: the Rust handler is the source of truth (annotated via proc macro on the `ServiceModule` impl). The generator reads Rust metadata and emits everything else — the TS shim, the README, the package.json — from one input. This collapses the dual-spec problem and makes ts-rs a true "Rust is the spec; everything else is generated" pipeline.
-
-The command-family migration includes retiring the duplicate specification and regenerating its consumers.
+The live Rust command registry supplies the command inventory. Its metadata drives SDK generation. When moving a command into a smaller owning module or crate, move its handler and registration together, preserve its declared wire shape, regenerate the affected SDK files and verify discovery and dispatch through the public command. Remove the previous handler, registration and imports. Review the generated diff for changes to the public contract. [Command catalog](../../core/continuum-core/src/commands/catalog.rs) · [SDK generator](../../core/continuum-kernel/src/sdk_codegen/mod.rs) · [Generated command API](../../sdk/typescript/generated/CommandApi.ts)
 
 ---
 
@@ -887,7 +870,7 @@ WASM Component Model is the right substrate for shipped modules (process isolati
 
 For any AI or human authoring a continuum module:
 
-1. **Use the generator.** `Commands.execute('generate/module', ...)` is the only correct way to create a new module's structure. Do not hand-create directories.
+1. **Keep the package and registry coherent.** Follow [command and module packaging](#command-and-module-packaging) when moving handlers or changing their public surface.
 2. **Extend the substrate.** The daemon implements `ServiceModule`. Inherits cadence, pressure response, telemetry from the substrate. Do not roll your own runtime.
 3. **Stateless commands, stateful daemon.** Commands receive params, touch daemon state, return a cell shape. They do not hold state.
 4. **Declare everything in the manifest.** Commands provided, events subscribed and published, capabilities required, test suites. The kernel uses the manifest at install + boot.
