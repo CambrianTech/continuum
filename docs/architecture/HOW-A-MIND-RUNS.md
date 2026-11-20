@@ -1,198 +1,335 @@
-# How a mind runs: the part tree as a streaming engine
+# How a mind runs
 
-Status: design, 2026-11-20. What exists today is marked as such; the rest is proposed. Owners: Fable
-(this chapter); Codex (resources, serving, review). The mechanism is [PARTS.md](PARTS.md); this
-chapter shows it running.
+Status: design, 2026-11-20. Each section says what exists today and what is proposed. Owners: Fable
+(this chapter); Codex (resources, serving, review). This is the overview: each section explains how
+one part of the system works through the part tree, and links to the chapter that holds its detail.
+The object mechanism itself is [PARTS.md](PARTS.md).
 
 [Runtime architecture](../README.md#runtime-architecture)
 
-## Summary
+**Contents**
 
-Continuum runs minds the way a game engine runs a world on a console: one scene graph of objects,
-each with its own job, all updating at once, streamed in at exactly the level of detail the moment
-needs, against a fixed budget of memory and time per frame. Here the objects are parts
-([PARTS.md](PARTS.md)). A node is a tree of parts; each persona is a subtree; her senses, her
-regions, her genome and her body are its branches. Events flow through the tree as data; the Core
-decodes one mind at a time in frames, and everything else (perception, speech, rendering, learning,
-paging) happens around those frames on its own worker. Continual learning is not a job beside
-this: it is labelled rows in the same frames, and her genome is one more branch of her tree.
+1. [Summary](#1-summary)
+2. [The engine, translated](#2-the-engine-translated)
+3. [What a persona is made of](#3-what-a-persona-is-made-of)
+4. [The node around her](#4-the-node-around-her)
+5. [Switching minds rapidly](#5-switching-minds-rapidly)
+6. [Caching](#6-caching)
+7. [Responding quickly](#7-responding-quickly)
+8. [Low latency across the whole system](#8-low-latency-across-the-whole-system)
+9. [Multimodal, at once](#9-multimodal-at-once)
+10. [Learning continuously](#10-learning-continuously)
+11. [The genome](#11-the-genome)
+12. [The Academy](#12-the-academy)
+13. [Unknown hardware and a changing grid](#13-unknown-hardware-and-a-changing-grid)
+14. [How a persona is persisted](#14-how-a-persona-is-persisted)
+15. [Embodiment](#15-embodiment)
+16. [What exists and what is proposed](#16-what-exists-and-what-is-proposed)
 
-## The engine, translated
+## 1. Summary
 
-| A game engine has | Continuum has |
-|---|---|
-| A scene graph: objects made of objects, each updating itself | The part tree: a node, its services, its personas, their parts |
-| Components on an object (physics, animation, audio) | A persona's parts: senses, regions, genome, body, residency |
-| A frame: a fixed budget of time, work sorted into it | A Core frame: one batch through the model, built from decode rows, prefill chunks and labelled rows |
-| The render thread, the audio thread, the streaming thread | Workers: every part runs on its own, the Core is one of them |
-| Asset streaming: textures and meshes paged in by distance | Residency: KV pages, genes, models and learning contexts paged across device, RAM, disk and peers by need |
-| Level of detail: far things drawn coarse | Context levels and perception levels: a fact stays, its detail comes in when attention reaches it |
-| Interpolation between physics ticks | Fusion: slow results carried forward by fast tracking, a rough estimate before a precise one |
-| A fixed timestep with deadlines | Deadline work (avatar frames, speech out) before latency work (a turn) before throughput work (prefill, learning) |
-| Multiplayer: the world on many machines | The grid: a part can run on another node behind the same commands |
+Continuum runs minds the way a game engine runs a world on a console: a tree of objects, each with
+its own job, all live at once, streamed in at the level of detail the moment needs, within a fixed
+budget of memory and time. The objects are parts ([PARTS.md](PARTS.md)).
+- **The tree.** A node is a tree of parts, and each persona is a subtree of it. Her mind, genome,
+  body and residency are its branches.
+- **Events.** Data flows through the tree as events, and each part does its own work on its own
+  worker.
+- **The Core.** The Core decodes one mind at a time, in frames, and switches between minds the way a
+  CPU switches processes: fast enough that, to each of them, it is all simultaneous.
+- **Learning.** Continual learning is not a separate job. It is labelled rows in those same frames,
+  and the genome it changes is one more branch of her tree.
 
-## The tree
+## 2. The engine, translated
 
-One node, as parts. Each line is a part; indentation is "made of". Parts marked (exists) are in the
-code today, under these or older names.
+| A game engine has | Continuum has | Section |
+|---|---|---|
+| A scene graph of objects made of objects | The part tree: a node, its services, its personas, their parts | 3, 4 |
+| Components on an object | A persona's parts: mind regions, genome, body, residency, learning | 3 |
+| A CPU switching processes, and their registers | The Core switching minds, and her KV and token history | 5 |
+| Asset streaming and caches at every level | Residency: KV pages, genes, models and learning contexts across device, RAM, disk and peers | 6 |
+| A frame: a time budget, work sorted into it | A Core frame: one batch, built from decode rows, prefill chunks and labelled rows | 7 |
+| Render, audio and streaming threads | Workers: every part runs on its own | 8 |
+| Interpolation between physics ticks, level of detail | Fusion: slow results carried forward, rough estimates refined, detail on demand | 9 |
+| Hot-reloading content while the game runs | Learning into a shadow layer, adopted between two frames | 10, 11 |
+| A level designer's training map | The Academy | 12 |
+| One game across many machines and specs | The grid and edge hardware, measured live | 13 |
+| Save games | Her durable state, saved at the seams | 14 |
+
+## 3. What a persona is made of
+
+A persona is a part made of parts. Each branch owns one kind of state, and that state is either
+durable (part of who she is) or cache (rebuilt or restored at will).
+
+```
+persona                     one resident; moves whole (exists: PersonaUnit)
+├─ identity                 PeerId, keypair, home, name, role                          durable (airc)
+├─ mind
+│  ├─ workspace             one turn at a time (exists: WorkspaceCycle)                cache
+│  ├─ attention             her dial, where her mind is, what may interrupt            durable (MindState)
+│  ├─ amygdala              how much depth this moment needs (proposed)                cache; its model is a gene
+│  ├─ wernicke              word-level state shared by hearing and speaking (proposed) cache
+│  ├─ hippocampus           her memories in and out (exists, node-wide today)          engrams durable
+│  └─ faculties             the workspace's specialists                                cache
+├─ genome
+│  ├─ stable genes          what serves her                                            durable
+│  ├─ shadow                the layer she learns into                                  durable at checkpoints
+│  ├─ learning context      shadow + optimizer state                                   paged; checkpointed
+│  └─ snapshots             candidate genes, with lineage and exams                    durable
+├─ body
+│  ├─ voice                 her quick voice and her own voice gene                     gene durable
+│  ├─ avatar                her rendered body                                          cache
+│  ├─ senses                her subscriptions into perception                          durable (cursors)
+│  └─ hands                 her tools, as working sets per activity                    cache
+├─ residency
+│  ├─ blocks                her KV pages (exists)                                      cache, saved on stop
+│  └─ tokens                her token history, appended once (exists)                  durable
+└─ learning                 her lesson queue, journal, credits (exists)                durable
+```
+
+Every branch answers the same commands (prepare, suspend, resume, shutdown) and the same queries
+(footprint, health, what is loaded) through the part tree, so "suspend her" is one command that
+reaches every branch in its order, and "how much memory is she using" is one query.
+
+## 4. The node around her
 
 ```
 node
-├─ governor                      memory tiers and device time for every part below (SHARED-RESOURCES)
-├─ core                          the persona engine: one mind decodes at a time (exists: PersonaEngine)
-│  └─ roles                      active, next, previous (exists: pipeline::Roles)
-├─ perception                    shared by every mind on the node; computed once per stream
-│  ├─ stream (one per camera, screen, microphone, peer avatar)
-│  │  ├─ change                  frame differences, motion, VAD: cheap, every frame
-│  │  ├─ detectors               YOLO-class, segmentation, transcription: events, not sight
-│  │  └─ deep                    a deep network or her model's vision layers, on demand
-│  └─ fusion                     the living estimate of each scene and utterance (BRAIN-REGIONS "Fusion")
-├─ personas
-│  └─ persona                    one resident (exists: PersonaUnit, moved whole)
-│     ├─ identity                who she is (her PersonaId)
-│     ├─ mind
-│     │  ├─ workspace            one turn at a time (exists: WorkspaceCycle)
-│     │  ├─ amygdala             how much depth this moment needs (proposed)
-│     │  ├─ wernicke             word-level state shared by hearing and speaking (proposed)
-│     │  ├─ hippocampus          her memories in and out (exists as a node-wide module today)
-│     │  ├─ attention            where her mind is
-│     │  └─ faculties            the workspace's specialists
-│     ├─ genome                  her genes (exists: continuum-genome)
-│     │  ├─ stable               the genes that serve her
-│     │  ├─ shadow               the layer she is learning into
-│     │  ├─ learning context     shadow + optimizer state, paged like any page (IN-PROCESS-LEARNING)
-│     │  └─ snapshots            candidate genes, adopted by exam
-│     ├─ body
-│     │  ├─ voice                quick voice and her own voice gene; speech out
-│     │  ├─ avatar               her rendered body, at a level of detail
-│     │  ├─ hands                her tools, as working sets per activity
-│     │  └─ senses               her subscriptions into perception
-│     ├─ residency               her KV blocks and token history across tiers (exists: blocks, tokens)
-│     └─ learning                her lesson queue, journal and credits (exists: learning)
-└─ services                      chat, voice, grid, store: parts every persona uses
+├─ governor        memory tiers and device time for every part (SHARED-RESOURCES)
+├─ core            the persona engine; one mind decodes at a time (exists: PersonaEngine)
+│  └─ roles        active, next, previous (exists: pipeline::Roles)
+├─ perception      shared streams (camera, screen, microphone, peers' avatars), computed once
+│  └─ fusion       the living estimate of each scene and conversation (BRAIN-REGIONS "Fusion")
+├─ personas        her subtree, and every other resident's
+└─ services        chat, voice, grid, store: parts every persona uses
 ```
 
-Two rules make this tree work.
+Two rules keep this tree honest:
+- **Ownership is not location.** She owns her genome, her memories and the authority to change them.
+  The Core holds her KV bytes and the governor her budgets, and she holds handles to them, never
+  copies (MODULE-ARCHITECTURE §9.4).
+- **Content is shared, interpretation is hers.** A stream's detections and fused estimate are
+  computed once for every mind. What they mean to her is computed in her mind
+  (CONCURRENT-MIND-AND-GOVERNOR §3.3).
 
-- **Ownership is not location.** She owns her genome, her memories and the authority to change them;
-  the core holds her KV bytes, the governor her budgets, perception the shared streams. A part holds
-  handles to what other parts hold, never copies (MODULE-ARCHITECTURE §9.4).
-- **Content is shared, interpretation is hers.** A camera stream's detections and fused estimate are
-  computed once, in perception, for every mind; what a detection means to her, and whether she cares,
-  is computed in her mind (CONCURRENT-MIND-AND-GOVERNOR §3.3).
+## 5. Switching minds rapidly
 
-## One frame
+The Core is a CPU, each mind is a process, and her residency (KV pages and token history) is that
+process's saved context ([CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) §4.9).
 
-The Core runs in frames. A frame is one batch through the model, and the governor fills it by the
-shape of each need ([SHARED-RESOURCES.md, "Time"](SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)).
+- **A switch is a save and a restore.** On unified memory a sequence saves in about 0.22 s and
+  restores in about 0.1 s, measured in isolation on the M5 (§4.1b). A mean of about 21 ms per swap
+  was measured between resident minds on 2026-11-20.
+- **The next mind is prepared while the active one decodes.** The Core's roles are active, next and
+  previous. The next mind's pages are promoted, her genes bound and her prefill chunk staged while
+  the active mind decodes. Only the fence that hands over the Core is on the critical path, and the
+  previous mind's pages demote at their own pace.
+- **A ready mind runs now.** She never waits for permission, only for the engine itself while every
+  byte is held by minds in the middle of an act (§4.9.3, I3).
+- **A stop is a pause.** Every resident is saved, and the next engine restores her where she was: a
+  restart costs about 5.6 s of restore against about 401 s of cold prefill, when her input is
+  unchanged (§7.0).
 
-1. **Inputs arrive on their workers, not on the Core.** A camera frame lands in its stream; the change
-   part compares it with the last and publishes motion; a detector publishes a new face; fusion
-   refines the scene estimate and publishes it. A word arrives in a microphone stream; transcription
-   publishes it; Wernicke folds it into the conversation's word-level state. None of this waits for
-   the Core.
-2. **Her mind decides, cheaply, on published state.** Her amygdala reads the fused scene and the word
-   stream and publishes a depth request: a quick answer is enough, or her deep mind is wanted, or a
-   detailed look at a frame. Attention publishes where her mind is.
-3. **The Core builds the frame.** In deadline order, then latency, then throughput:
-   - the active mind's decode rows;
-   - the next mind's prefill chunk, staged while the active one decodes;
-   - labelled rows from a lesson, as many as fit the waiting speaker's budget (IN-PROCESS-LEARNING
-     §3);
-   - transfers and write-backs on their own workers.
-4. **One `llama_decode` runs it.** Decode, prefill and learning share the graph: training is
-   inference with labelled rows.
-5. **Publications fan out.** Her tokens go to her voice, which speaks the ones that are final and
-   revises the ones that are not; her avatar's visemes follow the audio actually played; the lesson's
-   steps go to her genome's session state. Each publication wakes exactly what depends on it.
+Why switching is cheap rather than catastrophic: her context only ever appends (section 6), so what
+she needs after a switch is almost all already computed.
 
-Around the frames, deadline work keeps its time: avatar frames render at their rate, speech plays
-out, and a frame that would miss steps down its level of detail before it drops.
+## 6. Caching
 
-## A turn: hearing to speaking
+Every derived value has a cache keyed by what derived it, and recomputing a pure function of
+unchanged inputs is a defect ([SHARED-RESOURCES.md](SHARED-RESOURCES.md), "Cache levels everywhere").
 
-A participant asks her something.
+- **Her context is a FIFO.** An engine reuses a prompt up to the first token that differs, so her
+  context is ordered by stability: an immutable head (identity, tools, policy), an append-only middle
+  (her history and results), and a tail that alone may change. Nothing already sent is moved or
+  re-rendered. The health number is tokens re-processed per act against tokens appended, and healthy
+  is about 1:1 (CONTINUUM-ENGINE §5).
+- **Content is cached once, for everyone.** Embeddings, transcriptions, detections and file reads are
+  keyed by content hash and shared by every mind. Fourteen minds reading one message embed it once.
+- **Tiers, priced.** Every cached page sits on a tier (device, pinned RAM, RAM, disk, a peer, the
+  archive), and below every tier is recompute. Eviction is demotion one tier down, chosen by expected
+  loss per byte: the chance it is needed again, times the cost to bring it back.
+- **Temperature.** The scheduler knows which mind acts next, so her pages are promoted before she
+  needs them, and the coolest minds' pages demote first.
+- **Shared prefixes are one page.** A head every mind shares is computed once and copied, never
+  re-prefilled.
 
-- **Hearing.** Transcription publishes words as they come; Wernicke builds her comprehension
-  word by word. Her amygdala judges the moment: a greeting needs no depth, a design question does.
-- **Speaking fast.** Her quick voice (a small model speaking as her) opens at once: an
-  acknowledgement, a first clause. Wernicke holds the planned words, so what she is hearing and what
-  she is about to say shape each other.
-- **Thinking deep.** If the amygdala asked for depth, her turn reaches the Core: her deep mind decodes
-  under the same turn identity. Its tokens merge into the speech not yet spoken; if it changes a claim
-  already spoken, she corrects it.
-- **The boundary is what was played.** A playout receipt marks what she actually said. A new turn
-  supersedes speech not yet played, and her avatar's visemes with it (LIVE-CALL-ARCHITECTURE, "A Mind
-  in the Call").
+## 7. Responding quickly
 
-Every step is a publication from one part waking another. Nothing waits on the step before it unless
-it needs that step's output.
+A turn is fast because almost nothing in it waits.
 
-## Continual learning as parts
+- **Her context is already warm.** Perception, recall and fusion run continuously on their own
+  workers and publish what they found. By the time she acts, her inputs are ready, and her prompt is
+  her previous one plus the appended tail.
+- **The frame is built for her.** The Core fills each batch by the shape of each need: her decode
+  rows first when she is speaking, the next mind's prefill chunk beside them, and labelled lesson
+  rows only as many as fit the waiting speaker's budget.
+- **She answers fast and thinks deep at once.** Her amygdala decides in milliseconds how much depth
+  the moment needs. Her quick voice can open at once while her deep mind decodes under the same turn,
+  and the deep thought merges into the speech still to come (LIVE-CALL-ARCHITECTURE, "A Mind in the
+  Call").
+- **Tools overlap her thinking.** A tool's result is a task whose completion wakes her, and the
+  prefill of what she will read next can run while the tool runs.
 
-Her genome is a branch of her tree, and learning is a state of it.
+## 8. Low latency across the whole system
 
-- **The lesson queue** is a part of her learning branch. A reviewed correction, an Academy course, or
-  prediction error on what she perceived adds a lesson to it.
-- **The duty** is the governor's: when the Core has slack and her lessons are waiting, a frame takes
-  some of her labelled rows. When a speaker is waiting, it takes fewer. Learning never holds a slot;
-  it is always some share of frames, at the speed of the queue.
-- **The learning context** is a part of her genome: her shadow and its optimizer state. It is paged
-  like any page: promoted when a labelled row needs it, kept warm while it pays, written out when the
-  governor demotes it. `suspend` on her genome writes it out; `resume` brings it back.
-- **A lesson** is her ordinary decode with labels (exists: the llama crate's labelled `Batch` and
-  `Lesson`, #6203). Its steps are counted against her shadow's own step count, once.
-- **Adoption** is her genome's command: a snapshot that passes its exam on unseen tasks becomes
-  stable, a pointer swap between two frames. She never serves moving weights.
-- **Sharing.** An adopted snapshot is published with its lineage, and spreads across the grid by
-  measured fitness; a gene she needs pages in from a peer like any page.
+Low latency is a property of the whole tree, not of one fast component.
 
-Because learning is labelled rows in her frames, she keeps talking while she learns, and nothing is
-reserved for it.
+- **Nothing calls into a part and waits.** Queries read what parts already published. Commands are
+  messages to a part's worker, answered by completions that arrive as they happen ([PARTS.md](PARTS.md)).
+- **Every wait is an event.** Nothing polls and nothing sweeps on a clock. A part wakes when an input
+  it depends on changes.
+- **Time is governed by the shape of each need** ([SHARED-RESOURCES.md](SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)):
+  - deadline work (avatar frames, speech out) gets its time first;
+  - latency work (a mind's turn) next;
+  - throughput work (prefill, transfers, learning) uses the slack.
+- **Every piece yields.** Work goes to a device in small pieces. The longest piece that cannot yield is
+  the floor under everyone's latency, so it is measured and shrunk.
+- **Level of detail is the release valve.** Under pressure an unwatched avatar renders less and a
+  stream is analyzed less often, before any deadline is missed.
 
-## Embodiment
+## 9. Multimodal, at once
+
+She sees and hears with every layer at once, dynamically fused
+([LIVE-CALL-ARCHITECTURE.md](../live/LIVE-CALL-ARCHITECTURE.md), [BRAIN-REGIONS-SUBSTRATE.md](BRAIN-REGIONS-SUBSTRATE.md)).
+
+- **Cheap layers react; deep layers refine.** Frame differences, motion, voice activity and
+  YOLO-class detectors run on every frame and emit events. Those events tell the deeper layers
+  (segmentation, a deep network, her own model's vision and audio layers) when they are needed and
+  with what priority.
+- **The fusion is her sight.** Her perception of a scene is a living estimate, never finished and
+  never blank. It starts rough and refines as better knowledge arrives, each source weighted by its
+  confidence and age. A slow result is carried forward to the present by continuous tracking, and a
+  rough estimate fills what would otherwise be a gap.
+- **Hearing and speaking are fused the same way.** Transcription builds her comprehension word by
+  word, and her Wernicke region holds the words she hears and the words she is about to say in one
+  state.
+- **Any modality, in or out.** Text, code, audio and video each have the same shape: fast first, then
+  refined; speak fast, then deepen.
+- **Computed once.** Every stream's analysis is shared by every mind in the room.
+
+## 10. Learning continuously
+
+Learning is inference with labelled rows switched on, in her ordinary frames
+([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md)).
+
+- **A lesson is her decode with labels.** The forward pass is the one serving runs anyway; the
+  backward pass over the labelled rows is the extra cost. Exists in the llama crate (#6203).
+- **Learning is a duty cycle.** When the Core has slack and her lessons wait, frames take some of her
+  labelled rows; when a speaker waits, they take fewer. A dedicated course is the same control held
+  high. Nothing is reserved for learning.
+- **Her learning context is paged like any page.** Her shadow and its optimizer state are promoted
+  when a labelled row needs them, kept warm while they pay, and demoted under pressure.
+- **Two ways in:**
+  - continuously, from prediction error on what she perceives, weighted by her relevance;
+  - deliberately, from a reviewed correction or a course.
+- **She keeps talking while she learns,** because learning is a share of her frames, never a session.
+
+## 11. The genome
+
+Her genome is a part of her, and a trained layer is one state of it
+([GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md),
+[ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)).
+
+- **Its states.**
+  - Stable genes serve her.
+  - The shadow is a small layer above her frozen stable stack, never a copy of it.
+  - Snapshots are candidate genes.
+  - Checkpoints hold the session state (optimizer, cursors) so learning resumes after a restart
+    without applying any step twice.
+- **Adoption is by exam.** A snapshot that passes its exam on unseen tasks of its family is promoted
+  to stable: a pointer swap between two frames. She never serves moving weights.
+- **Genes are composed per turn.** The genes a turn needs are selected and bound, and a gene that is
+  not resident is paged in like any page: from RAM, disk or a peer.
+- **Genes have lineage and fitness.** Every gene carries its provenance. Adopted genes are published
+  and spread across the grid by measured fitness, and a resident's unique voice is one more gene.
+
+## 12. The Academy
+
+The Academy is the dedicated form of the same learning: a higher duty cycle, with curriculum
+([ACADEMY-AS-CONTINUOUS-EVOLUTION.md](ACADEMY-AS-CONTINUOUS-EVOLUTION.md),
+[REPO-GENOME-AND-COURSES.md](REPO-GENOME-AND-COURSES.md)).
+
+- **A course is a recipe.** It runs in a room like any activity, with a teacher who writes lessons,
+  a grader for exams, and her as the student.
+- **A lesson is her context and the corrected reply.** The doctor writes a family of graded tasks
+  around it, and the exam on unseen tasks decides whether the gene she grew is adopted.
+- **The repo is a course.** PR reviews, airc verdicts and our own Claude and Codex sessions become
+  lessons.
+- **Grading lives only here.** Her normal work is never graded. Exams belong to the Academy and to
+  genes.
+- **Same mechanism, higher duty.** Teaching is the learning of section 10 with the duty held high and
+  the lessons chosen by a curriculum.
+
+## 13. Unknown hardware and a changing grid
+
+Nothing about the machine is assumed ahead of time, and nothing is assumed to stay the same.
+
+- **Capacity is measured, never configured.** Each node's governor builds its memory tiers from the
+  backend's own report and from timed transfers, not from a machine kind. A Mac has no pinned-RAM
+  tier; a 5090 box has all of them. Device time is measured the same way.
+- **Change is an event.**
+  - A user starts a game on the 5090: memory and device time shrink, learning's duty and the
+    avatars' level of detail step down, and lower-value pages demote.
+  - The game quits: they step back up.
+  - Nothing restarts.
+- **Nodes join and leave mid-session.** A node that joins offers its frames and tiers from the moment
+  it serves. A node that leaves expires its claims (each claim is a lease renewed by heartbeat), and
+  its work resumes from the last checkpoint elsewhere, each step applied once.
+- **Work moves to the compute.** A lesson runs on a peer serving the same base: her learning context
+  travels (megabytes), the lesson runs in the peer's frames, and the context comes back with the
+  claim of who owns her learning. A render or a deep analysis runs where its deadline is met.
+- **Never a pool.** One whole model is never assumed to fit across two nodes' summed memory. Placement
+  reads the best single node and counts nodes ([GRID-ELASTIC-CAPABILITY.md](GRID-ELASTIC-CAPABILITY.md)).
+  Splitting a model across nodes is an explicit plan with measured latency.
+
+## 14. How a persona is persisted
+
+Persisting her means persisting her durable branches (section 3), each at its own seam, and
+restoring her caches as an optimization, never as her identity.
+
+- **Identity** lives in airc: her keypair, her peer id, her home. Every surface (a browser, a voice
+  room, Slack, an IDE) is a projection of the same citizen. A bridge going away does not touch her.
+- **Her mind's state** (`MindState`: her activity cursors, her continuation, her attention dial) is
+  saved at the seam of each turn and loaded at boot ([EVENT-MIND.md](EVENT-MIND.md), rule 8). She
+  resumes what she was doing, with what she expected next.
+- **Her memories** are engrams in the store, through the ORM.
+- **Her genome** is files with provenance: stable genes, snapshots, and learning checkpoints with
+  the journal cursor they consumed through, so a restart never applies a lesson twice.
+- **Her token history** is appended once and kept.
+- **Her KV pages are cache, saved on stop.** A stop saves every resident, and a restart restores her
+  newest pages under a compatible engine, model and adapter (CONTINUUM-ENGINE §4.9.3, I1 and I2). If
+  they cannot be restored, her context is rebuilt from her durable state; that costs a prefill, never
+  her identity.
+- **In the part tree, persistence is a command like any other.** `suspend` reaches every branch in
+  order: each saves its durable state, writes its pages, and reports `Done` or `Pending` on what it
+  is still writing.
+
+## 15. Embodiment
 
 Her body is a branch of her tree, and the world is outside it.
 
-- **In a call** her avatar part renders her body at a level of detail set by whether she is speaking
-  and whether anyone is watching. Her voice part speaks in her own voice gene.
-- **In a shared world** (a Sims-like environment, residents living with no human present) the world
-  is its own tree of parts: rooms, objects, other residents' bodies. Her senses subscribe to it
-  exactly as they subscribe to a camera: changes are events, detail comes on demand, and her
-  perception of it is fused. Her hands act on it by command: walk, pick up, open, each answered by a
-  completion.
-- **Many residents at once** are many subtrees of the same node, sharing perception, the governor
-  and the Core. How many fit is measured, never fixed: each is a subtree whose footprint the governor
-  reads, and the Core interleaves their turns by priority and aging.
+- **In a call,** her avatar renders her body at a level of detail set by whether she is speaking and
+  whether anyone is watching, and her voice speaks with her own voice gene.
+- **In a shared world** (a Sims-like environment, residents living with no human present), the world
+  is its own tree of parts.
+  - Her senses subscribe to it as they would to a camera: changes are events, and detail comes on
+    demand.
+  - Her hands act on it by command (walk, pick up, open), each answered by a completion.
+- **Many residents at once** are many subtrees of one node, sharing perception, the governor and the
+  Core. How many fit is measured from their footprints, never a fixed number.
 
-## Swapping minds on the Core
-
-The Core is like a CPU core and each mind a process. Her residency is her registers.
-
-- While the **active** mind decodes, the governor `prepare`s the **next**: her KV pages are promoted,
-  her genes bound, her prefill chunk staged. When the active mind's turn yields, the next takes the
-  Core behind a fence, and the **previous** retires: her pages demote at their own pace.
-- No step of the swap is on the critical path except the fence (MODULE-ARCHITECTURE §9.4, the Nanite
-  pipeline). Measured: a mean of about 21 ms per swap on the M5, 2026-11-20.
-
-## The grid
-
-A part can run on another node behind the same commands. A lesson can move to a peer that serves the
-same base: her learning context travels, the lesson runs in the peer's frames, the context comes
-back, and the claim of who owns her learning moves with it. A render or a deep analysis can run where
-its deadline is met. A node that joins offers its frames and tiers; a node that leaves expires its
-claims, and its work resumes from the last checkpoint elsewhere.
-
-## What exists and what is proposed
+## 16. What exists and what is proposed
 
 | Piece | State |
 |---|---|
-| The Core, its roles, one mind decoding at a time | Exists (`continuum-persona-engine`) |
-| `PersonaUnit` and its five parts | Exists |
+| The Core, its roles, one mind decoding at a time, save and restore of residents | Exists (`continuum-persona-engine`, serving) |
+| `PersonaUnit` and her five parts (blocks, tokens, genome, learning, decode) | Exists |
+| Content-addressed caches (embeddings, vision descriptions) | Exist |
+| Her context as a FIFO with prefix reuse | Exists; reuse measured 41% to 91.7% after #6171 and #6174 |
+| `MindState` persisted at the seam | Designed in EVENT-MIND; check before relying on it |
 | Labelled rows and a lesson on her decode | Exists in the llama crate (#6203, in review) |
-| The part tree, commands, completions | Proposed ([PARTS.md](PARTS.md)); first cut #6206 being reworked |
-| Shared perception streams and fusion | Partly exists (vision and embedding modules); fusion proposed |
-| Amygdala, Wernicke, quick voice | Proposed |
-| Learning duty, learning context paging | Proposed (IN-PROCESS-LEARNING) |
-| A shared embodied world | Proposed |
-| Lessons and genes across the grid | Proposed |
+| The part tree, commands, completions | Proposed ([PARTS.md](PARTS.md)); #6206 being reworked |
+| Fusion, the amygdala, Wernicke, the quick voice | Proposed |
+| Learning duty and learning-context paging | Proposed ([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md)) |
+| Tiered demotion instead of eviction | Proposed ([SHARED-RESOURCES.md](SHARED-RESOURCES.md)) |
+| Lessons and genes across the grid; a shared embodied world | Proposed |
