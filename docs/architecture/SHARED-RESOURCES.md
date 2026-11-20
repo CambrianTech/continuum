@@ -4,6 +4,24 @@ Card 13c81ced. Joel, 2026-11-10: "Shared residency on one machine is difficult b
 "It's like a resource like any other, just need to do it elegantly, not hacked patches."
 "You don't hard code for rust or anything."
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [Why this exists](#why-this-exists)
+- [The principle: resources flow, like data](#the-principle-resources-flow-like-data)
+- [Every decision is a price](#every-decision-is-a-price)
+- [Cache levels everywhere](#cache-levels-everywhere)
+- [What the users are](#what-the-users-are)
+- [The design: three layers, each holding only its own difference](#the-design-three-layers-each-holding-only-its-own-difference)
+- [Residency over time: resident, transient, pageable](#residency-over-time-resident-transient-pageable)
+- [Built on what exists: the pipeline flows both ways and carries more](#built-on-what-exists-the-pipeline-flows-both-ways-and-carries-more)
+- [Cache tier levels](#cache-tier-levels)
+- [The test that proves the interface](#the-test-that-proves-the-interface)
+- [Migration](#migration)
+- [What has already landed (interim, card 13c81ced)](#what-has-already-landed-interim-card-13c81ced)
+- [Owners](#owners)
+
 ## Why this exists
 
 Several citizens share one machine: agents, residents, and humans. They also share its memory, its
