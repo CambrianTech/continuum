@@ -890,6 +890,17 @@ Joel, 2026-10-24: "take it on full steam. Make it really optimized and advanced,
 | `port` | What minds call: binary frames, no HTTP or JSON | `ServingPort { act(PageKey, ActRequest) -> TokenStream; warm/cool(PageKey, Temperature); capacity() -> CapacityReport }` |
 | `probes` | Metrics: reuse, page-in ms, wait, footprint | — |
 
+**Cutting a resident prompt at its first changed token**
+
+For each new fitted prompt, compare its rendered token IDs with the resident's held history under the same model and adapter basis. Let **shared** be the exact length of the matching prefix. A paused generation resumes its current native state directly. For a new turn, use the following contract.
+
+1. When the prompt extends held state, append at the held frontier. When it diverges, crop to the shared frontier if the backend can restore both attention and recurrent state there. Reserve the final prompt token for fresh logits when the restored state does not carry them.
+2. If the exact cut lies outside the backend's native rollback window, restore the deepest valid checkpoint before the cut. Replay only the interval from there to the cut, then ingest the changed suffix. A cache miss is a scheduling outcome. Keep the turn runnable between prefill frames.
+3. Cognition supplies the semantic boundaries of the fitted input. The renderer and tokenizer establish their exact positions in the final prompt. History retains useful boundaries within the measured native-memory budget. Matching text after a changed token is conditioned on a different prefix and must be evaluated again.
+4. Report shared, restored and total prompt tokens together. **Shared minus restored** measures matching-prefix recomputation. **Total minus shared** measures the changed or newly appended suffix. Check correctness against a clean prefill on the same prompt, including after paging and restart.
+
+The in-process hybrid currently restores checkpoint cuts. Direct native tail cropping still needs capability and lineage verification on the serving configuration. In the 03:49 UTC M5 window on 2026-11-20, 249,154 of 277,544 matching tokens were reused across 20 completed turns. One turn shared 10,600 tokens but restored only 95. Use that case for matched-input replay before expanding retention.
+
 **Prefix sharing on a hybrid model.**
 - With a unified KV, `seq_cp` only rewrites cell metadata (llama-kv-cache.cpp:462-466).
 - The recurrent `seq_cp` shares only the source's tail cell, which is the state at the source's end (llama-memory-recurrent.cpp:251-271).
