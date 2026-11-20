@@ -749,9 +749,34 @@ One concrete audit target is the genome extraction. The genome has its own crate
 
 ### Specialization in Rust
 
+Joel, 2026-11-20: "machine->automobile->truck->F150, not just machine->F150." Every object descends
+through a lineage of abstractions, and each generation holds only its difference from its parent:
+the logic is written once at the narrowest ancestor that all its users share, and each descendant
+adds only its subtle variation, down to the leaf. Skipping a generation (a leaf implementing straight
+from the root) is the defect, because the shared middle is then rewritten in every leaf. Composition
+is the other axis: an object is made of objects, and a common method (shutdown, suspend, footprint)
+is written once in the base and walks the children (§9.4), so no object writes its own cascade. The
+organization follows the same tree: many crates, many modules, many small files, each holding little
+and each shaped like its siblings.
+
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
 
 For example, the flow worker owns queueing and wakeup. A brain stage adds run identity, revision tracking and output provenance. A perception stage can add shared frame history and freshness rules. Segmentation then supplies the model operation; a second segmentation backend supplies only its device-specific implementation. The flow worker and brain-stage contracts exist today. Composing them into the perception lineage is planned. [Flow worker](../../core/continuum-flow/src/stage.rs) · [Brain stage](../../core/continuum-kernel/src/runtime/stage/stage.rs)
+
+The same lineage carries her fusion regions ([BRAIN-REGIONS-SUBSTRATE.md](BRAIN-REGIONS-SUBSTRATE.md),
+"Fusion"), proposed:
+
+```
+flow worker        queueing, wakeup, cancellation
+└─ brain stage     run identity, revisions, provenance
+   └─ fusion region     a living estimate: subscribe, cache, fuse by confidence and age, emit, request depth
+      ├─ amygdala            the estimate is a depth judgement; the leaf is its small learned model
+      ├─ Wernicke's area     the estimate is word-level state shared by hearing and speaking
+      └─ perceptual fusion   shared frame history and freshness
+         └─ visual fusion    the estimate is a scene; leaves are each source's update rule
+```
+
+Each generation adds one invariant; nothing below rewrites what is above it.
 
 A planned specialization of the existing memory contract illustrates the split. The common adapter implements `ResourceConsumer::reclaim` once and delegates to a typed reduction. The measured outcome goes back to the governor. A serving adapter can share layout-transition and confirmation behavior between text and vision holders.
 
