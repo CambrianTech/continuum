@@ -1,170 +1,159 @@
-# Parts: objects, methods and data flow, one design
+# Parts: the object model
 
-Status: design, revised 2026-11-20 after review. Owners: Fable (the part, its methods and data
-flow); Codex (resources, completion ownership, review). Builds on the stage contract
-([STAGE-CONTRACT.md](STAGE-CONTRACT.md)), the concurrent mind
-([CONCURRENT-MIND-AND-GOVERNOR.md](CONCURRENT-MIND-AND-GOVERNOR.md)) and CBAR's analyzer graph.
+Status: design, revised 2026-11-20 with Codex's review of the names, the dispatch rules and the
+command binding. Owners: Fable (the part hierarchy); Codex (resources, completion ownership,
+review). The code mirrors this chapter: each named interface below is one type in one module, at
+the place this chapter gives it.
 
-[Runtime architecture](../README.md#runtime-architecture) · [How a mind runs](HOW-A-MIND-RUNS.md) · [Module architecture](MODULE-ARCHITECTURE.md) ·
-[Shared resources](SHARED-RESOURCES.md)
+[Runtime architecture](../README.md#runtime-architecture) · [How a mind runs](HOW-A-MIND-RUNS.md) ·
+[Module architecture](MODULE-ARCHITECTURE.md) · [Shared resources](SHARED-RESOURCES.md)
 
-## Summary
+**Contents**
 
-The core is made of objects, which this chapter calls **parts**: a speech model, an inference
-adapter, a grid transport, a service, a brain region, a persona and each of her parts. Each part
-answers three questions, and the core answers each one once.
+1. [Summary](#1-summary)
+2. [The problem](#2-the-problem)
+3. [Goals and non-goals](#3-goals-and-non-goals)
+4. [The general: what every part is](#4-the-general-what-every-part-is)
+5. [The specific: the lineages](#5-the-specific-the-lineages)
+6. [Names](#6-names)
+7. [Worked example: a call ends, then memory is needed](#7-worked-example-a-call-ends-then-memory-is-needed)
+8. [Alternatives considered](#8-alternatives-considered)
+9. [Migration](#9-migration)
+10. [How we will know it works](#10-how-we-will-know-it-works)
+11. [Open questions](#11-open-questions)
+12. [Appendix: where the code stands](#12-appendix-where-the-code-stands)
 
-- **What it is and what it is made of.** A part has an identity, owns its state, and is made of
-  parts. It descends from a lineage in which each generation holds only its difference from its
-  parent.
-- **How a method works on it.** Any method on a part chains to the same method on its parts, then
-  adds its own answer. The traversal is written once, so a method is "my parts' answers, plus mine",
-  whatever the method is: shutdown, suspend, footprint, health, save.
-- **How it lives.** A part runs on its own worker. Typed inputs wake it; it takes a short turn, owns
-  what it changes, and publishes what it produced with provenance. Long work becomes a task whose
-  completion wakes it again. Nothing calls into a part and waits for it to finish.
+## 1. Summary
 
-Today each of these is answered several ways (see [the problem](#the-problem)). This design keeps
-the parts of today's code that are right, names them once, and deletes the rest.
+Everything that runs in the core is a **part**: a speech model, an inference adapter, a grid
+transport, a service, a brain region, a persona and each of her branches. The design is a hierarchy
+of named interfaces, from the general to the specific.
 
-## The problem
+- **The general** (section 4) is what every part is. It has an identity and a generation, it is
+  made of parts, it lives on a worker, it answers commands with completions and queries with
+  published snapshots, and it hands long work off as tasks. All of this is written once.
+- **The specific** (section 5) is the lineages. A model part adds a model it loads and releases; a
+  speech-to-text model adds transcription; a region adds a published estimate; a fusion region adds
+  refinement by confidence and age. Each generation holds only what it adds. A leaf such as Whisper
+  writes how to load its model and how to transcribe, and inherits the rest.
 
-Five shapes answer "how does a component live", and none answers all of it:
+The code is the same tree. Each interface is a trait whose supertrait is its parent; each shared
+subsystem is a generic owner written once; each lives in the module this chapter names.
 
-| Today | Where | What it does |
-|---|---|---|
-| `ServiceModule` | `continuum-kernel/src/runtime/service_module.rs` | Commands by string name, events by glob, a tick, its own initialize and shutdown; 102 implementors |
-| `Daemon` | `continuum-kernel/src/runtime/daemon.rs` | A tick on a cadence publishing a watch snapshot |
-| `BrainRegion` | `continuum-kernel/src/runtime/brain_region.rs` | A tick publishing into a ready buffer |
-| kernel `Stage` | `continuum-kernel/src/runtime/stage/stage.rs` | The stage contract: triggers, typed topics, input revisions, provenance, a run outcome; used by cognition's deferred faculty |
-| flow `Stage` | `continuum-flow/src/stage.rs` | CBAR's `QueueThread`: one input in hand and one pending, its own worker, a QoS class, typed overflow; no other crate uses it |
+## 2. The problem
 
-Three more shapes answer "how does a component start and stop": persona engine's `Lifecycle`
-(suspend only), each component root's own `initialize` and `shutdown` (34 `shutdown` bodies), and
-the sketch in MODULE-ARCHITECTURE §9.4. And no shape answers "how is a component made of
-components": every parent writes its own loop over its children.
+Today the core answers "what is a component" many separate ways.
 
-The audio models a resident hears and speaks with show the cost.
-- **Thirteen backends, one surface, many copies.** The thirteen backends repeat the same surface
-  across three traits.
-- **The models live in globals.** Each backend's model is a `static`
-  (`static WHISPER_RT: ReloadableModel<...>`), not a field the backend owns.
-- **Three owners unload them, each its own way:**
-  - an idle watcher on a five-second constant nobody measured;
-  - a pressure lever;
-  - an unload command.
+- **Five ways to live:**
+  - `ServiceModule`: commands by string name, events by glob, a tick; 102 implementors.
+  - `Daemon`: a tick publishing a watch snapshot.
+  - `BrainRegion`: a tick publishing into a ready buffer.
+  - The kernel's `Stage`: typed topics, revisions and provenance.
+  - `continuum-flow`'s `Stage`: CBAR's `QueueThread`, which no other crate uses.
+- **Three ways to start and stop:** persona engine's `Lifecycle` (suspend only), each root's own
+  `initialize` and `shutdown` (34 `shutdown` bodies), and a sketch in MODULE-ARCHITECTURE §9.4.
+- **No way to be made of components:** every parent writes its own loop over its children.
+- **The leaves repeat their parents.** Thirteen audio backends repeat one surface across three
+  traits; each keeps its model in a `static`; three owners unload them, each walking the registries
+  in its own serial loop, and none reports a model still held by a transcription in flight.
 
-  Each walks the registries in its own serial loop, and none reports a model that is unloaded but
-  still held by a transcription in flight. So the memory governor counts bytes as free before they
-  are.
+Each copy is a place where a fix lands once and is missed everywhere else.
 
-Every copy is a place where a fix lands once and is missed everywhere else.
-
-## Goals and non-goals
+## 3. Goals and non-goals
 
 Goals:
 
-- One object, the part, with one way to be made of parts, one way to chain a method through them,
-  and one way to live on a worker and exchange data.
-- Each generation of the lineage holds only its difference; each leaf writes only what is new about
-  it.
-- Results are typed, arrive as they happen, and are never lost: a slow part delays no other, and an
-  observer that leaves and comes back sees everything that finished meanwhile.
-- State is owned by parts, never by globals.
+- One hierarchy of named interfaces, general to specific. Every component descends from it, and
+  each generation holds only what it adds.
+- Shared subsystems written once: being made of parts, living on a worker, commands and their
+  completions, queries and their snapshots, tasks.
+- Results that are typed, arrive as they happen, and are never lost.
+- State owned by parts, never by globals.
 
 Non-goals:
 
-- Deciding when to release memory or which work runs first. The resource governor
-  ([SHARED-RESOURCES.md](SHARED-RESOURCES.md)) and the flow scheduler (`continuum-flow`) decide.
-  This design gives them one surface to drive and exact answers.
-- Rewriting every component at once. Each family moves in its own change.
+- Deciding when to release memory or which work runs first. The governor
+  ([SHARED-RESOURCES.md](SHARED-RESOURCES.md)) and the flow scheduler (`continuum-flow`) decide; this
+  design gives them one surface and exact answers.
+- Moving every family at once. Each moves in its own change (section 9).
 
-## The design
+## 4. The general: what every part is
 
-### 1. A part and its lineage
+The general interfaces live in `continuum-base::part` (the floor crate), except the worker, which
+lives in `continuum-flow` because it needs an async runtime. Each subsection is one module.
 
-A part has an identity (its kind: a static name and a sentence; an instance's own id is held by its
-owner or is its key among its parent's parts), the state it owns, and its parts. Each generation of
-the lineage is a trait whose supertrait is its parent. A behavior shared by several leaves is written
-once, at the narrowest ancestor they share.
-
-To find a part's ancestors, read the code as language and ask each word for its parent: a truck is an
-automobile; Whisper, Moonshine and Kokoro are each a model, so they share a model generation; three
-loops that unload three registries are each an unload, so they are one method. A new trait with the
-same verbs as an existing one is a second lineage; extend the existing one instead.
-
-The lineage for the audio models:
-
-```
-part                      identity, owned state, its parts
-└─ model                  a model it loads and releases (owns its ReloadableModel; no statics)
-   ├─ speech to text      transcribe, languages
-   ├─ text to speech      synthesize, voices (each resident's own, likely a LoRA voice gene)
-   └─ voice activity      detect
-```
-
-### 2. Methods chain through the parts
-
-A method on a part is answered by asking its parts the same thing and adding its own answer. This is
-true of every method, not only starting and stopping:
+### 4.1 `Part`: identity and generation (`part/part.rs`)
 
 ```rust
-// The traversal is written once. Each method is its parts' answers plus the part's own.
-fn footprint(&self) -> Bytes      { self.parts.sum(|part| part.footprint()) + self.own_bytes() }
-fn health(&self) -> Health        { self.parts.fold(self.own_health(), |worst, part| worst.min(part.health())) }
-async fn shutdown(&self) -> Report { self.parts.each(|part| part.shutdown()).await.then(self.release_own()) }
+pub trait Part: Send + Sync {
+    fn identity(&self) -> Identity;     // its kind: a static name and a sentence
+    fn generation(&self) -> Generation; // which incarnation this is; a replacement gets a new one
+}
 ```
 
-Two kinds of method, because the core is concurrent (section 3):
+An instance's own id (a persona's id, a configured provider's key) is not its identity; its owner
+holds it, or it is the part's key among its parent's parts.
 
-- **Queries** (footprint, health, identity, what is loaded) read state a part has already published.
-  They never wait on the part's worker and never take its lock; the answer is the freshest published
-  snapshot, aggregated through the parts.
-- **Commands** (prepare, suspend, resume, shutdown, reconfigure) change a part's state. A command is
-  a message to the part's worker, and its answer is a completion the caller can await or subscribe
-  to. A parent's command sends the same command to each of its parts, then performs its own once
-  their completions say it may.
+### 4.2 `Parts`: being made of parts (`part/parts.rs`)
 
-Direction follows dependencies: a part is started before the parts that depend on it and stopped
-after them. `prepare` and `resume` run the parent, then its parts; `suspend` and `shutdown` run the
-parts, then the parent, and `shutdown` first closes the parent to new work.
+A part made of parts holds them in one of two forms with one traversal: a fixed set of named fields
+(a persona's branches), or `Parts<K, P>`, a keyed, ordered set with one part per key (a registry of
+backends). Replacing a key keeps its place in the order and gives the new part a new generation.
 
-A part made of a fixed set of parts (a persona's five) declares them as fields; a part made of a
-changing set (a registry of backends) holds them keyed, one part per key, in order. Both are
-traversed by the same code.
+Every method that crosses into a part's parts declares its **dispatch** where the method is
+declared, never at the call site:
 
-### 3. How a part lives: its worker and its data flow
+| Dispatch | Meaning | Example |
+|---|---|---|
+| Aggregate | Ask every part and combine the answers | footprint, health |
+| Broadcast | Send to every part, keep each answer | shutdown, suspend |
+| Select | Send to one part, chosen by the parent's policy | transcribe, synthesize: one backend speaks, never all of them |
 
-Every part runs on its own worker: the flow stage (CBAR's `QueueThread`) that `continuum-flow`
-already provides.
+The traversal for each dispatch is written once. Direction follows dependencies: commands that
+start (`prepare`, `resume`) reach the parent first and then its parts; commands that stop
+(`suspend`, `shutdown`) reach the parts first and then the parent, which first closes itself to new
+work.
 
-- **Wake.** Typed inputs wake it: events (every item matters, read through a cursor) and snapshots
-  (only the newest matters, read by revision), as the stage contract defines topics. A command is
-  one more input.
-- **Turn.** It takes one input at a time and holds one pending. A reliable input (a command, a result)
-  is never dropped, and its producer waits for the slot. A signal (a wake, a frame) keeps only the
-  newest. The worker's QoS class decides what waits behind what.
-- **Short turns.** A turn changes the part's own state and publishes. It holds no lock across I/O and
-  never waits on another part. Work that takes longer is dispatched as a task, whose completion is
-  one more input that wakes the part again.
-- **Publish.** What a part produced is published with its provenance (which run, from which input
-  revisions), and everything that depends on it is invalidated and wakes. Nothing polls and nothing
-  sweeps on a clock; a cadence is only a floor for a part that must not go silent.
+### 4.3 `Worker`: how a part lives (`continuum-flow`)
 
-This is what makes command results arrive as they happen. A parent sends `shutdown` to its parts; each
-part's worker answers on its own, and each answer is published as it arrives into the parent's
-**completion**: an owned record of the command, keyed by part and generation, held until every part
-has answered. A slow part holds back no other. An observer reads the completion's current state,
-and one that detaches and returns later sees every answer that arrived meanwhile. Pending work keeps
-its custody: a model unloaded while a transcription still holds it answers `Pending` on that
-transcription's completion, and its bytes stay counted until then.
+A worker is a part's logical, serialized owner: the one place its state changes, one input at a
+time. It is `continuum-flow`'s stage (CBAR's `QueueThread`), joined with the stage contract's
+typed topics, revisions and provenance ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)).
 
-Replacing a part is a command too. When a key is registered again, the new part takes the old one's
-place in the order, and the old part keeps running under its own generation until its own shutdown
-completes, held by the completion that owns it. It is a different object with its own worker, so its
-release can never touch its replacement.
+- **Inputs** wake it: events (every item matters, read by cursor), snapshots (only the newest
+  matters, read by revision), commands, and task completions.
+- **Two lanes.** Data inputs share one bounded lane; a reliable producer waits for room. Commands and
+  completions have a reserved control lane, so a part whose data lane is full can still be told to
+  stop and can still receive the task result it needs to drain.
+- **Short turns.** A turn changes the part's state and publishes. It holds no lock across I/O and
+  never waits on another part.
+- **Executors are shared.** A worker is a logical owner, not an OS thread: many independent parts'
+  workers run on a shared executor, and the flow scheduler's QoS classes decide what waits behind
+  what.
 
-### 4. The answers a command returns
+### 4.4 `Command` and `Completion`: changing a part (`part/command.rs`)
+
+A command changes a part's state. Submitting one never waits: it returns the command's completion at
+once, and the caller awaits it or subscribes to it.
+
+```rust
+let completion = registry.submit(Shutdown);   // returns immediately
+let report = completion.settled().await;      // or completion.subscribe() for each answer as it arrives
+```
+
+- **Binding.** A command is bound at ingress, atomically, to an operation id, the target's
+  generation, and (for a broadcast) the set of parts it admitted. A part added afterwards is not in
+  this command's set; a part replaced afterwards answers under its old generation.
+- **Answers arrive as they happen.** Each part's answer is recorded in the completion when it arrives.
+  A slow part holds back no other; an observer that detaches and returns sees every answer that
+  arrived meanwhile; nothing is reissued.
+- **Retries rejoin.** Submitting the same command again while it runs returns the same completion.
+- **Fencing.** A `shutdown` admitted during a `prepare` fences the prepare's generation, so the
+  prepare's late completion cannot mark the part ready.
+- **The parent finishes on its parts' events.** A parent's own step in a stopping command runs when
+  its parts' answers arrive, never by blocking on them.
+
+### 4.5 `Outcome`: what an answer says (`part/outcome.rs`)
 
 ```rust
 pub enum Outcome<P, E> {
@@ -174,117 +163,226 @@ pub enum Outcome<P, E> {
 }
 ```
 
-A part answers a command with an `Outcome`; a part made of parts answers with each part's outcome,
-so a caller always sees which parts finished, which are pending and on what, and which failed. A
-repeated command joins the one running; a shutdown that arrives during a prepare fences the
-prepare's generation so its late completion cannot mark the part ready. No command has a default
-answer: a default `Done` would let a part that holds memory claim to have released it. The
-generation that knows a part's state supplies its answers once, as the model generation does for
-every model.
+A part answers with an `Outcome`; a broadcast's completion holds each part's. `Pending` keeps
+custody: a model unloaded while a transcription still holds it answers `Pending` on that
+transcription, and its bytes stay counted until then. No command has a default answer: a default
+`Done` would let a part that holds memory claim to have released it.
 
-## Names
+### 4.6 `Published`: reading a part (`part/published.rs`)
 
-One name per concept. Each row's existing names become the new one; nothing keeps two.
+A query reads what a part has published; it never waits on the worker or takes its lock.
 
-| Concept | Name | Replaces |
+```rust
+pub struct Published<S> {
+    pub generation: Generation, // whose snapshot
+    pub revision: Revision,     // which version of it
+    pub state: S,
+}
+```
+
+An aggregate query over parts combines snapshots of different ages, so it is telemetry: a footprint
+read this way says roughly how much is held. Only a confirmed release (a completion's `Done` for a
+shutdown) frees bytes the governor may grant to someone else.
+
+### 4.7 `Task`: long work (`part/task.rs`)
+
+Work longer than a turn is dispatched as a task. Its completion is one more input that wakes the
+part, on the control lane. Nothing spawned is unowned: every task belongs to the part whose lifetime
+it shares, and that part's shutdown stops or joins it.
+
+### 4.8 The lifecycle commands (`part/lifecycle.rs`)
+
+`Prepare`, `Suspend`, `Resume` and `Shutdown` are four commands every part answers, broadcast
+through its parts. They are not a mechanism of their own: they are commands, with completions and
+outcomes, like any other.
+
+## 5. The specific: the lineages
+
+Each lineage descends from section 4. Each generation names what it adds; everything else it
+inherits.
+
+### 5.1 The tree
+
+```
+Part                                   identity, generation; parts, worker, commands, queries, tasks
+├─ Model                               owns a model it loads and releases       continuum-base::part::model
+│  ├─ SpeechToText                     transcribe (select)                      continuum-live audio
+│  ├─ TextToSpeech                     synthesize, voices (select)              continuum-live audio
+│  ├─ VoiceActivity                    detect (select)                          continuum-live audio
+│  └─ InferenceAdapter                 generate (select)                        continuum-engine (step 4)
+├─ Region                              publishes an estimate of something       continuum-kernel runtime
+│  ├─ FusionRegion                     refines its estimate by confidence and age
+│  │  ├─ Amygdala                      the estimate is how much depth a moment needs
+│  │  ├─ Wernicke                      the estimate is word-level state, heard and planned
+│  │  └─ VisualFusion                  the estimate is a scene
+│  └─ Monitor                          the estimate is a measurement (memory pressure, disk); today's Daemon
+├─ Service                             answers typed commands from callers      continuum-kernel runtime; today's ServiceModule
+├─ Transport                           carries envelopes to peers               continuum-grid
+└─ Persona                             one resident, made of her branches       continuum-persona-engine
+```
+
+### 5.2 `Model`: a part that holds a model
+
+What it adds: a model it owns and the hook to load it.
+
+```rust
+pub trait Model: Part {
+    type Loaded: Send + Sync;
+    type Failure: Send;
+    fn slot(&self) -> &ReloadableModel<Self::Loaded>;          // the field it owns; no statics
+    fn load(&self) -> Result<Self::Loaded, Self::Failure>;      // the leaf's only lifecycle code
+}
+```
+
+What it inherits: the lifecycle commands, written once for every model by a generic owner. Prepare
+and resume load through the slot, suspend and shutdown unload it, and an unload while a caller still
+holds the model answers `Pending` on that caller. Whether it is loaded is a query on its slot.
+
+A part with no local model (a cloud speech session, a test stub) is not a `Model`. It descends from
+`Part` and answers the lifecycle commands by opening and closing its session.
+
+### 5.3 The speech models
+
+What each adds: its own verb, declared with **select** dispatch, so its registry chooses one
+backend by policy and no utterance is ever synthesized twice.
+
+```rust
+pub trait SpeechToText: Model { async fn transcribe(&self, audio: Audio, language: Option<Language>) -> Result<Transcript, SpeechFailure>; }
+pub trait TextToSpeech: Model { async fn synthesize(&self, text: &str, voice: Voice) -> Result<Speech, SpeechFailure>; fn voices(&self) -> Voices; }
+pub trait VoiceActivity: Model { fn detect(&self, frame: &Pcm) -> Activity; }
+```
+
+A leaf (Whisper, Kokoro, Silero) implements its kind's verb and `Model::load`. Its registry is a
+`Parts<Name, dyn TextToSpeech>` with one active member, owned by the voice service.
+
+### 5.4 `Region`, `FusionRegion` and their leaves
+
+What `Region` adds: a published estimate, recomputed when an input it depends on changes, and
+invalidating what depends on it. `BrainRegion` and the ready buffers become this.
+
+What `FusionRegion` adds: the estimate is refined, never replaced wholesale. Each source updates it
+where it applies, weighted by confidence and age; a rough estimate stands until a better one arrives
+([BRAIN-REGIONS-SUBSTRATE.md](BRAIN-REGIONS-SUBSTRATE.md), "Fusion"). Its leaves supply their
+estimate type and update rules: the amygdala's depth judgement, Wernicke's word-level state, a
+scene.
+
+What `Monitor` adds: a measurement on a cadence floor, for the parts that must report even when
+nothing changes. `Daemon` becomes this.
+
+### 5.5 `Service`, `Transport` and `Persona`
+
+- **`Service`** adds typed commands from callers outside the tree (a CLI, a client, a peer). Today's
+  `ServiceModule` becomes this; its string command names become typed commands, its event globs
+  become topics, and its tick becomes a cadence floor where one is needed.
+- **`Transport`** adds carrying envelopes to peers. The grid's four loops over its transports become
+  broadcasts over its `Parts`.
+- **`Persona`** adds nothing a persona does not need: she is a part made of a fixed set of branches
+  (identity, mind, genome, body, residency, learning), each a part
+  ([HOW-A-MIND-RUNS.md](HOW-A-MIND-RUNS.md), section 3). Suspending her is one broadcast.
+
+## 6. Names
+
+One name per concept. Each row's old names become the new one; nothing keeps two.
+
+| Name | What it is | Replaces |
 |---|---|---|
-| The object | **part** (`Part`) | the roots of `ServiceModule`, `Daemon`, `BrainRegion`, the speech traits, `AIProviderAdapter`, `GridTransport` as roots |
-| What a part is made of | **its parts** | `Children`, `persona_parts!`, `PersonaParts`, every hand-written child loop |
-| A part's thread | **worker** (the flow stage) | `Daemon`'s tick task, `BrainRegion`'s tick, `ServiceModule`'s tick loop |
-| What wakes a part | **inputs**: events and snapshots, by topic | event globs, string command names, the tick as a trigger |
-| What a part produces | **publications**, with provenance | ready buffers, daemon snapshots, ad hoc broadcasts |
-| A state-changing method | **command**, answered by a **completion** | `initialize`, `shutdown` returning `Result`, `Lifecycle::suspend` |
-| A read-only method | **query**, over published state | getters that lock or recompute |
-| A command's answer | **outcome** (`Done`, `Pending`, `Failed`) | `Preservation`, `Result<(), String>` |
-| Long work | **task**, whose completion is an input | `Dispatched` runs, spawned futures nobody joins |
+| `Part` | Anything that runs: identity, generation | the separate roots of every family |
+| `Parts` | What a part is made of, with aggregate, broadcast and select | `Children`, `persona_parts!`, hand-written loops |
+| worker | A part's logical serialized owner | `Daemon`'s and `BrainRegion`'s tick tasks, `ServiceModule`'s tick loop |
+| command, `Completion` | A state change, and its answers as they arrive | `initialize`, `shutdown -> Result`, `Lifecycle::suspend` |
+| query, `Published` | A read of published state, with generation and revision | getters that lock or recompute, daemon snapshots, ready buffers |
+| `Outcome` | Done, pending on a completion, or failed | `Preservation`, `Result<(), String>` |
+| task | Long work whose completion is an input | `Dispatched` runs, unowned spawns |
+| `Model` | A part that owns a model it loads | per-backend statics and lifecycle methods |
+| `Region`, `FusionRegion`, `Monitor` | A part that publishes an estimate; one that refines it; one that measures | `BrainRegion`, `Daemon` |
+| `Service` | A part answering typed commands from outside | `ServiceModule` |
 
-`Lifecycle` survives only as the name of the four commands every part answers (prepare, suspend,
-resume, shutdown). It is not a mechanism of its own.
+Kept from Codex's review: part, worker, command, completion, task.
 
-## Worked example: a call ends, then memory is needed
+## 7. Worked example: a call ends, then memory is needed
 
-1. Two residents finish a call. The voice service is a part whose parts include its speech-to-text
-   and text-to-speech registries, each a part whose parts are its models. Whisper and Kokoro are
-   loaded; Piper is not.
-2. Learning asks for device memory. The governor sends the voice service `shutdown` for its models:
-   one command.
-3. The voice service sends `shutdown` to both registries, and each sends it to its models. Every
-   model's worker answers on its own:
+1. Two residents finish a call. The voice service is a `Service` whose parts are its speech-to-text
+   and text-to-speech registries, each `Parts` of `Model`s. Whisper and Kokoro are loaded; Piper is
+   not.
+2. Learning needs device memory. The governor submits `Shutdown` to the voice service's model
+   registries and receives the completion at once.
+3. The command is bound to its operation id and to the three models present at ingress. Each model's
+   worker answers on its own:
    - Kokoro unloads and answers `Done`.
    - Piper was never loaded and answers `Done`.
    - Whisper unloads, but a transcription that began a moment earlier still holds the model, so it
      answers `Pending` on that transcription.
-4. The completion records each answer as it arrives. The governor counts Kokoro's bytes free
-   immediately and Whisper's when the transcription completes.
-5. A new call starts and sends `prepare`. Whisper's prepare joins nothing stale: the old shutdown's
-   generation is fenced, so its late completion cannot unload the model the new call is using.
+4. The completion records each answer as it arrives. The governor funds a grant with Kokoro's bytes
+   at once and with Whisper's when the transcription completes; it never funds one from the
+   footprint query's telemetry.
+5. A new call starts and the voice service submits `Prepare`. The old shutdown's generation is
+   fenced, so its late completion cannot unload the model the new call is using.
 
 Today step 3 is a serial loop that logs failures, step 4 does not exist, and step 5 is guarded by a
 five-second timer.
 
-## Alternatives considered
+## 8. Alternatives considered
 
-- **A lifecycle per family** (an audio `Backend`, an adapter trait). Tried in #6205 and withdrawn: one
-  more copy of the problem.
-- **Lifecycle as its own mechanism** (a `Verb` enum and a walk that knows only those verbs, #6206's
-  first cut). Withdrawn: every other method, footprint or health, would need the same machinery
-  again. Traversal belongs to the part; lifecycle is four commands that use it.
-- **Calling a part's method directly and awaiting it.** Simple, and wrong for a concurrent core: the
-  caller blocks on the slowest part, a dropped caller cancels the work, and results are visible
-  only when all finish. Commands to workers with owned completions avoid all three.
-- **`&mut self` methods.** Simple for a part with one owner, but parts are shared by handle while they
-  run; exclusive access belongs inside the worker's turn, not on the caller's reference.
-- **Keeping the five worker shapes and adapting between them.** Each adapter would be one more copy.
-  They differ only in which trigger wakes them and what they publish, which are inputs and
-  publications of the one worker.
+- **A lifecycle per family** (an audio `Backend` trait). Tried in #6205 and withdrawn: one more
+  copy.
+- **Lifecycle as its own mechanism** (#6206's first cut: a verb enum and a walk that only knows
+  those verbs). Withdrawn: footprint, health and every other method would need the same machinery
+  again. Traversal belongs to `Parts`; the lifecycle is four commands.
+- **Calling a part's method and awaiting it.** The caller blocks on the slowest part, a dropped
+  caller cancels the work, and results appear only when all are done. Commands with completions
+  avoid all three.
+- **`&mut self` methods.** Simple with one owner, but parts are shared by handle; exclusive access
+  belongs inside the worker's turn.
+- **Keeping five worker shapes and adapting between them.** Each adapter is one more copy. They
+  differ only in what wakes them and what they publish: inputs and publications of one worker.
+- **Blanket implementations** (`impl<T: Model> Lifecycle for T`, and one for composites). Two
+  blankets over one trait overlap and Rust rejects them; generic owners give the same sharing.
 
-## Migration
+## 9. Migration
 
 Each step deletes more than it adds and lands with its validators.
 
-1. **The part, its parts and the completion**, in `continuum-base::part`. This is a rework of #6206:
-   - the traversal is generic for any method;
-   - commands go to workers;
-   - completions keep each answer as it arrives.
+1. **The general, in `continuum-base::part`:** `Part`, `Parts`, `Command` and `Completion`,
+   `Outcome`, `Published`, `Task`, the lifecycle commands, one module each. #6206 is reworked to
+   this. Persona engine's `Lifecycle`, `Preservation` and `persona_parts!` are deleted, and her
+   branches become a fixed `Parts`.
+2. **The worker:** `continuum-flow`'s stage becomes the part's worker, with the control lane and the
+   stage contract's topics and provenance. The kernel's second `Stage` trait is deleted.
+3. **`Model` and the speech models:** `ReloadableModel` moves beside `Model`. The thirteen audio
+   backends own their models; their statics, their own lifecycle methods and the three unload walks
+   are deleted.
+4. **The other lineages, one change each:** `InferenceAdapter`, `Region` and `Monitor` (absorbing
+   `BrainRegion` and `Daemon`), `Transport`, then `Service` (absorbing `ServiceModule`).
 
-   Persona engine's `Lifecycle`, `Preservation` and `persona_parts!` are deleted; her five parts
-   become a fixed set of parts.
-2. **The worker.** `continuum-flow`'s stage becomes the part's worker, joined with the kernel stage
-   contract's topics, revisions and provenance; the two `Stage` traits become one.
-3. **Models.** `ReloadableModel` moves beside the model generation; the thirteen audio backends own
-   their models; the statics, their own initialize and shutdown, and the three unload walks are
-   deleted.
-4. **The other families**, each its own change: `Daemon` and `BrainRegion` (a worker with a cadence
-   floor and a snapshot publication), the inference adapters, the grid transports, then
-   `ServiceModule`.
-
-## How we will know it works
+## 10. How we will know it works
 
 Validators that run in seconds, with fixture parts and no model or device:
-- a part made of a fixed set and one made of a keyed set, driven by the same traversal for a command
-  and for a query;
-- one slow part and one failing part: the others finish, the failure is named, and an observer sees
-  the finished parts before the slow one answers;
+- a fixed set and a keyed set of parts driven by one traversal, for an aggregate query and a
+  broadcast command;
+- one slow part and one failing part in a broadcast: the others finish, the failure is named, and an
+  observer sees the finished answers before the slow one arrives;
 - an observer that detaches mid-command and reattaches, seeing every answer that arrived meanwhile,
-  with no command reissued;
-- a replaced part mid-shutdown, with no other handle to it: it finishes its own shutdown under its
-  generation, its replacement untouched;
+  with nothing reissued;
+- a part's data lane saturated, then `Shutdown`: it arrives on the control lane and completes;
+- a part replaced mid-shutdown with no other handle to it: it finishes under its old generation, and
+  its stale publication is not read as its replacement's;
 - concurrent suspend, resume and shutdown on one part, and a shutdown during a prepare;
-- an unload while a caller still holds the model: `Pending`, released when the caller finishes.
+- two text-to-speech backends installed: one utterance is synthesized exactly once;
+- an unload while a caller holds the model: `Pending`, released when the caller finishes.
 
 On the live node, after step 3:
-- the bytes the governor counts as released match what the device reports;
-- releasing the audio models under pressure no longer waits on the slowest model;
+- the bytes the governor grants from match what the device reports released;
+- releasing the audio models under pressure no longer waits on the slowest one;
 - the five-second idle constant is gone.
 
-## Open questions
+## 11. Open questions
 
 - Whether idle release should exist at all, or release is only the governor's decision under
-  pressure. The design supports both; the policy belongs in [SHARED-RESOURCES.md](SHARED-RESOURCES.md).
-- Where the model generation lives once the inference adapters adopt it: `continuum-base` for now,
-  since both `continuum-live` and `continuum-engine` need it.
+  pressure. The policy belongs in [SHARED-RESOURCES.md](SHARED-RESOURCES.md).
+- Where `Model` lives once `InferenceAdapter` adopts it: `continuum-base` for now, because both
+  `continuum-live` and `continuum-engine` need it.
 
-## Appendix: where the code stands
+## 12. Appendix: where the code stands
 
 Survey of canary c819052ef7, 2026-11-20.
 
@@ -293,4 +391,4 @@ Survey of canary c819052ef7, 2026-11-20.
 | How a component lives and stops | Five worker shapes, three lifecycle shapes, 34 `shutdown` bodies, 19 health checks, hand-written loops over children | Fable: this chapter |
 | Pressure, footprint, leases | Five overlapping bases; about 150 Lease, Permit, Grant, Gate and Admission types | Codex: the one governor of [SHARED-RESOURCES.md](SHARED-RESOURCES.md) |
 | Small utilities | Three backoff formulas, 36 registries, 25 raw `HOME` reads | Each gets one floor owner as it is touched |
-| The mind as a tree | `PersonaUnit` and `PersonaCognition` as two unconnected roots | After step 1: her parts, then her regions, as parts |
+| The mind as a tree | `PersonaUnit` and `PersonaCognition` as two unconnected roots | After step 1: her branches as `Parts`, then her regions |
