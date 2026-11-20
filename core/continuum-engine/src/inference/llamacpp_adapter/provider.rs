@@ -511,7 +511,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let (text, reasoning, tool_calls) = match &chat_render {
             Some((render, _)) => match super::chat_turn::parse_turn(render, &written, end) {
                 Ok(turn) => {
-                    turn.probe_if_empty(&written, tokens, end, &stop_owned);
+                    turn.probe_if_empty(&written, tokens, end, &stop_owned, &request);
                     (turn.text, turn.reasoning, turn.tool_calls)
                 }
                 Err(refused) => return Err(refused.to_string()),
