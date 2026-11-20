@@ -311,6 +311,24 @@ The owner of this contract is [FOCUS-CONTRACT.md](FOCUS-CONTRACT.md); this secti
 
 ## 3. Live conversation, end to end
 
+### Diagnose the first missing result
+
+Follow one resident turn from stimulus through admission, prefix selection, decode, parsing
+and delivery. The endpoint for coding is a usable tool call or answer. For speech it is the
+first audible response. Aggregate GPU occupancy alone cannot locate a delay along this path.
+
+| Observed on the M5 | Boundary to inspect | Evidence that selects a fix |
+|---|---|---|
+| In a 900-second window the longest engine idle interval was 118 ms. One resident turn spent 49.9 s in prefill and reused 7,084 of 20,225 prompt tokens. | Scheduler and token history | Compare the actual shared prefix with the recoverable checkpoint on that turn. A changed prompt requires different work from a missed checkpoint. Measure ready-to-first-service separately from prefill. |
+| In a separate 900-second window, 52 of 53 empty parsed turns retained closing function and tool tags in their raw tails. | Request catalog, native render, then call assembly | Replay the captured turn with its original template and exact head and tail tool schemas. Compare the emitted name, native parsed name and assembled result. A fixture with one undeclared name reproduced the symptom; the live cause is open. |
+
+The [request adapter](../../core/continuum-engine/src/inference/llamacpp_adapter/chat_turn.rs)
+supplies head and tail tools to the [native render](../../core/llama/chat_boundary.cpp).
+Use that render's catalog for the comparison. An unavailable verb belongs with the owner
+that advertised or selected it. A declared verb lost by the parser belongs at the render
+boundary. Keep execution behind the existing typed call assembler. Replay storage preserves
+the original turn; replaying a parser must have no tool side effects.
+
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
 
 1. ingress (a word, a line);
