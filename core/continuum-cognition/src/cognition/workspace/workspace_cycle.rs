@@ -155,11 +155,12 @@ impl WorkspaceCycle {
     /// no recipe for the room (never a fabricated manifest), or when the recipe
     /// declares none: all three mean "the surface is not room-selected this turn".
     pub(super) fn room_affordances_for(&self, room: Uuid) -> Vec<String> {
-        self.experience
-            .as_ref()
-            .and_then(|source| source.experience_for(room))
-            .map(|manifest| manifest.affordances.into_iter().map(|a| a.command).collect())
-            .unwrap_or_default()
+        let Some(manifest) = self.experience.as_ref().and_then(|source| source.experience_for(room)) else {
+            // No source shared in, or no recipe for this room: the room selects no surface, which
+            // is the empty selection (her whole surface stays), never a fabricated manifest.
+            return Vec::new();
+        };
+        manifest.affordances.into_iter().map(|a| a.command).collect()
     }
 
     /// Re-home the persona's deliberation onto a newly served model — swap the

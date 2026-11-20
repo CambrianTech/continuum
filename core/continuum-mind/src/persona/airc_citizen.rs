@@ -339,6 +339,9 @@ pub struct StubAircCitizen {
     boards: std::collections::HashMap<Uuid, Vec<airc_lib::WorkCard>>,
     /// Whole boards for her held-work read (`AircWorkReader::boards`): none by default.
     board_snapshots: Vec<std::sync::Arc<airc_work::BoardSnapshot>>,
+    /// Whether her board answers `active_claims` (a test flips it to exercise an unanswered board and
+    /// its recovery); answering by default.
+    claims_answering: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Records every `advance_card_to` call so a test can assert the held-work
     /// completion edge concluded the right card with the right state — the
     /// WRITE half the read supertraits can't observe. Shared `Arc` so the test
@@ -357,8 +360,16 @@ impl StubAircCitizen {
             held: Vec::new(),
             boards: std::collections::HashMap::new(),
             board_snapshots: Vec::new(),
+            claims_answering: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true)),
             advanced: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
         }
+    }
+
+    /// Test-only: her board answers `active_claims` only while `answering` is set.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn with_claims_answering(mut self, answering: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.claims_answering = answering;
+        self
     }
 
     /// Seed the cards this stub reports as active claims — so the held-work
@@ -452,6 +463,9 @@ impl crate::persona::held_work::AircWorkReader for StubAircCitizen {
     async fn active_claims(&self) -> Result<Vec<airc_lib::WorkCard>, AircError> {
         // Default: no daemon → no claimed work. A test may seed `with_claims` to
         // exercise the held-work path.
+        if !self.claims_answering.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(AircError::Transport("StubAircCitizen: the board did not answer".to_string()));
+        }
         Ok(self.held.clone())
     }
 
@@ -568,6 +582,9 @@ impl AircCitizen for StubAircCitizen {
     /// subscribed to that room (the subscription check is the caller's); a claim on no
     /// seeded board has no room to report.
     async fn held_cards(&self) -> Result<Vec<(Uuid, airc_lib::WorkCard)>, AircError> {
+        if !self.claims_answering.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(AircError::Transport("StubAircCitizen: the board did not answer".to_string()));
+        }
         Ok(self
             .held
             .iter()

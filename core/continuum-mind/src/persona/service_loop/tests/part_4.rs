@@ -96,7 +96,8 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+            context_window: 65_536,
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
@@ -195,7 +196,8 @@ use super::*;
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::inference::planning::MIN_SERVE_CTX,
+                // Roomy enough for framing + tools + a reply: a refused prompt is not what this tests.
+                context_window: 65_536,
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
@@ -617,4 +619,29 @@ async fn holding_nothing_her_heartbeat_offers_an_initiative_turn_with_her_hands(
             "roster line did not reach the prompt:\n{}",
             assembled.system_message
         );
+    }
+
+    // what this catches (Codex on #6122; Joel: they are autonomous minds, not agents waiting on a
+    // queue): an unanswered board read as "she holds nothing", which settled her held work and
+    // counted her initiative as passed; and the opposite mistake, freezing her whole mind until the
+    // board answers. Through the actual caller: with her board unanswered her cycle still runs and
+    // nothing about her held work is settled or passed; once it answers, the cycle runs as ever.
+    #[tokio::test]
+    pub(super) async fn an_unanswered_board_leaves_her_work_owed_and_her_mind_running() {
+        let persona = Uuid::new_v4();
+        let hosted = hosted_with_heuristic(persona);
+        let answering = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let citizen: Arc<dyn crate::persona::airc_citizen::AircCitizen> =
+            Arc::new(StubAircCitizen::new(persona).with_claims_answering(Arc::clone(&answering)));
+        let mut conversation = ScriptedConversation::new().with_attachment(citizen);
+        conversation.prime().await.unwrap(); // unwrap: test fixture
+        let opts = ServeOptions { now_ms: fixed_now, ..Default::default() };
+        let mut pending = crate::persona::wake_backlog::PendingInput::for_persona(persona);
+        let mut fingerprint = 0u64;
+
+        run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
+        assert_eq!(pending.initiative_passed_at_ms(), None, "an unknown board counts no initiative as passed");
+
+        answering.store(true, std::sync::atomic::Ordering::Release);
+        run_self_cycle(&hosted, &mut conversation, &opts, &mut fingerprint, None, &mut pending).await;
     }

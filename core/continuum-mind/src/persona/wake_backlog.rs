@@ -427,6 +427,7 @@ mod tests {
         pending.settle_self(elsewhere.room_id, &SettleStep::Passed { reason: None });
         pending.settle_work(&crate::persona::act_question::WorkQuestionOutcome {
             drove: true,
+            board: crate::persona::act_question::BoardRead::Answered,
             room: Some(elsewhere.room_id),
             capacity: None,
             engaged: true,

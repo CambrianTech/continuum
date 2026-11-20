@@ -235,13 +235,16 @@ pub(super) async fn run_self_cycle(
         Some(citizen) => match super::super::work_focus::focus_room(citizen.as_ref()).await {
             Ok(room) => room,
             Err(error) => {
+                // Her board did not answer: which card holds her focus is unknown, so this beat works
+                // from her home room. Her mind is not the board: she still perceives, thinks and takes
+                // initiative; the board is asked again next beat.
                 continuum_base::probe!(
                     class = "persona.selftick.focus_unavailable",
                     persona = %ctx.identity.agent_name,
                     error = %error,
-                    "cannot resolve held work room; preserve work and retry next self-cycle",
+                    "her board did not answer: this beat works from her home room, her held work untouched",
                 );
-                return;
+                None
             }
         },
         None => None,
@@ -309,8 +312,13 @@ pub(super) async fn run_self_cycle(
         initiative,
     )
     .await;
-    pending.settle_work(&work);
-    pending.note_initiative(&work, now_ms);
+    // An unanswered board leaves what she holds unknown: nothing about her held work is settled or
+    // closed and no initiative is counted as passed, so owed work stays owed. Her mind goes on: she
+    // is an autonomous citizen, not a worker waiting on a queue, and the beat below is hers.
+    if work.board == crate::persona::act_question::BoardRead::Answered {
+        pending.settle_work(&work);
+        pending.note_initiative(&work, now_ms);
+    }
     if work.drove {
         // She WORKED this tick (her claim, or her own initiative) — that is engagement, so
         // the caller must keep her at the fast beat, not rest her. The caller reads
