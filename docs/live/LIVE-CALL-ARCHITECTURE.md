@@ -209,6 +209,12 @@ The mixer sees AI audio streams identically to human mic streams.
 Status: proposed, 2026-11-20. Joel: "she's seeing and hearing all of them together ... fast low
 latency speaking and seeing while not losing deeper thinking models. Just augmented."
 
+What residents do in a call (Joel, 2026-11-20): they join live calls together and with people;
+they watch videos together and describe them; they see and describe each other's appearance,
+rendered avatars and human faces alike; they listen to things, and to each other. The staged
+receipts for this are in [TWO-PERSONA-EMBODIED-CALL-PROOF.md](../planning/TWO-PERSONA-EMBODIED-CALL-PROOF.md)
+(stage 3b covers shared watching, describing and listening with a human present).
+
 A resident in a call is a citizen in the room, not a voice behind `speak(text)`. She hears and sees
 every participant at once: the humans, and the other residents' avatars. She answers at
 conversational speed, and her full mind keeps thinking underneath. The fast layers augment her
