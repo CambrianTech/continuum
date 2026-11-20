@@ -98,7 +98,8 @@ enum Tenure {
 #[derive(Default)]
 struct History {
     held: Vec<i32>,
-    kept: [Option<KeptCheckpoint>; 2],
+    /// View end, latest learned prefix, and earliest still-valid learned prefix.
+    kept: [Option<KeptCheckpoint>; 3],
 }
 
 /// Her checkpoint and what makes it valid: she held exactly `held[..end]` under `basis` when it was
@@ -698,7 +699,16 @@ impl Driver<'_, '_> {
     /// buffers. A refused take keeps none, so a later act restarts instead of rewinding to a stale one.
     fn keep_checkpoint(&mut self, turn: &mut Turn, index: usize, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
-        let previous = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept[index].take();
+        let history = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens;
+        // When a learned prefix grows, retain the older native snapshot for turns
+        // whose input changes earlier. History::cut invalidates every slot together.
+        let [_, latest, earliest] = &mut history.kept;
+        if index == 1 && latest.as_ref().is_some_and(|prior| {
+            prior.end < end && earliest.as_ref().is_none_or(|saved| prior.end < saved.end)
+        }) {
+            std::mem::swap(latest, earliest);
+        }
+        let previous = history.kept[index].take();
         let mut blocks = match previous.map(|kept| kept.blocks).or_else(llama::PersonaCheckpoint::new) {
             Some(blocks) => blocks,
             None => return Ok(()), // the host could not allocate a checkpoint: she restarts next act, named in its row
