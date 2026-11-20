@@ -48,9 +48,11 @@ Part ............................................. identity, generation; parts, 
 │  ├─ SpeechToText, TextToSpeech, VoiceActivity     speech
 │  ├─ Embedder                                      embeddings
 │  └─ InferenceAdapter                              generation
-├─ Region ........................................ publishes an estimate, recomputed on change
-│  ├─ FusionRegion                                  refines it by confidence and age (amygdala, Wernicke, vision)
-│  ├─ Faculty                                       contributes to her workspace's turn
+├─ Estimator ..................................... publishes an estimate, recomputed on change
+│  ├─ Fusion<E>                                     refines it by confidence and age (a scene, a voice)
+│  ├─ Region                                        a part of a mind: amygdala, Wernicke, surprise, cerebellum
+│  │  ├─ FusionRegion                               a region whose estimate is fused
+│  │  └─ Faculty                                    contributes to her workspace's turn
 │  └─ Monitor                                       measures on a cadence floor
 ├─ Holder ........................................ holds governed bytes; footprint and reclaim
 ├─ Transport ..................................... carries envelopes to a peer

@@ -757,7 +757,7 @@ CBAR is Joel's real-time perception engine. Its lessons are the other half of th
 - **Slow results in real time, by fusion.** A three-second network's result is attached to its frame
   and carried forward by continuous tracking. A rough estimate fills what would otherwise be a gap,
   and precise methods refine it as the camera approaches. Here: perception, comprehension and speech
-  are living estimates that refine as better knowledge arrives (chapter 4.2, `FusionRegion`).
+  are living estimates that refine as better knowledge arrives (chapter 4.2, `Fusion`).
 
 ## 0.6 The budgets
 

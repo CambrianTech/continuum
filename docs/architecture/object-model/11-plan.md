@@ -92,7 +92,7 @@ render; Cormac for the genome; Fable for the rest.
 |---|---|---|
 | `Holder` (pool, residency, cache) | `ResourcePool`, `ResourceConsumer`, `MemoryReporter`, `DeviceTenant`, `StagingResidency`, `VoiceReclaimLever`, `DiskReporter` as traits | Codex |
 | `Monitor` | `Daemon`, `DaemonChannel`, `GpuMonitor` and `CapacitySource` as separate roots, the hand-written interval monitors | Codex |
-| `Region`, `FusionRegion`, `Faculty` | `BrainRegion`, ready buffers, `RagSourceFaculty` | Fable |
+| `Estimator`, `Fusion`, `Region`, `FusionRegion`, `Faculty` | `BrainRegion`, ready buffers, `RagSourceFaculty` | Fable |
 | `Transport` | the client's and kernel's `Transport`, `GridTransport`, the airc and inference transports, gateway `Wire` as separate roots | Codex |
 | `Room` and its views; `ActivityAdapter` | `AircCitizen` and its readers, the board readers, the three suite adapters | Fable |
 | `Search` | `RecallLayer`, `CandidateSource`, `SearchAlgorithm` | Fable |

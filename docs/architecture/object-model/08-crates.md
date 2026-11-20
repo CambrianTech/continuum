@@ -50,7 +50,7 @@ reaching into each other's state.
 | `continuum-serving` | the Core, residency, inference adapters, capacity and planning, the model registry | `InferenceAdapter`; the persona engine's tier | `continuum-engine` (inference, capacity, model registry, serving modules), `continuum-serving`, `continuum-persona-engine`, `continuum-persona-llama`, `continuum-models` |
 | `continuum-media` | calls, mixing, speech | `SpeechToText`, `TextToSpeech`, `VoiceActivity` | `continuum-live`'s audio and call modules; `livekit-bridge` stays its own binary crate beside it, the only process that links webrtc |
 | `continuum-render` | bodies and scenes on a deadline | `Renderer`, `AvatarRenderer`, frame sinks | `continuum-live`'s avatar and video modules |
-| `continuum-perception` | shared streams, detectors, fusion | `FusionRegion` leaves for scenes; stream parts | `continuum-perception`, `continuum-engine::sensory`, vision description |
+| `continuum-perception` | shared streams, detectors, fusion | `Fusion` leaves for scenes; stream parts | `continuum-perception`, `continuum-engine::sensory`, vision description |
 | `continuum-memory` | engrams, recall, embeddings | `Search`, `Recall`, `Embedder` | `continuum-memory`, `continuum-engram`, `continuum-embedding`, `continuum-store`'s vector commands |
 | `continuum-store` | the data layer and its commands | `Service` for `data/*`; ORM entities | itself, minus vectors |
 | `continuum-hands` | a mind's acting tools: code, git, commands, pipelines | its tool parts | `continuum-hands`, `continuum-git`, `continuum-sentinel` |

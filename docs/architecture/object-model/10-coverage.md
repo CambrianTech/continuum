@@ -19,7 +19,7 @@ implementors are on their destination and the trait is deleted or kept as named 
 | `Demand` (3.8) | `LeaseRequest` (kernel resources, engine capacity), the window allocator's needs, `Admission` (engine), `AdmissionGate`s, permits' requests, the serving planner's demands; answers become leases (`ThroughputLease` kept as the cleared grant) |
 | `Durable` (3.7) | `SavedState`, `Rebuildable`, `Key` (saved-state, kept and generalized); `OrmEntity`, `StorageAdapter`, `EpochWatermarkStore` (kernel: the ORM medium); `AdmissionPersistenceSink` (cognition); `LineImporter` (mind) |
 | Capabilities and holdings (4.1) | `SpeechToText`, `TextToSpeech`, `VoiceActivityDetection` (live); `EmbeddingProvider` (engine); `AIProviderAdapter` (engine); `Screenshotter`, `WebSearchProvider`, `Publisher`, `ArtifactSource` (core); `PullRequestHost` (hands) |
-| `Region`, `FusionRegion`, `Faculty`, `Monitor` (4.2) | `BrainRegion`, `Daemon`, `GpuMonitor`, `GpuDeviceProbe`, `CapacitySource` (kernel); `Faculty` (cognition) |
+| `Estimator`, `Fusion`, `Region`, `FusionRegion`, `Faculty`, `Monitor` (4.2) | `BrainRegion`, `Daemon`, `GpuMonitor`, `GpuDeviceProbe`, `CapacitySource` (kernel); `Faculty` (cognition) |
 | `Holder` (4.3) | `ResourcePool`, `ResourceConsumer`, `MemoryReporter` (kernel); `StagingResidency` (academy); `Resident` (cognition: her working memory's items become context blocks) |
 | `Transport` (4.4) | `Transport` (client); `Transport`, `AddressedFrame`, `AddressedInbox`, `AddressedPort` (kernel routing); `GridTransport` (grid); `AircDaemonClient`, `AircEventTransport` (core); `AircInferenceTransport` (engine); `Wire` (gateway) |
 | `Renderer` (4.5) | `RenderBackend`, `AvatarRenderer`, `SceneObject` (live) |

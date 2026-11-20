@@ -65,21 +65,26 @@ Part
   text-to-speech backends and picks one per utterance, so no utterance is ever synthesized twice.
   `STTRegistry`, `TTSRegistry`, `AdapterRegistry` and `RenderBackendRegistry` are deleted.
 
-## 4.2 `Region`: parts that publish an estimate
+## 4.2 `Estimator` and `Region`: parts that publish an estimate
 
-A region keeps an estimate of something and publishes it, recomputing when an input it depends on
-changes and invalidating what depends on it. Module: `continuum-kernel::region`.
+An estimator keeps an estimate of something and publishes it, recomputing when an input it depends
+on changes and invalidating what depends on it. A `Region` is an estimator that is a part of a mind:
+the neuroscience term (Wernicke's area, the amygdala), and the name every part of her mind carries.
+Module: `continuum-kernel::estimate`, with `Region` in `continuum-mind::region`.
 
 ```
 Part
-└─ Region                 publishes an estimate on change
-   ├─ FusionRegion        refines it by confidence and age; rough before precise, never blank
-   │  ├─ Amygdala         how much depth this moment needs
-   │  ├─ Wernicke         word-level state of what she hears and is about to say
-   │  └─ SceneFusion      a living estimate of one scene
-   ├─ Faculty             contributes to her workspace's turn
-   │  ├─ Recall, ActThenSpeak, Deferred
-   │  └─ Deliberation     her turn on the Core
+└─ Estimator              publishes an estimate on change
+   ├─ Fusion<E>           refines it by confidence and age; rough before precise, never blank
+   │  └─ SceneFusion      a living estimate of one scene, shared by every mind (chapter 7)
+   ├─ Region              a part of a mind: in her tree, reads the one importance
+   │  ├─ FusionRegion     a region whose estimate is fused
+   │  │  ├─ Amygdala      how much depth this moment needs
+   │  │  └─ Wernicke      word-level state of what she hears and is about to say
+   │  ├─ Faculty          contributes to her workspace's turn
+   │  │  ├─ Recall, ActThenSpeak, Deferred
+   │  │  └─ Deliberation  her turn on the Core
+   │  └─ Surprise, Expectation, Attention, Cerebellum, ... (chapter 5.2)
    ├─ Digest              a channel's consolidated activity (today's ChannelDigestRegion)
    └─ Monitor             measures on a cadence floor
       ├─ GpuMonitor       leaves: Metal, NVIDIA (today's GpuDeviceProbe implementors)
@@ -87,15 +92,20 @@ Part
       └─ CapacityMonitor  leaves: GPU, host RAM, unified pool (today's CapacitySource)
 ```
 
-- **`Region`** replaces `BrainRegion` and its ready buffers: the estimate is a `Published` value.
-- **`FusionRegion`** is a generic owner over the estimate type and its update rules
-  ([BRAIN-REGIONS-SUBSTRATE.md](../BRAIN-REGIONS-SUBSTRATE.md), "Fusion"). Each leaf supplies its
-  estimate type and how each source updates it.
-- **`Faculty`** keeps its name and moves under `Region`: a faculty's contribution is its
-  publication, which her workspace reads at the moment of a turn. `RagSourceFaculty` is deleted:
-  sources feed her view through `Source` (3.6).
-- **`Monitor`** replaces `Daemon`: a region with a cadence floor. `MonitoredGpu<P>` is the existing
-  generic owner pattern, kept.
+- **`Estimator`** replaces `BrainRegion` as the generic root and its ready buffers: the estimate is a
+  `Published` value. A GPU monitor or a channel digest is an estimator, not a region; it is not part
+  of anyone's mind.
+- **`Region`** is what a part of her mind is. It adds only what minds need: a place in her tree and
+  the one importance. Because the plumbing is inherited, a region is its update rule and its
+  declarations, a short file (chapter 5.2). A long region means something belongs in the base.
+- **`Fusion<E>`** is a generic owner over the estimate type and its update rules
+  ([BRAIN-REGIONS-SUBSTRATE.md](../BRAIN-REGIONS-SUBSTRATE.md), "Fusion"), used by shared perception
+  and by her regions alike. Each leaf supplies its estimate type and how each source updates it.
+- **`Faculty`** keeps its name and is a region: a faculty's contribution is its publication, which
+  her workspace reads at the moment of a turn. `RagSourceFaculty` is deleted: sources feed her view
+  through `Source` (3.6).
+- **`Monitor`** replaces `Daemon`: an estimator with a cadence floor. `MonitoredGpu<P>` is the
+  existing generic owner pattern, kept.
 - **`DreamConsolidationRegion`** and **`CreditAcceptanceRegion`** move to the learning lineage (4.8)
   as regions of her learning branch.
 
@@ -224,7 +234,7 @@ a part like any other, with commands that happen to be addressable by name. Modu
 Replaces `ServiceModule` (69 implementors). Each module becomes one of:
 - a `Service`, when it answers outside callers (data, chat, models, code, grid);
 - a `Monitor`, when it only measures (GPU, system resources, health);
-- a `Region`, when it only publishes an estimate (the hippocampus, the channel digest);
+- a `Region`, when it is a part of a mind that only publishes an estimate (the hippocampus); an `Estimator` when it is not (the channel digest);
 - a branch of a persona, when it is hers (her cognition, her rag inspection).
 
 Its string command names become typed action commands, its event globs become topics, and its tick

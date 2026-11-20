@@ -21,10 +21,10 @@ Call: Activity                       a room run by a call recipe; its essentials
 ├─ participants: Parts<PeerId, Participant>
 │  └─ Participant                    a person or a resident, with their streams
 ├─ streams: Parts<StreamId, Stream>  one per camera, screen, microphone, and resident's rendered body
-│  ├─ change: Region                 frame differences, motion, voice activity: cheap, every frame
+│  ├─ change: Estimator              frame differences, motion, voice activity: cheap, every frame
 │  ├─ detectors                      YOLO-class detection, segmentation, transcription: events
 │  └─ deep                           a deep look, on demand, rotated by salience
-├─ scene: SceneFusion: FusionRegion  the living estimate of what is happening on each stream
+├─ scene: SceneFusion: Fusion        the living estimate of what is happening on each stream
 ├─ conversation: Wernicke            words heard and planned, shared by everyone's comprehension
 └─ mix: Mixer: Part                  the audio everyone hears
 ```
