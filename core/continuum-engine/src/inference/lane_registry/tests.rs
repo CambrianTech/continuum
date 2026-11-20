@@ -65,14 +65,14 @@ fn a_restamp_writes_only_onto_the_record_it_read() {
 /// A unique temp lanes dir per test — NEVER the real `~/.continuum/run/lanes/`,
 /// so a live core's registry is untouched and parallel tests don't collide (#7
 /// isolation rule).
-fn temp_dir(tag: &str) -> PathBuf {
+pub(super) fn temp_dir(tag: &str) -> PathBuf {
     std::env::temp_dir().join(format!(
         "continuum-lane-registry-test-{tag}-{}",
         std::process::id()
     ))
 }
 
-fn rec(pid: u32, port: u16, role: LaneRole) -> LaneRecord {
+pub(super) fn rec(pid: u32, port: u16, role: LaneRole) -> LaneRecord {
     LaneRecord {
         pid,
         port,
@@ -267,9 +267,12 @@ fn removing_an_original_never_deletes_the_replacement_under_its_reused_pid() {
     let original = LaneRecord { started_s: 7, ..rec(4243, 58_201, LaneRole::Ephemeral) };
     let replacement = LaneRecord { started_s: 8, ..original.clone() };
     record_in(dir.path(), &replacement).expect("test: the replacement's record");
+    write_retained_marker(dir.path(), &replacement).expect("replacement retention");
     assert!(!remove_under_lock(dir.path(), &original), "the original's teardown finds another incarnation");
     assert_eq!(records_in(dir.path()), vec![replacement.clone()], "the replacement's record survives");
+    assert!(retained_path(dir.path(), replacement.pid).exists(), "stale teardown preserves replacement retention");
     assert!(remove_under_lock(dir.path(), &replacement), "its own teardown removes it");
+    assert!(!retained_path(dir.path(), replacement.pid).exists(), "matched teardown removes its retention");
 }
 
 // what this catches: a LIVE lane is singular — recording a new live lane
@@ -397,7 +400,7 @@ fn shutdown_reaps_the_live_lane_that_boot_leaves_alone() {
     let stop_dir = temp_dir("mode-shutdown");
     let _ = std::fs::remove_dir_all(&stop_dir);
     record_in(&stop_dir, &rec(me, 58057, LaneRole::Live)).expect("record");
-    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown);
+    let outcomes = sweep_in(&stop_dir, SweepMode::Shutdown(&Attested::default()));
     assert!(
         !matches!(outcomes.as_slice(), [SweepOutcome::LeftLive { .. }]),
         "shutdown must NEVER leave a live lane running, got {outcomes:?}"
@@ -539,170 +542,136 @@ mod census_for_admission {
     }
 }
 
-// what this catches: the live-lane watch page IO's retained custody waits on (Codex on #6099). A waiter that
-// subscribed while no lane was verified must WAKE when an adopted engine verifies; a recycled pid running another
-// llama-server (same image, another start time) must never be published; a removal must clear the watch in the
-// same locked step. A REAL process named llama-server stands in for the engine.
-#[cfg(unix)]
-#[tokio::test]
-async fn the_live_lane_watch_publishes_only_the_verified_incarnation() {
-    let dir = temp_dir("live-watch");
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
-    }
-    std::fs::create_dir_all(&dir).expect("test: dir");
-    let pidfile = dir.join("lane.pid");
-    let program = dir.join("llama-server");
-    // /bin/sh, not /bin/sleep: a multi-call coreutils (one binary dispatching on its name) exits at once when its
-    // copy is named llama-server, and the loop keeps the shell itself alive (no exec into a child image)
-    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
-    let mut child = std::process::Command::new(&program)
-        .args(["-c", "while :; do sleep 1; done"])
-        .spawn()
-        .expect("test: spawn");
-    let pid = child.id();
-    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
-    let live = LiveLane::new();
-    let mut waiter = live.subscribe();
-    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
+// what this catches: a stop reaping an engine its durable receipt never attested saved (Codex on #6097: the
+// role-blind shutdown sweep validated the live process but not saved custody, so a replacement engine, or an
+// ephemeral lane holding a genome eval or a vision lease, could be reaped with its state). Only a Saved,
+// stamped, LOCAL custody entry attests a lane, and only its exact incarnation (port, pid, start time).
+#[test]
+fn a_receipt_attests_only_the_exact_local_incarnations_it_saved() {
+    use crate::runtime::{CustodyState, SettledCustody, SettledProcess};
+    assert_eq!(local_endpoint_port("http://127.0.0.1:58057"), Some(58057));
+    assert_eq!(local_endpoint_port("http://localhost:58057/"), Some(58057));
+    assert_eq!(local_endpoint_port("http://[::1]:58057"), Some(58057));
+    assert_eq!(local_endpoint_port("http://10.0.0.7:58057"), None, "a remote host on the same port is not this engine");
+    assert_eq!(local_endpoint_port("http://127.0.0.1:58057/v1"), None, "a root, not a path");
+    assert_eq!(local_endpoint_port("https://127.0.0.1:58057"), None);
 
-    // the same image under the same pid but another start time: a recycled pid, never published
-    record_in(&dir, &LaneRecord { started_s: started_s + 1, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
-    sync_live_locked(&dir, &pidfile, &live);
-    assert!(!waiter.has_changed().expect("test: watch open"), "a start-time mismatch publishes nothing");
-    assert_eq!(*waiter.borrow(), None);
+    let entry = |endpoint: &str, pid, started_s, state| SettledCustody {
+        participant: "page_io".into(),
+        endpoint: endpoint.into(),
+        process: Some(SettledProcess { pid, started_s }),
+        state,
+    };
+    let receipt = |custody| crate::runtime::ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody };
+    let attested = Attested::from_receipt(&receipt(vec![
+        entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Saved),
+        entry("http://10.0.0.7:58059", 8, 12, CustodyState::Saved),
+        entry("http://127.0.0.1:58060", 9, 0, CustodyState::Saved),
+    ]));
+    let lane = |pid, port, started_s| LaneRecord { started_s, ..rec(pid, port, LaneRole::Live) };
+    assert!(attested.covers(&lane(45_376, 58057, 1_794_889_235)), "the saved incarnation is attested");
+    assert!(!attested.covers(&lane(45_376, 58057, 1_794_889_999)), "a replacement on the same pid and port is not");
+    assert!(!attested.covers(&lane(45_376, 58061, 1_794_889_235)), "another port is not");
+    assert!(!attested.covers(&lane(8, 58059, 12)), "a remote endpoint attests nothing on this machine");
+    assert!(!attested.covers(&lane(9, 58060, 0)), "an unstamped process attests nothing");
+    assert!(!Attested::default().covers(&lane(45_376, 58057, 1_794_889_235)), "no receipt attests nothing");
 
-    // the adopted engine verifies: the waiter that subscribed at None wakes with its exact incarnation
-    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
-    sync_live_locked(&dir, &pidfile, &live);
-    assert!(
-        waiter.has_changed().expect("test: watch open"),
-        "the waiter wakes (pidfile pid {:?}, is_llama_server {}, start now {:?} vs recorded {started_s})",
-        lane_pidfile::read_at(&pidfile),
-        lane_process::is_llama_server(pid),
-        crate::inference::engine_residency::process_start_s(pid),
-    );
-    assert_eq!(*waiter.borrow_and_update(), Some(crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 }));
-
-    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_081 };
-    assert!(live.trusts(Some(engine)), "a published engine whose exit is awaited is trusted without a probe");
-
-    // the record removed: cleared in the same step
-    std::fs::remove_file(record_path(&dir, pid)).expect("test: remove the record");
-    sync_live_locked(&dir, &pidfile, &live);
-    assert!(waiter.has_changed().expect("test: watch open"), "the removal wakes the waiter");
-    assert_eq!(*waiter.borrow_and_update(), None, "no live lane once its record is gone");
-
-    // published again; then the engine EXITS with its pidfile and record unchanged: the exit revokes it
-    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_081, LaneRole::Live) }).expect("test: record");
-    sync_live_locked(&dir, &pidfile, &live);
-    assert_eq!(*waiter.borrow_and_update(), Some(engine));
-    child.kill().expect("test: end the fixture process");
-    child.wait().expect("test: reap it");
-    tokio::time::timeout(std::time::Duration::from_secs(10), waiter.wait_for(Option::is_none)) // test watchdog only
-        .await
-        .expect("the engine's exit revokes it, with its files unchanged")
-        .expect("test: watch open");
-    assert!(!live.trusts(Some(engine)), "a dead engine is never trusted from its unchanged files");
-    std::fs::remove_dir_all(&dir).expect("test: clean up");
+    // one participant's retention outweighs another's save of the same incarnation (and the receipt is then not
+    // durable, which attests nothing at all)
+    let mixed = Attested::from_receipt(&receipt(vec![
+        SettledCustody { participant: "page_io".into(), ..entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Saved) },
+        SettledCustody { participant: "learner".into(), ..entry("http://127.0.0.1:58057", 45_376, 1_794_889_235, CustodyState::Retained) },
+    ]));
+    assert!(!mixed.covers(&lane(45_376, 58057, 1_794_889_235)), "a contradicted save attests nothing");
 }
 
-// what this catches (Codex on #6099 c41d1e29f): a cancelled exit waiter leaving its engine trusted forever. The
-// waiter's guard is built before the spawn, so a runtime dropped before the task's first poll still clears it,
-// and only its own watch generation.
+// what this catches: a stop or the next boot killing a running engine lane its durable receipt never attested
+// saved (Codex on #6098: an ephemeral lane may hold a genome A/B eval or a vision lease; the old boot sweep
+// reaped every ephemeral as an orphan, so a lane retained at shutdown died on the next start). A REAL process
+// named llama-server (the sweep's own identification) must survive a shutdown sweep with an empty receipt, with
+// its retention persisted, and then survive the next boot sweep; only after that is it killed, by the test.
 #[cfg(unix)]
 #[test]
-fn an_exit_watch_whose_waiter_never_runs_stops_being_trusted() {
-    let dir = temp_dir("live-watch-abort");
+fn an_unattested_running_lane_survives_the_stop_and_the_next_boot() {
+    let dir = temp_dir("retained-survives");
     if dir.exists() {
         std::fs::remove_dir_all(&dir).expect("test: a clean dir");
     }
     std::fs::create_dir_all(&dir).expect("test: dir");
-    let pidfile = dir.join("lane.pid");
-    let program = dir.join("llama-server");
-    std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
-    let mut child = std::process::Command::new(&program)
-        .args(["-c", "while :; do sleep 1; done"])
-        .spawn()
-        .expect("test: spawn");
-    let pid = child.id();
-    let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
-    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
-    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_082, LaneRole::Live) }).expect("test: record");
-    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_082 };
-
-    let live = LiveLane::new();
-    // a runtime nobody drives: the waiter is spawned but never polled
-    let runtime = tokio::runtime::Builder::new_current_thread().build().expect("test: runtime");
-    {
-        let _entered = runtime.enter();
-        let _writes = writes();
-        sync_live_locked(&dir, &pidfile, &live);
+    let (mut child, pid, started_s) = running_llama_server(&dir);
+    for role in [LaneRole::Ephemeral, LaneRole::Live] {
+        let lane = LaneRecord { started_s, ..rec(pid, 58_071, role) };
+        record_in(&dir, &lane).expect("test: record");
+        assert_eq!(
+            sweep_in(&dir, SweepMode::Shutdown(&Attested::default())),
+            vec![SweepOutcome::RetainedUnattested { pid, port: 58_071, role, persisted: true }],
+            "the stop retains a lane no durable receipt attests"
+        );
+        assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the stop");
+        assert!(record_path(&dir, pid).exists(), "its record kept");
+        if role == LaneRole::Ephemeral {
+            assert_eq!(
+                sweep_in(&dir, SweepMode::Boot),
+                vec![SweepOutcome::RetainedUnattested { pid, port: 58_071, role, persisted: true }],
+                "the next boot honors the retention instead of reaping an 'orphan'"
+            );
+        }
+        assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the next boot");
+        assert!(remove_under_lock(&dir, &lane));
+        assert!(!retained_path(&dir, pid).exists(), "the retention goes with its record");
     }
-    assert_eq!(*live.subscribe().borrow(), Some(engine), "armed, then published");
-    assert!(live.trusts(Some(engine)), "trusted while its waiter exists");
-    drop(runtime); // the waiter is dropped before its first poll
-    assert!(!live.trusts(Some(engine)), "its guard cleared the watch: no longer trusted without a probe");
-
     child.kill().expect("test: end the fixture process");
     child.wait().expect("test: reap it");
     std::fs::remove_dir_all(&dir).expect("test: clean up");
 }
 
-// what this catches (Codex on #6099 b4c75bc57): a persistent exit-watch failure spinning. A waiter that ends
-// Unobservable must leave the engine published but untrusted and NEVER re-arm it: repeated syncs make one arm
-// attempt in all, not a thread per sync.
+/// A REAL process named llama-server (the sweep's own identification) for a test to retire itself: a copied
+/// /bin/sh looping, which stays alive under any name (a multi-call coreutils `sleep` copy exits at once).
 #[cfg(unix)]
-#[tokio::test]
-async fn an_unobservable_exit_watch_is_armed_once_and_never_trusted() {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    struct FailingWatcher(std::sync::Arc<AtomicUsize>);
-    impl EngineExitWatcher for FailingWatcher {
-        fn arm(
-            &self,
-            pid: u32,
-            _is_expected: &dyn Fn() -> bool,
-        ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal> {
-            self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(Box::pin(std::future::ready(continuum_host::process_exit::ExitObserved::Unobservable(
-                continuum_host::process_exit::Unobservable::WatcherLost { pid },
-            ))))
-        }
-    }
-
-    let dir = temp_dir("live-watch-unobservable");
-    if dir.exists() {
-        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
-    }
-    std::fs::create_dir_all(&dir).expect("test: dir");
-    let pidfile = dir.join("lane.pid");
+fn running_llama_server(dir: &Path) -> (std::process::Child, u32, u64) {
     let program = dir.join("llama-server");
     std::fs::copy("/bin/sh", &program).expect("test: a process named llama-server");
-    let mut child = std::process::Command::new(&program)
+    let child = std::process::Command::new(&program)
         .args(["-c", "while :; do sleep 1; done"])
         .spawn()
         .expect("test: spawn");
     let pid = child.id();
     let started_s = crate::inference::engine_residency::process_start_s(pid).expect("test: its start time");
-    std::fs::write(&pidfile, pid.to_string()).expect("test: pidfile");
-    record_in(&dir, &LaneRecord { started_s, ..rec(pid, 58_083, LaneRole::Live) }).expect("test: record");
-    let engine = crate::inference::engine_residency::EngineIncarnation { pid, started_s, port: 58_083 };
+    (child, pid, started_s)
+}
 
-    let arms = std::sync::Arc::new(AtomicUsize::new(0));
-    let live = LiveLane::with_watcher(Box::new(FailingWatcher(arms.clone())));
-    let sync = |live: &std::sync::Arc<LiveLane>| {
-        let _writes = writes();
-        sync_live_locked(&dir, &pidfile, live);
-    };
-    sync(&live);
-    tokio::task::yield_now().await; // the waiter runs: its wait ends Unobservable
-    for _ in 0..3 {
-        sync(&live);
-        tokio::task::yield_now().await;
+// what this catches (Codex on #6098 fb7421c83): boot reaping a running ephemeral lane because no retention
+// marker protects it. The marker is written only after a stop's commit, so a crash before it, a failed write, or
+// a stale marker (another incarnation's start time) must all still leave the running lane and its record to
+// its owner; `persisted` reports a marker only when it names the running process.
+#[cfg(unix)]
+#[test]
+fn boot_never_reaps_a_running_ephemeral_lane_without_attestation() {
+    let dir = temp_dir("boot-fails-closed");
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir).expect("test: a clean dir");
     }
-    assert_eq!(arms.load(Ordering::SeqCst), 1, "one arm attempt in all: an unobservable engine is never re-armed");
-    assert_eq!(*live.subscribe().borrow(), Some(engine), "still published: it is verified live on every sync");
-    assert!(!live.trusts(Some(engine)), "never trusted without a probe");
+    std::fs::create_dir_all(&dir).expect("test: dir");
+    let (mut child, pid, started_s) = running_llama_server(&dir);
+    let lane = LaneRecord { started_s, ..rec(pid, 58_072, LaneRole::Ephemeral) };
+    let retained = |persisted| vec![SweepOutcome::RetainedUnattested { pid, port: 58_072, role: LaneRole::Ephemeral, persisted }];
+
+    // a crash before any stop: no marker at all
+    record_in(&dir, &lane).expect("test: record");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "no marker: still retained, never reaped");
+    assert!(continuum_cli_lifecycle::process::is_alive(pid) && record_path(&dir, pid).exists());
+
+    // a stale marker, naming another incarnation's start time: no proof, still retained
+    write_retained_marker(&dir, &LaneRecord { started_s: started_s + 1, ..lane.clone() }).expect("test: stale marker");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "a stale marker is not custody proof");
+    remove_retained_marker(&dir, pid);
+
+    // the stop's marker write fails (its path is a directory): the stop reports it, and boot still retains
+    std::fs::create_dir_all(retained_path(&dir, pid).join("blocked")).expect("test: block the marker path");
+    assert_eq!(sweep_in(&dir, SweepMode::Shutdown(&Attested::default())), retained(false), "the failed write is reported");
+    assert_eq!(sweep_in(&dir, SweepMode::Boot), retained(false), "a failed marker never licenses the next boot to reap");
+    assert!(continuum_cli_lifecycle::process::is_alive(pid), "still running after the failed stop and the boot");
+    std::fs::remove_dir_all(retained_path(&dir, pid)).expect("test: unblock");
 
     child.kill().expect("test: end the fixture process");
     child.wait().expect("test: reap it");

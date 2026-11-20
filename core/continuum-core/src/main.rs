@@ -74,7 +74,13 @@ fn install_shutdown_handlers() {
         match continuum_host::shutdown_signal::first_edge().await {
             Ok(edge) => {
                 eprintln!("[continuum-core] {} — save-and-join broadcast, then exit", edge.name());
-                continuum_core::runtime::run_signal_shutdown().await;
+                match continuum_core::runtime::run_signal_shutdown().await {
+                    continuum_core::runtime::SignalShutdown::Durable => {}
+                    outcome => {
+                        eprintln!("[continuum-core] retaining core and children after shutdown: {outcome:?}");
+                        return;
+                    }
+                }
                 continuum_sentinel::shutdown_all_sentinels();
                 unsafe { libc::_exit(0) };
             }

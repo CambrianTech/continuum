@@ -7,6 +7,9 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+mod custody_recovery;
+pub use custody_recovery::{CustodyRecoveryError, CustodyRecoveryRefusal};
+
 /// Maps a caller's spelling of a command (a trained alias, a former name, a charset-legal
 /// form) to its canonical name. Installed by the layer that owns that vocabulary.
 pub type CommandNameResolver = fn(&str) -> String;
@@ -35,6 +38,9 @@ pub trait SettleBeforeStop: Send + Sync + 'static {
     /// Its description, for logs. Identity is the participant's type.
     fn name(&self) -> &'static str;
     fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<super::HeldCustody>> + Send + 'static>>;
+    /// Resume only the supplied retained entries. The shutdown operation owns this
+    /// future; observer disconnects never restart it or cancel its custody.
+    fn recover(&self, retained: Vec<super::HeldCustody>) -> Pin<Box<dyn Future<Output = Result<Vec<super::HeldCustody>, CustodyRecoveryError>> + Send + 'static>>;
 }
 
 static SETTLERS: parking_lot::RwLock<Vec<(std::any::TypeId, Arc<dyn SettleBeforeStop>)>> =
@@ -57,6 +63,29 @@ pub fn install_settle_before_stop<S: SettleBeforeStop>(settler: Arc<S>) {
 pub async fn settle_before_stop(cap: Duration) -> Vec<super::SettledCustody> {
     let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
     settle_within(&settlers, cap, &SETTLING).await
+}
+
+/// Resume only retained custody through the participants that originally owned it.
+/// Completed and lost entries are never handed back to a participant.
+pub(crate) async fn recover_retained_custody(custody: &mut [super::SettledCustody]) -> Result<(), CustodyRecoveryError> {
+    let settlers: Vec<Arc<dyn SettleBeforeStop>> = SETTLERS.read().iter().map(|(_, s)| Arc::clone(s)).collect();
+    let mut names = Vec::new();
+    for entry in custody.iter().filter(|entry| entry.state == super::CustodyState::Retained) {
+        if !names.contains(&entry.participant) { names.push(entry.participant.clone()); }
+    }
+    for name in names {
+        let owners: Vec<_> = settlers.iter().filter(|owner| owner.name() == name).collect();
+        let [owner] = owners.as_slice() else {
+            return Err(CustodyRecoveryError {
+                participant: name, reason: CustodyRecoveryRefusal::AmbiguousOwner,
+            });
+        };
+        let retained = custody.iter().filter(|entry| entry.participant == name && entry.state == super::CustodyState::Retained)
+            .map(|entry| super::HeldCustody { endpoint: entry.endpoint.clone(), process: entry.process, state: entry.state }).collect();
+        let recovered = owner.recover(retained).await?;
+        custody_recovery::merge_recovery(custody, &name, &recovered)?;
+    }
+    Ok(())
 }
 
 /// The participant settling right now, so a stop whose watchdog fires names the step that never
@@ -105,6 +134,15 @@ mod tests {
         fn name(&self) -> &'static str {
             "spends"
         }
+    fn recover(&self, retained: Vec<crate::runtime::HeldCustody>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::runtime::HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send + 'static>> {
+        let participant = self.name().to_owned();
+        Box::pin(async move {
+            if retained.is_empty() { return Ok(Vec::new()); }
+            Err(crate::runtime::extensions::CustodyRecoveryError {
+                participant, reason: crate::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
+            })
+        })
+    }
         fn settle(&self, cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             self.given.lock().push(cap);
             let takes = self.takes.min(cap);
@@ -141,6 +179,15 @@ mod tests {
         fn name(&self) -> &'static str {
             "wedged"
         }
+    fn recover(&self, retained: Vec<crate::runtime::HeldCustody>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::runtime::HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send + 'static>> {
+        let participant = self.name().to_owned();
+        Box::pin(async move {
+            if retained.is_empty() { return Ok(Vec::new()); }
+            Err(crate::runtime::extensions::CustodyRecoveryError {
+                participant, reason: crate::runtime::extensions::CustodyRecoveryRefusal::NonCustodian,
+            })
+        })
+    }
         fn settle(&self, _cap: Duration) -> Pin<Box<dyn Future<Output = Vec<crate::runtime::HeldCustody>> + Send + 'static>> {
             Box::pin(std::future::pending())
         }

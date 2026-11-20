@@ -37,6 +37,10 @@
 //! core (the #7 `$HOME`-pollution class). Public wrappers resolve the one
 //! canonical directory and delegate.
 
+mod live_watch;
+pub use live_watch::{subscribe_live, sync_live};
+use live_watch::{sync_live_locked, LIVE_LANE};
+
 use super::lane_pidfile;
 use super::lane_process;
 use serde::{Deserialize, Serialize};
@@ -199,13 +203,69 @@ pub fn live_incarnation() -> Option<super::engine_residency::EngineIncarnation> 
 /// never-blind-kill, GC dead records, drop unparseable garbage — is shared by
 /// construction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SweepMode {
-    /// A fresh core starting up. Ephemeral records are definitionally orphans;
-    /// the LIVE record is left for `lane_pidfile` to adopt-or-reap.
+pub enum SweepMode<'a> {
+    /// A fresh core starting up. It never retires a running lane by its role: with no durable receipt
+    /// attesting its work saved (a crash before the stop's marker, a failed marker write), a running ephemeral
+    /// lane and its record stay for their owner (the ephemeral census); the LIVE record is left for
+    /// `lane_pidfile` to adopt-or-reap. Only dead or reused-pid records are collected.
     Boot,
-    /// This core is shutting down. EVERY lane it owns must die with it, live
-    /// included — `stop` that leaves a server holding VRAM has not stopped.
-    Shutdown,
+    /// This core is shutting down. A lane is reaped only when the durable receipt ATTESTS its exact
+    /// incarnation saved; any other lane, live or ephemeral, is retained and reported with its owner and
+    /// reason (an ephemeral lane may hold a genome A/B eval or a vision lease: its role is not proof that
+    /// nothing is unfinished).
+    Shutdown(&'a Attested),
+}
+
+/// What a durable shutdown receipt attests: the exact LOCAL engine incarnations (port, pid, start time)
+/// whose state it saved. Built only from the receipt's custody; a lane outside it is never reaped.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Attested(Vec<super::engine_residency::EngineIncarnation>);
+
+impl Attested {
+    /// What a receipt attests. A receipt that is not durable attests nothing. In a durable one, an incarnation
+    /// (a stamped process on a LOCAL endpoint) is attested only when EVERY participant's entry for it is
+    /// `Saved`: one participant's retention or loss outweighs any other's save. A remote URL on the same port
+    /// or an unstamped process attests nothing.
+    pub fn from_receipt(receipt: &crate::runtime::ShutdownReceipt) -> Self {
+        if !receipt.state_is_durable() {
+            return Self::default();
+        }
+        let incarnation = |c: &crate::runtime::SettledCustody| {
+            let process = c.process.as_ref()?;
+            let port = local_endpoint_port(&c.endpoint)?;
+            (process.started_s != 0).then_some(super::engine_residency::EngineIncarnation {
+                pid: process.pid,
+                started_s: process.started_s,
+                port,
+            })
+        };
+        let mut attested: Vec<super::engine_residency::EngineIncarnation> = Vec::new();
+        let mut contradicted: Vec<super::engine_residency::EngineIncarnation> = Vec::new();
+        for entry in &receipt.custody {
+            let Some(found) = incarnation(entry) else { continue };
+            if matches!(entry.state, crate::runtime::CustodyState::Saved) {
+                attested.push(found);
+            } else {
+                contradicted.push(found);
+            }
+        }
+        attested.retain(|found| !contradicted.contains(found));
+        attested.dedup();
+        Self(attested)
+    }
+
+    fn covers(&self, rec: &LaneRecord) -> bool {
+        rec.started_s != 0 && self.0.contains(&rec.incarnation())
+    }
+}
+
+/// The port of a LOCAL engine root (`http://127.0.0.1:P`, `http://localhost:P`, `http://[::1]:P`, no path):
+/// the only endpoints a lane record on this machine can be. Anything else is not this machine's engine.
+fn local_endpoint_port(endpoint: &str) -> Option<u16> {
+    let authority = endpoint.strip_prefix("http://")?.trim_end_matches('/');
+    let (host, port) = authority.rsplit_once(':')?;
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]").then_some(())?;
+    port.parse().ok()
 }
 
 /// What a sweep did to one record — exhaustive so every branch is
@@ -227,6 +287,11 @@ pub enum SweepOutcome {
     RemovedReused { pid: u32 },
     /// A live-lane record — left for `lane_pidfile` to adopt-or-reap.
     LeftLive { pid: u32 },
+    /// A running lane no durable receipt attests saved: left running WITH its record (a stop retaining it, or a
+    /// boot finding it). Its owner (the core that recorded it, or its lease/completion owner) must attest it
+    /// before it may be retired. `persisted`: a retention marker naming this exact running incarnation (its OS
+    /// start time) is on disk; informational, never the reason it is kept.
+    RetainedUnattested { pid: u32, port: u16, role: LaneRole, persisted: bool },
     /// A `.lane` file that didn't parse — removed as garbage.
     RemovedUnparseable { path: PathBuf },
 }
@@ -267,225 +332,6 @@ pub fn remove(expected: &LaneRecord) {
     sync_live_locked(&dir, &pidfile, &LIVE_LANE); // in the same lock: no read can interleave with the removal
 }
 
-/// The live lane THIS PROCESS has verified, as a watch: a waiter (page IO's retained custody, waiting for an
-/// adopted engine's identity) awaits a change instead of polling. Single-process by design. Its value is always
-/// the registry's VERIFIED truth, recomputed under the registry's write owner ([`writes`]) whenever it may have
-/// changed: a live record written ([`record`]), a record removed ([`remove`]), or an engine adopted
-/// ([`sync_live`], from the reconcile's `AlreadyServing`). Verified means the canonical pidfile and the live
-/// record agree AND the pid is a running llama-server whose OS start time equals the record's: a recycled pid
-/// running another llama-server is never published. No generation counter is needed: every write recomputes
-/// the one truth under the lock, so a stale read cannot republish over a newer state.
-///
-/// A published engine that EXITS is revoked by the process-completion owner ([`continuum_host::process_exit`]):
-/// publishing first ARMS one kernel exit watch bound to that exact incarnation (binding, then start-time check),
-/// and its exit re-verifies under [`writes`].
-/// So a dead original is never kept published while its pidfile and record stay unchanged (Codex on #6099).
-static LIVE_LANE: std::sync::LazyLock<std::sync::Arc<LiveLane>> = std::sync::LazyLock::new(LiveLane::new);
-
-type LiveIncarnation = Option<super::engine_residency::EngineIncarnation>;
-
-/// One registry's verified live lane, as a watch, and the exit watch of the published engine.
-pub(crate) struct LiveLane {
-    published: tokio::sync::watch::Sender<LiveIncarnation>,
-    exit_watch: parking_lot::Mutex<Option<ExitWatch>>,
-    generations: std::sync::atomic::AtomicU64,
-    watcher: Box<dyn EngineExitWatcher>,
-}
-
-/// How a lane awaits its engine's exit. In production the process-completion owner
-/// ([`continuum_host::process_exit`]); a test injects its own to drive the failure paths.
-pub(crate) trait EngineExitWatcher: Send + Sync {
-    /// Bind the exit watch of `pid`, then prove it with `is_expected` ([`continuum_host::process_exit::arm`]); the
-    /// future resolves on that process's exit.
-    fn arm(
-        &self,
-        pid: u32,
-        is_expected: &dyn Fn() -> bool,
-    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal>;
-}
-
-/// The kernel's exit event, through the one process-completion owner.
-struct KernelExitWatcher;
-
-impl EngineExitWatcher for KernelExitWatcher {
-    fn arm(
-        &self,
-        pid: u32,
-        is_expected: &dyn Fn() -> bool,
-    ) -> Result<std::pin::Pin<Box<dyn std::future::Future<Output = continuum_host::process_exit::ExitObserved> + Send>>, continuum_host::process_exit::ArmRefusal> {
-        let armed = continuum_host::process_exit::arm(pid, is_expected)?;
-        Ok(Box::pin(armed.exited()))
-    }
-}
-
-/// The exit watch of the published engine.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExitWatch {
-    /// Armed and awaited: the engine is trusted without a probe. `generation` names this registration, so an
-    /// older watch's guard can never clear a newer one.
-    Armed { engine: super::engine_residency::EngineIncarnation, generation: u64 },
-    /// Its exit cannot be awaited (the kernel refused, or the wait ended without an answer): published but never
-    /// trusted, so every sync verifies it against the OS, and never armed again for this incarnation (a
-    /// persistent failure is one attempt, not a spin of threads; Codex on #6099 b4c75bc57).
-    Unobservable { engine: super::engine_residency::EngineIncarnation },
-}
-
-/// Owned by the waiting task from before it is spawned: however the task ends (exit seen, abort, runtime
-/// shutdown before its first poll), the armed watch it stood for stops being trusted. It clears only its own
-/// generation.
-struct ExitWatchGuard {
-    lane: std::sync::Arc<LiveLane>,
-    generation: u64,
-}
-
-impl ExitWatchGuard {
-    /// The armed watch could not be awaited: keep the engine published, untrusted, and never re-armed.
-    fn unobservable(self, engine: super::engine_residency::EngineIncarnation) {
-        let mut watch = self.lane.exit_watch.lock();
-        if matches!(*watch, Some(ExitWatch::Armed { generation, .. }) if generation == self.generation) {
-            *watch = Some(ExitWatch::Unobservable { engine });
-        }
-    }
-}
-
-impl Drop for ExitWatchGuard {
-    fn drop(&mut self) {
-        let mut watch = self.lane.exit_watch.lock();
-        if matches!(*watch, Some(ExitWatch::Armed { generation, .. }) if generation == self.generation) {
-            *watch = None;
-        }
-    }
-}
-
-impl LiveLane {
-    pub(crate) fn new() -> std::sync::Arc<Self> {
-        Self::with_watcher(Box::new(KernelExitWatcher))
-    }
-
-    pub(crate) fn with_watcher(watcher: Box<dyn EngineExitWatcher>) -> std::sync::Arc<Self> {
-        std::sync::Arc::new(Self {
-            published: tokio::sync::watch::channel(None).0,
-            exit_watch: parking_lot::Mutex::new(None),
-            generations: std::sync::atomic::AtomicU64::new(0),
-            watcher,
-        })
-    }
-
-    pub(crate) fn subscribe(&self) -> tokio::sync::watch::Receiver<LiveIncarnation> {
-        self.published.subscribe()
-    }
-
-    /// Whether the published value stands for `on_disk` without a process probe: they agree, and a published
-    /// engine has an ARMED exit watch (so its death would already have revoked it).
-    fn trusts(&self, on_disk: LiveIncarnation) -> bool {
-        let published = *self.published.borrow();
-        on_disk == published
-            && published.is_none_or(|engine| matches!(*self.exit_watch.lock(), Some(ExitWatch::Armed { engine: armed, .. }) if armed == engine))
-    }
-
-    /// What to publish for `engine`, just verified from `dir` + `pidfile`: arm its exit watch FIRST (the kernel
-    /// binding, then the start-time check against it). Armed, already armed, or already known unobservable: the
-    /// engine (the last untrusted, never re-armed). Refused (exited, or the pid now names another process):
-    /// nothing, never the earlier verification. Unobservable now, or no runtime to await on: the engine, verified
-    /// now but untrusted, so every sync verifies against the OS.
-    fn publishable(self: &std::sync::Arc<Self>, engine: super::engine_residency::EngineIncarnation, dir: &Path, pidfile: &Path) -> LiveIncarnation {
-        use continuum_host::process_exit::{ArmRefusal, ExitObserved};
-        if matches!(*self.exit_watch.lock(), Some(ExitWatch::Armed { engine: e, .. } | ExitWatch::Unobservable { engine: e }) if e == engine) {
-            return Some(engine);
-        }
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return Some(engine);
-        };
-        let is_engine = || super::engine_residency::process_start_s(engine.pid) == Some(engine.started_s);
-        let exited = match self.watcher.arm(engine.pid, &is_engine) {
-            Ok(exited) => exited,
-            Err(ArmRefusal::AlreadyExited | ArmRefusal::NotThatProcess) => return None,
-            Err(ArmRefusal::Unobservable(why)) => {
-                *self.exit_watch.lock() = Some(ExitWatch::Unobservable { engine });
-                continuum_base::probe!(
-                    class = "lane.live.exit_unobservable",
-                    pid = engine.pid,
-                    why = %why,
-                    "the live engine's exit cannot be awaited: published untrusted, verified against the OS on every sync"
-                );
-                return Some(engine);
-            }
-        };
-        let generation = self.generations.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        *self.exit_watch.lock() = Some(ExitWatch::Armed { engine, generation });
-        let guard = ExitWatchGuard { lane: std::sync::Arc::clone(self), generation };
-        let (dir, pidfile) = (dir.to_path_buf(), pidfile.to_path_buf());
-        runtime.spawn(async move {
-            let guard = guard;
-            match exited.await {
-                ExitObserved::Exited => {
-                    let lane = std::sync::Arc::clone(&guard.lane);
-                    drop(guard); // the watch is spent: untrusted before the re-verify below
-                    let _writes = writes();
-                    sync_live_locked(&dir, &pidfile, &lane);
-                }
-                ExitObserved::Unobservable(why) => {
-                    continuum_base::probe!(
-                        class = "lane.live.exit_unobservable",
-                        pid = engine.pid,
-                        why = %why,
-                        "the live engine's exit watch ended without an answer: published untrusted, never re-armed"
-                    );
-                    guard.unobservable(engine);
-                }
-            }
-        });
-        Some(engine)
-    }
-}
-
-/// Subscribe to the verified live lane of this process ([`LIVE_LANE`]). The first subscription brings the watch
-/// to the truth on disk (an adopting core may never record).
-pub fn subscribe_live() -> tokio::sync::watch::Receiver<LiveIncarnation> {
-    sync_live();
-    LIVE_LANE.subscribe()
-}
-
-/// Bring the watch to the verified truth. Cheap when nothing changed: the file-only incarnation
-/// ([`live_incarnation`], two small reads) agrees with the published one AND that engine's exit is awaited, so
-/// the reconcile may call it on every `AlreadyServing` without a process probe per tick.
-pub fn sync_live() {
-    if LIVE_LANE.trusts(live_incarnation()) {
-        return;
-    }
-    let (Some(dir), Some(pidfile)) = (lanes_dir(), lane_pidfile::pidfile_path()) else {
-        return;
-    };
-    let _writes = writes();
-    sync_live_locked(&dir, &pidfile, &LIVE_LANE);
-}
-
-/// Publish the verified truth of `dir` + `pidfile` on `live`; a live engine is published only once its exit
-/// watch is armed (or found unobservable). The caller holds [`writes`].
-pub(crate) fn sync_live_locked(dir: &Path, pidfile: &Path, live: &std::sync::Arc<LiveLane>) {
-    let truth = verified_live_in(dir, pidfile).and_then(|engine| live.publishable(engine, dir, pidfile));
-    live.published.send_if_modified(|current| {
-        let changed = *current != truth;
-        if changed {
-            *current = truth;
-        }
-        changed
-    });
-}
-
-/// The live lane of `dir` + `pidfile`, verified against the OS: pidfile and live record agree, the record names
-/// a start time, the pid is a running llama-server, and its OS start time is the record's.
-fn verified_live_in(dir: &Path, pidfile: &Path) -> Option<super::engine_residency::EngineIncarnation> {
-    let pid = lane_pidfile::read_at(pidfile)?;
-    let body = std::fs::read_to_string(record_path(dir, pid)).ok()?;
-    let rec = serde_json::from_str::<LaneRecord>(&body).ok()?;
-    let live = rec.role == LaneRole::Live && rec.pid == pid && rec.started_s != 0;
-    (live
-        && lane_process::is_llama_server(pid)
-        && super::engine_residency::process_start_s(pid) == Some(rec.started_s))
-    .then(|| rec.incarnation())
-}
-
 /// Reap every orphaned ephemeral lane recorded by a crashed predecessor and
 /// garbage-collect dead records. Resolves the canonical directory then delegates
 /// to the pure [`sweep_in`]. Returns what it did, for the caller to log.
@@ -509,13 +355,14 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub async fn sweep_all(deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
+pub async fn sweep_all(attested: &Attested, deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
+    let attested = attested.clone();
     let (outcomes, pending) = tokio::task::spawn_blocking(move || {
         let mut pending = Vec::new();
-        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending);
+        let outcomes = sweep_collect(&dir, SweepMode::Shutdown(&attested), &mut pending);
         (outcomes, pending)
     })
     .await
@@ -630,6 +477,60 @@ fn record_path(dir: &Path, pid: u32) -> PathBuf {
     dir.join(format!("{pid}.lane"))
 }
 
+/// Why a running lane was retained, beside its record: the exact incarnation (so a reused pid is never
+/// protected) and the reason. Written by a shutdown that could not attest the lane saved; honored by the next
+/// boot; removed with the record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct RetainedMarker {
+    pid: u32,
+    started_s: u64,
+    port: u16,
+    role: LaneRole,
+    reason: String,
+}
+
+fn retained_path(dir: &Path, pid: u32) -> PathBuf {
+    dir.join(format!("{pid}.retained"))
+}
+
+fn write_retained_marker(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
+    let marker = RetainedMarker {
+        pid: rec.pid,
+        started_s: rec.started_s,
+        port: rec.port,
+        role: rec.role,
+        reason: "a shutdown's durable receipt did not attest this lane's state saved; its owner must attest it".into(),
+    };
+    let body = serde_json::to_string(&marker).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?; // file format on disk: the `.retained` JSON an operator reads beside the `.lane` record and the next boot honors
+    continuum_host::durable::write_replace(&retained_path(dir, rec.pid), body.as_bytes())
+}
+
+/// Remove a lane's retention marker with its record. Absent is the normal case; any other failure is reported,
+/// never discarded (a marker left behind would keep a dead incarnation's reason on disk, which boot ignores
+/// because it names a start time no live process has).
+fn remove_retained_marker(dir: &Path, pid: u32) {
+    match std::fs::remove_file(retained_path(dir, pid)) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => continuum_base::probe!(
+            class = "serving.lane_retention_marker",
+            pid = pid,
+            error = error.to_string().as_str(),
+            "a lane's retention marker could not be removed with its record"
+        ),
+        _ => {}
+    }
+}
+
+/// Whether a retention marker names the RUNNING process `rec` points at: the marker matches the record, and the
+/// OS start time of the pid is that incarnation's (never the record alone: a stale marker is no proof of
+/// custody). Informational only: boot retains a running lane with or without it.
+fn retention_on_disk(dir: &Path, rec: &LaneRecord) -> bool {
+    let marked = std::fs::read_to_string(retained_path(dir, rec.pid))
+        .ok()
+        .and_then(|raw| serde_json::from_str::<RetainedMarker>(&raw).ok())
+        .is_some_and(|marker| rec.started_s != 0 && marker.pid == rec.pid && marker.started_s == rec.started_s && marker.port == rec.port);
+    marked && super::engine_residency::process_start_s(rec.pid) == Some(rec.started_s)
+}
+
 /// Write `rec` as JSON to `<pid>.lane`, creating the directory if needed. Pure:
 /// the caller owns the dir so tests never touch the real registry.
 pub(crate) fn record_in(dir: &Path, rec: &LaneRecord) -> std::io::Result<()> {
@@ -677,17 +578,17 @@ fn clear_live_records_in(dir: &Path) {
     }
 }
 
-/// Delete `expected`'s record, only if the record at its pid is still that incarnation (pid, start time, port).
-/// The caller holds [`writes`]. Whether it was deleted.
+/// Delete only the expected incarnation while holding the registry write lock.
+/// Its retention marker belongs to that same incarnation and is removed only after its record.
 fn remove_locked(dir: &Path, expected: &LaneRecord) -> bool {
     let path = record_path(dir, expected.pid);
-    let Ok(body) = std::fs::read_to_string(&path) else {
-        return false; // no record: nothing to remove
-    };
-    let Ok(found) = serde_json::from_str::<LaneRecord>(&body) else {
-        return false; // unparseable: the sweep owns garbage, never a teardown
-    };
-    found.incarnation() == expected.incarnation() && std::fs::remove_file(&path).is_ok()
+    let Ok(body) = std::fs::read_to_string(&path) else { return false };
+    let Ok(found) = serde_json::from_str::<LaneRecord>(&body) else { return false };
+    if found.incarnation() != expected.incarnation() || std::fs::remove_file(&path).is_err() {
+        return false;
+    }
+    remove_retained_marker(dir, expected.pid);
+    true
 }
 
 /// Every lane record on disk, in no particular order.
@@ -785,11 +686,11 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 }
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
-fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
+fn sweep_in(dir: &Path, mode: SweepMode<'_>) -> Vec<SweepOutcome> {
     sweep_collect(dir, mode, &mut Vec::new())
 }
 
-fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
+fn sweep_collect(dir: &Path, mode: SweepMode<'_>, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
     let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
@@ -817,7 +718,20 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
         // number.
         if !continuum_cli_lifecycle::process::is_alive(rec.pid) {
             let _ = std::fs::remove_file(&path);
+            remove_retained_marker(dir, rec.pid);
             outcomes.push(SweepOutcome::RemovedDead { pid: rec.pid });
+            continue;
+        }
+        // BOOT fails closed: a running ephemeral lane is never retired by its role. Nothing at boot attests its
+        // work saved (the marker is written only after a stop's commit, and may never have been: a crash, a
+        // failed write), so it and its record stay for its owner, the ephemeral census (Codex on #6098).
+        if matches!(mode, SweepMode::Boot) && rec.role == LaneRole::Ephemeral && lane_process::is_llama_server(rec.pid) {
+            outcomes.push(SweepOutcome::RetainedUnattested {
+                pid: rec.pid,
+                port: rec.port,
+                role: rec.role,
+                persisted: retention_on_disk(dir, &rec),
+            });
             continue;
         }
 
@@ -826,7 +740,7 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
         // adoptable — this core is exiting — so every role is reaped.
         let reap = match (rec.role, mode) {
             (LaneRole::Ephemeral, _) => true,
-            (LaneRole::Live, SweepMode::Shutdown) => true,
+            (LaneRole::Live, SweepMode::Shutdown(_)) => true,
             // The live lane's port is `lane_pidfile`'s job (adopt-or-reap). Leave
             // both the process and its record; if `lane_pidfile` reaps it, the next
             // boot sees a dead pid here and GCs the file.
@@ -837,6 +751,14 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             continue;
         }
         if lane_process::is_llama_server(rec.pid) {
+            // A running lane the receipt does not attest saved keeps running, with its record.
+            if let SweepMode::Shutdown(attested) = mode {
+                if !attested.covers(&rec) {
+                    let persisted = write_retained_marker(dir, &rec).is_ok();
+                    outcomes.push(SweepOutcome::RetainedUnattested { pid: rec.pid, port: rec.port, role: rec.role, persisted });
+                    continue;
+                }
+            }
             // Capture the stamped incarnation before signalling. Unstamped
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;

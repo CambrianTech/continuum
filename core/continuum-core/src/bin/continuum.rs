@@ -57,12 +57,6 @@ use continuum_cli_lifecycle::install_cli;
 #[cfg(target_os = "macos")]
 use continuum_cli_lifecycle::launchd;
 
-// The teardown DECISION lives in the leaf, where it runs on every machine in seconds.
-// What stays here is the Windows half that spends the capability — gated at the
-// declaration, because every item inside needs `windows_sys`.
-#[cfg(windows)]
-#[path = "continuum/elevated_teardown.rs"]
-mod elevated_teardown;
 #[cfg(windows)]
 #[path = "continuum/container_maintenance.rs"]
 mod container_maintenance;

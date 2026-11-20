@@ -79,6 +79,22 @@ impl crate::runtime::extensions::SettleBeforeStop for PageIoSettle {
             checkpoint_every_endpoint().await
         })
     }
+
+    /// Recover exactly the retained entries given, one result each, in order (Codex's API on #6097). Admission
+    /// stays closed: the page gate this stop closed is never reopened here.
+    fn recover(
+        &self,
+        retained: Vec<crate::runtime::HeldCustody>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<crate::runtime::HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send + 'static>> {
+        Box::pin(async move {
+            let client = reqwest::Client::new();
+            let mut recovered = Vec::with_capacity(retained.len());
+            for held in &retained {
+                recovered.push(recover_one(&client, held).await?);
+            }
+            Ok(recovered)
+        })
+    }
 }
 
 /// Save every resident of every endpoint, launched here or adopted, through the one checkpoint
@@ -92,65 +108,174 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::HeldCustody> {
     let endpoints: Vec<(String, std::sync::Arc<super::EndpointSlots>)> =
         super::directory().endpoints.iter().map(|e| (e.key().clone(), e.value().clone())).collect();
     let client = &client;
-    let custody = futures::future::join_all(endpoints.into_iter().map(|(root, endpoint)| async move {
-        let started = std::time::Instant::now();
-        let (route, pool) = {
-            let state = endpoint.state.lock();
-            (StopRoute::of(&state), state.pool().cloned())
-        };
-        // Counted outside the endpoint's state lock (no new lock order); an endpoint never asked
-        // or without paging keeps saying so instead of counting as zero residents.
-        let residents = match pool {
-            Probed::Known(pool) => Probed::Known(pool.holders.lock().len() as u64),
-            Probed::NotAsked => Probed::NotAsked,
-            Probed::Absent(why) => Probed::Absent(why),
-        };
-        // An adopted engine's checkpoint needs the live process recorded at this endpoint; the
-        // checkpoint itself verifies it against the engine's ledger.
-        let lane = crate::inference::lane_registry::live_lane()
-            .filter(|lane| lane.root_url() == root)
-            .map(|lane| lane.incarnation());
-        // Before the drain: a stop cut during its checkpoint still leaves whom it was saving.
-        continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
-            route = ?route, residents = ?residents, lane = ?lane,
-            "the stop drains this endpoint's acts, then saves every resident a slot holds, all at once");
-        let state = match (route, lane) {
-            (StopRoute::Owned, _) => {
-                let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
-                StopCheckpoint::Owned(checkpoint_endpoint(client, &root, &endpoint, condemn).await)
-            }
-            (StopRoute::Adopted, Some(lane)) => StopCheckpoint::Adopted(checkpoint_adopted_for_stop(client, &root, &endpoint, lane).await),
-            // An adopted pool with no live lane recorded here: no identity to bind a save to.
-            (StopRoute::Adopted, None) => StopCheckpoint::Adopted(Err(super::AdoptedCheckpointRefusal::IdentityUnverified)),
-            (StopRoute::NoPaging, _) => StopCheckpoint::NoPaging,
-        };
-        // The one process this evidence speaks for, sealed inside the checkpoint while it held the
-        // endpoint's writer: the incarnation stamped on the pool it saved (owned), or the live
-        // incarnation the adopted checkpoint verified against the ledger. Never a reread of the
-        // endpoint after the writer is released, which a replacement could change (Codex on #6042).
-        let process = state.process();
-        let held = state.custody();
-        continuum_base::probe!(
-            class = "inference.kv_page.stop_checkpoint",
-            endpoint = %root,
-            outcome = ?state,
-            failure = ?state.owned_failure(),
-            custody = ?held,
-            process = ?process,
-            residents = ?residents,
-            ms = started.elapsed().as_millis() as u64,
-            "every resident a slot holds saved before the stop, or named as still held by the live engine"
-        );
-        // Retention with no identity still counts against the stop's durability; it only cannot
-        // authorize ending a process.
-        crate::runtime::HeldCustody {
-            endpoint: root,
-            process: process.map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
-            state: held,
+    futures::future::join_all(
+        endpoints.into_iter().map(|(root, endpoint)| checkpoint_one(client, root, endpoint)),
+    )
+    .await
+}
+
+/// One endpoint's stop checkpoint (the first pass) and the custody it leaves.
+async fn checkpoint_one(
+    client: &reqwest::Client,
+    root: String,
+    endpoint: std::sync::Arc<super::EndpointSlots>,
+) -> crate::runtime::HeldCustody {
+    let started = std::time::Instant::now();
+    let (route, pool) = {
+        let state = endpoint.state.lock();
+        (StopRoute::of(&state), state.pool().cloned())
+    };
+    // Counted outside the endpoint's state lock (no new lock order); an endpoint never asked
+    // or without paging keeps saying so instead of counting as zero residents.
+    let residents = match pool {
+        Probed::Known(pool) => Probed::Known(pool.holders.lock().len() as u64),
+        Probed::NotAsked => Probed::NotAsked,
+        Probed::Absent(why) => Probed::Absent(why),
+    };
+    // An adopted engine's checkpoint needs the live process recorded at this endpoint; the
+    // checkpoint itself verifies it against the engine's ledger.
+    let lane = crate::inference::lane_registry::live_lane()
+        .filter(|lane| lane.root_url() == root)
+        .map(|lane| lane.incarnation());
+    // Before the drain: a stop cut during its checkpoint still leaves whom it was saving.
+    continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
+        route = ?route, residents = ?residents, lane = ?lane,
+        "the stop drains this endpoint's acts, then saves every resident a slot holds, all at once");
+    let state = match (route, lane) {
+        (StopRoute::Owned, _) => {
+            let condemn = || crate::inference::llama_server::condemn("the node is stopping: its turns were handed back, so their acts end before the stop's checkpoint");
+            StopCheckpoint::Owned(checkpoint_endpoint(client, &root, &endpoint, condemn).await)
         }
-    }))
-    .await;
-    custody
+        (StopRoute::Adopted, Some(lane)) => StopCheckpoint::Adopted(checkpoint_adopted_for_stop(client, &root, &endpoint, lane).await),
+        // An adopted pool with no live lane recorded here: no identity to bind a save to.
+        (StopRoute::Adopted, None) => StopCheckpoint::Adopted(Err(super::AdoptedCheckpointRefusal::IdentityUnverified)),
+        (StopRoute::NoPaging, _) => StopCheckpoint::NoPaging,
+    };
+    // The one process this evidence speaks for, sealed inside the checkpoint while it held the
+    // endpoint's writer: the incarnation stamped on the pool it saved (owned), or the live
+    // incarnation the adopted checkpoint verified against the ledger. Never a reread of the
+    // endpoint after the writer is released, which a replacement could change (Codex on #6042).
+    let process = state.process();
+    let held = state.custody();
+    continuum_base::probe!(
+        class = "inference.kv_page.stop_checkpoint",
+        endpoint = %root,
+        outcome = ?state,
+        failure = ?state.owned_failure(),
+        custody = ?held,
+        process = ?process,
+        residents = ?residents,
+        ms = started.elapsed().as_millis() as u64,
+        "every resident a slot holds saved before the stop, or named as still held by the live engine"
+    );
+    // Retention with no identity still counts against the stop's durability; it only cannot
+    // authorize ending a process.
+    crate::runtime::HeldCustody {
+        endpoint: root,
+        process: process.map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
+        state: held,
+    }
+}
+
+/// Recover ONE retained endpoint (Codex's approved shape on #6097). Nothing reaches an engine until its identity is
+/// proven under the endpoint's writer: a stamped process whose OS incarnation is gone, or an endpoint now serving
+/// another engine, is Lost with its original endpoint and process, and the replacement is never contacted. An
+/// unknown original binds only to the verified live lane at this root. Admission stays closed; an owned server is
+/// not condemned again (the first pass did).
+async fn recover_one(
+    client: &reqwest::Client,
+    held: &crate::runtime::HeldCustody,
+) -> Result<crate::runtime::HeldCustody, crate::runtime::extensions::CustodyRecoveryError> {
+    use crate::runtime::CustodyState;
+    let invalid = |reason| crate::runtime::extensions::CustodyRecoveryError {
+        participant: "page_io".into(),
+        reason,
+    };
+    if held.state != CustodyState::Retained {
+        return Err(invalid(crate::runtime::extensions::CustodyRecoveryRefusal::NotRetained));
+    }
+    let Some(endpoint) = super::directory().endpoints.get(&held.endpoint).map(|e| std::sync::Arc::clone(e.value())) else {
+        return Err(invalid(crate::runtime::extensions::CustodyRecoveryRefusal::UnknownEndpoint));
+    };
+    let original = held.process.map(|p| (p.pid, p.started_s));
+    let lost = |h: &crate::runtime::HeldCustody| crate::runtime::HeldCustody { state: CustodyState::Lost, ..h.clone() };
+    if let Some((pid, started_s)) = original {
+        if crate::inference::engine_residency::process_start_s(pid) != Some(started_s) {
+            return Ok(lost(held));
+        }
+    }
+    let route = StopRoute::of(&endpoint.state.lock());
+    let state = match route {
+        StopRoute::Owned => {
+            let Some(generation) = endpoint.state.lock().generation().cloned() else {
+                return Ok(held.clone()); // no generation to prove anything against: missing evidence is Retained, never Lost
+            };
+            // Under the writer, before readiness or anything else changes: the pool's stamped engine must be the
+            // original. A replacement is refused here and never contacted.
+            let pool_is_original = || {
+                original.is_some_and(|expected| match endpoint.state.lock().pool() {
+                    Probed::Known(pool) => pool.incarnation() == Some(expected),
+                    Probed::NotAsked | Probed::Absent(_) => false,
+                })
+            };
+            let Ok(mut transition) = endpoint.transition_for_generation_if(&generation, &pool_is_original).await else {
+                // Lost is terminal, so it needs proof: the endpoint now serves another generation, or its pool is
+                // stamped with another engine. An unstamped or unprobed pool is missing evidence: Retained.
+                let replaced = {
+                    let state = endpoint.state.lock();
+                    // positive evidence only: ANOTHER generation is there. None (it ended while recovery waited for
+                    // the writer) proves nothing about the original: Retained.
+                    let other_generation = state.generation().is_some_and(|g| !g.same_engine(&generation));
+                    let other_engine = match state.pool() {
+                        Probed::Known(pool) => pool.incarnation().is_some_and(|stamped| Some(stamped) != original),
+                        Probed::NotAsked | Probed::Absent(_) => false,
+                    };
+                    other_generation || other_engine
+                };
+                return Ok(if original.is_some() && replaced { lost(held) } else { held.clone() });
+            };
+            StopCheckpoint::Owned(match transition.checkpoint_residents(client, &held.endpoint).await {
+                Ok(saved) => OwnedStopCheckpoint::Saved { process: saved.pool.incarnation() },
+                Err(failure) => OwnedStopCheckpoint::Failed(failure),
+            })
+        }
+        StopRoute::Adopted => {
+            let lane = crate::inference::lane_registry::live_lane()
+                .filter(|lane| lane.root_url() == held.endpoint)
+                .map(|lane| lane.incarnation());
+            let incarnation = match (original, lane) {
+                (Some((pid, started_s)), Some(lane)) if (lane.pid, lane.started_s) == (pid, started_s) => lane,
+                (Some(_), Some(_)) => return Ok(lost(held)), // another engine is live at this root: never contacted
+                (None, Some(lane)) => lane,              // an unknown original binds only to the verified lane
+                (_, None) => return Ok(held.clone()),            // no verified identity now: retained, untouched
+            };
+            let mut transition = endpoint.transition().await;
+            // Under the writer: the recorded pool must be this engine's, with no discovery during recovery.
+            match endpoint.adopted_checkpoint_pool(incarnation) {
+                Ok(Probed::Known(_)) => {}
+                Ok(Probed::NotAsked | Probed::Absent(_)) => return Ok(held.clone()),
+                Err(_) => return Ok(held.clone()), // a refusal is not proof the original is gone: Retained
+            }
+            let checkpoint = super::AdoptedCheckpoint { incarnation, intent: super::AdoptedCheckpointIntent::Stop };
+            StopCheckpoint::Adopted(
+                transition
+                    .checkpoint_adopted_before_replacement(client, &held.endpoint, checkpoint, &|| true)
+                    .await
+                    .map(|()| (incarnation.pid, incarnation.started_s)),
+            )
+        }
+        StopRoute::NoPaging => StopCheckpoint::NoPaging,
+    };
+    let recovered = crate::runtime::HeldCustody {
+        endpoint: held.endpoint.clone(),
+        process: state.process().map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
+        state: state.custody(),
+    };
+    Ok(match (original, recovered.process) {
+        (Some(_), None) => held.clone(), // the retry named no process: the original identity stays, still Retained
+        (Some(o), Some(now)) if o != (now.pid, now.started_s) => lost(held),
+        _ => recovered,
+    })
 }
 
 /// Drain an adopted endpoint's acts and save its residents through the adopted checkpoint owner,
@@ -324,6 +449,98 @@ mod tests {
         assert!(gate.admit().is_none(), "nothing pages once the node is stopping");
         drop(permit); // the save's terminal receipt and ledger update
         assert_eq!(settling.await, PageIoSettled { in_flight_at_close: 1 });
+    }
+
+    // what this catches: a recovery that re-saves or rebinds what it must not (Codex's recovery API on #6097):
+    // only Retained custody is recovered, only for an endpoint this process pages, and a stamped incarnation that
+    // is gone becomes Lost with its original endpoint and process, never retried against a replacement.
+    #[tokio::test]
+    async fn recovery_takes_only_retained_custody_and_a_gone_incarnation_is_lost() {
+        use crate::runtime::{CustodyState, HeldCustody, SettledProcess};
+        let root = format!("http://127.0.0.1:1/{}", uuid::Uuid::new_v4());
+        let _paged = super::super::directory().endpoint(&root); // this process pages the endpoint
+        let client = reqwest::Client::new();
+        let gone = SettledProcess { pid: u32::MAX - 7, started_s: 1 }; // no such process
+        let held = |state| HeldCustody { endpoint: root.clone(), process: Some(gone), state };
+
+        assert!(recover_one(&client, &held(CustodyState::Saved)).await.is_err(), "Saved is immutable, never recovered");
+        assert!(recover_one(&client, &held(CustodyState::Lost)).await.is_err(), "Lost is immutable, never recovered");
+        let unknown = HeldCustody { endpoint: format!("http://127.0.0.1:1/{}", uuid::Uuid::new_v4()), ..held(CustodyState::Retained) };
+        assert!(recover_one(&client, &unknown).await.is_err(), "an endpoint this process does not page is a protocol failure");
+
+        let recovered = recover_one(&client, &held(CustodyState::Retained)).await.expect("a retained entry recovers");
+        assert_eq!(recovered, held(CustodyState::Lost), "a gone incarnation is Lost, its endpoint and process preserved");
+    }
+
+    // what this catches: recovery checkpointing a REPLACEMENT (Codex on #6100 10a173693). The original engine is
+    // still alive (this test process stands in for it), but the endpoint's owned pool now belongs to another
+    // engine: recovery must return Lost under the endpoint's writer and never send the replacement one request.
+    #[tokio::test]
+    async fn recovery_never_contacts_a_replacement_engine() {
+        use crate::runtime::{CustodyState, HeldCustody, SettledProcess};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let counted = requests.clone();
+        let app = axum::Router::new().fallback(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+            async { axum::http::StatusCode::OK }
+        });
+        let namespace = format!("/{}", uuid::Uuid::new_v4());
+        let app = axum::Router::new().nest(&namespace, app);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
+        let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.expect("test: serve") });
+
+        let dir = tempfile::tempdir().expect("test: page dir");
+        let endpoint = super::super::directory().endpoint(&root);
+        let contract = || super::super::KvPageContract {
+            model_id: "fixture".into(),
+            model: "fixture.gguf".into(),
+            adapters: vec![],
+            page_dir: Some(dir.path().to_path_buf()),
+            context: 8192,
+            slots: 2,
+            cache_type: Some("q8_0".into()),
+            flash_attn: Some(true),
+            revisions: Some(vec![("fixture.gguf".into(), 73, std::time::SystemTime::UNIX_EPOCH)]),
+        };
+        let transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("test: generation");
+        transition.ready(&root, &generation, contract()).expect("test: ready");
+        drop(transition);
+        let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
+        let me = std::process::id();
+        let started_s = crate::inference::engine_residency::process_start_s(me).expect("test: own start time");
+        let held = HeldCustody { endpoint: root.clone(), process: Some(SettledProcess { pid: me, started_s }), state: CustodyState::Retained };
+
+        // the pool stamps no engine yet: missing evidence, so the alive original stays Retained, nothing contacted
+        let unverified = recover_one(&reqwest::Client::new(), &held).await.expect("recovery answers");
+        assert_eq!(unverified, held, "an unstamped pool proves nothing: Retained, untouched");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted without proven identity");
+
+        // the generation ends WHILE recovery waits for the writer (Codex on #6100 edf4ab3f1): missing evidence, so
+        // the alive original stays Retained, nothing contacted
+        let writer = endpoint.transition().await;
+        let client = reqwest::Client::new(); // outlives the pinned future that borrows it
+        let mut waiting = Box::pin(recover_one(&client, &held));
+        assert!(futures::poll!(&mut waiting).is_pending(), "recovery read the generation and waits for the writer");
+        endpoint.state.lock().engine = super::super::kv_slot_pool::Engine::Unprobed;
+        drop(writer);
+        assert_eq!(waiting.await.expect("recovery answers"), held, "a generation gone while waiting proves nothing: Retained");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "nothing contacted after the generation ended");
+
+        // a new owned generation serves again, its pool not yet stamped with the original
+        let transition = endpoint.transition().await;
+        let generation = transition.start_generation().expect("test: generation");
+        transition.ready(&root, &generation, contract()).expect("test: ready");
+        drop(transition);
+        let pool = endpoint.admit().await.expect("test: ready pool").pool.expect("test: managed pool");
+
+        pool.mark_incarnation((4_242_424, 1)); // now proven: the replacement engine is behind this endpoint
+        let recovered = recover_one(&reqwest::Client::new(), &held).await.expect("recovery answers");
+        assert_eq!(recovered, HeldCustody { state: CustodyState::Lost, ..held }, "the original's custody is Lost");
+        assert_eq!(requests.load(Ordering::SeqCst), 0, "the replacement engine was never contacted");
+        server.abort();
     }
 
     // what this catches: a drain that waits when nothing was in flight.

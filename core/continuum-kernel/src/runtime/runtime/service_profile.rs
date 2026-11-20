@@ -228,6 +228,9 @@ pub enum CustodyState {
     /// Not saved, or not proven saved (refused, failed, uncertain, no paging): the live process
     /// may keep the only copy, and ending it would lose that copy.
     Retained,
+    /// The original custodian disappeared before proving its state saved.
+    /// Terminal evidence: a replacement process cannot repair this loss.
+    Lost,
 }
 
 impl CustodyState {
@@ -239,6 +242,7 @@ impl CustodyState {
     /// Two participants' custody of one process: retained by either is retained.
     pub fn combine(self, other: Self) -> Self {
         match (self, other) {
+            (Self::Lost, _) | (_, Self::Lost) => Self::Lost,
             (Self::Saved, Self::Saved) => Self::Saved,
             (Self::Retained, _) | (_, Self::Retained) => Self::Retained,
         }
@@ -304,7 +308,11 @@ impl ShutdownReceipt {
                     None => format!("{} at {} (process unidentified)", c.participant, c.endpoint),
                 })
                 .collect();
-            lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+            if retained.iter().any(|c| c.state == CustodyState::Lost) {
+                lines.push(format!("state NOT saved; a custodian was lost: {}", held.join(", ")));
+            } else {
+                lines.push(format!("state NOT saved, still held only by the live process: {}", held.join(", ")));
+            }
         }
         lines.join("; ")
     }
@@ -325,6 +333,28 @@ impl ShutdownReceipt {
 pub(super) struct ShutdownOperation {
     pub(super) result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
     pub(super) started: std::sync::atomic::AtomicBool,
+    recovery_running: Arc<parking_lot::Mutex<bool>>,
+}
+
+/// Own the evidence even when recovery unwinds or its executor drops the task.
+/// Constructed before spawning, so cancellation before the first poll is covered.
+struct RecoveryPublication {
+    receipt: ShutdownReceipt,
+    result: tokio::sync::watch::Sender<Option<ShutdownReceipt>>,
+    running: Arc<parking_lot::Mutex<bool>>,
+    completed: bool,
+}
+
+impl Drop for RecoveryPublication {
+    fn drop(&mut self) {
+        // These are receipt descriptors, never the resident blocks themselves.
+        self.result.send_replace(Some(self.receipt.clone()));
+        *self.running.lock() = false;
+        if !self.completed {
+            continuum_base::probe!(class = "shutdown.recovery.interrupted",
+                "recovery interrupted; latest verified evidence retained and explicit recovery available");
+        }
+    }
 }
 
 impl ShutdownOperation {
@@ -332,6 +362,7 @@ impl ShutdownOperation {
         Self {
             result: tokio::sync::watch::channel(None).0,
             started: std::sync::atomic::AtomicBool::new(false),
+            recovery_running: Arc::new(parking_lot::Mutex::new(false)),
         }
     }
 
@@ -377,6 +408,32 @@ impl ShutdownOperation {
         }
         self.result.subscribe()
     }
+
+    /// Recovery belongs to this operation, never to the requesting connection.
+    /// Reconnecting observers join the same future and see its merged receipt.
+    pub(super) fn recover_custody(&self) -> Result<tokio::sync::watch::Receiver<Option<ShutdownReceipt>>, NoDrainedShutdown> {
+        let mut running = self.recovery_running.lock();
+        if !*running {
+            let receipt = self.result.borrow().clone().ok_or(NoDrainedShutdown)?;
+            if receipt.custody.iter().any(|entry| entry.state == CustodyState::Retained) {
+                *running = true;
+                self.result.send_replace(None);
+                let mut publication = RecoveryPublication {
+                    receipt, result: self.result.clone(), running: self.recovery_running.clone(), completed: false,
+                };
+                tokio::spawn(async move {
+                    if let Err(error) = crate::runtime::extensions::recover_retained_custody(&mut publication.receipt.custody).await {
+                        continuum_base::probe!(class = "shutdown.recovery.refused", error = %error,
+                            "custody recovery refused; unresolved owners and completed evidence retained");
+                    }
+                    // Publish before reopening explicit recovery admission. Completed
+                    // entries will not be included in any subsequent recovery request.
+                    publication.completed = true;
+                });
+            }
+        }
+        Ok(self.result.subscribe())
+    }
 }
 
 impl Default for ShutdownOperation {
@@ -403,6 +460,16 @@ pub fn begin_shutdown(rt: &Arc<Runtime>, settle: std::time::Duration) -> tokio::
 /// Observe the retained terminal receipt without starting a shutdown.
 pub fn shutdown_receipt() -> Option<ShutdownReceipt> {
     process_shutdown().result.borrow().clone()
+}
+
+/// Join selective custody recovery on the existing shutdown owner. This does not
+/// replay module shutdown phases or erase incomplete module evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("no drained shutdown receipt exists to recover")]
+pub struct NoDrainedShutdown;
+
+pub fn recover_shutdown_custody() -> Result<tokio::sync::watch::Receiver<Option<ShutdownReceipt>>, NoDrainedShutdown> {
+    process_shutdown().recover_custody()
 }
 
 /// Wait for the shutdown to finish, up to `budget`.
@@ -449,47 +516,173 @@ pub fn signal_runtime() -> Result<Arc<Runtime>, ShutdownUnavailable> {
     SIGNAL_RUNTIME.get().cloned().ok_or(ShutdownUnavailable)
 }
 
-pub async fn run_signal_shutdown() {
-    // Through the SAME idempotent operation the `system/shutdown` verb triggers, so a
-    // signal arriving while the verb is running joins that broadcast instead of starting
-    // a second one over the same state. The bound is deliberately larger than one phase:
-    // three 2s phases run in parallel across modules, so a healthy stop is ~6s worst case
-    // and a tighter cap here would cut off the save phase on any node slow enough to
-    // need it.
-    // No time for turns: a signal's deadline is the supervisor's (launchd's ExitTimeOut, a
-    // console close), not ours to spend waiting on them. The settle participants still run
-    // (`ShutdownOperation::begin`): the page checkpoint ends on its own events.
+/// Only a durable receipt permits the signal caller to retire the process.
+#[derive(Debug)]
+pub enum SignalShutdown {
+    Durable,
+    Retained,
+    Unavailable,
+}
+
+#[must_use]
+pub async fn run_signal_shutdown() -> SignalShutdown {
+    // Join the same owner as command shutdown. An observer deadline cannot
+    // authorize exit or abandon the decision when the receipt arrives later.
     let rt = match signal_runtime() {
         Ok(rt) => rt,
         Err(reason) => {
             eprintln!("[continuum-core] shutdown unavailable: {reason}");
-            return;
+            return SignalShutdown::Unavailable;
         }
     };
     let rx = begin_shutdown(&rt, std::time::Duration::ZERO);
-    match await_shutdown(rx, std::time::Duration::from_secs(8)).await {
+    signal_shutdown_result(rx).await
+}
+
+async fn signal_shutdown_result(mut rx: tokio::sync::watch::Receiver<Option<ShutdownReceipt>>) -> SignalShutdown {
+    let observed = rx.wait_for(Option::is_some).await.ok();
+    let receipt = observed.as_deref().and_then(Option::as_ref);
+    match receipt {
         Some(receipt) => {
-            // A signal handler cannot return an exit code to anyone, so the receipt's only
-            // readers are the log and the probe ledger — which is exactly why it is
-            // written here rather than dropped. `_exit` follows immediately.
+            // The caller must preserve the process and its children on refusal.
             if !receipt.state_is_durable() {
+                continuum_base::probe!(class = "shutdown.refused", reason = "state_retained",
+                    receipt = receipt.summary(), "shutdown refused; unresolved state remains in its owners");
                 eprintln!(
-                    "[continuum-core] STOPPED WITH UNSAVED STATE: {}",
+                    "[continuum-core] STOP REFUSED, STATE RETAINED: {}",
                     receipt.summary()
                 );
+                SignalShutdown::Retained
+            } else {
+                SignalShutdown::Durable
             }
         }
         None => {
-            // Name the step that never completed (card b5b9bef3): a SIGTERM that joins a stop
-            // already stalled in a settle participant (the M5's page checkpoint, 2026-11-14) must
-            // say so, not only that the save is unknown.
-            let step = match crate::runtime::extensions::settling() {
-                Some(participant) => format!("the `{participant}` settle"),
-                None => "the module save".to_owned(),
-            };
-            eprintln!(
-                "[continuum-core] shutdown did not finish within 8s, stalled in {step} — state durability is UNKNOWN"
-            );
+            continuum_base::probe!(class = "shutdown.refused", reason = "receipt_owner_closed",
+                "shutdown owner closed without a receipt; core and children retained");
+            eprintln!("[continuum-core] STOP REFUSED: shutdown owner closed without a receipt");
+            SignalShutdown::Unavailable
         }
+    }
+}
+
+#[cfg(test)]
+mod signal_receipt_tests {
+    use super::*;
+
+    #[test]
+    fn recovery_without_a_drained_receipt_refuses_without_starting_work() {
+        let operation = ShutdownOperation::new();
+        assert!(matches!(operation.recover_custody(), Err(NoDrainedShutdown)));
+        assert!(!*operation.recovery_running.lock());
+        assert!(operation.result.borrow().is_none());
+        operation.started.store(true, std::sync::atomic::Ordering::Release);
+        assert!(matches!(operation.recover_custody(), Err(NoDrainedShutdown)));
+        assert!(!*operation.recovery_running.lock());
+        assert!(operation.result.borrow().is_none());
+    }
+
+    #[tokio::test]
+    async fn interrupted_recovery_publishes_evidence_and_reopens_admission() -> Result<(), Box<dyn std::error::Error>> {
+        for unwind in [false, true] {
+            let operation = ShutdownOperation::new();
+            *operation.recovery_running.lock() = true;
+            let receipt = ShutdownReceipt { modules: vec![], total_ms: 1, custody: vec![SettledCustody {
+                participant: "interrupted-owner".into(), endpoint: "retained".into(),
+                process: Some(SettledProcess { pid: 42, started_s: 7 }), state: CustodyState::Retained,
+            }] };
+            let publication = RecoveryPublication {
+                receipt: receipt.clone(), result: operation.result.clone(),
+                running: operation.recovery_running.clone(), completed: false,
+            };
+            let (entered, waiting) = tokio::sync::oneshot::channel();
+            let task = tokio::spawn(async move {
+                let _publication = publication;
+                let _ = entered.send(());
+                if unwind { std::panic::resume_unwind(Box::new("injected recovery unwind")); }
+                std::future::pending::<()>().await;
+            });
+            waiting.await?;
+            if !unwind { task.abort(); }
+            let failure = task.await.err().ok_or("fault did not interrupt recovery")?;
+            assert_eq!(failure.is_panic(), unwind);
+            assert_eq!(*operation.result.borrow(), Some(receipt));
+            assert!(!*operation.recovery_running.lock());
+        }
+        Ok(())
+    }
+
+    struct RecoveryOwner {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        entered: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::runtime::extensions::SettleBeforeStop for RecoveryOwner {
+        fn name(&self) -> &'static str { "recovery-observer-fixture" }
+        fn settle(&self, _: std::time::Duration) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<HeldCustody>> + Send>> {
+            Box::pin(async { Vec::new() })
+        }
+        fn recover(&self, mut retained: Vec<HeldCustody>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<HeldCustody>, crate::runtime::extensions::CustodyRecoveryError>> + Send>> {
+            let calls = self.calls.clone();
+            let entered = self.entered.clone();
+            let release = self.release.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert_eq!(retained.len(), 1, "completed state must never be recomputed");
+                entered.notify_one();
+                release.notified().await;
+                retained[0].state = CustodyState::Saved;
+                Ok(retained)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn recovery_survives_observer_disconnect_and_never_replays_saved_entries() -> Result<(), Box<dyn std::error::Error>> {
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        crate::runtime::extensions::install_settle_before_stop(Arc::new(RecoveryOwner {
+            calls: calls.clone(), entered: entered.clone(), release: release.clone(),
+        }));
+        let operation = ShutdownOperation::new();
+        let entry = |endpoint: &str, state| SettledCustody {
+            participant: "recovery-observer-fixture".into(), endpoint: endpoint.into(),
+            process: Some(SettledProcess { pid: 42, started_s: 7 }), state,
+        };
+        let saved = entry("already-saved", CustodyState::Saved);
+        operation.result.send_replace(Some(ShutdownReceipt {
+            modules: vec![], total_ms: 1, custody: vec![saved.clone(), entry("retained", CustodyState::Retained)],
+        }));
+        drop(operation.recover_custody()?);
+        entered.notified().await;
+        let mut observer = operation.recover_custody()?;
+        assert!(observer.borrow().is_none(), "in-progress recovery cannot authorize commit");
+        release.notify_one();
+        let receipt = observer.wait_for(Option::is_some).await?.clone().ok_or("missing receipt")?;
+        assert_eq!(receipt.custody[0], saved);
+        assert!(receipt.state_is_durable());
+        drop(operation.recover_custody()?);
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn signal_observer_waits_for_the_owners_late_receipt() -> Result<(), Box<dyn std::error::Error>> {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        let waiting = tokio::spawn(signal_shutdown_result(observer));
+        tokio::task::yield_now().await;
+        assert!(!waiting.is_finished());
+        owner.send_replace(Some(ShutdownReceipt { modules: vec![], total_ms: 9000, custody: vec![] }));
+        assert!(matches!(waiting.await?, SignalShutdown::Durable));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn losing_the_receipt_owner_never_authorizes_exit() {
+        let (owner, observer) = tokio::sync::watch::channel(None);
+        drop(owner);
+        assert!(matches!(signal_shutdown_result(observer).await, SignalShutdown::Unavailable));
     }
 }

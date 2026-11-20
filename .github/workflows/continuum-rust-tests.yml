@@ -311,9 +311,7 @@ jobs:
         run: |
           set -o pipefail
           for test in \
-            tests::reboot_tests::shutdown_errors_fail_closed_never_no_answer \
-            tests::reboot_tests::pre_rail_label_is_reserved_for_unknown_verb_phrasings \
-            tests::reboot_tests::cannot_attest_refuses_reboot_and_never_renders_as_first_rollout \
+            tests::reboot_tests::incomplete_custody_refuses_stop_and_reboot \
             tests::reboot_tests::prebuilt_reboot_options_are_explicit_and_strict \
             tests::reboot_tests::prebuilt_reboot_launch_retains_candidate_socket_and_cwd \
             tests::reboot_tests::service_reboot_rejects_stale_action_and_artifact_before_teardown \
@@ -487,7 +485,7 @@ jobs:
         if: needs.changes.outputs.rust != 'false'
         run: |
           foreach ($test in @(
-            'tests::reboot_tests::legacy_core_requires_explicit_recovery_before_reboot_teardown'
+            'tests::reboot_tests::incomplete_custody_refuses_stop_and_reboot'
             'maintenance::tests::maintenance_is_bounded_and_recovery_cannot_repeat_observation'
             'maintenance::tests::every_drain_observation_and_restart_failure_restores_once'
           )) {

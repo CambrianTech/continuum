@@ -72,6 +72,11 @@ fn validate_commit(params: &ShutdownCommitParams, current: &ShutdownTarget, rece
             "shutdown commit requires the completed save receipt from this process".into(),
         ));
     }
+    if !receipt.is_some_and(ShutdownReceipt::state_is_durable) {
+        return Err(crate::sdk_codegen::CommandError::Invalid(
+            "shutdown commit refused: state is not durable; retain the core and engine until custody is resolved".into(),
+        ));
+    }
     Ok(())
 }
 
@@ -117,6 +122,37 @@ crate::action_command! {
         // Match the signal path: save/join is already complete, and native static
         // destructors are deliberately skipped. No await between validation and exit.
         unsafe { libc::_exit(0) }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "../../../protocol/typescript/system/ShutdownRecoveryResult.ts")]
+pub enum ShutdownRecoveryResult {
+    NoDrainedShutdown,
+    ReceiptOwnerClosed,
+    Completed(ShutdownResult),
+}
+
+crate::action_command! {
+    /// Resume retained custody and await the existing shutdown receipt watch.
+    /// Disconnecting drops only this observer; the operation retains its work.
+    pub struct SystemShutdownRecover;
+    name: "system/shutdown-recover",
+    access: Privileged,
+    params: ShutdownTarget,
+    output: ShutdownRecoveryResult,
+    run(_this, _ctx, p) => {
+        validate_target(&p, shutdown_target())?;
+        let Ok(mut rx) = crate::runtime::recover_shutdown_custody() else {
+            return Ok(ShutdownRecoveryResult::NoDrainedShutdown);
+        };
+        let receipt = rx.wait_for(Option::is_some).await.ok().and_then(|value| value.clone());
+        Ok(match receipt {
+            None => ShutdownRecoveryResult::ReceiptOwnerClosed,
+            Some(receipt) => ShutdownRecoveryResult::Completed(ShutdownResult {
+                state_is_durable: receipt.state_is_durable(), summary: receipt.summary(), receipt,
+            }),
+        })
     }
 }
 
@@ -197,6 +233,7 @@ crate::action_command! {
 
 #[cfg(test)]
 mod tests {
+    mod custody;
     use super::*;
     use crate::sdk_codegen::{ActionCommand, Ctx};
 
@@ -209,9 +246,17 @@ mod tests {
             SystemShutdown::ACCESS,
             crate::sdk_codegen::AccessLevel::Privileged
         ));
-        for access in [SystemShutdownTarget::ACCESS, SystemShutdownDrain::ACCESS, SystemShutdownCommit::ACCESS] {
+        for access in [SystemShutdownTarget::ACCESS, SystemShutdownDrain::ACCESS, SystemShutdownCommit::ACCESS, SystemShutdownRecover::ACCESS] {
             assert!(matches!(access, crate::sdk_codegen::AccessLevel::Privileged));
         }
+    }
+
+    #[tokio::test]
+    async fn recovery_rejects_a_recycled_process_target_before_touching_owners() {
+        let before = crate::runtime::shutdown_receipt();
+        let stale = ShutdownTarget { pid: std::process::id(), instance: "not-this-instance".into() };
+        assert!(SystemShutdownRecover.run(&Ctx::default(), stale).await.is_err());
+        assert_eq!(crate::runtime::shutdown_receipt(), before);
     }
 
     // A receipt acknowledgment must never exit a replacement process, or exit
@@ -231,6 +276,31 @@ mod tests {
         params.target = current.clone();
         params.receipt_sha256.push('0');
         assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+    }
+
+    // A correctly acknowledged receipt is not permission to destroy unfinished work.
+    #[test]
+    fn matching_receipt_cannot_commit_an_incomplete_training_drain() -> Result<(), crate::sdk_codegen::CommandError> {
+        use crate::runtime::{DrainOutcome, ModuleStop, ModuleStopOutcome};
+        let current = ShutdownTarget { pid: 42, instance: "training-owner".into() };
+        for outcome in [ModuleStopOutcome::Clean, ModuleStopOutcome::JoinTimedOut] {
+            let receipt = ShutdownReceipt {
+                modules: vec![ModuleStop {
+                    module: "training-trigger".into(),
+                    drain: DrainOutcome::Incomplete { in_flight: 3 },
+                    outcome,
+                    ms: 2000,
+                }],
+                total_ms: 2000,
+                custody: vec![],
+            };
+            let params = ShutdownCommitParams {
+                target: current.clone(),
+                receipt_sha256: shutdown_receipt_digest(&receipt)?,
+            };
+            assert!(validate_commit(&params, &current, Some(&receipt)).is_err());
+        }
+        Ok(())
     }
 
     // Exercise the real exit in an isolated test child, never the serving core.
