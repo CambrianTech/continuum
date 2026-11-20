@@ -45,6 +45,8 @@ pub(super) enum TurnError {
     TooLong,
     #[error("nothing was decoded for her turn")]
     NothingDecoded,
+    #[error("the caller released this turn")]
+    CallerReleased,
 }
 
 /// Why one mind was not preserved at a stop. She stays in the engine's custody, and the stop
@@ -271,6 +273,9 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         // the stage's space: a wake on both, never a poll, and a stalled caller never blocks a stop.
         let holding = driver.holding();
         if holding || turns.is_empty() {
+            let parked_at = Instant::now();
+            let emit_pending = driver.emit.waiting();
+            let record_pending = driver.record.waiting();
             let woke = stages_on.block_on(async {
                 tokio::select! {
                     biased;
@@ -278,6 +283,24 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                     () = driver.drain(), if holding => None,
                 }
             });
+            let parked_for = parked_at.elapsed();
+            if parked_for > std::time::Duration::from_millis(500) {
+                let wake = match &woke {
+                    Some(Some(Submission::Turn(_))) => "turn",
+                    Some(Some(Submission::Suspend(_))) => "suspend",
+                    Some(None) => "closed",
+                    None => "stage_space",
+                };
+                continuum_base::probe!(
+                    class = "persona.engine.park",
+                    parked_ms = super::record::whole_ms(parked_for),
+                    active_turns = turns.len() as u64,
+                    emit_pending = emit_pending as u64,
+                    record_pending = record_pending as u64,
+                    wake = wake,
+                    "engine thread resumed after parking"
+                );
+            }
             match woke {
                 Some(Some(submission)) => driver.take(submission, &mut turns),
                 // Every handle dropped: Emit ends once it has drained what it holds.
@@ -413,10 +436,10 @@ impl Driver<'_, '_> {
         self.record.flush();
     }
 
-    /// Hand each stage everything that waits for it, awaiting its space: only when no turn is left.
+    /// Each outbox wakes on its own consumer's space. Both retain undelivered items
+    /// when an incoming submission interrupts the drain.
     async fn drain(&mut self) {
-        self.emit.drain().await;
-        self.record.drain().await;
+        tokio::join!(self.emit.drain(), self.record.drain());
     }
 
     /// Whether anything still waits for a stage that was full.
@@ -573,6 +596,9 @@ impl Driver<'_, '_> {
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
     /// one token).
     fn step(&mut self, turn: &mut Turn, ready: std::num::NonZeroUsize) -> Result<Advanced, TurnError> {
+        if turn.req.response_tx.is_closed() {
+            return Err(TurnError::CallerReleased);
+        }
         let gap = turn.ready_since.elapsed();
         turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {

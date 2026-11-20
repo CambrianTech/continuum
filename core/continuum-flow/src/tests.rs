@@ -125,17 +125,11 @@ fn a_full_background_queue_sheds_its_oldest_and_never_sheds_work() {
 async fn a_superseded_submission_resolves_at_once_with_its_reason() {
     let flow: Flow<&'static str> = Flow::spawn(1, aging());
     let _busy = flow.submit("aris", Qos::Work).await;
-    let first = tokio::spawn({
-        let flow = flow.clone();
-        async move { flow.submit("aiko", Qos::Work).await.err() }
-    });
-    tokio::task::yield_now().await;
-    let _second = tokio::spawn({
-        let flow = flow.clone();
-        async move { flow.submit("aiko", Qos::Work).await.is_ok() }
-    });
-    let why = tokio::time::timeout(Duration::from_secs(1), first).await;
-    assert!(matches!(why, Ok(Ok(Some(Refused::Dropped(Dropped::Superseded))))), "{why:?}");
+    let first = flow.submit("aiko", Qos::Work);
+    let second = flow.submit("aiko", Qos::Work);
+    assert!(matches!(first.await, Err(Refused::Dropped(Dropped::Superseded))));
+    drop(_busy);
+    assert!(second.await.is_ok());
 }
 
 // what this catches: a dispatcher that polls. It sleeps until the next aging step, or forever
