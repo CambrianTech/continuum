@@ -96,22 +96,23 @@ impl TrainingTriggerState {
         let lease = self.submit_gates.acquire(&key).await;
         let slot = self.in_place.engine(engine);
         let mut held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
-        let signature = if rows.is_empty() || held.minds.contains_key(&key) {
-            None
-        } else {
-            drop(held);
-            self.require_ready()?;
-            let started = std::time::Instant::now();
-            let signature = super::super::competence::mint_signature(
-                format!("inline:{}", key.trait_kind), &key.trait_kind,
-                rows.iter().flat_map(|row| row.examples.iter()),
-            ).await;
-            continuum_base::probe!(class = "training.in_place.signature_ready", persona = %key.persona_id,
-                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "bucket signature preparation finished outside the engine lock");
-            held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
-            signature
-        };
         self.run_leased(lease, key, move |state, key| async move {
+            let signature = if rows.is_empty() || held.minds.contains_key(&key) {
+                None
+            } else {
+                drop(held);
+                state.require_ready()?;
+                let started = std::time::Instant::now();
+                let signature = super::super::competence::mint_signature(
+                    format!("inline:{}", key.trait_kind), &key.trait_kind,
+                    rows.iter().flat_map(|row| row.examples.iter()),
+                ).await;
+                continuum_base::probe!(class = "training.in_place.signature_ready", persona = %key.persona_id,
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "bucket signature preparation finished outside the engine lock");
+                held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+                state.require_ready()?;
+                signature
+            };
             let Some(first) = rows.first() else { return Ok(Prepared::Nothing) };
             let count = rows.iter().map(|row| row.examples.len()).sum();
             match seat(&state.in_place.authority, &state, &mut held, &key, first, count, signature, engine).await? {
