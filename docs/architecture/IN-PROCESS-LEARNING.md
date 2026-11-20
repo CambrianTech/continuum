@@ -43,9 +43,15 @@ her stable gene set, so serving's state is what it was.
 
 ## A learn is frames of work, like a turn (L2, proposed 2026-11-20)
 
-The context is the one thing that must be serial, so it lives on the scheduler's own thread
-(`persona_scheduler/driver.rs`). Nothing else waits on it: callers submit and subscribe, and the
-thread advances one item by one quantum per frame.
+The engine is concurrent everywhere except inference, which runs like a CPU core. A **Core**
+(`PersonaEngine` with `pipeline::Roles`: active, next, previous) runs one mind at a time. Her
+native state is the register file: the next mind is staged in and the previous one retired out
+while the active one runs, so the minds seem parallel. How many Cores a node has comes from the
+engine's list of Cores, under measured admission (one on the M5; a larger node may run more),
+never from parallel decode inside one Core. Learning is not a special mode that holds the engine.
+It is work of the mind active on a Core, scheduled and switched like her decode. The Core's
+driver is its own thread (`persona_scheduler/driver.rs`), and nothing else waits on it: callers
+submit and subscribe, and the thread advances one item by one quantum per frame.
 
 **Flow, one resident learning while another becomes ready to speak:**
 
@@ -58,7 +64,7 @@ thread advances one item by one quantum per frame.
    asks the authority mid-frame.
 2. **One worklist.** The driver holds `Vec<Work>`, with `enum Work { Turn(Turn), Learn(Learn) }`.
    `frame::pick` ranks both with the same `Candidate` (bound, remaining work, waited). A frame is
-   one quantum: a prefill chunk, one token, or one learn chunk (`llama_opt_learn_step`, or
+   one quantum: a prefill chunk, one token, or one learn chunk of the active mind (`llama_opt_learn_step`, or
    `graph_step` when a turn has waited past its target).
 3. **No borrow across frames.** Today `LearnRun<'l>` holds `&mut Learner`, and so the context, for
    a whole reply, so no turn could run before the reply ends. L2 makes the run an owned value,
@@ -66,13 +72,21 @@ thread advances one item by one quantum per frame.
    buffers. It lives in `Work::Learn`. `Learner::new(&mut ctx).step(&mut reply)` borrows the
    context for exactly one chunk. The borrow ends when the call returns, before the next frame
    picks.
-4. **Streams.** The context has `STREAMS` = 2. A learn keeps custody of her stream until its
-   restore is confirmed, and the ready resident binds the other stream and decodes between the
-   learn's chunks. When a third mind needs a stream, that learn is drained (`drain` stops new
-   gradient chunks, and committed steps stay). Its restore chunks run as ordinary frames and then
-   release the stream. Draining is the only way a learn yields, and no one blocks on it.
-   Validator (below): other sequences decode between chunks with each mind's native prefix intact.
-   The fork documents this but has not proven it yet.
+4. **Switching a learning mind.** P learns while she is active on the Core. When Q becomes ready,
+   the Core does what it does for any switch: Q is staged as next while P's chunks run, and the
+   handoff happens at a frame boundary. Today the fork keeps one learn reply per context, outside
+   P's saved state, so P cannot be retired mid-reply with her learn intact. Two steps follow.
+   - **L2:** before P is retired, her reply drains (`drain` stops new gradient chunks, and
+     committed steps stay) and its restore chunks run as P's last frames before the handoff. Q's
+     staging overlaps them, so the only added delay is the remaining restore chunks, which are
+     measured.
+   - **L2b, the full context switch:** the reply's native learn state becomes part of her saved
+     state (a fork change), so P is retired and later restaged mid-reply like any process, and
+     nothing drains.
+   
+   Validators: Q's first token waits at most one chunk plus her staging, and both minds' native
+   prefixes are intact afterwards. For L2b, a reply retired and restaged mid-way commits the same
+   steps as one run straight through.
 5. **Complete.** `finish` maps `Finished` to the artifact through a completion outbox (the
    `Emit`/`Record` pattern):
    - `Learned` and `Unchanged` hand the admission back.
