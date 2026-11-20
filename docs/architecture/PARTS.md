@@ -18,10 +18,10 @@ the place this chapter gives it.
 6. [Names](#6-names)
 7. [Worked example: a call ends, then memory is needed](#7-worked-example-a-call-ends-then-memory-is-needed)
 8. [Alternatives considered](#8-alternatives-considered)
-9. [Migration](#9-migration)
-10. [How we will know it works](#10-how-we-will-know-it-works)
-11. [Open questions](#11-open-questions)
-12. [Appendix: where the code stands](#12-appendix-where-the-code-stands)
+9. [Coverage: every component in the core, placed](#9-coverage-every-component-in-the-core-placed)
+10. [The plan to finish](#10-the-plan-to-finish)
+11. [How we will know it works](#11-how-we-will-know-it-works)
+12. [Open questions](#12-open-questions)
 
 ## 1. Summary
 
@@ -39,6 +39,11 @@ of named interfaces, from the general to the specific.
 
 The code is the same tree. Each interface is a trait whose supertrait is its parent; each shared
 subsystem is a generic owner written once; each lives in the module this chapter names.
+
+Section 9 places every component family in the core on this tree, with its implementors counted, so
+nothing is left out. Section 10 is the plan to finish: eleven changes, each moving one whole family
+and deleting its old trait in the same change, with no fallbacks and no compatibility layer, and
+ratchets that say when it is done.
 
 ## 2. The problem
 
@@ -75,7 +80,7 @@ Non-goals:
 - Deciding when to release memory or which work runs first. The governor
   ([SHARED-RESOURCES.md](SHARED-RESOURCES.md)) and the flow scheduler (`continuum-flow`) decide; this
   design gives them one surface and exact answers.
-- Moving every family at once. Each moves in its own change (section 9).
+- Moving every family at once. Each moves in its own change (section 10).
 
 ## 4. The general: what every part is
 
@@ -216,6 +221,8 @@ Part                                   identity, generation; parts, worker, comm
 │  │  ├─ Wernicke                      the estimate is word-level state, heard and planned
 │  │  └─ VisualFusion                  the estimate is a scene
 │  └─ Monitor                          the estimate is a measurement (memory pressure, disk); today's Daemon
+├─ Holder                              holds governed bytes: footprint, reclaim continuum-kernel resources (Codex)
+├─ Holder                              holds governed bytes: footprint, reclaim continuum-kernel resources (Codex)
 ├─ Service                             answers typed commands from callers      continuum-kernel runtime; today's ServiceModule
 ├─ Transport                           carries envelopes to peers               continuum-grid
 └─ Persona                             one resident, made of her branches       continuum-persona-engine
@@ -269,8 +276,12 @@ scene.
 What `Monitor` adds: a measurement on a cadence floor, for the parts that must report even when
 nothing changes. `Daemon` becomes this.
 
-### 5.5 `Service`, `Transport` and `Persona`
+### 5.5 `Holder`, `Service`, `Transport` and `Persona`
 
+- **`Holder`** adds governed bytes: a footprint query (telemetry, by generation and revision) and a
+  reclaim command whose completion confirms what was released. `ResourcePool`, `ResourceConsumer`
+  and `MemoryReporter` become this one lineage, driven by the governor
+  ([SHARED-RESOURCES.md](SHARED-RESOURCES.md); Codex).
 - **`Service`** adds typed commands from callers outside the tree (a CLI, a client, a peer). Today's
   `ServiceModule` becomes this; its string command names become typed commands, its event globs
   become topics, and its tick becomes a cadence floor where one is needed.
@@ -295,7 +306,9 @@ One name per concept. Each row's old names become the new one; nothing keeps two
 | task | Long work whose completion is an input | `Dispatched` runs, unowned spawns |
 | `Model` | A part that owns a model it loads | per-backend statics and lifecycle methods |
 | `Region`, `FusionRegion`, `Monitor` | A part that publishes an estimate; one that refines it; one that measures | `BrainRegion`, `Daemon` |
+| `Holder` | A part holding governed bytes: footprint query, reclaim command | `ResourcePool`, `ResourceConsumer`, `MemoryReporter` |
 | `Service` | A part answering typed commands from outside | `ServiceModule` |
+| context `Source` | What feeds her view, through the one codec | `RagSource` |
 
 Kept from Codex's review: part, worker, command, completion, task.
 
@@ -338,23 +351,72 @@ five-second timer.
 - **Blanket implementations** (`impl<T: Model> Lifecycle for T`, and one for composites). Two
   blankets over one trait overlap and Rust rejects them; generic owners give the same sharing.
 
-## 9. Migration
+## 9. Coverage: every component in the core, placed
 
-Each step deletes more than it adds and lands with its validators.
+Every long-lived component family in the core, counted on canary c819052ef7 (production
+implementors only, tests excluded), and where it lands. A family is covered when every implementor
+is on its lineage and the old trait is deleted.
 
-1. **The general, in `continuum-base::part`:** `Part`, `Parts`, `Command` and `Completion`,
-   `Outcome`, `Published`, `Task`, the lifecycle commands, one module each. #6206 is reworked to
-   this. Persona engine's `Lifecycle`, `Preservation` and `persona_parts!` are deleted, and her
-   branches become a fixed `Parts`.
-2. **The worker:** `continuum-flow`'s stage becomes the part's worker, with the control lane and the
-   stage contract's topics and provenance. The kernel's second `Stage` trait is deleted.
-3. **`Model` and the speech models:** `ReloadableModel` moves beside `Model`. The thirteen audio
-   backends own their models; their statics, their own lifecycle methods and the three unload walks
-   are deleted.
-4. **The other lineages, one change each:** `InferenceAdapter`, `Region` and `Monitor` (absorbing
-   `BrainRegion` and `Daemon`), `Transport`, then `Service` (absorbing `ServiceModule`).
+| Family today | Implementors | Lands as | Owner |
+|---|---|---|---|
+| `ServiceModule` | 77, across 16 crates (continuum-core 38, mind 9, dreaming 5, engine 3, kernel 3, grid 2, and one each in embedding, serving, sentinel, cognition, live, store, models, gateway, hands) | `Service`; a module that only measures becomes a `Monitor`; one that only publishes becomes a `Region` | Fable (the trait), each crate's owner (its modules) |
+| `Daemon` | 5 (`MonitoredGpu`, `ResourceDaemon`, `DiskPressureMonitor`, `DiskUsageScanner`, `MemoryPressureMonitor`) | `Monitor` | Codex |
+| `BrainRegion` | 4 (`HippocampusModule`, `CreditAcceptanceRegion`, `ChannelDigestRegion`, `DreamConsolidationRegion`) | `Region`; the hippocampus becomes a branch of each persona's mind | Fable |
+| `Faculty` | 4 (`DeferredFaculty`, `LlmDeliberationFaculty`, `RagSourceFaculty`, `RecallFaculty`) | `Region`s her workspace reads; the deliberation faculty is her turn on the Core | Fable |
+| kernel `Stage` and flow `Stage` | 1 production user (`FacultyStage`) and 0 | one worker (`continuum-flow`); the kernel trait is deleted | Fable |
+| `AIProviderAdapter` | 5 adapters (`LlamaCppAdapter`, `AnthropicAdapter`, `OpenAICompatibleAdapter`, `AircRemoteInferenceAdapter`, `HeuristicInferenceAdapter`) and 2 placement wrappers in mind | `InferenceAdapter: Model` for a local model, `InferenceAdapter: Part` for a remote one; the wrappers become the parent's select policy | Codex (serving) with Fable |
+| `SpeechToText`, `TextToSpeech`, `VoiceActivityDetection` | 4, 5 and 4 backends | `SpeechToText`, `TextToSpeech`, `VoiceActivity` on `Model`; the stub, the silence backend and the cloud session on `Part` | Fable (BigMama reviews: live) |
+| `GridTransport` | 2 (`ReticulumTransport`, `TailscaleTransport`) | `Transport`; the grid's four loops become broadcasts | Codex (grid) |
+| `ResourcePool`, `ResourceConsumer`, `MemoryReporter` | 13, 6 and 5 | one `Holder: Part` lineage: a part that holds governed bytes, answers footprint as a query and reclaim as a command | Codex |
+| `RagSource` and context `Source` | 13 and the codec's own | context `Source` only (the one codec, CLAUDE.md); every `RagSource` moves onto it and the trait is deleted | Fable |
+| Persona engine `Lifecycle`, `PersonaParts` | 1 composite | `Persona`, a fixed `Parts` of her branches | Fable |
+| `PersonaCognition`, `PersonaAircRuntime` | 2 roots | branches of `Persona` (her mind, her presence in rooms) | Fable |
 
-## 10. How we will know it works
+What is not a part: plain values and wire types (a turn's tokens, a gene's bytes, a ts-rs type), pure
+functions, and errors. They have no lifetime of their own, so they are owned by the part that holds
+them and carry no identity.
+
+## 10. The plan to finish
+
+The rules for every change:
+
+- **One family per change, whole.** A change moves every implementor of one family onto its lineage
+  and deletes the old trait, its registrations and its callers' old paths in the same change. Nothing
+  is adapted or wrapped, and no old trait outlives its family's change.
+- **No fallbacks, no compatibility.** There is no legacy to support. A path that cannot move yet is a
+  named, owned blocker on the card, not a shim in the code.
+- **Each change deletes more than it adds**, and reports both.
+- **Proven before it lands:** its validators from section 11, the hygiene ratchets, and for a change
+  to live behavior, a matched read on the live node.
+
+The order, with what each change deletes. Changes on separate rows run in parallel when their owners
+differ.
+
+| # | Change | Deletes | Owner | Depends on |
+|---|---|---|---|---|
+| 1 | The general in `continuum-base::part`: `Part`, `Parts`, `Command`, `Completion`, `Outcome`, `Published`, `Task`, the lifecycle commands (reworks #6206) | persona engine's `Lifecycle`, `Preservation`, `persona_parts!`, `PersonaUnit`'s delegation | Fable | #6204 |
+| 2 | The worker: `continuum-flow`'s stage with the control lane, topics, revisions and provenance | the kernel `Stage` trait; `FacultyStage` moves | Fable | 1 |
+| 3 | `Model` and the audio lineage | the three speech traits' lifecycle methods, every backend's `static` model, `STTRegistry`, `TTSRegistry`, the three unload walks, the five-second constant | Fable | 1, 2 |
+| 4 | `Holder` (the governed-bytes lineage) | `ResourcePool`, `ResourceConsumer`, `MemoryReporter` as separate traits; the duplicate pressure readings | Codex | 1 |
+| 5 | `Monitor` | `Daemon`, `DaemonChannel`, the hand-written interval monitors | Codex | 2 |
+| 6 | `Region` and `FusionRegion` | `BrainRegion`, the ready buffers, `Faculty` | Fable | 2 |
+| 7 | `InferenceAdapter` | `AIProviderAdapter` and its placement wrappers | Codex with Fable | 3 |
+| 8 | `Transport` | `GridTransport`; the grid's four transport loops | Codex | 1 |
+| 9 | Context `Source` only | `RagSource` and its 13 implementations' old shape | Fable | none |
+| 10 | `Persona` as one tree | `PersonaCognition` and `PersonaAircRuntime` as separate roots | Fable | 1, 6 |
+| 11 | `Service` | `ServiceModule`: its string command names, glob subscriptions and tick loop, family by family across the 16 crates, the last one deleting the trait | Fable (trait), each crate's owner | 2, 5, 6 |
+
+How we will know it is finished, measured on canary by the hygiene ratchets:
+- the old roots (`ServiceModule`, `Daemon`, `BrainRegion`, the kernel `Stage`, `Faculty`,
+  `AIProviderAdapter`, `GridTransport`, `RagSource`, `ResourcePool`, `ResourceConsumer`,
+  `MemoryReporter`, the three speech traits' old shape) are at zero;
+- `fn shutdown` bodies outside the lineages' generic owners are at zero;
+- hand-written loops over a part's children are at zero;
+- `static` model slots are at zero.
+
+A ratchet for each lands with change 1 and only falls.
+
+## 11. How we will know it works
 
 Validators that run in seconds, with fixture parts and no model or device:
 - a fixed set and a keyed set of parts driven by one traversal, for an aggregate query and a
@@ -375,20 +437,10 @@ On the live node, after step 3:
 - releasing the audio models under pressure no longer waits on the slowest one;
 - the five-second idle constant is gone.
 
-## 11. Open questions
+## 12. Open questions
 
 - Whether idle release should exist at all, or release is only the governor's decision under
   pressure. The policy belongs in [SHARED-RESOURCES.md](SHARED-RESOURCES.md).
 - Where `Model` lives once `InferenceAdapter` adopts it: `continuum-base` for now, because both
   `continuum-live` and `continuum-engine` need it.
 
-## 12. Appendix: where the code stands
-
-Survey of canary c819052ef7, 2026-11-20.
-
-| Cluster | What repeats | Owner and target |
-|---|---|---|
-| How a component lives and stops | Five worker shapes, three lifecycle shapes, 34 `shutdown` bodies, 19 health checks, hand-written loops over children | Fable: this chapter |
-| Pressure, footprint, leases | Five overlapping bases; about 150 Lease, Permit, Grant, Gate and Admission types | Codex: the one governor of [SHARED-RESOURCES.md](SHARED-RESOURCES.md) |
-| Small utilities | Three backoff formulas, 36 registries, 25 raw `HOME` reads | Each gets one floor owner as it is touched |
-| The mind as a tree | `PersonaUnit` and `PersonaCognition` as two unconnected roots | After step 1: her branches as `Parts`, then her regions |
