@@ -78,14 +78,35 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
   dependencies by type (`getAnalyzerOfType<T>()`), and implements one handler. `CBP_ElevationAnalyzer`
   is 71 lines, most of them boilerplate.
 
-`continuum-flow` therefore ships a **`Stage`** alongside the capacity dispatcher:
+**Implement a worker.** The example below publishes the latest playback position so
+animation can sample it independently. The position is replaceable state. Each update is
+an absolute sample offset within one playback session. A new session gets a new worker.
+The example uses the current [stage API](../../core/continuum-flow/src/stage.rs).
 
 ```rust
-pub trait Stage: Send + 'static {
-    type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
-    const QOS: Qos;                // its class
-    const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
-    async fn handle(&mut self, input: Self::Input);
+use continuum_flow::{spawn_stage, Capacity, Overflow, Qos, Stage};
+use tokio::sync::watch;
+
+struct PlaybackPosition(watch::Sender<u64>);
+
+impl Stage for PlaybackPosition {
+    type Input = u64;
+    const QOS: Qos = Qos::Interactive;
+    const OVERFLOW: Overflow = Overflow::KeepNewest;
+
+    async fn handle(&mut self, sample_offset: u64) {
+        self.0.send_replace(sample_offset);
+    }
+}
+
+#[tokio::main]
+async fn main() {
+    let (position, animation) = watch::channel(0);
+    let (updates, worker) = spawn_stage(PlaybackPosition(position), Capacity::latest());
+    assert!(updates.push(480).is_ok());
+    worker.stop();
+    assert!(worker.join().await.is_ok());
+    assert_eq!(*animation.borrow(), 480);
 }
 ```
 
@@ -95,6 +116,11 @@ releases the lock and calls `handle_all`. Its default preserves input order with
 stage. Override it for a native batch operation. Other stages run independently. An idle
 worker parks until signaled. Its owner can request stop, let accepted inputs drain, and join
 when it needs confirmation of shutdown.
+
+In this example `join` makes the final assertion deterministic. During a call the renderer
+samples `animation.borrow()` on its own clock. The trait requires each implementation to
+supply the input type, class and handler. It supplies reliable delivery by default and an
+ordered batch handler; specialize either where the consumer's contract calls for it.
 
 Choose delivery semantics per input. For a reliable result, a full queue returns ownership
 to the producer. A replaceable wake can use `KeepNewest` when its underlying data lives

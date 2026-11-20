@@ -102,6 +102,24 @@ what I intended?"* — the single most useful feedback in any iteration loop. Ma
 first-class Percept. It is also the cleanest **training signal**: the before/after of
 every *accepted* tweak is a labeled example of a good move.
 
+**Read observations today.** With a `PerceptionBuffer`, the shared compute cache and a
+participant ID, a consumer can read resolved cells for recent frames immediately. A
+separate detail worker can request an image. These calls use the current
+[media API](../../core/continuum-live/src/media/perception_buffer.rs).
+
+```rust
+// In the attention worker: newest first. An unknown source yields an empty history.
+let observations = buffer.window_percepts(participant.as_str(), 3, compute);
+let latest_with_evidence = observations.iter().find(|percept| percept.has_any());
+
+// In the detail worker: resolve the source's current frame at its original size.
+let images = buffer.look(LookScope::Source(participant), LookFidelity::Full, compute).await;
+```
+
+`has_any` reports a resolved cell, which can contain an error. The consumer inspects the
+cell's result before using it. Today's `look` selects the current head; exact historical
+frame retrieval and tolerance-based selection are part of the following design.
+
 **Live calls (proposed).** Capture owns a bounded buffer of native frames. A visual
 observation carries its source, capture time and exact frame handle. Detection, segmentation
 and slide differencing subscribe independently. Each publishes as soon as it has a result.
