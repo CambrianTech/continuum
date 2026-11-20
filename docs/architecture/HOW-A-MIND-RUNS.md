@@ -3,7 +3,7 @@
 Status: design, 2026-11-20. Each section says what exists today and what is proposed. Owners: Fable
 (this chapter); Codex (resources, serving, review). This is the overview: each section explains how
 one part of the system works through the part tree, and links to the chapter that holds its detail.
-The object mechanism itself is [PARTS.md](PARTS.md).
+The object model itself is [the object model](object-model/README.md).
 
 [Runtime architecture](../README.md#runtime-architecture)
 
@@ -30,7 +30,7 @@ The object mechanism itself is [PARTS.md](PARTS.md).
 
 Continuum runs minds the way a game engine runs a world on a console: a tree of objects, each with
 its own job, all live at once, streamed in at the level of detail the moment needs, within a fixed
-budget of memory and time. The objects are parts ([PARTS.md](PARTS.md)).
+budget of memory and time. The objects are parts ([the object model](object-model/README.md)).
 - **The tree.** A node is a tree of parts, and each persona is a subtree of it. Her mind, genome,
   body and residency are its branches.
 - **Events.** Data flows through the tree as events, and each part does its own work on its own
@@ -175,7 +175,7 @@ A turn is fast because almost nothing in it waits.
 Low latency is a property of the whole tree, not of one fast component.
 
 - **Nothing calls into a part and waits.** Queries read what parts already published. Commands are
-  messages to a part's worker, answered by completions that arrive as they happen ([PARTS.md](PARTS.md)).
+  messages to a part's worker, answered by completions that arrive as they happen ([roots](object-model/03-roots.md)).
 - **Every wait is an event.** Nothing polls and nothing sweeps on a clock. A part wakes when an input
   it depends on changes.
 - **Time is governed by the shape of each need** ([SHARED-RESOURCES.md](SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)):
@@ -328,7 +328,7 @@ Her body is a branch of her tree, and the world is outside it.
 | Her context as a FIFO with prefix reuse | Exists; reuse measured 41% to 91.7% after #6171 and #6174 |
 | `MindState` persisted at the seam | Designed in EVENT-MIND; check before relying on it |
 | Labelled rows and a lesson on her decode | Exists in the llama crate (#6203, in review) |
-| The part tree, commands, completions | Proposed ([PARTS.md](PARTS.md)); #6206 being reworked |
+| The part tree, commands, completions | Proposed ([the object model](object-model/README.md)); #6206 being reworked |
 | Fusion, the amygdala, Wernicke, the quick voice | Proposed |
 | Learning duty and learning-context paging | Proposed ([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md)) |
 | Tiered demotion instead of eviction | Proposed ([SHARED-RESOURCES.md](SHARED-RESOURCES.md)) |
