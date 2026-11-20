@@ -568,6 +568,18 @@ four things together:
 - **virtualization:** a resident below the cut is tracked, her durable self intact and her wake
   condition set, but not computing, as a virtualized sound is.
 
+Focus and recall read it the same way:
+- **Her focus is the camera.** Her attention sets the distance and direction of everything she
+  perceives: what is near her current work, what is to one side, what is far.
+- **Recall is asset streaming.** Memories, grounding and documents are the world's assets. They
+  stream into her context by the importance her focus gives them, and arrive at the level of detail
+  that importance earns: the memory that bears directly on her task whole, a related one as a
+  headline she can expand, the rest not loaded at all.
+
+Recall therefore needs no budget of its own: it is one more source priced by the same demand,
+competing for her window with her history and her results. That is why grounding's separate budget
+folds into the context codec (chapter 6.2).
+
 No subsystem keeps its own idea of what matters. Each reads the one importance its tree computed.
 
 ## 0.4 One engine across many consoles: the grid and the mesh
