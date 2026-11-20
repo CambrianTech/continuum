@@ -11,6 +11,20 @@ to a gene adopted by a stranger on another machine. The design detail lives in
 [GENOME-FOUNDRY-SENTINEL.md](../GENOME-FOUNDRY-SENTINEL.md) and
 [ACADEMY-AS-CONTINUOUS-EVOLUTION.md](../ACADEMY-AS-CONTINUOUS-EVOLUTION.md).
 
+**The thesis.** Joel: "Never manual ever. It's autonomous and self improving, the entire ecosystem
+world sized, to get better and challenge frontier by having essentially limitless experts assembled
+on the fly, like Voltron."
+- **Experts are assembled, not held.** The genome is not a model to be kept resident. It is a
+  population of experts, assembled on the fly into whatever each moment needs, the way Voltron forms
+  from its lions.
+- **The cost argument.** One frontier model must be held whole to be used. A paged genome holds only
+  the experts in use now, and its cost scales with the deduplicated union of those working sets
+  across the grid, not with users times model size (GRID-ECONOMICS-AND-AFFINITY-ROUTING §1).
+- **It improves itself, at world scale.** Every resident who wears a gene teaches it, and every
+  node's spare frames train it. The whole ecosystem gets better without anyone running anything.
+
+Every object in this chapter serves that, and none of them has a manual step.
+
 ## 6.1 The objects
 
 ```
