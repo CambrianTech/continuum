@@ -311,6 +311,9 @@ impl<'c, 'm> Learner<'c, 'm> {
         if self.holder().shadows.get(key).is_none() {
             return Err(LearnRefusal { step: "release_shadow", message: "the shadow is not retained on this context".into() });
         }
+        if self.holder().lessons.pins(key) {
+            return Err(LearnRefusal { step: "release_shadow", message: "an open lesson trains this shadow: conclude or abandon it first".into() });
+        }
         if !unsafe { sys::llama_opt_release(self.ctx.as_ptr(), key.0.as_ptr()) } {
             return Err(self.refusal("release_shadow"));
         }
@@ -361,7 +364,12 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
             return Err(Refused { refusal, admission });
         };
-        let Lesson { shadow: key, steps_before, .. } = self.select(shadow, admission)?;
+        // A reply is a lesson run by the fork's resumable steps: its record is the holder's, and the
+        // run's own completion reclaims the admission and closes it.
+        let Lesson { .. } = self.select(shadow, admission)?;
+        let Some(lesson::Open { shadow: key, steps_before, .. }) = self.holder().lessons.current() else {
+            return Err(Refused { refusal: LearnRefusal { step: "select_shadow", message: "no lesson open after select".into() }, admission: self.reclaim() });
+        };
         let Some(result) = NonNull::new(unsafe { sys::ggml_opt_result_init() }) else {
             return Err(Refused { refusal: LearnRefusal { step: "result", message: "no result".into() }, admission: self.reclaim() });
         };

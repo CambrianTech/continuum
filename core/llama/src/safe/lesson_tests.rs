@@ -16,6 +16,30 @@ fn model() -> Model {
     Model::load(path, ModelParams { n_gpu_layers: gpu, use_mmap: true }).expect("load the fixture model")
 }
 
+/// A scratch directory for one test's shadows.
+fn scratch(test: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!("continuum-{test}-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).expect("a scratch directory");
+    directory
+}
+
+/// A fresh rank-8 shadow on attn_q and attn_v, written and loaded.
+fn fresh_shadow(model: &Model, directory: &std::path::Path, seed: u32) -> Arc<LoraAdapter> {
+    let path = directory.join(format!("shadow-{seed}.gguf"));
+    let shape = ShadowShape { rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed };
+    model.write_fresh_shadow(&path, &shape).expect("a fresh shadow");
+    Arc::new(model.load_lora(&path).expect("load the shadow"))
+}
+
+fn trains(adapter: &Arc<LoraAdapter>) -> Shadow {
+    Shadow {
+        adapter: Arc::clone(adapter),
+        optimizer: Optimizer::AdamW { learning_rate: 1e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 },
+        recompute: false,
+        walk: Walk::default(),
+    }
+}
+
 fn context(model: &Model, rows: u32) -> Context<'_> {
     model
         .new_context(ContextParams { n_ctx: 512, n_batch: rows, n_ubatch: rows, pooling_type: PoolingType::None, ..Default::default() })
@@ -80,21 +104,12 @@ fn a_lesson_is_her_decode_with_labels_and_leaves_her_stable_self_untouched() {
     let stable_loss = loss(&stable, reply_rows, &targets);
 
     // The same, learning: her shadow is the trainable adapter for each lesson.
-    let directory = std::env::temp_dir().join(format!("continuum-lesson-{}", std::process::id()));
-    std::fs::create_dir_all(&directory).expect("a scratch directory");
-    let path = directory.join("her-shadow.gguf");
-    let shape = ShadowShape { rank: 8, alpha: 16.0, targets: vec!["attn_q".into(), "attn_v".into()], top_layers: 0, seed: 42 };
-    model.write_fresh_shadow(&path, &shape).expect("a fresh shadow");
-    let adapter = Arc::new(model.load_lora(&path).expect("load her shadow"));
+    let directory = scratch("lesson");
+    let adapter = fresh_shadow(&model, &directory, 42);
     let mut ctx = context(&model, rows);
     let held = Arc::new(std::sync::atomic::AtomicU64::new(0));
     assert!(Learner::new(&mut ctx).retain_shadow(Arc::clone(&adapter), Box::new(Counting(Arc::clone(&held)))).is_ok());
-    let shadow = Shadow {
-        adapter: Arc::clone(&adapter),
-        optimizer: Optimizer::AdamW { learning_rate: 1e-3, beta1: 0.9, beta2: 0.999, eps: 1e-8, weight_decay: 0.0 },
-        recompute: false,
-        walk: Walk::default(),
-    };
+    let shadow = trains(&adapter);
 
     let mut losses = Vec::new();
     for repeat in 0..4 {
@@ -135,5 +150,48 @@ fn a_lesson_is_her_decode_with_labels_and_leaves_her_stable_self_untouched() {
     assert_eq!(ctx.logits_ith(0), stable.logits_ith(0), "after the lesson her served state is not her stable self's (P1 d)");
 
     assert!(Learner::new(&mut ctx).release_shadow(&adapter).is_ok());
+    std::fs::remove_dir_all(&directory).ok();
+}
+
+// what this catches: the shadow an open lesson trains released under it, an unrelated shadow held
+// hostage by the lesson, or a lesson whose handle was lost left unsettleable (its admission stuck,
+// its committed steps uncounted), or settled twice. After the owner settles it, the context takes a
+// new lesson on the same shadow (Codex's review of #6203).
+#[test]
+fn a_lost_lesson_is_settled_by_its_owner_and_pins_only_its_shadow() {
+    let model = model();
+    let prefix = model.tokenize(PREFIX, true, false).expect("tokenize");
+    let mut reply = model.tokenize(REPLY, false, false).expect("tokenize");
+    let next = reply.pop().expect("a reply of several tokens");
+    let rows = u32::try_from(prefix.len() + reply.len()).expect("a small fixture");
+    let directory = scratch("lost-lesson");
+    let (hers, other) = (fresh_shadow(&model, &directory, 42), fresh_shadow(&model, &directory, 7));
+    let mut ctx = context(&model, rows);
+    let held = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    for adapter in [&hers, &other] {
+        assert!(Learner::new(&mut ctx).retain_shadow(Arc::clone(adapter), Box::new(Counting(Arc::clone(&held)))).is_ok());
+    }
+    ctx.set_loras(&[(hers.as_ref(), 1.0)]).expect("her shadow on the context");
+
+    let lesson = Learner::new(&mut ctx).select(&trains(&hers), Box::new(Open)).map_err(|refused| refused.refusal).expect("her shadow selected");
+    assert!(Learner::new(&mut ctx).release_shadow(&other).is_ok(), "an unrelated shadow is releasable during the lesson");
+    assert!(Learner::new(&mut ctx).release_shadow(&hers).is_err(), "the lesson's shadow released under it");
+    ctx.decode(&lesson_batch(&prefix, &reply, next, true)).expect("her lesson decoded");
+
+    drop(lesson); // the handle is lost; the context still holds the lesson and its admission
+    match Learner::new(&mut ctx).abandon() {
+        Some(Finished::Learned { steps, .. }) => assert!(steps.get() >= 1),
+        Some(Finished::Unchanged { .. }) => panic!("the lost lesson's committed step was not counted"),
+        Some(Finished::Uncertain { steps, .. }) => panic!("native code marked her shadow uncertain after {steps} steps"),
+        Some(Finished::Failed { refusal, .. }) => panic!("{refusal:?}"),
+        None => panic!("no open lesson to settle"),
+    }
+    assert!(Learner::new(&mut ctx).abandon().is_none(), "a settled lesson settled again: two admissions back");
+
+    assert!(ctx.memory_seq_rm(0, 0, -1));
+    let again = Learner::new(&mut ctx).select(&trains(&hers), Box::new(Open)).map_err(|refused| refused.refusal).expect("a new lesson after the owner settled the lost one");
+    ctx.decode(&lesson_batch(&prefix, &reply, next, true)).expect("the new lesson decoded");
+    assert!(matches!(Learner::new(&mut ctx).conclude(again), Ok(Finished::Learned { .. })));
+    assert!(Learner::new(&mut ctx).release_shadow(&hers).is_ok(), "released once the lesson ended");
     std::fs::remove_dir_all(&directory).ok();
 }
