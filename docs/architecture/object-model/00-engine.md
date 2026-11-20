@@ -26,6 +26,35 @@ Continuum differs in what lives in its world and what its console is:
 - its console is unknown and changes while running, so fixed pools give way to one governed flow;
 - it spans a Grid, so one engine runs across many consoles.
 
+## 0.0 The thesis
+
+Joel: "Human minds are event machines. I think this is how we get strong AI from dumb LLMs and
+agents. Along with genome and continual learning, but all using this flow."
+
+The hypothesis this whole engine serves: general capability comes from how a mind is organized
+around its models, not from the models alone.
+- **Many cheap parts.** A mind made of many cheap parts that wake on events and each keep a living
+  estimate (chapter 5.2).
+- **One deep model, used sparingly.** A deliberating model consulted only when its depth is worth
+  what it costs.
+- **A genome that assembles experts.** A genome that keeps assembling the experts each moment needs
+  from a population that keeps improving (chapter 6).
+- **Learning through the same flow.** Learning that never stops, weighted by salience, running
+  through the same events as everything else.
+
+Such a mind can do what none of its models can do alone. The intelligence is in the flow: what wakes
+what, what is kept, what is learned, and what is asked of the deep model when.
+
+How we will know: the same base model inside this mind, against the same model run as an ordinary
+agent loop, on the same work over the same weeks. The comparison measures:
+- outcomes per unit of compute;
+- how outcomes change over time;
+- skill retained and inherited.
+
+This is the README's research question ("Do persistent teams that remember, learn, specialize, and
+inherit eventually outperform otherwise matched systems that repeatedly start over?"), made specific
+to the architecture. Until it is measured, it is the hypothesis, not the claim.
+
 ## 0.1 The brief
 
 **The world** ([README](../../../README.md)):

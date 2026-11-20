@@ -6,7 +6,9 @@ serving, grid; review). Replaces `PARTS.md`. Measured against canary c819052ef7.
 [Runtime architecture](../../README.md#runtime-architecture) · [How a mind runs](../HOW-A-MIND-RUNS.md) ·
 [Module architecture](../MODULE-ARCHITECTURE.md)
 
-This book starts from the design ideal (chapter 0): Continuum as an engine that keeps a living
+This book starts from its thesis and design ideal (chapter 0): that strong capability comes from
+minds organized as event machines around limited models, with a self-assembling genome and learning
+through the same flow; and Continuum as an engine that keeps such a living
 society present on small, changing hardware, as RAGE keeps a city present on a console. It then
 describes every important object and interface in the Rust core, how they inherit from
 one another from the most general to the most specific, which crate and module each lives in, and
