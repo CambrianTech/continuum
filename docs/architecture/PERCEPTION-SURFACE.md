@@ -102,6 +102,22 @@ what I intended?"* — the single most useful feedback in any iteration loop. Ma
 first-class Percept. It is also the cleanest **training signal**: the before/after of
 every *accepted* tweak is a labeled example of a good move.
 
+**Live calls (proposed).** Capture owns a bounded buffer of native frames. A visual
+observation carries its source, capture time and exact frame handle. Detection, segmentation
+and slide differencing subscribe independently. Each publishes as soon as it has a result.
+Audio features, transcript fragments and participant events carry their own source times,
+so a resident can associate a speaker's “this line” with the code visible when it was said.
+
+Each resident chooses what merits a closer look using her task and the available signals.
+She can request a crop or the full frame by handle while the conversation continues. A
+request pins that frame for the read. An expired handle reports expiry so a later slide
+cannot silently stand in for the one she asked about. A new aid implements the shared
+stage contract and subscribes to the inputs it needs. See the [flow implementation plan](FLOW-IMPLEMENTATION-PLAN.md).
+
+Replay a call with greetings, a slide change, a cursor moving over unchanged code and a
+question about one line. Record which frame each resident requested, missed cues,
+unnecessary full-frame transfers, and time from the question to a grounded answer.
+
 ---
 
 ## 5. Capture/replay → the aesthetic-taste corpus
