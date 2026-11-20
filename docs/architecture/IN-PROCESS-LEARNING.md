@@ -10,8 +10,7 @@ and CONTINUUM-ENGINE.md 4.14 (the persona engine: one mind decodes at a time).
 
 - [Why this comes before deleting the lanes](#why-this-comes-before-deleting-the-lanes)
 - [What moves, and where](#what-moves-and-where)
-- [The driver's one queue](#the-drivers-one-queue)
-- [How the trainer reaches it](#how-the-trainer-reaches-it)
+- [A learn is frames of work, like a turn](#a-learn-is-frames-of-work-like-a-turn-l2-proposed-2026-11-20)
 - [Slices, each with its validator](#slices-each-with-its-validator)
 
 ## Why this comes before deleting the lanes
@@ -42,24 +41,59 @@ her stable gene set, so serving's state is what it was.
 | Shadow selection per mind (`llama_opt_init` with her shadow adapter) and the preflight (`llama_opt_measure_shadow_graph`) | The driver, when it binds her for a learn | Fable |
 | `POST /learn`, `/learn/grants` and the residency endpoints | Removed with llama-server, after the trainer reaches the scheduler | Codex |
 
-## The driver's one queue
+## A learn is frames of work, like a turn (L2, proposed 2026-11-20)
 
-`Job::{Turn, Learn}` on one mpsc queue, one thread, one context (agreed 2026-11-18):
+The context is the one thing that must be serial, so it lives on the scheduler's own thread
+(`persona_scheduler/driver.rs`). Nothing else waits on it: callers submit and subscribe, and the
+thread advances one item by one quantum per frame.
 
-- A `Turn` runs as today: switch, prefill her new tail, decode.
-- A `Learn` binds her and her shadow, calls `learn_begin`, then runs one chunk per `step`. Between
-  chunks the driver serves any waiting `Turn`, so a turn waits at most one chunk (`max_chunk_us`),
-  never a whole reply. `max_chunk_us` is a target, not a bound: her first-token wait also includes the drain, the rebind, any queued turns and decode, and that added delay is proven by contention and fault traces. When a waiting turn needs the context exclusively, the driver calls `drain`,
-  which stops new gradient chunks and restores the served tail. Steps already committed stay
-  committed.
-- Nothing decodes in parallel. A learn chunk and a decode never overlap; they alternate.
+**Flow, one resident learning while another becomes ready to speak:**
 
-## How the trainer reaches it
+1. **Submit.** The dream stage calls `LearnPort::learn(LearnRequest)`. That pushes
+   `Submission::Learn` onto the driver's existing queue and returns at once with a `Subscribes`
+   to the outcome (STAGE-CONTRACT artifacts). The caller never awaits the engine. The completion
+   re-triggers its stage. `LearnRequest` carries what the frame needs, already granted: her
+   persona, the reply (tokens, labels, restore tail), her shadow adapter, its `OptimizerLease`, and
+   the `ReplyAdmission` from Codex's `LearnAdmission` over the ResourceDaemon. The driver never
+   asks the authority mid-frame.
+2. **One worklist.** The driver holds `Vec<Work>`, with `enum Work { Turn(Turn), Learn(Learn) }`.
+   `frame::pick` ranks both with the same `Candidate` (bound, remaining work, waited). A frame is
+   one quantum: a prefill chunk, one token, or one learn chunk (`llama_opt_learn_step`, or
+   `graph_step` when a turn has waited past its target).
+3. **No borrow across frames.** Today `LearnRun<'l>` holds `&mut Learner`, and so the context, for
+   a whole reply, so no turn could run before the reply ends. L2 makes the run an owned value,
+   `ReplyInProgress`: the native result handle, sequence, shadow key, steps before, and state and
+   buffers. It lives in `Work::Learn`. `Learner::new(&mut ctx).step(&mut reply)` borrows the
+   context for exactly one chunk. The borrow ends when the call returns, before the next frame
+   picks.
+4. **Streams.** The context has `STREAMS` = 2. A learn keeps custody of her stream until its
+   restore is confirmed, and the ready resident binds the other stream and decodes between the
+   learn's chunks. When a third mind needs a stream, that learn is drained (`drain` stops new
+   gradient chunks, and committed steps stay). Its restore chunks run as ordinary frames and then
+   release the stream. Draining is the only way a learn yields, and no one blocks on it.
+   Validator (below): other sequences decode between chunks with each mind's native prefix intact.
+   The fork documents this but has not proven it yet.
+5. **Complete.** `finish` maps `Finished` to the artifact through a completion outbox (the
+   `Emit`/`Record` pattern):
+   - `Learned` and `Unchanged` hand the admission back.
+   - `Uncertain` is never published as learned.
+   - `Failed` quarantines the context, and `recover` then runs as later learn frames after her
+     retained shadows are released.
+6. **Engine availability is an event.** The scheduler's `watch<EngineState>` is the only source.
+   The dream stage subscribes: `Ready` re-triggers it, and `Stopped`/`Refused` make
+   `LearnPort::learn` answer a typed `Unavailable` at once. There is no polling and no
+   `live_lane()`.
 
-The trainer calls a `LearnPort` trait with one method per verb it uses today (`seat`, `learn`,
-`release`). The in-process `Scheduler` implements it, and the trainer moves to it in ONE production
-cutover. No engine means a typed `Unavailable`, never a runtime fallback to HTTP. The HTTP
-`LearningEngine` and `live_lane` are deleted in that cutover or right after it.
+**Waits removed:**
+- The trainer waiting on an engine: it subscribes instead.
+- A turn waiting out a whole reply: chunks interleave.
+- The driver waiting on admission: it is granted before submission.
+- `recover_pass` returning early with no lane: the engine-state event replaces it.
+
+**Deleted in L3:** the whole-reply `LearnRun` borrow, `POST /learn` and its ledger and residency
+endpoints, the HTTP `LearningEngine`, `lane_registry::live_lane`, and `training_trigger`'s lane
+lookup. Gene catalog and paging over HTTP (`llama_server/gene_pages.rs`) go with llama-server in L4.
+The trainer's surface becomes `LearnPort`: `learn`, `seat`/`release` her shadow, `save` a checkpoint.
 
 ## Slices, each with its validator
 
