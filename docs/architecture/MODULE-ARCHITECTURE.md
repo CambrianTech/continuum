@@ -517,19 +517,10 @@ really share or substitute the verb, never one trait per verb, never dynamic dis
 | `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
 | `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
 
-**Lifecycle composes through the tree (the first example; any shared method or logic composes the
-same way, §12).** Every part has a
-lifetime, and the parent, not the caller, knows its children, their order and their outstanding
-work:
-
-```rust
-trait Lifecycle {
-    async fn prepare(&mut self) -> Ready;      // stage for use: native staging only, never recompute
-    async fn suspend(&mut self) -> Preserved;  // keep state; finish or hand off outstanding work
-    async fn resume(&mut self) -> Bound;       // bind what was preserved
-    async fn shutdown(&mut self) -> Released;  // children first, then own resources, safely
-}
-```
+**Lifecycle composes through the tree.** Every part has a lifetime, and the parent, not the caller,
+knows its children, their order and their outstanding work. The trait, its typed outcomes and the
+composite walk are specified once in [parts/LIFECYCLE.md](parts/LIFECYCLE.md); any other shared
+method or logic composes the same way ([parts](parts/README.md)).
 
 `persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
 order and combines what each reports. "Shut down this engine" is `shutdown` on its incarnation,
@@ -750,46 +741,12 @@ One concrete audit target is the genome extraction. The genome has its own crate
 
 ### Specialization in Rust
 
-Joel, 2026-11-20: "machine->automobile->truck->F150, not just machine->F150." Every object descends
-through a lineage of abstractions, and each generation holds only its difference from its parent:
-the logic is written once at the narrowest ancestor that all its users share, and each descendant
-adds only its subtle variation, down to the leaf. Skipping a generation (a leaf implementing straight
-from the root) is the defect, because the shared middle is then rewritten in every leaf. Composition
-is the other axis: an object is made of objects. This holds for any method and any logic, not only
-the lifecycle: validation, measurement, pressure response, serialization, health, perception,
-learning, a transition of state. Whatever several objects share is written once at their common
-ancestor and, where it concerns parts, walks the children (§9.4); each object writes only its own
-direct answer, and no object writes its own cascade. The
-organization follows the same tree: many crates, many modules, many small files, each holding little
-and each shaped like its siblings.
-
-**How to find the lineage: read the code as language.** List the nouns (the types: a whisper
-backend, a grid transport, a KV slot lease) and the verbs (the methods: shutdown, reclaim, retry,
-estimate). Then ask each word for its parent, as language does: a truck is an automobile, a throw is
-an action. Nouns that share a parent word share a base; verbs that share a parent word share one
-implementation at that base. The copies in the survey below read this way: `KvSlotLease`,
-`EmbedLease` and `PortLease` are each a lease; `backoff_after`, `retry_delay` and `backoff_delay`
-are each a backoff. Picture the system as animated objects: things that are made of things and
-do things. Their family tree is the module tree.
+How to find a type's parent, and the tree the core's parts form, are in [parts](parts/README.md)
+([finding the lineage](parts/LINEAGE.md), [where the code stands](parts/SURVEY.md)).
 
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
 
 For example, the flow worker owns queueing and wakeup. A brain stage adds run identity, revision tracking and output provenance. A perception stage can add shared frame history and freshness rules. Segmentation then supplies the model operation; a second segmentation backend supplies only its device-specific implementation. The flow worker and brain-stage contracts exist today. Composing them into the perception lineage is planned. [Flow worker](../../core/continuum-flow/src/stage.rs) · [Brain stage](../../core/continuum-kernel/src/runtime/stage/stage.rs)
-
-The same lineage carries her fusion regions ([BRAIN-REGIONS-SUBSTRATE.md](BRAIN-REGIONS-SUBSTRATE.md),
-"Fusion"), proposed:
-
-```
-flow worker        queueing, wakeup, cancellation
-└─ brain stage     run identity, revisions, provenance
-   └─ fusion region     a living estimate: subscribe, cache, fuse by confidence and age, emit, request depth
-      ├─ amygdala            the estimate is a depth judgement; the leaf is its small learned model
-      ├─ Wernicke's area     the estimate is word-level state shared by hearing and speaking
-      └─ perceptual fusion   shared frame history and freshness
-         └─ visual fusion    the estimate is a scene; leaves are each source's update rule
-```
-
-Each generation adds one invariant; nothing below rewrites what is above it.
 
 A planned specialization of the existing memory contract illustrates the split. The common adapter implements `ResourceConsumer::reclaim` once and delegates to a typed reduction. The measured outcome goes back to the governor. A serving adapter can share layout-transition and confirmation behavior between text and vision holders.
 
@@ -811,72 +768,6 @@ trait ResizableAllocation: Send + Sync {
 ```
 
 The request identifies the resource and target bytes. Today the deferred outcome carries status only. In the planned contract the allocation owner retains the in-flight reduction; the governor retains the demand and subscribes to its keyed completion before dispatch. The acknowledgement identifies that operation so a later completion can be matched, including one published during dispatch. Only confirmed released bytes count toward admission. Use typed variants for mutually exclusive states. A required identity, byte count or result belongs on the variant that needs it. Use an optional field only when absence has a defined domain meaning. [Existing consumer contract](../../core/continuum-kernel/src/resources/consumer.rs) · [Resource policy](SHARED-RESOURCES.md)
-
-### Where the code stands (survey of canary c819052ef7, 2026-11-20)
-
-Receipts are file:line on canary, and implementor counts include test doubles. The clusters are
-ranked by how much logic they rewrite per leaf. Each one closes by lifting the shared logic to its
-narrowest common ancestor, moving every leaf onto it, and deleting the copies (the definition of
-done below).
-
-1. **Component lifecycle, health and initialization: six unrelated roots.**
-   - **The roots:** `ServiceModule` (102 implementors; `continuum-kernel/src/runtime/service_module.rs:247`), `AIProviderAdapter` (14; `continuum-engine/src/ai/adapter/inference_device.rs:389`), `SpeechToText`/`TextToSpeech` (`continuum-live/src/live/audio/stt/mod.rs:73`, `tts/mod.rs:135`), `GridTransport` (`continuum-grid/src/grid/transport.rs:88`), `Daemon` (`runtime/daemon.rs:113`) and `BrainRegion` (`runtime/brain_region.rs:399`).
-   - **What each declares:** its own initialize, shutdown and health surface. Only `AIProviderAdapter` extends another trait.
-   - **The resulting copies:**
-     - 34 `fn shutdown` bodies.
-     - 19 health checks in 15 files, while `ServiceModule` has no health method.
-     - Parents hand-write their child loops: STT then TTS shutdown appears twice almost line for line (`continuum-live/src/live/audio/resource_lifecycle.rs:212-250`, `continuum-core/src/modules/live/voice_module/resources.rs:75-105`), and the grid loops over its transports in four places (`continuum-grid/src/grid/mod.rs:266, 292, 337, 517`).
-   - **What already exists:** the only folding base is `Lifecycle` (`continuum-persona-engine/src/persona/lifecycle.rs:6`), used only inside that crate. The runtime does fan drain, save and shutdown over its modules (`runtime/runtime/runtime.rs:52-68`).
-   - **Target:** one lineage. A `Part` root (identity, children) carries the composed methods (lifecycle, health, footprint), each written once and walking the children. A long-lived component and a model adapter specialize it, and each backend (whisper, kokoro, llama.cpp, anthropic) supplies only its device-specific body. Location (Codex and Fable, 2026-11-20): `continuum-base::part` (`core/continuum-base/src/part/`), on the dependency floor with arrows downward. `Part` owns identity and the traversal of owned children, walking ownership edges only, so two backends borrowing one model never count or release its allocation twice. It lifts the persona `Lifecycle` preservation rule: a pending or failed child keeps custody. Capability hooks stay on their narrowest ancestor; the resource governor keeps admission, and the lease owner confirms release. First cut: the identity shared by `SpeechToText` and `TextToSpeech` moves to one owner and its consumers migrate, with Whisper transcribing and Kokoro and Piper synthesizing as leaves.
-     That cut landed as identity only (#6204, approved).
-
-     **The one lifecycle (proposed, for review before any code).** Today there are three lifecycle shapes:
-     - persona-engine's `Lifecycle`: `suspend` only, with a typed `Preservation { Preserved, Pending, Failed }` and a composite that joins its five parts (`continuum-persona-engine/src/persona/lifecycle.rs`);
-     - each component root's own `initialize` and `shutdown` returning `Result`;
-     - the §9.4 specification: `prepare`, `suspend`, `resume`, `shutdown`.
-
-     A fourth, an audio `Backend` trait (#6205), was a mistake and is withdrawn. All of them become one trait on the root:
-
-     - **Where:** `continuum-base::part`, beside `Part`. It is `Lifecycle: Part`, with the four §9.4 verbs.
-     - **Outcome:** each verb returns one typed outcome, `Outcome<P, E> { Done, Pending(P), Failed(E) }`. `Preservation` is this type, renamed.
-     - **Receiver:** `&self`. Components are shared by handle (`Arc`) while they run, and each keeps its state behind its own synchronization.
-     - **Defaults:** a verb gets a default body only where every implementer may safely inherit it. `Done` is safe only for a part that holds nothing, so state holders implement every verb.
-     - **Composite:** one generic fold written once in `part`, for a fixed set of fields (today's `persona_parts!`) and for a dynamic set (a registry's children). It snapshots the children, then fans out the independent ones concurrently. It reports a typed outcome per child keyed by its identity, and a pending or failed child keeps custody of its bytes. Direction follows dependencies: `prepare` and `resume` run self then children; `suspend` and `shutdown` run children then self.
-     - **Ownership:** a composite owns one child per key. Re-registering a key replaces that child in place and keeps its order.
-     - **What stays narrower:** audio parameters and registry selection policy stay in the audio owner, and configured per-instance provider ids stay distinct from static kind names (Codex's review of #6205).
-
-     **Migration:**
-     - persona-engine's `Lifecycle` and `Preservation` move to `part`, and their copies are deleted.
-     - The speech backends implement `Lifecycle`. Their `initialize` and `shutdown` are deleted. VAD joins them, since a synchronous body inside an async verb is not a difference.
-     - One audio registry owns them as children, and the release walks become one composite `shutdown`.
-     - Then `AIProviderAdapter`, the grid transports and `ServiceModule`, each in its own change.
-
-     **Validators:** one slow child and one failing child in a composite (the others progress and the failure is reported, not lost); repeated registration (one child, order kept); suspend then resume preserving state; shutdown during prepare.
-2. **Pressure, footprint, leases and admission: parallel models.**
-   - **Overlapping bases:** `ResourcePool` (16 implementors; `paging/pool.rs:188`), `ResourceConsumer` (10; `resources/consumer.rs:126`), `FootprintSource` (1), `EvictionRegistry` (`gpu/eviction_registry.rs:101`) and `BrainRegion::pressure_profile`.
-   - **The resulting copies:**
-     - About 150 Lease, Permit, Grant, Gate and Admission types.
-     - Name collisions (`Admission` four times, `LaneAdmission` twice).
-     - `memory_pressure_monitor.rs:99` and `disk_pressure.rs:547` each define their own `pressure()` beside `ResourcePool`.
-   - **Target:** the one governor of [SHARED-RESOURCES.md](SHARED-RESOURCES.md). The hold, its expiry and its visibility are written once in a lease root. Memory, slots, ports and seats are specializations of it. Each holder supplies only its typed reduction (the `Reduction` example above).
-3. **Small utilities re-rolled per crate.**
-   - **Backoff:** three formulas (`continuum-core/src/airc/daemon_liveness.rs:52`, `airc/reattach.rs:48`, `continuum-mind/src/persona/host.rs:817`) and about seven retry helpers, with no shared base.
-   - **Monitors:** `Daemon` is the base, yet `watch::channel` is created 115 times in 66 files, and hand-written interval monitors bypass it (`continuum-grid/src/grid_allocator.rs`, `continuum-mind/src/modules/cognition.rs`, `continuum-vitals/src/activity_gate.rs`).
-   - **Home paths:** the base delegates correctly (`continuum-kernel/src/paths/mod.rs:62` calls `continuum_base::home`), but `serving-replay/src/main.rs:37` keeps its own copy and 25 raw `HOME` reads in 20 files bypass it.
-   - **Other families:**
-     - 36 registries, with collisions (`Registry` three times, `AdapterRegistry` twice).
-     - 13 keyed caches with no common base.
-     - 48 validators and 65 refusal types with no common base.
-     - Atomic writes repeated in 47 files.
-     - Token estimators bypassing `continuum-base/src/token_estimate.rs`.
-   - **Target:** each family gets one floor owner (`continuum-base` or a crate named for the pattern, plan phase 5). The copies move onto it and are deleted.
-4. **The mind is not one tree yet.**
-   - **Two disconnected roots:** `PersonaUnit` (`continuum-persona-engine/src/persona/unit.rs:9`) composes her five parts under `Lifecycle`, and nothing outside its crate uses it. `PersonaCognition` (`continuum-mind/src/persona/unified.rs:27`) holds about a dozen parts with no common trait and no shutdown, suspend or footprint. `PersonaAircRuntime` tears down through an ad hoc `Drop`.
-   - **Target:** the §9.4 tree under one `Persona` root, on the `Part` lineage of cluster 1, with her regions (§ BRAIN-REGIONS-SUBSTRATE "Fusion") as children.
-
-Size today: 52 crates under `core/`, and the largest files sit just under the 1,000-line gate (25
-files between 947 and 999 lines, one vendored file at 1,269). They pass the gate without being
-small. The gate is a ceiling, not the goal: a file holds one object's own difference.
 
 ### Finding violations across the system
 
