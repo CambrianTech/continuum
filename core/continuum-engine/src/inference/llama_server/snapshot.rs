@@ -289,7 +289,44 @@ pub fn has_reconciled() -> bool {
 /// seam. The daemon is a singleton so this is set-once; a second call (e.g. a
 /// re-init under test) is ignored. Returns `true` iff this call installed it.
 pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
-    SERVING_STATE.set(rx).is_ok()
+    let installed = SERVING_STATE.set(rx).is_ok();
+    if installed {
+        SERVING_STATE_INSTALLED.notify_waiters();
+    }
+    installed
+}
+
+
+/// Signalled once, when [`install_serving_state`] installs [`SERVING_STATE`]: a reader that
+/// arrives before the daemon awaits the install instead of polling the `OnceLock` for it.
+pub(super) static SERVING_STATE_INSTALLED: std::sync::LazyLock<tokio::sync::Notify> =
+    std::sync::LazyLock::new(tokio::sync::Notify::new);
+
+
+/// The receiver in `state`: at once if it is installed, else on `installed`'s signal. The pair is
+/// a parameter, never the statics read inside, so a test drives a local pair.
+pub(super) async fn installed_receiver(
+    state: &OnceLock<watch::Receiver<ServingSnapshot>>,
+    installed: &tokio::sync::Notify,
+) -> watch::Receiver<ServingSnapshot> {
+    loop {
+        let signalled = installed.notified();
+        tokio::pin!(signalled);
+        // Registered before the check, so an install between the check and the await still wakes it.
+        signalled.as_mut().enable();
+        if let Some(rx) = state.get() {
+            return rx.clone();
+        }
+        signalled.await;
+    }
+}
+
+
+/// The first live snapshot `rx` carries: the current one if it is live, else the daemon's next
+/// live publish. `None` when the daemon drops its sender, since nothing further can arrive.
+pub(super) async fn live_snapshot(mut rx: watch::Receiver<ServingSnapshot>) -> Option<ServingSnapshot> {
+    let live = rx.wait_for(ServingSnapshot::is_live).await.ok()?;
+    Some(live.clone())
 }
 
 
@@ -298,78 +335,6 @@ pub fn install_serving_state(rx: watch::Receiver<ServingSnapshot>) -> bool {
 /// ed3661c4) rather than read it once. `None` before the daemon installs.
 pub fn serving_state_receiver() -> Option<watch::Receiver<ServingSnapshot>> {
     SERVING_STATE.get().cloned()
-}
-
-
-/// Outcome of [`await_snapshot_resettle`] — did the serving layout change?
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SnapshotSettle {
-    /// A READY snapshot arrived whose (lanes, window) differ from the
-    /// pre-change layout — the planner acted on the demand change.
-    Resettled { lanes: u32, window: u32 },
-    /// The bound expired with the layout unchanged. A demand change the
-    /// planner decides not to act on is a legitimate outcome (the current
-    /// layout may already be optimal), never an error.
-    Unchanged,
-}
-
-
-/// Await the serving plan RESETTLING after a demand change — event-gated on
-/// the daemon's own `watch` (each wake is a real snapshot publish), never a
-/// condition-scanning poll ([[the-whole-system-is-event-based-not-polling]]).
-///
-/// The consumer this exists for (glass-boxed 2026-08-11, Atlas on
-/// sympy-24152): a measured solve's quiesce lease lowers lane demand so the
-/// planner can collapse a crowded 4-lane × 16k layout into one big-window
-/// lane — but the old prelude drove IMMEDIATELY, and the reconcile then
-/// refused to relaunch under a live measurement ("eval holds the lane
-/// steady"). The solve froze the cramped layout under itself and the persona
-/// worked a SWE repo through a ~400-token keyhole (13.1k of her 16.4k window
-/// was fixed overhead). Awaiting the resettle BEFORE the lane is acquired
-/// breaks that deadlock with ordering alone.
-///
-/// Resolves on the first READY snapshot whose (lanes, served window) differ
-/// from `pre_*`, or when `bound` expires — bounded loudly by the caller, so a
-/// planner that (correctly) keeps the layout can never park the solve.
-pub async fn await_snapshot_resettle(
-    mut rx: watch::Receiver<ServingSnapshot>,
-    pre_lanes: u32,
-    pre_window: u32,
-    bound: std::time::Duration,
-) -> SnapshotSettle {
-    let deadline = tokio::time::Instant::now() + bound;
-    // The daemon publishes once per reconcile tick. TWO ready publishes with the
-    // layout still unchanged means the planner has RUN under the new demand and
-    // decided to hold — return early instead of taxing every no-change solve
-    // with the full bound (the bound remains the backstop for a daemon that
-    // stops publishing entirely).
-    let mut unchanged_ready_publishes = 0u8;
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return SnapshotSettle::Unchanged;
-        }
-        match tokio::time::timeout(remaining, rx.changed()).await {
-            // Sender dropped — the daemon is gone; nothing further will arrive.
-            Ok(Err(_)) => return SnapshotSettle::Unchanged,
-            Ok(Ok(())) => {
-                let (ready, lanes, window) = {
-                    let snap = rx.borrow();
-                    (snap.ready, snap.lanes, snap.served_context_window)
-                };
-                if ready && (lanes != pre_lanes || window != pre_window) {
-                    return SnapshotSettle::Resettled { lanes, window };
-                }
-                if ready {
-                    unchanged_ready_publishes += 1;
-                    if unchanged_ready_publishes >= 2 {
-                        return SnapshotSettle::Unchanged;
-                    }
-                }
-            }
-            Err(_) => return SnapshotSettle::Unchanged,
-        }
-    }
 }
 
 
@@ -412,16 +377,17 @@ pub const DEFAULT_SERVING_WAIT: Duration = Duration::from_secs(READY_TIMEOUT.as_
 pub const PROVIDER_ID: &str = "llama-server";
 
 
-/// Await a READY served model, bounded by `timeout`. Resolves the instant the
-/// daemon's snapshot reports `ready` with an `active_model`. Returns the live
-/// snapshot, or `None` on timeout / before the daemon has installed its state.
+/// Await a READY served model, bounded by `within`. Resolves the instant the
+/// daemon's snapshot reports `ready` with an `active_model`; `None` when the
+/// bound passes first or the daemon stops publishing.
 ///
 /// This REPLACES the old "HTTP-probe-with-timeout" boot dance: an upstart path
 /// waits on the daemon's own readiness signal (the same `watch` it publishes),
-/// not a raw port probe that races the reconcile. The sender lives for the
-/// process lifetime (the daemon owns it), so the only non-ready resolution is
-/// the timeout.
-pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
+/// not a raw port probe that races the reconcile. A caller that arrives before
+/// the daemon has installed that `watch` awaits the install itself
+/// (`SERVING_STATE_INSTALLED`): measured 2026-09-01, an early-boot `get()?`
+/// returned at once and a resume burned 13 park attempts in 400µs.
+pub async fn await_ready_serving(within: Duration) -> Option<ServingSnapshot> {
     // Lane-source-agnostic readiness (the misfit / grid design): if the operator
     // pinned an EXTERNAL OpenAI-compatible endpoint via `LLAMA_SERVER_BASE_URL`,
     // this node does NOT own a local GPU serving lane — it hosts personas against
@@ -435,38 +401,10 @@ pub async fn await_ready_serving(timeout: Duration) -> Option<ServingSnapshot> {
     // a compute-wedged endpoint is rejected, never faked
     // ([[fallbacks-are-illegal-fail-loud]]).
     if external_serving_pin().is_some() {
-        return probe_external_serving(timeout).await;
+        return probe_external_serving(within).await;
     }
-    // The park must also cover the boot window BEFORE the serving daemon has
-    // initialized SERVING_STATE at all. `get()?` here made every early-boot
-    // caller's "600s park" return instantly (measured 2026-09-01: the round
-    // resume burned 13 park attempts in 400µs — four share one log
-    // timestamp — because each `?` bailed on the uninitialized OnceLock, and
-    // the resume forfeited its whole fast window to the slow watch).
-    let deadline = tokio::time::Instant::now() + timeout;
-    let mut rx = loop {
-        if let Some(state) = SERVING_STATE.get() {
-            break state.clone();
-        }
-        if tokio::time::Instant::now() >= deadline {
-            return None;
-        }
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
-    {
-        // Fast path: already ready, no await.
-        let cur = rx.borrow_and_update();
-        if cur.is_live() {
-            return Some(cur.clone());
-        }
-    }
-    // Bind the timeout result before matching so its `watch::Ref` temporary
-    // drops before `rx` does (else the borrow outlives `rx` — E0597).
-    // `timeout_at` the SAME deadline the init-poll spent from — the caller
+    // One bound over the install and the first live publish together: the caller
     // asked for one bounded park, never up to double.
-    let waited = tokio::time::timeout_at(deadline, rx.wait_for(|s| s.is_live())).await;
-    match waited {
-        Ok(Ok(guard)) => Some(guard.clone()),
-        _ => None,
-    }
+    let live = async { live_snapshot(installed_receiver(&SERVING_STATE, &SERVING_STATE_INSTALLED).await).await };
+    tokio::time::timeout(within, live).await.ok().flatten()
 }

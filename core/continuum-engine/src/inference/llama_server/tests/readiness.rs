@@ -134,3 +134,37 @@ fn a_smoke_decode_never_takes_a_slot_holding_a_mind() {
     assert_eq!(smoke_seat(None, &busy), SmokeSeat::Occupied, "a processing slot is taken");
     assert_eq!(smoke_seat(None, &json!({"error": "x"})), SmokeSeat::Occupied, "an unreadable account is never read as empty");
 }
+
+// what this catches (#205, rule 10): bring-up learning of its child's death only at the next
+// `/health` poll. The poll here never fires, so only the kernel's exit event can end the wait: it
+// is pending while the child runs, ends on the exit, and the observed exit is never awaited again.
+#[cfg(unix)]
+#[tokio::test]
+async fn bring_up_wakes_on_its_childs_exit_never_on_the_next_poll() {
+    use super::super::readiness::between_polls;
+    use continuum_host::process_exit::{exited, ExitObserved};
+    use tokio::io::AsyncWriteExt;
+    let mut child = tokio::process::Command::new("sh")
+        .args(["-c", "read line"])
+        .stdin(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .expect("test: sh spawns");
+    let pid = child.id().expect("test: a running child has a pid");
+    let mut exit = Some(Box::pin(exited(pid)));
+    {
+        let mut waiting = Box::pin(between_polls(&mut exit, std::future::pending()));
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(waiting.as_mut(), cx).is_pending(), "a running child has not exited");
+            std::task::Poll::Ready(())
+        })
+        .await;
+        let mut stdin = child.stdin.take().expect("test: piped stdin");
+        stdin.write_all(b"done\n").await.expect("test: write");
+        drop(stdin);
+        assert_eq!(waiting.await, Some(ExitObserved::Exited), "the exit ends the wait, not a poll");
+    }
+    assert!(exit.is_none(), "an observed exit is taken out, never awaited twice");
+    assert_eq!(between_polls(&mut exit, std::future::ready(())).await, None, "with no exit watched, the poll alone ends the wait");
+    child.wait().await.expect("test: reap");
+}
