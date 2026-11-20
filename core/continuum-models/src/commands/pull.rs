@@ -202,9 +202,9 @@ impl PullProgress {
         if let Some(rid) = self.run_id.as_deref() {
             if let (Some(path), Ok(json)) = (
                 models_pull_ledger_path(rid),
-                serde_json::to_string_pretty(&payload),
+                serde_json::to_string_pretty(&payload) // justified: ledger file is a disk-format contract boundary, serializable
             ) {
-                let _ = std::fs::write(path, json);
+                let _ = std::fs::write(path, json); // justified: best-effort local ledger write; non-critical polling state
             }
         }
     }
@@ -301,9 +301,9 @@ crate::action_command! {
                         };
                         if let (Some(path), Ok(json)) = (
                             models_pull_ledger_path(&run_id),
-                            serde_json::to_string_pretty(&failed),
+                            serde_json::to_string_pretty(&failed) // justified: ledger file is a disk-format contract boundary, serializable
                         ) {
-                            let _ = std::fs::write(path, json);
+                            let _ = std::fs::write(path, json); // justified: best-effort local ledger write; non-critical polling state
                         }
                         if let Some(bus) = crate::runtime::MessageBus::global() {
                             bus.publish_async_only("models:pull:failed", serde_json::json!({
@@ -575,9 +575,9 @@ impl ModelsPull {
         if let Some(rid) = p.run_id.as_deref() {
             if let (Some(path), Ok(json)) = (
                 models_pull_ledger_path(rid),
-                serde_json::to_string_pretty(&report),
+                serde_json::to_string_pretty(&report) // justified: ledger file is a disk-format contract boundary, serializable
             ) {
-                let _ = std::fs::write(path, json);
+                let _ = std::fs::write(path, json); // justified: best-effort local ledger write; non-critical polling state
             }
         }
         if let Some(bus) = crate::runtime::MessageBus::global() {
@@ -610,7 +610,7 @@ fn hf_repo_id(hint: &str) -> Option<String> {
 /// The HF auth token for gated repos, from the environment. `None` for public
 /// repos (the common case). We read the standard `HF_TOKEN` var.
 fn hf_token() -> Option<String> {
-    std::env::var("HF_TOKEN").ok().filter(|t| !t.is_empty())
+    continuum_base::config_env::read("HF_TOKEN").filter(|t| !t.is_empty())
 }
 
 /// Quant tiers we prefer when the caller does not name one, best-balance first.
