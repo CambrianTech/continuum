@@ -30,6 +30,11 @@ context, a time-share grant, a workspace held on the side, a second engine or a 
 base. The extra cost is the backward pass over the labelled rows, plus her shadow and its
 optimizer state while she is learning.
 
+Nothing about the machine is assumed to stay fixed. Memory, Cores and nodes change during a
+session: a user starts a game or quits one, a node joins or drops off the grid. The governor
+measures capacity live and reacts to each change as an event, and the policies it uses (duty,
+placement, demotion) are refined from our own receipts rather than set once (§3, §4, §6).
+
 The fork already supports this. `llama_batch` carries `label` and `label_weight` per position. A
 labelled position makes `llama_decode` also run the loss, the backward and the optimizer write of
 the context's trainable adapter (`llama_opt_init`), in the same graph as the batch's other rows
@@ -68,11 +73,14 @@ ends: it is a share of her decoding that switches on and off as she works, like 
 modulation. She keeps talking throughout.
 
 **One control per Core (proposed).** Each Core has one duty value: the share of its frames whose
-batches carry labelled rows. The governor sets it from three inputs:
+batches carry labelled rows. The governor sets it from four inputs, all measured live and never
+fixed at launch:
 
 - the lessons queued across the minds it serves (her lesson queue);
 - the Core's slack: frames with no turn waiting;
-- the latency budget of whoever is waiting to speak.
+- the latency budget of whoever is waiting to speak;
+- the memory the node can give right now, which changes when a user's own application (a game on
+  the 5090, an editor) takes or frees memory.
 
 A long queue on a quiet Core raises the duty toward 1. A turn becoming ready lowers it at the next
 frame boundary. The Academy's dedicated teaching is the same control held high, so learning keeps
@@ -108,6 +116,10 @@ flow, like data"). Her learning context is a pageable resource of the memory-tie
   (`llama_opt_state_restore`) the next time she learns. No lease is held across idle time.
 - **During a step:** the labelled rows' activations and gradients exist only inside that
   `llama_decode`, as transient memory of the serving graph.
+- **When the machine changes under her:** a user's application taking memory is pressure like
+  any other. The duty drops, and her learning context is demoted at the next frame boundary,
+  before serving gives anything up. When the application quits and frees memory, the duty rises
+  again. Neither needs a restart, and neither loses a committed step.
 
 A small need is met quickly because lower-value bytes are moved, and is never refused while they
 sit resident. On BigMama, 2026-11-19 14:14-14:29Z, a 12,058,624-byte (11.5 MiB) learning Prepare
@@ -153,6 +165,13 @@ GENOME-FOUNDRY-SENTINEL Parts 3 and 10 and on SHARED-RESOURCES' Peer tier).
   every page, with the Peer tier below Cold: VRAM, RAM, disk, a LAN peer, the p2p mesh
   (OCI or airc transport, REPO-GENOME §6). A composition requests the genes it needs; a miss is a
   page fault that fetches the gene (GENOME-FOUNDRY-SENTINEL Part 3).
+- **Nodes come and go mid-session.** A node joining offers its frames and its tiers from the
+  moment it serves the base. A node leaving, by shutdown, sleep, a lost link or its owner taking it
+  back, is an expected event, not a failure. The learning owner's claim is a lease renewed by
+  heartbeat (SHARED-RESOURCES "Expiry"), so when a peer vanishes mid-lesson the claim expires and
+  her learning resumes from her last checkpoint, at home or on another peer. A step that ran on the
+  vanished node after that checkpoint is not counted. It is replayed from the journal cursor, so
+  each arrival still commits once (ONE-RESIDENT §9.3).
 - **What she learns is shared back.** A snapshot that earns adoption is published with its lineage
   and exam results (the publication row in §2). It spreads by measured fitness across minds that
   wear it (GENOME-FOUNDRY-SENTINEL Part 10).
@@ -206,6 +225,9 @@ Each item goes in the change that replaces it, never kept as a fallback:
    - memory while learning is serving plus the learning context and the labelled rows'
      activations; while not learning it is serving plus nothing;
    - the learning context's page-in and page-out times;
+   - another process taking device memory mid-session (a game on the 5090, a large allocation on
+     the M5): the duty drops and her learning context is demoted before serving shrinks, and the
+     duty recovers when the memory is freed, with no restart and no lost committed step;
    - two overlapping lessons, including on the same shadow, completed in reverse order, count each
      step once and return each admission once;
    - an interrupt and resume across a commit applies each arrival once;
@@ -217,7 +239,9 @@ Each item goes in the change that replaces it, never kept as a fallback:
 4. **Learning across the grid (§6).** A lesson runs on a peer serving the same base and returns
    her learning context; a gene pages in from a peer on a miss. Validators: the owner claim moves
    with the context, and no step is applied twice across the move; the round trip costs less than
-   the frames it uses on the peer.
+   the frames it uses on the peer; a peer disconnected mid-lesson expires its claim and her
+   learning resumes from her last checkpoint elsewhere, each arrival committed once; a node joining
+   mid-session receives work without a restart anywhere.
 
 Live gate (ONE-RESIDENT §9.6 P6), on the M5 and on BigMama: a reviewed correction is learned in
 place by her own dream, applied on unseen related tasks, and retained after a restart, with
