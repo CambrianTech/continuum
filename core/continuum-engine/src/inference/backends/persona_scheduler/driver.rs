@@ -729,14 +729,14 @@ impl Driver<'_, '_> {
             (tokens as u128 * allowance).checked_div(elapsed.as_nanos())
         }).map_or(1, |count| count.clamp(1, self.batch.get() as u128) as usize);
         let end = pos.saturating_add(count).min(limit);
-        let chunk = turn.prompt[pos..end].to_vec();
+        let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
         let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
-        self.engine.submit(Step { tokens: chunk.clone(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
+        self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
             self.engine.settle()?;
-            self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
+            self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
             if let Some(kind) = turn.boundaries.at(end) {
                 self.keep_checkpoint(turn, kind, end)?;
             }
@@ -746,7 +746,7 @@ impl Driver<'_, '_> {
         }
         let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
         let token = self.engine.tier().sample(&mut turn.sampler, at);
-        self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
+        self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
         self.prefill_sample = Some((len, started.elapsed()));
