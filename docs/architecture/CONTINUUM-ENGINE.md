@@ -1113,6 +1113,19 @@ locks, not the engine, made minds wait. Each was added after an incident instead
 - The engine's own continuous batching is the concurrency: every seated sequence with tokens to
   process rides the same forward pass.
 
+**Placement across resources (proposed).** A memory operation describes its input blocks, the
+exact token range and the result its consumer needs. The memory owner knows where valid blocks
+reside and which kernels preserve their geometry and lineage. A CPU SIMD kernel, a device
+kernel and a peer are candidates only for operations they support. Compare their predicted
+finish times including queue delay, input transfer, execution and return of the result.
+Keep mutable blocks with one writer until its completion fence lands.
+
+Use the existing `Flow` dispatcher for each independently available capacity. Submit a unit
+once and give its caller a completion handle. A release or capacity change wakes dispatch.
+Independent work can run during a transfer or decode. Reconsider queued placement when capacity
+changes. A single owner must claim a unit before execution so competing devices cannot run it twice.
+Evaluate placement with time to first reply, sustained tokens/s and bytes moved under resident load.
+
 **Classes, the GCD way** (Joel, 2026-10-28: "no one is ever not getting their task done so a dream
 still happens just irregularly and doesn't eat into work"). Each mind is a serial queue (one act at
 a time) that targets a quality-of-service class; the engine is the concurrent pool beneath them.
