@@ -667,7 +667,11 @@ impl Driver<'_, '_> {
             reuse::Reuse::Append { from } => (from, "append"),
             reuse::Reuse::Rewind { from } => match self.rewind_to_checkpoint(from) {
                 Ok(()) => (from, "rewind"),
-                Err(_) => (0, "rewind_refused"),
+                Err(error) => {
+                    continuum_base::probe!(class = "persona.engine.rewind_failed", persona = %turn.id.0, checkpoint_end = from as u64,
+                        shared_tokens = shared as u64, error = %error, "native rewind failed; turn must prefill");
+                    (0, "rewind_refused")
+                }
             },
             reuse::Reuse::Restart(miss) => (0, miss.reason()),
         };
@@ -693,9 +697,20 @@ impl Driver<'_, '_> {
     fn keep_checkpoint(&mut self, turn: &mut Turn, kind: Boundary, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
         let history = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens;
-        let Some(mut blocks) = history.capture_buffer(kind, end) else { return Ok(()) };
-        if self.engine.checkpoint_active(&mut blocks).is_ok_and(|pos| pos as usize + 1 == end) {
-            self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
+        let Some(mut blocks) = history.capture_buffer(kind, end) else {
+            continuum_base::probe!(class = "persona.engine.checkpoint_allocation_failed", persona = %turn.id.0,
+                expected_end = end as u64, "native checkpoint buffer allocation failed");
+            turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
+            return Ok(());
+        };
+        match self.engine.checkpoint_active(&mut blocks) {
+            Ok(pos) if pos as usize + 1 == end => {
+                self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
+            }
+            Ok(pos) => continuum_base::probe!(class = "persona.engine.checkpoint_misaligned", persona = %turn.id.0,
+                expected_end = end as u64, native_position = i64::from(pos), "discarded misaligned native checkpoint"),
+            Err(error) => continuum_base::probe!(class = "persona.engine.checkpoint_failed", persona = %turn.id.0,
+                expected_end = end as u64, error = %error, "native checkpoint capture failed"),
         }
         turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
         Ok(())
