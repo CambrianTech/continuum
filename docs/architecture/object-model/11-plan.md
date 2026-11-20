@@ -15,7 +15,7 @@ every stream builds on.
 | Minds and the genome | 5, 6 | Fable | #6203 lands; learning as a mode of her turn (`Step` labels, the duty, learning-context paging); the persona as one tree; the live learning gate |
 | Live calls and embodiment | 7 | a second agent focused on it, with BigMama (live and media) | the proof plan's stages 1 to 3: one speaker to one listener, interruption, rendered bodies with native vision; then shared attention, scale, and a shared world |
 | Resources, serving and the grid | 3.7, 3.8, 4.3, 4.4, 8 | Codex | `Demand` cleared by the governor; `Holder`; `Durable` media; the serving and grid crate cuts |
-| The learning acceptance test | 6.5 | Cormac | a reviewed correction learned in place, retained after a restart, on unseen tasks, against the base without the gene |
+| The learning acceptance test | 6.6 | Cormac | a reviewed correction learned in place, retained after a restart, on unseen tasks, against the base without the gene |
 
 Each stream reports its progress as its own validators and live receipts, plus the ratchets of 11.3
 that its changes move.

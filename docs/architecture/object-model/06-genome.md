@@ -85,7 +85,55 @@ A gene does not stop learning when it leaves the resident who grew it.
 So a gene improves while it is downloaded and shared: every recipient is another life it learns
 from, and the lineage records whose experience made each version better.
 
-## 6.4 Crates and what exists
+## 6.4 Her genome assembles itself
+
+Joel: "no matter what the personas are doing or thinking about, the genome and the genes in the ether
+... it automatically assembles its own paged in genes and trains them to get better dynamically.
+It's not hand coded or manual. It's part of her being." Nothing below is a job someone runs for
+her. These are regions of her learning branch, reading the one importance (chapter 0.3), always on.
+
+**Where lessons come from.** Every trace her work and her team's work leaves is a source of lessons,
+streamed like any source (chapter 3.6):
+- **The repo's history is a course.** A PR's diff with its review is a correction. A CI failure with
+  the commit that fixed it is a gap and its answer. A review thread is a lesson in how this team
+  works (REPO-GENOME-AND-COURSES §17.1).
+- **GitHub comments and verdicts.** Issue discussions, airc verdicts and card outcomes are lessons too.
+- **Distilled sessions.** Our own Claude and Codex sessions are distilled into lessons
+  (REPO-GENOME-AND-COURSES §12): the corrections a person made, the dead ends, the fix that landed.
+- **Her ongoing work.** Every receipt that contradicted her intent, and every correction a reviewer
+  gave her.
+
+Each becomes a `Lesson` demand, weighted by salience: how often the gap would cost her in the
+activities she is in.
+
+**Where genes come from.** Genes live in the ether, and she reaches all of it the same way, through
+the tiers (chapter 0, "Every page has a lifecycle"):
+- her own node;
+- the repo's own genes, versioned with its code (REPO-GENOME-AND-COURSES §1);
+- lineage-tracked genes shared on Hugging Face;
+- any other repository, public or private, that she has access to.
+
+Demand-aligned recall (GENOME-FOUNDRY-SENTINEL) finds candidates by outcome-conditioned similarity
+to her current gaps and activities, and prefers a refined gene over an imported one.
+
+**How they are scored.** A candidate gene is a demand on her genome. Its value is the improvement it
+is expected to bring on her current gaps, weighted by the activities she is in and by the fitness
+evidence its lineage carries. Its cost is the bytes and paging it needs. The same importance that
+decides what streams into her context decides which genes are paged in for a turn, which candidates
+are examined, and which lessons train first.
+
+**How it assembles.** Her `GeneSet` composes the genes each turn needs. Her `Lessons` train her
+shadow from the highest-valued lessons as the duty allows. Candidates and refinements are examined
+on held-out tasks and adopted when they pass. All of this runs as she works, at whatever duty the Core
+can give, without anyone starting it.
+
+**The fastest start.** A resident joining a repo is useful at once:
+- genes matching the repo's stack and history page in from the ether;
+- a course is built from the repo's own history;
+- the most recent PRs are held out as an honest exam, so whether she improved is measured from day
+  one (REPO-GENOME-AND-COURSES §3, "clone to veteran", and §11, with and without arms).
+
+## 6.5 Crates and what exists
 
 | Object | Crate (chapter 8) | Today |
 |---|---|---|
@@ -97,7 +145,7 @@ from, and the lineage records whose experience made each version better.
 | `Exam`, adoption | `continuum-genome`, `continuum-academy` | exists in the academy; to run on the live Core |
 | Publication, discovery, inheritance, fitness | `continuum-genome` with `continuum-grid` | designed (GENOME-FOUNDRY-SENTINEL Parts 3 and 10); not built end to end |
 
-## 6.5 What must be done
+## 6.6 What must be done
 
 In order, each with its validator:
 1. **#6203 lands:** the labelled batch and the bound lesson (validators exist and pass on Metal).
@@ -112,6 +160,13 @@ In order, each with its validator:
 4. **The live gate:** a reviewed correction learned in place by her own dream, applied on unseen
    related tasks, retained after a restart, with unrelated skill intact, against the same base
    without the gene (ONE-RESIDENT §9.6 P6).
-5. **Spread:** publish, discover, adopt by exam, refine as a child, publish back. Validator: a gene
+5. **Self-assembly from the repo and the ether (6.4):**
+   - lessons streamed from the repo's history, comments and distilled sessions;
+   - candidate genes recalled from the ether by her gaps;
+   - examined on held-out recent PRs and adopted, with no manual step.
+
+   Validator: REPO-GENOME-AND-COURSES §11's with-and-without arms. On the held-out PRs, a resident
+   who assembled her genome from the repo does measurably better than the same base without it.
+6. **Spread:** publish, discover, adopt by exam, refine as a child, publish back. Validator: a gene
    grown on one node improves a resident on another node on her own tasks, and her refinement
    measurably improves it again.
