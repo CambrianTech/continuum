@@ -164,22 +164,21 @@ pub fn apply_decision(t: &GeneTrial, now_ms: u64) {
             );
         }
     }
-    if let Some(dir) = crate::genome::fitness_ledger::GeneFitnessIndex::default_dir() {
-        let row = fitness_receipt(t, now_ms);
-        let line = format!("{row}\n");
-        let path = dir.join(format!("{}.jsonl", t.persona_id));
-        let written = std::fs::create_dir_all(&dir).and_then(|_| {
-            use std::io::Write;
-            std::fs::OpenOptions::new().create(true).append(true).open(&path)?.write_all(line.as_bytes())
-        });
-        if let Err(error) = written {
-            continuum_base::probe!(
-                class = "genome.trial.ledger_unwritten",
-                gene = t.alias.as_str(),
-                error = %error,
-                "the verdict did not reach the fitness ledger: recall ranks this gene without it"
-            );
-        }
+    // The fitness ledger is `<progress>/<persona>.jsonl` (GeneFitnessIndex reads it there): appended
+    // through the `progress` class's writer, which owns that directory, measures it and decides
+    // its eviction, never through a path this module picked.
+    let line = format!("{}\n", fitness_receipt(t, now_ms));
+    let written = continuum_kernel::system_resources::disk_reporters::ClassWriter::of("progress").and_then(|class| {
+        use std::io::Write;
+        class.append(Path::new(&format!("{}.jsonl", t.persona_id)))?.write_all(line.as_bytes())
+    });
+    if let Err(error) = written {
+        continuum_base::probe!(
+            class = "genome.trial.ledger_unwritten",
+            gene = t.alias.as_str(),
+            error = %error,
+            "the verdict did not reach the fitness ledger: recall ranks this gene without it"
+        );
     }
     let verdict = t.verdict.as_ref();
     continuum_base::probe!(
@@ -321,35 +320,52 @@ impl Adoption {
     }
 }
 
+/// The node's gene trials as one saved-state value (`<genome>/trials.json`), through the one
+/// saved-state contract: staged and placed durably, generation-checked, and the pre-envelope bare
+/// array adopted on first load (written as the envelope by the next save).
+struct Trials;
+impl continuum_saved_state::SavedState for Trials {
+    const KIND: &'static str = "trials";
+    const FORMAT: u32 = 1;
+    const RETENTION: continuum_saved_state::Retention =
+        continuum_saved_state::Retention::PerKey { bound: "one file per node: every persona's gene trials" };
+    type Key = continuum_saved_state::Singleton;
+    type Contract = ();
+    type Value = Vec<GeneTrial>;
+    type Medium = continuum_saved_state::OwnedFile;
+    fn upgrade(found: u32, old: serde_json::Value) -> Option<Self::Value> {
+        continuum_saved_state::adopt_bare(found, old)
+    }
+}
+
 /// The trial file.
 pub struct GeneTrials {
-    path: PathBuf,
+    store: continuum_saved_state::Store<Trials>,
 }
 
 impl GeneTrials {
-    pub fn at(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
+    /// The trials kept in genome directory `dir` (`<dir>/trials.json`).
+    pub fn in_dir(dir: impl Into<PathBuf>) -> Self {
+        Self { store: continuum_saved_state::Store::at(dir.into()) }
     }
 
     /// `~/.continuum/genome/trials.json`; `None` without a home directory.
     pub fn default_store() -> Option<Self> {
-        crate::paths::ContinuumLayout::home()
-            .ok()
-            .map(|layout| Self::at(layout.genome().join("trials.json")))
+        crate::paths::ContinuumLayout::home().ok().map(|layout| Self::in_dir(layout.genome()))
     }
 
-    pub fn path(&self) -> &Path {
-        &self.path
+    /// The trials file (`<genome>/trials.json`).
+    pub fn file(&self) -> Option<PathBuf> {
+        self.store.path(&continuum_saved_state::Singleton)
     }
 
     /// Every trial. A missing file is no trials; an unreadable one is an error the caller
     /// surfaces (a turn then runs its current genome, never a guessed one).
     pub fn load(&self) -> Result<Vec<GeneTrial>, String> {
-        match std::fs::read_to_string(&self.path) {
-            Ok(body) => serde_json::from_str(&body)
-                .map_err(|e| format!("gene trials {} unreadable: {e}", self.path.display())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
-            Err(e) => Err(format!("gene trials {}: {e}", self.path.display())),
+        match self.store.load(&continuum_saved_state::Singleton, &()).matched() {
+            Ok(all) => Ok(all),
+            Err(continuum_saved_state::Loaded::Absent) => Ok(Vec::new()),
+            Err(found) => Err(format!("gene trials {:?}: {found}", self.file())),
         }
     }
 
@@ -361,13 +377,10 @@ impl GeneTrials {
     }
 
     fn save(&self, all: &[GeneTrial]) -> Result<(), String> {
-        if let Some(dir) = self.path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        match self.store.save(&continuum_saved_state::Singleton, &(), &all.to_vec()) {
+            Ok(_saved) => Ok(()),
+            Err(error) => Err(format!("gene trials {:?}: {error}", self.file())),
         }
-        let tmp = self.path.with_extension("json.tmp");
-        let body = serde_json::to_vec_pretty(all).map_err(|e| e.to_string())?;
-        std::fs::write(&tmp, body).map_err(|e| format!("{}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, &self.path).map_err(|e| format!("{}: {e}", self.path.display()))
     }
 
     /// Open a trial for a gene with no recorded training job (a fixture, a reused gene).
@@ -453,7 +466,7 @@ mod tests {
     #[test]
     fn a_landed_gene_settles_for_a_while_and_is_never_expired() {
         let dir = tempfile::tempdir().unwrap();
-        let store = GeneTrials::at(dir.path().join("trials.json"));
+        let store = GeneTrials::in_dir(dir.path());
         let persona = Uuid::from_u128(0x7);
         let old = store.open(persona, "code", std::path::Path::new("/g/old.gguf"), "base", 1_000).unwrap();
         let young = store.open(persona, "code", std::path::Path::new("/g/young.gguf"), "base", 1_000 + SETTLE_WINDOW_MS).unwrap();
@@ -472,7 +485,7 @@ mod tests {
     #[test]
     fn a_trial_is_decided_once_and_only_retention_retires_a_promoted_gene() {
         let dir = tempfile::tempdir().expect("test: dir");
-        let store = GeneTrials::at(dir.path().join("trials.json"));
+        let store = GeneTrials::in_dir(dir.path());
         let kimi = Uuid::from_u128(0x6b1);
         let job = Path::new("/genome/kimi/code/job-1");
         let t = store.open_from(kimi, "kimi-dream-1", Path::new("/genes/k1.gguf"), "qwen-27b", Some(job), 10).unwrap();
@@ -507,7 +520,9 @@ mod tests {
         assert!(store.decide(t.id, TrialState::Promoted, verdict, 60).unwrap().is_none(), "a retired gene stays retired");
         assert!(her_genes(&store.load().unwrap(), kimi, "qwen-27b").is_empty(), "a retired gene never runs");
 
-        // A row the deleted card gate wrote still reads, its arms carried into the new names.
+        // A row the deleted card gate wrote still reads, its arms carried into the new names: a
+        // pre-envelope bare array on disk, met by a fresh store as a restarted node meets it.
+        let old = tempfile::tempdir().expect("test: dir");
         let legacy = serde_json::json!([{
             "id": Uuid::from_u128(1), "persona_id": kimi, "alias": "g", "path": "/g.gguf",
             "base_model_id": "b", "share_milli": 500, "opened_at_ms": 1, "state": "promoted",
@@ -515,8 +530,8 @@ mod tests {
             "candidate": {"settled": 10, "passed": 9}, "stable": {"settled": 10, "passed": 2},
             "credited_cards": [], "looked": 1
         }]);
-        std::fs::write(store.path(), legacy.to_string()).expect("test: legacy row");
-        let rows = store.load().expect("a legacy trial file reads");
+        std::fs::write(old.path().join("trials.json"), legacy.to_string()).expect("test: legacy row");
+        let rows = GeneTrials::in_dir(old.path()).load().expect("a legacy trial file reads");
         assert_eq!(rows[0].verdict.as_ref().map(|v| v.with_gene.passed), Some(9));
         assert_eq!(rows[0].trained_from, None);
     }
