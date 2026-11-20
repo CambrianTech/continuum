@@ -783,17 +783,31 @@ function Mod-Airc {
     if (@($env:PATH -split ';' | Where-Object { $_.TrimEnd('\') -eq $aircDirectory }).Count -eq 0) { $env:PATH = $aircDirectory + ';' + $env:PATH }
 }
 
+
 function Mod-OrtRuntime {
-    # DirectML builds obtain their runtime through ort at build time. CUDA's
-    # load-dynamic-ort build needs this explicit runtime provision before launch.
-    if (-not (Get-Command nvidia-smi -ErrorAction SilentlyContinue)) { return }
+    # ONNX Runtime provision for ALL Windows builds.
+    #
+    # CUDA builds use the GPU-enabled runtime (onnxruntime module).  DirectML
+    # builds need CPU-only ORT so that voice / STT works without an NVIDIA card.
+    # Both paths land their DLLs in ~/.continuum/lib/ which is where continuum-
+    # core's dynamic loader looks for onnxruntime.dll before falling back to the
+    # system path.  (System32 precedence means we can't rely on PATH — the DLL
+    # must be placed beside the consumer.)
     if ($env:ORT_DYLIB_PATH) {
         if (-not (Test-Path -LiteralPath $env:ORT_DYLIB_PATH)) { throw 'Configured ORT_DYLIB_PATH does not exist.' }
         return
     }
+    # Already installed?
     $lib = Join-Path (Get-ManagedPayloadRoot) 'lib'
     if (Test-Path (Join-Path $lib 'onnxruntime.dll')) { Module-Skip 'onnxruntime' 'installed runtime present'; return }
-    $source = (Get-ManifestModule 'onnxruntime').source
+    # Pick the right source module.
+    $sourceId = if (Get-Command nvidia-smi -ErrorAction SilentlyContinue) {
+        'onnxruntime'
+    } else {
+        'onnxruntime-cpu'
+    }
+    $source = (Get-ManifestModule $sourceId).source
+    Module-Start 'onnxruntime' "downloading $sourceId runtime"
     $scratch = Join-Path ([IO.Path]::GetTempPath()) ('continuum-ort-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $scratch | Out-Null
     try {
@@ -802,7 +816,7 @@ function Mod-OrtRuntime {
         Assert-Sha256 -Path $archive -Expected $source.sha256 -Name 'onnxruntime'
         Expand-Archive -LiteralPath $archive -DestinationPath $scratch
         $library = @(Get-ChildItem -LiteralPath $scratch -Filter onnxruntime.dll -Recurse)
-        if ($library.Count -ne 1) { throw 'ONNX Runtime archive has no unique runtime DLL.' }
+        if ($library.Count -ne 1) { throw "ONNX Runtime archive has no unique runtime DLL (found $($library.Count))." }
         New-Item -ItemType Directory -Force -Path $lib | Out-Null
         Get-ChildItem -LiteralPath $library[0].DirectoryName -Filter '*.dll' |
             Copy-Item -Destination $lib -Force -ErrorAction Stop
