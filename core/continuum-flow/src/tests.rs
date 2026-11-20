@@ -186,7 +186,7 @@ async fn independent_capacity_completes_while_device_work_is_pending() {
         drop(holding);
         assert!(pending.await.expect("device request joined").is_ok()); // expect: test owns task
     };
-    assert!(tokio::time::timeout(Duration::from_secs(1), scenario).await.is_ok());
+    tokio::time::timeout(Duration::from_secs(1), scenario).await.expect("independent work and device release should both complete"); // expect: fail the test on a stalled dispatcher
 }
 
 // what this catches: a running low class never told to yield through the dispatcher.
