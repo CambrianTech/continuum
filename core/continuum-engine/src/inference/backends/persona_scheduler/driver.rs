@@ -45,6 +45,8 @@ pub(super) enum TurnError {
     TooLong,
     #[error("nothing was decoded for her turn")]
     NothingDecoded,
+    #[error("the caller released this turn")]
+    CallerReleased,
 }
 
 /// Why one mind was not preserved at a stop. She stays in the engine's custody, and the stop
@@ -573,6 +575,9 @@ impl Driver<'_, '_> {
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
     /// one token).
     fn step(&mut self, turn: &mut Turn, ready: std::num::NonZeroUsize) -> Result<Advanced, TurnError> {
+        if turn.req.response_tx.is_closed() {
+            return Err(TurnError::CallerReleased);
+        }
         let gap = turn.ready_since.elapsed();
         turn.spent.longest_gap = turn.spent.longest_gap.max(gap);
         if turn.spent.first_step.is_none() {
