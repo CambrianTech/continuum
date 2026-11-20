@@ -27,28 +27,16 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use parking_lot::Mutex;
-use std::time::SystemTime;
 
 use crate::paging::pool::{ResourcePool, ResourcePoolEntry};
 
-/// Cached directory-walk result. Recomputed on demand, never older
-/// than `MAX_AGE` so concurrent `usage_bytes`/`evict_at_least` calls
-/// agree on a consistent set of files for one decision cycle. The
-/// cache exists ONLY to avoid the same broker tick doing two
-/// independent `readdir`s; correctness doesn't depend on it.
-#[derive(Debug, Clone)]
-struct DirSnapshot {
-    /// Files sorted oldest-first by mtime — eviction order.
-    files: Vec<(PathBuf, u64, SystemTime)>,
-    total_bytes: u64,
-    captured_at: SystemTime,
-}
-
-/// Refresh-cache TTL. 1 s is short enough that a hot pool sees fresh
-/// numbers but long enough that the same broker `relieve()` tick
-/// reuses one snapshot across `usage_bytes` + `evict_at_least`.
-const SNAPSHOT_TTL_MS: u128 = 1000;
+mod index;
+use index::{DirIndex, Seen};
 
 /// What removing one file did. A guarded remover returns [`Removal::Protected`] for a file
 /// something live still points at.
@@ -75,10 +63,16 @@ pub struct FilesystemTierPool {
     tier_name: String,
     dir: PathBuf,
     max_bytes: u64,
-    /// Cached directory snapshot. Mutex (not RwLock) because every
-    /// read may also refresh; the lock window is small and contention
-    /// is bounded by the broker's tick interval anyway.
-    snapshot: Mutex<Option<DirSnapshot>>,
+    /// Her directory's files, kept current by the kernel's change events (`index.rs`): walked once
+    /// here, never per read.
+    index: Arc<Mutex<DirIndex>>,
+    /// Signalled after each change the kernel reported is in the index (what a waiter waits on).
+    observed: Arc<parking_lot::Condvar>,
+    /// Set when the kernel says events were lost (or the watch could not start): the next read
+    /// walks once to rebuild the index, as the watch API requires.
+    rescan: Arc<AtomicBool>,
+    /// The kernel watch that keeps `index` current; dropped with the pool.
+    watcher: Mutex<Option<RecommendedWatcher>>,
     /// How a file is removed, for a cache whose entries something live may still point at (the
     /// tool-output spill: a handle in a mind's working memory). The remover decides liveness
     /// AND deletes in one critical section of its owner, so nothing can claim the file between
@@ -94,12 +88,67 @@ impl FilesystemTierPool {
     /// `usage / max_bytes` to pressure 0.0..1.0+ and acts when it
     /// crosses thresholds.
     pub fn new(tier_name: impl Into<String>, dir: PathBuf, max_bytes: u64) -> Self {
-        Self {
+        Self::built(tier_name, dir, max_bytes, || {})
+    }
+
+    /// [`Self::new`], running `between` after the watch starts and before the seed walk: production
+    /// runs nothing there; a test writes, to prove a write in that window is counted exactly once.
+    fn built(tier_name: impl Into<String>, dir: PathBuf, max_bytes: u64, between: impl FnOnce()) -> Self {
+        let pool = Self {
             tier_name: tier_name.into(),
+            index: Arc::new(Mutex::new(DirIndex::default())),
+            observed: Arc::new(parking_lot::Condvar::new()),
+            rescan: Arc::new(AtomicBool::new(false)),
+            watcher: Mutex::new(None),
             dir,
             max_bytes,
-            snapshot: Mutex::new(None),
             remove: None,
+        };
+        // Watch FIRST, then seed under the index lock: a write in between is seen by the walk, and an
+        // event that arrives during the walk waits for the lock and then reconciles against what is on
+        // disk, so nothing falls between the walk and the watch (Codex on #6113 d9e1af314).
+        pool.watch();
+        between();
+        pool.seed();
+        pool
+    }
+
+    /// Rebuild the index from the directory under the index lock; an unreadable directory keeps what
+    /// was known and leaves the rescan set, so the next read tries again.
+    fn seed(&self) {
+        if self.index.lock().reseed(&self.dir) == Seen::Unreadable {
+            self.rescan.store(true, Ordering::Release);
+        }
+    }
+
+    /// Watch her directory: each change the kernel reports updates only the paths it names. A watch
+    /// that cannot start (the directory is absent) leaves `rescan` set, so each read walks it until it
+    /// exists and the watch starts.
+    fn watch(&self) {
+        let index = Arc::clone(&self.index);
+        let observed = Arc::clone(&self.observed);
+        let rescan = Arc::clone(&self.rescan);
+        let started = notify::recommended_watcher(move |event: notify::Result<Event>| match event {
+            Ok(event) if event.need_rescan() => rescan.store(true, Ordering::Release),
+            Ok(event) => {
+                let mut index = index.lock();
+                for path in &event.paths {
+                    if index.observe(path) == Seen::Unreadable {
+                        rescan.store(true, Ordering::Release);
+                    }
+                }
+                observed.notify_all();
+            }
+            Err(_) => rescan.store(true, Ordering::Release),
+        })
+        .and_then(|mut watcher| watcher.watch(&self.dir, RecursiveMode::Recursive).map(|()| watcher));
+        match started {
+            Ok(watcher) => *self.watcher.lock() = Some(watcher),
+            Err(e) => {
+                continuum_base::probe!(class = "pool.watch_unavailable", tier = %self.tier_name, reason = %e,
+                    "the pool's directory cannot be watched yet: reads walk it until the watch starts");
+                self.rescan.store(true, Ordering::Release);
+            }
         }
     }
 
@@ -109,31 +158,29 @@ impl FilesystemTierPool {
         self
     }
 
-    /// Recompute or reuse the cached directory snapshot.
-    ///
-    /// The cache is purely for correlating two reads within one broker
-    /// tick (`usage_bytes` then `evict_at_least`). If the cache is
-    /// stale or missing, we re-walk; on success the snapshot is
-    /// installed for subsequent reads.
-    fn refresh(&self) -> DirSnapshot {
-        let mut guard = self.snapshot.lock();
-        if let Some(snap) = guard.as_ref() {
-            if let Ok(age) = SystemTime::now().duration_since(snap.captured_at) {
-                if age.as_millis() < SNAPSHOT_TTL_MS {
-                    return snap.clone();
-                }
+    /// Wait until `ready` holds of her usage, or `deadline` passes: woken by each change the kernel
+    /// reports, never polled.
+    #[cfg(test)]
+    fn wait_for_usage(&self, ready: impl Fn(u64) -> bool, deadline: std::time::Instant) -> bool {
+        let mut index = self.index.lock();
+        while !ready(index.total()) {
+            if self.observed.wait_until(&mut index, deadline).timed_out() {
+                return ready(index.total());
             }
         }
-        let new = walk_dir(&self.dir);
-        *guard = Some(new.clone());
-        new
+        true
     }
 
-    /// Invalidate the cached snapshot — call after mutating the
-    /// directory (e.g., after eviction) so the next read sees the
-    /// updated state.
-    fn invalidate(&self) {
-        *self.snapshot.lock() = None;
+    /// Rebuild the index once when the kernel said it lost events (or the watch has not started): the
+    /// one walk the watch API requires, never one per read.
+    fn rescan_if_lost(&self) {
+        if !self.rescan.swap(false, Ordering::AcqRel) {
+            return;
+        }
+        if self.watcher.lock().is_none() {
+            self.watch(); // watch before the walk, as at creation
+        }
+        self.seed();
     }
 }
 
@@ -147,16 +194,18 @@ impl ResourcePool for FilesystemTierPool {
     }
 
     fn usage_bytes(&self) -> u64 {
-        self.refresh().total_bytes
+        self.rescan_if_lost();
+        self.index.lock().total()
     }
 
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         if want_bytes == 0 {
             return 0;
         }
-        let snap = self.refresh();
+        self.rescan_if_lost();
+        let oldest = self.index.lock().oldest_first();
         let mut freed: u64 = 0;
-        for (path, size, _mtime) in &snap.files {
+        for (path, size) in &oldest {
             if freed >= want_bytes {
                 break;
             }
@@ -174,6 +223,9 @@ impl ResourcePool for FilesystemTierPool {
                     );
                 }
                 Removal::Removed => {
+                    // Reconciled, never assumed gone: a file recreated at this path (and already recorded by
+                    // the watch) keeps its accounting.
+                    self.index.lock().observe(path);
                     freed = freed.saturating_add(*size);
                     continuum_base::probe!(
                         class = "pool.evicted",
@@ -202,9 +254,6 @@ impl ResourcePool for FilesystemTierPool {
                 }
             }
         }
-        if freed > 0 {
-            self.invalidate();
-        }
         freed
     }
 
@@ -217,45 +266,6 @@ impl ResourcePool for FilesystemTierPool {
     }
 }
 
-/// Walk `dir`, returning files sorted oldest-first by mtime with
-/// their sizes. Subdirectories are walked recursively — the substrate's
-/// existing layouts (probes/, genome/, models/) all keep files at the
-/// top level today, but recursive walk avoids surprise when a future
-/// caller passes a parent dir.
-fn walk_dir(dir: &Path) -> DirSnapshot {
-    let mut files: Vec<(PathBuf, u64, SystemTime)> = Vec::new();
-    let mut total: u64 = 0;
-    walk(dir, &mut files, &mut total);
-    files.sort_by_key(|(_, _, mtime)| *mtime);
-    DirSnapshot {
-        files,
-        total_bytes: total,
-        captured_at: SystemTime::now(),
-    }
-}
-
-fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>, total: &mut u64) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return, // dir absent or unreadable — treat as empty
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let metadata = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if metadata.is_dir() {
-            walk(&path, out, total);
-            continue;
-        }
-        let size = metadata.len();
-        let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        *total = total.saturating_add(size);
-        out.push((path, size, mtime));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     //! What this catches: the full broker → pool → eviction loop in
@@ -263,6 +273,7 @@ mod tests {
     //! one integration test exercises the contract end-to-end rather
     //! than three single-path unit tests.
     use super::*;
+    use std::time::SystemTime;
     use std::time::Duration;
     use tempfile::tempdir;
 
@@ -362,5 +373,40 @@ mod tests {
         let pool = FilesystemTierPool::new("missing", missing, 1_000_000);
         assert_eq!(pool.usage_bytes(), 0);
         assert_eq!(pool.evict_at_least(1000), 0);
+    }
+
+    /// What this catches: usage read by re-walking her directory every broker tick (the M5,
+    /// 2026-11-17: ~615 of ~6,900 active core samples under `walk`). Files written AFTER the pool is
+    /// made reach its usage through the kernel's change events, and removing one is seen the same
+    /// way; no read walks.
+    #[test]
+    fn files_written_after_the_pool_is_made_reach_its_usage_by_kernel_events() {
+        let dir = tempdir().unwrap();
+        let pool = FilesystemTierPool::new("watched", dir.path().to_path_buf(), 1_000_000);
+        assert_eq!(pool.usage_bytes(), 0);
+        let deadline = || std::time::Instant::now() + Duration::from_secs(10);
+        fs::create_dir(dir.path().join("persona")).unwrap();
+        fs::write(dir.path().join("persona/a.log"), vec![b'.'; 700]).unwrap();
+        fs::write(dir.path().join("b.log"), vec![b'.'; 300]).unwrap();
+        assert!(pool.wait_for_usage(|usage| usage == 1_000, deadline()), "the kernel reported both writes, nested included");
+        fs::remove_file(dir.path().join("b.log")).unwrap();
+        assert!(pool.wait_for_usage(|usage| usage == 700, deadline()), "and the removal");
+    }
+
+    /// What this catches (Codex on #6113 d9e1af314): the pool walked its directory BEFORE it started
+    /// watching, so a write between the walk and the watch was never counted. The watch now starts
+    /// first: a write in that window is counted, exactly once (the walk and its event reconcile the
+    /// same file), and later writes still arrive by event.
+    #[test]
+    fn a_write_between_the_watch_and_the_seed_walk_is_counted_once() {
+        let dir = tempdir().unwrap();
+        let window = dir.path().join("window.log");
+        let pool = FilesystemTierPool::built("watched", dir.path().to_path_buf(), 1_000_000, || {
+            fs::write(&window, vec![b'.'; 500]).unwrap();
+        });
+        assert_eq!(pool.usage_bytes(), 500, "the write in the window is counted");
+        let deadline = || std::time::Instant::now() + Duration::from_secs(10);
+        fs::write(dir.path().join("later.log"), vec![b'.'; 200]).unwrap();
+        assert!(pool.wait_for_usage(|usage| usage == 700, deadline()), "once, never twice, and later writes still arrive");
     }
 }
