@@ -15,6 +15,7 @@ Card 13c81ced. Joel, 2026-11-10: "Shared residency on one machine is difficult b
 - [What the users are](#what-the-users-are)
 - [The design: three layers, each holding only its own difference](#the-design-three-layers-each-holding-only-its-own-difference)
 - [Residency over time: resident, transient, pageable](#residency-over-time-resident-transient-pageable)
+- [Time: every consumer is given its time](#time-every-consumer-is-given-its-time)
 - [Built on what exists: the pipeline flows both ways and carries more](#built-on-what-exists-the-pipeline-flows-both-ways-and-carries-more)
 - [Cache tier levels](#cache-tier-levels)
 - [The test that proves the interface](#the-test-that-proves-the-interface)
@@ -205,6 +206,44 @@ reports transient and pageable bytes to the serving plan as reclaimable rather t
 taken. Learning is not one of these side operations: it rides the serving batch itself, as
 labelled rows in the same graph (ONE-RESIDENT-MODEL §9.2).
 
+## Time: every consumer is given its time
+
+Joel, 2026-11-20: "We have to render avatars and potentially life like ones. Everything must be
+governed and given its time." Residency decides where bytes live. Time decides when each consumer
+runs on a device: the GPU, the CPU cores, the Neural Engine, the media engine. No consumer owns a
+device. Each gets time according to the shape of its need:
+
+| Shape | Consumers | What it needs | How the governor gives it time |
+|---|---|---|---|
+| Periodic deadline | An avatar's frame (33 ms at 30 fps), audio out, a video encode | Each piece done before its deadline; a late frame is worthless | Earliest deadline first. A consumer that cannot meet its deadline steps down its level of detail before it drops frames |
+| Latency | A mind's turn: her first token, then each decode step | Start soon, then steady steps | Priority by temperature and aging (S3, #5914) |
+| Throughput | Cold prefill chunks, transfers, write-back, learning's labelled rows | A share of time, not a moment | The slack left after the two shapes above ([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) §3) |
+
+The rules:
+
+- **Every piece yields.** Work goes to a device in pieces: one decode step, one prefill chunk, a
+  small render command buffer. The longest piece that cannot yield is the floor under every
+  deadline, so it is measured per consumer and shrunk.
+- **Admission by feasibility.** Each consumer declares its shape and reports its measured cost per
+  piece. A periodic consumer is admitted at the level of detail whose deadlines stay feasible with
+  everything already admitted; if none is, it is offered a lower level, never a silent miss.
+- **Level of detail is the release valve,** as for memory. A lifelike avatar has a ladder
+  (resolution, frame rate, model quality). The speaking and the watched get the top of their
+  ladder; an idle avatar runs lower; one nobody is watching drops to a keepalive
+  ([LIVE-AVATAR-BUDGET.md](LIVE-AVATAR-BUDGET.md) §2).
+- **Each workload runs where it is nearly free.** Video encodes and decodes go to the media engine,
+  and speech to the Neural Engine where one exists ([LIVE-AVATAR-BUDGET.md](LIVE-AVATAR-BUDGET.md)
+  §2.5). Placement follows the measured cost per engine, not habit.
+- **The machine changes under every consumer.** A user's game takes GPU time as well as memory. The
+  governor sees it as lower measured capacity (longer pieces, missed deadlines) and steps levels
+  of detail and the learning duty down; when the game quits they step back up, without a restart.
+  Rendering, like a lesson, can run on another node of the grid (the Rendering module of the
+  placement map) when that node meets the deadline including the transfer.
+
+Measured per consumer: deadline misses, piece-time distribution and level of detail held; for the
+whole device, decode tokens/s with renders against without (LIVE-AVATAR-BUDGET receipts B1 and
+B6).
+
 ## Built on what exists: the pipeline flows both ways and carries more
 
 Joel, 2026-11-10: "We already had this graphics pipeline. Just need it to flow both ways and for more
@@ -216,7 +255,8 @@ things." Nothing here is a new engine. Three existing pieces become the memory-t
   and recall results. In production only KV slots construct it.
 - **The frame pipeline:** the engine as a cache, run like bgfx (ONE-ACT 5a and 5e). The core's
   encoders record each mind's work as it arrives. The engine runs double-buffered frames ordered by
-  a sort key: warm decode, then temperature, then bounded cold-prefill chunks, then
+  deadline for work due by one ([Time](#time-every-consumer-is-given-its-time)), then a sort key:
+  warm decode, then temperature, then bounded cold-prefill chunks, then
   prefetch/write-back. Handles are released at the frame fence.
 - **Grants as leases:** the window grant owner (`window_grant`, `yield_after`, handoff with
   terminal and physical custody receipts).
@@ -228,7 +268,7 @@ What changes:
 | A page under pressure | Dropped (evicted), then re-prefilled at minutes per act | Demoted one tier (device to host to flash) at its measured transfer cost, and promoted back by predicted need (warm-ahead) |
 | Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (CONTINUUM-ENGINE.md slice S2); a user's game or editor gets its memory back, and gets it again when it quits |
 | Seats | Change hands only when an evaluation catches an idle holder | A lease per act, re-decided each tick by temperature and aging (S3, #5914) |
-| Learning | A separate admission waiting on a multi-GB lease | Labelled rows ride the serving batch and graph; her learning context is promoted when learning switches on for her and demoted after ([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) §3-4) |
+| Learning | A separate admission waiting on a multi-GB lease | Labelled rows ride the serving batch and graph; compute is a lease per labelled piece; her learning context is a page, promoted when a piece needs it and demoted on pressure ([IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) §3-4) |
 
 And what it carries. Each concern becomes an implementer of the same pool, holding only its key,
 its loader and its tier costs:
@@ -240,7 +280,7 @@ its loader and its tier costs:
 | MoE experts | Pageable | Its own host cache lease | Pool implementer |
 | Small-model weights (embedder, mmproj) | Pageable | Always resident | Promoted to the device for an operation, demoted after |
 | Embedding context, vision pass, draft buffers | Transient | Each holds its own floor or allocation | Transient leases from the one pool, taken per operation between decodes and returned |
-| A mind's learning context (shadow and optimizer state) | Pageable | A waiting lease of GBs, held across idle time | Pool implementer: promoted when learning switches on for her, written out and demoted when it switches off |
+| A mind's learning context (shadow and optimizer state) | Pageable | A waiting lease of GBs, held across idle time | Pool implementer: promoted when a labelled piece needs it, kept as reclaimable hot state, written out only as it is demoted |
 | Recall caches, embedding vectors | Pageable (host and flash) | Hand-rolled caches | Pool implementer |
 
 Build order (each slice proven by its validator first, then a live read):

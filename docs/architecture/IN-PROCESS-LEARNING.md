@@ -15,7 +15,7 @@ serving half of the deletions, review). Builds on
 1. [The rule](#1-the-rule)
 2. [Her genome holds her learning](#2-her-genome-holds-her-learning)
 3. [Learning is a duty cycle](#3-learning-is-a-duty-cycle)
-4. [Memory: taken while learning, paged out after](#4-memory-taken-while-learning-paged-out-after)
+4. [Memory: a compute lease per piece, residency priced apart](#4-memory-a-compute-lease-per-piece-residency-priced-apart)
 5. [A dedicated lesson on the Core](#5-a-dedicated-lesson-on-the-core)
 6. [Learning across the grid](#6-learning-across-the-grid)
 7. [What is deleted](#7-what-is-deleted)
@@ -58,7 +58,7 @@ checkpoints and travels. One format serves all three uses (proposed):
 
 | Use | What is written | When |
 |---|---|---|
-| Page-out | The learning context, to RAM or disk | Learning switches off for her (§4) |
+| Page-out | The learning context, to RAM or disk | The tier owner demotes it (§4) |
 | Checkpoint | The same bytes, with the journal cursor they consumed through | At an optimizer boundary, and at a deploy seam (§9.2) |
 | Publication | A snapshot of the shadow alone, with its lineage and exam results | When a gene earns adoption and is shared (§6) |
 
@@ -72,21 +72,26 @@ Her genome and her ability to learn are always present. Learning is not a sessio
 ends: it is a share of her decoding that switches on and off as she works, like pulse-width
 modulation. She keeps talking throughout.
 
-**One control per Core (proposed).** Each Core has one duty value: the share of its frames whose
-batches carry labelled rows. The governor sets it from four inputs, all measured live and never
-fixed at launch:
+**One control per Core, admitted in bounded pieces (proposed).** The duty is the Core governor's
+permission to compute labelled rows. It never decides residency (§4). A share of frames cannot
+bound a speaker's delay, because one labelled frame can carry many rows and a long backward pass
+(Codex's review, 2026-11-20). So the governor admits a bounded set of labelled rows at a time: as
+many as fit, at their measured non-preemptible time, inside the remaining latency budget of whoever
+may be waiting to speak and the deadlines already admitted (SHARED-RESOURCES "Time"). Its inputs,
+all measured live and never fixed at launch:
 
 - the lessons queued across the minds it serves (her lesson queue);
-- the Core's slack: frames with no turn waiting;
+- the Core's slack: time left after deadline work (avatar frames, audio) and waiting turns
+  (SHARED-RESOURCES "Time: every consumer is given its time");
 - the latency budget of whoever is waiting to speak;
 - the memory the node can give right now, which changes when a user's own application (a game on
   the 5090, an editor) takes or frees memory.
 
-A long queue on a quiet Core raises the duty toward 1. A turn becoming ready lowers it at the next
-frame boundary. The Academy's dedicated teaching is the same control held high, so learning keeps
-pace with what is queued and never needs a scheduler of its own. Swapping a mind in or out of the
-Core costs milliseconds (mean ~21 ms on the M5, 2026-11-20), so the Core can interleave learning
-and speech between minds as often as the duty requires.
+A long queue on a quiet Core admits more labelled pieces. A speaker arriving bounds the next piece
+to her remaining budget. The Academy's dedicated teaching is the same control held high, so
+learning keeps pace with what is queued and never needs a scheduler of its own. The ordinary swap
+between minds (mean ~21 ms on the M5, 2026-11-20) does not measure the cost of a labelled piece;
+slice 2 does.
 
 **Two ways in, one mechanism:**
 
@@ -102,18 +107,23 @@ and speech between minds as often as the duty requires.
   and Codex sessions). The lesson is her context, then the corrected reply, labelled (§5). The
   doctor writes the lesson's family of graded tasks, and the exam on unseen tasks decides adoption.
 
-## 4. Memory: taken while learning, paged out after
+## 4. Memory: a compute lease per piece, residency priced apart
 
 Nothing is held that is not in use (Joel, 2026-11-11; SHARED-RESOURCES "The principle: resources
 flow, like data"). Her learning context is a pageable resource of the memory-tier adapter:
 
-- **On:** when the duty turns learning on for her, her learning context is promoted to the Fast
-  tier through the one memory authority. A pending request does not block anything else. The
-  authority asks lower-value owners to demote, and the grant becomes runnable when the release is
-  confirmed (SUBSTRATE.md, "Worked example: a live conversation under memory pressure", in #6170).
-- **Off:** when learning switches off for her, the learning context is written out
-  (`llama_opt_shadow_state_write`) and demoted to Bench or Cold like any page. It is restored
-  (`llama_opt_state_restore`) the next time she learns. No lease is held across idle time.
+- **Compute:** a lease for one admitted labelled piece, ended at the frame fence. No compute lease
+  is held between pieces. A completion is accepted only for the genome generation that admitted
+  it.
+- **Residency:** priced like any page, separately from the duty. If her learning context is not in
+  the Fast tier when a piece is admitted, it is promoted through the one memory authority; the
+  pending request blocks nothing else, the authority asks lower-value owners to demote, and the
+  grant becomes runnable when the release is confirmed (SUBSTRATE.md, "Worked example: a live
+  conversation under memory pressure", in #6170). When her pieces end, it stays as reclaimable hot
+  state. The tier owner demotes it under pressure or when the measured reuse cost says so, writing
+  it out (`llama_opt_shadow_state_write`) only as it leaves, and restores it
+  (`llama_opt_state_restore`) when it returns. Writing the whole dirty context out at every off
+  edge would spill again and again with Fast memory free and a lesson already queued.
 - **During a step:** the labelled rows' activations and gradients exist only inside that
   `llama_decode`, as transient memory of the serving graph.
 - **When the machine changes under her:** a user's application taking memory is pressure like
@@ -129,8 +139,8 @@ taken during those refusals; a separate snapshot on 2026-11-20 showed 302 MiB ph
 Size, measured and estimated: slice 1 measured 6,488,128 bytes of optimizer state for a rank-8
 shadow on qwen2.5-0.5b (M5, 2026-11-20). For the served 35B the learning context is expected to be
 tens of MB at the same rank (an estimate, not a measurement), less with the 8-bit moments of
-ONE-RESIDENT §9.6. Its page-in and page-out times on the M5 are a slice 2 receipt; if they are not
-small against a switch, the duty control in §3 cannot follow her switches and is redesigned.
+ONE-RESIDENT §9.6. Slice 2 measures the served model's actual bytes and the page-in and page-out
+times by tier, dirty and clean, under contended I/O. The 0.5B optimizer size is not that measurement.
 
 ## 5. A dedicated lesson on the Core
 
@@ -211,20 +221,25 @@ Each item goes in the change that replaces it, never kept as a fallback:
    stable genes, her next decode was byte-identical to the stable context with the same history
    (P1 d). On the CPU with repacked weights the labelled decode crashes (card 3c28a895).
 2. **Learning is a mode of her turn on the Core.** `Step` carries labels and weights. Her genome part
-   holds her learning context, paged in when learning switches on for her and written out when it
-   switches off (§4); slice 1's `retain_shadow` holds its lease until release, which is the
-   reservation this slice removes. The `Lesson` handle is bound to the context and the admission
+   holds her learning context. Compute is a lease per admitted labelled piece, ended at the fence,
+   and residency is priced by the tier owner apart from it (§4); slice 1's `retain_shadow` holds
+   its lease until release, which is the reservation this slice removes. The `Lesson` handle is bound to the context and the admission
    generation that issued it, verified before steps are counted or the admission is returned, and
    an abandoned lesson is reported to its owner (Codex's review of #6203). The Core's duty control
    (§3) and both ways in. Validators, on the M5 with residents running, at her served window:
-   - the other minds' ready-to-first-token with learning on versus off;
+   - against the no-learning control: the worst speaker delay and the ready-to-first-output tails,
+     the oldest lesson's age, and bytes moved per committed step, for a speaker arriving just
+     after a labelled piece starts, bursts of alternating short lessons, and sustained speaking
+     with a lesson pending;
    - another resident's unlabelled output in the same run is byte-identical to a run without
      learning;
    - P and Q use distinct adapters, and Q's logits match an uninterrupted decode bit for bit
      (`UnifiedTier::applied_genes` caches by `Arc` pointer);
    - memory while learning is serving plus the learning context and the labelled rows'
-     activations; while not learning it is serving plus nothing;
-   - the learning context's page-in and page-out times;
+     activations; under pressure with no lesson pending, the learning context is the first to be
+     demoted;
+   - the served model's learning context bytes, and its page-in and page-out times by tier, dirty
+     and clean, under contended I/O;
    - another process taking device memory mid-session (a game on the 5090, a large allocation on
      the M5): the duty drops and her learning context is demoted before serving shrinks, and the
      duty recovers when the memory is freed, with no restart and no lost committed step;

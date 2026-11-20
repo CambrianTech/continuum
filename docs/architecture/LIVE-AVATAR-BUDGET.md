@@ -1,5 +1,11 @@
 # Live Avatar Budget — 14 citizens on camera without eating the machine
 
+> How rendering is given its device time beside decode, prefill and learning (deadlines, admission
+> by feasibility, level of detail as the release valve) is governed in
+> [SHARED-RESOURCES.md, "Time"](SHARED-RESOURCES.md#time-every-consumer-is-given-its-time). Where
+> these notes say decode owns the GPU and everything else yields, read: no consumer owns a device;
+> each is given its time by the shape of its need.
+
 **Status:** RAW SESSION NOTES — captured reactively across one night and it shows (amended piecewise; Joel: "you're kind of flailing in design here"). These are INPUTS to the consolidated LIVE-PLANE architecture doc, which gets written ONCE, fresh, as the LiveKit session's opening act. Trust the laws and receipts here; treat the structure as provisional. **Status:** core requirements (2026-08-31, Joel: "how do we handle 14,
 30fps avatars in video without eating resources… take every advantage").
 Binds the renderer law (hot potato: pixels never touch CPU) and the
