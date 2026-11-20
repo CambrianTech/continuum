@@ -98,13 +98,16 @@ impl Boundaries {
             .find_map(|(kind, pos)| (pos == end).then_some(kind))
     }
 }
-impl History {
-    pub(super) fn restored(held: Vec<i32>) -> Self {
+impl From<Vec<i32>> for History {
+    fn from(held: Vec<i32>) -> Self {
         Self {
             held,
             ..Self::default()
         }
     }
+}
+
+impl History {
     pub(super) fn deepest(&self) -> Option<usize> {
         self.kept.iter().flatten().map(|s| s.end).max()
     }
@@ -152,9 +155,13 @@ impl History {
         kind: Boundary,
         blocks: llama::PersonaCheckpoint,
         end: usize,
-        basis: Basis,
+        basis: &Basis,
     ) {
-        *self.slot(kind) = Some(KeptCheckpoint { blocks, end, basis });
+        *self.slot(kind) = Some(KeptCheckpoint {
+            blocks,
+            end,
+            basis: basis.clone(),
+        });
     }
 }
 pub(super) struct Snapshot {

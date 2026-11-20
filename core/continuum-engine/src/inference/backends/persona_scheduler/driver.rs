@@ -167,7 +167,7 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match tier.read_file(MindId { persona: id, epoch }, &preserved.path(&mind.blocks)) {
             Ok(blocks) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
-                let parts = Parts { blocks, tokens: History::restored(mind.held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+                let parts = Parts { blocks, tokens: History::from(mind.held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -650,7 +650,7 @@ impl Driver<'_, '_> {
         let history = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens;
         let Some(mut blocks) = history.capture_buffer(kind, end) else { return Ok(()) };
         if self.engine.checkpoint_active(&mut blocks).is_ok_and(|pos| pos as usize + 1 == end) {
-            self.record(|her| her.tokens.save(kind, blocks, end, turn.basis.clone()))?;
+            self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
         }
         turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
         Ok(())
