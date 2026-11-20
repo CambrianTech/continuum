@@ -77,16 +77,26 @@ submit and subscribe, and the thread advances one item by one quantum per frame.
    handoff happens at a frame boundary. Today the fork keeps one learn reply per context, outside
    P's saved state, so P cannot be retired mid-reply with her learn intact. Two steps follow.
    - **L2:** before P is retired, her reply drains (`drain` stops new gradient chunks, and
-     committed steps stay) and its restore chunks run as P's last frames before the handoff. Q's
-     staging overlaps them, so the only added delay is the remaining restore chunks, which are
-     measured.
+     committed steps stay) and ALL of its remaining restore chunks run as P's last frames before
+     the handoff. Q's staging overlaps them, but Q still waits for every restore frame, then her
+     own bind, prefill and first decode. The restore tail is the longest piece that cannot yield,
+     so it is the floor on Q's wait, and L2 only stands until L2b removes it.
    - **L2b, the full context switch:** the reply's native learn state becomes part of her saved
      state (a fork change), so P is retired and later restaged mid-reply like any process, and
      nothing drains.
-   
-   Validators: Q's first token waits at most one chunk plus her staging, and both minds' native
-   prefixes are intact afterwards. For L2b, a reply retired and restaged mid-way commits the same
-   steps as one run straight through.
+
+   L2 validators:
+   - **Delay.** Measure Q's ready-to-bind and ready-to-first-token against the same Q turn with
+     no learn on the Core. Trace P's last chunk, restore, Q's staging, bind, prefill and first emit
+     separately, including a case with a long restore tail.
+   - **Weights.** P and Q use distinct adapters. After the learn and restore, Q's context gene
+     binding is correct and her logits match an uninterrupted decode bit for bit.
+     `UnifiedTier::applied_genes` caches the binding by `Arc` pointer, so matching prefix lengths
+     alone would miss wrong weights.
+   - **Prefixes.** Both minds' native prefixes are intact afterwards.
+
+   L2b validator: a reply retired and restaged mid-way ends with the same shadow weights and the
+   same optimizer step count as one run straight through.
 5. **Complete.** `finish` maps `Finished` to the artifact through a completion outbox (the
    `Emit`/`Record` pattern):
    - `Learned` and `Unchanged` hand the admission back.
@@ -113,9 +123,11 @@ The trainer's surface becomes `LearnPort`: `learn`, `seat`/`release` her shadow,
 
 1. **L1, llama crate wrapper.** `Learner` and `LearnRefusal` with no policy. Validator: on a 0.5B
    model, one reply trains, its loss drops, and the sequence holds exactly what it held before.
-2. **L2, `Job::Learn` on the driver.** Chunks interleave with turns. Validator: a learn and two
-   minds' turns on one context. Each turn's first token waits at most one chunk, and each mind's
-   native prefix is intact afterwards.
+2. **L2, learning on the Core's driver.** A learn's chunks interleave with turns; a switch drains
+   the learn first. Validators: the delay, weights and prefixes checks in
+   [A learn is frames of work](#a-learn-is-frames-of-work-like-a-turn-l2-proposed-2026-11-20).
+   **L2b** (fork) saves the learn state with her registers so nothing drains; validator: the same
+   shadow weights and step count as one uninterrupted run.
 3. **L3, the trainer through `LearnPort`.** Validators, with no llama-server running:
    - the in-place trainer's existing tests pass;
    - her native prefix is equivalent before and after a learn;
