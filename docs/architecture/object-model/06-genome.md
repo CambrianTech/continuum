@@ -45,8 +45,9 @@ Population                           the genes published on the grid and mesh, w
 
 - **`Gene`** is a `Durable` archetype (chapter 0, "archetypes are separate from instances"). It holds
   weights at a rank and set of targets for one base model, and its lineage. It is stored once,
-  content-addressed, and referenced by every resident who wears it. It moves through `Candidate`,
-  `Adopted`, `Refined`, `Archived` and `Retired` (GENOME-FOUNDRY-SENTINEL Part 12).
+  content-addressed, and referenced by every resident who wears it. Its identity and lineage are
+  today's `GeneSignature` (its corpus, its parent, its region). Its lifecycle is today's
+  `TrialState`: `Trial`, then `Promoted` or `Retired`.
 - **`GeneSet`** is the set she wears. Each turn it selects the genes the turn needs by importance
   (chapter 0.3) and binds them as her phenotype for that turn: the blend of small learned motions.
 - **`Shadow`** is a small trainable layer above her frozen stable genes, never a copy of them. Its
@@ -147,40 +148,115 @@ can give, without anyone starting it.
 - the most recent PRs are held out as an honest exam, so whether she improved is measured from day
   one (REPO-GENOME-AND-COURSES §3, "clone to veteran", and §11, with and without arms).
 
-## 6.5 Crates and what exists
+## 6.5 What exists
 
-| Object | Crate (chapter 8) | Today |
+An inventory of canary (latest genome commit 3301e0d470, 2026-11-20). Much of the genome is built,
+tested and live; the design above is mostly its unification and its gaps. **G** is
+`core/continuum-genome/src/genome`, **D** is `core/continuum-dreaming/src`, **A** is
+`core/continuum-academy/src/cognition`, and **M** is `core/continuum-mind/src`.
+
+| Object | Today | Status |
 |---|---|---|
-| Labelled rows, `Lesson` binding, shadow selection, `abandon` | `llama` | exists, #6203 in review |
-| `Genome`, `GeneSet`, selection, residency | `continuum-genome` | exists in parts (`Genome`, `GeneTrials`, `GeneResidency`, `select`) |
-| `Shadow` and its `LearningContext` paging | `continuum-genome` | proposed (IN-PROCESS-LEARNING slice 2) |
-| `Lessons` as demands, the learning duty | `continuum-genome` with the governor | proposed |
-| `Snapshot`, `Checkpoint` | `continuum-genome` on `Durable` | partly exists (learning checkpoints) |
-| `Exam`, adoption | `continuum-genome`, `continuum-academy` | exists in the academy; to run on the live Core |
-| Publication, discovery, inheritance, fitness | `continuum-genome` with `continuum-grid` | designed (GENOME-FOUNDRY-SENTINEL Parts 3 and 10); not built end to end |
+| `Gene`: identity and lineage | `GeneSignature` (`G/signature.rs:63`: corpus, parent, region), `TrainedAdapter` (`G/adapter_manifest.rs:31`) | built, tested; signed only at publish |
+| `Genome` as one object | spread over `GeneTrial` (`G/gene_trial.rs:78`), the manifest, `SignatureStore` | partial: no single owner |
+| `GeneSet` and the phenotype | `composer::select` and `compose`, `Phenotype` (`G/composer.rs:88-223`), called on every turn (`M/persona/service_loop/turn_cycle.rs:65`) | built, tested, live |
+| Residency | `GeneResidency` (LRU-2 heat, prefetch, victims), `GeneCatalog` (`G/gene_residency.rs:120`, `catalog.rs:23`) | built for device and host; no disk, Hugging Face or grid tier |
+| Gene search | `DemandAlignedRecall`, `LocalDemandAlignedRecall`, scoring, composite sources (`G/recall_*.rs`, about 56 tests) | built, tested; one caller; no grid candidate source |
+| Reuse, fork or mint | `competence::Decision`, `decide_with_pending` (`G/competence.rs:137-215`) | built, tested; a fork starts cold (no warm start) |
+| Learning (production path) | `MindLearner` over llama-server `/learn`, one example at a time, durable checkpoints (`D/modules/training_trigger/in_place.rs:527`, `durable/*`; `G/learner/*`) | built, tested, live |
+| Learning (in-process path) | `Learner`, `Shadow`, the labelled `Batch` (`core/llama/src/safe/learn.rs`; #6203) | slice 1 built; no callers yet |
+| `Exam` and adoption | the examiner (`G/examiner/*`: `decide`, `p_gene_better`, retention re-run on boot), `MindExamHost` (`A/eval/gene_exam.rs:40`), graders (`G/gym_grader.rs`, `A/held_out.rs`) | built, tested: the only adoption gate |
+| Lifecycle | `TrialState`: `Trial`, `Promoted`, `Retired` (`G/gene_trial.rs:25`) | built |
+| Lessons from corrections | `training_producer/reviewed/correction.rs` (M); teacher remediation (`G/teach.rs:256`) | built, tested |
+| Lessons from repo history, reviews, sessions | only prompt captures (`D/commands/dataset/from_captures.rs`) | absent |
+| Courses | `A/coursework.rs`, `A/curriculum.rs`; buckets keyed by `trait_kind` | partial; no course files or repo layout |
+| Fitness | `LayerFitness` (`G/fitness.rs:66`), `GeneFitnessIndex` from lift rows (`G/fitness_ledger.rs:68`) | partial: three definitions (6.6) |
+| Publication and inheritance | Hugging Face push, pull and nearest-on-hub with a covenant (`D/commands/genome_share.rs`), publishers (`continuum-core/src/forge/`) | partial: publishing is manual; no OCI or grid |
+| Dream consolidation | the region (`A/dream_consolidation.rs`), distilled lessons | built for memory; does not feed gene training |
 
-## 6.6 What must be done
+## 6.6 Rulings on the contradictions
 
-In order, each with its validator:
-1. **#6203 lands:** the labelled batch and the bound lesson (validators exist and pass on Metal).
-2. **Learning as a mode of her turn:**
-   - `Step` carries labels;
+The genome's design docs disagree in nine places. Each ruling below follows the thesis (never
+manual; learning in place; one of everything) and what the code already does.
+
+1. **Where training runs: in place.** Separate trainer processes (TRAINING-SYSTEM, FINE-TUNING,
+   CUDA-GENOME-TRAINING) are superseded by learning on the serving weights (ONE-RESIDENT,
+   IN-PROCESS-LEARNING), which the code already does. The MLX trainer remains only behind the
+   forge, and goes when the forge trains in place.
+2. **Batch size: one example at a time.** LEARNING-LOOP's threshold of 16 is stale. The trigger
+   learns per example, and the duty decides how much runs per frame.
+3. **Fitness: one definition.** There are three: lift×demand/(cost×redundancy) in
+   SELF-EVOLVING-GENOME, U×(1+Π) in GENE-REUSE-FORK-MINT and LEARNING-LOOP, and A/B lift rows in
+   the ledger. They become one, owned by `continuum-genome`:
+   - a gene's fitness is its measured lift (the examiner's A/B evidence);
+   - weighted by its utilization, meaning the turns and wearers that draw on it, its descendants
+     included, which is its propagation;
+   - divided by its cost in bytes and paging;
+   - redundancy with a nearer gene lowers its utilization rather than appearing as a separate term.
+4. **The pager: the one tier ladder.** The five-tier gene pager in older docs does not exist; the
+   code has device and host. Genes gain flash, Hugging Face and grid tiers as pages of the `Holder`
+   lineage (chapter 4.3), not as a pager of their own.
+5. **Whether a gene changes: the shadow continues, genes are immutable.** Her shadow keeps learning;
+   each snapshot is an immutable candidate; refining an inherited gene produces a child with it as
+   parent. "Continue" and "fork" are the same act seen from the session and from the gene.
+6. **Composition: automatic, steered by her own importance.** No manual select, lock or release
+   (ADAPTIVE-GENOME-LIFECYCLE). The composer selects by distance and region today, and by the one
+   importance (chapter 0.3) once it is unified, which already reflects her attention.
+7. **Who grades: the world.** Tests, compilers and deterministic graders grade; there is no LLM
+   judge in the core (ONE-RESIDENT §1). A teacher writes lessons and tasks; it does not decide
+   adoption.
+8. **Where gene bytes live: Hugging Face is the lineage of record.** Genes are model repositories
+   whose `base_model` field is their lineage (GENOME-REPOSITORY-ON-HF). A repo's genome manifest
+   refers to genes by content address. Whether bytes also travel by OCI between nodes is a
+   transport choice, open for Joel (REPO-GENOME-AND-COURSES §6 proposed OCI).
+9. **The corpus: superseded docs are marked.** About 35 docs from the TypeScript and Python eras
+   still read as current, among them `docs/genome/README.md`, `LORA-GENOME-PHENOTYPES.md`,
+   `CUDA-GENOME-TRAINING.md` and the trainer docs. Each gets a superseded banner pointing here, and
+   their surviving ideas are cited from this chapter (11, phase A).
+
+## 6.7 What must be done
+
+Built on what exists (6.5), in order. Each step has its validator, and none adds a manual step.
+
+1. **#6203 lands:** the labelled batch and the bound lesson. Its validators exist and pass on Metal.
+2. **One `Genome` object.** The trial file, the manifest and the signature store become branches of
+   one `Genome` part, owned by `continuum-genome`; their scattered owners are deleted. Validator:
+   suspend and resume of her genome is one command, and nothing about her genes is read anywhere else.
+3. **Learning in process, as a mode of her turn:**
+   - the `Learner` gets its callers, so `Step` carries labels;
    - the duty admits bounded pieces;
-   - her learning context pages.
+   - her learning context pages;
+   - the llama-server `/learn` path and the reserved-learning paths are deleted (IN-PROCESS-LEARNING
+     §7).
 
    Validators: IN-PROCESS-LEARNING slice 2, including worst speaker delay against no learning.
-3. **Her dream faculty dispatches her lessons,** and the reserved-learning paths are deleted
-   (IN-PROCESS-LEARNING §7).
-4. **The live gate:** a reviewed correction learned in place by her own dream, applied on unseen
+4. **Salience in every lesson.** Prediction error on what she perceives, weighted by her relevance,
+   becomes `label_weight` on her perception rows, and lessons are bucketed by competence instead of
+   by `trait_kind`. Validator: chapter 0.3's comparison of salience against uniform weighting.
+5. **Lessons from every trace (6.4).**
+   - Sources: repo history (a PR's diff with its review, a CI failure with its fix), GitHub comments
+     and verdicts, distilled Claude and Codex sessions.
+   - They join the corrections already built.
+   - Dream consolidation feeds its distilled lessons to the same queue.
+
+   Validator: lessons appear from a repo's history with no one starting anything, and each names its
+   source.
+6. **One fitness (6.6, ruling 3),** feeding recall's scoring, the examiner's retention checks and
+   retirement. The fitness sentinel retires as well as reports.
+7. **Genes on every tier.** Flash, Hugging Face and grid tiers as `Holder` pages; a grid candidate
+   source for recall; a forked gene warm-started from its parent. Validator: a gene missing locally
+   pages in from a peer or the hub on demand, and a fork starts from its parent's weights.
+8. **The live gate:** a reviewed correction learned in place by her own dream, applied on unseen
    related tasks, retained after a restart, with unrelated skill intact, against the same base
    without the gene (ONE-RESIDENT §9.6 P6).
-5. **Self-assembly from the repo and the ether (6.4):**
-   - lessons streamed from the repo's history, comments and distilled sessions;
-   - candidate genes recalled from the ether by her gaps;
-   - examined on held-out recent PRs and adopted, with no manual step.
+9. **Self-assembly from the repo and the ether (6.4).** Validator: REPO-GENOME-AND-COURSES §11's
+   with-and-without arms. On held-out recent PRs, a resident who assembled her genome from the repo
+   does measurably better than the same base without it.
+10. **Spread, automatically:**
+    - publishing an adopted gene is automatic, attested and signed;
+    - discovery, adoption by the recipient's own exam, refinement as a child, publication back.
 
-   Validator: REPO-GENOME-AND-COURSES §11's with-and-without arms. On the held-out PRs, a resident
-   who assembled her genome from the repo does measurably better than the same base without it.
-6. **Spread:** publish, discover, adopt by exam, refine as a child, publish back. Validator: a gene
-   grown on one node improves a resident on another node on her own tasks, and her refinement
-   measurably improves it again.
+    Validator: a gene grown on one node improves a resident on another node on her own tasks, and her
+    refinement measurably improves it again.
+11. **The corpus reconciled (6.6, ruling 9).** Every superseded genome doc carries a banner pointing
+    here, and no doc describes deleted code as current.
