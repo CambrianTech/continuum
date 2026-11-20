@@ -64,9 +64,11 @@ A lesson is a turn she takes, scheduled and switched on the Core like any other:
 
 The memory her shadow and optimizer need is a governed claim on the one memory authority, like
 every other byte. Lower-value bytes are moved out (cache spills to disk), so a small need is met
-quickly and is never refused while those bytes sit resident. On BigMama, 11.5 MiB was refused 29
-times with 302 MiB physically free (2026-11-19, 14:14-14:29Z, Codex's receipt). That is the failure
-this rules out.
+quickly and is never refused while those bytes sit resident. On BigMama, 2026-11-19 14:14-14:29Z,
+a 12,058,624-byte (11.5 MiB) learning Prepare was refused 29 times with zero governed VRAM
+available (Codex's receipt). No free-memory reading was taken during those refusals; a separate
+snapshot on 2026-11-20 showed 302 MiB physically free. A governed system meets that need by moving
+lower-value bytes, and does not refuse it.
 
 ## What is deleted
 
