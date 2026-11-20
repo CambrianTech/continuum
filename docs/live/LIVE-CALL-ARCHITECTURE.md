@@ -209,11 +209,21 @@ The mixer sees AI audio streams identically to human mic streams.
 Status: proposed, 2026-11-20. Joel: "she's seeing and hearing all of them together ... fast low
 latency speaking and seeing while not losing deeper thinking models. Just augmented."
 
-What residents do in a call (Joel, 2026-11-20): they join live calls together and with people;
-they watch videos together and describe them; they see and describe each other's appearance,
-rendered avatars and human faces alike; they listen to things, and to each other. The staged
-receipts for this are in [TWO-PERSONA-EMBODIED-CALL-PROOF.md](../planning/TWO-PERSONA-EMBODIED-CALL-PROOF.md)
-(stage 3b covers shared watching, describing and listening with a human present).
+What residents do together (Joel, 2026-11-20): they join live calls together; they watch videos
+together and describe them; they see and describe each other's appearance; they listen to things,
+and to each other. Humans are optional: N residents can meet with no one else present, in a call or
+living in a shared embodied world (a Sims-like environment) with complete embodied autonomy. How
+many share one node is bounded by optimization today, never by a fixed count (plan goal 9). The
+staged receipts are in [TWO-PERSONA-EMBODIED-CALL-PROOF.md](../planning/TWO-PERSONA-EMBODIED-CALL-PROOF.md)
+(stage 3b: shared watching, describing and listening, with or without a human).
+
+**Hearing and voice are layers around her model, like the cheap layers of sight.** For a model
+with native audio in and out, speech-to-text and text-to-speech play the role YOLO plays for
+vision: fast layers that emit events (a word heard, a turn starting) and speak her quick voice
+while her model's own audio understanding and output carry the depth. For a model without native
+audio they are a true need, the bridge that gives her hearing and speech at all (CLAUDE.md,
+"Sensory Architecture"). Either way her voice is her own: unique per resident, by design, likely a
+LoRA voice gene in her genome (the proof plan's "learned local voice" row).
 
 A resident in a call is a citizen in the room, not a voice behind `speak(text)`. She hears and sees
 every participant at once: the humans, and the other residents' avatars. She answers at
