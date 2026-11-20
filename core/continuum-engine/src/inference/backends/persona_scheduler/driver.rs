@@ -93,37 +93,8 @@ enum Tenure {
     FinishedOneOff,
 }
 
-/// The tokens her blocks hold, and her checkpoint at her last view's end while what she holds still
-/// runs through it.
-#[derive(Default)]
-struct History {
-    held: Vec<i32>,
-    /// View end, latest learned prefix, and earliest still-valid learned prefix.
-    kept: [Option<KeptCheckpoint>; 3],
-}
-
-/// Her checkpoint and what makes it valid: she held exactly `held[..end]` under `basis` when it was
-/// taken, and nothing she holds below `end` has changed since (a cut below it drops it).
-struct KeptCheckpoint {
-    blocks: llama::PersonaCheckpoint,
-    end: usize,
-    basis: Basis,
-}
-
-/// Her checkpoint holds her recurrent rows in host memory.
-impl Footprint for KeptCheckpoint {
-    fn held(&self) -> Held {
-        Held::host(self.blocks.bytes() as u64)
-    }
-}
-
-/// Her token history and her checkpoint. Her blocks in the context are reported by the tier that
-/// binds them; [`Bound`] is that child's view.
-impl Footprint for History {
-    fn held(&self) -> Held {
-        self.kept.iter().fold(self.held.held(), |bytes, kept| bytes + kept.held())
-    }
-}
+mod history;
+use history::{Boundary, History, Boundaries};
 
 /// A bound mind's blocks, as the tier that holds them in the context reports them.
 struct Bound<'t, 'c, 'm> {
@@ -137,28 +108,8 @@ impl Footprint for Bound<'_, '_, '_> {
     }
 }
 
-impl History {
-    /// Keep only her first `len` tokens; a cut below her checkpoint's end drops the checkpoint.
-    fn cut(&mut self, len: usize) {
-        self.held.truncate(len);
-        for slot in &mut self.kept {
-            if slot.as_ref().is_some_and(|kept| kept.end > len) {
-                *slot = None;
-            }
-        }
-    }
-
-    /// Where `prompt` under `basis` would start for her, whose blocks were computed under `under`
-    /// (`reuse::choose`), deciding nothing and moving nothing: the bind uses it to resume her, the
-    /// frame to size her turn's prefill.
-    fn reuse(&self, under: &Basis, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
-        let kept = self.kept.iter().flatten().map(|kept| reuse::Kept { end: kept.end, basis: &kept.basis });
-        reuse::choose(reuse::History { basis: under, tokens: &self.held }, kept, reuse::History { basis, tokens: prompt })
-    }
-}
-
 /// Where `prompt` under `basis` would start for `her`.
-fn reuse_for(her: &Mind, prompt: &[i32], basis: &Basis) -> reuse::Reuse {
+fn reuse_for(her: &Mind, prompt: &[i32], basis: &Basis) -> reuse::Decision {
     her.parts().tokens.reuse(&her.parts().genome, prompt, basis)
 }
 
@@ -216,7 +167,7 @@ fn resume(tier: &mut UnifiedTier<'_, '_>, preserved: &mut preserve::Preserved, m
         match tier.read_file(MindId { persona: id, epoch }, &preserved.path(&mind.blocks)) {
             Ok(blocks) => {
                 continuum_base::probe!(class = "persona.engine.resumed", persona = %mind.persona, tokens = mind.held.len() as u64, "a mind came back from her preserved blocks");
-                let parts = Parts { blocks, tokens: History { held: mind.held, kept: Default::default() }, genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
+                let parts = Parts { blocks, tokens: History::from(mind.held), genome: Basis { genes: mind.basis }, learning: (), decode: Tenure::Resident };
                 parked.insert(id, Mind::new(id, epoch, parts));
             }
             Err(refused) => {
@@ -371,7 +322,7 @@ struct Turn {
     spent: Spent,
     /// Where her view ends in `prompt` (CONTINUUM-ENGINE 4.15): a prefill chunk ends exactly there
     /// and she is checkpointed, so her next act resumes from it. `None` for a turn with no view.
-    boundaries: [Option<usize>; 2],
+    boundaries: Boundaries,
     /// Her answer, as Emit numbers it.
     answer: emit::AnswerSeq,
     /// Raised by Emit when her answer has ended on a stop sequence or her caller hung up; read at
@@ -533,7 +484,7 @@ impl Driver<'_, '_> {
     /// pipeline, written. Her entry names that file; it is published with the stop's manifest.
     fn preserve(&mut self, id: PersonaId, store: &preserve::Preserved, generation: &preserve::Generation) -> Result<preserve::PreservedMind, PreserveError> {
         self.switch_to(id, false)?;
-        let end = self.engine.active_mut().and_then(|her| her.parts().tokens.kept.iter().flatten().map(|kept| kept.end).max());
+        let end = self.engine.active_mut().and_then(|her| her.parts().tokens.deepest());
         if let Some(end) = end {
             self.rewind_to_checkpoint(end)?;
             self.record(|her| her.tokens.cut(end))?;
@@ -567,7 +518,7 @@ impl Driver<'_, '_> {
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
                 let submitted = Instant::now();
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: [boundary, None], answer, cancel });
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
             }
             Err(refused) => {
                 tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
@@ -590,7 +541,7 @@ impl Driver<'_, '_> {
                 let (decoding, remaining) = match &turn.phase {
                     Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
-                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).reused() } else { 0 }; // a mind never seen reuses nothing
+                        let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
                         turn.prompt.len().saturating_sub(reused)
                     })),
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
@@ -654,9 +605,8 @@ impl Driver<'_, '_> {
     fn resume(&mut self, turn: &mut Turn) -> Result<usize, TurnError> {
         let basis = turn.basis.clone();
         let her = self.engine.active_mut().ok_or(TurnError::NoneActive)?;
-        turn.spent.shared_prefix_tokens = reuse::common_prefix(&her.parts().tokens.held, &turn.prompt);
-        let decided = reuse_for(her, &turn.prompt, &basis);
-        let shared = turn.spent.shared_prefix_tokens;
+        let reuse::Decision { shared, action: decided } = reuse_for(her, &turn.prompt, &basis);
+        turn.spent.shared_prefix_tokens = shared;
         // Prefill will cross this matching prefix again. Take a native checkpoint there
         // so the next turn can use it if both token history and recurrent lineage match.
         let can_learn = match decided {
@@ -664,8 +614,8 @@ impl Driver<'_, '_> {
             reuse::Reuse::Restart(reuse::Miss::Diverged | reuse::Miss::NoCheckpoint) => shared > 0,
             _ => false,
         };
-        if can_learn && her.parts().genome == basis && turn.boundaries[0].is_some_and(|view| shared < view) {
-            turn.boundaries[1] = Some(shared);
+        if can_learn && her.parts().genome == basis && turn.boundaries.view.is_some_and(|view| shared < view) {
+            turn.boundaries.learned = Some(shared);
         }
         let (from, start) = match decided {
             reuse::Reuse::Append { from } => (from, "append"),
@@ -686,41 +636,21 @@ impl Driver<'_, '_> {
     /// Rewind the active mind to her kept checkpoint (taken out and put back, so the engine can read
     /// it while it moves her).
     fn rewind_to_checkpoint(&mut self, end: usize) -> Result<(), TurnError> {
-        let slots = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.kept;
-        let index = slots.iter().position(|slot| slot.as_ref().is_some_and(|kept| kept.end == end)).ok_or(TurnError::NoneActive)?;
-        let kept = slots[index].take();
-        let Some(kept) = kept else { return Err(TurnError::NoneActive) };
-        let rewound = self.engine.rewind_active(&kept.blocks);
-        self.record(|her| her.tokens.kept[index] = Some(kept))?;
+        let snapshot = self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens.take_at(end).ok_or(TurnError::NoneActive)?;
+        let rewound = self.engine.rewind_active(snapshot.blocks());
+        self.record(|her| her.tokens.put_back(snapshot))?;
         Ok(rewound?)
     }
 
     /// Checkpoint the active mind at her view's end (`end` tokens held), reusing her checkpoint's
     /// buffers. A refused take keeps none, so a later act restarts instead of rewinding to a stale one.
-    fn keep_checkpoint(&mut self, turn: &mut Turn, index: usize, end: usize) -> Result<(), TurnError> {
+    fn keep_checkpoint(&mut self, turn: &mut Turn, kind: Boundary, end: usize) -> Result<(), TurnError> {
         let taking = Instant::now();
         let history = &mut self.engine.active_mut().ok_or(TurnError::NoneActive)?.parts_mut().tokens;
-        // When a learned prefix grows, retain the older native snapshot for turns
-        // whose input changes earlier. History::cut invalidates every slot together.
-        let [_, latest, earliest] = &mut history.kept;
-        if index == 1 && latest.as_ref().is_some_and(|prior| {
-            prior.end < end && earliest.as_ref().is_none_or(|saved| prior.end < saved.end)
-        }) {
-            std::mem::swap(latest, earliest);
+        let Some(mut blocks) = history.capture_buffer(kind, end) else { return Ok(()) };
+        if self.engine.checkpoint_active(&mut blocks).is_ok_and(|pos| pos as usize + 1 == end) {
+            self.record(|her| her.tokens.save(kind, blocks, end, &turn.basis))?;
         }
-        let previous = history.kept[index].take();
-        let mut blocks = match previous.map(|kept| kept.blocks).or_else(llama::PersonaCheckpoint::new) {
-            Some(blocks) => blocks,
-            None => return Ok(()), // the host could not allocate a checkpoint: she restarts next act, named in its row
-        };
-        let taken = self.engine.checkpoint_active(&mut blocks);
-        let basis = turn.basis.clone();
-        self.record(|her| {
-            her.tokens.kept[index] = match taken {
-                Ok(pos) if pos as usize + 1 == end => Some(KeptCheckpoint { blocks, end, basis }),
-                _ => None,
-            }
-        })?;
         turn.spent.checkpoint_ms += record::whole_ms(taking.elapsed());
         Ok(())
     }
@@ -729,7 +659,7 @@ impl Driver<'_, '_> {
     /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
     fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize, ready: std::num::NonZeroUsize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
-        let limit = turn.boundaries.iter().flatten().copied().filter(|boundary| *boundary > pos).min().unwrap_or(turn.prompt.len()); // unwrap_or: no view end ahead, the prompt's end bounds the chunk
+        let limit = turn.boundaries.next_end(pos, turn.prompt.len());
         // A submission can arrive during this frame. Size the next native call from
         // observed prefill time so a long prompt yields at the service boundary.
         let started = Instant::now();
@@ -746,8 +676,8 @@ impl Driver<'_, '_> {
         if !last {
             self.engine.settle()?;
             self.record(|her| her.tokens.held.extend_from_slice(&chunk))?;
-            if let Some(index) = turn.boundaries.iter().position(|boundary| *boundary == Some(end)) {
-                self.keep_checkpoint(turn, index, end)?;
+            if let Some(kind) = turn.boundaries.at(end) {
+                self.keep_checkpoint(turn, kind, end)?;
             }
             self.prefill_sample = Some((len, started.elapsed()));
             turn.phase = Phase::Prefilling { pos: end };
@@ -814,8 +744,8 @@ impl Driver<'_, '_> {
             reused_tokens: turn.spent.reused as u64,
             shared_prefix_tokens: turn.spent.shared_prefix_tokens as u64,
             start: turn.spent.start,
-            boundary: turn.boundaries[0].map(|end| end as u64),
-            learned_boundary: turn.boundaries[1].map(|end| end as u64),
+            boundary: turn.boundaries.view.map(|end| end as u64),
+            learned_boundary: turn.boundaries.learned.map(|end| end as u64),
             checkpoint_ms: turn.spent.checkpoint_ms,
             wait_ms: turn.spent.first_step.map(ms),
             longest_service_gap_ms: ms(turn.spent.longest_gap),
