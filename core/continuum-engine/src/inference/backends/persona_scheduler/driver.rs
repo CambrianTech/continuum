@@ -1,7 +1,7 @@
 //! The driver thread: a frame loop over one context (CONTINUUM-ENGINE 4.15). Each frame advances one
 //! turn by one step, so no mind waits behind another's whole prompt; one mind decodes at a time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc::UnboundedReceiver as Receiver;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -90,7 +90,6 @@ type Parts = PersonaParts<Blocks, History, Basis, (), Tenure>;
 enum Tenure {
     Resident,
     OneOff,
-    FinishedOneOff,
 }
 
 mod history;
@@ -123,6 +122,8 @@ struct Driver<'c, 'm> {
     batch: NonZeroUsize,
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
+    /// Admitted anonymous turns that still own their native blocks, across all transfer states.
+    live_one_offs: HashSet<PersonaId>,
     /// Where decoded tokens and answer ends go (4.16); the engine thread never does text work.
     emit: Outbox<emit::Out>,
     /// Where each GPU step's span and each finished turn's row go; measured and written off this
@@ -247,6 +248,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         batch,
         engine: PersonaEngine::new(tier),
         parked,
+        live_one_offs: HashSet::new(),
         emit: Outbox::new(emit),
         record: Outbox::new(record),
         answers: 0,
@@ -445,6 +447,7 @@ impl Driver<'_, '_> {
     fn suspend(&mut self, turns: &mut Vec<Turn>) -> Suspended {
         self.stopping = true;
         for turn in turns.drain(..) {
+            self.finish_one_off(&turn);
             self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
         }
         let Some(mut store) = self.store.take() else {
@@ -518,6 +521,7 @@ impl Driver<'_, '_> {
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
                 let submitted = Instant::now();
+                if one_off { self.live_one_offs.insert(id); }
                 turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
             }
             Err(refused) => {
@@ -798,16 +802,14 @@ impl Driver<'_, '_> {
     fn finish_one_off(&mut self, turn: &Turn) {
         if turn.one_off {
             self.parked.remove(&turn.id);
-            if let Some(mind) = self.engine.active_mut().filter(|mind| mind.id() == turn.id) {
-                mind.parts_mut().decode = Tenure::FinishedOneOff;
-            }
+            self.live_one_offs.remove(&turn.id);
         }
     }
 
     /// A paused one-off keeps her blocks until she finishes, just like a paused resident.
     fn retire_previous(&mut self) -> Result<(), TurnError> {
         let Some(previous) = self.engine.finish_retirement()? else { return Ok(()) };
-        if previous.parts().decode != Tenure::FinishedOneOff {
+        if resident(&previous) || self.live_one_offs.contains(&previous.id()) {
             self.parked.insert(previous.id(), previous);
         }
         Ok(())
