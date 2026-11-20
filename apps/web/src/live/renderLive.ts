@@ -136,7 +136,11 @@ function renderComposition(body: LiveContentBody): TemplateResult {
       ${audioSinks}
     </div>`;
   }
-  return html`<div class="live-grid" data-composition="grid" data-count=${body.participants.length}>
+  const n = body.participants.length;
+  // Spec: cols from count — ceil(sqrt(n)) gives 2 for ≤4, 3 for ≤9, 4 for ≤16
+  const cols = Math.ceil(Math.sqrt(n));
+  const rows = Math.ceil(n / cols);
+  return html`<div class="live-grid" data-composition="grid" data-count=${n} style="--cols:${cols};--rows:${rows}">
     ${repeat(body.participants, (p) => p.id, participantTile)}
     ${audioSinks}
   </div>`;
