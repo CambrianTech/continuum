@@ -1,161 +1,118 @@
-# In-process learning on the persona engine
+# In-process learning: a lesson is her turn with labels
 
-Status: design, 2026-11-18. Owner: Fable (engine, llama crate); Codex (serving, admission callers).
-Read with [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
-and CONTINUUM-ENGINE.md 4.14 (the persona engine: one mind decodes at a time).
+Status: design, revised 2026-11-20. Owner: Fable (engine, llama crate, her genome's engine side);
+Codex (memory authority, deletion of the serving half). Built on
+[ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md) §2.1, §9 and
+§9.6 P1-P6, and on the genome in [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md).
 
 [Runtime architecture](../README.md#runtime-architecture)
 
 **Contents**
 
-- [Why this comes before deleting the lanes](#why-this-comes-before-deleting-the-lanes)
-- [What moves, and where](#what-moves-and-where)
-- [A learn is frames of work, like a turn](#a-learn-is-frames-of-work-like-a-turn-l2-proposed-2026-11-20)
+- [The rule](#the-rule)
+- [Her genome holds her learning](#her-genome-holds-her-learning)
+- [A lesson on the Core](#a-lesson-on-the-core)
+- [What is deleted](#what-is-deleted)
 - [Slices, each with its validator](#slices-each-with-its-validator)
 
-## Why this comes before deleting the lanes
+## The rule
 
-Today a mind learns only inside llama-server. The trainer
-(`continuum-dreaming/src/modules/training_trigger.rs:221`) finds its engine through
-`lane_registry::live_lane()`, which needs a llama-server process. The Rust side POSTs `/learn`
-(`continuum-engine/src/inference/llama_server/learn_step.rs:60`), and the fork's C++ runs the step
-on the server's own context (`tools/server/server-context-learn.inc`, 647 lines at pin `a88f255cc`:
-`llama_opt_init`, then `llama_opt_learn_begin` and `llama_opt_learn_graph_step` / `_drain`). The
-llama crate has no wrapper for any of it.
+Dreaming is as natural to her as speaking, and costs about as little. Training is inference with
+extra layers switched on (ONE-RESIDENT §9.6): the same batch, the same graph, the same resident
+weights, her own served window. Learning never gets a train call, a reserved slot, a lane, a
+context, a time-share grant, a workspace held on the side, a second engine or a second copy of
+the base. The extra cost is the backward over the labelled rows, plus her shadow and its optimizer
+state.
 
-Deleting the lanes and llama-server first would stop every mind from learning. Learning is the goal
-(a reviewed correction kept across restart, applied to unseen tasks), so it moves in-process first.
+The fork already has this. `llama_batch` carries `label` and `label_weight` per position. A
+labelled position makes `llama_decode` also run the loss, the backward and the optimizer write of
+the context's trainable adapter (`llama_opt_init`), in the same graph as the batch's other rows
+(`include/llama.h`, `struct llama_batch`).
 
-## What moves, and where
+## Her genome holds her learning
 
-The fork's API already has the shape the persona engine needs. `llama_opt_learn_begin` trains one
-reply on one sequence of a serving context. Each `llama_opt_learn_step` / `_graph_step` runs at
-most one chunk. Other sequences may decode between steps. Afterwards the reply is restored under
-her stable gene set, so serving's state is what it was.
+Her genome is an object, and part of her: `PersonaUnit` is her five parts, moved only as a whole
+(blocks, tokens, **genome**, **learning**, decode). A trained layer is one state of her genome:
 
-| Today (C++, in llama-server) | Moves to | Owner |
-|---|---|---|
-| The `llama_opt_*` calls | `llama` crate `safe/learn.rs`: a `Learner` over `&mut Context`, typed `LearnRefusal` from `llama_opt_failure`, the status as an enum | Fable |
-| The residency mirror and its admission callbacks (`static_admission`, `workspace_admission`) | A Rust `LearnAdmission` trait the callbacks call. Codex implements it over `training_admission` and the ResourceDaemon: measured incremental bytes, held until the step completes | Fable (trait), Codex (implementation) |
-| The learn ledger (grants: `period_ms`, `max_chunk_us`, `share_ppm`; committed steps) | The time-share policy stays with the existing grant issuer. The driver consumes ONE versioned grant and measures its elapsed chunks and drains. There is no second quota and no dedicated lane | Codex (issuer), Fable (driver) |
-| Shadow selection per mind (`llama_opt_init` with her shadow adapter) and the preflight (`llama_opt_measure_shadow_graph`) | The driver, when it binds her for a learn | Fable |
-| `POST /learn`, `/learn/grants` and the residency endpoints | Removed with llama-server, after her dream stage dispatches to the Core | Codex |
+- her **stable** genes, which serve her;
+- her **shadow**, a small trainable layer above her frozen stable stack, never a copy of it (§2.1,
+  §9.6 P3);
+- the shadow's optimizer state (moments, accumulator, RNG, step count) and her arrival and replay
+  cursors (the §9.2 session state);
+- immutable **snapshots** (candidate genes) and **checkpoints** (session state), each with
+  provenance and lineage (GENOME-FOUNDRY-SENTINEL Parts 1 and 12).
 
-## A learn is frames of work, like a turn (L2, proposed 2026-11-20)
+Adoption is her genome promoting a snapshot to stable after its exam, a pointer swap between two
+steps. She never serves moving weights.
 
-The engine is concurrent everywhere except inference, which runs like a CPU core. A **Core**
-(`PersonaEngine` with `pipeline::Roles`: active, next, previous) runs one mind at a time. Her
-native state is the register file: the next mind is staged in and the previous one retired out
-while the active one runs, so the minds seem parallel. How many Cores a node has comes from the
-engine's list of Cores, under measured admission (one on the M5; a larger node may run more),
-never from parallel decode inside one Core. Learning is not a special mode that holds the engine.
-It is work of the mind active on a Core, scheduled and switched like her decode. The Core's
-driver is its own thread (`persona_scheduler/driver.rs`), and nothing else waits on it: callers
-submit and subscribe, and the thread advances one item by one quantum per frame.
+## A lesson on the Core
 
-**Learning is hers.** A citizen's genome is part of her, and learning is her own lifecycle:
-live, work, remember, dream, learn, test (README, "They truly learn"). The engine already models
-this: `PersonaUnit` is her five parts, moved only as a whole: blocks, tokens, **genome**,
-**learning**, decode. Her `genome` part holds her genes, the shadow gene she is growing, its
-optimizer state and its lineage. Her `learning` part holds a lesson in progress. Nothing outside
-her pushes examples into an engine or grades her ordinary work. Her dream faculty (a stage of her
-mind, STAGE-CONTRACT's dream consumer) chooses what experience to consolidate, and the Core runs
-that lesson as her work while she is active on it, as it runs her turns.
+A lesson is a turn she takes, scheduled and switched on the Core like any other:
 
-**Flow, one resident learning while another becomes ready to speak:**
+1. **Her lesson.** Her dream faculty picks an experience to consolidate: a reviewed correction,
+   rendered from the turn as she was served it (§9.1, learning sees what serving sees). The lesson
+   is her context, then the corrected reply.
+2. **Her turn, with labels.** Her context resumes from her cached prefix: an append, or a rewind
+   to her checkpoint. The reply's tokens are decoded with labels and her shadow as the trainable
+   adapter, so the forward, loss, backward and optimizer write all run in that one `llama_decode`.
+   Persona-engine change: `Step` carries optional labels, and the tier sets them on the batch.
+3. **Back to her stable self.** After the labelled rows she rewinds to her checkpoint, so her
+   cache is her stable self's (§2.1). The lesson's K/V under the shadow is not kept.
+4. **Into her genome.** The committed step count and loss go to her shadow's session state. At an
+   optimizer boundary a snapshot is written with its arrival ids (§9.2, commit once). It earns
+   adoption only through the exam on unseen tasks of its family (§11).
 
-1. **She dreams.** P's dream stage turns settled experience into a lesson (tokens, labels, restore
-   tail) and dispatches it as her work: `Submission::Learn` on the Core's existing queue. It
-   returns at once with a `Subscribes` to the outcome (STAGE-CONTRACT artifacts). The outcome
-   re-triggers her dream stage, and nothing waits. The memory her lesson needs, the shadow's
-   optimizer bytes and the reply workspace, is admitted before dispatch by the one resource
-   authority (Codex's `LearnAdmission` over the ResourceDaemon). The authority parks the demand,
-   reclaims lower-value bytes through their owners (cache spills to disk), and grants on
-   confirmed release, so the Core never asks mid-frame. On BigMama, 11.5 MiB was refused 29
-   times with 302 MiB physically free (Nov 19, 14:14-14:29Z); a governed system finds it.
-2. **One worklist.** The driver holds `Vec<Work>`, with `enum Work { Turn(Turn), Learn(Learn) }`.
-   `frame::pick` ranks both with the same `Candidate` (bound, remaining work, waited). A frame is
-   one quantum: a prefill chunk, one token, or one learn chunk of the active mind (`llama_opt_learn_step`, or
-   `graph_step` when a turn has waited past its target).
-3. **No borrow across frames.** Today `LearnRun<'l>` holds `&mut Learner`, and so the context, for
-   a whole reply, so no turn could run before the reply ends. L2 makes the run an owned value,
-   `ReplyInProgress`: the native result handle, sequence, shadow key, steps before, and state and
-   buffers. It lives in her `learning` part, so it moves with her.
-   `Learner::new(&mut ctx).step(&mut reply)` borrows the context for exactly one chunk. The borrow ends when the call returns, before the next frame
-   picks.
-4. **Switching a learning mind.** P learns while she is active on the Core. When Q becomes ready,
-   the Core does what it does for any switch: Q is staged as next while P's chunks run, and the
-   handoff happens at a frame boundary. Today the fork keeps one learn reply per context, outside
-   P's saved state, so P cannot be retired mid-reply with her learn intact. Two steps follow.
-   - **L2:** before P is retired, her reply drains (`drain` stops new gradient chunks, and
-     committed steps stay) and ALL of its remaining restore chunks run as P's last frames before
-     the handoff. Q's staging overlaps them, but Q still waits for every restore frame, then her
-     own bind, prefill and first decode. The restore tail is the longest piece that cannot yield,
-     so it is the floor on Q's wait, and L2 only stands until L2b removes it.
-   - **L2b, the full context switch:** the reply's native learn state becomes part of her saved
-     state (a fork change), so P is retired and later restaged mid-reply like any process, and
-     nothing drains.
+The memory her shadow and optimizer need is a governed claim on the one memory authority, like
+every other byte. Lower-value bytes are moved out (cache spills to disk), so a small need is met
+quickly and is never refused while those bytes sit resident. On BigMama, 11.5 MiB was refused 29
+times with 302 MiB physically free (2026-11-19, 14:14-14:29Z, Codex's receipt). That is the failure
+this rules out.
 
-   L2 validators:
-   - **Delay.** Measure Q's ready-to-bind and ready-to-first-token against the same Q turn with
-     no learn on the Core. Trace P's last chunk, restore, Q's staging, bind, prefill and first emit
-     separately, including a case with a long restore tail.
-   - **Weights.** P and Q use distinct adapters. After the learn and restore, Q's context gene
-     binding is correct and her logits match an uninterrupted decode bit for bit.
-     `UnifiedTier::applied_genes` caches the binding by `Arc` pointer, so matching prefix lengths
-     alone would miss wrong weights.
-   - **Prefixes.** Both minds' native prefixes are intact afterwards.
+## What is deleted
 
-   L2b validator: a reply retired and restaged mid-way ends with the same shadow weights and the
-   same optimizer step count as one run straight through.
-5. **Into her genome.** `finish` writes the outcome into her own parts and publishes it to her
-   dream stage through a completion outbox (the `Emit`/`Record` pattern):
-   - **`Learned`:** her shadow gene's committed steps and loss, appended to its lineage in her
-     `genome` part. The candidate still has to earn adoption: her phenotype is evaluated before
-     the gene joins her genome (README: "It has to earn adoption").
-   - **`Unchanged`:** nothing is committed.
-   - **`Uncertain`:** never kept as learned.
-   - **`Failed`:** quarantines the context. `recover` then runs as her later frames, after her
-     retained shadows are released.
-   
-   Every outcome hands back its admission.
-6. **Serving her is an event.** The Core's `watch<EngineState>` is the only availability source.
-   Her dream stage subscribes: `Ready` re-triggers it, and `Stopped`/`Refused` answer her dispatch
-   with a typed `Unavailable` at once. There is no polling and no `live_lane()`.
+Each item goes in the change that replaces it, never kept as a fallback:
 
-**Waits removed:**
-- Her dream waiting on an engine: it subscribes instead.
-- Another resident waiting out a whole reply: chunks interleave.
-- The Core waiting on admission: memory is granted before dispatch.
-- Learning silently not running with no lane: the Core's state event replaces the lookup.
-
-**Deleted in L3:**
-- The whole-reply `LearnRun` borrow.
-- `POST /learn` and its ledger and residency endpoints.
-- The HTTP `LearningEngine` and `lane_registry::live_lane`.
-- The outside trigger that finds a lane and pushes examples into it (`training_trigger`'s
-  `recover_pass`/`learn_in_place`). Its curriculum selection moves into her dream stage.
-
-Gene catalog and paging over HTTP (`llama_server/gene_pages.rs`) go with llama-server in L4; her
-genes are then catalogued and paged through her `genome` part on the Core.
+- **Reserved learning capacity:** the training planner's "one learning context reserved beside
+  serving" (`continuum-engine/src/inference/planning/training_plan.rs`), and the
+  `TrainingReserve` that grows serving's requirement
+  (`continuum-genome/src/genome/fine_tuning/training_demand.rs`).
+- **Time-share grants:** `continuum-genome/src/genome/learner/grant.rs` (`UncontendedOnly`, shares),
+  the learn ledger (`continuum-engine/src/inference/llama_server/learn_ledger.rs`), `period_ms`,
+  `share_ppm` and `max_chunk_us`.
+- **The HTTP learning path:** `llama_server/learn_step.rs`, `learn_residency.rs` (seat, preflight
+  on a disposable scheduler, workspace), the `/learn*` routes, `lane_registry::live_lane` as the
+  way learning finds an engine, and `training_trigger`'s `recover_pass` / `learn_in_place`.
+  Curriculum selection moves into her dream faculty.
+- **Second engines and copies:** `EphemeralServingLane` for gene exams
+  (`continuum-academy/src/cognition/eval/spawn_gene_eval_lane.rs`; exams run on the live Core,
+  §4.3), `PrivateTeacherLane` when the teacher shares her base, and the MLX/CUDA Python trainers
+  and their launchers (§9.6 P5).
+- **The separate run API, if the labelled turn covers it:** `Learner::begin` and `LearnRun` in
+  `llama/src/safe/learn.rs` restore a reply on their own. With labels on her ordinary decode and
+  a rewind to her checkpoint, that run is redundant. Its admission and quarantine checks move to
+  the decode path, then the run API is deleted.
 
 ## Slices, each with its validator
 
-1. **L1, llama crate wrapper.** `Learner` and `LearnRefusal` with no policy. Validator: on a 0.5B
-   model, one reply trains, its loss drops, and the sequence holds exactly what it held before.
-2. **L2, learning on the Core's driver.** A learn's chunks interleave with turns; a switch drains
-   the learn first. Validators: the delay, weights and prefixes checks in
-   [A learn is frames of work](#a-learn-is-frames-of-work-like-a-turn-l2-proposed-2026-11-20).
-   **L2b** (fork) saves the learn state with her registers so nothing drains; validator: the same
-   shadow weights and step count as one uninterrupted run.
-3. **L3, her dream stage dispatches her lessons to the Core.** The outside trigger and the HTTP
-   learning path are deleted. Validators, with no llama-server running:
-   - the in-place learning tests pass against her dispatch;
-   - her native prefix is equivalent before and after a learn;
-   - a committed step survives an interruption and its retry without being applied twice;
-   - held-out quality holds after a reload, alongside throughput on the 35B model.
-4. **Then:** delete llama-server's learn endpoints, the HTTP adapter, `live_lane`, and the lanes
-   (Codex's serving half, Fable's engine half).
+1. **The labelled batch in Rust.** `llama` crate `Batch` gains labels and label weights, and
+   `llama_opt_init` binds her shadow. Validators, on a 0.5B model, CPU and Metal:
+   - unlabelled rows' logits are byte-identical to a pure serving decode (§9.6 P1 c);
+   - one lesson's loss falls across repeats;
+   - after the rewind, her cache and recurrent state are byte-identical to before (P1 d).
+2. **A lesson is her turn on the Core.** `Step` carries labels; her genome part holds her shadow
+   and its optimizer; the lesson rewinds to her checkpoint. Validators, on the M5 with residents
+   running:
+   - the other minds' ready-to-first-token with lessons running versus without;
+   - P and Q use distinct adapters, and Q's logits match an uninterrupted decode bit for bit
+     (`UnifiedTier::applied_genes` caches by `Arc` pointer);
+   - memory is serving plus the shadow, the optimizer and the labelled rows' activations,
+     measured;
+   - throughput is held.
+3. **Her dream faculty dispatches her lessons, and the deletion list above lands.** Validators:
+   - with no llama-server running, a committed step survives an interruption without being
+     applied twice;
+   - a snapshot earns or fails adoption on its exam, which runs on the live Core.
 
-Live gate after L3: on the M5 and on BigMama, a resident's own dream commits a learning step into
-her shadow gene with throughput held, and that gene then earns or fails adoption on her phenotype.
+Live gate (§9.6 P6), on the M5 and on BigMama: a reviewed correction is learned in place by her own
+dream, applied on unseen related tasks, and retained after a restart, with unrelated skill intact,
+against the same base without the gene.
