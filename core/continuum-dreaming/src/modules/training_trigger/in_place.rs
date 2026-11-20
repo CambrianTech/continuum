@@ -193,45 +193,10 @@ impl InPlace {
                     fence(mind, engine).await;
                     drop(slot);
                     drop(held);
-                })
-                .await;
+                });
                 Ok(Next::Fenced)
             }
         }
-    }
-
-    /// Seat `key`'s learner if needed and cover her next pending example's memory, waiting for this
-    /// engine (holding no serving resource): the step that follows only revalidates. Seating's
-    /// embeddings, competence decision and leases all happen here, never under her serving guards.
-    async fn prepare(&self, state: &TrainingTriggerState, key: &BucketKey, rows: &[Arrival], engine: EngineIncarnation) -> Result<Prepared, String> {
-        let mut held = self.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
-        for row in rows {
-            let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
-            match seat(&self.authority, state, &mut held, key, row, rows, engine).await? {
-                Seating::Seated => {}
-                Seating::NotNow => return Ok(Prepared::Deferred),
-                Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
-            }
-            let EngineLearning { minds, workspace } = &mut *held;
-            let Some(seated) = minds.get_mut(key) else {
-                return Err(format!("the learner seated for {} left before its cover", key.persona_id));
-            };
-            let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
-            if learned >= total {
-                continue;
-            }
-            let framed = learn_messages(&row.examples[learned as usize]);
-            return match seated.mind.cover(&self.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
-                Ok(()) => Ok(Prepared::Ready),
-                Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
-                Err(failure) => {
-                    continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
-                        "her next example's memory was not covered; it is tried again on a later pass");
-                    Ok(Prepared::Deferred)
-                }
-            };
-        }
-        Ok(Prepared::Nothing)
     }
 
     /// The end of `key`'s pass: publish what her seated learner learned since its newest
@@ -498,17 +463,16 @@ enum Seating {
 
 /// Make sure a learner is seated for `key` in `held`'s engine, restored from the bucket's newest
 /// generation when it has one. `false` when it cannot be seated now; the bucket defers.
-async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, rows: &[Arrival], engine: EngineIncarnation) -> Result<Seating, String> {
+async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, examples: usize, mut signature: Option<crate::genome::signature::GeneSignature>, engine: EngineIncarnation) -> Result<Seating, String> {
     if held.minds.contains_key(key) {
         return Ok(Seating::Seated);
     }
     let began = std::time::Instant::now();
     // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
     // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
-    let examples: Vec<crate::genome::fine_tuning::types::TrainingExample> = rows.iter().flat_map(|r| r.examples.iter().cloned()).collect();
-    let mut signature = super::competence::mint_signature(format!("inline:{}", key.trait_kind), &key.trait_kind, &examples).await;
+
     if let Some(sig) = signature.as_mut() {
-        let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples: examples.len() };
+        let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples };
         let adoption = crate::genome::gene_trial::Adoption::default_paths();
         // her other learners seated on this base are her competences in flight: a near one joins it
         // rather than minting a second gene beside it (Codex on e473f72b1)

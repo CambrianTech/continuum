@@ -346,7 +346,7 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 #[tokio::test]
 async fn a_drain_counts_the_learning_still_running() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    state.spawn_owned(std::future::pending()).await;
+    state.spawn_owned(std::future::pending());
     assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
     assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
 }
@@ -374,7 +374,7 @@ async fn a_save_leaves_a_busy_engine_to_its_step() {
 async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     use crate::runtime::ServiceModule;
     let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
-    trigger.state.spawn_owned(std::future::pending()).await;
+    trigger.state.spawn_owned(std::future::pending());
     assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
     let idle = engine(9);
     drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
@@ -611,4 +611,47 @@ mod live_engine {
         assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
     }
+}
+
+#[tokio::test]
+async fn shutdown_joins_a_fence_registered_by_a_running_step() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let owner = state.clone();
+    let (release, started) = tokio::sync::oneshot::channel();
+    let (finished, fence) = tokio::sync::oneshot::channel();
+    state.spawn_owned(async move {
+        started.await.expect("test: release the step");
+        owner.spawn_owned(async move { let _ = finished.send(()); });
+    });
+    let drain = state.drain_operations();
+    tokio::pin!(drain);
+    tokio::select! {
+        biased;
+        _ = &mut drain => panic!("the step is still running"),
+        _ = std::future::ready(()) => {}
+    }
+    release.send(()).expect("test: step is alive");
+    tokio::time::timeout(std::time::Duration::from_secs(2), drain)
+        .await.expect("test: nested fence admitted").expect("test: shutdown joined");
+    fence.await.expect("test: fence completed");
+}
+
+#[tokio::test]
+async fn prepare_waiters_have_no_engine_work_to_drain() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    state.ready.store(true, std::sync::atomic::Ordering::Release);
+    let engine = engine(9);
+    let slot = state.in_place.engine(engine);
+    let held = slot.acquire(None, engine_lock::Phase::Step).await;
+    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "test".into() };
+    let waiting = state.prepare_bucket(key, Arc::new(Vec::new()), engine);
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("the engine is still held"),
+        _ = std::future::ready(()) => {}
+    }
+    assert_eq!(state.stop_admitting().await, 0);
+    drop(held);
+    assert!(matches!(waiting.await, Err(reason) if reason.contains("shutting down")));
 }
