@@ -147,7 +147,7 @@ A command has **two stable identifiers** that serve different audiences:
 | **Kernel name** | `chat/send` | `Commands.execute(name, params)` | Stable across versions; renaming breaks every caller |
 | **Package identity** | `@continuum-modules/chat@1.4.0` | `npm install`, `module/install`, mesh registry | Versioned (semver); content-addressable optionally |
 
-Callers — both human and AI — write `Commands.execute('chat/send', { ... })`. They do not write the package identity at call sites. The kernel resolves the name through its in-memory `Map<&str, Box<dyn Command>>`; the resolution is `O(1)`, the same primitive whether the chat module is locally compiled, dynamically loaded from a `.wasm` artifact, or routed over the grid to a peer machine. Same call, four possible transports, identical syntax.
+Callers — both human and AI — write `Commands.execute('chat/send', { ... })`. They do not write the package identity at call sites. The kernel resolves the name through its in-memory `Map<&str, Box<dyn Command>>`; the resolution is `O(1)`, the same primitive whether the chat module is locally compiled, dynamically loaded from a `.wasm` artifact, or routed over the grid to a peer machine. The operation keeps its identity across placement.
 
 The package identity exists for installation, versioning, publishing, and dependency resolution. It is what `module/install` consumes, what `npm publish` writes, what the mesh registry indexes, what cryptographic signatures attach to.
 
@@ -194,6 +194,8 @@ const health = await api.ping({ message: "desktop" });
 | Desktop or interface to core | Generated client sends typed parameters to the Rust command handler. |
 | Core module to local core module | The Rust runtime dispatches to the registered owner in-process. |
 | Local core to remote core | The grid routes the operation to the peer's Rust owner and returns its completion. |
+
+Every runtime operation has a Rust owner from admission through completion. It declares its resource demand, holds the grant while the allocation is live, receives pressure and cancellation events, and reports progress and the bytes actually released. When speech interrupts learning, the governor can ask the learner to yield at a safe boundary, schedule speech on confirmed capacity, and resume the pending learning operation when capacity returns. A subprocess exit status cannot supply that contract. An adapter that invokes a script to implement core work violates the boundary even if it measures process uptime or RSS.
 
 The interface consumes results and subscribes to events for display. Closing it releases its subscriptions. Resident execution, learning and recovery continue under their Rust owners. Check new entry points by running the headless workload without an interpreter on its execution path. A resident can invoke a shell as a user-requested tool when one is available; the Rust tool owner still governs the process and its completion. [Generated client](../../sdk/typescript/generated/CommandApi.ts) · [Rust command catalog](../../core/continuum-core/src/commands/catalog.rs)
 
