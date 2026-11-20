@@ -444,9 +444,21 @@ consumers have a value curve with a threshold, a deadline or a whole unit:
 - a frame delivered after its deadline is discarded;
 - a model split across two nodes with no plan for its latency serves nobody.
 
-So the price of a resource is computed against what it completes. The governor allocates whole
-units: it admits a consumer only when what it is given completes something of value, and it would
-rather finish one act than half-serve two. Its decisions follow from that:
+Joel again: "a car with a smaller engine is fine. One missing it entirely is scrap." Value degrades
+gracefully in quality but falls to nothing when something essential is missing. Every consumer
+therefore has two kinds of need:
+- **Essential parts,** without which the result is scrap: an act's model and its working context, a
+  lesson's whole labelled piece, a frame's deadline, a reply's grounding in what was actually said.
+- **Quality,** which can step down and still deliver: a smaller model, a lower level of detail, a
+  shorter context with its oldest items as headlines, a coarser look at a frame, the quick voice
+  before the deep one.
+
+So the price of a resource is computed against what it completes. The governor never cuts an
+essential part to fit, and steps quality down instead:
+- a complete smaller version beats an incomplete larger one;
+- a mind served by a smaller model, or at a lower level of detail, still acts;
+- a mind given half of what her act needs does not;
+- it would rather finish one act at a quality that fits than half-serve two. Its decisions follow from that:
 - admission by feasibility, a level of detail stepped down before a deadline is missed, and never
   a fixed split between consumers ([SHARED-RESOURCES.md](../SHARED-RESOURCES.md), "Time");
 - a lesson's labelled rows admitted as a whole piece (IN-PROCESS-LEARNING §3);
