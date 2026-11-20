@@ -10,6 +10,8 @@ The stage types themselves are specified in [STAGE-CONTRACT.md](STAGE-CONTRACT.m
 residency in [SHARED-RESOURCES.md](SHARED-RESOURCES.md); a mind's concurrent regions in
 [CONCURRENT-MIND-AND-GOVERNOR.md](CONCURRENT-MIND-AND-GOVERNOR.md).
 
+For a worked example across perception, speech and learning, see [a live conversation under memory pressure](#worked-example-a-live-conversation-under-memory-pressure).
+
 ## 1. Non-negotiable: every optimization, exhausted
 
 Joel, 2026-11-13: "use the graphics pipeline approach and study the unreal engine optimizations";
@@ -575,6 +577,22 @@ continuum-live 482, continuum-academy 337, continuum-dreaming 309,
 continuum-cli-lifecycle 262, continuum-grid 211. The floor, where phase 5 starts:
 `continuum-base` 15 stringly errors and 1 string identity; `continuum-host` 7 waits
 (5 production, 2 test), 2 unknowns and 1 contract; `continuum-pack` is not cut yet.
+
+### Worked example: a live conversation under memory pressure
+
+This is the target behavior for live calls. A resident can subscribe ahead of time or ask for a single observation. In both cases the stage needs the source, capture time, acceptable age and accuracy, and whether the caller accepts a prediction. Consumers of the same compatible observation share its handle and any work already in flight. Each consumer keeps its own freshness requirement.
+
+| Event | What becomes runnable |
+|---|---|
+| A camera frame arrives | Capture publishes a timestamped frame handle. Quarter-resolution grayscale optical flow updates a short motion history. Detection and segmentation workers take eligible frames independently. |
+| A segmentation finishes three seconds after capture | Its owner associates the mask with its source frame. If the motion history covers the interval and confidence permits, it warps the mask forward to the display frame. The compositor can present at 30 fps while exposing the observation time and prediction confidence. A cut invalidates the projection. |
+| A new slide, speaker or object appears | A resident using the cheap change feed requests the original full frame. Other residents requesting that frame or the same derived result share the capture or computation. A demand for exact slide text requires an observed frame. |
+| A conversational turn starts | The small language model and deeper reasoning stage receive the same turn identity. Speech can start from the quick response. The output owner tracks what has already been spoken, revises the unsent continuation, and speaks a correction if later evidence changes a delivered claim. A new turn can supersede unsent speech. |
+| Learning requests device memory during the call | The governor keeps the request pending and asks eligible owners to release lower-value residency. The cache owner preserves reusable native blocks in another tier, including disk, and signals when the transfer is complete and the old allocation is safe to release. That event makes the pending grant runnable. Capture, speech and unrelated inference continue. |
+
+A slow worker retains its own dependency. The capture callback publishes and returns. It never joins segmentation, speech, or paging. A subscriber requiring a fresh exact result stays registered for its completion while others consume a permissible cached or projected result.
+
+Evaluate the policy on the same stimulus and context. Record first audible response, frame presentation interval, age of the last genuine observation, duplicate computations across residents, and time from memory demand through safe release to optimizer activation. Use measured transfer cost, reuse, queue delay and output quality to refine placement. A smooth display alone cannot establish fresh perception or durable learning.
 
 ### Domain Mapping
 
