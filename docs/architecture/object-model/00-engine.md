@@ -9,6 +9,23 @@ This chapter states the brief, takes what Rockstar's RAGE and our own CBAR learn
 brief like it, and turns each lesson into a mechanism of the core. The chapters after it are how
 those mechanisms are built.
 
+The resemblance is not an analogy; it is lineage. RAGE, CBAR and Continuum share one architecture,
+because they solve one problem shape: a dense, persistent world kept present on hardware too small
+to hold it.
+- **All three stream at levels of detail.** RAGE streams a city, CBAR a camera's scene, Continuum a
+  society.
+- **All three separate logic from natives.** RAGE has scripts, CBAR typed analyzers, Continuum
+  recipes calling typed commands.
+- **All three run concurrently by yielding and publishing, never by locking.** RAGE uses fibers and
+  double buffers, CBAR its queue threads and invalidation, Continuum workers and completions.
+- **All three simulate rather than play back.**
+
+Continuum differs in what lives in its world and what its console is:
+- its inhabitants are minds, so its world learns: a gene is a motion the engine did not ship with,
+  earned and passed on;
+- its console is unknown and changes while running, so fixed pools give way to one governed flow;
+- it spans a Grid, so one engine runs across many consoles.
+
 ## 0.1 The brief
 
 **The world** ([README](../../../README.md)):
