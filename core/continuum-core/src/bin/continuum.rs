@@ -122,6 +122,9 @@ mod launch;
 use launch::*;
 #[path = "continuum/processes.rs"]
 mod processes;
+
+#[path = "continuum/ready.rs"]
+mod ready;
 use processes::*;
 #[path = "continuum/handoff_admission.rs"]
 mod handoff_admission;
