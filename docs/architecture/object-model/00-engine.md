@@ -595,6 +595,22 @@ The whole cognitive lifecycle of the README (live, experience, remember, dream, 
 
 No subsystem keeps its own idea of what matters. Each reads the one importance its tree computed.
 
+**Salience is compression, and it is how a mind gets better rather than worse.** Joel: "If you're
+not prioritizing you are not compressing and learning poorly or even degrading."
+- **Live understanding.** A mind that weights everything equally fills her window with what does not
+  matter, and what does is diluted. Ranking first is what lets a small window hold a large situation.
+- **Long-term capability.** Learning from experience weighted equally spends her capacity on noise
+  and can overwrite what she already did well. Weighting by salience is what turns experience into
+  skill. The continuous learning path carries it in every labelled row as `label_weight`: prediction
+  error weighted by her relevance to what she perceived (IN-PROCESS-LEARNING §3).
+- **Cheap salience improves both.** Salience must therefore be cheap and natural: a by-product of the
+  importance her perception already computes, never an extra pass that is skipped under load.
+
+How we will know: on the same experience, a mind whose context and lessons are weighted by salience
+is compared with one weighted uniformly. Measure task success at the same window size, and skill
+retained on unrelated tasks after the same learning. The first measures live understanding, the
+second long-term capability.
+
 ## 0.4 One engine across many consoles: the grid and the mesh
 
 A **grid** is the machines of one household or team, under one governor that allocates by price
