@@ -104,47 +104,9 @@ pub async fn ensure_citizen_layer_from_base(
     std::fs::create_dir_all(parent)
         .map_err(|e| CommandError::Internal(format!("citizen layer mkdir failed: {e}")))?;
     let started = std::time::Instant::now();
-    // A SHARED CLONE, never a copy (2026-09-06, the day the M5 hit zero free). The
-    // previous shape — `cp -cR` of the whole checkout — was copy-on-write for a day and
-    // 7–20 GB per citizen a week later: every clone carried the canonical repo's full
-    // history, its stale worktree metadata (5 × 462 MB of vendored packs), 4.5 GB of
-    // gitignored model caches and node_modules, and as the base moved on, every block
-    // materialized. `git clone --shared` writes ONLY the tracked tree; objects come from
-    // the base through `.git/objects/info/alternates`, so the layer's marginal disk is
-    // her working tree plus her own commits. `git_sync_from_shared` (fetch + merge) is
-    // unchanged — it never depended on the copy.
-    // The clone source is the base's repository ROOT: production hands our recorded
-    // checkout (its root), but a caller standing inside the tree (a test in
-    // core/continuum-core) means the same repository, and `git clone` wants the root.
-    // A base outside any repository is a loud error — a citizen layer without a
-    // repository is not a workspace.
-    // This one call lifts the runner's discovery ceiling by name: finding the root from
-    // inside the tree IS the upward discovery.
-    let toplevel = run_git_with_env(base, &["rev-parse", "--show-toplevel"], &[("GIT_CEILING_DIRECTORIES", "")])
-        .await
-        .map_err(|e| {
-            CommandError::Internal(format!(
-                "citizen layer: base {} is not inside a git repository ({e}) — a layer is a shared \
-                 clone of the checkout and cannot be provisioned from a bare directory",
-                base.display()
-            ))
-        })?;
-    let repo_root = std::path::PathBuf::from(toplevel.trim());
-    protect_shared_objects(&repo_root).await;
-    let (source, target) = (repo_root.to_string_lossy(), layer.to_string_lossy());
-    if let Err(e) = run_git(&repo_root, &["clone", "--shared", "--quiet", &source, &target]).await {
-        // Never leave a half-materialized layer for the next call to mistake
-        // for a real one.
-        let _ = std::fs::remove_dir_all(&layer);
-        return Err(CommandError::Internal(format!(
-            "citizen layer shared clone failed for peer {peer} (base {}): {e}",
-            base.display()
-        )));
-    }
-    // The vendored inference engine rides along as a submodule; reference the base's
-    // copy so its objects are shared too. Bounded and named: a layer without the vendor
-    // tree still gives her hands (the core serves inference, not her checkout).
-    let vendor = init_vendor_submodule(&layer, &repo_root).await;
+    let vendor = shared_clone(base, &layer).await.map_err(|e| {
+        CommandError::Internal(format!("citizen layer for peer {peer}: {e}"))
+    })?;
     continuum_base::probe!(
         class = "workspace.layer.provision",
         peer = %peer,
@@ -155,6 +117,40 @@ pub async fn ensure_citizen_layer_from_base(
         "citizen layer provisioned — shared clone of the base (objects via alternates, tracked tree only)"
     );
     Ok(layer)
+}
+
+/// A SHARED CLONE of the repository `base` stands in, at `target`: the one way this node makes a working copy
+/// of its checkout (a citizen's layer, an exam's disposable world). Never a copy (2026-09-06, the day the M5 hit
+/// zero free): the old `cp -cR` was copy-on-write for a day and 7–20 GB per citizen a week later — the full
+/// history, stale worktree metadata (5 × 462 MB of vendored packs), 4.5 GB of gitignored model caches and
+/// node_modules, every block materialized as the base moved on. `git clone --shared` writes ONLY the tracked
+/// tree; objects come from the base through `.git/objects/info/alternates` (kept safe by
+/// `extensions.preciousObjects`), so a clone's marginal disk is its working tree plus its own commits. The same
+/// on every OS: git does the work, no shell. A failure leaves no half-made `target`. Returns the vendored
+/// engine submodule's outcome (`shared`, `absent`, `failed: <why>`).
+pub async fn shared_clone(base: &std::path::Path, target: &std::path::Path) -> Result<String, String> {
+    // The clone source is the base's repository ROOT: production hands our recorded checkout (its root), but a
+    // caller standing inside the tree (a test in core/continuum-core) means the same repository, and `git clone`
+    // wants the root. This one call lifts the runner's discovery ceiling by name: finding the root from inside
+    // the tree IS the upward discovery.
+    let toplevel = run_git_with_env(base, &["rev-parse", "--show-toplevel"], &[("GIT_CEILING_DIRECTORIES", "")])
+        .await
+        .map_err(|e| {
+            format!(
+                "base {} is not inside a git repository ({e}) — a shared clone needs the checkout's repository",
+                base.display()
+            )
+        })?;
+    let repo_root = std::path::PathBuf::from(toplevel.trim());
+    protect_shared_objects(&repo_root).await;
+    let (source, dest) = (repo_root.to_string_lossy(), target.to_string_lossy());
+    if let Err(e) = run_git(&repo_root, &["clone", "--shared", "--quiet", &source, &dest]).await {
+        let _ = std::fs::remove_dir_all(target); // never leave a half-made clone for the next call to mistake
+        return Err(format!("shared clone of {} failed: {e}", base.display()));
+    }
+    // The vendored inference engine rides along as a submodule; reference the base's copy so its objects are
+    // shared too. A clone without the vendor tree is still a working copy (the core serves inference).
+    Ok(init_vendor_submodule(target, &repo_root).await)
 }
 
 /// `git submodule update --init --reference <base>/<path>` for the vendored engine,

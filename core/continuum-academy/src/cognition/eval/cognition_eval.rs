@@ -84,7 +84,7 @@ impl CognitionEval {
         } else {
             p.eval_set
                 .clone()
-                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string())
+                .unwrap_or_else(|| DEFAULT_EVAL_SET.to_string()) // unwrap_or_else: no named set runs the default set
         };
 
         // Task source: inline → a gym reference resolved through `gym::resolve_gym`
@@ -99,7 +99,7 @@ impl CognitionEval {
         let mut tasks: Vec<EvalTask> = if let Some(inline) = p.tasks {
             inline
         } else {
-            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET);
+            let reference = p.eval_set.as_deref().unwrap_or(DEFAULT_EVAL_SET); // unwrap_or: no named set runs the default set
             let (origin, text) =
                 crate::cognition::gym::resolve_gym(reference).map_err(CommandError::Invalid)?;
             crate::cognition::gym::parse_tasks(&text, &origin).map_err(CommandError::Invalid)?
@@ -145,15 +145,15 @@ impl CognitionEval {
         // personas' "own" projects — the exam↔live contamination the room degraded under.
         // The mind side was already isolated (fork_detached + NoopSink + volatile-tier
         // exclusion); the WORLD side wasn't. Repo-nav exams still need the repo, so the
-        // default is a per-run CoW clone (APFS clonefile / reflink; plain copy where the
-        // FS lacks CoW), removed on every return path via Drop. An explicit
+        // default is a per-run shared clone of the checkout (`citizen_layer::shared_clone`),
+        // removed on every return path via Drop. An explicit
         // workspace_root pin still wins (SWE-bench checkouts own their state).
         let ephemeral_root = if p.workspace_root.is_none() && needs_tools {
             let tag = p
                 .run_id
                 .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            match provision_ephemeral_eval_root(&tag) {
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string()); // unwrap_or_else: an unnamed run gets its own world
+            match provision_ephemeral_eval_root(&tag).await {
                 Ok(root) => Some(EphemeralEvalRoot::new(root)),
                 Err(e) => {
                     // Fail LOUD and refuse to contaminate — no silent fallback to cwd.
@@ -173,7 +173,7 @@ impl CognitionEval {
 
         // #207: suppress the fork's drifting episodic recall for a reproducible ABSOLUTE
         // baseline. Opt-in; default false = memories intact (the natural persona).
-        let suppress_recall = p.suppress_recall.unwrap_or(false);
+        let suppress_recall = p.suppress_recall == Some(true);
 
         // Fork an EPHEMERAL measurement copy of her mind — the exam runs on the
         // copy while the LIVING persona keeps living (heartbeat beating, present in
@@ -499,7 +499,7 @@ impl CognitionEval {
                 name: gene.name.clone(),
                 path: gene.path.clone(),
                 domain: String::new(),
-                scale: gene.scale.unwrap_or(1.0),
+                scale: gene.scale.unwrap_or(1.0), // unwrap_or: a gene with no scale applies at full strength
             }]);
             let gene_outcome = run_pass(
                 &cycle,
@@ -541,11 +541,11 @@ impl CognitionEval {
                 lane_placement: placement_evidence
                     .as_ref()
                     .map(|e| e.device.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or_default: no placement evidence reports no device
                 lane_placement_reason: placement_evidence
                     .as_ref()
                     .map(|e| e.reason.clone())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or_default: no placement evidence reports no reason
                 lane_free_vram_bytes: placement_evidence.as_ref().and_then(|e| e.free_vram_bytes),
                 lane_estimated_footprint_bytes: placement_evidence
                     .as_ref()
@@ -607,7 +607,7 @@ impl CognitionEval {
         // (reviewers>=1, live single-pass only) forks a second copy of the same persona
         // as a reviewer and grades the reviewed answer — same model, +1 teammate.
         let want_team =
-            p.reviewers.unwrap_or(0) >= 1 && p.gene.is_none() && p.base_model_id.is_none();
+            p.reviewers.is_some_and(|n| n >= 1) && p.gene.is_none() && p.base_model_id.is_none();
         let outcome = if want_team {
             let reviewer = crate::cognition::persona_workspace::global()
                 .fork_eval_cycle(&persona_uuid, needs_tools, eval_workspace_root.as_deref(), suppress_recall)
