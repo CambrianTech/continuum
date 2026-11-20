@@ -31,9 +31,10 @@ how today's code gets there. It reads in order: each chapter builds on the ones 
 
 Everything that runs is a **part**. A part has an identity and a generation, owns its state, is made
 of parts, lives on a worker, changes only through commands answered by completions, and is read only
-through what it publishes. Beside parts sit a few general abstractions that are not parts: a
-**policy** decides, a **check** judges, a **sink** records, a **source** feeds a mind's view, and a
-**durable** value outlives a process.
+through what it publishes. Every piece of work asks for resources with a **claim**: its value over
+time, its essentials and its progress, which every governor decides by. Beside parts sit a few
+general abstractions that are not parts: a **policy** decides, a **check** judges, a **sink**
+records, a **source** feeds a mind's view, and a **durable** value outlives a process.
 
 Each family descends from those roots through generations that each add one thing:
 
@@ -57,7 +58,7 @@ Part ............................................. identity, generation; parts, 
 ├─ Service ....................................... answers typed commands from outside the tree
 └─ Persona ....................................... one resident, made of her branches
 
-Policy ........ decides         Check ...... judges        Sink ........ records
+Claim ......... asks           Policy ..... decides       Check ....... judges       Sink ........ records
 Source ........ feeds a view    Durable .... outlives a process
 ```
 

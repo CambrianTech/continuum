@@ -15,6 +15,7 @@ from them (chapter 6).
 | `Sink` | pure trait, plus generic owners | `continuum-base::sink` | nine recording traits |
 | `Source` | partial trait | `continuum-context::source` | five view-feeding traits |
 | `Durable` | partial trait | `continuum-saved-state` | eight persistence traits |
+| `Claim` | concrete type, read by policies | `continuum-base::claim`; cleared by the governor in `continuum-kernel` | the request side of about 150 Lease, Permit, Grant, Gate and Admission types |
 
 ## 3.1 `Part`
 
@@ -154,3 +155,65 @@ the contracts a value declares and refuses a value whose contracts it cannot kee
 What it replaces: `LedgerStore`, `RunLedger`, `ActivityStateStore`, `StepStateSink`,
 `RecallTraceStore` and `EpochWatermarkStore`. Each becomes a `Durable` value with its own key and
 medium, and its store is the medium's generic owner.
+
+## 3.8 `Claim`
+
+A claim is what a piece of work presents to the governor: everything the governor needs to decide
+who goes next, for how long, at what quality, and on which node. It is the one interface every
+governor in the system decides by: the Core's scheduler choosing the next mind, a node's memory
+governor, the time governance of SHARED-RESOURCES, and the grid and mesh markets. The pricing it
+carries is specified in [GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md) §1a: the currency is
+weighted time to a verified outcome, and every claim carries its own value over time.
+
+```rust
+pub struct Claim {
+    pub work: WorkId,                  // the turn, lesson, frame or render it is for
+    pub activity: ActivityId,          // whose value curve and weight apply
+    pub value: ValueCurve,             // U(t): value of a verified completion at time t; its horizon
+    pub essentials: Essentials,        // what must be whole or the result is scrap
+    pub quality: QualityLadder,        // the steps it can take down and still deliver
+    pub progress: Progress,            // its verified sub-outcomes so far: edits landed, steps committed
+    pub completion: CompletionEstimate,// predicted time to complete, measured, with its spread
+    pub switch_cost: SwitchCost,       // what freezing and unfreezing it costs: bytes to move, restore time
+    pub resources: ResourceNeed,       // memory per tier, device time, network
+}
+```
+
+What each field is for:
+
+- **Value and activity.** The curve comes from the activity: a live reply decays once the conversation
+  moves on, a frame has a hard deadline, a refactor is flat for hours, dreaming is low and never zero.
+  The one human input, which activity matters now, weights it.
+- **Essentials and quality.** A claim is never granted less than its essentials ("a car missing its
+  engine is scrap"). It may be granted a lower step of its quality ladder ("a smaller engine is
+  fine").
+- **Progress.** Long work enters as verified sub-outcomes, so it is credited as it advances, and a
+  preemption never discards it: a frozen claim keeps its progress and resumes.
+- **Completion and switch cost.** Together they let the governor price both waiting and switching.
+  Freezing a claim costs it the time it waits, never the work it has done: a red light, not a return
+  to the start. Each switch costs the bytes moved and the restore time. Hard work with a large
+  context has a high switch cost, so once it is warm it is cheaper to let it run to a natural boundary
+  than to slice it thinly. The governor sizes each run by comparing the value others lose while they
+  wait with the switch cost a shorter run would add.
+
+The governor answers a claim with a typed outcome:
+- **`Granted`:** at a quality step, on a node, for a run length;
+- **`Waiting`:** with the event that will wake it;
+- **`Infeasible`:** before admission, when no grant can meet its essentials before its horizon;
+- **`MissedCommitment`:** after admission, when one could not be kept.
+
+A cleared grant is a lease (today's `ThroughputLease` is one).
+
+**Choosing the next mind on the Core** is the same rule at its finest grain. Among the ready claims,
+run the one whose expected gain in value per unit of Core time is highest, counting the switch it
+would cost. Run it until its next natural boundary or until another claim's loss from waiting
+outweighs the switch, whichever comes first. Every resident is time-shared this way. In a call with
+several residents, the one speaking now holds the highest curve. In a room of programmers, a hard
+change already warm runs to its next landed edit before the Core moves on. The curves' shapes and the
+conversions are measured and learned (GRID-MARKET-CLEARING §1a, "What is measured and what is
+learned"), never fixed constants.
+
+What it replaces: every request type that today asks for a resource in its own vocabulary. That is
+the window allocator's needs, the `LeaseRequest`s, admission gates and their permits, and the
+serving planner's demands. The answers they receive become leases and typed outcomes on one
+governor (Codex's lineage, chapter 4.3).

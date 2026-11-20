@@ -477,6 +477,13 @@ uses it, a node's governor uses it, two nodes clear a trade with it, and a mesh 
 When money enters, between owners who do not share a household, it enters as one more input to
 the same price, not as a second system.
 
+The price is defined precisely in [GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md) §1a. The
+currency is weighted time to a verified outcome. Every piece of work carries its own value over
+time (a time-utility function, as in real-time scheduling), and a resource's price is how far one
+more unit moves that work along its curve. Each piece of work presents all of this to the governor
+as a **claim** (chapter 3.8): its activity, its value curve, its essentials, its quality ladder, its
+progress so far, its expected completion and the cost of freezing it.
+
 **Value is not linear in what is given.** Joel: "half of a produced car is worthless." Most
 consumers have a value curve with a threshold, a deadline or a whole unit:
 - an act given half the memory it needs produces nothing, and blocks what the memory could have
@@ -525,6 +532,18 @@ advance in pieces, but work already paid for is never thrown away:
   context that could have been restored, or discarding a learning step that had committed is
   rollback, and rollback is the costliest outcome there is. The governor prices a preemption by what
   it would throw away, which is nothing when the work checkpoints.
+
+**Freezing is a red light, not a rollback.** On one Core, minds take turns. A mind frozen while
+another decodes has lost nothing: her state is saved, and she resumes where she stopped. She pays
+only the wait, like a car at a red light. Everyone is time-shared, and a mind's turn of the Core is
+priced like any resource:
+- the speaking resident in a call holds the steepest curve;
+- a hard change already warm runs to its next landed edit;
+- a flat refactor yields to both.
+
+A large context or a hard problem pays a high cost to freeze and restore, so once it is warm it runs
+to a natural boundary rather than being sliced thinly. The governor sizes each run by weighing what
+the others lose while they wait against what an extra switch would cost (chapter 3.8).
 
 **Quality of service is part of the price.** The same answer is worth more sooner. A voice's next
 frame is worth everything before its deadline and nothing after; a reply is worth most at the moment

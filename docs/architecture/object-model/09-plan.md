@@ -30,6 +30,7 @@ Each phase lists its changes in order. Rows in one phase with different owners r
 | `continuum-base::{policy, check, sink}` | nothing yet; families move in phase D | Fable |
 | `continuum-flow::worker`: the stage with the control lane, topics, revisions and provenance | the kernel's `Stage`, `Inputs`, `DependentStage` (one production user moves) | Fable |
 | `continuum-saved-state`: `Durable` with media, the ORM as one medium | nothing yet | Codex |
+| `continuum-base::claim`: `Claim`, value curves, essentials, quality ladders, progress, switch cost; the governor clears claims into leases and typed outcomes ([GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md) §1a, the `cambrian-flex` solver) | request types move onto it family by family in phase D (`Holder`) | Codex, with Fable for the Core's scheduler |
 | Ratchets: one per old root (chapter 9.3), at today's counts, only falling | nothing | Fable |
 
 ### Phase B: the crate layers (pure moves)
