@@ -569,6 +569,11 @@ impl Driver<'_, '_> {
     /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
     /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
     fn pick(&mut self, turns: &[Turn]) -> Option<(usize, std::num::NonZeroUsize)> {
+        // A lone turn needs no ranking or cache estimate. Its bind still
+        // validates reuse against the actual prompt before advancing.
+        if turns.len() == 1 {
+            return Some((0, std::num::NonZeroUsize::MIN));
+        }
         let mut seen = std::collections::HashSet::new();
         let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
         let active = self.engine.active();
