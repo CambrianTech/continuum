@@ -516,3 +516,21 @@ async fn a_submission_wakes_a_producer_held_by_a_stalled_sink_and_the_drain_lose
     worker.join().await.expect("test: the worker drained");
     assert_eq!(*got.lock().unwrap_or_else(|e| e.into_inner()), vec![1, 2, 3, 4], "the cancelled drain lost nothing and kept the order"); // test: plain data
 }
+
+#[test]
+fn stopping_executor_before_first_poll_closes_intake() {
+    struct Wake;
+    impl Stage for Wake {
+        type Input = ();
+        const QOS: Qos = Qos::Utility;
+        async fn handle(&mut self, (): ()) {}
+    }
+
+    let runtime = tokio::runtime::Builder::new_current_thread().build().expect("test: current-thread runtime");
+    let (input, _worker) = {
+        let _entered = runtime.enter();
+        spawn_stage(Wake, Capacity::latest())
+    };
+    drop(runtime);
+    assert_eq!(input.push(()), Err(crate::PushError::Stopped(())));
+}
