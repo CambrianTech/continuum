@@ -296,7 +296,7 @@ pub async fn admit_turn(
 ) -> Result<TurnAdmission, String> {
     let patience = patience.into();
     let concurrency = concurrency.into();
-    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
+    let admission = admit(Some(&concurrency), class, key, pool, client, root, approx_tokens, patience.readiness);
     match patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
@@ -312,15 +312,13 @@ pub async fn admit_turn(
 /// Best-effort warm-ahead uses the same paging and provisional-attribution owner
 /// as a turn. No generation follows, so only proven physical warmth is committed.
 pub(crate) async fn warm_ahead(
-    concurrency: impl Into<DecodeBound>,
     key: PageKey,
     pool: Arc<KvSlotPool>,
     client: &reqwest::Client,
     root: &str,
 ) -> Result<(), String> {
     let started = std::time::Instant::now();
-    let concurrency = concurrency.into();
-    let admission = admit(&concurrency, SlotClass::Turn, Some(key), Some(pool), client, root, 0, true, std::time::Duration::ZERO);
+    let admission = admit(None, SlotClass::Turn, Some(key), Some(pool), client, root, 0, std::time::Duration::ZERO);
     tokio::pin!(admission);
     let admission = match futures::poll!(&mut admission) {
         std::task::Poll::Ready(result) => result,
@@ -346,17 +344,17 @@ pub(crate) async fn warm_ahead(
 }
 
 async fn admit(
-    concurrency: &DecodeBound,
+    decode: Option<&DecodeBound>,
     class: SlotClass,
     key: Option<PageKey>,
     pool: Option<Arc<KvSlotPool>>,
     client: &reqwest::Client,
     root: &str,
     approx_tokens: u64,
-    warm_only: bool,
     patience: std::time::Duration,
 ) -> Result<TurnAdmission, String> {
     let started = tokio::time::Instant::now();
+    let warm_only = decode.is_none();
     let mut readiness_left = patience;
     let mut waited = false;
     let mut caller_lane = if warm_only {
@@ -406,18 +404,20 @@ async fn admit(
         // 1. PERMIT FIRST — event-driven wait for a free permit. A caller holding a lane only
         //    TRIES: when the adapter is full it lets the lane go, waits for a permit to RETURN
         //    holding nothing (never handed one it could only drop), and takes both again (#5786).
-        let _permit = if lane.is_some() || caller_lane.is_some() {
-            match concurrency.try_or_return() {
-                Ok(permit) => permit,
+        // Page staging uses the slot and page-I/O owners. Only a generation consumes
+        // decode capacity, so a different slot can stage during the current answer.
+        let permit = match decode {
+            None => None,
+            Some(bound) if lane.is_some() || caller_lane.is_some() => match bound.try_or_return() {
+                Ok(permit) => Some(permit),
                 Err(returned) => {
                     lane = None;
                     caller_lane = None;
                     returned.await;
                     continue 'admit;
                 }
-            }
-        } else {
-            concurrency.acquire().await
+            },
+            Some(bound) => Some(bound.acquire().await),
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,
@@ -442,7 +442,7 @@ async fn admit(
             page_in: PageIn::None,
             saved_evictee: false,
             paging_in_flight: false,
-            _permit: Some(_permit),
+            _permit: permit,
             uncommitted: None,
             dispatch: Dispatch::Unsent,
             scratch: pool.as_ref().and_then(|pool| pool.scratch_slot()),

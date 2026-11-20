@@ -348,15 +348,6 @@ async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() -> Result<
         .await?;
     let slot_a = adm_a.slot().expect("A pinned the one slot"); // test: a 1-slot pool leases to the first admission
 
-    let capacity = DecodeBound::from(&sem);
-    let last_free = capacity.try_acquire()?;
-    let speculative = warm_ahead(capacity, b, Arc::clone(&pool), &client, root);
-    tokio::pin!(speculative);
-    assert!(futures::poll!(&mut speculative).is_pending());
-    assert!(MindTurn::try_begin(b).is_some(), "pending interest holds no mind gate");
-    drop(last_free);
-    assert!(speculative.await.is_ok(), "permit return wakes the pending hint");
-
     let turn_b = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(b), Some(pool), &client, root, 100, std::time::Duration::ZERO);
     tokio::pin!(turn_b);
     assert!(futures::poll!(&mut turn_b).is_pending(), "B was admitted unpinned while every slot was held");
