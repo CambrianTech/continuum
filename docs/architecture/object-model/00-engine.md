@@ -175,7 +175,7 @@ descriptor.
 
 **Here:** a persona entering the Core claims a resident slot and is hydrated from her descriptor:
 her durable state, her genes, her saved pages. Switching minds is swapping the descriptor bound to
-the Core's active role. This is why a switch costs milliseconds (0.4).
+the Core's active role. This is why a switch costs milliseconds (0.5).
 
 RAGE's descriptors are reported to include an agent's whole behavioral profile: its personality,
 perception thresholds, reaction latencies and relationship group. These are reflected from C++
@@ -418,7 +418,46 @@ our speed. We own the substrate down to the inference engine (our fork of llama.
 process), because what we cannot change we cannot make fast, and what someone else owns can be
 taken away.
 
-## 0.3 What CBAR learned
+## 0.3 One price for everything
+
+An engine on a small console is always choosing: what stays resident, what runs this frame, what
+waits, which machine takes the work. It needs one way to compare a voice's next frame with a lesson's
+next step, a page of one mind's KV with a gene another mind wears, or an hour of the 5090 with an
+hour of the laptop. That comparison is a **price**, and it needs no money.
+
+Joel: "It's really something like the desire for something and its quality of service overall the
+true price." A price here is the value a consumer would get from a resource, given the quality of
+service it would actually receive. It is one scalar, computed by one formula, so that every
+consumer and every resource is comparable: memory, device time, network, a learning step, a remote
+node's frames. Once everything speaks in one scalar, allocation is ordinary: the governor gives each
+resource to whoever values it most at that moment, and the price of a byte (λ in
+[GRID-MARKET-CLEARING.md](../GRID-MARKET-CLEARING.md)) is the same number at every scale. A frame
+uses it, a node's governor uses it, two nodes clear a trade with it, and a mesh of many does too.
+When money enters, between owners who do not share a household, it enters as one more input to
+the same price, not as a second system.
+
+**Value is not linear in what is given.** Joel: "half of a produced car is worthless." Most
+consumers have a value curve with a threshold, a deadline or a whole unit:
+- an act given half the memory it needs produces nothing, and blocks what the memory could have
+  done;
+- a lesson half applied teaches nothing;
+- a frame delivered after its deadline is discarded;
+- a model split across two nodes with no plan for its latency serves nobody.
+
+So the price of a resource is computed against what it completes. The governor allocates whole
+units: it admits a consumer only when what it is given completes something of value, and it would
+rather finish one act than half-serve two. Its decisions follow from that:
+- admission by feasibility, a level of detail stepped down before a deadline is missed, and never
+  a fixed split between consumers ([SHARED-RESOURCES.md](../SHARED-RESOURCES.md), "Time");
+- a lesson's labelled rows admitted as a whole piece (IN-PROCESS-LEARNING §3);
+- no placement that sums memory across nodes ("never a pool").
+
+**Quality of service is part of the price.** The same answer is worth more sooner. A voice's next
+frame is worth everything before its deadline and nothing after; a reply is worth most at the moment
+a person stops speaking; a lesson is worth about the same today or in an hour. Each consumer's value
+is a curve over time, and the governor reads the curve, not a fixed priority.
+
+## 0.4 What CBAR learned
 
 CBAR is Joel's real-time perception engine. Its lessons are the other half of the design.
 
@@ -442,7 +481,7 @@ CBAR is Joel's real-time perception engine. Its lessons are the other half of th
   and precise methods refine it as the camera approaches. Here: perception, comprehension and speech
   are living estimates that refine as better knowledge arrives (chapter 4.2, `FusionRegion`).
 
-## 0.4 The budgets
+## 0.5 The budgets
 
 The numbers the design is held to. Measured values carry their receipt; targets are labelled.
 
@@ -458,7 +497,7 @@ The numbers the design is held to. Measured values carry their receipt; targets 
 | A learning step's extra memory | the shadow and its optimizer, about 6.5 MB at rank 8 on a 0.5B model | measured, #6203 |
 | An idle core's CPU | near zero | target |
 
-## 0.5 What we refuse
+## 0.6 What we refuse
 
 Each of these is a way the brief is failed, recognised by name:
 - a mind that waits on another for permission;
@@ -472,7 +511,7 @@ Each of these is a way the brief is failed, recognised by name:
 - a constant where a measurement exists;
 - a second copy of an idea that already has a home.
 
-## 0.6 How the rest of this book builds it
+## 0.7 How the rest of this book builds it
 
 - **Parts** (chapters 2 to 4) are the engine's objects: each with a lineage, its own worker and its
   own state, talking by commands and publications.
