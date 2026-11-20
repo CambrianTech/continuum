@@ -19,6 +19,7 @@
 //!   kv_quant.rs         — KV cache quantization helpers
 
 pub mod airc_remote;
+pub mod audit;
 pub mod backends;
 pub mod batching_probe;
 pub mod child_log;
