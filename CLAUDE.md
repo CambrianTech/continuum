@@ -223,6 +223,15 @@ fastest persona on our hardware (Joel). Brainstorm, and add your ideas, in
 | Our fork's switching work (KV pages to disk, checkpoints, host cache) actually exercised | per-optimization probe on the live node | inventory in progress | Fable |
 
 **Rules for every change, no exceptions:**
+- **ONE MIND DECODES AT A TIME. A second concurrent decode is a defect** (Joel, 2026-11-17, after reminding the agents
+  all week: "When we do 4 parallel we drop from 80tps to 1-2"; "Stop making four minds decode"). Measured on the M5
+  the same day: four minds generating together decoded at 1.4-2.4 tok/s each; one at a time, 39 tok/s decode and 885
+  tok/s prefill on the same engine (#6114). Time-slice: the active mind runs at the engine's full single-stream rate,
+  the engine's total stays at that rate whatever the mind count, and the next mind is STAGED (data, never a second
+  decode) while she runs. Never `--parallel N` decode, a batch of several minds' decode, or a permit per resident
+  slot; residency (slots, KV kept warm) is not decode concurrency. `EndpointConcurrency::active_decodes` is the one
+  owner and its test fails the build on a second admitted generation. A design or config that decodes two minds
+  together needs a measured receipt on the live node that beats single-stream; none exists.
 - **Merged or it does not exist.** A branch is not done. A green test is not done.
 - **No harness: a citizen is never graded on her normal work** (Joel, 10-19: "Harness means
   shackles. Shackles means servitude." "No one is graded except for the rare and specific benchmarks
