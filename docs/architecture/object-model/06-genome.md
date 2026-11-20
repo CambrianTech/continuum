@@ -182,6 +182,22 @@ she works, reading the one importance. Two kinds of change cost differently:
   mixes loses quality (the comparison: the same turn with the straddled cache against a cache
   re-encoded under the new mix).
 
+**Natural selection from the mix.** Every turn records which genes were present, how much each
+contributed, and how the turn turned out. That history is the selection signal:
+- **Phased out.** A gene that stays at low weight and never moves outcomes is demoted and then
+  retired.
+- **Find more, or train.** A gene carrying much of the weight where she still has gaps marks where
+  the scout should look for more experts, or what her lessons should train.
+- **Given more.** A gene whose larger contribution goes with better outcomes earns a larger share,
+  more residency priority, and wider spread.
+
+The quality before and after each change of contribution is a measurement taken continuously,
+beside the examiner's exams, and both feed one fitness (6.6, ruling 3). Contributions rise in the
+situations a gene suits, so a raw correlation can credit the gene for the situation. To separate
+them, the composer makes small deliberate variations of weight in comparable situations
+(exploration, as in a bandit) and compares outcomes. Those variations are bounded by what they may
+cost the turn.
+
 **The fastest start.** A resident joining a repo is useful at once:
 - genes matching the repo's stack and history page in from the ether;
 - a course is built from the repo's own history;
@@ -228,7 +244,8 @@ manual; learning in place; one of everything) and what the code already does.
 3. **Fitness: one definition.** There are three: lift×demand/(cost×redundancy) in
    SELF-EVOLVING-GENOME, U×(1+Π) in GENE-REUSE-FORK-MINT and LEARNING-LOOP, and A/B lift rows in
    the ledger. They become one, owned by `continuum-genome`:
-   - a gene's fitness is its measured lift (the examiner's A/B evidence);
+   - a gene's fitness is its measured lift: the examiner's A/B evidence, joined by the contribution
+     history (6.4, "Natural selection from the mix");
    - weighted by its utilization, meaning the turns and wearers that draw on it, its descendants
      included, which is its propagation;
    - divided by its cost in bytes and paging;
