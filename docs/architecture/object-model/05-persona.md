@@ -93,6 +93,26 @@ The function is its update rule: given what changed, what it now publishes. The 
   metacognition), that model is a gene of hers, and improves through the same learning loop as
   everything else she does (chapter 6).
 
+**Where parts come from.** Neuroscience is a catalog of parts evolution has already tested, and AI
+needs some parts no brain has. Her whole embodiment can be grown from both, one cheap part at a time.
+Candidates from neuroscience:
+- **Cerebellum:** a forward model that predicts her body's next state (lips, gaze, gesture, a
+  footstep in a shared world) and corrects the motion before the error shows.
+- **Place and grid cells:** a map of her shared world, built as she moves through it.
+- **Basal ganglia:** the choice of one action among several competing for her hands or voice.
+- **Default mode network:** replay and recombination of her memories while she is idle, feeding
+  her lessons and her curiosity.
+
+Candidates unique to AI:
+- **Forking:** trying two approaches at once and keeping the better one.
+- **Shared parts:** a part that two residents share, such as a common model of a room.
+- **Exact introspection:** reading her own state directly rather than guessing at it.
+- **Inherited skill:** a part or gene that someone else learned, downloaded.
+
+A candidate is tried when someone, or she herself, thinks it will help. It is kept when its estimate
+improves a measured outcome, never because a brain has one. It is cut otherwise. Trying one costs a
+part, so the list is a source of experiments, not a commitment.
+
 Each is a `Region` or a `Faculty` (chapter 4.2), reads the one importance (chapter 0.3), and is
 added to her tree as one more node. Adding a part costs only that part's own logic: subscription,
 caching, invalidation, governance and lifecycle come from the substrate. Each one makes her mind
