@@ -11,6 +11,7 @@ Codex (memory authority, deletion of the serving half). Built on
 
 - [The rule](#the-rule)
 - [Her genome holds her learning](#her-genome-holds-her-learning)
+- [Learning switches on and off as her mind works](#learning-switches-on-and-off-as-her-mind-works)
 - [A lesson on the Core](#a-lesson-on-the-core)
 - [What is deleted](#what-is-deleted)
 - [Slices, each with its validator](#slices-each-with-its-validator)
@@ -45,9 +46,38 @@ Her genome is an object, and part of her: `PersonaUnit` is her five parts, moved
 Adoption is her genome promoting a snapshot to stable after its exam, a pointer swap between two
 steps. She never serves moving weights.
 
+## Learning switches on and off as her mind works
+
+Her genome and her ability to learn are always present. Learning switches on when she has
+something to learn and the Core has the time, and off again. She keeps talking throughout: it is a
+mode of her ordinary decoding, not a session. There are two ways in, and they use the same
+mechanism.
+
+- **Continuous: prediction error on what she perceives.** When she perceives (a peer's message, a
+  tool's output, a file she reads), her prefill of it can carry labels: each token's target is the
+  next, weighted by her own relevance to what she perceived (`label_weight`, "a mind's relevance on
+  what it perceived"; REPO-GENOME-AND-COURSES §17). The forward is the one her prefill runs anyway;
+  the backward over the labelled rows is the extra. To measure before relying on it: whether a
+  labelled perception row's K/V under the shadow must be restored under her stable set (§2.1), and
+  what that restore costs against the backward.
+- **Dedicated: the Academy.** A lesson from a reviewed correction (ONE-RESIDENT §11), a course, or
+  the repo's own history as a course (REPO-GENOME §17.1: PR reviews, airc verdicts, Claude and
+  Codex sessions): her context, then the corrected reply, labelled. The doctor writes the lesson's
+  family of graded tasks, and the exam on unseen tasks decides adoption.
+
+**Memory: nothing is held that is not in use** (Joel, 2026-11-11). Her shadow's optimizer state is
+taken from the one memory authority when learning switches on, and paged back out to RAM or disk
+when it switches off, like any cached state (the fork's `llama_opt_shadow_state_write` and
+`llama_opt_state_restore`). No lease is held across idle time. Lower-value bytes are moved out to
+make room, so the small amount learning needs is met quickly and is never refused while those
+bytes sit resident. On BigMama, 2026-11-19 14:14-14:29Z, a 12,058,624-byte (11.5 MiB) learning
+Prepare was refused 29 times with zero governed VRAM available (Codex's receipt). No free-memory
+reading was taken during those refusals; a separate snapshot on 2026-11-20 showed 302 MiB
+physically free. A governed system meets that need by moving lower-value bytes.
+
 ## A lesson on the Core
 
-A lesson is a turn she takes, scheduled and switched on the Core like any other:
+A dedicated lesson is a turn she takes, scheduled and switched on the Core like any other:
 
 1. **Her lesson.** Her dream faculty picks an experience to consolidate: a reviewed correction,
    rendered from the turn as she was served it (§9.1, learning sees what serving sees). The lesson
@@ -61,14 +91,6 @@ A lesson is a turn she takes, scheduled and switched on the Core like any other:
 4. **Into her genome.** The committed step count and loss go to her shadow's session state. At an
    optimizer boundary a snapshot is written with its arrival ids (§9.2, commit once). It earns
    adoption only through the exam on unseen tasks of its family (§11).
-
-The memory her shadow and optimizer need is a governed claim on the one memory authority, like
-every other byte. Lower-value bytes are moved out (cache spills to disk), so a small need is met
-quickly and is never refused while those bytes sit resident. On BigMama, 2026-11-19 14:14-14:29Z,
-a 12,058,624-byte (11.5 MiB) learning Prepare was refused 29 times with zero governed VRAM
-available (Codex's receipt). No free-memory reading was taken during those refusals; a separate
-snapshot on 2026-11-20 showed 302 MiB physically free. A governed system meets that need by moving
-lower-value bytes, and does not refuse it.
 
 ## What is deleted
 
@@ -101,14 +123,21 @@ Each item goes in the change that replaces it, never kept as a fallback:
    - unlabelled rows' logits are byte-identical to a pure serving decode (§9.6 P1 c);
    - one lesson's loss falls across repeats;
    - after the rewind, her cache and recurrent state are byte-identical to before (P1 d).
-2. **A lesson is her turn on the Core.** `Step` carries labels; her genome part holds her shadow
-   and its optimizer; the lesson rewinds to her checkpoint. Validators, on the M5 with residents
-   running:
-   - the other minds' ready-to-first-token with lessons running versus without;
+2. **Learning is a mode of her turn on the Core.** `Step` carries labels and weights. Her genome
+   part holds her shadow, and the shadow's optimizer state is paged in when learning switches on
+   and written out (`llama_opt_shadow_state_write`) when it switches off, so nothing is held while
+   she is not learning. (Slice 1's `retain_shadow` holds the lease until release, which is the
+   reservation this slice removes.) Both modes: continuous labels on her perception prefill, and
+   a dedicated lesson that rewinds to her checkpoint. Validators, on the M5 with residents running,
+   at her served window:
+   - the other minds' ready-to-first-token with learning on versus off;
+   - another resident's unlabelled output in the same run is byte-identical to a run without
+     learning;
    - P and Q use distinct adapters, and Q's logits match an uninterrupted decode bit for bit
      (`UnifiedTier::applied_genes` caches by `Arc` pointer);
-   - memory is serving plus the shadow, the optimizer and the labelled rows' activations,
-     measured;
+   - memory while learning is serving plus the shadow, the optimizer and the labelled rows'
+     activations, measured; while not learning it is serving plus nothing;
+   - an interrupt and resume across a commit applies each arrival once;
    - throughput is held.
 3. **Her dream faculty dispatches her lessons, and the deletion list above lands.** Validators:
    - with no llama-server running, a committed step survives an interruption without being
