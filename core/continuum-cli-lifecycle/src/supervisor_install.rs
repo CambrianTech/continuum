@@ -558,37 +558,15 @@ pub fn write_task_xml(path: &Path, xml: &str) -> Result<(), String> {
 
 #[cfg(windows)]
 pub async fn powershell(script: &str, timeout: std::time::Duration) -> Result<String, String> {
-    use base64::Engine;
-    use std::os::windows::process::CommandExt;
-    let root = std::env::var_os("SystemRoot").ok_or("SystemRoot is unset")?;
-    let shell = PathBuf::from(root).join("System32/WindowsPowerShell/v1.0/powershell.exe");
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-    let encoded = base64::engine::general_purpose::STANDARD.encode(bytes); // -EncodedCommand is UTF-16LE base64 at this process boundary
-    let mut command = std::process::Command::new(shell);
-    command
-        .args(["-NoProfile", "-NonInteractive", "-EncodedCommand", &encoded])
-        // Windows PowerShell 5.1 builds its own module path when this is unset. Inherited from
-        // a pwsh 7 caller it leads with 7's module folders, 5.1 cannot load 7's
-        // Microsoft.PowerShell.Utility, and Get-FileHash is "not recognized" (the 5090 install,
-        // 2026-09-28, card 1b040de5).
-        .env_remove("PSModulePath")
-        .stdin(std::process::Stdio::null())
-        .creation_flags(0x0800_0000);
-    let mut command = tokio::process::Command::from(command);
-    command.kill_on_drop(true);
-    let output = tokio::time::timeout(timeout, command.output())
-        .await
-        .map_err(|_| "Task Scheduler operation timed out".to_string())?
-        .map_err(|e| format!("cannot invoke Task Scheduler: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "Task Scheduler operation failed: {}",
-            plain_stderr(&String::from_utf8_lossy(&output.stderr))
-        ));
+    use continuum_host::powershell::{run, PowerShellError};
+    match run(script, timeout).await {
+        Ok(output) => Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned()),
+        Err(PowerShellError::Exit { stderr, .. }) => Err(format!(
+            "Task Scheduler operation failed: {}", plain_stderr(&String::from_utf8_lossy(&stderr))
+        )),
+        Err(error) => Err(format!("Task Scheduler: {error}")),
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
-
 /// Run a foreground install operation, keeping build progress on stdout and
 /// returning PowerShell's stderr with a failure. A hidden child's inherited
 /// console handles do not reliably show its errors to the operator.

@@ -2,34 +2,68 @@
 use super::*;
 use serde_json::json;
 
-// Regression for #3929: a first upgrade must leave the legacy core available
-// for explicit checkpoint recovery, while normal reboot outcomes may continue.
+fn empty_receipt() -> continuum_core::runtime::ShutdownReceipt {
+    continuum_core::runtime::ShutdownReceipt { modules: Vec::new(), total_ms: 0, custody: Vec::new() }
+}
+
+// what this catches (CONTINUUM-ENGINE 4.9, I1; Codex on #6041/#6042): `stop --engine` ending an
+// engine no receipt shows saved (the M5, 2026-11-15 16:48Z: an adopted engine's four residents
+// were never saved and it was ended anyway), or ending a second engine on proof made for the first.
+// The authority judges each engine the sweep finds on its own record: no answer, no custody, a
+// reused pid or a retained save refuses that engine; only the explicit discard overrides.
 #[test]
-fn legacy_core_requires_explicit_recovery_before_reboot_teardown() {
+fn every_engine_ends_only_on_custody_for_exactly_its_process() {
+    use continuum_core::inference::lane_registry::EngineEndRefusal;
+    use continuum_core::runtime::{CustodyState, SettledCustody, SettledProcess};
+    let engine = |pid: u32, port: u16| continuum_core::inference::lane_registry::LaneRecord {
+        pid,
+        port,
+        role: continuum_core::inference::lane_registry::LaneRole::Live,
+        model: "qwen".into(),
+        context_window: 1,
+        lanes: 1,
+        page_dir: None,
+        engine_bin: None,
+        weights: None,
+        started_s: 1_794_679_637,
+        placement: None,
+    };
+    let (first, second) = (engine(49_553, 58_057), engine(49_600, 58_058));
+    let answered = |pid: u32, started_s: u64, state: CustodyState| {
+        let mut receipt = empty_receipt();
+        receipt.custody.push(SettledCustody { participant: "page_io".into(), endpoint: first.root_url(), process: Some(SettledProcess { pid, started_s }), state });
+        GracefulStop::Durable(Stopped { summary: "saved".into(), receipt })
+    };
+    let saved = EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Saved));
+    assert!(saved.may_end(&first).is_ok(), "saved for exactly this process");
+    assert_eq!(saved.may_end(&second), Err(EngineEndRefusal::NoProof), "a second engine never ends on the first one's proof");
+    assert_eq!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s, CustodyState::Retained)).may_end(&first), Err(EngineEndRefusal::Retained), "a retained save refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &answered(first.pid, first.started_s + 1, CustodyState::Saved)).may_end(&first).is_err(), "a reused pid refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).may_end(&first).is_err(), "no custody for it refuses");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NothingRunning).may_end(&first).is_err(), "no core answered: nothing speaks for the engine");
+    assert!(EngineEndAuthority::of(EngineFate::EndIfSaved, &GracefulStop::NoAnswer("timed out".into())).may_end(&first).is_err());
+    assert!(EngineEndAuthority::of(EngineFate::EndDiscardingKv, &GracefulStop::NothingRunning).may_end(&second).is_ok(), "only the explicit discard overrides");
+    assert_eq!(EngineEndAuthority::of(EngineFate::Keep, &answered(first.pid, first.started_s, CustodyState::Saved)).may_end(&first), Err(EngineEndRefusal::Kept), "a kept engine is never ended");
+}
+
+// Regression for #3929/#3940: a core that answered but cannot attest a final checkpoint stays
+// available for explicit checkpoint recovery, while normal reboot outcomes may continue.
+#[test]
+fn a_core_that_cannot_attest_requires_explicit_recovery_before_reboot_teardown() {
     use super::GracefulStop;
-    let legacy = GracefulStop::LegacyCore("no shutdown handler".into());
-    let error = legacy.ensure_teardown_supported(true).unwrap_err();
-    assert!(
-        legacy.ensure_teardown_supported(false).is_ok(),
-        "explicit stop remains available"
-    );
-    assert!(error.contains("before teardown"));
-    assert!(error.contains("checkpoint inspect"));
-    assert!(error.contains("checkpoint adopt"));
-    // Maintenance must not inherit ordinary stop's permission to force an
-    // exit after a missing or incomplete save receipt (5120).
-    assert!(legacy.require_durable().is_err());
-    // #3940 revision: a core that HAS the rail but cannot attest is fail-closed exactly like
-    // LegacyCore — refused before reboot, explicit stop still available, no durable evidence.
     let fault = GracefulStop::CannotAttest("checkpoint not found".into());
     let fault_error = fault.ensure_teardown_supported(true).unwrap_err();
     assert!(fault.ensure_teardown_supported(false).is_ok(), "explicit stop remains available");
     assert!(fault_error.contains("before teardown"));
+    assert!(fault_error.contains("checkpoint inspect"));
+    assert!(fault_error.contains("checkpoint adopt"));
+    // Maintenance must not inherit ordinary stop's permission to force an
+    // exit after a missing or incomplete save receipt (5120).
     assert!(fault.require_durable().is_err());
     for outcome in [
         GracefulStop::NothingRunning,
-        GracefulStop::Durable("saved".into()),
-        GracefulStop::Incomplete("save failed".into()),
+        GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() }),
+        GracefulStop::Incomplete(Stopped { summary: "save failed".into(), receipt: empty_receipt() }),
         GracefulStop::NoAnswer("timed out".into()),
     ] {
         assert!(outcome.ensure_teardown_supported(true).is_ok());
@@ -551,88 +585,18 @@ fn prebuilt_reboot_launch_retains_candidate_socket_and_cwd() {
     .is_ok());
 }
 
-// what this catches: an unmatched phrasing falling through to NoAnswer, which passes the reboot guard (#3940).
-// Regression for #3940 (revised): any error from a reachable core fails closed — never
-// NoAnswer, which used to be the fall-through and passes the reboot guard. Phrasings that
-// mean "this name is not in the command registry" are positive evidence of a pre-rail
-// core (`LegacyCore`, a first rollout); every other error is a fault inside a supported
-// core (`CannotAttest`) and must not be rendered as one. Both fail-closed outcomes are
-// refused by `ensure_teardown_supported` before any kill.
+// what this catches: a fault from a core that answered rendered as a clean or first-rollout stop
+// (#3940): it goes to stderr naming what the core said; the clean outcomes keep their placement.
 #[test]
-fn shutdown_errors_fail_closed_never_no_answer() {
-    use super::classify_shutdown_error;
-    use super::GracefulStop;
-    for (rendered, pre_rail) in [
-        ("unknown command: system/shutdown", true),
-        ("no handler registered for 'system/shutdown'", true),
-        // These used to slip through as NoAnswer and pass the reboot guard.
-        ("the core refused the request", false),
-        ("checkpoint not found", false),
-        ("save_state panicked in module X", false),
-        ("", false),
-    ] {
-        let outcome = classify_shutdown_error(rendered);
-        match (pre_rail, &outcome) {
-            (true, GracefulStop::LegacyCore(reason)) => assert!(reason.contains(rendered)),
-            (false, GracefulStop::CannotAttest(reason)) => assert!(reason.contains(rendered)),
-            other => panic!("{rendered:?} must fail closed: got {other:?}"),
-        }
-        // Caller level: both fail-closed outcomes are refused before reboot.
-        assert!(outcome.ensure_teardown_supported(true).is_err(), "{rendered:?}");
-    }
-}
-
-// what this catches: recognition deciding WHETHER to fail closed — it may only pick which of the two labels (#3940).
-// Recognition only picks WHICH label, never whether to fail closed: an internal error like
-// `checkpoint not found` must still be refused, but must not carry the first-rollout claim.
-#[test]
-fn pre_rail_label_is_reserved_for_unknown_verb_phrasings() {
-    use super::classify_shutdown_error;
-    use super::GracefulStop;
-    let legacy = match classify_shutdown_error("unknown command: system/shutdown") {
-        GracefulStop::LegacyCore(reason) => reason,
-        other => panic!("unknown-verb phrasing must be LegacyCore: got {other:?}"),
-    };
-    assert!(legacy.contains("no system/shutdown verb"));
-    assert!(legacy.contains("predates this rail"));
-    let fault = match classify_shutdown_error("checkpoint not found") {
-        GracefulStop::CannotAttest(reason) => reason,
-        other => panic!("internal error must be CannotAttest: got {other:?}"),
-    };
-    assert!(!fault.contains("no system/shutdown verb"));
-    assert!(!fault.contains("predates this rail"));
-}
-
-// what this catches: a checkpoint-not-found fault rendered to the operator as FIRST UPGRADE / first rollout (#3940 revision).
-// What the reviewer asked for (#3940 revision): a caller/rendering regression test — not
-// just an assertion on the classifier's reason string. The checkpoint-not-found path must
-// verify BOTH that reboot is refused AND that what the operator sees carries no first-
-// rollout claim, while a true LegacyCore still does.
-#[test]
-fn cannot_attest_refuses_reboot_and_never_renders_as_first_rollout() {
-    use super::classify_shutdown_error;
+fn cannot_attest_refuses_reboot_and_renders_as_a_fault() {
     use super::render_graceful_outcome;
     use super::GracefulStop;
-    let outcome = classify_shutdown_error("checkpoint not found");
-    match &outcome {
-        GracefulStop::CannotAttest(_) => (),
-        other => panic!("internal error must be CannotAttest: got {other:?}"),
-    }
-    // Caller level: reboot is refused before any kill.
+    let outcome = GracefulStop::CannotAttest("checkpoint not found".into());
     assert!(outcome.ensure_teardown_supported(true).is_err());
-    // Rendering level: no first-rollout claim, on stderr like every forced stop.
     let (to_stderr, line) = render_graceful_outcome(&outcome);
     assert!(to_stderr);
-    assert!(!line.contains("FIRST UPGRADE"), "{line}");
-    assert!(!line.contains("predates"), "{line}");
     assert!(line.contains("checkpoint not found"), "{line}");
-    // A true first rollout still says so.
-    let (legacy_stderr, legacy_line) = render_graceful_outcome(&GracefulStop::LegacyCore(
-        "no shutdown handler".into(),
-    ));
-    assert!(legacy_stderr && legacy_line.contains("FIRST UPGRADE"));
-    // And the clean outcomes keep their placement.
-    assert!(!render_graceful_outcome(&GracefulStop::Durable("saved".into())).0);
+    assert!(!render_graceful_outcome(&GracefulStop::Durable(Stopped { summary: "saved".into(), receipt: empty_receipt() })).0);
     assert!(!render_graceful_outcome(&GracefulStop::NothingRunning).0);
 }
 

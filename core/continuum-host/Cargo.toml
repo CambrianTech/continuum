@@ -5,7 +5,9 @@ edition = "2021"
 description = "The host OS seam: one module per capability whose behaviour differs by OS (durable placement, positioned reads, local streams). Each module holds its contract and logic once; its unix.rs/windows.rs hold only the calls that differ. Depends on nothing in Continuum, so every crate may use it."
 
 [dependencies]
+base64 = { workspace = true }
 tokio = { workspace = true } # local_stream: the async local socket (a Unix domain socket, a Windows named pipe)
+thiserror = { workspace = true } # process_id: the typed reason an id names no single process
 cap-std = "4.0.3" # confine: a held directory handle, so every create/open/rename below a root is resolved against it, never re-walked from a path a concurrent writer can redirect
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
@@ -15,7 +17,7 @@ libc = { workspace = true } # host_memory: host_statistics64 + sysctlbyname on m
 landlock = { workspace = true } # sandbox: the Linux adapter confines a child to its allow-list
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { workspace = true, features = ["Win32_Storage_FileSystem", "Win32_System_Threading"] } # process_class: IDLE_PRIORITY_CLASS
+windows-sys = { workspace = true, features = ["Win32_Globalization", "Win32_Storage_FileSystem", "Win32_System_Threading"] } # process_class: IDLE_PRIORITY_CLASS
 
 [features]
 # Fault injection for tests in this crate and its dependents; never in a release.

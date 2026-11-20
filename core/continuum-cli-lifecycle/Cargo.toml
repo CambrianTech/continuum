@@ -15,6 +15,7 @@ edition = "2021"
 # mods. The crate makes that property structural — the compiler now refuses what
 # the convention merely discouraged.
 [dependencies]
+thiserror = { workspace = true }
 continuum-host = { path = "../continuum-host" } # durable placement of the recovery journal
 async-trait = "0.1" # shared deploy-source contract; no server implementation dependency
 serde = { workspace = true }

@@ -215,6 +215,9 @@ pub enum SweepOutcome {
     /// Termination was requested, but exit is not observed; retain the record for retry.
     ExitUnconfirmed { pid: u32, port: u16 },
     TerminationRefused { pid: u32, started_s: u64, reason: String },
+    /// The stop's authority refused to end this engine: it may hold minds' only KV
+    /// (CONTINUUM-ENGINE 4.9, I1). Left running, its record kept.
+    EndRefused { pid: u32, started_s: u64, why: EngineEndRefusal },
     /// Killed a live ephemeral orphan and removed its record.
     ReapedEphemeral { pid: u32, port: u16 },
     /// Killed the LIVE lane and removed its record. [`SweepMode::Shutdown`] only —
@@ -229,6 +232,17 @@ pub enum SweepOutcome {
     LeftLive { pid: u32 },
     /// A `.lane` file that didn't parse — removed as garbage.
     RemovedUnparseable { path: PathBuf },
+}
+
+/// Why a stop may not end one engine (CONTINUUM-ENGINE 4.9, I1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum EngineEndRefusal {
+    #[error("the engine is kept for the next core")]
+    Kept,
+    #[error("it still holds residents' KV the stop could not save; it is left up (`continuum stop --engine --discard-kv` ends it and loses that KV)")]
+    Retained,
+    #[error("no stop receipt speaks for it: nothing proves its residents' KV was saved, so it is left up (`continuum stop --engine --discard-kv` ends it and loses that KV)")]
+    NoProof,
 }
 
 /// The canonical lanes directory: `~/.continuum/run/lanes/`. `None` only if there
@@ -509,17 +523,26 @@ pub fn sweep_orphans() -> Vec<SweepOutcome> {
 ///
 /// Role-blind on purpose. The live/ephemeral split exists to decide ADOPTION, and
 /// nothing is adoptable by a core that is exiting.
-pub async fn sweep_all(deadline: std::time::Instant) -> Result<Vec<SweepOutcome>, String> {
+/// `may_end` decides each live engine on its own record, right before it would be signalled: an
+/// engine may hold minds' only KV, so none ends on proof made for another (CONTINUUM-ENGINE 4.9,
+/// I1; Codex on #6042). A refusal leaves that engine running, as `TerminationRefused`.
+///
+/// Err only when the sweep's own blocking task did not finish (it panicked or was cancelled): the
+/// records were not all read, so nothing about the lanes may be concluded from it.
+pub async fn sweep_all(
+    deadline: std::time::Instant,
+    may_end: impl Fn(&LaneRecord) -> Result<(), EngineEndRefusal> + Send + 'static,
+) -> Result<Vec<SweepOutcome>, SweepInterrupted> {
     let Some(dir) = lanes_dir() else {
         return Ok(Vec::new());
     };
     let (outcomes, pending) = tokio::task::spawn_blocking(move || {
         let mut pending = Vec::new();
-        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending);
+        let outcomes = sweep_collect(&dir, SweepMode::Shutdown, &mut pending, &may_end);
         (outcomes, pending)
     })
     .await
-    .map_err(|e| format!("lane shutdown sweep failed: {e}"))?;
+    .map_err(SweepInterrupted::Sweep)?;
     confirm_pending(outcomes, pending, deadline.saturating_duration_since(std::time::Instant::now())).await
 }
 
@@ -527,7 +550,7 @@ async fn confirm_pending(
     mut outcomes: Vec<SweepOutcome>,
     pending: Vec<(PathBuf, LaneRecord)>,
     within: std::time::Duration,
-) -> Result<Vec<SweepOutcome>, String> {
+) -> Result<Vec<SweepOutcome>, SweepInterrupted> {
     let identities = pending.iter().map(|(_, rec)| lane_identity(rec)).collect();
     let survivors = continuum_process::confirm_gone(identities, within).await;
     tokio::task::spawn_blocking(move || {
@@ -545,7 +568,16 @@ async fn confirm_pending(
         outcomes
     })
     .await
-    .map_err(|e| format!("lane exit confirmation failed: {e}"))
+    .map_err(SweepInterrupted::Confirmation)
+}
+
+/// A lane sweep whose blocking task did not finish: which half, and the runtime's own answer.
+#[derive(Debug, thiserror::Error)]
+pub enum SweepInterrupted {
+    #[error("lane shutdown sweep did not finish: {0}")]
+    Sweep(tokio::task::JoinError),
+    #[error("lane exit confirmation did not finish: {0}")]
+    Confirmation(tokio::task::JoinError),
 }
 
 fn lane_identity(rec: &LaneRecord) -> crate::system_resources::process_tree::ProcessIdentity {
@@ -786,10 +818,15 @@ fn finish_reap(path: &Path, rec: &LaneRecord) -> SweepOutcome {
 
 /// The pure sweep against an explicit `dir`. See [`sweep_orphans`] / [`sweep_all`].
 fn sweep_in(dir: &Path, mode: SweepMode) -> Vec<SweepOutcome> {
-    sweep_collect(dir, mode, &mut Vec::new())
+    sweep_collect(dir, mode, &mut Vec::new(), &|_| Ok(()))
 }
 
-fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRecord)>) -> Vec<SweepOutcome> {
+fn sweep_collect(
+    dir: &Path,
+    mode: SweepMode,
+    pending: &mut Vec<(PathBuf, LaneRecord)>,
+    may_end: &dyn Fn(&LaneRecord) -> Result<(), EngineEndRefusal>,
+) -> Vec<SweepOutcome> {
     let _writes = writes();
     let mut outcomes = Vec::new();
     // A missing directory is the normal first-run / all-graceful-prior-shutdown
@@ -840,7 +877,9 @@ fn sweep_collect(dir: &Path, mode: SweepMode, pending: &mut Vec<(PathBuf, LaneRe
             // Capture the stamped incarnation before signalling. Unstamped
             // legacy records cannot authorize termination of a recycled PID.
             let identified = rec.started_s != 0;
-            let outcome = if identified {
+            let outcome = if let Err(why) = may_end(&rec) {
+                SweepOutcome::EndRefused { pid: rec.pid, started_s: rec.started_s, why }
+            } else if identified {
                 finish_signal(&path, &rec, continuum_process::signal_if_same(lane_identity(&rec)))
             } else {
                 // No stamped incarnation: retain evidence instead of signalling

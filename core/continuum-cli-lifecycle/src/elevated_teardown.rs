@@ -2,7 +2,7 @@
 //!
 //! Ending a core this caller has no handle on is two problems: deciding WHICH process
 //! may be ended and in WHAT ORDER, and actually ending it. The second needs Windows.
-//! The first is arithmetic over strings, and it is where every defect has been — a
+//! The first is policy over native paths, and it is where every defect has been — a
 //! recycled pid, a plan swapped in `%TEMP%`, a drain that ran before the capability was
 //! held. Those live here so they can be exercised on any machine, in seconds.
 //!
@@ -24,9 +24,73 @@
 //! would be a second thing to know about on the node whose operator does not know it
 //! exists.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// A plan must bind to consent before the process capability can be acquired.
+#[derive(Debug, thiserror::Error)]
+pub enum TeardownPlanError {
+    #[error("cannot read {path}: {source}")]
+    Read {
+        path: std::path::PathBuf,
+        #[source]
+        source: std::io::Error,
+    },
+    #[error("the teardown plan at {path} differs from the consented digest — refusing to terminate anything")]
+    DigestMismatch { path: std::path::PathBuf },
+    #[error("the plan is not a TeardownPlan: {0}")]
+    Decode(#[from] serde_json::Error),
+    #[error("pid {pid} is running {image} outside installation {directory} — the pid was recycled; refusing to terminate it")]
+    OutsideInstallation {
+        pid: i32,
+        image: PathBuf,
+        directory: PathBuf,
+    },
+    #[error("pid {pid} is running {image}, which is not a core image — refusing to terminate it")]
+    NotCore { pid: i32, image: PathBuf },
+    #[error(transparent)]
+    InvalidPid(#[from] continuum_host::process_id::NotAProcess),
+    #[error("cannot take the process capability: {0}")]
+    Take(#[source] std::io::Error),
+    #[error("cannot inspect the held process: {0}")]
+    Image(#[source] std::io::Error),
+    #[error("cannot terminate the held process: {0}")]
+    Terminate(#[source] std::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ElevationError {
+    #[error("cannot encode the teardown plan: {0}")]
+    Encode(#[source] serde_json::Error),
+    #[error("cannot write the teardown plan: {0}")]
+    Write(#[source] std::io::Error),
+    #[error("cannot locate this executable: {0}")]
+    OwnPath(#[source] std::io::Error),
+    #[error("install: the elevation consent was refused — pid {pid} is untouched and still serving. Nothing was drained, nothing was terminated")]
+    Refused { pid: i32 },
+    #[error(transparent)]
+    Launcher(#[from] continuum_host::powershell::PowerShellError),
+    #[error("invalid elevation outcome: {0}")]
+    Outcome(#[from] serde_json::Error),
+    #[error("cannot read the elevated child's receipt: {0}")]
+    Receipt(#[source] std::io::Error),
+    #[error("elevated child exited with {exit_code}; receipt: {receipt:?}")]
+    Child {
+        exit_code: i32,
+        receipt: Option<TeardownReceipt>,
+    },
+}
+
+/// The child's persisted diagnostic receipt, distinct from launcher output.
+#[derive(Debug, Clone)]
+pub struct TeardownReceipt(pub(crate) String);
+
+impl std::fmt::Display for TeardownReceipt {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.0.trim())
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,7 +99,7 @@ pub struct TeardownPlan {
     /// The directory the installed core lives in, from the `ContinuumCore` descriptor.
     /// A DIRECTORY and not a file, because the unelevated half cannot see which image
     /// the process is actually executing — see `target_is_our_core`.
-    pub install_dir: String,
+    pub install_dir: PathBuf,
 }
 
 /// `stop`'s options.
@@ -58,6 +122,10 @@ pub struct StopOptions {
     /// and nobody's KV (Joel, 2026-10-29: "The engine is supposed to stay up"). `--engine` is
     /// for when its memory is wanted back.
     pub engine: bool,
+    /// `--discard-kv` (with `--engine`): end the engine even when the stop's receipt does not
+    /// show every resident's KV saved, losing that KV. Without it an unsaved engine stays up
+    /// (CONTINUUM-ENGINE 4.9, I1).
+    pub discard_kv: bool,
     pub elevated: bool,
     pub plan: Option<String>,
     pub plan_sha: Option<String>,
@@ -70,6 +138,7 @@ impl StopOptions {
         while let Some(arg) = args.next() {
             match arg.as_str() {
                 "--engine" => options.engine = true,
+                "--discard-kv" => options.discard_kv = true,
                 "--elevated" => options.elevated = true,
                 "--plan" => options.plan = args.next(),
                 "--plan-sha" => options.plan_sha = args.next(),
@@ -86,6 +155,9 @@ impl StopOptions {
                  exactly one process, bound by its digest)"
                     .to_string(),
             );
+        }
+        if options.discard_kv && !options.engine {
+            return Err("stop: --discard-kv ends the engine and needs --engine".to_string());
         }
         if options.engine && options.elevated {
             return Err("stop: --engine is an operator's stop; the consented child ends exactly one process".to_string());
@@ -108,17 +180,14 @@ pub fn bind_plan_bytes(
     bytes: &[u8],
     plan_sha: &str,
     shown_as: &Path,
-) -> Result<TeardownPlan, String> {
+) -> Result<TeardownPlan, TeardownPlanError> {
     let actual = digest(bytes);
     if !actual.eq_ignore_ascii_case(plan_sha) {
-        return Err(format!(
-            "the teardown plan at {} is not the one the consent was given for \
-             (sha {} on argv, {actual} on disk) — refusing to terminate anything",
-            shown_as.display(),
-            plan_sha.get(..12).unwrap_or(plan_sha) // unwrap_or: a short digest is still a digest; showing all of it beats hiding it
-        ));
+        return Err(TeardownPlanError::DigestMismatch {
+            path: shown_as.to_path_buf(),
+        });
     }
-    serde_json::from_slice(bytes).map_err(|e| format!("the plan is not a TeardownPlan: {e}"))
+    serde_json::from_slice(bytes).map_err(TeardownPlanError::Decode)
 }
 
 /// Is the process this handle names one of OUR cores?
@@ -145,48 +214,50 @@ pub fn bind_plan_bytes(
 /// Paths compare the way Windows means them — case-insensitively, and `/` spelled `\`
 /// is the same separator — because the scheduler and `QueryFullProcessImageName`
 /// disagree about spelling far more often than they disagree about the file.
-pub fn target_is_our_core(plan: &TeardownPlan, observed_image: &str) -> Result<(), String> {
-    let norm = |s: &str| s.replace('/', "\\").trim_matches('"').to_ascii_lowercase();
-    let root = norm(&plan.install_dir);
-    let root = root.trim_end_matches('\\').to_string();
-    let image = norm(observed_image);
-    let image_dir = image.rsplit_once('\\').map(|(dir, _)| dir);
-    // Registration selects the next slot before the previous core exits. Bind
-    // consent to this installation's two known service slots, never arbitrary
-    // siblings or descendants. The elevated caller still observes and terminates
-    // through the same held process handle.
-    let other_slot = root.rsplit_once('\\').and_then(|(bin, slot)| {
-        if bin.rsplit('\\').next() != Some("bin") {
+pub fn target_is_our_core(
+    plan: &TeardownPlan,
+    observed_image: &Path,
+) -> Result<(), TeardownPlanError> {
+    use continuum_host::path_spelling::equal;
+    let root = &plan.install_dir;
+    let image_dir = observed_image.parent();
+    let other_slot = root.parent().and_then(|bin| {
+        if !bin
+            .file_name()
+            .is_some_and(|name| equal(Path::new(name), Path::new("bin")))
+        {
             return None;
         }
-        match slot {
-            "service-a" => Some(format!("{bin}\\service-b")),
-            "service-b" => Some(format!("{bin}\\service-a")),
-            _ => None,
+        let slot = root.file_name()?;
+        if equal(Path::new(slot), Path::new("service-a")) {
+            Some(bin.join("service-b"))
+        } else if equal(Path::new(slot), Path::new("service-b")) {
+            Some(bin.join("service-a"))
+        } else {
+            None
         }
     });
-    let in_other_slot = other_slot
-        .as_deref()
-        .is_some_and(|slot| image_dir == Some(slot));
-    if image_dir != Some(root.as_str()) && !in_other_slot {
-        return Err(format!(
-            "pid {} is running {observed_image}, which is not under the installation \
-             directory {} the consent named — the pid was recycled; refusing to terminate it",
-            plan.pid, plan.install_dir
-        ));
+    if !image_dir.is_some_and(|dir| {
+        equal(dir, root) || other_slot.as_ref().is_some_and(|slot| equal(dir, slot))
+    }) {
+        return Err(TeardownPlanError::OutsideInstallation {
+            pid: plan.pid,
+            image: observed_image.to_owned(),
+            directory: root.clone(),
+        });
     }
-    let name = image.rsplit('\\').next().unwrap_or(&image); // unwrap_or: rsplit always yields once, so this is the no-separator case — the whole string IS the name
-    if !CORE_IMAGE_NAMES.contains(&name) {
-        return Err(format!(
-            "pid {} is running {observed_image}, which is in the installation directory but \
-             is not a core image ({}) — refusing to terminate it",
-            plan.pid,
-            CORE_IMAGE_NAMES.join(", ")
-        ));
+    if !observed_image.file_name().is_some_and(|name| {
+        CORE_IMAGE_NAMES
+            .iter()
+            .any(|allowed| equal(Path::new(name), Path::new(allowed)))
+    }) {
+        return Err(TeardownPlanError::NotCore {
+            pid: plan.pid,
+            image: observed_image.to_owned(),
+        });
     }
     Ok(())
 }
-
 /// The file names a continuum core can legitimately be executing from. `.prev.exe` is
 /// here deliberately: a core that outlived its own deploy is running from the parking
 /// space, and that is the single most likely state at the moment this rail is used.
@@ -202,9 +273,9 @@ const CORE_IMAGE_NAMES: &[&str] = &[
 pub trait HeldCapability: Sized {
     /// The image the HELD process is running. Read through the capability, never by a
     /// second lookup on the pid.
-    fn image(&self) -> Result<String, String>;
+    fn image(&self) -> Result<PathBuf, TeardownPlanError>;
     /// Spend it. Consumes self: a capability is used once.
-    fn spend(self) -> Result<(), String>;
+    fn spend(self) -> Result<(), TeardownPlanError>;
 }
 
 /// The teardown sequence, generic over the capability so the order is testable without
@@ -217,10 +288,10 @@ pub async fn teardown_sequence<C, T, F, Fut>(
     plan: &TeardownPlan,
     take: T,
     drain: F,
-) -> Result<(String, String), String>
+) -> Result<(PathBuf, String), TeardownPlanError>
 where
     C: HeldCapability,
-    T: FnOnce(i32) -> Result<C, String>,
+    T: FnOnce(i32) -> Result<C, TeardownPlanError>,
     F: FnOnce() -> Fut,
     Fut: std::future::Future<Output = String>,
 {
@@ -237,28 +308,31 @@ where
     Ok((image, graceful))
 }
 
-pub fn elevation_outcome(
-    pid: i32,
-    consent: Result<String, String>,
-    receipt_text: &str,
-) -> Result<(), String> {
-    let Err(why) = consent else { return Ok(()) };
-    if why.contains("canceled by the user") {
-        return Err(format!(
-            "install: the elevation consent was refused — pid {pid} is untouched and still \
-             serving. Nothing was drained, nothing was terminated"
-        ));
-    }
-    Err(format!(
-        "install: the elevated teardown did not complete: {why}\n  receipt: {}",
-        if receipt_text.trim().is_empty() {
-            "(none — the child never ran, or ran and could not write one)"
-        } else {
-            receipt_text.trim()
-        }
-    ))
+/// The launcher reports this protocol, never localized exception prose.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ConsentOutcome {
+    Refused,
+    Completed {
+        #[serde(rename = "exitCode")]
+        exit_code: i32,
+    },
 }
 
+pub fn elevation_outcome(
+    pid: i32,
+    consent: ConsentOutcome,
+    receipt: Option<&TeardownReceipt>,
+) -> Result<(), ElevationError> {
+    match consent {
+        ConsentOutcome::Refused => Err(ElevationError::Refused { pid }),
+        ConsentOutcome::Completed { exit_code: 0 } => Ok(()),
+        ConsentOutcome::Completed { exit_code } => Err(ElevationError::Child {
+            exit_code,
+            receipt: receipt.cloned(),
+        }),
+    }
+}
 /// The unelevated half: write the plan, ask for ONE consent, read the receipt. Whether
 /// the process actually WENT is proven by the caller on the same bounded deadline the
 /// ordinary teardown uses — an immediate liveness probe after a terminate sees a process
@@ -266,11 +340,14 @@ pub fn elevation_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn check_target(plan: &TeardownPlan, image: &str) -> Result<(), TeardownPlanError> {
+        target_is_our_core(plan, Path::new(image))
+    }
 
     fn plan() -> TeardownPlan {
         TeardownPlan {
             pid: 25040,
-            install_dir: "C:\\Users\\a\\.continuum\\bin".to_string(),
+            install_dir: PathBuf::from("C:/Users/a/.continuum/bin"),
         }
     }
 
@@ -294,10 +371,21 @@ mod tests {
         assert!(unknown.contains("unknown option"), "{unknown}");
 
         // what this catches: a plain stop taking the engine down. The engine stays unless asked.
-        assert!(!parse(&[]).expect("a plain stop").engine, "a plain stop keeps the engine");
+        assert!(
+            !parse(&[]).expect("a plain stop").engine,
+            "a plain stop keeps the engine"
+        );
         let all = parse(&["--engine"]).expect("an operator's stop that ends the engine too");
         assert!(all.engine && !all.elevated);
-        assert!(parse(&["--engine", "--elevated", "--plan", "p.json", "--plan-sha", "abc"]).is_err());
+        assert!(parse(&[
+            "--engine",
+            "--elevated",
+            "--plan",
+            "p.json",
+            "--plan-sha",
+            "abc"
+        ])
+        .is_err());
 
         let child = parse(&["--elevated", "--plan", "p.json", "--plan-sha", "abc"])
             .expect("the bound child parses");
@@ -324,7 +412,9 @@ mod tests {
         let refused = bind_plan_bytes(&swapped_bytes, &sha, Path::new("plan.json"))
             .expect_err("a rewritten plan must not bind to the approved digest");
         assert!(
-            refused.contains("refusing to terminate anything"),
+            refused
+                .to_string()
+                .contains("refusing to terminate anything"),
             "the refusal must say nothing was killed: {refused}"
         );
     }
@@ -347,16 +437,15 @@ mod tests {
             ),
             (
                 "outside the installation",
-                target_is_our_core(&p, "C:\\Windows\\System32\\notepad.exe").unwrap_err(),
+                check_target(&p, "C:/Windows/System32/notepad.exe").unwrap_err(),
             ),
             (
                 "inside but not a core",
-                target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\llama-server.exe")
-                    .unwrap_err(),
+                check_target(&p, "C:/Users/a/.continuum/bin/llama-server.exe").unwrap_err(),
             ),
         ] {
             assert!(
-                refusal.to_lowercase().contains("refusing"),
+                refusal.to_string().to_lowercase().contains("refusing"),
                 "the {what} check must REFUSE, so nothing has been drained when it fires: {refusal}"
             );
         }
@@ -370,27 +459,30 @@ mod tests {
     #[test]
     fn a_recycled_pid_is_refused_rather_than_terminated() {
         let p = plan();
-        let elsewhere = "C:\\Windows\\System32\\notepad.exe";
-        let refused = target_is_our_core(&p, elsewhere)
+        let elsewhere = "C:/Windows/System32/notepad.exe";
+        let refused = check_target(&p, elsewhere)
             .expect_err("a process outside the installation must be refused");
         assert!(
-            refused.contains("recycled"),
+            refused.to_string().contains("recycled"),
             "the reason must name reuse: {refused}"
         );
         assert!(
-            refused.contains(elsewhere),
+            refused.to_string().contains(elsewhere),
             "the refusal names what is there: {refused}"
         );
 
-        let neighbour = "C:\\Users\\a\\.continuum\\bin\\llama-server.exe";
-        let sibling = target_is_our_core(&p, neighbour)
+        let neighbour = "C:/Users/a/.continuum/bin/llama-server.exe";
+        let sibling = check_target(&p, neighbour)
             .expect_err("our own engine is not our core; terminating it would take the lane");
-        assert!(sibling.contains("not a core image"), "{sibling}");
+        assert!(
+            sibling.to_string().contains("not a core image"),
+            "{sibling}"
+        );
 
         // A path that merely STARTS with the directory's characters is not inside it.
-        let lookalike = "C:\\Users\\a\\.continuum\\bin-evil\\core.exe";
+        let lookalike = "C:/Users/a/.continuum/bin-evil/core.exe";
         assert!(
-            target_is_our_core(&p, lookalike).is_err(),
+            check_target(&p, lookalike).is_err(),
             "a sibling directory sharing a prefix is not the installation directory"
         );
     }
@@ -403,9 +495,9 @@ mod tests {
     #[test]
     fn a_core_running_from_the_renamed_predecessor_is_still_our_core() {
         let p = plan();
-        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.prev.exe")
+        check_target(&p, "C:/Users/a/.continuum/bin/core.prev.exe")
             .expect("a core that outlived its own deploy runs from the parking space");
-        target_is_our_core(&p, "C:\\Users\\a\\.continuum\\bin\\core.exe")
+        check_target(&p, "C:/Users/a/.continuum/bin/core.exe")
             .expect("and the ordinary case still passes");
     }
 
@@ -415,23 +507,23 @@ mod tests {
     fn registered_and_running_service_slots_can_differ() {
         for (registered, running) in [("service-a", "service-b"), ("service-b", "service-a")] {
             let mut p = plan();
-            p.install_dir = format!("C:\\Users\\a\\.continuum\\bin\\{registered}");
-            let bin = "C:\\Users\\a\\.continuum\\bin";
-            target_is_our_core(&p, &format!("{bin}\\{running}\\continuum-core-server.exe"))
+            p.install_dir = PathBuf::from(format!("C:/Users/a/.continuum/bin/{registered}"));
+            let bin = "C:/Users/a/.continuum/bin";
+            check_target(&p, &format!("{bin}/{running}/continuum-core-server.exe"))
                 .expect("previous slot in the same installation");
             for rejected in [
                 "continuum-core-server.exe".to_string(),
-                format!("{bin}\\service-c\\continuum-core-server.exe"),
-                format!("{bin}\\{running}\\nested\\continuum-core-server.exe"),
-                format!("{bin}\\{running}\\llama-server.exe"),
-                format!("C:\\Users\\other\\.continuum\\bin\\{running}\\continuum-core-server.exe"),
+                format!("{bin}/service-c/continuum-core-server.exe"),
+                format!("{bin}/{running}/nested/continuum-core-server.exe"),
+                format!("{bin}/{running}/llama-server.exe"),
+                format!("C:/Users/other/.continuum/bin/{running}/continuum-core-server.exe"),
             ] {
-                assert!(target_is_our_core(&p, &rejected).is_err(), "{rejected}");
+                assert!(check_target(&p, &rejected).is_err(), "{rejected}");
             }
         }
         let mut p = plan();
-        p.install_dir = "C:\\unrelated\\service-a".to_string();
-        assert!(target_is_our_core(&p, "C:\\unrelated\\service-b\\core.exe").is_err());
+        p.install_dir = PathBuf::from("C:/unrelated/service-a");
+        assert!(check_target(&p, "C:/unrelated/service-b/core.exe").is_err());
     }
 
     // A capability whose every act is RECORDED, so the sequence can be asserted rather
@@ -440,15 +532,15 @@ mod tests {
     #[derive(Default)]
     struct Recorder {
         log: std::rc::Rc<std::cell::RefCell<Vec<&'static str>>>,
-        image: String,
+        image: PathBuf,
     }
 
     impl HeldCapability for Recorder {
-        fn image(&self) -> Result<String, String> {
+        fn image(&self) -> Result<PathBuf, TeardownPlanError> {
             self.log.borrow_mut().push("image");
             Ok(self.image.clone())
         }
-        fn spend(self) -> Result<(), String> {
+        fn spend(self) -> Result<(), TeardownPlanError> {
             self.log.borrow_mut().push("spend");
             Ok(())
         }
@@ -469,7 +561,7 @@ mod tests {
         let taken = l.clone();
         // Built BEFORE the closure: the sequence borrows the plan, so the closure must
         // not also reach into it.
-        let ours = format!("{}\\core.exe", p.install_dir);
+        let ours = p.install_dir.join("core.exe");
         let (image, graceful) = teardown_sequence(
             &p,
             move |_pid| {
@@ -502,7 +594,11 @@ mod tests {
         let l = log.clone();
         let refused = teardown_sequence::<Recorder, _, _, _>(
             &p,
-            |_pid| Err("OpenProcess denied".to_string()),
+            |_pid| {
+                Err(TeardownPlanError::Take(std::io::Error::from(
+                    std::io::ErrorKind::PermissionDenied,
+                )))
+            },
             || {
                 l.borrow_mut().push("drain");
                 async { String::new() }
@@ -510,7 +606,9 @@ mod tests {
         )
         .await
         .expect_err("no capability must abort before anything is drained");
-        assert!(refused.contains("OpenProcess denied"), "{refused}");
+        assert!(
+            matches!(refused, TeardownPlanError::Take(ref e) if e.kind() == std::io::ErrorKind::PermissionDenied)
+        );
         assert!(log.borrow().is_empty(), "NOTHING ran: {:?}", log.borrow());
 
         // A RECYCLED pid: the capability was taken, but what it names is not our core.
@@ -524,7 +622,7 @@ mod tests {
                 taken.borrow_mut().push("take");
                 Ok(Recorder {
                     log: taken.clone(),
-                    image: "C:\\Windows\\System32\\notepad.exe".to_string(),
+                    image: PathBuf::from("C:/Windows/System32/notepad.exe"),
                 })
             },
             || {
@@ -534,7 +632,7 @@ mod tests {
         )
         .await
         .expect_err("a recycled pid must abort before anything is drained");
-        assert!(wrong.contains("recycled"), "{wrong}");
+        assert!(wrong.to_string().contains("recycled"), "{wrong}");
         assert_eq!(
             log.borrow().as_slice(),
             &["take", "image"],
@@ -555,7 +653,7 @@ mod tests {
         let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let l = log.clone();
         let taken = l.clone();
-        let ours = format!("{}\\core.exe", p.install_dir);
+        let ours = p.install_dir.join("core.exe");
         let (image, graceful) = teardown_sequence(
             &p,
             move |_pid| {
@@ -594,43 +692,32 @@ mod tests {
     // must never be reported as if nothing happened.
     #[test]
     fn a_refused_consent_says_nothing_was_touched_and_a_silent_failure_does_not() {
-        use super::elevation_outcome;
-
-        elevation_outcome(25040, Ok("ok".to_string()), "terminated pid 25040")
-            .expect("a completed elevation is not an error");
-
-        let refused = elevation_outcome(
-            25040,
-            Err("Start-Process: The operation was canceled by the user.".to_string()),
-            "",
-        )
-        .expect_err("a declined consent must not read as success");
-        assert!(refused.contains("untouched and still serving"), "{refused}");
+        elevation_outcome(25040, ConsentOutcome::Completed { exit_code: 0 }, None)
+            .expect("completed child");
+        assert!(matches!(
+            elevation_outcome(25040, ConsentOutcome::Refused, None),
+            Err(ElevationError::Refused { pid: 25040 })
+        ));
+        assert!(matches!(
+            elevation_outcome(25040, ConsentOutcome::Completed { exit_code: 1 }, None),
+            Err(ElevationError::Child {
+                exit_code: 1,
+                receipt: None
+            })
+        ));
         assert!(
-            refused.contains("Nothing was drained, nothing was terminated"),
-            "the refusal must say what did NOT happen, in those words: {refused}"
-        );
-
-        let silent = elevation_outcome(25040, Err("exit code 1".to_string()), "   ")
-            .expect_err("a failed elevation is an error");
-        assert!(
-            silent.contains("the child never ran, or ran and could not write one"),
-            "an absent receipt is reported as absent, never as nothing-happened: {silent}"
-        );
-        assert!(
-            !silent.contains("untouched"),
-            "only a DECLINED consent may claim the target is untouched: {silent}"
-        );
-
-        let with_receipt = elevation_outcome(
-            25040,
-            Err("exit code 1".to_string()),
-            "elevated teardown failed: X",
-        )
-        .expect_err("still an error");
-        assert!(
-            with_receipt.contains("elevated teardown failed: X"),
-            "{with_receipt}"
+            matches!(
+                elevation_outcome(
+                    25040,
+                    ConsentOutcome::Completed { exit_code: 1223 },
+                    Some(&TeardownReceipt("child ran".into()))
+                ),
+                Err(ElevationError::Child {
+                    exit_code: 1223,
+                    receipt: Some(_)
+                })
+            ),
+            "a child exit code must never impersonate declined consent"
         );
     }
 
@@ -639,9 +726,9 @@ mod tests {
     // spelling; treating `C:/x/Core.exe` and `c:\x\core.exe` as different targets would
     // refuse every legitimate teardown on some machines and none of the dangerous ones.
     #[test]
-    fn windows_path_spelling_is_not_a_different_target() {
+    fn a_native_path_identifies_the_core() {
         let p = plan();
-        target_is_our_core(&p, "c:/Users/a/.continuum/BIN/CONTINUUM-CORE-SERVER.EXE")
+        check_target(&p, "C:/Users/a/.continuum/bin/continuum-core-server.exe")
             .expect("case and separator spelling name the same place on Windows");
     }
 }

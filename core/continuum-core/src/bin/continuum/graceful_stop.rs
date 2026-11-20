@@ -34,32 +34,22 @@ pub(super) fn say_turns_may_settle() {
 #[derive(Debug)]
 pub(super) enum GracefulStop {
     /// The core ran the broadcast and every module's state reached disk.
-    Durable(String),
+    Durable(Stopped),
     /// The core ran the broadcast and something did NOT save. The message names it.
     /// The process is still stopping; the operator needs the names, not a retry.
-    Incomplete(String),
+    Incomplete(Stopped),
     /// No answer — a core too wedged to answer, or a response that did not arrive inside
     /// the budget. NOT the same as "it stopped": the caller must still tear the process
     /// down, and must not report a clean stop.
     NoAnswer(String),
-    /// The running core PREDATES this rail: it has no `system/shutdown` verb, so it was
-    /// never going to save and no fix in this binary can change that.
+    /// The running core answered `system/shutdown` with an error, or with a receipt that does
+    /// not decode, and so cannot attest a final checkpoint. A fault, whatever it said: the
+    /// verdict never depends on the error's text (#3940).
     ///
-    /// Distinct from `NoAnswer` on purpose. Both are non-durable, but they are different
-    /// facts and an operator needs to tell them apart: this one is the expected, one-time
-    /// cost of the FIRST upgrade — the core being replaced was built before the rail
-    /// existed — whereas `NoAnswer` is a core that HAS the capability and would not use
-    /// it, which is a fault. Collapsing them would make every first rollout look like a
-    /// malfunction, and every malfunction look like a rollout.
-    LegacyCore(String),
-    /// The running core HAS the rail but answered `system/shutdown` with an error and cannot
-    /// attest a final checkpoint — e.g. "checkpoint not found". That is a fault in a SUPPORTED
-    /// core, not evidence it predates the rail: it must not render as a first rollout.
-    ///
-    /// Fail-closed on purpose, like `LegacyCore`: a core that cannot attest a final checkpoint
-    /// must not be killed mid-upgrade, so `ensure_teardown_supported` refuses reboot for both.
-    /// Distinct from `NoAnswer`, which passes the guard — an error from a core that DID answer
-    /// is not "no core ever answered".
+    /// Fail-closed on purpose: a core that cannot attest a final checkpoint must not be killed
+    /// mid-upgrade, so `ensure_teardown_supported` refuses reboot. Distinct from `NoAnswer`,
+    /// which passes the guard — an error from a core that DID answer is not "no core ever
+    /// answered".
     CannotAttest(String),
     /// Nothing was listening in the first place. Distinct from `NoAnswer` on purpose: a
     /// core that never ran lost nothing, so `stop` on an already-stopped node must exit 0
@@ -68,7 +58,24 @@ pub(super) enum GracefulStop {
     NothingRunning,
 }
 
+/// What a core that answered its stop returned: the line for the operator and the typed
+/// receipt, whose custody decides whether its engine may end (CONTINUUM-ENGINE 4.9, I1).
+#[derive(Debug)]
+pub(super) struct Stopped {
+    pub(super) summary: String,
+    pub(super) receipt: continuum_core::runtime::ShutdownReceipt,
+}
+
 impl GracefulStop {
+    /// The receipt of a core that answered its stop; `None` when nothing answered with one,
+    /// which speaks for no process.
+    pub(super) fn receipt(&self) -> Option<&continuum_core::runtime::ShutdownReceipt> {
+        match self {
+            Self::Durable(stopped) | Self::Incomplete(stopped) => Some(&stopped.receipt),
+            Self::NoAnswer(_) | Self::CannotAttest(_) | Self::NothingRunning => None,
+        }
+    }
+
     pub(super) fn require_durable(&self) -> Result<(), String> {
         match self {
             Self::Durable(_) | Self::NothingRunning => Ok(()),
@@ -76,12 +83,11 @@ impl GracefulStop {
         }
     }
 
-    /// A core that cannot attest a final checkpoint — whether it predates the rail or is
-    /// failing inside it — must keep running until the operator can stop it explicitly and
-    /// preserve/adopt its selected checkpoint. Both fail-closed outcomes refuse reboot here;
+    /// A core that cannot attest a final checkpoint must keep running until the operator can
+    /// stop it explicitly and preserve/adopt its selected checkpoint. That refuses reboot here;
     /// `NoAnswer` deliberately does not (nothing ever answered, so nothing attested a save).
     pub(super) fn ensure_teardown_supported(&self, reboot: bool) -> Result<(), String> {
-        if let (true, Self::LegacyCore(reason) | Self::CannotAttest(reason)) = (reboot, self) {
+        if let (true, Self::CannotAttest(reason)) = (reboot, self) {
             return Err(format!(
                 "keeping the engine refused before teardown (reboot, install handoff or \
                  a plain `stop`): {reason}. The existing core is still running. Use \
@@ -112,76 +118,62 @@ impl GracefulStop {
 /// strands a drained core still answering ping. Measured 2026-09-22 on Astra's
 /// node: `OpenProcess(25040, TERMINATE)` returned NULL with Win32 error 5, and the
 /// drain had already run.
-pub(super) fn may_begin_shutdown(authority: Result<(), String>) -> Result<(), String> {
-    authority.map_err(|why| {
-        format!(
-            "refusing to DRAIN a core this caller cannot then tear down ({why}). \
+pub(super) fn may_begin_shutdown(authority: Result<(), TeardownRefused>) -> Result<(), DrainRefused> {
+    authority.map_err(DrainRefused)
+}
+
+/// Why this caller may not tear down a core: the host's own answer, typed (Codex on #6042: only a
+/// positive absence proves a pid gone).
+#[derive(Debug)]
+pub(super) enum TeardownRefused {
+    /// The pid is not one this host can address as a process.
+    Unaddressable { pid: i32, why: continuum_host::process_id::NotAProcess },
+    /// The process exists and this caller may not terminate it.
+    Refused { pid: i32, error: std::io::Error },
+    /// The OS answered neither authority nor absence.
+    Unknown { pid: i32, error: std::io::Error },
+}
+
+impl std::fmt::Display for TeardownRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unaddressable { pid, why } => write!(f, "no teardown authority over pid {pid}: {why}"),
+            Self::Refused { pid, error } => write!(f, "no authority to terminate pid {pid}: {error}"),
+            Self::Unknown { pid, error } => write!(f, "cannot tell whether pid {pid} may be terminated: {error}"),
+        }
+    }
+}
+
+/// The drain refused because the core it would leave could not then be torn down.
+#[derive(Debug)]
+pub(super) struct DrainRefused(pub(super) TeardownRefused);
+
+impl std::fmt::Display for DrainRefused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to DRAIN a core this caller cannot then tear down ({}). \
              The drain is not reversible: system/shutdown leaves the process alive \
              for the CLI to end, so draining without teardown authority leaves a \
              drained core still answering ping. No state was touched — run \
              `continuum install` at this machine, which may spend one consent to \
-             borrow the privilege this caller does not hold"
+             borrow the privilege this caller does not hold",
+            self.0
         )
-    })
-}
-
-/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the
-/// OS answered.
-#[cfg(windows)]
-pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
-    use windows_sys::Win32::Foundation::{CloseHandle, ERROR_INVALID_PARAMETER};
-    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_TERMINATE};
-    // SAFETY: OpenProcess is a read-only capability query here; the handle is closed
-    // immediately and nothing is terminated by this call.
-    let handle = unsafe { OpenProcess(PROCESS_TERMINATE, 0, pid as u32) };
-    if handle.is_null() {
-        let err = std::io::Error::last_os_error();
-        // ABSENCE IS NOT REFUSAL, and Windows spells absence differently from unix: a
-        // pid that is not in the table answers ERROR_INVALID_PARAMETER here where unix
-        // answers ESRCH. Reading it as "no authority" would abandon every stop whose
-        // pidfile is merely stale — which is most of them (Astra, 2026-09-22).
-        if err.raw_os_error() == Some(ERROR_INVALID_PARAMETER as i32) {
-            return Ok(());
-        }
-        return Err(format!("OpenProcess(pid {pid}, PROCESS_TERMINATE) failed: {err}"));
-    }
-    // SAFETY: handle came from a successful OpenProcess above and is closed once.
-    unsafe { CloseHandle(handle) };
-    Ok(())
-}
-
-#[cfg(unix)]
-pub(super) fn teardown_authority(pid: i32) -> Result<(), String> {
-    // SAFETY: signal 0 performs the permission and existence check WITHOUT delivering
-    // a signal — the standard capability probe.
-    if unsafe { libc::kill(pid, 0) } == 0 {
-        return Ok(());
-    }
-    let err = std::io::Error::last_os_error();
-    match err.raw_os_error() {
-        Some(libc::EPERM) => Err(format!("signal 0 to pid {pid} refused: {err}")),
-        // ESRCH = already gone: nothing to tear down, so nothing to refuse.
-        _ => Ok(()),
     }
 }
 
-/// The DIRECTORY the supervisor was told to run the core out of — the parent of the
-/// `artifact` field in the `ContinuumCore` descriptor.
-///
-/// A directory and not the file, because a caller that cannot open the process cannot
-/// ask the OS which image it is executing (that is the whole reason it is escalating),
-/// and the descriptor's file name is routinely NOT that image: after a staging swap the
-/// descriptor names the new slot while the surviving core runs from the renamed
-/// predecessor beside it. The child proves the rest through its own handle.
-#[cfg(windows)]
-pub(super) async fn installed_core_dir() -> Result<String, String> {
-    let task = PreparedCoreService::query().await?;
-    let description: CoreServiceDescription = serde_json::from_str(&task.description)
-        .map_err(|e| format!("the {} task's descriptor is unreadable ({e}); rerun the installer before escalating", supervisor_install::CORE_TASK))?;
-    Path::new(&description.artifact)
-        .parent()
-        .map(|d| d.display().to_string())
-        .ok_or_else(|| format!("the installed artifact {} has no directory", description.artifact))
+/// Can this caller terminate `pid`? Probed BEFORE any drain. Reports only what the OS answered
+/// (`continuum_host::termination_authority`): a pid positively gone is nothing to refuse; an answer
+/// that proves neither authority nor absence refuses (Codex on #6042: only ESRCH proves gone).
+pub(super) fn teardown_authority(pid: i32) -> Result<(), TeardownRefused> {
+    use continuum_host::termination_authority::{may_terminate, TerminationAuthority};
+    let process = continuum_host::process_id::ProcessId::try_from(pid).map_err(|why| TeardownRefused::Unaddressable { pid, why })?;
+    match may_terminate(process) {
+        TerminationAuthority::Granted | TerminationAuthority::Absent => Ok(()),
+        TerminationAuthority::Refused(error) => Err(TeardownRefused::Refused { pid, error }),
+        TerminationAuthority::Unknown(error) => Err(TeardownRefused::Unknown { pid, error }),
+    }
 }
 
 /// The core pid the pidfile CLAIMS. `None` means no pidfile, or one that names nothing
@@ -223,17 +215,6 @@ pub(super) struct MayDrain {
     pub(super) borrow_authority_for: Option<i32>,
 }
 
-impl MayDrain {
-    /// The drain is authorised because a TERMINATE handle for the target is HELD OPEN
-    /// across it — capability, not intent (Astra, 2026-09-22: "operator_present is
-    /// intent, not capability"). Only the elevated child can build one of these, and
-    /// only while it is holding the handle it will terminate with.
-    #[cfg(windows)]
-    pub(super) fn proven_by_held_handle() -> Self {
-        Self { borrow_authority_for: None }
-    }
-}
-
 /// The preflight decision, pure over what the OS answered.
 ///
 /// A refusal with no operator present is final and returns before anything is drained.
@@ -242,8 +223,8 @@ impl MayDrain {
 pub(super) fn preflight_teardown(
     pids: &[i32],
     operator_present: bool,
-    authority: impl Fn(i32) -> Result<(), String>,
-) -> Result<MayDrain, String> {
+    authority: impl Fn(i32) -> Result<(), TeardownRefused>,
+) -> Result<MayDrain, DrainRefused> {
     for pid in pids {
         let Err(why) = authority(*pid) else { continue };
         if operator_present {
@@ -355,29 +336,19 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
     say_turns_may_settle();
     match tokio::time::timeout(GRACEFUL_STOP_BUDGET, req).await {
         Ok(Ok(value)) => {
-            let durable = value
-                .get("state_is_durable")
-                .and_then(Value::as_bool)
-                // A response whose shape we do not recognise is not a durable stop. An
-                // older core answering `system/shutdown` with something else must not be
-                // read as a clean save.
-                .unwrap_or(false);
-            let summary = value
-                .get("summary")
-                .and_then(Value::as_str)
-                .unwrap_or("the core answered without a summary")
-                .to_string();
-            if durable {
-                GracefulStop::Durable(summary)
-            } else {
-                GracefulStop::Incomplete(summary)
+            // Decoded once, typed, at the wire's edge: the receipt's custody decides what may
+            // end next. A receipt that does not decode is a fault in the core, never a stop.
+            match serde_json::from_value::<continuum_core::commands::system::shutdown::ShutdownResult>(value) { // Decode the lifecycle IPC answer at its edge.
+                Ok(result) if result.state_is_durable => GracefulStop::Durable(Stopped { summary: result.summary, receipt: result.receipt }),
+                Ok(result) => GracefulStop::Incomplete(Stopped { summary: result.summary, receipt: result.receipt }),
+                Err(undecodable) => GracefulStop::CannotAttest(format!("its shutdown receipt does not decode: {undecodable}")),
             }
         }
-        Ok(Err(e)) => {
-            // The verdict must not depend on what the core said — see
-            // `classify_shutdown_error`: any error from a reachable core fails closed.
-            classify_shutdown_error(&format!("{e}"))
-        }
+        // Any error from a core that answered fails closed; its text is kept for the operator and
+        // never decides the verdict (#3940).
+        Ok(Err(e)) => GracefulStop::CannotAttest(format!(
+            "the running core answered system/shutdown with an error and cannot attest a final checkpoint ({e})"
+        )),
         Err(_) => GracefulStop::NoAnswer(format!(
             "no answer within {}s",
             GRACEFUL_STOP_BUDGET.as_secs()
@@ -386,61 +357,20 @@ pub(super) async fn request_graceful_stop(_authority_preflighted: &MayDrain) -> 
 }
 
 
-/// Turn an error answer to `system/shutdown` into a stop outcome — never `NoAnswer`.
-///
-/// The verdict must not depend on what the core said (#3940): any error from a reachable
-/// core fails closed, because such a core cannot attest a final checkpoint and therefore
-/// must not be killed mid-upgrade (`ensure_teardown_supported` refuses reboot for both
-/// fail-closed outcomes). What the phrasing may still decide is WHICH of them:
-/// phrasings that mean "this name is not in the command registry" are positive evidence
-/// the core predates the rail (`LegacyCore`, a first rollout); every other error is a fault
-/// inside a supported core (`CannotAttest`) and must not be rendered as one.
-/// `NoAnswer` keeps its meaning for paths where no core ever answered (pre-check failures
-/// and timeouts); an error from a core that DID answer can no longer masquerade as one.
-pub(super) fn classify_shutdown_error(rendered: &str) -> GracefulStop {
-    let m = rendered.to_lowercase();
-    // Recognition now only picks WHICH fail-closed outcome — never whether to fail closed.
-    // Only phrasings that specifically mean "this name is not in the command registry" earn
-    // the pre-rail label; the old list's weak markers ("not found", bare "unsupported") could
-    // mislabel an internal error like `checkpoint not found` as a core from before the rail.
-    let predates_rail = m.contains("unknown command") || m.contains("no handler");
-    if predates_rail {
-        GracefulStop::LegacyCore(format!(
-            "the running core has no system/shutdown verb ({rendered}) — it predates this \
-             rail, so its modules were never going to save and this stop cannot be called durable"
-        ))
-    } else {
-        // Fail closed (#3940): the old code fell through here to NoAnswer for any phrasing that
-        // matched no marker string — and NoAnswer passes the reboot guard, so an un-attested core
-        // could be killed mid-upgrade. Any error from a reachable core is now fail-closed, with its
-        // own text preserved so the operator can diagnose what it actually said; the outcome says
-        // this is a fault in a supported core, not evidence of a first rollout.
-        GracefulStop::CannotAttest(format!(
-            "the running core answered system/shutdown with an error and cannot attest a final \
-             checkpoint ({rendered})"
-        ))
-    }
-}
-
 /// What the operator sees for each outcome, and whether it goes to stderr. Extracted from
-/// `stop_with_authority` so a regression test can pin the wording: `CannotAttest` is a fault in a
-/// supported core and must never render as a first rollout — that label belongs only to
-/// `LegacyCore`, whose phrasing came from a core that positively predates this rail.
+/// `stop_with_authority` so a regression test can pin the wording.
 pub(super) fn render_graceful_outcome(outcome: &GracefulStop) -> (bool, String) {
     match outcome {
-        GracefulStop::Durable(summary) => (false, format!("core stopped gracefully — {summary}")),
-        GracefulStop::Incomplete(summary) => (
+        GracefulStop::Durable(stopped) => (false, format!("core stopped gracefully — {}", stopped.summary)),
+        GracefulStop::Incomplete(stopped) => (
             true,
-            format!("core stopped WITH UNSAVED STATE — {summary}"),
+            format!("core stopped WITH UNSAVED STATE — {}", stopped.summary),
         ),
         GracefulStop::NoAnswer(why) => (
             true,
             format!("no graceful stop ({why}); forcing — modules did not save"),
         ),
         GracefulStop::NothingRunning => (false, "no core is listening; sweeping for survivors".into()),
-        GracefulStop::LegacyCore(why) => {
-            (true, format!("FIRST UPGRADE — {why}; forcing, and its volatile state is lost"))
-        }
         GracefulStop::CannotAttest(why) => (
             true,
             format!(

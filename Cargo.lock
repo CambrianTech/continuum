@@ -2807,6 +2807,7 @@ dependencies = [
  "sha2",
  "sysinfo",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "uuid",
  "windows-sys 0.60.2",
@@ -3334,10 +3335,12 @@ dependencies = [
 name = "continuum-host"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "cap-std",
  "landlock",
  "libc",
  "tempfile",
+ "thiserror 2.0.18",
  "tokio",
  "windows-sys 0.60.2",
 ]

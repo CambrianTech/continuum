@@ -47,3 +47,7 @@ pub mod unelevated_service;
 
 pub mod prebuilt_validation;
 pub mod cargo_cache_custody;
+
+/// Windows consent and held-handle teardown, sharing the platform-independent policy.
+#[cfg(windows)]
+pub mod windows_elevated_teardown;

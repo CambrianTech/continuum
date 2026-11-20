@@ -57,12 +57,8 @@ use continuum_cli_lifecycle::install_cli;
 #[cfg(target_os = "macos")]
 use continuum_cli_lifecycle::launchd;
 
-// The teardown DECISION lives in the leaf, where it runs on every machine in seconds.
-// What stays here is the Windows half that spends the capability — gated at the
-// declaration, because every item inside needs `windows_sys`.
-#[cfg(windows)]
-#[path = "continuum/elevated_teardown.rs"]
-mod elevated_teardown;
+#[path = "continuum/stop_platform/mod.rs"]
+mod stop_platform;
 #[cfg(windows)]
 #[path = "continuum/container_maintenance.rs"]
 mod container_maintenance;
@@ -395,13 +391,9 @@ async fn run() -> Result<(), CliError> {
                 std::process::exit(1);
             }
             println!("🖥  {url}");
-            #[cfg(target_os = "macos")]
-            {
-                let _ = std::process::Command::new("open").arg(&url).status();
-            }
-            #[cfg(target_os = "linux")]
-            {
-                let _ = std::process::Command::new("xdg-open").arg(&url).status();
+            // The URL is printed above, so a browser that cannot be opened still leaves the way in.
+            if let Err(error) = continuum_host::default_browser::open(&url) {
+                eprintln!("✗ {error}");
             }
             Ok(())
         }
