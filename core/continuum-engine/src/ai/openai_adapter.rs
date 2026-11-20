@@ -159,7 +159,7 @@ pub struct OpenAICompatibleAdapter {
     /// Cloud providers (OpenAI / Groq / etc.) → high slot count (no throttle).
     /// Only for an endpoint with no slot pool (cloud): a pooled endpoint's admissions take ITS
     /// permits, shared by every adapter and the learner (`slots::EndpointConcurrency`, card 23069702).
-    concurrency: std::sync::Arc<tokio::sync::Semaphore>,
+    concurrency: crate::inference::slots::DecodeBound,
 }
 
 // Serving-guard predicates live in `crate::inference::serving_guard` (S3b decompose).

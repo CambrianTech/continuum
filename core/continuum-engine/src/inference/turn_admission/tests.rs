@@ -13,7 +13,6 @@
     }
 
     use super::*;
-    use tokio::sync::Semaphore;
     use uuid::Uuid;
 
     mod one_act_per_mind;
@@ -120,7 +119,7 @@
         let pool = Arc::new(KvSlotPool::new("test://scratch-owner", 3)); // index 2 is scratch
         let scratch = pool.scratch_slot().expect("three slots reserve a scratch slot"); // test: pool contract
         let held = pool.acquire_slot(scratch).await.expect("test: the probe holds scratch");
-        let sem = Arc::new(Semaphore::new(4));
+        let sem = crate::inference::slots::DecodeBound::with_permits(4);
         let client = reqwest::Client::new();
         let waiting = admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, Some(pool.clone()), &client, "test://scratch-owner", 0, std::time::Duration::ZERO);
         tokio::pin!(waiting);
@@ -182,7 +181,7 @@
             .negotiate_page_admission(&root, &pool, None, None).await,
             "this fixture advertises the legacy paging protocol");
         assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
-        let sem = Arc::new(Semaphore::new(4));
+        let sem = crate::inference::slots::DecodeBound::with_permits(4);
         let client = reqwest::Client::new();
         let a = PageKey::mind(Uuid::from_u128(1)).expect("test: non-nil ids");
         let b = PageKey::mind(Uuid::from_u128(3)).expect("test: non-nil ids");
@@ -284,7 +283,7 @@
     #[tokio::test]
     async fn a_pinned_slot_survives_a_contending_lease_until_the_turn_drops() {
         let pool = Arc::new(KvSlotPool::new("test://admit", 1)); // ONE citizen slot
-        let sem = Arc::new(Semaphore::new(1));
+        let sem = crate::inference::slots::DecodeBound::with_permits(1);
         let client = reqwest::Client::new();
         let a = PageKey::mind(Uuid::from_u128(1)).unwrap();  // test: non-nil ids
         let b = PageKey::mind(Uuid::from_u128(3)).unwrap();  // test: non-nil ids
@@ -334,7 +333,7 @@
         let transition = endpoint.transition();
         tokio::pin!(transition);
         assert!(futures::poll!(&mut transition).is_pending());
-        let other_adapter = Arc::new(Semaphore::new(1));
+        let other_adapter = crate::inference::slots::DecodeBound::with_permits(1);
         assert!(
             admit_turn(&other_adapter, crate::inference::slots::SlotClass::Background, None, None, &client, "test://admit", 0, std::time::Duration::ZERO)
                 .await
@@ -360,7 +359,7 @@
     async fn a_turn_that_finds_every_slot_pinned_waits_and_lands_pinned() {
         let root = "test://all-pinned";
         let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot
-        let sem = Arc::new(Semaphore::new(2)); // lanes free: only the slot is contended
+        let sem = crate::inference::slots::DecodeBound::with_permits(2); // lanes free: only the slot is contended
         let client = reqwest::Client::new();
         let a = PageKey::mind(Uuid::from_u128(11)).unwrap(); // test: non-nil ids
         let b = PageKey::mind(Uuid::from_u128(13)).unwrap(); // test: non-nil ids
@@ -392,8 +391,8 @@
     {
         let root = format!("test://admission-drain-{}", Uuid::new_v4());
         let pool = Arc::new(KvSlotPool::new(&root, 1));
-        let first_adapter = Arc::new(Semaphore::new(1));
-        let waiting_adapter = Arc::new(Semaphore::new(1));
+        let first_adapter = crate::inference::slots::DecodeBound::with_permits(1);
+        let waiting_adapter = crate::inference::slots::DecodeBound::with_permits(1);
         let client = reqwest::Client::new();
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
@@ -450,7 +449,7 @@
         -> Result<(), Box<dyn std::error::Error>>
     {
         let root = format!("test://admission-queue-drain-{}", Uuid::new_v4());
-        let sem = Arc::new(Semaphore::new(1));
+        let sem = crate::inference::slots::DecodeBound::with_permits(1);
         let client = reqwest::Client::new();
         let running = admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, None, &client, &root, 0, std::time::Duration::ZERO).await?;
         let mut first = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Background, None, None, &client, &root, 0, std::time::Duration::ZERO));
@@ -496,7 +495,7 @@
         initial.ready(&root, &old, contract.clone())?;
         drop(initial);
         let old_pool = endpoint.admit().await?.pool.ok_or("initial pool")?;
-        let sem = Arc::new(Semaphore::new(2));
+        let sem = crate::inference::slots::DecodeBound::with_permits(2);
         let client = reqwest::Client::new();
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
@@ -541,7 +540,7 @@
     {
         let root = format!("test://admission-patience-{}", Uuid::new_v4());
         let pool = Arc::new(KvSlotPool::new(&root, 1));
-        let sem = Arc::new(Semaphore::new(2));
+        let sem = crate::inference::slots::DecodeBound::with_permits(2);
         let client = reqwest::Client::new();
         let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
         let waiting_key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
@@ -578,7 +577,7 @@
     {
         for permits in [1, 2] {
             let root = format!("test://admission-deadline-{}", Uuid::new_v4());
-            let sem = Arc::new(Semaphore::new(permits));
+            let sem = crate::inference::slots::DecodeBound::with_permits(permits);
             let pool = Arc::new(KvSlotPool::new(&root, 1));
             let client = reqwest::Client::new();
             let first_key = PageKey::mind(Uuid::new_v4()).ok_or("first key")?;
@@ -606,7 +605,7 @@
     async fn a_cancelled_pin_holder_wakes_a_turn_parked_on_an_all_pinned_pool() {
         let root = "test://cancelled-pin";
         let pool = Arc::new(KvSlotPool::new(root, 1)); // ONE citizen slot, index 0
-        let sem = Arc::new(Semaphore::new(3));
+        let sem = crate::inference::slots::DecodeBound::with_permits(3);
         let client = reqwest::Client::new();
         let a = PageKey::mind(Uuid::from_u128(21)).unwrap(); // test: non-nil ids
         let b = PageKey::mind(Uuid::from_u128(23)).unwrap(); // test: non-nil ids
@@ -723,7 +722,7 @@
             .expect("ready pool")
             .pool
             .expect("managed pool");
-        let sem = Arc::new(Semaphore::new(2));
+        let sem = crate::inference::slots::DecodeBound::with_permits(2);
         let client = reqwest::Client::new();
         let key = PageKey::mind(Uuid::new_v4()).expect("fixture activity");
 
@@ -822,7 +821,7 @@
         let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
-        let other_adapter = Arc::new(Semaphore::new(2));
+        let other_adapter = crate::inference::slots::DecodeBound::with_permits(2);
         let before = calls.load(Ordering::SeqCst);
         tokio::time::timeout(std::time::Duration::from_secs(5), warm_ahead(&other_adapter, key, pool.clone(), &client, &root))
             .await

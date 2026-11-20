@@ -7,8 +7,9 @@
 //! the calls are assembled by [`native_tool_calls::assemble`] (what the streamed path uses). One
 //! [`llama::ChatRender`] serves the request from its render to its final parse.
 //!
-//! Not yet (slice 2): the render's grammar, lazy triggers, preserved tokens and extra stops into
-//! the sampler. Until then no resident is routed here.
+//! Into the sampler from the render: its extra stops, and a think budget bounded by its thinking tags
+//! (the reasoning-budget sampler llama-server ran). Not yet: its grammar, lazy triggers and preserved
+//! tokens (slice 2).
 
 use continuum_tool_protocol::GenerationEnd;
 use serde_json::{json, Value};
@@ -34,10 +35,60 @@ pub(super) enum ChatTurnError {
     SpecificToolChoice { choice: ToolChoice },
 }
 
-/// What the render describes, read as a type: the prompt the engine decodes from.
+/// What the render describes, read as a type: the prompt the engine decodes from, the generation
+/// prompt it ends with, the template's extra stops, and its thinking tags.
 #[derive(serde::Deserialize)]
-struct Described {
+pub(super) struct Described {
     prompt: Option<String>,
+    #[serde(default)]
+    generation_prompt: String,
+    #[serde(default)]
+    pub(super) additional_stops: Vec<String>,
+    #[serde(default)]
+    supports_thinking: bool,
+    #[serde(default)]
+    thinking_start_tag: String,
+    #[serde(default)]
+    thinking_end_tags: Vec<String>,
+}
+
+impl Described {
+    /// The bound a think `budget` puts on this template, or `None` when it does not think (no start
+    /// tag to count from, no end tag to force): a budget on it is moot.
+    pub(super) fn think_bound(&self, budget: u32) -> Option<llama::ThinkBound> {
+        let thinks = self.supports_thinking && !self.thinking_start_tag.is_empty() && !self.thinking_end_tags.is_empty();
+        thinks.then(|| llama::ThinkBound { start_tag: self.thinking_start_tag.clone(), end_tags: self.thinking_end_tags.clone(), budget })
+    }
+
+    /// The prompt without its generation prompt: what a later act that keeps these messages holds
+    /// unchanged. `None` when the prompt does not end in its own generation prompt.
+    fn held(&self) -> Option<&str> {
+        self.prompt.as_deref()?.strip_suffix(self.generation_prompt.as_str())
+    }
+}
+
+/// What the render describes.
+pub(super) fn described(render: &llama::ChatRender) -> Result<Described, ChatTurnError> {
+    Ok(serde_json::from_str(&render.describe()?)?)
+}
+
+/// The text of her prompt her next act will hold unchanged: her view's messages
+/// (`request.view_messages`, where cognition says her next act stops matching), rendered by the same
+/// templates with the generation prompt taken off. The engine checkpoints her there, so a next act
+/// that keeps it prefills only what follows (CONTINUUM-ENGINE 4.15). `None` for a turn with no view.
+pub(super) fn view_text(
+    request: &TextGenerationRequest,
+    full: &Described,
+    thinking: bool,
+    render: impl FnOnce(&Value) -> Result<llama::ChatRender, ChatTurnError>,
+) -> Result<Option<String>, ChatTurnError> {
+    let Some(held) = request.view_messages.and_then(|held| usize::try_from(held).ok()) else { return Ok(None) };
+    if held >= request.messages.len() {
+        return Ok(full.held().map(str::to_owned));
+    }
+    let view = TextGenerationRequest { messages: request.messages[..held].to_vec(), ..request.clone() };
+    let body = thinking_request(&view, thinking)?;
+    Ok(described(&render(&body)?)?.held().map(str::to_owned))
 }
 
 /// The message her render parses from what the model wrote (common/chat's OpenAI-compatible
@@ -79,10 +130,17 @@ pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, Cha
     Ok(body)
 }
 
+/// Her request with the turn's thinking term: off only when the turn states a zero think budget, so
+/// the template renders no thinking for it; otherwise the template's default, on.
+pub(super) fn thinking_request(request: &TextGenerationRequest, thinking: bool) -> Result<Value, ChatTurnError> {
+    let mut body = chat_request(request)?;
+    body["enable_thinking"] = json!(thinking);
+    Ok(body)
+}
+
 /// The prompt the render describes, which the engine decodes from.
-pub(super) fn prompt_of(render: &llama::ChatRender) -> Result<String, ChatTurnError> {
-    let described: Described = serde_json::from_str(&render.describe()?)?;
-    described.prompt.ok_or(ChatTurnError::NoPrompt)
+pub(super) fn prompt_of(described: &Described) -> Result<String, ChatTurnError> {
+    described.prompt.clone().ok_or(ChatTurnError::NoPrompt)
 }
 
 /// What the model wrote, read by her render: the visible text, her reasoning, and her native calls.
@@ -92,13 +150,39 @@ pub(super) struct ParsedTurn {
     pub(super) tool_calls: Option<Vec<ToolCall>>,
 }
 
+impl ParsedTurn {
+    /// A turn that kept no text and no call, told apart by its raw tail and the stop it ended on: a
+    /// stop string firing where her call began, the model ending inside its thinking, or a call the
+    /// parse dropped (Aiko, 20 turns from 15:36Z 2026-11-19, text 0, reasoning only).
+    pub(super) fn probe_if_empty(&self, written: &str, tokens: usize, end: GenerationEnd, stops: &[String]) {
+        if !self.text.is_empty() || self.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
+            return;
+        }
+        let chars: Vec<char> = written.chars().collect();
+        let tail: String = chars[chars.len().saturating_sub(160)..].iter().collect();
+        continuum_base::probe!(
+            class = "inference.turn.wrote_nothing",
+            tokens = tokens as u64,
+            end = ?end,
+            stop = ?stops.iter().find(|stop| written.ends_with(stop.as_str())),
+            reasoning_chars = ?self.reasoning.as_ref().map(|r| r.chars().count()),
+            written_chars = chars.len() as u64,
+            tail = %tail,
+            "a turn ended with no text and no call: the raw tail and the stop it ended on"
+        );
+    }
+}
+
 /// Parse the finished output with the render that produced its prompt. `end` is why the generation
 /// stopped, so a call the output limit cut is typed as cut, never as bad JSON.
 pub(super) fn parse_turn(render: &llama::ChatRender, written: &str, end: GenerationEnd) -> Result<ParsedTurn, ChatTurnError> {
     let message: ParsedMessage = serde_json::from_str(&render.parse(written, false)?)?;
     let written_text = |text: Option<String>| text.filter(|text| !text.is_empty());
     let raw = message.tool_calls.into_iter().flatten().map(|call| StreamToolAccum {
-        id: call.id.unwrap_or_default(), // unwrap_or_default: a call the template gave no id is still her call; the assembler keys on its name
+        // A template that names no call id (Qwen's) gets one minted here, as llama-server minted one
+        // for its /v1 reply: her result must answer an id, and an empty one is refused downstream
+        // (the M5 at 6d1396e62f, 06:21-06:26Z: 19 turns refused as mismatched call/result ids).
+        id: call.id.filter(|id| !id.is_empty()).unwrap_or_else(|| format!("call_{}", uuid::Uuid::new_v4().simple())), // unwrap_or_else: an unnamed call gets a fresh unique id
         name: call.function.name.unwrap_or_default(), // unwrap_or_default: a nameless call is dropped by the assembler, never run
         arguments: call.function.arguments.unwrap_or_default(), // unwrap_or_default: no arguments parse as no JSON and are typed by the assembler
     });

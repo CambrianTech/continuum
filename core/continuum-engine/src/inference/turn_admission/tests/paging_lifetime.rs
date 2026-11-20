@@ -31,7 +31,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
     let key = PageKey::mind(Uuid::new_v4()).ok_or("activity key")?;
     pool.note_saved(key);
-    let sem = Arc::new(Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let client = reqwest::Client::new();
     let mut admitting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
         &client, &root, 100, AdmissionPatience::for_turn()));
@@ -115,7 +115,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     );
     let old = PageKey::mind(Uuid::new_v4()).expect("test: old activity");
     let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
-    let sem = Arc::new(Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let client = reqwest::Client::new();
     let mut resident = admit_turn(
         &sem, crate::inference::slots::SlotClass::Turn,
@@ -209,7 +209,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
             let pool = crate::inference::slots::directory().ensure_pool(&root, 3);
             let key = PageKey::mind(Uuid::new_v4()).expect("test: activity");
             pool.note_saved(key);
-            let sem = Arc::new(Semaphore::new(1));
+            let sem = crate::inference::slots::DecodeBound::with_permits(1);
             let client = reqwest::Client::new();
             let mut admitting = Box::pin(admit_turn(
                 &sem, crate::inference::slots::SlotClass::Turn,
@@ -373,7 +373,7 @@ async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
             .await
     );
     let key = PageKey::mind(Uuid::new_v4()).expect("test: activity");
-    let sem = Arc::new(Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let client = reqwest::Client::new();
     let admission = admit_turn(
         &sem, crate::inference::slots::SlotClass::Turn,

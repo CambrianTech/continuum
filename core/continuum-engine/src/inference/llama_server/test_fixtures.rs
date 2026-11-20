@@ -340,7 +340,7 @@ where
     let pool = endpoint.admit().await.unwrap().pool.unwrap();
     let key = crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
         .unwrap();
-    let sem = Arc::new(tokio::sync::Semaphore::new(4));
+    let sem = crate::inference::slots::DecodeBound::with_permits(4);
     let mut turn = crate::inference::turn_admission::admit_turn(
         &sem, crate::inference::slots::SlotClass::Turn,
         Some(key),

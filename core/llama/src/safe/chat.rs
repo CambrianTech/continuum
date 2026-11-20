@@ -26,6 +26,14 @@ extern "C" {
     fn continuum_chat_render_free(render: *mut c_void);
     fn continuum_chat_render_describe(render: *const c_void, reply: *mut Reply) -> c_int;
     fn continuum_chat_render_parse(render: *const c_void, said: *const Utterance, reply: *mut Reply) -> c_int;
+    fn continuum_chat_reasoning_budget(
+        model: *const sys::llama_model,
+        start_tag: *const c_char,
+        end_tags: *const *const c_char,
+        n_end_tags: usize,
+        budget: i32,
+        reply: *mut Reply,
+    ) -> c_int;
     #[cfg(test)]
     fn continuum_chat_render_content_only(reasoning: c_int, reply: *mut Reply) -> c_int;
 }
@@ -164,6 +172,35 @@ impl ChatRender {
 impl Drop for ChatRender {
     fn drop(&mut self) {
         unsafe { continuum_chat_render_free(self.ptr.as_ptr()) }
+    }
+}
+
+/// What a think budget bounds on a template that thinks: the tokens allowed between its thinking
+/// start tag and the first end tag, which is forced once they are spent (the render describes both).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThinkBound {
+    pub start_tag: String,
+    pub end_tags: Vec<String>,
+    pub budget: u32,
+}
+
+impl super::SamplerChainBuilder {
+    /// Bound the model's thinking: llama.cpp's reasoning-budget sampler (the one llama-server ran)
+    /// counts tokens after the start tag and forces the end tag once `bound.budget` is spent.
+    pub fn reasoning_budget(self, model: &Model, bound: &ThinkBound) -> Result<Self, ChatRefusal> {
+        const STEP: &str = "reasoning budget";
+        let start = c_text(STEP, &bound.start_tag)?;
+        let ends: Vec<CString> = bound.end_tags.iter().map(|tag| c_text(STEP, tag)).collect::<Result<_, _>>()?;
+        let end_ptrs: Vec<*const c_char> = ends.iter().map(|tag| tag.as_ptr()).collect();
+        let budget = i32::try_from(bound.budget).map_err(|_| ChatRefusal { step: STEP, message: format!("think budget {} exceeds i32", bound.budget) })?;
+        let mut reply = Reply::new();
+        // SAFETY: the model and every string outlive the call; the sampler returned is owned by the
+        // chain once added.
+        let status = unsafe {
+            continuum_chat_reasoning_budget(model.as_ptr(), start.as_ptr(), end_ptrs.as_ptr(), end_ptrs.len(), budget, &mut reply)
+        };
+        let sampler = reply.taken(STEP, status)?;
+        Ok(self.add(sampler.as_ptr().cast()))
     }
 }
 

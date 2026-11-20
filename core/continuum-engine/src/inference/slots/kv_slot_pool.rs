@@ -291,11 +291,14 @@ impl KvSlotPool {
             .operations
             .get(slot as usize)
             .ok_or("unknown physical KV slot")?;
+        let started = std::time::Instant::now();
         let permit = operation
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| "physical KV slot admission closed".to_string())?;
+        continuum_base::probe!(class = "inference.slot.permit_waited", slot = slot as u64, ms = started.elapsed().as_millis() as u64,
+            "a turn waited for its physical slot's operation permit");
         Ok(self.operation_permit(slot, permit))
     }
 

@@ -4,6 +4,7 @@
 // update parses with it directly (Codex on #6142: no re-serialized render per partial). Exceptions
 // terminate on this side of the Rust FFI boundary.
 #include "chat.h"
+#include "reasoning-budget.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -11,6 +12,7 @@
 #include <exception>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 struct continuum_chat {
     common_chat_templates_ptr templates;
@@ -140,6 +142,7 @@ extern "C" int continuum_chat_render_describe(const continuum_chat_render *rende
         }
         const common_json description = {
             {"prompt", params.prompt},
+            {"generation_prompt", params.generation_prompt},
             {"grammar", params.grammar},
             {"grammar_lazy", params.grammar_lazy},
             {"grammar_triggers", triggers},
@@ -171,5 +174,28 @@ extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_
         render->parser = common_chat_parser_params(render->params);
         render->parser.reasoning_format = reasoning_format(reasoning);
         reply->out = render.release();
+    }, reply);
+}
+
+// llama.cpp's reasoning-budget sampler (what llama-server ran for reasoning_budget_tokens): counts
+// tokens after `start_tag` and, once `budget` is spent, forces the first of `end_tags`
+// (`n_end_tags` strings). The sampler returned is owned by the chain the caller adds it to.
+extern "C" int continuum_chat_reasoning_budget(const llama_model *model, const char *start_tag,
+        const char *const *end_tags, size_t n_end_tags, int32_t budget, continuum_chat_reply *reply) noexcept {
+    return guarded([&] {
+        const llama_vocab *vocab = llama_model_get_vocab(model);
+        std::vector<llama_tokens> starts = { common_tokenize(vocab, start_tag, false, true) };
+        std::vector<llama_tokens> ends;
+        for (size_t i = 0; i < n_end_tags; ++i) {
+            ends.push_back(common_tokenize(vocab, end_tags[i], false, true));
+        }
+        if (starts.front().empty() || ends.empty() || ends.front().empty()) {
+            throw std::invalid_argument("the template names no thinking start or end tag to bound");
+        }
+        llama_sampler *sampler = common_reasoning_budget_init(vocab, starts, ends, ends.front(), budget);
+        if (sampler == nullptr) {
+            throw std::runtime_error("llama.cpp made no reasoning-budget sampler");
+        }
+        reply->out = sampler;
     }, reply);
 }

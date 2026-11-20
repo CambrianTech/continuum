@@ -41,7 +41,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .local()
             .context_window(max_ctx)
             .max_output_tokens(output_window)
-            .protocols(crate::ai::adapter::NativeProtocols::GrammarConstrained)
+            .protocols(crate::ai::adapter::NativeProtocols::ModelTemplate)
             .build()
     }
 
@@ -133,14 +133,13 @@ impl AIProviderAdapter for LlamaCppAdapter {
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
-        _dispatched: crate::ai::adapter::Dispatched,
+        dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
-        let allocation = match self.generation {
-            GenerationSupport::EmbeddingOnly => return Err("embedding-only adapter does not support text generation".into()),
-            GenerationSupport::Enabled { context } => GenerationAllocation::new(
-                std::num::NonZeroU32::new(context).ok_or("invalid zero generation allocation")?
-            ),
-        };
+        let allocation = self.allocation()?;
+        // Her think term: a stated zero budget renders no thinking; any other budget is bounded by
+        // the template's own thinking tags below; none stated is the model's default.
+        let think_budget = dispatched.terms().think.budget();
+        let thinking = !matches!(think_budget, Some(budget) if budget.0 == 0);
         let backend = self.ensure_loaded()?;
 
         // Use the model's OWN chat template (from GGUF metadata) via
@@ -250,21 +249,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // A text turn renders through the model's own chat handling with her tools (S2b): the same
         // wire messages and tools serving sends, and one render kept to parse what she writes. Only a
         // media turn builds the plain template's messages and media bytes (mtmd has no chat render).
+        let render_body = |body: &serde_json::Value| -> Result<llama::ChatRender, super::chat_turn::ChatTurnError> {
+            Ok(backend.render_chat_turn(&body.to_string(), &registry_template, llama::ReasoningFormat::Auto)?)
+        };
         let (prompt, collected_media, chat_render) = if !super::chat_turn::carries_media(&request) {
             let rendered = continuum_base::time_sync!("inference.render_chat", {
-                super::chat_turn::chat_request(&request).and_then(|body| {
-                    Ok(backend.render_chat_turn(&body.to_string(), registry_template, llama::ReasoningFormat::Auto)?)
-                })
+                super::chat_turn::thinking_request(&request, thinking).and_then(|body| render_body(&body))
             });
-            let render = match rendered {
-                Ok(render) => render,
-                Err(refused) => return Err(refused.to_string()),
-            };
-            let prompt = match super::chat_turn::prompt_of(&render) {
-                Ok(prompt) => prompt,
-                Err(refused) => return Err(refused.to_string()),
-            };
-            (prompt, Vec::new(), Some(render))
+            let turn = rendered.and_then(|render| {
+                let described = super::chat_turn::described(&render)?;
+                let prompt = super::chat_turn::prompt_of(&described)?;
+                Ok((prompt, render, described))
+            });
+            let (prompt, render, described) = turn.map_err(|refused| refused.to_string())?; // the adapter trait's error is text
+            (prompt, Vec::new(), Some((render, described)))
         } else {
             let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
             let mut messages: Vec<llama::ChatMsg> = Vec::new();
@@ -328,7 +326,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             // bottlenecks. Bracketing it lets the operator subtract it
             // from `inference.forward.*` cleanly.
             let prompt = continuum_base::time_sync!("inference.render_chat", {
-                let template = backend.model_chat_template().or_else(registry_template);
+                let template = backend.model_chat_template().or_else(&registry_template);
                 llama::render_chat(template.as_deref(), &messages, true)
             })?;
             (prompt, collected_media, None)
@@ -342,7 +340,19 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .max_tokens
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or_else: a caller with no cap decodes to the model's trained context, never a guessed one
-        let sampling = sampling_config_from_request(&request);
+        let mut sampling = sampling_config_from_request(&request);
+        // Her think budget, bounded by the template's own thinking tags (what llama-server enforced
+        // for reasoning_budget_tokens). No budget stated is the model's default.
+        sampling.think = match (think_budget, &chat_render) {
+            (Some(budget), Some((_, described))) => described.think_bound(budget.0),
+            _ => None,
+        };
+        // Where her next act stops matching this prompt (her view, CONTINUUM-ENGINE 4.15): the engine
+        // checkpoints her there and her next act prefills only what follows.
+        let stable_prefix = match &chat_render {
+            Some((_, described)) => super::chat_turn::view_text(&request, described, thinking, &render_body).map_err(|refused| refused.to_string())?,
+            None => None,
+        };
         // Stop sequences = caller-supplied + model's registry-declared
         // text-form stops. Some GGUFs (the forged qwen3.5 included) carry
         // the wrong tokenizer.ggml.eos_token_id, so is_eog_token never
@@ -360,10 +370,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 }
             }
         }
+        // The template's own extra stops (a tool-call format that ends a turn on a marker).
+        let template_stops: Vec<String> = chat_render.iter().flat_map(|(_, described)| described.additional_stops.iter()).filter(|stop| !stop_owned.contains(stop)).cloned().collect();
+        stop_owned.extend(template_stops);
 
         let gen_start = Instant::now();
         let backend_for_blocking = backend.clone();
         let prompt_for_blocking = prompt.clone();
+        let stable_for_blocking = stable_prefix.clone();
         let stop_for_closure = stop_owned.clone();
         let sampling_for_closure = sampling.clone();
         // Parse the wire-format persona_id (Option<String> on the public
@@ -412,7 +426,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .collect();
                     backend_for_blocking.generate_for_persona(
                         allocation,                        persona_id,
-                        &prompt_for_blocking,
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref() },
                         max_tokens,
                         sampling_for_closure,
                         &stop_refs,
@@ -495,8 +509,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // is its text.
         let end = super::chat_turn::generation_end(tokens, max_tokens);
         let (text, reasoning, tool_calls) = match &chat_render {
-            Some(render) => match super::chat_turn::parse_turn(render, &written, end) {
-                Ok(turn) => (turn.text, turn.reasoning, turn.tool_calls),
+            Some((render, _)) => match super::chat_turn::parse_turn(render, &written, end) {
+                Ok(turn) => {
+                    turn.probe_if_empty(&written, tokens, end, &stop_owned);
+                    (turn.text, turn.reasoning, turn.tool_calls)
+                }
                 Err(refused) => return Err(refused.to_string()),
             },
             None => (written, None, None),

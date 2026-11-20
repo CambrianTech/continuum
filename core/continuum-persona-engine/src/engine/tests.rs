@@ -3,7 +3,7 @@
 //! custody never lost to a refusal.
 
 use super::*;
-use crate::persona::{Epoch, PersonaParts, PersonaUnit};
+use crate::persona::{Epoch, MindId, PersonaParts, PersonaUnit};
 use crate::residency::{Fence, FenceTag, Tier};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -49,23 +49,28 @@ struct Recording {
 }
 impl Tier for Recording {
     type Fence = Pending;
+    type Blocks = ();
     fn name(&self) -> &'static str {
         "recording"
     }
-    fn begin(&mut self, what: FenceTag) -> Result<Pending, TierRefusal> {
-        if self.refuse.get() == Some(what.direction) {
-            return Err(TierRefusal { tier: "recording", persona: what.persona, reason: "refused by the test", native: Native::NotAsked });
+    fn blocks_for(&mut self, _mind: MindId) -> Result<(), TierRefusal> {
+        Ok(())
+    }
+    fn begin(&mut self, mind: MindId, (): &mut (), direction: Direction) -> Result<Pending, TierRefusal> {
+        if self.refuse.get() == Some(direction) {
+            return Err(TierRefusal { tier: "recording", mind, reason: "refused by the test", native: Native::NotAsked });
         }
+        let tag = FenceTag { mind, direction };
         let landed = Rc::new(Cell::new(false));
-        self.moves.borrow_mut().push((what, Rc::clone(&landed)));
-        Ok(Pending { tag: what, landed })
+        self.moves.borrow_mut().push((tag, Rc::clone(&landed)));
+        Ok(Pending { tag, landed })
     }
 }
 impl Execute for Recording {
     type Work = ();
     type Done = Pending;
-    fn submit(&mut self, persona: PersonaId, epoch: Epoch, (): ()) -> Result<Pending, TierRefusal> {
-        let tag = FenceTag { persona, epoch, direction: Direction::In };
+    fn submit(&mut self, mind: MindId, (): ()) -> Result<Pending, TierRefusal> {
+        let tag = FenceTag { mind, direction: Direction::In };
         let landed = Rc::new(Cell::new(false));
         self.decodes.borrow_mut().push((tag, Rc::clone(&landed)));
         Ok(Pending { tag, landed })
@@ -75,6 +80,15 @@ impl Execute for Recording {
             landed.set(true);
         }
         Ok(())
+    }
+    type Checkpoint = Option<u32>;
+    fn checkpoint(&mut self, _mind: MindId, into: &mut Option<u32>) -> Result<u32, TierRefusal> {
+        let at = self.decodes.borrow().len() as u32; // a test log never holds 4 billion steps
+        *into = Some(at);
+        Ok(at)
+    }
+    fn rewind(&mut self, mind: MindId, from: &Option<u32>) -> Result<(), TierRefusal> {
+        from.map(|_| ()).ok_or(TierRefusal { tier: "recording", mind, reason: "nothing taken", native: Native::NotAsked })
     }
 }
 
@@ -117,7 +131,7 @@ fn a_step_runs_only_for_the_active_mind_and_one_at_a_time() {
     assert!(h.engine.stage(mind(2)).is_ok());
 
     assert_eq!(h.engine.submit(()), Ok(()));
-    let asked = h.decodes.borrow().last().map(|(tag, _)| tag.persona);
+    let asked = h.decodes.borrow().last().map(|(tag, _)| tag.mind.persona);
     assert_eq!(asked, Some(id(1)), "the tier decodes the active mind, never the staged one");
     assert_eq!(h.engine.submit(()), Err(DecodeError::InFlight { active: id(1) }), "one decode in flight");
     land_last(&h.decodes);
@@ -159,7 +173,7 @@ fn the_previous_mind_retires_after_the_bind_and_is_released_once_her_copy_out_la
     assert_eq!(h.engine.handoff(), Ok(Some(id(1))));
     assert_eq!(h.engine.active(), Some(id(2)));
     let last = h.moves.borrow().last().map(|(tag, _)| *tag);
-    assert_eq!(last, Some(FenceTag { persona: id(1), epoch: Epoch(1), direction: Direction::Out }), "her copy-out began after the bind");
+    assert_eq!(last, Some(FenceTag { mind: MindId { persona: id(1), epoch: Epoch(1) }, direction: Direction::Out }), "her copy-out began after the bind");
 
     assert!(matches!(h.engine.release_retired(), Err(RetireRefusal::NotLanded { .. })));
     land_last(&h.moves);
@@ -214,4 +228,48 @@ fn a_refused_copy_out_keeps_her_retiring_until_it_begins() {
     assert_eq!(h.engine.retry_retire(), Ok(()));
     land_last(&h.moves);
     assert_eq!(h.engine.release_retired().map(|unit| unit.id()), Ok(id(1)));
+}
+
+// what this catches (Codex on #6140 at 17c208cf5): a refused copy-out skipped by the next switch, or
+// the retiring mind handed out twice. finish_retirement keeps her retiring while her copy-out is
+// refused or still moving, gives her back exactly once, and an A/B/A switch then holds one of each.
+#[test]
+fn a_refused_copy_out_is_finished_before_the_next_switch_and_given_back_once() {
+    let mut h = with_one_active();
+    assert!(h.engine.stage(mind(2)).is_ok());
+    land_last(&h.moves);
+    h.refuse.set(Some(Direction::Out));
+    assert!(matches!(h.engine.handoff(), Err(HandoffError::CopyOut { .. })));
+
+    assert!(matches!(h.engine.finish_retirement(), Err(RetireError::CopyOut(_))), "still refused");
+    assert_eq!(h.engine.retiring(), Some(id(1)), "she stays in custody");
+    h.refuse.set(None);
+    assert!(matches!(h.engine.finish_retirement(), Err(RetireError::Release(RetireRefusal::NotLanded { .. }))), "begun, not landed");
+    land_last(&h.moves);
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.map(|unit| unit.id())), Ok(Some(id(1))));
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.is_none()), Ok(true), "given back once");
+
+    assert!(h.engine.stage(mind(1)).is_ok(), "A comes back after B");
+    land_last(&h.moves);
+    assert_eq!(h.engine.handoff(), Ok(Some(id(2))));
+    land_last(&h.moves);
+    assert_eq!(h.engine.finish_retirement().map(|unit| unit.map(|unit| unit.id())), Ok(Some(id(2))));
+    assert_eq!((h.engine.active(), h.engine.staged(), h.engine.retiring()), (Some(id(1)), None, None));
+}
+
+// what this catches (CONTINUUM-ENGINE 4.16, restore is the norm): a stop that cannot take the last
+// mind out of the stream without staging another, so her suspend would move her blocks behind the
+// pipeline's back. With nobody to follow, the active mind retires through the same copy-out a
+// handoff begins, and is given back once it lands; nobody is active after.
+#[test]
+fn the_active_mind_retires_with_nobody_to_follow_through_the_same_copy_out() {
+    let mut h = with_one_active();
+    assert_eq!(h.engine.retire_active(), Ok(Some(id(1))));
+    assert_eq!(h.engine.active(), None);
+    let last = h.moves.borrow().last().map(|(tag, _)| *tag);
+    assert_eq!(last, Some(FenceTag { mind: MindId { persona: id(1), epoch: Epoch(1) }, direction: Direction::Out }), "her copy-out began");
+    assert!(matches!(h.engine.release_retired(), Err(RetireRefusal::NotLanded { .. })));
+    land_last(&h.moves);
+    assert_eq!(h.engine.release_retired().map(|unit| unit.id()), Ok(id(1)));
+    assert_eq!(h.engine.retire_active(), Ok(None), "nobody active: nothing retires");
 }

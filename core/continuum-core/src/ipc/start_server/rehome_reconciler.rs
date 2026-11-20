@@ -83,7 +83,7 @@ pub(super) fn spawn_rehome_reconciler(
             let adapter = match reason {
                 crate::cognition::persona_workspace::RehomeReason::WindowChanged => None,
                 crate::cognition::persona_workspace::RehomeReason::ModelChanged => {
-                    match crate::persona::supervisor::build_served_adapter(&snap).await {
+                    match crate::persona::supervisor::node_engine_adapter().await {
                         Ok(a) => Some(a),
                         Err(e) => {
                             tracing::warn!(

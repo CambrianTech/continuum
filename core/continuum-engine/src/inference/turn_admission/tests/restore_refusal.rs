@@ -63,7 +63,7 @@ async fn rig(dir: &std::path::Path, cells: Option<u64>) -> Rig {
 
 impl Rig {
     /// One act of `mind`: admitted, then her slot holds `tokens`.
-    async fn act(&self, lanes: &Arc<Semaphore>, client: &reqwest::Client, mind: u128, tokens: u64) -> PageIn {
+    async fn act(&self, lanes: &crate::inference::slots::DecodeBound, client: &reqwest::Client, mind: u128, tokens: u64) -> PageIn {
         act(lanes, &self.pool, client, &self.root, &self.slots, mind, tokens).await
     }
 
@@ -71,7 +71,7 @@ impl Rig {
     /// dropped ungenerated, as a cancelled turn would be. Deferred when admission refuses or is
     /// still waiting after the adapter's own page-switch bound on an unmeasured node
     /// ([`kv_page_wedge_bound`]): a restore that has not resolved by then is not resolving.
-    async fn attempt(&self, lanes: &Arc<Semaphore>, client: &reqwest::Client, mind: u128, tokens: u64) -> Attempt {
+    async fn attempt(&self, lanes: &crate::inference::slots::DecodeBound, client: &reqwest::Client, mind: u128, tokens: u64) -> Attempt {
         let admitted = tokio::time::timeout(
             crate::inference::turn_admission::kv_page_wedge_bound(0),
             admit_turn(lanes, crate::inference::slots::SlotClass::Turn, Some(key(mind)), Some(self.pool.clone()), client, &self.root, tokens, std::time::Duration::ZERO),
@@ -107,7 +107,7 @@ impl Rig {
 /// confirmed; two others resident, one holding 70,000 cells (more than the 66,552 the pool leaves
 /// her page). Her return evicts the small resident and asks the engine to restore her page,
 /// which the engine refuses: "failed to find 59144 available cells".
-async fn refused_for_free_cells(dir: &std::path::Path, lanes: &Arc<Semaphore>, client: &reqwest::Client) -> Rig {
+async fn refused_for_free_cells(dir: &std::path::Path, lanes: &crate::inference::slots::DecodeBound, client: &reqwest::Client) -> Rig {
     let cells = free_cells();
     let rig = rig(dir, Some(cells.pool_cells)).await;
     rig.act(lanes, client, 1, cells.page_cells).await;
@@ -133,7 +133,7 @@ fn reclaim(slots: &Slots, mind: u128) {
 async fn a_capacity_refusal_keeps_her_confirmation_across_a_restart() {
     let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let core_a = refused_for_free_cells(dir.path(), &lanes, &client).await;
     let outcome = core_a.attempt(&lanes, &client, 1, cells.page_cells).await;
     let refused = core_a.refused();
@@ -159,7 +159,7 @@ async fn a_capacity_refusal_keeps_her_confirmation_across_a_restart() {
 async fn verified_reclamation_restores_her_without_a_cold_prefill() {
     let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let core = refused_for_free_cells(dir.path(), &lanes, &client).await;
     let first = core.attempt(&lanes, &client, 1, cells.page_cells).await;
     assert!(!matches!(first, Attempt::Cold(_)), "a capacity refusal handed her a cold turn: {first:?}");
@@ -181,7 +181,7 @@ async fn verified_reclamation_restores_her_without_a_cold_prefill() {
 async fn a_page_larger_than_the_whole_pool_stays_confirmed_and_is_never_asked_for() {
     let oversize = day().oversize.value;
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let [first_page, second_page] = oversize.pages;
     let larger = rig(dir.path(), None).await;
     larger.act(&lanes, &client, 1, first_page).await;
@@ -210,7 +210,7 @@ async fn a_page_larger_than_the_whole_pool_stays_confirmed_and_is_never_asked_fo
 #[ignore = "ONE-ACT slice 1b: an incompatible destination keeps the artifact and its provenance"]
 async fn an_incompatible_destination_keeps_the_page_for_a_compatible_one() {
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let core_a = rig(dir.path(), None).await;
     for (mind, tokens) in [(1, 100), (2, 200), (3, 300)] {
         core_a.act(&lanes, &client, mind, tokens).await;
@@ -239,7 +239,7 @@ async fn an_incompatible_destination_keeps_the_page_for_a_compatible_one() {
 #[tokio::test]
 async fn proven_corruption_invalidates_only_the_affected_page() {
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let core = rig(dir.path(), None).await;
     // Minds 1 and 2 are paged out by 3 and 4 (the cheapest tail goes first).
     for (mind, tokens) in [(1, 100), (2, 200), (3, 300), (4, 400)] {
@@ -264,7 +264,7 @@ async fn proven_corruption_invalidates_only_the_affected_page() {
 async fn concurrent_admissions_never_double_spend_free_cells() {
     let cells = free_cells();
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let larger = rig(dir.path(), None).await;
     larger.act(&lanes, &client, 1, cells.page_cells).await;
     larger.act(&lanes, &client, 2, cells.others_resident_cells).await;
@@ -298,7 +298,7 @@ fn a_timeout_and_a_late_receipt_retain_custody() {
 #[tokio::test]
 async fn a_completed_save_survives_an_interrupted_ledger_replace() {
     let dir = tempfile::tempdir().expect("test: page dir");
-    let (client, lanes) = (reqwest::Client::new(), Arc::new(Semaphore::new(2)));
+    let (client, lanes) = (reqwest::Client::new(), crate::inference::slots::DecodeBound::with_permits(2));
     let core_a = rig(dir.path(), None).await;
     for (mind, tokens) in [(1, 100), (2, 200), (3, 300)] {
         core_a.act(&lanes, &client, mind, tokens).await;

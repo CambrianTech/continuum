@@ -61,6 +61,7 @@ pub mod weights_stamp;
 pub mod engine_residency;
 pub mod llama_server;
 pub mod llamacpp_adapter;
+pub mod in_process_engine;
 pub mod measured_hold;
 pub mod page_ref;
 pub mod slots;

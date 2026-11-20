@@ -385,6 +385,14 @@ impl RecentMove {
     }
 }
 
+/// Whether a native exchange can be continued as native protocol: every call has a nonempty id,
+/// no id repeats, and the results answer exactly those calls in order. The one rule both the
+/// receipt's form (`messages.rs`) and the refusal (`active_protocol_error`) read.
+pub(crate) fn native_ids_correlate(calls: &[&str], results: &[&str]) -> bool {
+    let unique: std::collections::HashSet<_> = calls.iter().copied().collect();
+    calls == results && unique.len() == calls.len() && calls.iter().all(|id| !id.is_empty())
+}
+
 impl PromptMessages {
     /// Her act's tail as `judged` (by her view, or every item whole before her view is placed), in
     /// its slots: the framing follows her view in the history (the fit's optional tail); the ask, her
@@ -501,8 +509,7 @@ impl PromptMessages {
                 }
             }
         }
-        let unique: std::collections::HashSet<_> = calls.iter().copied().collect();
-        (calls != results || unique.len() != calls.len() || calls.iter().any(|id| id.is_empty()))
+        (!native_ids_correlate(&calls, &results))
             .then(|| "active tool receipt has missing, duplicate, or mismatched native call/result IDs; refusing an invalid continuation".to_string())
     }
 

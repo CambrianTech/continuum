@@ -1,7 +1,7 @@
 //! Completion of a transfer, tied to what it moves. Readiness is never exposed before its fence
-//! completes, and a fence for another persona, epoch or direction is never accepted.
+//! completes, and a fence for another mind or direction is never accepted.
 
-use crate::persona::{Epoch, PersonaId};
+use crate::persona::MindId;
 
 /// Which way a transfer moves her blocks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,11 +12,10 @@ pub enum Direction {
     Out,
 }
 
-/// What a fence moves: whose blocks, which generation of them, which way.
+/// What a fence moves: whose blocks (her mind: persona and generation), which way.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FenceTag {
-    pub persona: PersonaId,
-    pub epoch: Epoch,
+    pub mind: MindId,
     pub direction: Direction,
 }
 

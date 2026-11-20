@@ -177,9 +177,37 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_synchronize(self.ptr.as_ptr()) }
     }
 
+    /// How many times this context has reused a built compute graph instead of rebuilding it
+    /// (libllama's own counter, `llama_perf_context().n_reused`). A decode that rebuilds its graph
+    /// pays the build on the CPU before the device starts.
+    pub fn graphs_reused(&self) -> u64 {
+        // SAFETY: `self.ptr` is a live context; the call only reads its counters.
+        u64::try_from(unsafe { sys::llama_perf_context(self.ptr.as_ptr()) }.n_reused).unwrap_or(0) // unwrap_or: libllama's counter starts at 0 and only counts up; a negative reads as none reused
+    }
+
     /// Context window size.
     pub fn n_ctx(&self) -> u32 {
         unsafe { sys::llama_n_ctx(self.ptr.as_ptr()) }
+    }
+
+    /// The logical batch the context was created with (llama.cpp may clamp what was asked).
+    pub fn n_batch(&self) -> u32 {
+        unsafe { sys::llama_n_batch(self.ptr.as_ptr()) }
+    }
+
+    /// The physical micro-batch the context was created with.
+    pub fn n_ubatch(&self) -> u32 {
+        unsafe { sys::llama_n_ubatch(self.ptr.as_ptr()) }
+    }
+
+    /// The window one sequence may use, as the context applied it.
+    pub fn n_ctx_seq(&self) -> u32 {
+        unsafe { sys::llama_n_ctx_seq(self.ptr.as_ptr()) }
+    }
+
+    /// The sequences the context holds.
+    pub fn n_seq_max(&self) -> u32 {
+        unsafe { sys::llama_n_seq_max(self.ptr.as_ptr()) }
     }
 
     /// Bytes llama.cpp has actually committed to the KV cache for the given

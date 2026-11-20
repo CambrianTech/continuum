@@ -110,6 +110,11 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::HeldCustody> {
         let lane = crate::inference::lane_registry::live_lane()
             .filter(|lane| lane.root_url() == root)
             .map(|lane| lane.incarnation());
+        if !holds_custody(route, &residents, lane.is_some()) {
+            continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_skipped", endpoint = %root,
+                "an endpoint nothing launched, discovered or recorded a lane for holds no resident: the stop does not claim it");
+            return None;
+        }
         // Before the drain: a stop cut during its checkpoint still leaves whom it was saving.
         continuum_base::probe!(class = "inference.kv_page.stop_checkpoint_started", endpoint = %root,
             route = ?route, residents = ?residents, lane = ?lane,
@@ -143,14 +148,23 @@ async fn checkpoint_every_endpoint() -> Vec<crate::runtime::HeldCustody> {
         );
         // Retention with no identity still counts against the stop's durability; it only cannot
         // authorize ending a process.
-        crate::runtime::HeldCustody {
+        Some(crate::runtime::HeldCustody {
             endpoint: root,
             process: process.map(|(pid, started_s)| crate::runtime::SettledProcess { pid, started_s }),
             state: held,
-        }
+        })
     }))
     .await;
-    custody
+    custody.into_iter().flatten().collect()
+}
+
+/// Whether the stop owes `endpoint` a checkpoint: this core launched its engine, its pool was
+/// asked (discovered, or latched without paging), or a live lane is recorded there. An endpoint
+/// only ever looked up holds no resident this core placed; claiming it printed UNSAVED for an
+/// M5 whose minds the persona engine had preserved (14:54Z 2026-11-19, Codex traced the insert).
+/// Real adopted custody (a discovered pool, a recorded lane) is still checkpointed or retained.
+fn holds_custody<T, Why>(route: StopRoute, pool: &Probed<T, Why>, lane_recorded: bool) -> bool {
+    matches!(route, StopRoute::Owned) || !matches!(pool, Probed::NotAsked) || lane_recorded
 }
 
 /// Drain an adopted endpoint's acts and save its residents through the adopted checkpoint owner,
@@ -324,6 +338,31 @@ mod tests {
         assert!(gate.admit().is_none(), "nothing pages once the node is stopping");
         drop(permit); // the save's terminal receipt and ledger update
         assert_eq!(settling.await, PageIoSettled { in_flight_at_close: 1 });
+    }
+
+    // what this catches (the M5, 2026-11-19 14:54Z; Codex traced it): a stop that claimed custody
+    // of an endpoint only ever looked up, so its receipt said UNSAVED while the persona engine had
+    // preserved every mind. A lookup registers nothing; an endpoint nothing launched, discovered or
+    // recorded a lane for is not the stop's; a discovered pool (real adopted custody) still is.
+    #[test]
+    fn only_a_registered_endpoint_is_the_stops_to_checkpoint() {
+        let dir = super::super::SlotDirectory { endpoints: dashmap::DashMap::new() };
+        let looked_up = "http://127.0.0.1:58057";
+        assert!(matches!(dir.get(looked_up), Probed::NotAsked));
+        assert!(!dir.page_admission_known(looked_up) && dir.page_discovery_generation(looked_up).is_none());
+        assert!(dir.endpoints.is_empty(), "a lookup registers no endpoint");
+
+        let unprobed = dir.endpoint(looked_up);
+        let route = StopRoute::of(&unprobed.state.lock());
+        let pool = unprobed.state.lock().pool().cloned();
+        assert!(!holds_custody(route, &pool, false), "never discovered, no lane: holds no resident");
+        assert!(holds_custody(route, &pool, true), "a recorded lane is a live adopted engine: still checkpointed");
+
+        let adopted = "http://127.0.0.1:58058";
+        dir.ensure_pool(adopted, 2);
+        let known = dir.endpoint(adopted);
+        let (route, pool) = { let state = known.state.lock(); (StopRoute::of(&state), state.pool().cloned()) };
+        assert!(holds_custody(route, &pool, false), "a discovered pool is real custody");
     }
 
     // what this catches: a drain that waits when nothing was in flight.

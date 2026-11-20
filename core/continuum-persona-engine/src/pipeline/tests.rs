@@ -61,7 +61,7 @@ fn mind(n: u128, drops: &Drops) -> Unit {
 /// A transfer for persona `n`, epoch 1, in `direction`, and the switch that lands it.
 fn transfer(n: u128, direction: Direction, drops: &Drops) -> (Transfer, Rc<Cell<bool>>) {
     let landed = Rc::new(Cell::new(false));
-    let tag = FenceTag { persona: id(n), epoch: Epoch(1), direction };
+    let tag = FenceTag { mind: crate::persona::MindId { persona: id(n), epoch: Epoch(1) }, direction };
     (Transfer { tag, landed: Rc::clone(&landed), drops: drops.clone() }, landed)
 }
 
@@ -100,7 +100,7 @@ fn a_refused_stage_returns_the_unit_and_its_fence() {
     assert_eq!(refused.reason, StageRefusal::NextOccupied { staged: id(1) });
     assert_eq!(drops.count(), 0, "nothing was dropped by the refusal");
     let (unit, fence) = refused.returned;
-    assert_eq!((unit.id(), fence.tag().persona), (id(2), id(2)), "custody came back whole");
+    assert_eq!((unit.id(), fence.tag().mind.persona), (id(2), id(2)), "custody came back whole");
     drop((unit, fence));
     assert_eq!(drops.count(), 2, "the caller, not the pipeline, released them");
 
@@ -178,11 +178,15 @@ struct TestTier {
 }
 impl crate::residency::Tier for TestTier {
     type Fence = Transfer;
+    type Blocks = Blocks;
     fn name(&self) -> &'static str {
         "test"
     }
-    fn begin(&mut self, what: FenceTag) -> Result<Transfer, crate::residency::TierRefusal> {
-        Ok(Transfer { tag: what, landed: Rc::new(Cell::new(true)), drops: self.drops.clone() })
+    fn blocks_for(&mut self, _mind: crate::persona::MindId) -> Result<Blocks, crate::residency::TierRefusal> {
+        Ok(Blocks(self.drops.clone()))
+    }
+    fn begin(&mut self, mind: crate::persona::MindId, _blocks: &mut Blocks, direction: Direction) -> Result<Transfer, crate::residency::TierRefusal> {
+        Ok(Transfer { tag: FenceTag { mind, direction }, landed: Rc::new(Cell::new(true)), drops: self.drops.clone() })
     }
 }
 
@@ -200,13 +204,15 @@ fn the_completion_owner_begins_exactly_the_described_copy_out() {
     bind(&mut roles, 2, &drops);
 
     let described = roles.awaiting_copy_out().expect("test: she awaits her copy-out"); // expect: the test's own precondition
-    assert_eq!(described, FenceTag { persona: id(1), epoch: Epoch(1), direction: Direction::Out });
+    assert_eq!(described, FenceTag { mind: crate::persona::MindId { persona: id(1), epoch: Epoch(1) }, direction: Direction::Out });
 
-    let stale = tier.begin(FenceTag { epoch: Epoch(0), ..described }).expect("test: the tier begins what it is told"); // expect: the test's own precondition
+    let mut blocks = Blocks(drops.clone());
+    let older = crate::persona::MindId { epoch: Epoch(0), ..described.mind };
+    let stale = tier.begin(older, &mut blocks, described.direction).expect("test: the tier begins what it is told"); // expect: the test's own precondition
     let refused = roles.begin_retire(stale).err().expect("test: another generation's copy-out"); // expect: the test's own precondition
     assert!(matches!(refused.reason, RetireRefusal::WrongFence { .. }));
 
-    let copy_out = tier.begin(described).expect("test: begin the described transfer"); // expect: the test's own precondition
+    let copy_out = tier.begin(described.mind, &mut blocks, described.direction).expect("test: begin the described transfer"); // expect: the test's own precondition
     assert!(roles.begin_retire(copy_out).is_ok());
     assert_eq!(roles.awaiting_copy_out(), None, "begun: no longer awaiting");
     assert_eq!(roles.release_retired().map(|u| u.epoch()), Ok(Epoch(1)));

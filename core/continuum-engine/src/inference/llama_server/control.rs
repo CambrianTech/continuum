@@ -6,6 +6,9 @@ use super::*;
 pub enum LlamaServerError {
     #[error("serving lifecycle request was superseded before admission")]
     Superseded,
+    /// The node's in-process engine refused, by its typed cause.
+    #[error(transparent)]
+    InProcess(#[from] crate::inference::in_process_engine::InProcessRefusal),
     /// The server isn't answering — not yet spawned, or down. The reconcile
     /// loop treats this as "no active model" and (re)spawns, rather than failing.
     #[error("llama-server unreachable: {0}")]

@@ -31,10 +31,18 @@ pub(super) fn register_serving_daemon(
             std::io::Error::other(format!("serving pin store needs the continuum home: {e}"))
         })?,
     );
-    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::new(
+    // The node's ONE engine, in this process: serving drives it through the same control seam it
+    // drove llama-server through, and publishes it once so every resident (and the re-home
+    // reconciler) binds to this handle. Nothing is launched for residents; the weights load once.
+    let engine = Arc::new(crate::inference::in_process_engine::InProcessEngine::new());
+    if crate::inference::in_process_engine::install(Arc::clone(&engine)).is_err() {
+        return Err(std::io::Error::other("the node's in-process engine was installed twice"));
+    }
+    let serving_daemon = Arc::new(crate::modules::serving_daemon::ServingDaemonModule::with_control(
         gpu_manager.clone(),
         system_monitor.clone(),
         resource_daemon.clone(),
+        engine,
         model_catalog.clone(),
         pin_store,
     ));

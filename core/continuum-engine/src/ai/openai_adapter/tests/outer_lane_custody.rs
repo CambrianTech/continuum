@@ -45,7 +45,7 @@ async fn adapter_parks_without_caller_lane_and_reacquires_before_http(
     let endpoints = adapter.endpoints();
     let root = endpoints.root();
     let pool = directory().ensure_pool(root, 1);
-    let sem = Arc::new(tokio::sync::Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let held = admit_turn(
         &sem,
         SlotClass::Turn,

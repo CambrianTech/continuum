@@ -20,15 +20,17 @@
 #![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 mod flow;
+mod outbox;
 mod qos;
 mod scheduler;
 mod stage;
 pub mod sim;
 
 pub use flow::{Flow, Grant, Refused};
+pub use outbox::Outbox;
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
-pub use stage::{spawn_stage, Overflow, PushError, Stage, StageInput, Stopped};
+pub use stage::{spawn_stage, Capacity, Overflow, PushError, Stage, StageInput, StageWorker, Stopped};
 
 #[cfg(test)]
 mod tests;

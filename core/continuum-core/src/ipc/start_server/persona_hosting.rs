@@ -184,11 +184,10 @@ pub(super) fn start_persona_host(
                     .and_then(|g| g.cache_geometry().map(|(_, l)| l)),
             ),
         instance_manager.clone(),
-        // Persona reasoning binds to whatever the serving daemon has live,
-        // read off its published ServingSnapshot (not a probe of our own).
-        // The OpenAI-compatible `/v1` transport gives native function-calling
-        // (the persona's HANDS actually fire) for free, vs the in-process
-        // llama.cpp adapter which silently dropped tools. Joel 2026-06-21.
+        // Every local resident reasons through the node's ONE in-process engine
+        // (one model, one persona scheduler: one mind decodes at a time). Tools
+        // ride the prompt (`GrammarConstrained` -> `JsonInPrompt`) and cognition
+        // parses the call from her text, so no local HTTP server is in her path.
         // Wrapped so a persona whose durable override names a `remote_peer` gets
         // an `AircRemoteInferenceAdapter` over the grid instead of a local lane
         // (card 1d2f65e7, slice 2 — slice 1 #3799 made the override durable but
@@ -202,7 +201,7 @@ pub(super) fn start_persona_host(
         // and refuse every remote persona for the process lifetime.
         std::sync::Arc::new(
             crate::persona::remote_lane_factory::RemoteLaneAdapterFactory::new(
-                std::sync::Arc::new(crate::persona::supervisor::ServedModelPersonaAdapterFactory),
+                std::sync::Arc::new(crate::persona::supervisor::SharedEnginePersonaAdapterFactory::new()),
                 crate::paths::continuum_root(),
                 airc_interceptor_cell.clone(),
             ),

@@ -377,12 +377,6 @@ vulkan = ["llama/vulkan", "continuum-kernel/vulkan", "continuum-engine/vulkan", 
 rocm = ["ort/rocm", "continuum-engine/rocm"]
 directml = ["ort/directml", "continuum-engine/directml"]
 openvino = ["ort/openvino", "continuum-engine/openvino"]
-# MLX — Apple Silicon native inference path (phases A–E of continuum#897).
-# Only compiles on macOS/aarch64; the adapter module is guarded by this feature
-# AND by cfg(target_os = "macos") so non-Mac targets simply don't see the code.
-# Phase A: flag only, no mlx-rs dep yet. Phase B will add `dep:mlx-rs` back
-# once we're writing forward() and can ensure full Xcode is installed.
-mlx = ["continuum-engine/mlx"]
 accelerate = ["candle-core/accelerate", "candle-nn/accelerate", "candle-transformers/accelerate"]
 # Linux: swap ORT from static (download-binaries) to dynamic loading.
 # Avoids protobuf symbol conflict with webrtc-sys. macOS uses static (default).

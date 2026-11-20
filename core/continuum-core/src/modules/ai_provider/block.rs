@@ -37,19 +37,29 @@ impl AIProviderModule {
                 if snap.ready {
                     let want = (snap.base_url.clone(), snap.active_model.clone());
                     if synced.as_ref() != Some(&want) {
-                        match build_gateway_adapter(want.0.clone(), want.1.as_deref()).await {
+                        // The node's in-process engine, when serving runs one, IS the served model:
+                        // register that one handle (the gateway and every local caller reach the same
+                        // weights), never an HTTP client to a server nothing launched.
+                        let built = match crate::inference::in_process_engine::node_engine().and_then(|e| e.adapter()) {
+                            Some(engine) => Ok(engine),
+                            None => build_gateway_adapter(want.0.clone(), want.1.as_deref())
+                                .await
+                                .map(|a| Arc::new(a) as Arc<dyn crate::ai::adapter::AIProviderAdapter>),
+                        };
+                        match built {
                             Ok(a) => {
                                 let mut reg = registry_arc.write().await;
                                 // Replace, never append: deregister sweeps the
                                 // base key AND any #N collision duplicates.
                                 reg.deregister(crate::inference::llama_server::PROVIDER_ID);
-                                reg.register(Arc::new(a), 9);
+                                reg.deregister(a.provider_id());
+                                reg.register(a, 9);
                                 drop(reg);
                                 let short = want
                                     .1
                                     .as_deref()
-                                    .map(|m| m.rsplit('/').next().unwrap_or(m))
-                                    .unwrap_or("(unknown)");
+                                    .map(|m| m.rsplit('/').next().unwrap_or(m)) // unwrap_or: rsplit always yields a first piece
+                                    .unwrap_or("(unknown)"); // unwrap_or: the boot line names an unnamed model "(unknown)"
                                 if !announced_first {
                                     announced_first = true;
                                     boot_status(
@@ -431,53 +441,10 @@ impl AIProviderModule {
                 )
                 .with_context_length(effective_context);
 
-                // Probe the GGUF architecture at registration time and
-                // enable multi-seq continuous batching when safe (per
-                // task #110 / batching_probe.rs). Coordinator-managed
-                // lane multiplexing (per task #109) requires
-                // n_seq_max>1 in the in-backend scheduler. Standard
-                // transformers (Llama / Qwen-2.5 / Gemma-2 / Mistral /
-                // ...) classify as SafeForMultiSeq; qwen3 / mamba /
-                // rwkv / jamba / etc. classify as SingleSeqOnly and
-                // we keep them at 1. Default n_seq_max for safe
-                // architectures is 4 — matches the realistic-floor
-                // coordinator config (4 concurrent lanes). The probe
-                // is cheap (GGUF header only, no weights), runs once
-                // per adapter registration.
-                const N_SEQ_MAX_FOR_SAFE_MULTISEQ: u32 = 4;
-                let adapter = match crate::inference::batching_probe::probe_gguf_batching_safety(
-                    &gguf_path,
-                ) {
-                    Ok(verdict) if verdict.safe_for_multi_seq() => {
-                        self.log().info(&format!(
-                            "Architecture `{}` is safe for multi-seq batching; enabling n_seq_max={} \
-                             for coordinator-managed lane multiplexing",
-                            verdict.arch(),
-                            N_SEQ_MAX_FOR_SAFE_MULTISEQ
-                        ));
-                        adapter_base.with_n_seq_max(N_SEQ_MAX_FOR_SAFE_MULTISEQ)
-                    }
-                    Ok(verdict) => {
-                        self.log().info(&format!(
-                            "Architecture `{}` not safe for multi-seq batching ({}); \
-                             keeping n_seq_max=1",
-                            verdict.arch(),
-                            match &verdict {
-                                crate::inference::batching_probe::BatchingSafety::SingleSeqOnly { reason, .. } => reason.as_str(),
-                                _ => "architecture not in curated safe list",
-                            }
-                        ));
-                        adapter_base
-                    }
-                    Err(err) => {
-                        self.log().warn(&format!(
-                            "Batching probe failed for `{}`: {err} — keeping n_seq_max=1 \
-                             (conservative default)",
-                            model_meta.id
-                        ));
-                        adapter_base
-                    }
-                };
+                // One mind decodes at a time (CONTINUUM-ENGINE §1): four sequences decoding
+                // together ran at ~2 tok/s each on the M5 where one runs at the full rate, so
+                // the adapter is never widened to several sequences, whatever its architecture.
+                let adapter = adapter_base;
                 // Priority 0 — wins over DMR for the model ids it
                 // claims. Init-then-register per #162: the adapter
                 // is built by `build_llamacpp_adapter` already in a
@@ -516,7 +483,7 @@ impl AIProviderModule {
                 let desc = endpoint
                     .base_url
                     .as_deref()
-                    .unwrap_or("localhost:12434 (host-native)");
+                    .unwrap_or("localhost:12434 (host-native)"); // unwrap_or: a DMR probe with no URL is the host-native endpoint
                 self.log().info(&format!(
                     "Registering Docker Model Runner adapter ({})",
                     desc
@@ -658,8 +625,8 @@ impl AIProviderModule {
                 .await
                 {
                     Some(snap) => {
-                        let model = snap.active_model.as_deref().unwrap_or("(unknown)");
-                        let short = model.rsplit('/').next().unwrap_or(model);
+                        let model = snap.active_model.as_deref().unwrap_or("(unknown)"); // unwrap_or: the boot line names an unnamed model "(unknown)"
+                        let short = model.rsplit('/').next().unwrap_or(model); // unwrap_or: rsplit always yields a first piece
                         boot_status(
                             "inference",
                             if local_llama_opt_in {

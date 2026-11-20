@@ -43,6 +43,15 @@ pub(super) const OWNED: &[&str] = &[
 
 /// Classes whose eviction is deferred, each with the reason and the task that owns it.
 pub(super) const DEFERRED: &[(&str, &str)] = &[
+        // CONTINUUM-ENGINE 4.16 (restore is the norm). Deferred, not owned: a mind's file is her
+        // only copy across a restart, so no age- or size-based pool may delete it (Codex on
+        // 2990b44831). Its owner is the persona engine's manifest: one generation per mind,
+        // replaced at every stop; a mind the manifest no longer names is redundant.
+        (
+            "persona-blocks",
+            "persona engine manifest (continuum-engine persona_scheduler::preserve): remove the files \
+             of minds the published manifest does not name; never a file the manifest names",
+        ),
         // Registered by card 75dd8bfe. Each writer now bounds its own files per persona
         // (prompt captures: two 64 MiB segments; workspace traces: 2 x MAX_LOG_BYTES), but
         // the class total scales with persona count, so the broker needs an owner it can

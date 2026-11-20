@@ -1,5 +1,13 @@
 use super::*;
 
+/// A turn's prompt and the head of it her next act will hold unchanged (her view, without the
+/// generation prompt), which the engine checkpoints her at. `None` for a turn with no view.
+#[derive(Debug, Clone, Copy)]
+pub struct TurnPrompt<'a> {
+    pub text: &'a str,
+    pub stable_prefix: Option<&'a str>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum EmbedPlanError {
     #[error(transparent)]
@@ -448,15 +456,14 @@ impl LlamaCppBackend {
         Ok(())
     }
 
-    /// Lazily spawn (or get) the scheduler. Single instance per backend —
-    /// owns the shared Context and the OS-thread driver loop.
+    /// Lazily spawn (or get) the persona scheduler. Single instance per backend: it owns the context
+    /// and the driver thread. Its window holds `STREAMS` minds' windows (the active mind and the next),
+    /// whatever sequence count the launch carried: one mind decodes at a time.
     pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
-        let per_seq = self.effective_context_length(allocation)?;
-        if self.config.n_seq_max == 0 {
-            return Err("generation requires a nonzero sequence allocation".into());
-        }
-        let total_n_ctx = per_seq
-            .checked_mul(self.config.n_seq_max)
+        let per_mind = self.effective_context_length(allocation)?;
+        let streams = u32::try_from(continuum_persona_llama::STREAMS).map_err(|_| "stream count exceeds native representation")?;
+        let total_n_ctx = per_mind
+            .checked_mul(streams)
             .ok_or("context allocation exceeds native representation")?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
             (
@@ -464,13 +471,10 @@ impl LlamaCppBackend {
                 Scheduler::spawn(
                     self.model.clone(),
                     SchedulerConfig {
+                        model: self.config.model_path.display().to_string(),
                         n_ctx: total_n_ctx,
                         n_batch: self.config.n_batch,
                         n_ubatch: self.config.n_ubatch,
-                        n_seq_max: self.config.n_seq_max,
-                        flash_attn: self.config.flash_attn,
-                        fused_gdn_ar: self.config.fused_gdn_ar,
-                        fused_gdn_ch: self.config.fused_gdn_ch,
                         type_k: self.config.type_k,
                         type_v: self.config.type_v,
                     },
@@ -482,14 +486,23 @@ impl LlamaCppBackend {
                 "scheduler allocation changed; release the existing backend before resizing".into(),
             );
         }
-        Ok(scheduler)
+        match scheduler {
+            Ok(scheduler) => Ok(scheduler),
+            Err(refused) => Err(refused.to_string()),
+        }
     }
 
-    /// Generate text. Routes through the continuous-batching scheduler:
-    /// the request becomes one sequence in the shared batch and tokens
-    /// stream back as they're sampled. Multiple concurrent generate()
-    /// calls share the single Context — weights are read once per decode
-    /// step and used to advance every active sequence in parallel.
+    /// Start the persona scheduler for `allocation` (idempotent) and return its lifecycle.
+    pub fn start_scheduler(
+        &self,
+        allocation: GenerationAllocation,
+    ) -> Result<tokio::sync::watch::Receiver<super::super::persona_scheduler::EngineState>, String> {
+        Ok(self.scheduler(allocation)?.state())
+    }
+
+    /// Generate text through the persona scheduler: the turn continues her mind (one decodes at a
+    /// time, the next waits its turn) and tokens stream back as they are sampled. Concurrent
+    /// generate() calls are served one after another on the one context.
     ///
     /// `active_loras` is `(id, scale)` pairs naming genes previously paged
     /// in via [`ensure_adapter`]. They are resolved to live adapter handles
@@ -512,7 +525,7 @@ impl LlamaCppBackend {
         self.generate_for_persona(
             allocation,
             None,
-            prompt,
+            TurnPrompt { text: prompt, stable_prefix: None },
             max_tokens,
             sampling,
             stop_sequences,
@@ -533,7 +546,7 @@ impl LlamaCppBackend {
         &self,
         allocation: GenerationAllocation,
         persona_id: Option<uuid::Uuid>,
-        prompt: &str,
+        turn: TurnPrompt<'_>,
         max_tokens: usize,
         sampling: SamplingConfig,
         stop_sequences: &[&str],
@@ -541,6 +554,7 @@ impl LlamaCppBackend {
     ) -> Result<(String, usize), String> {
         let log = runtime::logger("llamacpp");
         let gen_start = Instant::now();
+        let prompt = turn.text;
         let prompt_len_chars = prompt.len();
 
         // Channel for streaming tokens back from the scheduler.
@@ -580,8 +594,11 @@ impl LlamaCppBackend {
         // — adding fields like `grammar` doesn't require changing this
         // signature). Previously this path silently overwrote the caller's
         // top_k/top_p/repeat_penalty fields with no-op defaults.
+        // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
+        let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
         let req = GenerationRequest {
-            prompt: prompt.to_string(),
+            prompt,
+            view_end,
             max_tokens,
             sampling,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
@@ -590,7 +607,9 @@ impl LlamaCppBackend {
             persona_id,
         };
 
-        self.scheduler(allocation)?.enqueue(req)?;
+        if let Err(refused) = self.scheduler(allocation)?.enqueue(req) {
+            return Err(refused.to_string());
+        }
 
         // Collect tokens from the channel until Done/Error. We're called
         // synchronously from spawn_blocking by CandleAdapter — block_in_place

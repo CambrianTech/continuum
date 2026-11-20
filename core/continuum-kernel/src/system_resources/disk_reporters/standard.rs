@@ -206,6 +206,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // KV is hundreds of MB, so the class is small in COUNT but real in
         // bytes — exactly what must never be an untracked writer.
         cached(continuum, "kv-pages"),
+        // A mind's preserved blocks (CONTINUUM-ENGINE 4.16, restore is the norm): the persona
+        // engine's stop writes each mind's raw rows and token history, one generation per mind,
+        // replaced at every stop. Bounded by residents x their window; a file is her only copy.
+        cached(continuum, "persona-blocks"),
         // Every lane's `--train-dir`: adapters the engine's /train writes, in flight or
         // left by a crashed run (a finished one moves into its job dir). Registered with
         // the flag itself (2026-09-26) so it is never an unweighed writer.

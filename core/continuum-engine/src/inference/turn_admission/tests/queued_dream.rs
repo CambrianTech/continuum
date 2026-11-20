@@ -12,7 +12,7 @@ async fn a_dream_queued_on_the_scratch_slot_holds_no_adapter_permit_and_no_lane(
     let pool = Arc::new(KvSlotPool::new("test://queued-dream", 3)); // index 2 is scratch
     let scratch = pool.scratch_slot().expect("three slots reserve a scratch slot"); // test: pool contract
     let held = pool.acquire_slot(scratch).await.expect("test: another call holds scratch");
-    let sem = Arc::new(Semaphore::new(3));
+    let sem = crate::inference::slots::DecodeBound::with_permits(3);
     let client = reqwest::Client::new();
     let queued = admit_turn(&sem, SlotClass::Dream, None, Some(pool.clone()), &client, "test://queued-dream", 0, std::time::Duration::ZERO);
     tokio::pin!(queued);
@@ -36,7 +36,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     use crate::inference::resource_admission::serving_lane_permits_available as lanes_free;
     let pool = Arc::new(KvSlotPool::new("test://dream-borrow", 2));
     assert!(pool.scratch_slot().is_none(), "two lanes reserve no scratch slot");
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let before = lanes_free();
 
@@ -55,7 +55,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
 
     // The inversion Codex named on #5786: a resident holds the adapter permit while it waits for
     // a slot. A dream waiting for the adapter must then hold no slot, or each waits on the other.
-    let one = Arc::new(Semaphore::new(1));
+    let one = crate::inference::slots::DecodeBound::with_permits(1);
     let resident = DecodeBound::from(&one).try_acquire().expect("test: a resident holds the only adapter permit");
     let waiting = admit_turn(&one, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(waiting);
@@ -134,7 +134,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let turn_b = admit_turn(&sem, SlotClass::Turn, Some(b), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: b's turn pins the other");
     // Its own adapter semaphore: the two turns hold the shared one's permits, and this scenario is
     // about pins, not the adapter.
-    let own_permits = Arc::new(Semaphore::new(2));
+    let own_permits = crate::inference::slots::DecodeBound::with_permits(2);
     let behind_pins = admit_turn(&own_permits, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(behind_pins);
     assert!(futures::poll!(&mut behind_pins).is_pending(), "every slot is pinned: the keyed dream waits");
@@ -149,7 +149,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // residents through the ambient lane (a keyless dream on scratch takes none, test above).
     let roomy = Arc::new(KvSlotPool::new("test://keyed-dream-scratch", 3));
     assert!(roomy.scratch_slot().is_some(), "three lanes reserve a scratch slot");
-    let on_scratch_node = admit_turn(&Arc::new(Semaphore::new(3)), SlotClass::Dream, Some(her), Some(roomy), &client, "test://keyed-dream-scratch", 0, std::time::Duration::ZERO)
+    let on_scratch_node = admit_turn(&crate::inference::slots::DecodeBound::with_permits(3), SlotClass::Dream, Some(her), Some(roomy), &client, "test://keyed-dream-scratch", 0, std::time::Duration::ZERO)
         .await
         .expect("test: admitted on her page");
     assert!(on_scratch_node._lane.is_some(), "a keyed dream holds the ambient lane even where a scratch slot exists");
