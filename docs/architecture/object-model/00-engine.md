@@ -580,6 +580,19 @@ Recall therefore needs no budget of its own: it is one more source priced by the
 competing for her window with her history and her results. That is why grounding's separate budget
 folds into the context codec (chapter 6.2).
 
+The whole cognitive lifecycle of the README (live, experience, remember, dream, learn) reads it too:
+- **Remembering.** What becomes an engram is chosen by its importance when it is lived (salience).
+  Retrieval streams engrams in by the importance her focus gives them. Rehearsal raises an engram's
+  importance, and neglect lets it fall until the engram decays, as RAGE's ruts fade.
+- **Dreaming.** Consolidation is the same streaming run offline: the important is replayed and
+  strengthened, the rest is let go.
+- **Learning.** Her lesson queue is priced by the same demand. A gap that keeps costing her in the
+  activities she is in, or one a reviewer corrected, is worth more than a rare one, and the learning
+  duty serves the most valuable first.
+- **The genome.** Genes are the engine's motion clips. The genes a turn needs are chosen by
+  importance, genes many minds wear stream first, and a gene no one has needed for a long time
+  demotes down the tiers to flash or a peer.
+
 No subsystem keeps its own idea of what matters. Each reads the one importance its tree computed.
 
 ## 0.4 One engine across many consoles: the grid and the mesh
