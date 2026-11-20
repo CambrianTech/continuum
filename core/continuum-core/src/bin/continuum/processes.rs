@@ -188,10 +188,31 @@ pub(super) fn cputime_to_secs(field: &str) -> u64 {
     secs
 }
 
-/// PIDs of every running `continuum-core-server`, via `pgrep` (pure unix, no
-/// Node). Empty on no match or if pgrep is unavailable.
+/// PIDs of every running core: each `continuum-core-server` process that is not an engine's
+/// stderr relay ([`is_log_relay`]). Empty on no match.
 pub(super) fn running_core_pids() -> Vec<i32> {
-    processes_named("continuum-core-server")
+    let relays = log_relay_pids();
+    processes_named("continuum-core-server").into_iter().filter(|pid| !relays.contains(pid)).collect()
+}
+
+/// An engine's stderr relay runs this same executable in relay mode (`continuum-core-server
+/// --log-relay <port> <engine pid> <engine start>`, `stderr_relay::process`), inside the ENGINE's
+/// process group so it outlives every core and the next core reads the adopted engine through it.
+/// It is never a core: counted as one, every stop ended it, and the adopted engine wrote its log into
+/// a pipe nobody read (the M5, 2026-11-15: engine 64859's log silent from 13:52 on, after its relay,
+/// pid 64860, was swept with a core; a mind's 129k-token cache loss at 04:30Z could not be read).
+pub(super) fn is_log_relay(argv: &[std::ffi::OsString]) -> bool {
+    argv.get(1).is_some_and(|arg| arg == continuum_core::inference::stderr_relay::process::FLAG)
+}
+
+/// The pids of every running engine stderr relay, read from the command lines of the
+/// `continuum-core-server` processes only (a command line costs a syscall per process).
+fn log_relay_pids() -> Vec<i32> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let named: Vec<Pid> = processes_named("continuum-core-server").into_iter().map(|pid| Pid::from(pid as usize)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&named), true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    sys.processes().values().filter(|p| is_log_relay(p.cmd())).map(|p| p.pid().as_u32() as i32).collect()
 }
 
 /// The socket path in a core server's argv, or `None` when it passed none.
@@ -389,10 +410,12 @@ pub(super) fn core_process_evidence() -> std::io::Result<CoreProcessEvidence> {
         true,
         ProcessRefreshKind::nothing().with_exe(UpdateKind::OnlyIfNotSet),
     );
+    let relays = log_relay_pids();
     CoreProcessEvidence::from_processes(
         std::process::id() as i32,
         sys.processes()
             .values()
+            .filter(|process| !relays.contains(&(process.pid().as_u32() as i32)))
             .map(|process| (process.pid().as_u32() as i32, process.name(), process.exe())),
     )
 }

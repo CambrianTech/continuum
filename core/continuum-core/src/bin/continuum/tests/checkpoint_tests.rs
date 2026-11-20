@@ -157,3 +157,21 @@ fn checkpoint_recovery_requires_explicit_selection_and_offline_precondition() {
         assert!(parse(&args).is_err(), "must refuse {args:?}");
     }
 }
+
+// What this catches (the M5, 2026-11-15: engine 64859's log silent from 13:52 on): an engine's
+// stderr relay, this same executable in relay mode, counted as a core, so every stop swept it and
+// the adopted engine logged into a pipe nobody read. The relay's own spawn arguments say it is one;
+// a core's argv (its socket, a boot mode) never does.
+#[test]
+fn an_engine_stderr_relay_is_never_counted_as_a_core() {
+    use continuum_core::inference::engine_residency::EngineIncarnation;
+    use continuum_core::inference::stderr_relay::process::to_args;
+    use std::ffi::OsString;
+    let engine = EngineIncarnation { pid: 64859, started_s: 1_794_761_533, port: 58057 };
+    let relay: Vec<OsString> = std::iter::once(OsString::from("continuum-core-server")).chain(to_args(engine).into_iter().map(OsString::from)).collect();
+    assert!(super::is_log_relay(&relay), "the relay's own spawn arguments name it a relay");
+    let core: Vec<OsString> = ["continuum-core-server", "/tmp/continuum-core.sock"].into_iter().map(OsString::from).collect();
+    assert!(!super::is_log_relay(&core), "a core's socket argument is never relay mode");
+    let moded: Vec<OsString> = ["continuum-core-server", "--mode", "fail-fast", "/tmp/x.sock"].into_iter().map(OsString::from).collect();
+    assert!(!super::is_log_relay(&moded), "a boot mode is never relay mode");
+}
