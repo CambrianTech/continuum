@@ -81,10 +81,19 @@ bounded by the governor.
 Status: proposed, 2026-11-20 (Joel: "build objects and easy to reuse event data flow ... We can
 write an amygdala and a Wernicke's area for example ... caches and events to fuse it all").
 
-Perception, comprehension and speech are each a **fusion region**: an object that holds a living
-estimate and refines it as contributions arrive from faster and slower regions
-([LIVE-CALL-ARCHITECTURE.md](../live/LIVE-CALL-ARCHITECTURE.md), "A Mind in the Call"). It is
-one reusable shape:
+Every stimulus she takes in and every output she produces is a **fusion region**: an object that
+holds a living estimate and refines it as contributions arrive from faster and slower regions. It
+is the same for any modality, in or out:
+
+| Modality | In: fast first, refined | Out: fast first, deep merged in |
+|---|---|---|
+| Text | Skim, then read closely where it matters | A quick reply that deepens as she writes |
+| Code | Outline and symbols first, then the bodies that matter | A first sketch or edit, refined by deeper reasoning and checks before it lands |
+| Audio | Transcription word by word, then meaning and intent | Her quick voice, with deep thought merged into the speech still to come |
+| Video | Tracking and change events, then deep analysis, fused forward | Her avatar, its expression and gesture following what she says as it forms |
+
+A live call is one case of it ([LIVE-CALL-ARCHITECTURE.md](../live/LIVE-CALL-ARCHITECTURE.md),
+"A Mind in the Call"). It is one reusable shape:
 
 - **Subscribe:** each source is an event stream (a tracker every frame, a deep result seconds later,
   her model's layers, a word heard, a word planned).
