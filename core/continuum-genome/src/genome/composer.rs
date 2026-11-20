@@ -282,7 +282,7 @@ pub async fn compose(persona: Uuid, perception: &str) -> Option<Phenotype> {
     let selection = select(need.as_ref(), &candidates, candidates.len(), &previous);
     probe_selection(persona, &selection, pending);
     residency.record_turn(persona, &selection.phenotype, now_ms);
-    residency.request_reconcile();
+    residency.schedule_reconcile();
     Some(selection.phenotype)
 }
 

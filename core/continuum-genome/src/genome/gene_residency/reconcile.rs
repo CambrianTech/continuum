@@ -28,7 +28,7 @@ impl Stage for Reconcile {
 }
 
 impl GeneResidency {
-    pub(in crate::genome) fn request_reconcile(self: &Arc<Self>) {
+    pub fn schedule_reconcile(self: &Arc<Self>) {
         let mut running = self.reconcile_worker.0.lock();
         if let Some(stage) = running.as_ref() {
             match stage.input.push(()) {
