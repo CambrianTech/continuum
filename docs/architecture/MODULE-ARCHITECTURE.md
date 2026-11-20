@@ -29,7 +29,7 @@
 - [9. Distribution: Pure-Rust For Built-Ins, WASM For Shipped](#9-distribution-pure-rust-for-built-ins-wasm-for-shipped)
 - [10. The Recursive Bootstrap](#10-the-recursive-bootstrap)
 - [11. Lifecycle, Dependencies, And Boot](#11-lifecycle-dependencies-and-boot)
-- [12. Continuous removal of technical debt](#12-continuous-removal-of-technical-debt)
+- [12. Continuous design refinement](#12-continuous-design-refinement)
   - [Contract ownership](#contract-ownership)
   - [File, module and crate boundaries](#file-module-and-crate-boundaries)
   - [Specialization in Rust](#specialization-in-rust)
@@ -737,11 +737,11 @@ Reload at runtime is the same primitive: `module/uninstall <name>` → kernel st
 
 ---
 
-## 12. Continuous removal of technical debt
+## 12. Continuous design refinement
 
 ### Contract ownership
 
-This policy applies to the entire system, including clients, runtime modules, native backends, generated bindings and grid peers. Every caller of a capability goes through its owning contract. Our standard is zero technical debt. Whoever discovers a broken boundary owns its repair. Repair takes priority over extending the affected capability. Trace every caller, correct the owner and delete the displaced implementation as one coherent change. Apply the same rule during incident work, code review and routine development. Git retains the history. Compatibility wrappers, switches that restore retired behavior and private fallbacks violate the contract.
+This policy applies to the entire system, including clients, runtime modules, native backends, generated bindings and grid peers. Every caller of a capability goes through its owning contract. Our standard is zero technical debt. Design each change around its owner before implementation. As behavior evolves, refine the owner, its interfaces and their callers together. Whoever discovers a broken boundary owns its repair. Repair takes priority over extending the affected capability. Trace every caller, correct the owner and delete the displaced implementation as one coherent change. Apply the same rule during incident work, code review and routine development. Git retains the history. Compatibility wrappers, switches that restore retired behavior and private fallbacks violate the contract.
 
 Give each invariant to the narrowest ancestor shared by the implementations that need it. The worker owns submission, wakeup and overflow. The operation owner governs cancellation, publication and terminal delivery. The resource governor chooses among competing demands and eligible holders. Each holder knows how to shrink its own allocation. A subsystem that plays several roles composes those owners.
 
