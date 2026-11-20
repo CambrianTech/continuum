@@ -34,7 +34,7 @@ fn lesson_batch(prefix: &[i32], reply: &[i32], next: i32, labelled: bool) -> Bat
         let pos = (prefix.len() + offset) as i32;
         let target = reply.get(offset + 1).copied().unwrap_or(next); // unwrap_or: the reply's last token predicts the token after it
         if labelled {
-            batch.push_labelled(token, pos, 0, Label::Target(target), 1.0).expect("a labelled row");
+            batch.push_labelled(Row { token, pos, seq: 0 }, Label::Target { token: target, weight: 1.0 }).expect("a labelled row");
         } else {
             batch.push(token, pos, &[0], true);
         }
@@ -101,10 +101,13 @@ fn a_lesson_is_her_decode_with_labels_and_leaves_her_stable_self_untouched() {
         assert!(ctx.memory_seq_rm(0, 0, -1));
         ctx.set_loras(&[(adapter.as_ref(), 1.0)]).expect("her shadow on the context");
         let lesson = Learner::new(&mut ctx).select(&shadow, Box::new(Open)).map_err(|refused| refused.refusal).expect("her shadow selected");
+        // A second lesson while one is open is refused with its own admission, never written over
+        // the first's (Codex's review of #6203).
+        assert!(Learner::new(&mut ctx).select(&shadow, Box::new(Open)).is_err(), "repeat {repeat}: a second lesson opened over the first");
         ctx.decode(&lesson_batch(&prefix, &reply, next, true)).expect("her lesson decoded");
         assert_eq!(ctx.logits_ith(prefix_last), stable_prefix_row.as_slice(), "repeat {repeat}: an unlabelled row moved under her shadow (P1 c)");
         losses.push(loss(&ctx, reply_rows, &targets));
-        match Learner::new(&mut ctx).conclude(lesson) {
+        match Learner::new(&mut ctx).conclude(lesson).expect("the lesson open on this context") {
             Finished::Learned { steps, .. } => assert!(steps.get() >= 1),
             Finished::Unchanged { .. } => panic!("repeat {repeat}: a labelled decode committed no step"),
             Finished::Uncertain { steps, .. } => panic!("repeat {repeat}: native code marked her shadow uncertain after {steps} steps"),

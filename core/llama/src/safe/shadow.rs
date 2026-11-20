@@ -10,15 +10,27 @@ extern "C" {
     fn continuum_lora_write_fresh(
         model: *const sys::llama_model,
         path: *const c_char,
-        rank: i32,
-        alpha: f32,
-        targets: *const *const c_char,
-        n_targets: usize,
-        seed: u32,
-        top_layers: i32,
-        error: *mut c_char,
-        capacity: usize,
+        shape: *const NativeShadowShape,
+        error: *mut NativeMessage,
     ) -> i32;
+}
+
+/// `continuum_shadow_shape` in `genome_boundary.cpp`.
+#[repr(C)]
+struct NativeShadowShape {
+    rank: i32,
+    alpha: f32,
+    targets: *const *const c_char,
+    n_targets: usize,
+    seed: u32,
+    top_layers: i32,
+}
+
+/// `continuum_message` in `genome_boundary.cpp`: where native code writes what it threw.
+#[repr(C)]
+struct NativeMessage {
+    text: *mut c_char,
+    capacity: usize,
 }
 
 /// The shape of a fresh shadow: its rank and scale, which weights it adapts (`attn_q`, `attn_v`, ...),
@@ -54,21 +66,18 @@ impl Model {
             .map(|target| CString::new(target.as_bytes()).map_err(|_| ShadowRefusal::Nul("target")))
             .collect::<Result<_, _>>()?;
         let pointers: Vec<*const c_char> = names.iter().map(|name| name.as_ptr()).collect();
-        let mut error = [0 as c_char; 512];
-        let written = unsafe {
-            continuum_lora_write_fresh(
-                self.ptr.as_ptr(),
-                c_path.as_ptr(),
-                shape.rank,
-                shape.alpha,
-                pointers.as_ptr(),
-                pointers.len(),
-                shape.seed,
-                shape.top_layers,
-                error.as_mut_ptr(),
-                error.len(),
-            )
+        let native = NativeShadowShape {
+            rank: shape.rank,
+            alpha: shape.alpha,
+            targets: pointers.as_ptr(),
+            n_targets: pointers.len(),
+            seed: shape.seed,
+            top_layers: shape.top_layers,
         };
+        let mut error = [0 as c_char; 512];
+        let mut message = NativeMessage { text: error.as_mut_ptr(), capacity: error.len() };
+        // SAFETY: every pointer in `native` and `message` borrows a value that outlives the call.
+        let written = unsafe { continuum_lora_write_fresh(self.ptr.as_ptr(), c_path.as_ptr(), &native, &mut message) };
         match written {
             1 => Ok(()),
             0 => Err(ShadowRefusal::Refused),

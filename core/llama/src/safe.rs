@@ -20,7 +20,7 @@ pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, ThinkBou
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};
-pub use learn::{BufferType, Finished, LearnRefusal, LearnRun, Learner, Lesson, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
+pub use learn::{BufferType, Finished, ForeignLesson, LearnRefusal, LearnRun, Learner, Lesson, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod shadow;
 pub use shadow::{ShadowRefusal, ShadowShape};
 mod persona;

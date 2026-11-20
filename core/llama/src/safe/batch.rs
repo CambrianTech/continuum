@@ -18,20 +18,30 @@ pub struct Batch {
     labels: Option<Labels>,
 }
 
+/// One row of a batch: a token at a position of a sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Row {
+    pub token: i32,
+    pub pos: i32,
+    pub seq: i32,
+}
+
 /// The target after one row's token. A labelled row is a training row: `llama_decode` also runs the
 /// loss, the backward and the optimizer write of the context's trainable adapter in the same graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Label {
-    Target(i32),
+    /// The token after this row, and how much it counts in the loss (finite, >= 0).
+    Target { token: i32, weight: f32 },
     /// No target after this token: the trainable adapter does not apply to its row.
     Unlabelled,
 }
 
 impl Label {
-    pub(super) fn native(self) -> i32 {
+    /// The native label and weight: `-1` and no weight for a row with no target.
+    pub(super) fn native(self) -> (i32, f32) {
         match self {
-            Self::Target(token) => token,
-            Self::Unlabelled => -1,
+            Self::Target { token, weight } => (token, weight),
+            Self::Unlabelled => (-1, 0.0),
         }
     }
 }
@@ -116,13 +126,14 @@ impl Batch {
         batch
     }
 
-    /// Append a training row: `token` at `pos` of sequence `seq`, with the target after it. A
-    /// labelled row returns its logits (the loss reads them). The fork refuses, at decode, a batch
-    /// whose labelled run is followed by more rows of the same sequence.
-    pub fn push_labelled(&mut self, token: i32, pos: i32, seq: i32, label: Label, weight: f32) -> Result<(), LabelRefusal> {
+    /// Append a training row with the target after it. A labelled row returns its logits (the loss
+    /// reads them). The fork refuses, at decode, a batch whose labelled run is followed by more rows
+    /// of the same sequence.
+    pub fn push_labelled(&mut self, row: Row, label: Label) -> Result<(), LabelRefusal> {
         if self.labels.is_none() {
             return Err(LabelRefusal::NotLabelled);
         }
+        let (target, weight) = label.native();
         if !(weight.is_finite() && weight >= 0.0) {
             return Err(LabelRefusal::Weight(weight));
         }
@@ -133,11 +144,11 @@ impl Batch {
         if self.inner.n_tokens >= capacity {
             return Err(LabelRefusal::Full { capacity });
         }
-        self.push(token, pos, &[seq], matches!(label, Label::Target(_)));
+        self.push(row.token, row.pos, &[row.seq], matches!(label, Label::Target { .. }));
         if let Some(labels) = self.labels.as_mut() {
             // `push` added an unlabelled row for this index; this row is the labelled one.
-            if let (Some(row), Some(row_weight)) = (labels.label.last_mut(), labels.weight.last_mut()) {
-                *row = label.native();
+            if let (Some(row_label), Some(row_weight)) = (labels.label.last_mut(), labels.weight.last_mut()) {
+                *row_label = target;
                 *row_weight = weight;
             }
         }
@@ -185,8 +196,9 @@ impl Batch {
             *self.inner.logits.add(idx) = i8::from(want_logits);
         }
         if let Some(labels) = self.labels.as_mut() {
-            labels.label.push(Label::Unlabelled.native());
-            labels.weight.push(0.0);
+            let (label, weight) = Label::Unlabelled.native();
+            labels.label.push(label);
+            labels.weight.push(weight);
         }
         self.inner.n_tokens += 1;
     }

@@ -27,6 +27,10 @@ use super::optimizer_slots::{OptimizerLease, Role, Slot, Slots};
 
 use super::*;
 
+mod lesson;
+use lesson::Lessons;
+pub use lesson::{ForeignLesson, Lesson};
+
 /// One allocator a buffer comes from: the physical device it lives on, as the backend names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BufferType(pub(super) NonNull<sys::ggml_backend_buffer_type>);
@@ -171,6 +175,8 @@ pub(super) struct CallbackHolder {
     /// Native code owned optimizer memory nobody admitted: accounting is wrong, so no reply begins
     /// until an owner looks.
     accounting: Option<LearnRefusal>,
+    /// Which lesson is open on this context, so a lesson concludes only itself.
+    lessons: Lessons,
 }
 
 /// A retained shadow: the adapter (kept alive), its optimizer lease, and what each of its optimizer
@@ -235,7 +241,7 @@ struct Quarantine {
 impl CallbackHolder {
     fn empty() -> Self {
         let optimizer = unsafe { sys::ggml_opt_get_default_optimizer_params(std::ptr::null_mut()) };
-        Self { admission: None, optimizer, shadows: Shadows::new(), selected: None, quarantine: None, accounting: None }
+        Self { admission: None, optimizer, shadows: Shadows::new(), selected: None, quarantine: None, accounting: None, lessons: Lessons::new() }
     }
 }
 
@@ -344,59 +350,6 @@ impl<'c, 'm> Learner<'c, 'm> {
         Ok(Some(Recovered { seq: quarantine.seq, admission }))
     }
 
-    /// Make her shadow the context's trainable adapter under `admission`, for a lesson taken as her
-    /// ordinary decode: labelled rows in a [`Batch::labelled`] then train it in the same graph as
-    /// everything else. Returns the lesson as an owned value that borrows nothing, so the context is
-    /// free for her decodes; [`Learner::conclude`] ends it. Refused, with the admission handed back,
-    /// while the context is quarantined or its accounting untrusted, on a pooled context, or for a
-    /// shadow not retained here.
-    pub fn select(&mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>) -> Result<Lesson, Refused> {
-        if let Some(refusal) = self.quarantine().or(self.accounting()) {
-            return Err(Refused { refusal: refusal.clone(), admission });
-        }
-        // A lesson trains on per-token logits: a pooled (embedding) context has none, and native
-        // code would refuse only at the first labelled step (Codex's BigMama replay at 7f8462502).
-        if unsafe { sys::llama_pooling_type(self.ctx.as_ptr()) } != sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
-            let refusal = LearnRefusal { step: "context", message: "a pooled context cannot learn: create it with PoolingType::None".into() };
-            return Err(Refused { refusal, admission });
-        }
-        let key = ShadowKey::of(&shadow.adapter);
-        if self.holder().shadows.get(key).is_none() {
-            let refusal = LearnRefusal { step: "select_shadow", message: "the shadow is not retained on this context".into() };
-            return Err(Refused { refusal, admission });
-        }
-        let data = {
-            let holder = self.holder();
-            holder.optimizer = optimizer_params(shadow.optimizer);
-            holder.admission = Some(admission);
-            holder.selected = Some(key);
-            std::ptr::from_mut(holder).cast::<c_void>()
-        };
-        let params = shadow_params(shadow, data);
-        let selected = unsafe { sys::llama_opt_init(self.ctx.as_ptr(), self.ctx.model.as_ptr(), params) };
-        // The init ended, admitted or refused: native code's own buffers say what survived.
-        self.reconcile();
-        if !selected {
-            let refusal = self.refusal("select_shadow");
-            return Err(Refused { refusal, admission: self.reclaim() });
-        }
-        // Her shadow's own count before the lesson: what it committed is measured against this.
-        let steps_before = unsafe { sys::llama_opt_shadow_steps(self.ctx.as_ptr(), key.0.as_ptr()) };
-        Ok(Lesson { shadow: key, steps_before })
-    }
-
-    /// End a lesson taken through [`Learner::select`]: native code's buffers are reconciled, her
-    /// shadow's committed steps are counted from its own native count, and the admission comes
-    /// back. Effects native code marks uncertain, or untrusted accounting, are never `Learned`.
-    pub fn conclude(&mut self, lesson: Lesson) -> Finished {
-        self.reconcile();
-        let ctx = self.ctx.as_ptr();
-        let after = unsafe { sys::llama_opt_shadow_steps(ctx, lesson.shadow.0.as_ptr()) };
-        let quarantined = unsafe { sys::llama_opt_shadow_quarantined(lesson.shadow.0.as_ptr()) };
-        let uncertain = quarantined || self.accounting().is_some();
-        restored(self.reclaim(), committed_steps(lesson.steps_before, after), uncertain, None)
-    }
-
     /// Select her shadow under this reply's admission and begin the reply.
     pub fn begin<'l>(&'l mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>, reply: &Reply<'_>) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
         // Everything that can refuse without native state is checked before the shadow is selected.
@@ -408,12 +361,13 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
             return Err(Refused { refusal, admission });
         };
-        let Lesson { shadow: key, steps_before } = self.select(shadow, admission)?;
+        let Lesson { shadow: key, steps_before, .. } = self.select(shadow, admission)?;
         let Some(result) = NonNull::new(unsafe { sys::ggml_opt_result_init() }) else {
             return Err(Refused { refusal: LearnRefusal { step: "result", message: "no result".into() }, admission: self.reclaim() });
         };
         let tokens = reply.tokens.to_vec();
-        let labels: Vec<i32> = reply.labels.iter().map(|label| label.native()).collect();
+        // The run API carries no per-row weight; a weighted lesson is a labelled batch.
+        let labels: Vec<i32> = reply.labels.iter().map(|label| label.native().0).collect();
         let restore = reply.restore.to_vec();
         let begun = unsafe {
             sys::llama_opt_learn_begin(
@@ -439,13 +393,16 @@ impl<'c, 'm> Learner<'c, 'm> {
     /// Take the reply's admission back out of the holder (native state unchanged by the reply):
     /// callbacks reaching the holder from here on find it empty and refuse.
     fn reclaim(&mut self) -> Box<dyn ReplyAdmission> {
-        self.holder().admission.take().unwrap_or_else(|| Box::new(Released)) // unwrap_or_else: begin filled the holder; Released admits nothing
+        let holder = self.holder();
+        holder.lessons.close();
+        holder.admission.take().unwrap_or_else(|| Box::new(Released)) // unwrap_or_else: begin filled the holder; Released admits nothing
     }
 
     /// Quarantine the context after a run whose restoration was not confirmed: its admission stays in
     /// the holder's quarantine, so no allocation is admitted and no bytes are released.
     fn quarantine_after(&mut self, refusal: &LearnRefusal, seq: i32) {
         let holder = self.holder();
+        holder.lessons.close();
         let admission = holder.admission.take();
         holder.quarantine = Some(Quarantine { refusal: refusal.clone(), seq, admission });
     }
@@ -459,16 +416,6 @@ impl<'c, 'm> Learner<'c, 'm> {
         };
         LearnRefusal { step, message }
     }
-}
-
-/// A lesson taken as her ordinary decode ([`Learner::select`]): which shadow trains and its native
-/// step count when the lesson began. It borrows nothing, so her labelled decodes run on the context
-/// in between; [`Learner::conclude`] ends it and hands the admission back.
-#[must_use = "a lesson is concluded explicitly, which hands its admission back"]
-#[derive(Debug)]
-pub struct Lesson {
-    shadow: ShadowKey,
-    steps_before: i64,
 }
 
 /// One reply in progress. Holds the context until it finishes.
@@ -818,8 +765,8 @@ mod tests {
     // target), or a target rewritten.
     #[test]
     fn an_unlabelled_token_is_the_native_no_target() {
-        assert_eq!(Label::Unlabelled.native(), -1);
-        assert_eq!(Label::Target(151_643).native(), 151_643);
+        assert_eq!(Label::Unlabelled.native(), (-1, 0.0));
+        assert_eq!(Label::Target { token: 151_643, weight: 0.5 }.native(), (151_643, 0.5));
     }
 
     // what this catches: a released admission that still admits, so a run already handed back
