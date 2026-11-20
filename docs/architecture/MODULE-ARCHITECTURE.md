@@ -29,12 +29,12 @@
 - [9. Distribution: Pure-Rust For Built-Ins, WASM For Shipped](#9-distribution-pure-rust-for-built-ins-wasm-for-shipped)
 - [10. The Recursive Bootstrap](#10-the-recursive-bootstrap)
 - [11. Lifecycle, Dependencies, And Boot](#11-lifecycle-dependencies-and-boot)
-- [12. Migration Path From Today](#12-migration-path-from-today)
+- [12. Continuous removal of technical debt](#12-continuous-removal-of-technical-debt)
   - [Contract ownership](#contract-ownership)
   - [File, module and crate boundaries](#file-module-and-crate-boundaries)
   - [Specialization in Rust](#specialization-in-rust)
-  - [Inventory and migration order](#inventory-and-migration-order)
-  - [Closing a migration](#closing-a-migration)
+  - [Finding violations across the system](#finding-violations-across-the-system)
+  - [Definition of done for every change](#definition-of-done-for-every-change)
   - [Command and module packaging](#command-and-module-packaging)
 - [13. Open Questions](#13-open-questions)
 - [14. What This Replaces, Defers To, And Is Replaced By](#14-what-this-replaces-defers-to-and-is-replaced-by)
@@ -421,7 +421,7 @@ model, finds an owner by its folder and never reconstructs it from functions spr
   reclaimed only on that completion fence or the verified death of the process holding it.
 - An invalid transition is unrepresentable through the interface (a typed outcome, not a checked
   string); a failure is typed (`StoreUnresolved`, never `Result<_, String>`).
-- Repairing an area moves its state and operations into its owner, migrates every caller, and
+- Repairing an area moves its state and operations into its owner, updates every caller, and
   deletes the old path in the same change. Wrapping the same globals in a struct is not an object.
 - A pure directory move (paths only, tests unchanged) and a transfer of ownership (who may change
   or release state) are separate changes: the move is proven by diff or syntax-tree equivalence plus
@@ -737,11 +737,11 @@ Reload at runtime is the same primitive: `module/uninstall <name>` → kernel st
 
 ---
 
-## 12. Migration Path From Today
+## 12. Continuous removal of technical debt
 
 ### Contract ownership
 
-This policy applies to the entire system, including clients, runtime modules, native backends, generated bindings and grid peers. Every caller of a capability goes through its owning contract. A migration includes the complete caller family and deletes the displaced implementation. Git retains the history. Compatibility wrappers, switches that restore retired behavior and private fallbacks violate the contract.
+This policy applies to the entire system, including clients, runtime modules, native backends, generated bindings and grid peers. Every caller of a capability goes through its owning contract. Our standard is zero technical debt. Whoever discovers a broken boundary owns its repair. Repair takes priority over extending the affected capability. Trace every caller, correct the owner and delete the displaced implementation as one coherent change. Apply the same rule during incident work, code review and routine development. Git retains the history. Compatibility wrappers, switches that restore retired behavior and private fallbacks violate the contract.
 
 Give each invariant to the narrowest ancestor shared by the implementations that need it. The worker owns submission, wakeup and overflow. The operation owner governs cancellation, publication and terminal delivery. The resource governor chooses among competing demands and eligible holders. Each holder knows how to shrink its own allocation. A subsystem that plays several roles composes those owners.
 
@@ -749,7 +749,7 @@ Keep an owner, its private state and the methods that change that state in a sma
 
 ### File, module and crate boundaries
 
-Inspect the containing file, parent module, crate manifest and reverse dependencies whenever behavior changes. Repair a boundary when the change exposes it. File length, an outage and a separate cleanup ticket are unnecessary triggers. The author of the change owns the move, caller migration and deletion.
+Inspect the containing file, parent module, crate manifest and reverse dependencies whenever behavior changes. Repair a boundary when the change exposes it. The author owns the split, updates every caller and removes the old path before the change is complete.
 
 | Boundary | Signal visible during ordinary development | Action in the change |
 | --- | --- | --- |
@@ -788,26 +788,26 @@ trait ResizableAllocation: Send + Sync {
 
 The request identifies the resource and target bytes. Today the deferred outcome carries status only. In the planned contract the allocation owner retains the in-flight reduction; the governor retains the demand and subscribes to its keyed completion before dispatch. The acknowledgement identifies that operation so a later completion can be matched, including one published during dispatch. Only confirmed released bytes count toward admission. Use typed variants for mutually exclusive states. A required identity, byte count or result belongs on the variant that needs it. Use an optional field only when absence has a defined domain meaning. [Existing consumer contract](../../core/continuum-kernel/src/resources/consumer.rs) · [Resource policy](SHARED-RESOURCES.md)
 
-### Inventory and migration order
+### Finding violations across the system
 
-Start from a pinned revision and enumerate every tracked first-party source file with `git ls-files`. Reconcile that list against crate and package manifests, the module catalog, generated entry points, platform build targets and native submodules. Map generated files to their generator and maintained vendor changes to their owning adapter. Include operator tools, scripts, fixtures and rarely built targets. Every file gets an owner and a disposition in its owning chapter's migration inventory. An unclassified file keeps the audit open.
+Start from a pinned revision and enumerate every tracked first-party source file with `git ls-files`. Reconcile that list against crate and package manifests, the module catalog, generated entry points, platform build targets and native submodules. Map generated files to their generator and maintained vendor changes to their owning adapter. Include operator tools, scripts, fixtures and rarely built targets. Every file gets an owner and a disposition in its owning chapter's source inventory. An unclassified file keeps the audit open.
 
 For each family, follow both directions: start at every public entry point and follow it to the implementation, then start at each native allocation, spawn, queue, timer, storage write or completion and find every caller. Search for duplicate bodies, equivalent transitions with different names, utility files, file fragments, default implementations that decline required work, and switches that select obsolete behavior. Inspect what each match does. A filename or a line count cannot establish ownership. Record the file and symbol, callers, violated invariant, destination owner, deletion set and verification evidence. Update this inventory as files change.
 
-| Order and scope | Change at the owner | Evidence required to close the family |
+| Contract family | Change at the owner | Evidence required to close the family |
 | --- | --- | --- |
-| 1. Memory admission and reclaim | Inventory serving, KV, embeddings, vision, voice, rendering, training and transfers. Replace the vision holder's unconditional reclaim refusal with a request to its serving owner. Retain a multi-pool demand until granted or withdrawn. On a confirmed release, reconsider competing demand by priority and age, accounting for shared backing on unified memory. | Trace one blocked learner through holder selection, confirmed reduction, full grant and resumed work. Show protected residents survive on discrete and unified memory. [Serving registrations](../../core/continuum-serving/src/modules/serving_daemon/consumer.rs) |
-| 2. Inference and learning | Give all provider entry points one submission and completion path. Remove the synchronous wrapper that can park the executor responsible for delivery. Retain the genome, optimizer and workspace claims through pause and resume. Replace pass-local memory retry with an owned pending demand and readiness subscription. | Cancel queued and active turns, interrupt a dream for speech, and resume learning. Measure ready-to-first-output, swap time and durable progress separately. [Engine](CONTINUUM-ENGINE.md) · [Learning](IN-PROCESS-LEARNING.md) |
-| 3. Minds, tools and governors | Replace private worker loops, permits held across algorithms and timer-driven retries with the existing stage and operation owners. Each brain function declares typed inputs and outputs. A long-running tool returns a handle and publishes completion. Shutdown closes admission, signals all owners, then joins completed work. | During a compile, another act and an unrelated resident progress. Trace every accepted operation to a terminal event or durable transfer. Replay shutdown during active work. [Concurrent mind](CONCURRENT-MIND-AND-GOVERNOR.md) · [Stage contract](STAGE-CONTRACT.md) |
-| 4. Media, perception and grid | Share retained windows by signal, provenance, timestamp and acceptable age. Reliable events retain each item. Replaceable snapshots coalesce. Local CPU, accelerator and remote execution implement the same placement contract. | Two subscribers reuse one expensive result. A late result refines the correct frame or utterance. Peer loss and resumption produce one terminal publication. [Grid bus](GRID-BUS-ARCHITECTURE.md) |
-| 5. Commands, storage and remaining modules | Apply the command and module migration below. Group each family around its state owner, generate bindings from the typed contract and remove duplicate handlers and descriptors. Preserve native bytes across storage and transfer. Finish file-by-file reconciliation across the remaining packages. | Trace public, generated and remote entry points to one implementation. Read and write existing data through the canonical schema. Verify the inventory has zero unclassified files and zero unresolved bypasses. [Rust ORM](../infrastructure/RUST-ORM-ARCHITECTURE.md) · [Module catalog](MODULE-CATALOG.md) |
+| Memory admission and reclaim | Inventory serving, KV, embeddings, vision, voice, rendering, training and transfers. Replace the vision holder's unconditional reclaim refusal with a request to its serving owner. Retain a multi-pool demand until granted or withdrawn. On a confirmed release, reconsider competing demand by priority and age, accounting for shared backing on unified memory. | Trace one blocked learner through holder selection, confirmed reduction, full grant and resumed work. Show protected residents survive on discrete and unified memory. [Serving registrations](../../core/continuum-serving/src/modules/serving_daemon/consumer.rs) |
+| Inference and learning | Give all provider entry points one submission and completion path. Remove the synchronous wrapper that can park the executor responsible for delivery. Retain the genome, optimizer and workspace claims through pause and resume. Replace pass-local memory retry with an owned pending demand and readiness subscription. | Cancel queued and active turns, interrupt a dream for speech, and resume learning. Measure ready-to-first-output, swap time and durable progress separately. [Engine](CONTINUUM-ENGINE.md) · [Learning](IN-PROCESS-LEARNING.md) |
+| Minds, tools and governors | Replace private worker loops, permits held across algorithms and timer-driven retries with the existing stage and operation owners. Each brain function declares typed inputs and outputs. A long-running tool returns a handle and publishes completion. Shutdown closes admission, signals all owners, then joins completed work. | During a compile, another act and an unrelated resident progress. Trace every accepted operation to a terminal event or durable transfer. Replay shutdown during active work. [Concurrent mind](CONCURRENT-MIND-AND-GOVERNOR.md) · [Stage contract](STAGE-CONTRACT.md) |
+| Media, perception and grid | Share retained windows by signal, provenance, timestamp and acceptable age. Reliable events retain each item. Replaceable snapshots coalesce. Local CPU, accelerator and remote execution implement the same placement contract. | Two subscribers reuse one expensive result. A late result refines the correct frame or utterance. Peer loss and resumption produce one terminal publication. [Grid bus](GRID-BUS-ARCHITECTURE.md) |
+| Commands, storage and remaining modules | Follow the packaging contract below. Group each family around its state owner, generate bindings from the typed contract and remove duplicate handlers and descriptors. Preserve native bytes across storage and transfer. Finish file-by-file reconciliation across the remaining packages. | Trace public, generated and remote entry points to one implementation. Read and write existing data through the canonical schema. Verify the inventory has zero unclassified files and zero unresolved bypasses. [Rust ORM](../infrastructure/RUST-ORM-ARCHITECTURE.md) · [Module catalog](MODULE-CATALOG.md) |
 
-### Closing a migration
+### Definition of done for every change
 
 1. **Define the boundary.** Identify the parent contracts, the shared method, the required leaf hooks, field invariants, ordering constraints and the event that transfers ownership. Draw the path for one normal operation and one interrupted operation.
 2. **Replace every caller.** Change registrations, imports, generated metadata and native entry points together. Delete retired methods, queues, constants, switches, exports and documentation. Check reverse references across all targets. Report production code added and removed separately from documentation and fixtures.
 3. **Account for every wait.** Record when work became ready, the prerequisite it needed, the owner able to satisfy it, the wake event, and concurrent work that progressed. Attribute each observed ready delay above one second. Averages alone hide stranded work.
-4. **Verify runtime migrations on the node.** Use matched 15-minute windows with real residents and comparable load. Record running core and native engine identity, memory, throughput, ready-to-first-response distribution and maximum, output quality and durable learning. Replay the triggering fault and capture recovery through the public entry point.
+4. **Verify runtime changes on the node.** Use matched 15-minute windows with real residents and comparable load. Record running core and native engine identity, memory, throughput, ready-to-first-response distribution and maximum, output quality and durable learning. Replay the triggering fault and capture recovery through the public entry point.
 5. **Enforce closure.** Use private state, typed constructors and required trait methods to prevent bypass. Add a focused CI check for boundaries the compiler cannot enforce. Reconcile every inventory row with the resulting tree, update the owning chapter and contents, and obtain independent review and CI for the exact commit. A family is closed only when all former callers use the new owner and the superseded route is gone.
 
 ### Command and module packaging
@@ -879,4 +879,4 @@ For any AI or human authoring a continuum module:
 7. **Use `Commands.execute` for cross-module calls.** Never import another module's code directly. Use commands and events; trust the kernel's routing.
 8. **ts-rs derives the wire types.** Do not hand-write a TS type that mirrors a Rust struct. The generator does that.
 9. **One module, one responsibility.** A module wraps one coherent concern. Chat is a module. Inference is a module. The generator is a module. If you find yourself authoring two unrelated things in one module, split them.
-10. **Close the whole contract.** Follow [the migration and deletion procedure](#closing-a-migration) for every affected caller and adapter.
+10. **Close the whole contract.** Follow [the definition of done](#definition-of-done-for-every-change) for every affected caller and adapter.
