@@ -69,6 +69,66 @@ pub struct TickOutcome {
 }
 ```
 
+**Regions wake on events, not on a clock.** The `tick` above is the region's turn of work, not a
+metronome. A region wakes when an event it subscribes to arrives or an input it depends on is
+invalidated, and its outputs invalidate exactly their dependents
+([CONCURRENT-MIND-AND-GOVERNOR.md](CONCURRENT-MIND-AND-GOVERNOR.md) §3.2). A periodic heartbeat is
+only housekeeping. Where this chapter says "cadence", read the rate at which events arrive, as
+bounded by the governor.
+
+## Fusion: regions that hold a living estimate
+
+Status: proposed, 2026-11-20 (Joel: "build objects and easy to reuse event data flow ... We can
+write an amygdala and a Wernicke's area for example ... caches and events to fuse it all").
+
+Perception, comprehension and speech are each a **fusion region**: an object that holds a living
+estimate and refines it as contributions arrive from faster and slower regions
+([LIVE-CALL-ARCHITECTURE.md](../live/LIVE-CALL-ARCHITECTURE.md), "A Mind in the Call"). It is
+one reusable shape:
+
+- **Subscribe:** each source is an event stream (a tracker every frame, a deep result seconds later,
+  her model's layers, a word heard, a word planned).
+- **Cache:** the estimate is a cache entry keyed by what it fused, with each part's observation time
+  and confidence. Readers peek it at any moment, and it is never blank: a rough estimate stands until
+  a better one replaces it, region by region.
+- **Fuse:** a per-source update rule, weighted by confidence and age; stale parts lose weight.
+- **Emit:** every change publishes an event and invalidates its dependents. A fusion region can also
+  emit a request for more knowledge (a stage is needed here, at this priority, by this deadline).
+
+Writing a new region is naming its sources, its estimate type and its update rule. The
+subscription, caching, invalidation, governance and telemetry are the substrate's, written once.
+Every request and stage it wakes is governed by device time
+([SHARED-RESOURCES.md, "Time"](SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)).
+
+### Worked example: the amygdala
+
+The fast decision of how much depth a moment needs.
+
+- **Subscribes to:** the fused percept (sight and hearing), her running comprehension, turn events,
+  her vitals.
+- **Holds:** a small learned model, fast enough to run on every change, and its current judgement.
+- **Emits:** depth requests: which deep stage is wanted (her deep mind for the reply, a detailed look
+  at a frame, a deeper analysis of what was said), at what priority, by what deadline. The deep
+  stages and the governor subscribe. It routes and prioritizes; it never forbids thought, and any
+  stage can still be pulled in later in the turn.
+- **Learns from:** our receipts. A correction she had to speak means depth came too late; a deep
+  answer nobody needed means it was spent where it was not.
+
+### Worked example: Wernicke's area
+
+One word-level representation shared by hearing and speaking. In human cortex the left posterior
+superior temporal gyrus is active while listening and before speaking, encoding whole upcoming words
+ahead of the motor stages (Silva et al., Science).
+
+- **Subscribes to:** words heard (the transcription stream of every participant) and words planned
+  (her quick voice and her deep mind's continuation).
+- **Holds:** the fused word-level state of the conversation: what was said, what she understood, and
+  what she is about to say.
+- **Emits:** updates to her comprehension estimate; the upcoming word plan to her voice (speech
+  synthesis and her avatar's visemes) ahead of articulation; revisions to words not yet spoken when
+  deeper thought changes the continuation. What she hears shapes what she is about to say while it
+  forms, and the reverse.
+
 ## The "for free" triplet
 
 Per the CBAR pattern, adding a new region must be cheap:
@@ -164,6 +224,9 @@ The rule: shared state shape MUST allow concurrent writes from independent ticks
 | **Motor cortex** | NOT YET — sibling slice | Continuously score candidate utterances/actions against current context. Predictive priming (algorithm 5). | `working`, attention salience, channel partial-message stream | candidate ready-buffer |
 | **Attention** | NOT YET — sibling slice | Maintain salience map. Update per user reactions, self-tags, structural centrality, rehearsal. Bias hippocampus prefetch. | `engrams`, channel reactions, recall co-occurrence | `salience` |
 | **Sleep policy** | NOT YET — sibling slice | When persona idle: deeper consolidation, semantic re-clustering, engram pruning. When active: gates regions to active-mode tick bodies. | `vitals`, channel activity rate | region cadence policy, consolidation depth |
+| **Amygdala** | NOT YET (proposed; see Fusion) | On each change of the fused state, judge how much depth the moment needs. | fused percept, comprehension, turn events, `vitals` | depth requests (stage, priority, deadline) |
+| **Wernicke's area** | NOT YET (proposed; see Fusion) | Fuse words heard and words planned into one word-level state. | transcription streams, quick-voice and deep continuations | comprehension estimate, upcoming word plan, revisions |
+| **Visual fusion** | NOT YET (proposed; see Fusion) | Refine the living scene estimate as tracking, detectors, deep networks and her vision layers report. | frame and change events, deep results | scene estimate, requests for a deeper look |
 | **Genome** | partial (LoRA paging exists in TS); Rust port pending | LRU paging of adapters, multi-LoRA blend on demand. | task domain hints, salience | `genome` |
 
 Every row in this table is its own implementation slice with its own card. None of them is the persona handler. The handler stays small.
