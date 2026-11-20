@@ -30,7 +30,7 @@ Call: Activity                       a room run by a call recipe; its essentials
 ```
 
 Everything above is computed once, for every mind in the call. What it means to each resident is
-computed in her own mind (chapter 5.4).
+computed in her own mind (chapter 5.5).
 
 ## 7.2 A resident in a call
 
