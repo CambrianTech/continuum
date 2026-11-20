@@ -17,6 +17,27 @@
 //! ([`next_scan_delay`]), so a million-entry tree cannot own a core.
 //! One scanner for all paths, not a task per reporter — one concurrent
 //! concern, one task (CONCURRENCY-STYLE-GUIDE: no parallel managers).
+//!
+//! ## Living daemon — event-driven estimation between walks
+//!
+//! Between full scans the cached bytes are stale. [`EventWatcher`] observes
+//! filesystem events via the `notify` crate and feeds budgeted size deltas
+//! into each [`TrackedDir`], so reporters see a live **estimate** (last_walk
+//! baseline + accumulated delta) rather than a frozen number. The estimate
+//! is labelled as such in the detail string; when a full walk completes it
+//! resets the baseline and the accumulator.
+//!
+//! Budgeted: each event triggers at most one `stat` call capped at
+//! [`EVENT_BUDGET_MS`] ms per tick — heavy write storms (cargo build, model
+//! download) do not turn disk accounting into a second full walk. The count
+//! of observed events is still tracked even when the budget is exhausted,
+//! so reporters can report "N changes since last scan" alongside the estimate.
+//!
+//! Incremental: only changed files are measured, never re-walked entire
+//! trees between scans.
+//! Estimating: `estimate_bytes() = last_walk_bytes + net_delta` when events
+//! have been observed; falls back to `bytes()` (scanner value) before any
+//! events or after a walk has corrected the baseline.
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
