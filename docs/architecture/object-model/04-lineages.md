@@ -156,6 +156,16 @@ Part
       └─ Course           an Academy activity: lessons, exams, a grader (4.8)
 ```
 
+A room is also the world's sector (chapter 0, "The world is sectors"):
+- **Streaming.** It is streamed around its streaming sources (the citizens acting in it, the people
+  watching it) at a level of detail set by how much attention it has.
+- **Scoped events.** Its events carry a scope, a salience and a decay, and reach only its
+  subscribers.
+- **Affordances.** It publishes its affordances, the commands its applications offer, as part of its
+  view.
+- **Hierarchy.** An activity contains its rooms, and a room contains its threads and artifacts; each
+  streams on its own.
+
 Replaces `AircCitizen` and its six parent readers (`AircTranscriptReader`, `AircRosterReader`,
 `AircDoctrineReader`, `AircWorkReader`, `WallReader`, `RoomBoardReader`), and `WorkBoardReader`,
 `CardBoards`, `BoardFetch`, `WorkspaceLayoutReader`. An outside task suite enters through one

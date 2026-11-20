@@ -38,7 +38,20 @@ Every branch answers the lifecycle commands and the same queries through the tre
 is one broadcast: each branch saves its durable state, demotes its pages, and answers `Done` or
 `Pending` on what it is still writing.
 
-## 5.2 Durable and cache
+## 5.2 Her level of presence
+
+She is always at one of four levels of presence (chapter 0, "Bubbles of fidelity"), and attention
+moves her between them:
+- **acting:** on the Core, at full detail;
+- **attentive:** warm, about to act;
+- **present:** following her rooms at her dial's level of detail;
+- **at rest:** her durable self and a wake condition.
+
+A level is a statement about her caches only. Promoting her is `Prepare` and `Resume` reaching the
+branches that level needs, and demoting her is `Suspend` reaching them, through the same tree.
+Her durable branches are the same at every level.
+
+## 5.3 Durable and cache
 
 A branch's durable state is who she is; its cache is how fast she is. Persisting her persists every
 durable branch at its seam, each as a `Durable` value:
@@ -54,7 +67,7 @@ durable branch at its seam, each as a `Durable` value:
 Her KV pages are cache: saved on a stop so that a restart restores them, and rebuilt from her durable
 state when they cannot be restored.
 
-## 5.3 What she shares and what is hers
+## 5.4 What she shares and what is hers
 
 The node's perception streams, the Core, the governor and the rooms are not hers. She holds handles
 to them, and her branches read their publications:
@@ -65,7 +78,7 @@ to them, and her branches read their publications:
 What is computed once for everyone (an embedding, a detection, a transcription) stays in the shared
 part; what it means to her is computed in her mind.
 
-## 5.4 Today's pieces of her, placed
+## 5.5 Today's pieces of her, placed
 
 | Today | Where it is | Where it lands |
 |---|---|---|

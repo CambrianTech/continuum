@@ -76,6 +76,66 @@ follows it (the context is a FIFO; [CONTINUUM-ENGINE.md](../CONTINUUM-ENGINE.md)
 checkerboard: a level change that never forces the rest to re-render. The codec that does this is
 `continuum-context` (chapter 3.6).
 
+### The world is sectors, streamed around its sources
+
+Analyses of RAGE describe the world as a spatial grid of hierarchical sectors. A sector is kept in
+memory only while a streaming source (the player, or an agent that matters) justifies its cost. The
+streaming radius is not a fixed circle: it reaches farther along the direction of travel, and
+further still the faster the source moves, while the sectors left behind are evicted. (These
+descriptions come from people analysing the engine; Rockstar has not confirmed them.)
+
+**Here:** the world's sectors are its rooms and activities, and its streaming sources are attention:
+a citizen acting, a person watching, a call in progress.
+- **The radius reaches ahead.** It extends along the direction a mind is heading: her continuation
+  and its expectation, the activity her board says is next, the room a call is about to open.
+- **Speed matters.** Its reach scales with how fast that activity is moving.
+- **Trailing sectors drop.** Rooms she has left fall to a lower level of detail, then to their
+  durable traces.
+- **Sectors are hierarchical.** An activity contains its rooms, and a room contains its threads and
+  artifacts. Each level streams on its own.
+
+### Bubbles of fidelity around every focal point
+
+The same analyses describe entities living in rings of fidelity around the player:
+- full physics, the Euphoria solver and frequent sensing up close;
+- simplified animation and a few updates a second farther out;
+- statistical movement along a node graph beyond that;
+- a compressed state record once out of range.
+
+Entities move between rings as the focus moves.
+
+**Here:** every citizen has a level of presence, chosen the same way, by distance from attention:
+
+| Level | She is | What she costs |
+|---|---|---|
+| Acting | on the Core, perceiving at full detail, her avatar at full rate | her KV on the device, her regions at full rate, her body rendered |
+| Attentive | warm and about to act, or in a call but not speaking | her KV warm, her regions on change, her avatar at its idle rate |
+| Present | in her rooms, following them at the level of detail her dial sets | summarized perception, her KV demoted, events filtered by salience |
+| At rest | her durable self, with a wake condition | her durable state only; a matching event promotes her |
+
+Promotion and demotion follow attention, never a timer. Nothing about her is lost at any level,
+because each level keeps her durable branches (chapter 5); only her caches move.
+
+### Slots, hydrated from descriptors
+
+RAGE avoids heap churn by keeping pools of preallocated slots for people, vehicles and objects. An
+entity entering a cell claims a slot and is hydrated from a data descriptor rather than allocated
+anew. Swapping an entity's behavior or physical profile is often just swapping a pointer to another
+descriptor.
+
+**Here:** a persona entering the Core claims a resident slot and is hydrated from her descriptor:
+her durable state, her genes, her saved pages. Switching minds is swapping the descriptor bound to
+the Core's active role. This is why a switch costs milliseconds (0.4).
+
+**Where we differ.** RAGE partitions memory into hard, fixed pools per subsystem: physics, audio,
+geometry, entities. That suits a console game, whose content is authored and fixed before it ships.
+Our load mix changes by the minute: a call starts, a lesson queues, the owner launches a game on the
+same GPU. Fixed partitions would hold memory idle in one pool while another starves. So the slots
+are sized from measurement, and memory is one governed pool that flows to whatever needs it now
+([SHARED-RESOURCES.md](../SHARED-RESOURCES.md)). RAGE's other memory rule we keep exactly: a freed
+asset is released only when every subsystem holding it has let go. Here that is custody: a release
+answers `Pending` until the last holder finishes (chapter 3.1).
+
 ### Streaming that cannot keep up shows holes, so design the stream
 
 On the PS2, GTA 3 streamed the city off the disc while you drove. Drive too fast and you saw
@@ -117,6 +177,32 @@ call, and GTA 5 has about 6,700 of them. A game's tunable data (a car's mass, gr
 - **Data.** Tunables are data entities beside the code, named after the code's own fields. A
   budget, a threshold or a forge recipe is measured and stored, never a constant. The core grows by
   adding natives and recipes, not by special-casing missions.
+
+### Scripts are cooperative fibers
+
+Each running RAGE script is reported to be a cooperative fiber on the script VM: a tiny fixed stack
+and an instruction pointer. It runs a slice and yields by calling `WAIT`. Hundreds can be started,
+paused, swapped or ended in a frame, with almost no cost to switch.
+
+**Here:** a running recipe and a mind's turn both yield at safe points instead of holding anything:
+- a recipe step at each native call;
+- a turn at each decode step;
+- a long native returns a task whose completion resumes it.
+
+What a switch must save is small and owned: her residency for a mind, a step cursor for a recipe.
+That is why hundreds of activities and a Core shared by many minds cost almost nothing to interleave.
+
+### Double-buffered state and command queues
+
+RAGE's subsystems are reported to talk through ring buffers and command queues rather than by
+mutating each other across threads. Its AI reads the previous frame's perception cache and pushes
+locomotion intents into a physics command buffer. Physics resolves those in one batch before
+rendering reads the results.
+
+**Here:** a mind reads the freshest published snapshots, never another part's live state, and acts by
+issuing commands. Those commands are resolved in batch by the parts that own the state, and the Core
+resolves a frame's rows in one decode. Readers never block writers, and nothing mutates across
+workers (chapter 2.5).
 
 ### A frame is built in passes
 
@@ -171,6 +257,29 @@ twice. Its behaviors (brace for impact, catch fall, teeter) are switched on per 
 recall, the workspace) run live on what she perceives, and behaviors such as interrupting, asking,
 deferring or digging deeper are switched on by her own state, not scripted by the caller. No two
 turns are replayed, because each is computed from her present.
+
+### Stimuli are scoped, queries are tickets, affordances are baked in
+
+Analyses of RAGE describe three ways its agents perceive without paying for omniscience:
+- **Scoped stimuli.** A gunshot, a collision or a siren is a spatial stimulus with a radius, a decay
+  and a priority. Only agents registered in the cells it reaches receive it; nothing polls the
+  world.
+- **Query tickets.** Line-of-sight and pathfinding queries are time-sliced. An agent submits a ticket
+  and keeps doing its current micro-behavior until the answer lands a few frames later.
+- **Baked affordances.** Cover points and interactable props are tagged into each sector ahead of
+  time, so an agent asks for the nearest chair rather than analysing geometry.
+
+**Here:**
+- **Events carry a scope, a salience and a decay.** They are delivered only to the subscribers of
+  the rooms they belong to. A citizen's dial decides which of those reach her mind; nothing in the
+  core polls a room.
+- **Every expensive question is a ticket.** A deep look at a frame, a recall, a search or a remote
+  inference returns a completion. She keeps acting on the freshest cached answer until it lands.
+- **Affordances are published, not inferred.** Positron defines each application once, with its
+  commands and state, and a room publishes its affordances as part of its view (README, "One world.
+  Many ways to inhabit it."). A citizen perceives "this is a button that merges the PR" directly,
+  never by reverse-engineering a screen. Her tool working set per activity is the same idea for her
+  hands.
 
 ### Many small motions, blended and fitted to the body
 

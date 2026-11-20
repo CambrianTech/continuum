@@ -36,7 +36,9 @@ pub trait Part: Send + Sync {
   its own shutdown under its old generation.
 - **The worker** (`continuum-flow::worker`), a generic owner around the flow stage (CBAR's
   `QueueThread`): a data lane and a reserved control lane, typed topics with revisions and
-  provenance, short turns, QoS classes. A worker is a logical owner; many share an executor.
+  provenance, short turns, QoS classes. A worker is a logical owner; many share an executor. An
+  event published to a topic may carry a scope (the room it belongs to), a salience and a decay, and
+  reaches only that scope's subscribers (chapter 0, "Stimuli are scoped").
 - **`Completion<A>`** (`part/completion.rs`), concrete. It records a command's answers as they arrive,
   bound at ingress to an operation id, the target's generation and the parts it admitted. A retry
   rejoins it; an observer can detach and reattach.
