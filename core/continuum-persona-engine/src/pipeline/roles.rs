@@ -83,11 +83,11 @@ enum Retiring<U, F> {
     Moving(InFlight<U, F>),
 }
 
-impl<U: Identified, F> Retiring<U, F> {
-    fn persona(&self) -> PersonaId {
+impl<U, F> Retiring<U, F> {
+    fn unit(&self) -> &U {
         match self {
-            Self::AwaitingCopyOut(unit) => unit.persona(),
-            Self::Moving(moving) => moving.unit.persona(),
+            Self::AwaitingCopyOut(unit) => unit,
+            Self::Moving(moving) => &moving.unit,
         }
     }
 }
@@ -115,6 +115,13 @@ impl<U: Identified, F: Fence> Roles<U, F> {
         self.active.as_ref()
     }
 
+    /// All units this Core owns, including those in flight.
+    pub fn units(&self) -> impl Iterator<Item = &U> {
+        self.active.iter()
+            .chain(self.next.iter().map(|next| &next.unit))
+            .chain(self.retiring.iter().map(Retiring::unit))
+    }
+
     /// Mutable access to the active mind only: decoding touches nobody else.
     pub fn active_mut(&mut self) -> Option<&mut U> {
         self.active.as_mut()
@@ -125,7 +132,7 @@ impl<U: Identified, F: Fence> Roles<U, F> {
     }
 
     pub fn retiring(&self) -> Option<PersonaId> {
-        self.retiring.as_ref().map(Retiring::persona)
+        self.retiring.as_ref().map(|role| role.unit().persona())
     }
 
     /// The exact copy-out to begin for the mind awaiting it (her persona, epoch, direction out): the

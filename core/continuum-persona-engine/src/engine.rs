@@ -111,6 +111,11 @@ where
         self.roles.active().map(Identified::persona)
     }
 
+    /// The units held across the active, staged and retiring roles.
+    pub fn units(&self) -> impl Iterator<Item = &U> {
+        self.roles.units()
+    }
+
     /// The active mind's own state (her tokens, her position), never the tier she runs on.
     pub fn active_mut(&mut self) -> Option<&mut U> {
         self.roles.active_mut()

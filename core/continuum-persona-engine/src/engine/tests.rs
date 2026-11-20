@@ -243,6 +243,8 @@ fn a_refused_copy_out_is_finished_before_the_next_switch_and_given_back_once() {
 
     assert!(matches!(h.engine.finish_retirement(), Err(RetireError::CopyOut(_))), "still refused");
     assert_eq!(h.engine.retiring(), Some(id(1)), "she stays in custody");
+    let held: Vec<_> = h.engine.units().map(|mind| mind.id()).collect();
+    assert_eq!(held, [id(2), id(1)], "both active and retiring minds remain in custody");
     h.refuse.set(None);
     assert!(matches!(h.engine.finish_retirement(), Err(RetireError::Release(RetireRefusal::NotLanded { .. }))), "begun, not landed");
     land_last(&h.moves);
