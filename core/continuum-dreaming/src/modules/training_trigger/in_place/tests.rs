@@ -635,3 +635,23 @@ async fn shutdown_joins_a_fence_registered_by_a_running_step() {
         .await.expect("test: nested fence admitted").expect("test: shutdown joined");
     fence.await.expect("test: fence completed");
 }
+
+#[tokio::test]
+async fn prepare_waiters_have_no_engine_work_to_drain() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    state.ready.store(true, std::sync::atomic::Ordering::Release);
+    let engine = engine(9);
+    let slot = state.in_place.engine(engine);
+    let held = slot.acquire(None, engine_lock::Phase::Step).await;
+    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "test".into() };
+    let waiting = state.prepare_bucket(key, Arc::new(Vec::new()), engine);
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("the engine is still held"),
+        _ = std::future::ready(()) => {}
+    }
+    assert_eq!(state.stop_admitting().await, 0);
+    drop(held);
+    assert!(matches!(waiting.await, Err(reason) if reason.contains("shutting down")));
+}
