@@ -38,10 +38,6 @@ use crate::runtime::brain_region::{
 };
 use crate::runtime::ready_buffer::{DashMapReadyBuffer, ReadyBuffer};
 
-/// Default newest-events fetch cap per digest build (mirrors `AircRagSource`'s
-/// production default). The recipe-defined grounding window slices within this.
-const DEFAULT_FETCH_LIMIT: usize = 100;
-
 /// Yields the personas to pre-stage for and, per persona, a transcript reader +
 /// the channel (room) to digest. Implemented on `PersonaAircRuntimeRegistry` in
 /// production; stubbed in tests so the region needs no live airc daemon.
@@ -62,7 +58,9 @@ pub struct ChannelDigestRegion {
     personas: Arc<dyn PersonaChannelReader>,
     digests: Arc<DigestBuffer>,
     grounding: usize,
-    fetch_limit: usize,
+    /// The room revision each (persona, room) digest was built at (`None`: built before anything
+    /// in the room changed): unchanged means current.
+    built_at: dashmap::DashMap<(Uuid, Uuid), Option<u64>>,
 }
 
 impl ChannelDigestRegion {
@@ -87,19 +85,13 @@ impl ChannelDigestRegion {
             personas,
             digests,
             grounding: DEFAULT_GROUNDING,
-            fetch_limit: DEFAULT_FETCH_LIMIT,
+            built_at: dashmap::DashMap::new(),
         }
     }
 
     /// Override the N-before-bookmark grounding window (recipe-defined in time).
     pub fn with_grounding(mut self, grounding: usize) -> Self {
         self.grounding = grounding;
-        self
-    }
-
-    /// Override the newest-events fetch cap.
-    pub fn with_fetch_limit(mut self, fetch_limit: usize) -> Self {
-        self.fetch_limit = fetch_limit;
         self
     }
 
@@ -120,20 +112,19 @@ impl ChannelDigestRegion {
         let Some((reader, room)) = self.personas.reader_and_room(persona_id) else {
             return TickOutcome::idle();
         };
-        match self
-            .builder
-            .build(
-                persona_id,
-                room,
-                reader.as_ref(),
-                self.fetch_limit,
-                self.grounding,
-            )
-            .await
-        {
+        // Read BEFORE the build: a change landing during the build moves it again, so the next
+        // tick rebuilds rather than keeping a digest that missed it.
+        let head = crate::cognition::channel_substrate::room_head(room);
+        let revision = head.map(|head| head.revision);
+        let key = (persona_id, room);
+        if self.built_at.get(&key).is_some_and(|built| *built == revision) && self.digests.peek(&key).is_some() {
+            return TickOutcome { cadence_hint: Some(CadenceHint::Slower), ..TickOutcome::idle() };
+        }
+        match self.build(reader.as_ref(), persona_id, room, head).await {
             Ok(digest) => {
                 let has_unread = digest.has_unread();
-                self.digests.publish((persona_id, room), Arc::new(digest));
+                self.digests.publish(key, Arc::new(digest));
+                self.built_at.insert(key, revision);
                 TickOutcome {
                     published: 1,
                     consumed_since_last: 0,
@@ -158,6 +149,26 @@ impl ChannelDigestRegion {
                 TickOutcome::idle()
             }
         }
+    }
+
+    /// Her page is what the digest needs: the grounding before her bookmark and everything after
+    /// it. The feed's head lamport minus her bookmark is her unread, so no count is fixed and no
+    /// unread line is left out. Before an event of the room crossed this core's feed, its head is
+    /// unknown here and the grounding is what can be shown.
+    async fn build(
+        &self,
+        reader: &dyn AircTranscriptReader,
+        persona_id: Uuid,
+        room: Uuid,
+        head: Option<crate::cognition::channel_substrate::RoomHead>,
+    ) -> Result<ChannelDigest, airc_lib::AircError> {
+        let bookmark = reader.read_cursor(persona_id, room).await?;
+        let page = match head.and_then(|head| head.lamport) {
+            Some(newest) => self.grounding.saturating_add(usize::try_from(newest.saturating_sub(bookmark)).unwrap_or(usize::MAX)), // unwrap_or: an unread count past the address space asks for everything
+            None => self.grounding,
+        };
+        let events = reader.page_recent(page).await?;
+        Ok(self.builder.build_from_events(persona_id, room, events, self.grounding, bookmark))
     }
 }
 
@@ -390,5 +401,20 @@ mod tests {
             1,
             "one entry per (persona, channel), refreshed"
         );
+    }
+
+    // what this catches: the region re-paging and decoding a room every tick when nothing in it
+    // changed (the core's second-largest CPU use on the M5, 2026-11-14). An unchanged room is not
+    // rebuilt; a touched room is, once.
+    #[tokio::test]
+    async fn an_unchanged_room_is_not_rebuilt() {
+        let persona = Uuid::new_v4();
+        let room = RoomId::new();
+        let region = region_for(persona, room, vec![event_in(room, "a", 1)]);
+        assert_eq!(region.tick(&RegionContext::for_persona(0, persona)).await.published, 1);
+        assert_eq!(region.tick(&RegionContext::for_persona(1, persona)).await.published, 0, "unchanged: no rebuild");
+        crate::cognition::channel_substrate::room_touched(room.as_uuid());
+        assert_eq!(region.tick(&RegionContext::for_persona(2, persona)).await.published, 1, "touched: rebuilt");
+        assert_eq!(region.tick(&RegionContext::for_persona(3, persona)).await.published, 0);
     }
 }

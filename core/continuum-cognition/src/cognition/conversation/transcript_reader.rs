@@ -133,7 +133,7 @@ impl AircTranscriptReader for airc_lib::Airc {
             airc_lib::Airc::load_runtime_cursor(self, &read_cursor_consumer_id(persona, room))
                 .await?
                 .map(|c| c.lamport)
-                .unwrap_or(0),
+                .unwrap_or(0), // unwrap_or: no cursor = she has read nothing, lamport 0 precedes every event
         )
     }
 
@@ -148,6 +148,9 @@ impl AircTranscriptReader for airc_lib::Airc {
             &read_cursor_consumer_id(persona, room),
             event,
         )
-        .await
+        .await?;
+        // Her unread split moved: the room's digest is rebuilt on the next tick.
+        crate::cognition::channel_substrate::room_touched(room);
+        Ok(())
     }
 }
