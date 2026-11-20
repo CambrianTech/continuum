@@ -373,7 +373,8 @@ struct Turn {
 /// Where a turn stands.
 enum Phase {
     /// Not bound yet: what her prefill starts from is decided against her blocks when she is.
-    Waiting,
+    /// Estimate once when first eligible, after any earlier turn for this mind. Native resume checks the actual blocks again.
+    Waiting(std::cell::OnceCell<usize>),
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
@@ -555,7 +556,7 @@ impl Driver<'_, '_> {
                 let answer = emit::AnswerSeq(self.answers);
                 let cancel = Arc::new(AtomicBool::new(false));
                 self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting, submitted: Instant::now(), spent: Spent::default(), boundaries: [boundary, None], answer, cancel });
+                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted: Instant::now(), spent: Spent::default(), boundaries: [boundary, None], answer, cancel });
             }
             Err(refused) => {
                 tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
@@ -576,11 +577,11 @@ impl Driver<'_, '_> {
             .map(|&index| {
                 let turn = &turns[index];
                 let (decoding, remaining) = match &turn.phase {
-                    Phase::Waiting => {
+                    Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
                         let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).reused() } else { 0 }; // a mind never seen reuses nothing
-                        (false, turn.prompt.len().saturating_sub(reused))
-                    }
+                        turn.prompt.len().saturating_sub(reused)
+                    })),
                     Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
                     Phase::Decoding { .. } => (true, 0),
                 };
@@ -603,7 +604,7 @@ impl Driver<'_, '_> {
             turn.spent.switch += switching.elapsed();
             turn.spent.switches += 1;
         }
-        if matches!(turn.phase, Phase::Waiting) {
+        if matches!(turn.phase, Phase::Waiting(_)) {
             let from = self.resume(turn)?;
             if from >= turn.prompt.len() {
                 return Err(TurnError::NothingDecoded);
@@ -611,8 +612,8 @@ impl Driver<'_, '_> {
             turn.phase = Phase::Prefilling { pos: from };
         }
         let stepping = Instant::now();
-        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting) {
-            Phase::Waiting => (Err(TurnError::NothingDecoded), false),
+        let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
+            Phase::Waiting(_) => (Err(TurnError::NothingDecoded), false),
             Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
