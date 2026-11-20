@@ -3,6 +3,7 @@
 # Runs before code reaches the remote. Fast enough to not block workflow,
 # thorough enough to catch real problems.
 set -e
+set -o pipefail
 
 START_TIME=$(date +%s)
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -45,7 +46,7 @@ echo "====================================="
 FAILED=0
 CHANGED_FILES="$(changed_files_for_push | sort -u)"
 RUST_RELEVANT=0
-if echo "$CHANGED_FILES" | grep -qE "^(core/|docker/|protocol/typescript/|Cargo\.(toml|lock)$|core/.*/Cargo\.(toml|lock)$)"; then
+if grep -qE "^(core/|docker/|protocol/typescript/|Cargo\.(toml|lock)$|core/.*/Cargo\.(toml|lock)$)" <<< "$CHANGED_FILES"; then
     RUST_RELEVANT=1
 fi
 

@@ -10,6 +10,7 @@
 # Safe to run multiple times (idempotent)
 
 set -e
+set -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
@@ -49,7 +50,9 @@ confirm() {
 dir_size() {
   local path="$1"
   if [ -d "$path" ]; then
-    du -sh "$path" 2>/dev/null | awk '{print $1}'
+    local size
+    size=$(du -sh "$path" 2>/dev/null | awk '{print $1}') || true
+    echo "${size:-0B}"
   else
     echo "0B"
   fi
@@ -63,8 +66,8 @@ remove_dir() {
   local path="$1"
   if [ -d "$path" ]; then
     local kb
-    kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}')
-    TOTAL_FREED_KB=$((TOTAL_FREED_KB + kb))
+    kb=$(du -sk "$path" 2>/dev/null | awk '{print $1}') || true
+    TOTAL_FREED_KB=$((TOTAL_FREED_KB + ${kb:-0}))
     rm -rf "$path"
   fi
 }
@@ -237,7 +240,8 @@ fi
 echo -e "${YELLOW}[4b/6] PostgreSQL database${NC}"
 
 if command -v psql &>/dev/null; then
-  if psql -lqt 2>/dev/null | cut -d \| -f 1 | grep -qw continuum; then
+  _db_list="$(psql -lqt 2>/dev/null | cut -d '|' -f 1)" || true
+  if grep -qw continuum <<< "$_db_list"; then
     echo -e "  Found: database 'continuum'"
     if confirm "Drop database 'continuum'? (PostgreSQL server will NOT be removed)"; then
       dropdb continuum 2>/dev/null || sudo -u postgres dropdb continuum 2>/dev/null || true
