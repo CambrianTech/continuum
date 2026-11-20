@@ -148,6 +148,10 @@ impl LlamaServerProcess {
             kept.settle(&error);
             return Err(error);
         }
+        // Stamp observed placement from /props (card 44ddb6fc): new launches
+        // start with placement=None so the engine's own report becomes the fact;
+        // kept lanes that already have a recorded placement exit early.
+        self.stamp_observed_placement().await;
         let Some(launch) = kept.launch() else {
             return Err(LlamaServerError::Spawn("the launch to publish was already spent".into()));
         };
