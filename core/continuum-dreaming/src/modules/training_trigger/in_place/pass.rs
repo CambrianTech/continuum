@@ -94,15 +94,34 @@ impl TrainingTriggerState {
     /// run_leased rechecks admission and owns preparation through caller disconnect.
     pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation) -> Result<Prepared, String> {
         let lease = self.submit_gates.acquire(&key).await;
-        let mut held = self.in_place.engine(engine).acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+        let slot = self.in_place.engine(engine);
+        let mut held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
         self.run_leased(lease, key, move |state, key| async move {
+            let signature = if rows.is_empty() || held.minds.contains_key(&key) {
+                None
+            } else {
+                drop(held);
+                state.require_ready()?;
+                let started = std::time::Instant::now();
+                let signature = super::super::competence::mint_signature(
+                    format!("inline:{}", key.trait_kind), &key.trait_kind,
+                    rows.iter().flat_map(|row| row.examples.iter()),
+                ).await;
+                continuum_base::probe!(class = "training.in_place.signature_ready", persona = %key.persona_id,
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "bucket signature preparation finished outside the engine lock");
+                held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+                state.require_ready()?;
+                signature
+            };
+            let Some(first) = rows.first() else { return Ok(Prepared::Nothing) };
+            let count = rows.iter().map(|row| row.examples.len()).sum();
+            match seat(&state.in_place.authority, &state, &mut held, &key, first, count, signature, engine).await? {
+                Seating::Seated => {}
+                Seating::NotNow => return Ok(Prepared::Deferred),
+                Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
+            }
             for row in rows.iter() {
                 let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
-                match seat(&state.in_place.authority, &state, &mut held, &key, row, &rows, engine).await? {
-                    Seating::Seated => {}
-                    Seating::NotNow => return Ok(Prepared::Deferred),
-                    Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
-                }
                 let EngineLearning { minds, workspace } = &mut *held;
                 let Some(seated) = minds.get_mut(&key) else {
                     return Err(format!("the learner seated for {} left before its cover", key.persona_id));

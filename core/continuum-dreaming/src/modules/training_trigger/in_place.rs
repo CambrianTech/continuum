@@ -463,17 +463,16 @@ enum Seating {
 
 /// Make sure a learner is seated for `key` in `held`'s engine, restored from the bucket's newest
 /// generation when it has one. `false` when it cannot be seated now; the bucket defers.
-async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, rows: &[Arrival], engine: EngineIncarnation) -> Result<Seating, String> {
+async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut EngineLearning, key: &BucketKey, row: &Arrival, examples: usize, mut signature: Option<crate::genome::signature::GeneSignature>, engine: EngineIncarnation) -> Result<Seating, String> {
     if held.minds.contains_key(key) {
         return Ok(Seating::Seated);
     }
     let began = std::time::Instant::now();
     // WHICH gene this competence trains, by the one rule (competence::decide): the bucket's pending
     // examples are the competence; nothing of hers learns it yet (no learner is seated for it).
-    let examples: Vec<crate::genome::fine_tuning::types::TrainingExample> = rows.iter().flat_map(|r| r.examples.iter().cloned()).collect();
-    let mut signature = super::competence::mint_signature(format!("inline:{}", key.trait_kind), &key.trait_kind, &examples).await;
+
     if let Some(sig) = signature.as_mut() {
-        let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples: examples.len() };
+        let asking = super::competence::Asking { persona_id: key.persona_id, persona_name: &row.persona_name, trait_kind: &key.trait_kind, base_model: &key.base_model, examples };
         let adoption = crate::genome::gene_trial::Adoption::default_paths();
         // her other learners seated on this base are her competences in flight: a near one joins it
         // rather than minting a second gene beside it (Codex on e473f72b1)
