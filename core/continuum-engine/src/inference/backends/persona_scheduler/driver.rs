@@ -450,20 +450,24 @@ impl Driver<'_, '_> {
             self.finish_one_off(&turn);
             self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
         }
-        // A refused copy-out still owns native state outside the parked inventory. Finish it
-        // before enumerating minds, or leave the store and last complete generation in custody.
+        let minds: Vec<_> = self.parked.values().chain(self.engine.units())
+            .filter(|mind| resident(mind)).map(|mind| mind.id()).collect();
+        let blocked = |cause: Uuid, why: String| {
+            let retained = if minds.is_empty() {
+                vec![(cause, why)]
+            } else {
+                minds.iter().map(|mind| (mind.0, why.clone())).collect()
+            };
+            Suspended { preserved: 0, retained }
+        };
         if let Some(id) = self.engine.retiring() {
             if let Err(why) = self.retire_previous() {
-                return Suspended { preserved: 0, retained: vec![(id.0, why.to_string())] };
+                return blocked(id.0, format!("copy-out of {:?} blocked preservation: {why}", id.0));
             }
         }
         let Some(mut store) = self.store.take() else {
-            return Suspended { preserved: 0, retained: vec![(Uuid::nil(), "this node has no home to preserve minds in".into())] };
+            return blocked(Uuid::nil(), "this node has no home to preserve minds in".into());
         };
-        let mut minds: Vec<PersonaId> = self.parked.iter().filter(|(_, mind)| resident(mind)).map(|(id, _)| *id).collect();
-        if let Some(active) = self.engine.active().filter(|id| self.engine.active_mut().is_some_and(|her| resident(her) && her.id() == *id)) {
-            minds.push(active);
-        }
         // This stop's generation: every mind's blocks go to a file no published manifest names, and the
         // manifest naming them is published only once every write has landed (preserve.rs).
         let generation = preserve::Generation::fresh();
