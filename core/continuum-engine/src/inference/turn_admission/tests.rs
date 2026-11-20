@@ -690,7 +690,7 @@
             .expect("ready pool")
             .pool
             .expect("managed pool");
-        let sem = Arc::new(Semaphore::new(2));
+        let sem = Arc::new(Semaphore::new(1));
         let client = reqwest::Client::new();
         let key = PageKey::mind(Uuid::new_v4()).expect("fixture activity");
 
@@ -700,7 +700,7 @@
         let small = crate::inference::slots::directory().ensure_pool(&small_root, 2);
         small.note_saved(key);
         let stale_discovery = Arc::new(KvSlotPool::new(&small_root, 3));
-        warm_ahead(&sem, key, stale_discovery, &client, &small_root)
+        warm_ahead(key, stale_discovery, &client, &small_root)
             .await
             .expect("authoritative two-slot skip");
         let cold = small.lease_paged(key).await.expect("small pool lease");
@@ -711,7 +711,7 @@
         );
 
         // A cold lease has no physical KV to attribute, and must issue no HTTP.
-        warm_ahead(&sem, key, pool.clone(), &client, &root)
+        warm_ahead(key, pool.clone(), &client, &root)
             .await
             .expect("cold warm-ahead");
         let slot = pool.lease(key).await.expect("assigned physical slot");
@@ -720,7 +720,7 @@
 
         pool.note_saved(key);
         mode.store(1, Ordering::SeqCst);
-        warm_ahead(&sem, key, pool.clone(), &client, &root)
+        warm_ahead(key, pool.clone(), &client, &root)
             .await
             .expect("failed restore is best effort");
         assert!(pool.take_resident(slot).0.is_none());
@@ -731,8 +731,13 @@
 
         pool.note_saved(key);
         mode.store(2, Ordering::SeqCst);
+        // Drive the native restore while the independent scratch turn owns all decode capacity.
+        let mut decoding = admit_turn(&sem, crate::inference::slots::SlotClass::Background,
+            None, Some(pool.clone()), &client, &root, 0, std::time::Duration::ZERO)
+            .await.expect("scratch generation admitted");
+        assert_eq!(sem.available_permits(), 0);
         let mut queued = {
-            let warming = warm_ahead(&sem, key, pool.clone(), &client, &root);
+            let warming = warm_ahead(key, pool.clone(), &client, &root);
             tokio::pin!(warming);
             tokio::time::timeout(std::time::Duration::from_secs(5), async {
                 tokio::select! {
@@ -754,7 +759,9 @@
         };
         // Dropping the warm-ahead waiter is not cancellation of engine IO.
         assert!(futures::poll!(&mut queued).is_pending(), "same-slot waiter stays behind the restore");
-        assert_eq!(sem.available_permits(), 1, "only the in-flight transfer owns a permit while its receipt is pending");
+        assert_eq!(sem.available_permits(), 0, "scratch generation still owns decode");
+        decoding.generation_completed();
+        drop(decoding);
         assert!(endpoint.is_ready(), "caller cancellation does not condemn a progressing engine");
         assert_eq!(calls.load(Ordering::SeqCst), 2, "no duplicate restore was dispatched");
         release.notify_one();
@@ -765,15 +772,15 @@
         assert_eq!(admitted.page_in(), PageIn::Resident, "abandoned verified restore retained warmth");
         admitted.generation_completed();
         drop(admitted);
-        assert_eq!(sem.available_permits(), 2);
+        assert_eq!(sem.available_permits(), 1);
         let new = old;
         mode.store(0, Ordering::SeqCst);
-        warm_ahead(&sem, key, pool.clone(), &client, &root)
+        warm_ahead(key, pool.clone(), &client, &root)
             .await
             .expect("successful retry");
         let restored_calls = calls.load(Ordering::SeqCst);
         assert_eq!(restored_calls, 2);
-        warm_ahead(&sem, key, pool.clone(), &client, &root)
+        warm_ahead(key, pool.clone(), &client, &root)
             .await
             .expect("already resident");
         assert_eq!(
@@ -788,13 +795,12 @@
         let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), &client, &root, 100, std::time::Duration::ZERO)
             .await
             .expect("turn restore");
-        let other_adapter = Arc::new(Semaphore::new(2));
         let before = calls.load(Ordering::SeqCst);
         {
-            let interest = warm_ahead(&other_adapter, key, pool.clone(), &client, &root);
+            let interest = warm_ahead(key, pool.clone(), &client, &root);
             tokio::pin!(interest);
             assert!(futures::poll!(&mut interest).is_pending());
-            assert_eq!(other_adapter.available_permits(), 2, "pending work returned its capacity");
+            assert_eq!(sem.available_permits(), 0, "only the active generation holds decode capacity");
         }
         assert_eq!(calls.load(Ordering::SeqCst), before, "no paging while she acts");
         turn.generation_completed();
@@ -802,7 +808,7 @@
         assert_eq!(pool.take_resident(slot).0, Some(key));
         mode.store(3, Ordering::SeqCst);
         assert!(
-            warm_ahead(&sem, key, pool.clone(), &client, &root)
+            warm_ahead(key, pool.clone(), &client, &root)
                 .await
                 .is_err(),
             "a status-only or malformed acknowledgement is uncertain"

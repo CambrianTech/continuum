@@ -71,11 +71,8 @@ impl AIProviderAdapter for OpenAICompatibleAdapter {
             return None;
         }
         let client = self.client.clone();
-        // The endpoint's own permits: a pooled server's one aggregate bound (card 23069702).
-        let concurrency = crate::inference::slots::directory().endpoint(&root).concurrency().bound();
         let (work, interest) = async move {
             let _ = crate::inference::turn_admission::warm_ahead(
-                concurrency,
                 key,
                 pool,
                 &client,
