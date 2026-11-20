@@ -96,23 +96,6 @@ pub struct Shadow {
     pub walk: Walk,
 }
 
-/// The target after one reply token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Label {
-    Target(i32),
-    /// No target after this token: the adapter does not apply to its row.
-    Unlabelled,
-}
-
-impl Label {
-    fn native(self) -> i32 {
-        match self {
-            Self::Target(token) => token,
-            Self::Unlabelled => -1,
-        }
-    }
-}
-
 /// One reply to learn, on the sequence that served it.
 pub struct Reply<'a> {
     pub seq: i32,
@@ -361,22 +344,18 @@ impl<'c, 'm> Learner<'c, 'm> {
         Ok(Some(Recovered { seq: quarantine.seq, admission }))
     }
 
-    /// Select her shadow under this reply's admission and begin the reply.
-    pub fn begin<'l>(&'l mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>, reply: &Reply<'_>) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
+    /// Make her shadow the context's trainable adapter under `admission`, for a lesson taken as her
+    /// ordinary decode: labelled rows in a [`Batch::labelled`] then train it in the same graph as
+    /// everything else. Returns the lesson as an owned value that borrows nothing, so the context is
+    /// free for her decodes; [`Learner::conclude`] ends it. Refused, with the admission handed back,
+    /// while the context is quarantined or its accounting untrusted, on a pooled context, or for a
+    /// shadow not retained here.
+    pub fn select(&mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>) -> Result<Lesson, Refused> {
         if let Some(refusal) = self.quarantine().or(self.accounting()) {
             return Err(Refused { refusal: refusal.clone(), admission });
         }
-        // Everything that can refuse without native state is checked before the shadow is selected.
-        if reply.labels.len() != reply.tokens.len() {
-            let refusal = LearnRefusal { step: "reply", message: format!("{} labels for {} tokens", reply.labels.len(), reply.tokens.len()) };
-            return Err(Refused { refusal, admission });
-        }
-        let (Ok(n), Ok(n_restore)) = (i32::try_from(reply.tokens.len()), i32::try_from(reply.restore.len())) else {
-            let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
-            return Err(Refused { refusal, admission });
-        };
-        // A reply trains on per-token logits: a pooled (embedding) context has none, and native code
-        // would refuse only at the first labelled step (Codex's BigMama replay at 7f8462502).
+        // A lesson trains on per-token logits: a pooled (embedding) context has none, and native
+        // code would refuse only at the first labelled step (Codex's BigMama replay at 7f8462502).
         if unsafe { sys::llama_pooling_type(self.ctx.as_ptr()) } != sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE {
             let refusal = LearnRefusal { step: "context", message: "a pooled context cannot learn: create it with PoolingType::None".into() };
             return Err(Refused { refusal, admission });
@@ -386,12 +365,6 @@ impl<'c, 'm> Learner<'c, 'm> {
             let refusal = LearnRefusal { step: "select_shadow", message: "the shadow is not retained on this context".into() };
             return Err(Refused { refusal, admission });
         }
-        let Some(result) = NonNull::new(unsafe { sys::ggml_opt_result_init() }) else {
-            return Err(Refused { refusal: LearnRefusal { step: "result", message: "no result".into() }, admission });
-        };
-        let tokens = reply.tokens.to_vec();
-        let labels: Vec<i32> = reply.labels.iter().map(|label| label.native()).collect();
-        let restore = reply.restore.to_vec();
         let data = {
             let holder = self.holder();
             holder.optimizer = optimizer_params(shadow.optimizer);
@@ -404,12 +377,44 @@ impl<'c, 'm> Learner<'c, 'm> {
         // The init ended, admitted or refused: native code's own buffers say what survived.
         self.reconcile();
         if !selected {
-            unsafe { sys::ggml_opt_result_free(result.as_ptr()) };
             let refusal = self.refusal("select_shadow");
             return Err(Refused { refusal, admission: self.reclaim() });
         }
-        // Her shadow's own count before the reply: what it committed is measured against this.
+        // Her shadow's own count before the lesson: what it committed is measured against this.
         let steps_before = unsafe { sys::llama_opt_shadow_steps(self.ctx.as_ptr(), key.0.as_ptr()) };
+        Ok(Lesson { shadow: key, steps_before })
+    }
+
+    /// End a lesson taken through [`Learner::select`]: native code's buffers are reconciled, her
+    /// shadow's committed steps are counted from its own native count, and the admission comes
+    /// back. Effects native code marks uncertain, or untrusted accounting, are never `Learned`.
+    pub fn conclude(&mut self, lesson: Lesson) -> Finished {
+        self.reconcile();
+        let ctx = self.ctx.as_ptr();
+        let after = unsafe { sys::llama_opt_shadow_steps(ctx, lesson.shadow.0.as_ptr()) };
+        let quarantined = unsafe { sys::llama_opt_shadow_quarantined(lesson.shadow.0.as_ptr()) };
+        let uncertain = quarantined || self.accounting().is_some();
+        restored(self.reclaim(), committed_steps(lesson.steps_before, after), uncertain, None)
+    }
+
+    /// Select her shadow under this reply's admission and begin the reply.
+    pub fn begin<'l>(&'l mut self, shadow: &Shadow, admission: Box<dyn ReplyAdmission>, reply: &Reply<'_>) -> Result<LearnRun<'l, 'c, 'm>, Refused> {
+        // Everything that can refuse without native state is checked before the shadow is selected.
+        if reply.labels.len() != reply.tokens.len() {
+            let refusal = LearnRefusal { step: "reply", message: format!("{} labels for {} tokens", reply.labels.len(), reply.tokens.len()) };
+            return Err(Refused { refusal, admission });
+        }
+        let (Ok(n), Ok(n_restore)) = (i32::try_from(reply.tokens.len()), i32::try_from(reply.restore.len())) else {
+            let refusal = LearnRefusal { step: "reply", message: "a reply longer than a position holds".into() };
+            return Err(Refused { refusal, admission });
+        };
+        let Lesson { shadow: key, steps_before } = self.select(shadow, admission)?;
+        let Some(result) = NonNull::new(unsafe { sys::ggml_opt_result_init() }) else {
+            return Err(Refused { refusal: LearnRefusal { step: "result", message: "no result".into() }, admission: self.reclaim() });
+        };
+        let tokens = reply.tokens.to_vec();
+        let labels: Vec<i32> = reply.labels.iter().map(|label| label.native()).collect();
+        let restore = reply.restore.to_vec();
         let begun = unsafe {
             sys::llama_opt_learn_begin(
                 self.ctx.as_ptr(),
@@ -454,6 +459,16 @@ impl<'c, 'm> Learner<'c, 'm> {
         };
         LearnRefusal { step, message }
     }
+}
+
+/// A lesson taken as her ordinary decode ([`Learner::select`]): which shadow trains and its native
+/// step count when the lesson began. It borrows nothing, so her labelled decodes run on the context
+/// in between; [`Learner::conclude`] ends it and hands the admission back.
+#[must_use = "a lesson is concluded explicitly, which hands its admission back"]
+#[derive(Debug)]
+pub struct Lesson {
+    shadow: ShadowKey,
+    steps_before: i64,
 }
 
 /// One reply in progress. Holds the context until it finishes.
@@ -839,27 +854,7 @@ mod tests {
         assert!(!state.is_running());
     }
 
-    /// Counts the optimizer bytes it admitted and never releases them by itself: its owner does.
-    struct Counting(std::sync::Arc<std::sync::atomic::AtomicU64>);
-
-    impl OptimizerLease for Counting {
-        fn admit(&self, _: Slot, bytes: u64) -> bool {
-            self.0.fetch_add(bytes, std::sync::atomic::Ordering::Relaxed);
-            true
-        }
-        fn release(&self, _: Slot, bytes: u64) {
-            self.0.fetch_sub(bytes, std::sync::atomic::Ordering::Relaxed);
-        }
-    }
-
-    /// Admits every workspace check, so a quarantine test sees only where the admission lives.
-    struct Open;
-
-    impl ReplyAdmission for Open {
-        fn workspace(&self, _: BufferType, _: u64, _: u64) -> bool {
-            true
-        }
-    }
+    use super::super::learn_fixtures::{Counting, Open};
 
     fn key(n: usize) -> ShadowKey {
         ShadowKey(NonNull::dangling().map_addr(|addr| addr.saturating_add(n * 64)))

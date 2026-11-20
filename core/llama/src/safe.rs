@@ -11,6 +11,8 @@ use crate::sys;
 
 mod backend_init;
 pub use backend_init::*;
+mod batch;
+pub use batch::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod chat;
@@ -18,7 +20,9 @@ pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, ThinkBou
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};
-pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
+pub use learn::{BufferType, Finished, LearnRefusal, LearnRun, Learner, Lesson, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
+mod shadow;
+pub use shadow::{ShadowRefusal, ShadowShape};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
 
@@ -28,3 +32,9 @@ mod tests;
 
 #[cfg(all(test, feature = "embedding-model-tests"))]
 mod embedding_output_tests;
+
+#[cfg(test)]
+mod learn_fixtures;
+
+#[cfg(all(test, feature = "learning-model-tests"))]
+mod lesson_tests;

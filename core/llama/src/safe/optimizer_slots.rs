@@ -86,6 +86,8 @@ struct Charged {
 pub(super) struct Slots([Charged; 2]);
 
 impl Slots {
+    /// What one role is charged now; read by the tests that pin each role's accounting.
+    #[cfg(test)]
     pub(super) fn charged(&self, role: Role) -> u64 {
         self.0[role.index()].bytes.get()
     }
