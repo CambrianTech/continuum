@@ -141,6 +141,16 @@ It is partial, built on what exists: `continuum-saved-state`'s `SavedState` (sta
 format, a retention and a medium) is generalized so that an ORM entity (`OrmEntity`, a row in a
 collection) is one more medium.
 
+Key, format and retention are not enough for the callers that rely on durability (Codex's review).
+A durable value also declares which of three contracts it keeps:
+- **Commit visibility:** a write is either fully visible to the next reader or not at all.
+- **Atomic checkpoint with its cursor:** state and the position it consumed through (a journal cursor,
+  an event cursor) are saved as one unit, so a restart never re-applies or skips an input.
+- **Replay idempotency:** replaying an input that was already applied changes nothing.
+
+A learning checkpoint keeps all three; a cache of derived values keeps none. The medium implements
+the contracts a value declares and refuses a value whose contracts it cannot keep.
+
 What it replaces: `LedgerStore`, `RunLedger`, `ActivityStateStore`, `StepStateSink`,
 `RecallTraceStore` and `EpochWatermarkStore`. Each becomes a `Durable` value with its own key and
 medium, and its store is the medium's generic owner.

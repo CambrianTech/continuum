@@ -34,6 +34,11 @@ Each phase lists its changes in order. Rows in one phase with different owners r
 
 ### Phase B: the crate layers (pure moves)
 
+Before the first move, capture `cargo metadata` with every optional and target-specific edge, and the
+feature closures of the headless CPU, Metal and CUDA builds. Each move compares them before and after,
+so that UI, remote and accelerator dependencies stay optional and nothing optional becomes default
+(Codex's review).
+
 One change per target crate (chapter 6.2), each moving whole modules with paths only, tests unchanged:
 
 1. The floor: `continuum-protocol` (three protocol crates), `continuum-context` absorbs prompt and

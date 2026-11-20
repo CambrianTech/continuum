@@ -36,6 +36,11 @@ pub trait Remote: Send + Sync {                // the leaf's hook for Session
 `Loaded` owns the model's slot (today's `ReloadableModel`, moved beside it), so no backend keeps its
 model in a `static`. Module: `continuum-base::part::holding` (`Loaded`, `Session`, `Model`, `Remote`).
 
+Holdings are strategies, and a part may hold more than one thing. A remote speech session that also
+pins local audio buffers holds both a `Session` and local bytes, and its shutdown settles only when
+both have: the session closed, and the buffers released. The validators exercise one capability
+through both holdings, and a part holding both (Codex's review).
+
 ```
 Part
 ├─ SpeechToText          transcribe (select)          leaves: Moonshine, Whisper (Loaded); OpenAI realtime (Session); stub
