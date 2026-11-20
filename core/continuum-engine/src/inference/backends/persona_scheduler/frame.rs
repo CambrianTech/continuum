@@ -5,10 +5,11 @@
 //!
 //! Eligible turns share a one-second service budget. The bound mind advances until another
 //! turn is due, then the oldest unserved turn gets the stream at the next landed frame.
+// derived-or-floor: the conversational service requirement allows one second between eligible frames.
 const SERVICE_BUDGET_MS: u64 = 1000;
 
-pub(super) fn share_ms(ready: usize) -> u64 {
-    (SERVICE_BUDGET_MS / ready.max(1) as u64).max(1)
+pub(super) fn share_ms(ready: std::num::NonZeroUsize) -> u64 {
+    SERVICE_BUDGET_MS.div_ceil(ready.get() as u64)
 }
 
 /// A turn as the frame sees it.
@@ -34,7 +35,7 @@ impl Candidate {
 
 /// The index of the turn the next frame advances, or `None` for no turns.
 pub(super) fn pick(turns: &[Candidate], bound_ms: u64) -> Option<usize> {
-    let share_ms = share_ms(turns.len());
+    let share_ms = share_ms(std::num::NonZeroUsize::new(turns.len())?);
     if let Some((index, other)) = turns.iter().enumerate().filter(|(_, t)| !t.active).max_by_key(|(_, t)| t.waited_ms) {
         if other.waited_ms >= SERVICE_BUDGET_MS || (other.waited_ms >= share_ms && bound_ms >= share_ms) {
             return Some(index);
