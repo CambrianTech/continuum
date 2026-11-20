@@ -21,15 +21,15 @@ pub use stub::StubSTT;
 
 use crate::clog_info;
 use async_trait::async_trait;
-use continuum_base::part::Part;
+use super::backend::Backend;
+use super::registry::{NotRegistered, Registry};
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::Arc;
 use thiserror::Error;
 
 /// Global STT registry
-static STT_REGISTRY: OnceCell<Arc<RwLock<STTRegistry>>> = OnceCell::new();
+static STT_REGISTRY: OnceCell<Arc<RwLock<Registry<dyn SpeechToText>>>> = OnceCell::new();
 
 /// STT errors
 #[derive(Error, Debug)]
@@ -67,123 +67,23 @@ pub struct TranscriptSegment {
     pub end_ms: i64,
 }
 
-/// Speech-to-Text adapter trait
-///
-/// Implement this for each STT backend (Whisper, Deepgram, etc.)
+/// A speech-to-text backend: a [`Backend`] that transcribes. Implement it for each engine (Whisper,
+/// Moonshine, a cloud API); loading, parameters and release are the backend generation's.
 #[async_trait]
-pub trait SpeechToText: Part + Send + Sync {
-    /// Check if adapter is ready for use
-    fn is_initialized(&self) -> bool;
+pub trait SpeechToText: Backend<Error = STTError> {
+    /// Transcribe audio samples: f32 in -1.0..1.0, 16 kHz mono; `language` a code ("en") or `None`
+    /// to detect it.
+    async fn transcribe(&self, samples: Vec<f32>, language: Option<&str>) -> Result<TranscriptResult, STTError>;
 
-    /// Initialize the adapter (load models, connect to API, etc.)
-    async fn initialize(&self) -> Result<(), STTError>;
-
-    /// Transcribe audio samples
-    ///
-    /// # Arguments
-    /// * `samples` - Audio samples as f32 (-1.0 to 1.0), 16kHz mono
-    /// * `language` - Language code (e.g., "en") or None for auto-detection
-    async fn transcribe(
-        &self,
-        samples: Vec<f32>,
-        language: Option<&str>,
-    ) -> Result<TranscriptResult, STTError>;
-
-    /// Get supported languages
+    /// The languages it transcribes.
     fn supported_languages(&self) -> Vec<&'static str> {
-        vec!["en"] // Default to English only
-    }
-
-    /// Get configuration parameters
-    fn get_param(&self, _name: &str) -> Option<String> {
-        None
-    }
-
-    /// Set configuration parameter
-    fn set_param(&self, _name: &str, _value: &str) -> Result<(), STTError> {
-        Ok(())
-    }
-
-    /// Shut down the adapter, releasing loaded models and GPU allocations.
-    ///
-    /// In-flight inference that already cloned the model Arc continues safely.
-    /// Memory is freed when the last Arc drops.
-    /// Calling `initialize()` after `shutdown()` reloads models transparently.
-    ///
-    /// Default: no-op (adapters that don't hold heavy resources can skip this).
-    async fn shutdown(&self) -> Result<(), STTError> {
-        Ok(())
+        vec!["en"]
     }
 }
 
-/// STT Registry - manages available adapters
-pub struct STTRegistry {
-    adapters: HashMap<&'static str, Arc<dyn SpeechToText>>,
-    active: Option<&'static str>,
-}
-
-impl STTRegistry {
-    pub fn new() -> Self {
-        Self {
-            adapters: HashMap::new(),
-            active: None,
-        }
-    }
-
-    /// Register an adapter
-    pub fn register(&mut self, adapter: Arc<dyn SpeechToText>) {
-        let name = adapter.identity().name;
-        clog_info!("STT: Registering adapter '{}'", name);
-        self.adapters.insert(name, adapter);
-
-        // Auto-select first registered adapter
-        if self.active.is_none() {
-            self.active = Some(name);
-        }
-    }
-
-    /// Set the active adapter
-    pub fn set_active(&mut self, name: &'static str) -> Result<(), STTError> {
-        if self.adapters.contains_key(name) {
-            self.active = Some(name);
-            clog_info!("STT: Active adapter set to '{}'", name);
-            Ok(())
-        } else {
-            Err(STTError::AdapterNotFound(name.to_string()))
-        }
-    }
-
-    /// Get the active adapter
-    pub fn get_active(&self) -> Option<Arc<dyn SpeechToText>> {
-        self.active
-            .and_then(|name| self.adapters.get(name))
-            .cloned()
-    }
-
-    /// Get adapter by name
-    pub fn get(&self, name: &str) -> Option<Arc<dyn SpeechToText>> {
-        self.adapters.get(name).cloned()
-    }
-
-    /// List all registered adapters
-    pub fn list(&self) -> Vec<(&'static str, bool)> {
-        self.adapters
-            .iter()
-            .map(|(name, adapter)| (*name, adapter.is_initialized()))
-            .collect()
-    }
-
-    /// Check if any adapter is initialized
-    pub fn is_initialized(&self) -> bool {
-        self.get_active()
-            .map(|a| a.is_initialized())
-            .unwrap_or(false)
-    }
-}
-
-impl Default for STTRegistry {
-    fn default() -> Self {
-        Self::new()
+impl From<NotRegistered> for STTError {
+    fn from(missing: NotRegistered) -> Self {
+        STTError::AdapterNotFound(missing.name.to_string())
     }
 }
 
@@ -192,9 +92,9 @@ impl Default for STTRegistry {
 // ============================================================================
 
 /// Initialize the global STT registry with default adapters
-pub fn init_registry() -> Arc<RwLock<STTRegistry>> {
+pub fn init_registry() -> Arc<RwLock<Registry<dyn SpeechToText>>> {
     let registry = STT_REGISTRY.get_or_init(|| {
-        let mut reg = STTRegistry::new();
+        let mut reg = Registry::<dyn SpeechToText>::new("STT");
 
         // TEMPORARY: Whisper registration disabled — whisper-rs dep is gated off
         // while we debug the ggml backend registry collision with our llama crate.
@@ -215,13 +115,13 @@ pub fn init_registry() -> Arc<RwLock<STTRegistry>> {
 
     clog_info!(
         "STT: Registry initialized with {} adapters",
-        registry.read().adapters.len()
+        registry.read().len()
     );
     registry.clone()
 }
 
 /// Get the global registry
-pub fn get_registry() -> Arc<RwLock<STTRegistry>> {
+pub fn get_registry() -> Arc<RwLock<Registry<dyn SpeechToText>>> {
     match STT_REGISTRY.get() {
         Some(registry) => registry.clone(),
         None => init_registry(),

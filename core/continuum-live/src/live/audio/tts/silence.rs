@@ -6,6 +6,7 @@
 use super::{SynthesisResult, TTSError, TextToSpeech, VoiceInfo};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -63,7 +64,9 @@ impl Part for SilenceTTS {
 }
 
 #[async_trait]
-impl TextToSpeech for SilenceTTS {
+impl Backend for SilenceTTS {
+    type Error = TTSError;
+
     fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
     }
@@ -74,6 +77,24 @@ impl TextToSpeech for SilenceTTS {
         Ok(())
     }
 
+    fn get_param(&self, name: &str) -> Option<String> {
+        match name {
+            "sample_rate" => Some(AUDIO_SAMPLE_RATE.to_string()),
+            "ms_per_char" => Some(SILENCE_MS_PER_CHAR.to_string()),
+            "min_duration_ms" => Some(SILENCE_MIN_DURATION_MS.to_string()),
+            "max_duration_ms" => Some(SILENCE_MAX_DURATION_MS.to_string()),
+            _ => None,
+        }
+    }
+
+    fn set_param(&self, _name: &str, _value: &str) -> Result<(), TTSError> {
+        // Silence adapter doesn't support runtime configuration
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TextToSpeech for SilenceTTS {
     async fn synthesize(&self, text: &str, _voice: &str) -> Result<SynthesisResult, TTSError> {
         if !self.is_initialized() {
             return Err(TTSError::ModelNotLoaded(
@@ -114,21 +135,6 @@ impl TextToSpeech for SilenceTTS {
 
     fn default_voice(&self) -> &str {
         "default"
-    }
-
-    fn get_param(&self, name: &str) -> Option<String> {
-        match name {
-            "sample_rate" => Some(AUDIO_SAMPLE_RATE.to_string()),
-            "ms_per_char" => Some(SILENCE_MS_PER_CHAR.to_string()),
-            "min_duration_ms" => Some(SILENCE_MIN_DURATION_MS.to_string()),
-            "max_duration_ms" => Some(SILENCE_MAX_DURATION_MS.to_string()),
-            _ => None,
-        }
-    }
-
-    fn set_param(&self, _name: &str, _value: &str) -> Result<(), TTSError> {
-        // Silence adapter doesn't support runtime configuration
-        Ok(())
     }
 }
 

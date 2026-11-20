@@ -60,57 +60,7 @@ impl VoiceModule {
             "Force-unloading all audio models"
         );
 
-        let mut unloaded = Vec::new();
-
-        // Collect initialized STT adapters (drop lock before await)
-        let stt_adapters: Vec<_> = {
-            let registry = crate::live::audio::stt::get_registry();
-            let reg = registry.read();
-            reg.list()
-                .into_iter()
-                .filter(|(_, initialized)| *initialized)
-                .filter_map(|(name, _)| reg.get(name).map(|a| (name, a)))
-                .collect()
-        };
-        for (name, adapter) in stt_adapters {
-            match adapter.shutdown().await {
-                Ok(()) => unloaded.push(name.to_string()),
-                Err(e) => {
-                    log_error!(
-                        "module",
-                        "voice_resource_unload",
-                        "STT '{}' shutdown failed: {}",
-                        name,
-                        e
-                    );
-                }
-            }
-        }
-
-        // Collect initialized TTS adapters (drop lock before await)
-        let tts_adapters: Vec<_> = {
-            let registry = crate::live::audio::tts::get_registry();
-            let reg = registry.read();
-            reg.list()
-                .into_iter()
-                .filter(|(_, initialized)| *initialized)
-                .filter_map(|(name, _)| reg.get(name).map(|a| (name, a)))
-                .collect()
-        };
-        for (name, adapter) in tts_adapters {
-            match adapter.shutdown().await {
-                Ok(()) => unloaded.push(name.to_string()),
-                Err(e) => {
-                    log_error!(
-                        "module",
-                        "voice_resource_unload",
-                        "TTS '{}' shutdown failed: {}",
-                        name,
-                        e
-                    );
-                }
-            }
-        }
+        let released = crate::live::audio::resource_lifecycle::AudioResourceLifecycle::shutdown_all_adapters().await;
 
         // Reset session counter — force-unload means we don't care about
         // in-flight sessions. Models will reload on next call.
@@ -124,12 +74,12 @@ impl VoiceModule {
             if running {
                 crate::live::video::bevy_renderer::shutdown();
                 crate::live::avatar::reset_slot_pool();
-                unloaded.push("bevy-renderer".to_string());
             }
             running
         };
         #[cfg(not(feature = "avatar-3d"))]
         let bevy_was_running = false;
+        let unloaded: Vec<String> = released.into_iter().map(String::from).chain(bevy_was_running.then(|| "bevy-renderer".to_string())).collect();
 
         log_info!(
             "module",

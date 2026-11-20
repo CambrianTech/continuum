@@ -6,6 +6,7 @@
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -58,7 +59,9 @@ impl Part for StubSTT {
 }
 
 #[async_trait]
-impl SpeechToText for StubSTT {
+impl Backend for StubSTT {
+    type Error = STTError;
+
     fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
     }
@@ -69,6 +72,22 @@ impl SpeechToText for StubSTT {
         Ok(())
     }
 
+    fn get_param(&self, name: &str) -> Option<String> {
+        match name {
+            "min_audio_ms" => Some(STUB_MIN_AUDIO_MS.to_string()),
+            "confidence" => Some(STUB_CONFIDENCE.to_string()),
+            _ => None,
+        }
+    }
+
+    fn set_param(&self, _name: &str, _value: &str) -> Result<(), STTError> {
+        // Stub adapter doesn't support runtime configuration
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SpeechToText for StubSTT {
     async fn transcribe(
         &self,
         samples: Vec<f32>,
@@ -112,19 +131,6 @@ impl SpeechToText for StubSTT {
 
     fn supported_languages(&self) -> Vec<&'static str> {
         vec!["en", "es", "fr", "de", "ja", "zh"]
-    }
-
-    fn get_param(&self, name: &str) -> Option<String> {
-        match name {
-            "min_audio_ms" => Some(STUB_MIN_AUDIO_MS.to_string()),
-            "confidence" => Some(STUB_CONFIDENCE.to_string()),
-            _ => None,
-        }
-    }
-
-    fn set_param(&self, _name: &str, _value: &str) -> Result<(), STTError> {
-        // Stub adapter doesn't support runtime configuration
-        Ok(())
     }
 }
 

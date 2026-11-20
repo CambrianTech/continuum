@@ -13,7 +13,8 @@
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
-use continuum_base::part::Part;
+use super::backend::Backend;
+use super::registry::{NotRegistered, Registry};
 
 pub(crate) mod normalize;
 mod kokoro;
@@ -37,7 +38,6 @@ use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
 use once_cell::sync::OnceCell;
 use parking_lot::RwLock;
-use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 use thiserror::Error;
 
@@ -82,7 +82,7 @@ pub(crate) fn truncate_str(s: &str, max_bytes: usize) -> &str {
 }
 
 /// Global TTS registry
-static TTS_REGISTRY: OnceCell<Arc<RwLock<TTSRegistry>>> = OnceCell::new();
+static TTS_REGISTRY: OnceCell<Arc<RwLock<Registry<dyn TextToSpeech>>>> = OnceCell::new();
 
 /// TTS errors
 #[derive(Error, Debug)]
@@ -130,25 +130,15 @@ pub struct SynthesisResult {
     pub voice_name: Option<String>,
 }
 
-/// Text-to-Speech adapter trait
-///
-/// Implement this for each TTS backend (Kokoro, ElevenLabs, etc.)
+/// A text-to-speech backend: a [`Backend`] that synthesizes speech in its voices. Implement it for
+/// each engine (Kokoro, Orpheus, Piper); loading, parameters and release are the backend
+/// generation's.
 #[async_trait]
-pub trait TextToSpeech: Part + Send + Sync {
-    /// Check if adapter is ready for use
-    fn is_initialized(&self) -> bool;
-
-    /// Initialize the adapter (load models, connect to API, etc.)
-    async fn initialize(&self) -> Result<(), TTSError>;
-
-    /// Synthesize speech from text
-    ///
-    /// # Arguments
-    /// * `text` - Text to synthesize
-    /// * `voice` - Voice ID (adapter-specific)
+pub trait TextToSpeech: Backend<Error = TTSError> {
+    /// Synthesize `text` in `voice` (an engine voice id).
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError>;
 
-    /// Get available voices
+    /// The voices it speaks in.
     fn available_voices(&self) -> Vec<VoiceInfo>;
 
     /// Get default voice ID
@@ -190,107 +180,11 @@ pub trait TextToSpeech: Part + Send + Sync {
         self.default_voice().to_string()
     }
 
-    /// Get configuration parameter
-    fn get_param(&self, _name: &str) -> Option<String> {
-        None
-    }
-
-    /// Set configuration parameter
-    fn set_param(&self, _name: &str, _value: &str) -> Result<(), TTSError> {
-        Ok(())
-    }
-
-    /// Shut down the adapter, releasing loaded models and GPU allocations.
-    ///
-    /// In-flight inference that already cloned the model Arc continues safely.
-    /// Memory is freed when the last Arc drops.
-    /// Calling `initialize()` after `shutdown()` reloads models transparently.
-    ///
-    /// Default: no-op (adapters that hold no local model can skip this).
-    async fn shutdown(&self) -> Result<(), TTSError> {
-        Ok(())
-    }
 }
 
-/// TTS Registry - manages available adapters
-///
-/// Uses Vec to preserve registration order (= priority order).
-/// First registered = highest priority = tried first during init.
-pub struct TTSRegistry {
-    adapters: HashMap<&'static str, Arc<dyn TextToSpeech>>,
-    /// Registration order — determines init priority (first = highest)
-    priority: Vec<&'static str>,
-    active: Option<&'static str>,
-}
-
-impl TTSRegistry {
-    pub fn new() -> Self {
-        Self {
-            adapters: HashMap::new(),
-            priority: Vec::new(),
-            active: None,
-        }
-    }
-
-    /// Register an adapter (order matters — first registered = highest priority)
-    pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
-        let name = adapter.identity().name;
-        clog_info!("TTS: Registering adapter '{}'", name);
-        self.adapters.insert(name, adapter);
-        self.priority.push(name);
-
-        // Auto-select first registered adapter
-        if self.active.is_none() {
-            self.active = Some(name);
-        }
-    }
-
-    /// Set the active adapter
-    pub fn set_active(&mut self, name: &'static str) -> Result<(), TTSError> {
-        if self.adapters.contains_key(name) {
-            self.active = Some(name);
-            clog_info!("TTS: Active adapter set to '{}'", name);
-            Ok(())
-        } else {
-            Err(TTSError::AdapterNotFound(name.to_string()))
-        }
-    }
-
-    /// Get the active adapter
-    pub fn get_active(&self) -> Option<Arc<dyn TextToSpeech>> {
-        self.active
-            .and_then(|name| self.adapters.get(name))
-            .cloned()
-    }
-
-    /// Get adapter by name
-    pub fn get(&self, name: &str) -> Option<Arc<dyn TextToSpeech>> {
-        self.adapters.get(name).cloned()
-    }
-
-    /// List all registered adapters in priority order
-    pub fn list(&self) -> Vec<(&'static str, bool)> {
-        self.priority
-            .iter()
-            .filter_map(|name| {
-                self.adapters
-                    .get(name)
-                    .map(|adapter| (*name, adapter.is_initialized()))
-            })
-            .collect()
-    }
-
-    /// Check if any adapter is initialized
-    pub fn is_initialized(&self) -> bool {
-        self.get_active()
-            .map(|a| a.is_initialized())
-            .unwrap_or(false)
-    }
-}
-
-impl Default for TTSRegistry {
-    fn default() -> Self {
-        Self::new()
+impl From<NotRegistered> for TTSError {
+    fn from(missing: NotRegistered) -> Self {
+        TTSError::AdapterNotFound(missing.name.to_string())
     }
 }
 
@@ -299,9 +193,9 @@ impl Default for TTSRegistry {
 // ============================================================================
 
 /// Initialize the global TTS registry with default adapters
-pub fn init_registry() -> Arc<RwLock<TTSRegistry>> {
+pub fn init_registry() -> Arc<RwLock<Registry<dyn TextToSpeech>>> {
     let registry = TTS_REGISTRY.get_or_init(|| {
-        let mut reg = TTSRegistry::new();
+        let mut reg = Registry::<dyn TextToSpeech>::new("TTS");
 
         // Register Pocket-TTS (local, Candle, 100M) - fast CPU TTS with voice cloning
         // ≤600ms TTFA, 8 preset voices, clone any voice from 5-15s WAV reference audio.
@@ -327,13 +221,13 @@ pub fn init_registry() -> Arc<RwLock<TTSRegistry>> {
 
     clog_info!(
         "TTS: Registry initialized with {} adapters",
-        registry.read().adapters.len()
+        registry.read().len()
     );
     registry.clone()
 }
 
 /// Get the global registry
-pub fn get_registry() -> Arc<RwLock<TTSRegistry>> {
+pub fn get_registry() -> Arc<RwLock<Registry<dyn TextToSpeech>>> {
     match TTS_REGISTRY.get() {
         Some(registry) => registry.clone(),
         None => init_registry(),
@@ -568,57 +462,6 @@ pub fn available_voices() -> Vec<VoiceInfo> {
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_tts_registry_basics() {
-        let mut registry = TTSRegistry::new();
-        assert!(!registry.is_initialized());
-        assert!(registry.get_active().is_none());
-        assert!(registry.list().is_empty());
-
-        // Register silence adapter (always available, no model files needed)
-        registry.register(Arc::new(SilenceTTS::new()));
-        assert_eq!(registry.list().len(), 1);
-
-        // First registered adapter becomes active
-        let active = registry.get_active().expect("Should have active adapter");
-        assert_eq!(active.identity().name, "silence");
-    }
-
-    #[test]
-    fn test_tts_registry_adapter_lookup() {
-        let mut registry = TTSRegistry::new();
-        registry.register(Arc::new(SilenceTTS::new()));
-        registry.register(Arc::new(KokoroTTS::new()));
-
-        // Get by name
-        let silence = registry
-            .get("silence")
-            .expect("Should find silence adapter");
-        assert_eq!(silence.identity().name, "silence");
-
-        let kokoro = registry.get("kokoro").expect("Should find kokoro adapter");
-        assert_eq!(kokoro.identity().name, "kokoro");
-
-        // Unknown adapter returns None
-        assert!(registry.get("nonexistent").is_none());
-    }
-
-    #[test]
-    fn test_tts_registry_set_active() {
-        let mut registry = TTSRegistry::new();
-        registry.register(Arc::new(SilenceTTS::new()));
-        registry.register(Arc::new(KokoroTTS::new()));
-
-        // Initially silence is active (first registered)
-        assert_eq!(registry.get_active().unwrap().identity().name, "silence");
-
-        // Switch to kokoro
-        registry.set_active("kokoro").expect("Should succeed");
-        assert_eq!(registry.get_active().unwrap().identity().name, "kokoro");
-
-        // Invalid adapter name
-        assert!(registry.set_active("nonexistent").is_err());
-    }
 
     #[test]
     fn resolve_voice_is_identity_seeded_and_unique() {

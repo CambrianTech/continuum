@@ -13,6 +13,7 @@ use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use ndarray;
@@ -418,7 +419,9 @@ impl Part for KokoroTTS {
 }
 
 #[async_trait]
-impl TextToSpeech for KokoroTTS {
+impl Backend for KokoroTTS {
+    type Error = TTSError;
+
     fn is_initialized(&self) -> bool {
         KOKORO_SESSION.is_loaded()
     }
@@ -505,6 +508,17 @@ impl TextToSpeech for KokoroTTS {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if KOKORO_SESSION.unload() {
+            KOKORO_GPU.release();
+            clog_info!("Kokoro: Models unloaded (~82MB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TextToSpeech for KokoroTTS {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
         KOKORO_GPU.touch();
 
@@ -518,14 +532,6 @@ impl TextToSpeech for KokoroTTS {
         tokio::task::spawn_blocking(move || Self::synthesize_sync(&session, &text, &voice, 1.0))
             .await
             .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), TTSError> {
-        if KOKORO_SESSION.unload() {
-            KOKORO_GPU.release();
-            clog_info!("Kokoro: Models unloaded (~82MB freed)");
-        }
-        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

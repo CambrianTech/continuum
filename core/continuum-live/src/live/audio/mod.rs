@@ -1,8 +1,10 @@
+pub mod backend;
 pub mod buffer;
 pub mod emotion_tags;
 pub mod capabilities;
 pub mod mixer;
 pub mod model_root;
+pub mod registry;
 pub mod reloadable;
 pub mod resource_lifecycle;
 pub mod router;

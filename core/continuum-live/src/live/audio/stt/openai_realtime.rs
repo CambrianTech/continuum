@@ -10,6 +10,7 @@
 
 use super::{STTError, SpeechToText, TranscriptResult};
 use crate::{clog_debug, clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use futures_util::{SinkExt, StreamExt};
@@ -328,7 +329,9 @@ impl Part for OpenAIRealtimeSTT {
 }
 
 #[async_trait]
-impl SpeechToText for OpenAIRealtimeSTT {
+impl Backend for OpenAIRealtimeSTT {
+    type Error = STTError;
+
     fn is_initialized(&self) -> bool {
         *self.initialized.lock() && self.api_key.is_some()
     }
@@ -344,7 +347,10 @@ impl SpeechToText for OpenAIRealtimeSTT {
         clog_info!("OpenAI Realtime STT: Initialized (semantic VAD enabled)");
         Ok(())
     }
+}
 
+#[async_trait]
+impl SpeechToText for OpenAIRealtimeSTT {
     async fn transcribe(
         &self,
         samples: Vec<f32>,

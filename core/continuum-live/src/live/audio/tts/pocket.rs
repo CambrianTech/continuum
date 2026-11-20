@@ -23,6 +23,7 @@ use crate::clog_info;
 use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use parking_lot::Mutex;
@@ -299,7 +300,9 @@ impl Part for PocketTTS {
 }
 
 #[async_trait]
-impl TextToSpeech for PocketTTS {
+impl Backend for PocketTTS {
+    type Error = TTSError;
+
     fn is_initialized(&self) -> bool {
         POCKET_MODEL.is_loaded()
     }
@@ -365,6 +368,17 @@ impl TextToSpeech for PocketTTS {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if POCKET_MODEL.unload() {
+            POCKET_GPU.release();
+            clog_info!("Pocket-TTS: Models unloaded (~400MB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TextToSpeech for PocketTTS {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
         POCKET_GPU.touch();
 
@@ -389,14 +403,6 @@ impl TextToSpeech for PocketTTS {
         })
         .await
         .map_err(|e| TTSError::SynthesisFailed(format!("Task join: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), TTSError> {
-        if POCKET_MODEL.unload() {
-            POCKET_GPU.release();
-            clog_info!("Pocket-TTS: Models unloaded (~400MB freed)");
-        }
-        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

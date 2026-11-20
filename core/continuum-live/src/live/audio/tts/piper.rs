@@ -10,6 +10,7 @@ use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use ndarray;
@@ -157,7 +158,9 @@ impl Part for PiperTTS {
 }
 
 #[async_trait]
-impl TextToSpeech for PiperTTS {
+impl Backend for PiperTTS {
+    type Error = TTSError;
+
     fn is_initialized(&self) -> bool {
         PIPER_SESSION.is_loaded()
     }
@@ -230,6 +233,17 @@ impl TextToSpeech for PiperTTS {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if PIPER_SESSION.unload() {
+            PIPER_GPU.release();
+            clog_info!("Piper: Models unloaded (~100MB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TextToSpeech for PiperTTS {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
         PIPER_GPU.touch();
 
@@ -243,14 +257,6 @@ impl TextToSpeech for PiperTTS {
         tokio::task::spawn_blocking(move || Self::synthesize_sync(&session, &text, &voice, 1.0))
             .await
             .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), TTSError> {
-        if PIPER_SESSION.unload() {
-            PIPER_GPU.release();
-            clog_info!("Piper: Models unloaded (~100MB freed)");
-        }
-        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {

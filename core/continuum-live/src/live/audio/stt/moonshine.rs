@@ -18,6 +18,7 @@ use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use ndarray::{Array2, ArrayD, IxDyn};
@@ -504,7 +505,9 @@ impl Part for MoonshineStt {
 }
 
 #[async_trait]
-impl SpeechToText for MoonshineStt {
+impl Backend for MoonshineStt {
+    type Error = STTError;
+
     fn is_initialized(&self) -> bool {
         MOONSHINE_MODEL.is_loaded()
     }
@@ -575,6 +578,16 @@ impl SpeechToText for MoonshineStt {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), STTError> {
+        if MOONSHINE_MODEL.unload() {
+            clog_info!("Moonshine: Models unloaded (~200MB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SpeechToText for MoonshineStt {
     async fn transcribe(
         &self,
         samples: Vec<f32>,
@@ -587,13 +600,6 @@ impl SpeechToText for MoonshineStt {
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&model, samples))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), STTError> {
-        if MOONSHINE_MODEL.unload() {
-            clog_info!("Moonshine: Models unloaded (~200MB freed)");
-        }
-        Ok(())
     }
 
     fn supported_languages(&self) -> Vec<&'static str> {

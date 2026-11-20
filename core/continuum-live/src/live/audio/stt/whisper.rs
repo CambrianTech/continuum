@@ -6,6 +6,7 @@
 use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use crate::live::audio::reloadable::ReloadableModel;
@@ -255,7 +256,9 @@ impl Part for WhisperSTT {
 }
 
 #[async_trait]
-impl SpeechToText for WhisperSTT {
+impl Backend for WhisperSTT {
+    type Error = STTError;
+
     fn is_initialized(&self) -> bool {
         WHISPER_RT.is_loaded()
     }
@@ -300,6 +303,16 @@ impl SpeechToText for WhisperSTT {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), STTError> {
+        if WHISPER_RT.unload() {
+            clog_info!("Whisper: Models unloaded (~407MB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl SpeechToText for WhisperSTT {
     async fn transcribe(
         &self,
         samples: Vec<f32>,
@@ -324,13 +337,6 @@ impl SpeechToText for WhisperSTT {
         tokio::task::spawn_blocking(move || Self::transcribe_sync(&rt, samples, lang.as_deref()))
             .await
             .map_err(|e| STTError::InferenceFailed(format!("Task join error: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), STTError> {
-        if WHISPER_RT.unload() {
-            clog_info!("Whisper: Models unloaded (~407MB freed)");
-        }
-        Ok(())
     }
 
     fn supported_languages(&self) -> Vec<&'static str> {

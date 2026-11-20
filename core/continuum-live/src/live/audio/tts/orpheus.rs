@@ -25,6 +25,7 @@ use crate::gpu::tracker::GpuModelTracker;
 use crate::inference::vendored::quantized_llama::ModelWeights;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
+use crate::live::audio::backend::Backend;
 use async_trait::async_trait;
 use continuum_base::part::{Identity, Part};
 use candle_core::quantized::gguf_file;
@@ -619,7 +620,9 @@ impl Part for OrpheusTts {
 }
 
 #[async_trait]
-impl TextToSpeech for OrpheusTts {
+impl Backend for OrpheusTts {
+    type Error = TTSError;
+
     fn is_initialized(&self) -> bool {
         ORPHEUS_MODEL.is_loaded()
     }
@@ -720,6 +723,18 @@ impl TextToSpeech for OrpheusTts {
         Ok(())
     }
 
+    async fn shutdown(&self) -> Result<(), TTSError> {
+        if ORPHEUS_MODEL.unload() {
+            ORPHEUS_LLM_GPU.release();
+            ORPHEUS_SNAC_GPU.release();
+            clog_info!("Orpheus: Models unloaded (~2GB freed)");
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+impl TextToSpeech for OrpheusTts {
     async fn synthesize(&self, text: &str, voice: &str) -> Result<SynthesisResult, TTSError> {
         ORPHEUS_LLM_GPU.touch();
         ORPHEUS_SNAC_GPU.touch();
@@ -746,15 +761,6 @@ impl TextToSpeech for OrpheusTts {
         })
         .await
         .map_err(|e| TTSError::SynthesisFailed(format!("Task join error: {e}")))?
-    }
-
-    async fn shutdown(&self) -> Result<(), TTSError> {
-        if ORPHEUS_MODEL.unload() {
-            ORPHEUS_LLM_GPU.release();
-            ORPHEUS_SNAC_GPU.release();
-            clog_info!("Orpheus: Models unloaded (~2GB freed)");
-        }
-        Ok(())
     }
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
