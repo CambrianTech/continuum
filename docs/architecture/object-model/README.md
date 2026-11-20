@@ -1,4 +1,4 @@
-# The object model of the core
+# The Continuum engine: its design and object model
 
 Status: design for review, 2026-11-20. Owners: Fable (the model and its migration), Codex (resources,
 serving, grid; review). Replaces `PARTS.md`. Measured against canary c819052ef7.
@@ -6,7 +6,9 @@ serving, grid; review). Replaces `PARTS.md`. Measured against canary c819052ef7.
 [Runtime architecture](../../README.md#runtime-architecture) · [How a mind runs](../HOW-A-MIND-RUNS.md) ·
 [Module architecture](../MODULE-ARCHITECTURE.md)
 
-This book describes every important object and interface in the Rust core, how they inherit from
+This book starts from the design ideal (chapter 0): Continuum as an engine that keeps a living
+society present on small, changing hardware, as RAGE keeps a city present on a console. It then
+describes every important object and interface in the Rust core, how they inherit from
 one another from the most general to the most specific, which crate and module each lives in, and
 how today's code gets there. It reads in order: each chapter builds on the ones before it.
 
@@ -14,6 +16,7 @@ how today's code gets there. It reads in order: each chapter builds on the ones 
 
 | # | Chapter | What it answers |
 |---|---|---|
+| 0 | [The engine](00-engine.md) | The design ideal: the brief, what RAGE and CBAR learned and what each lesson becomes here, the budgets, what we refuse |
 | 1 | [The core today](01-today.md) | What exists now, measured: crates, layers, traits, and where the same idea is written many times |
 | 2 | [Principles](02-principles.md) | Lineage, composition, pure and partial abstractions, generic owners, dispatch, naming |
 | 3 | [The roots](03-roots.md) | The handful of general abstractions everything descends from |

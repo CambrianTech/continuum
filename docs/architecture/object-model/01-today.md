@@ -1,6 +1,6 @@
 # 1. The core today
 
-[The object model](README.md) · next: [Principles](02-principles.md)
+[The object model](README.md) · previous: [The engine](00-engine.md) · next: [Principles](02-principles.md)
 
 Measured on canary c819052ef7, 2026-11-20, by reading every `Cargo.toml`, every `pub trait` and every
 `impl ... for` in the workspace (tests excluded). Each section ends with what it means for the design.
