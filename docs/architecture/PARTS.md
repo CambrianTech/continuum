@@ -5,7 +5,7 @@ flow); Codex (resources, completion ownership, review). Builds on the stage cont
 ([STAGE-CONTRACT.md](STAGE-CONTRACT.md)), the concurrent mind
 ([CONCURRENT-MIND-AND-GOVERNOR.md](CONCURRENT-MIND-AND-GOVERNOR.md)) and CBAR's analyzer graph.
 
-[Runtime architecture](../README.md#runtime-architecture) · [Module architecture](MODULE-ARCHITECTURE.md) ·
+[Runtime architecture](../README.md#runtime-architecture) · [How a mind runs](HOW-A-MIND-RUNS.md) · [Module architecture](MODULE-ARCHITECTURE.md) ·
 [Shared resources](SHARED-RESOURCES.md)
 
 ## Summary

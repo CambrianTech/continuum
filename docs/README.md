@@ -25,6 +25,7 @@ How the whole thing composes. Read these first; on architecture questions they w
 |---|---|
 | How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
 | How do the parts of one mind run independently and respond to events? | [Concurrent mind and governor](architecture/CONCURRENT-MIND-AND-GOVERNOR.md). The [stage contract](architecture/STAGE-CONTRACT.md) specifies proposed inputs, outputs, wakeups and completion. |
+| How does a mind run, end to end? | [How a mind runs](architecture/HOW-A-MIND-RUNS.md): the node and persona as a tree of parts, streaming like a game engine: frames, a turn, continual learning, embodiment, swaps and the grid. |
 | How is every running part built, and how does it start, suspend and stop? | [Parts](architecture/PARTS.md): one object for everything that runs: its lineage, methods that chain through its parts, and its worker and data flow. |
 | How does a governor share capacity among consumers? | [Shared resources](architecture/SHARED-RESOURCES.md): the common owner, resource-specific adapters, residency of bytes and device time by deadline, latency and throughput (avatars, decode, learning). |
 | How do minds take turns decoding while transfers and preparation proceed? | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) covers admission, the memory model and context reuse. |
