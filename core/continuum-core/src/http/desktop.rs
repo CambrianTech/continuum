@@ -7,10 +7,11 @@
 //! hand-run script racing a hand-run server.
 //!
 //! So the core serves the built web desktop statically:
-//! - `CONTINUUM_UI_DIST` names the dist directory (the start script builds it
-//!   and exports the path); absent/missing = the display manager stays off
-//!   with a probe naming the fix — an honestly-disabled projection, never a
-//!   broken one.
+//! - The dist directory is the release's own: `desktop/` beside this executable,
+//!   packaged with the binaries (core-binaries.yml), so an installed user gets the
+//!   desktop with no build and no setting. `CONTINUUM_UI_DIST` (env, then config.env)
+//!   overrides it for a contributor serving a freshly built web client. None present =
+//!   the display manager stays off with a probe naming the fix.
 //! - `CONTINUUM_UI_PORT` (default 8975) on 127.0.0.1 — beside the WS ingress
 //!   (8974) and the call plane (8790). One `continuum start` brings up all
 //!   three; `continuum desktop` opens the door.
@@ -28,6 +29,13 @@ use std::path::PathBuf;
 use axum::Router;
 use tower_http::services::{ServeDir, ServeFile};
 
+/// The desktop the release packaged beside this executable (`<exe dir>/desktop`), when present.
+fn packaged_dist() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dist = exe.parent()?.join("desktop");
+    dist.join("index.html").is_file().then_some(dist)
+}
+
 /// Spawn the display manager if a dist directory is configured and present.
 /// Detached; failures probe loudly and never block boot.
 pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
@@ -40,11 +48,11 @@ pub fn spawn_if_configured(rt: &tokio::runtime::Handle) {
         .ok()
         .filter(|v| !v.trim().is_empty())
         .or_else(|| continuum_base::config_env::read("CONTINUUM_UI_DIST"));
-    let Some(dist) = configured.map(PathBuf::from) else {
+    let Some(dist) = configured.map(PathBuf::from).or_else(packaged_dist) else {
         continuum_base::probe!(
             class = "desktop.dm.unconfigured",
-            "no CONTINUUM_UI_DIST — the core serves no desktop this boot \
-             (continuum start sets it after building the web client)"
+            "no desktop beside this executable and no CONTINUUM_UI_DIST — the core serves \
+             no desktop this boot (a release carries desktop/; a source build sets the env)"
         );
         return;
     };
