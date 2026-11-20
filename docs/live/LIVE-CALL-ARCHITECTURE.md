@@ -219,12 +219,28 @@ content, shared by every mind in the call; only attention and relevance are each
 ([CONCURRENT-MIND-AND-GOVERNOR.md](../architecture/CONCURRENT-MIND-AND-GOVERNOR.md) §3.3):
 
 - per audio stream: voice activity and transcription, once, whoever listens;
-- per video stream: cheap change detection on every frame (motion, a YOLO-class detector), once;
-  a mind pulls a full frame or an expensive analysis only when the change feed shows something she
-  cares about (a new slide, a new speaker), and other minds asking for the same frame share it;
-- slow results are carried forward between observations (a mask warped by the motion history), with
-  their observation time and confidence exposed, so 30 fps presentation never pretends to be fresh
-  perception.
+- per video stream: cheap signals on every frame, once: frame differences, camera motion, and
+  detectors (YOLO-class, semantic segmentation). **These are not how she sees.** They only emit
+  events that tell the deeper vision stages, her own model's multimodal vision layers among them,
+  that they are needed and with what priority. A large region newly uncovered while the camera is
+  still, a new slide, or a new face is an event, and the stage that cares takes priority there;
+  other minds asking for the same frame share the work.
+
+How the deep results are used comes from CBAR, Joel's real-time perception engine:
+
+- **Slow results are brought into real time.** A deep analysis may take seconds. Its result is
+  attached to the frame it came from, then carried forward by continuous feature tracking and
+  fusion, so it lands on the present frame rather than on a stale one. Its observation time and
+  confidence stay exposed, so 30 fps presentation never pretends to be fresh perception.
+- **A rough estimate beats a gap.** CBAR filled the far end of a hallway at once with a CNN's
+  estimate (depth, normals, semantics) where SLAM alone would leave it missing. The estimate is
+  wrong in detail, but from the viewer's position that detail is a few pixels, and a rough answer
+  is far better than a hole. Precise methods refine it as the camera moves toward it, seamlessly.
+  Assumptions carry a scene until evidence breaks them: a floor or a wall extends until it is seen
+  not to.
+- **For a mind, the same rule:** she always holds a whole, rough understanding of the call (who is
+  there, what is on screen, what is happening) and refines it where her attention goes. She never
+  has a blank where a participant or a region should be.
 
 **A fast voice, augmented by deep thought.** A turn starts two things under one turn identity: her
 quick voice (a small, fast model speaking as her, from her context) and her deep mind on the
@@ -234,8 +250,8 @@ not yet spoken, and speaks a correction if the deep reply changes a claim alread
 turn supersedes speech not yet spoken. The deep reply always arrives unless superseded: the fast
 layer buys latency, never replaces depth. Her avatar's visemes and gestures follow the audio
 actually going out, so her face moves with the quick voice from the first syllable. Seeing works
-the same way: the cheap per-frame layer answers "what changed" now, and the deep look answers
-"what it means" when it lands.
+the same way: the cheap signals say where to look now, and her deep look says what it means when
+it lands, fused forward into the present.
 
 **All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
 deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
@@ -245,7 +261,8 @@ deadline is missed, and nothing about the call stops her deep mind or her learni
 Codex's worked example in SUBSTRATE.md (#6170) traces one call under memory pressure.
 
 Measured on the same stimulus and context: first audible response; avatar frame interval; age of
-the last genuine observation; duplicate perception computed across residents (target zero); the
+the last genuine observation; regions or participants with no estimate at all (target zero, as
+CBAR had no gaps); duplicate perception computed across residents (target zero); the
 deep reply's quality with the quick voice against the deep reply alone (the augmentation must not
 degrade it); and decode and learning throughput with the call against without.
 
