@@ -204,7 +204,7 @@ impl PullProgress {
                 models_pull_ledger_path(rid),
                 serde_json::to_string_pretty(&payload),
             ) {
-                let _ = std::fs::write(path, json);
+                let _ = std::fs::write(path, json); // justified: best-effort local ledger write; boundary is non-critical polling state
             }
         }
     }
@@ -303,7 +303,7 @@ crate::action_command! {
                             models_pull_ledger_path(&run_id),
                             serde_json::to_string_pretty(&failed),
                         ) {
-                            let _ = std::fs::write(path, json);
+                            let _ = std::fs::write(path, json); // justified: best-effort local ledger write; boundary is non-critical polling state
                         }
                         if let Some(bus) = crate::runtime::MessageBus::global() {
                             bus.publish_async_only("models:pull:failed", serde_json::json!({
@@ -577,7 +577,7 @@ impl ModelsPull {
                 models_pull_ledger_path(rid),
                 serde_json::to_string_pretty(&report),
             ) {
-                let _ = std::fs::write(path, json);
+                let _ = std::fs::write(path, json); // justified: best-effort local ledger write; boundary is non-critical polling state
             }
         }
         if let Some(bus) = crate::runtime::MessageBus::global() {

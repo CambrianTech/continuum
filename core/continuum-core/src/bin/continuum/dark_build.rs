@@ -1,13 +1,10 @@
 //! The deploy build, run DARK: serving is stopped first, the build takes the whole machine,
 //! and a failed build puts the previous core back.
 //!
-//! Joel, 2026-10-24: "No. Take down serving while building." The warm build that compiled
-//! beside a serving core is gone, and its admission machinery with it (a free-memory gate, a
-//! job count derived from constants, nice 19). On a unified-memory node the compiler and the
-//! residents' KV share one pool: 2026-10-23 a crate-local check at -j4 beside serving pushed
-//! the M5 into a Metal out-of-memory, the engine wedged 10 minutes and 32 acts were recorded
-//! as completed when they had failed. No one-time gate can follow KV growth and rustc peaks
-//! mid-build, so the build no longer shares the machine with serving at all.
+//! Joel, 2026-10-24: "No. Take down serving while building." Building beside a serving core
+//! caused an OOM on the M5 (2026-10-23): rustc and the residents' KV share one memory pool,
+//! so dark builds no longer run alongside serving. The warm phase now fetches CI prebuilt
+//! artifacts instead of compiling locally, avoiding any shared-memory contention.
 
 use super::*;
 
