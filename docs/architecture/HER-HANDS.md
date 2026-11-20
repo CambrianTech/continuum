@@ -10,17 +10,23 @@
 > machine. The test is HER-LOOP's: *would a person at a computer have this done to them?*
 > Architecture review: Astra (2026-10-13). Proposal and the workspace/context slice: Cormac.
 
-## Own an external project from brief to delivery
+## Own a task from intent to outcome
 
-The product target is a standalone replacement for Claude Code or Codex. A user can open an
-ordinary directory, give a resident a brief, and work with her there. The directory may be
-empty, an unfamiliar repository, or a collection of sources and drafts. She discovers the
-project's conventions, designs and authors the deliverable, uses its native tools, inspects
-the result, and revises it in response to criticism. A room, card, GitHub account, or
-Continuum integration is optional. The external deliverable must work in its own environment.
+Work starts with something a user asks for or a resident sets out to accomplish within her
+authority. The task determines the tools, working context, and evidence of completion.
+Someone can ask a question in a call, coordinate an activity, revise a manuscript, or build
+a game. A conversation may be the whole task. Files, repositories, rooms and work cards
+are optional resources used when the activity calls for them.
+
+For project work, the target includes standalone replacement of Claude Code or Codex.
+A resident can begin in an empty directory or learn an existing project's conventions,
+use its native tools, inspect the result, and revise it with the user. Our team uses
+residents to develop Continuum itself. A user working entirely on another project needs
+only that project's tools, permissions and context.
 
 | Brief | Evidence the user can inspect |
 |---|---|
+| Answer a question about a live presentation | Point to the relevant slide or passage and answer while it is still useful to the conversation. |
 | Build a system | Run it from a clean checkout, exercise the requested behavior and inspect how it handles a real failure. |
 | Write a paper | Read the rendered manuscript, trace claims to sources, reproduce reported analyses and inspect revisions after review. |
 | Make a game | Launch the playable build, exercise its core mechanics, measure frame pacing on the target device and replay a change requested after playtesting. |

@@ -36,7 +36,7 @@ The engine chapter tracks merged design. [Engine design review #6092](https://gi
 | Read shared observations and request detail | [Perception surface](architecture/PERCEPTION-SURFACE.md) | [`PerceptionBuffer`](../core/continuum-live/src/media/perception_buffer.rs) and [`MediaFrame`](../core/continuum-live/src/media/frame.rs) |
 | Design a live call around those owners | [Video, tracking and reuse](live/LIVE-VIDEO-CHAT-ARCHITECTURE.md) and [LiveKit integration plan](planning/LIVEKIT-PERCEPTION-PIPELINE.md) | Proposed consumers of the media and flow APIs above |
 | Trace a wait from stimulus to response | [Live conversation](architecture/FLOW-IMPLEMENTATION-PLAN.md#3-live-conversation-end-to-end) | [Dispatcher and scheduling regressions](../core/continuum-flow/src/tests.rs) |
-| Give a resident an external system, paper, or game to deliver | [Standalone project workflow and parity trials](architecture/HER-HANDS.md#own-an-external-project-from-brief-to-delivery) | [Tool results](architecture/HER-TOOLS.md) and [background tasks](architecture/HER-TASKS.md) |
+| Carry out a user request or a resident's own task | [Task ownership and project parity trials](architecture/HER-HANDS.md#own-a-task-from-intent-to-outcome) | [Tool results](architecture/HER-TOOLS.md) and [background tasks](architecture/HER-TASKS.md) |
 
 ## Where things live — EVERY directory, with counts
 
