@@ -14,42 +14,7 @@
 use super::{Evidence, Rates};
 use crate::capacity::dyno::knee::{derive_knee, Knee, NoiseBand, ServiceCurve};
 
-/// Least squares by the normal equations (k <= 4 unknowns, weights per row).
-pub(crate) fn least_squares(rows: &[(Vec<f64>, f64, f64)]) -> Option<Vec<f64>> {
-    let k = rows.first()?.0.len();
-    let mut m = vec![vec![0.0; k + 1]; k];
-    for (x, y, w) in rows {
-        for i in 0..k {
-            for j in 0..k {
-                m[i][j] += w * x[i] * x[j];
-            }
-            m[i][k] += w * x[i] * y;
-        }
-    }
-    for i in 0..k {
-        let p = (i..k).max_by(|a, b| m[*a][i].abs().total_cmp(&m[*b][i].abs()))?;
-        m.swap(i, p);
-        if m[i][i].abs() < 1e-12 {
-            return None;
-        }
-        for r in 0..k {
-            if r != i {
-                let f = m[r][i] / m[i][i];
-                for c in i..=k {
-                    m[r][c] -= f * m[i][c];
-                }
-            }
-        }
-    }
-    Some((0..k).map(|i| m[i][k] / m[i][i]).collect())
-}
-
-/// The median of |predicted - observed| / observed.
-pub(crate) fn median_relative_residual(pairs: impl Iterator<Item = (f64, f64)>) -> f64 {
-    let mut r: Vec<f64> = pairs.filter(|(_, o)| *o > 0.0).map(|(p, o)| (p - o).abs() / o).collect();
-    r.sort_by(f64::total_cmp);
-    r.get(r.len() / 2).copied().unwrap_or(f64::NAN) // unwrap_or: no observation, no residual
-}
+use crate::capacity::decode_width::{least_squares, median_relative_residual, DecodePlane};
 
 /// The fitted costs and their residuals.
 #[derive(Debug, Clone)]
@@ -59,8 +24,9 @@ pub(crate) struct Costs {
     pub prefill: [f64; 4],
     /// Seconds per decode step: `[d0, d1, d2]` in `d0 + d1 n + d2 (D / 1000)`.
     pub decode: [f64; 3],
-    pub prefill_residual: f64,
-    pub decode_residual: f64,
+    /// `None` with no observation to measure the fit against.
+    pub prefill_residual: Option<f64>,
+    pub decode_residual: Option<f64>,
     /// The recorded per-batch rates by sequences (for the knee of candidate (d)).
     rates: Rates,
 }
@@ -104,12 +70,14 @@ impl Costs {
         (self.prefill[0] + self.prefill[1] * d + t * (self.prefill[2] + self.prefill[3] * d)).max(0.0)
     }
 
+    /// The fitted decode plane, the one the live publisher fits the same way (`decode_width`).
+    pub(crate) fn plane(&self) -> DecodePlane {
+        DecodePlane { base: self.decode[0], per_decoder: self.decode[1], per_kdepth: self.decode[2] }
+    }
+
     /// Seconds for one decode step of `decoders` over summed depth `depth`.
     pub(crate) fn decode_s(&self, decoders: usize, depth: u64) -> f64 {
-        match decoders {
-            0 => 0.0,
-            n => (self.decode[0] + self.decode[1] * n as f64 + self.decode[2] * depth as f64 / 1000.0).max(0.0),
-        }
+        self.plane().step_s(decoders, depth)
     }
 
     /// The prompt-concurrency knee of the recorded no-decoder batch curve, with the noise band the

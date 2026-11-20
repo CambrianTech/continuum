@@ -95,7 +95,7 @@ impl Evidence {
 mod costs;
 pub(crate) use costs::Costs;
 mod concurrency;
-pub(crate) use concurrency::MeasuredConcurrency;
+pub(crate) use concurrency::{MeasuredConcurrency, PublishedWidth};
 
 /// One slot as a scheduler sees it at an iteration boundary.
 #[derive(Debug, Clone, Copy, PartialEq)]
