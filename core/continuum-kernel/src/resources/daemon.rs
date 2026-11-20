@@ -230,6 +230,7 @@ impl ResourceDaemon {
         for src in &sources {
             governor.set_capacity(src.kind(), src.ceiling_bytes());
             governor.set_physical_used(src.kind(), src.used_bytes());
+            governor.set_backing(src.kind(), src.backed_by());
         }
         let channel = DaemonChannel::new(governor.board(), board_over_budget);
         let (evict_tx, evict_rx) = mpsc::unbounded_channel();
@@ -311,10 +312,55 @@ impl ResourceDaemon {
         })
     }
 
+    /// [`Self::acquire_guarded`] decided on what is physically resident NOW: every source is
+    /// measured and ingested first, so an admission between ticks never reads a sample up to a
+    /// tick old (memory another process took since, or a lease granted since that became
+    /// resident). The owners' attributions stay as last polled; physical growth they have not yet
+    /// reported still counts as pending, so the stale side only ever over-counts (refuses), never
+    /// over-grants. For admissions that run long work on the grant (a learning step); the hot
+    /// path keeps the tick's sample.
+    pub fn acquire_measured_now(
+        self: &std::sync::Arc<Self>,
+        req: &LeaseRequest,
+    ) -> Result<LeaseGuard, LeaseError> {
+        // read the sources outside the lock (a slow reader never stalls other allocations), numbered before
+        // reading; then ingest in order and grant under one lock, against the newest accepted sample (this
+        // one, or a newer one a tick took meanwhile) (Codex on #6124)
+        let scans: Vec<_> = self.sources.iter().map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by())).collect();
+        let now = EpochMs::now().millis();
+        let mut g = self.governor.lock();
+        for (kind, ceiling, sample, backing) in scans {
+            g.set_capacity(kind, ceiling);
+            g.set_physical_sample(kind, sample);
+            g.set_backing(kind, backing);
+        }
+        let lease = g.acquire(req, now)?;
+        self.publish_locked(&g);
+        Ok(LeaseGuard { daemon: std::sync::Arc::clone(self), lease_id: lease.lease_id, released: false })
+    }
+
+    /// The holder of `lease_id` declares its bytes resident (see [`LeaseGuard::landed`]).
+    pub fn landed(&self, lease_id: &str) -> Result<(), LeaseError> {
+        // only a reading observed from here on was taken after the declaration and can show the bytes
+        let from = super::observed::Observed::now();
+        let mut g = self.governor.lock();
+        g.landed(lease_id, from)?;
+        self.publish_locked(&g);
+        Ok(())
+    }
+
     pub fn renew(&self, lease_id: &str, expires_at_ms: u64) -> Result<(), LeaseError> {
         let now = EpochMs::now().millis();
         let mut g = self.governor.lock();
         g.renew(lease_id, expires_at_ms, now)
+    }
+
+    /// Hold native resident allocations and the additional headroom each needs.
+    /// Multiple loaded instances of the same consumer contribute independently.
+    pub fn hold_residency<const N: usize>(self: &Arc<Self>, consumer: &'static str, pools: [ResidentFloor; N]) -> ResidencyGuard<N> {
+        let guard = ResidencyGuard { daemon: Arc::clone(self), consumer, pools };
+        guard.adjust(u64::saturating_add);
+        guard
     }
 
     pub fn reserve(&self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
@@ -344,6 +390,13 @@ impl ResourceDaemon {
     /// for the measured incident.
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         self.governor.lock().budget_for_replacing(consumer_id, kind)
+    }
+
+    /// What `consumer_id` may size a successor into before its own bytes are on the board: the
+    /// pool's capacity less every other consumer's floor, grant or residency (see
+    /// [`ResourceLeaseLedger::room_beside_others`](super::ledger::ResourceLeaseLedger::room_beside_others)).
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.governor.lock().room_beside_others(consumer_id, kind)
     }
 
     /// Replacement budget, the caller's own bytes it added back, and the leases charged, all
@@ -477,10 +530,10 @@ impl ResourceDaemon {
         // 2. Read every source's fixed ceiling AND live physical usage OFF the
         //    accounting lock (cached monitor reads). Both feed the governor below;
         //    the ceiling is near-constant, the usage moves with external pressure.
-        let scans: Vec<(ResourceKind, u64, u64)> = self
+        let scans: Vec<(ResourceKind, u64, super::observed::PhysicalSample, Option<ResourceKind>)> = self
             .sources
             .iter()
-            .map(|s| (s.kind(), s.ceiling_bytes(), s.used_bytes()))
+            .map(|s| (s.kind(), s.ceiling_bytes(), s.sample(), s.backed_by()))
             .collect();
 
         // 2.5 Snapshot live (non-quarantined) consumers ONCE — reused for both the
@@ -524,11 +577,12 @@ impl ResourceDaemon {
         //    pressure, plan the reclaims, snapshot the board. No await inside.
         let (plans, board) = {
             let mut g = self.governor.lock();
-            for (kind, ceil, used) in &scans {
+            for (kind, ceil, sample, backing) in &scans {
                 g.set_capacity(*kind, *ceil);
                 // The un-inversion ground truth: everything physically resident,
                 // netted against the fixed ceiling to yield `available`.
-                g.set_physical_used(*kind, *used);
+                g.set_physical_sample(*kind, *sample);
+                g.set_backing(*kind, *backing);
             }
             // Feed the self-declared attribution axis: each consumer's freshly-polled
             // residency. Surfaces per-consumer on the board (the WHO); the physical
@@ -554,7 +608,7 @@ impl ResourceDaemon {
             let plans = g.reconcile_for_demand(
                 now,
                 |k| pmap[kind_idx(k)],
-                |k| demand.get(&k).copied().unwrap_or(0),
+                |k| demand.get(&k).copied().unwrap_or(0), // unwrap_or: a kind no consumer asked for this tick is a demand of 0 bytes, not an unknown
             );
             (plans, g.board())
         };
@@ -716,6 +770,13 @@ impl LeaseGuard {
         &self.lease_id
     }
 
+    /// Declare the held bytes resident: the holder calls it once its allocation has landed (the engine
+    /// confirmed the buffers, the lane reported loaded). Until then the lease is owed on top of physical
+    /// use; a holder that never declares is over-counted, never under-counted.
+    pub fn landed(&self) -> Result<(), LeaseError> {
+        self.daemon.landed(&self.lease_id)
+    }
+
     /// The bytes this guard holds, read from the governor itself (0 once the lease
     /// is released or swept). Not the published board: a board is a copy, and a copy
     /// can lag the grant it describes (card 26df: an admitted 6.1 GB train run read
@@ -796,7 +857,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().capacity(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); the broker's pool is empty and has nothing to relieve
     }
 
     fn usage_bytes(&self) -> u64 {
@@ -807,7 +868,7 @@ impl ResourcePool for LeasePoolView {
         self.daemon
             .upgrade()
             .map(|d| d.governor.lock().committed(self.kind))
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: the daemon is gone (shutdown); nothing is committed in a pool that no longer exists
     }
 
     /// NON-BLOCKING. Queue the relief ask and return best-effort `0` — the
@@ -870,3 +931,31 @@ fn drift_should_report(drift: u64, last: &mut u64) -> bool {
 
 #[cfg(test)]
 mod tests;
+
+/// Native bytes already allocated and the unused window the owner must keep available.
+pub struct ResidentFloor {
+    pub kind: ResourceKind,
+    pub resident: u64,
+    pub headroom: u64,
+}
+
+/// Releases precisely this instance's contribution when its owner unloads.
+pub struct ResidencyGuard<const N: usize> {
+    daemon: Arc<ResourceDaemon>,
+    consumer: &'static str,
+    pools: [ResidentFloor; N],
+}
+
+impl<const N: usize> ResidencyGuard<N> {
+    fn adjust(&self, change: fn(u64, u64) -> u64) {
+        let mut governor = self.daemon.governor.lock();
+        governor.adjust_residency(self.consumer, &self.pools, change);
+        self.daemon.publish_locked(&governor);
+    }
+}
+
+impl<const N: usize> Drop for ResidencyGuard<N> {
+    fn drop(&mut self) {
+        self.adjust(u64::saturating_sub);
+    }
+}

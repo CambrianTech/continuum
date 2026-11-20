@@ -10,8 +10,8 @@ screwing up, and keep going till we feel like it has good multi-persona throughp
 
 The design it executes: [HOW-A-MIND-GETS-WHAT-SHE-NEEDS](../architecture/HOW-A-MIND-GETS-WHAT-SHE-NEEDS.md)
 (requirements, loops, scenarios), [THE-PROVING-GROUND](../architecture/THE-PROVING-GROUND.md) (simulation and
-proof), [ONE-BUDGET](../architecture/ONE-BUDGET.md), MIND-CONTEXT's causality section and render receipt,
-[SERVING-ENGINE](../architecture/SERVING-ENGINE.md) S2.
+proof), [ONE-BUDGET](../architecture/ONE-BUDGET.md), CONTINUUM-ENGINE section 5's causality section and render receipt,
+[CONTINUUM-ENGINE.md, serving engine](../architecture/CONTINUUM-ENGINE.md) S2.
 
 ## The three use cases (no grid yet)
 
@@ -81,7 +81,7 @@ and work merges as it is proven, never parked.
 
 A round's finding that applies to all nodes is proven on one and carried to the others.
 
-**P4. The engine side,** once the mind side holds: SERVING-ENGINE S1 to S3 (unified state, live
+**P4. The engine side,** once the mind side holds: CONTINUUM-ENGINE.md slice S1 to S3 (unified state, live
 reconfigure, paging) and L5's lane price, through T2 first, then the same rounds.
 
 ## Gates

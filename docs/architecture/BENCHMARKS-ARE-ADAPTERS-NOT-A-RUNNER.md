@@ -75,7 +75,7 @@ parse it better — stop. That is the smell. The consumer should not be external
 
 ## Related
 
-- `docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md` — positron/ViewState contract
+- `docs/architecture/CONTINUUM-ENGINE.md` — positron/ViewState contract
 - #329 a benchmark IS a live room · #371 recipe-owned ActivityObjective
 - #307 collaboration instrument · #389 pair-coding delta (both still pending — we
   have NO instrument for "did these two help each other")

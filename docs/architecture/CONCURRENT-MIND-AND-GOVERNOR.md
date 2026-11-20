@@ -7,11 +7,24 @@
 > integrating them into one coherent act, governed only by resources, realized on
 > modern hardware via Rust.
 
-Companions (precedence-winning on their topics): [CBAR-SUBSTRATE-ARCHITECTURE](CBAR-SUBSTRATE-ARCHITECTURE.md),
+Companions (precedence-winning on their topics): [CONTINUUM-ENGINE](CONTINUUM-ENGINE.md),
 [BRAIN-REGIONS-SUBSTRATE](BRAIN-REGIONS-SUBSTRATE.md), [CONCURRENCY-STYLE-GUIDE](CONCURRENCY-STYLE-GUIDE.md),
 [PERSONA-COGNITION-PIPELINE](PERSONA-COGNITION-PIPELINE.md), [PERSONA-DEBUGGING-SYSTEM](PERSONA-DEBUGGING-SYSTEM.md).
 
 ---
+
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. Invariants (the bar — hold every line to these)](#1-invariants-the-bar--hold-every-line-to-these)
+- [2. Biology → RTOS → Rust (the realization, not metaphor)](#2-biology--rtos--rust-the-realization-not-metaphor)
+- [3. Architecture](#3-architecture)
+- [3.1 Information flow: enrichment, not pipelines](#31-information-flow-enrichment-not-pipelines)
+- [3.2 Cause and effect: invalidation propagation, not servicing](#32-cause-and-effect-invalidation-propagation-not-servicing)
+- [3.3 Consolidation + shared elements: the channel as a reference-passed frame](#33-consolidation--shared-elements-the-channel-as-a-reference-passed-frame)
+- [4. Slice plan](#4-slice-plan)
+- [5. Code map](#5-code-map)
 
 ## 1. Invariants (the bar — hold every line to these)
 

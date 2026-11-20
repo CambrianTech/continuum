@@ -12,7 +12,7 @@ const select = (...paths) => {
 // Tested crates a kernel change does not reach: the floor (base, host, git, service, saved-state) and
 // the leaves that depend on nothing in the workspace (the codec continuum-context, the flow
 // continuum-flow, the proving ground's types continuum-proving-types).
-const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types'];
+const BELOW_KERNEL = ['continuum-base', 'continuum-host', 'continuum-git', 'continuum-service', 'continuum-saved-state', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama'];
 
 test('installer repairs run installer checks without unrelated Rust builds', () => {
   for (const file of ['install.ps1', 'tools/scripts/lib/install-common.ps1', 'tools/scripts/lib/win-modules.ps1', 'tools/scripts/lib/win-engine.ps1', 'tools/scripts/lib/windows-engine-receipt.ps1', 'tools/scripts/lib/windows-service.ps1', 'tools/scripts/lib/windows-media-reconciliation.ps1', 'tools/scripts/lib/windows-elevation.ps1', 'tools/scripts/tests/windows-process.test.ps1', 'tools/scripts/tests/windows-airc-download.test.ps1', 'tools/scripts/tests/windows-xz.test.ps1', 'tools/scripts/sync-windows-bootstrap.ps1'])
@@ -148,14 +148,15 @@ test('a crate-local change runs that crate and every crate that depends on it', 
   const belowMind = crates('continuum-engine', 'continuum-vitals', 'continuum-prompt', 'continuum-engram', 'continuum-capture', 'continuum-embedding', 'continuum-store', 'continuum-models', 'continuum-hands', 'continuum-live', 'continuum-perception', 'continuum-genome', 'continuum-memory', 'continuum-cognition', 'continuum-academy', 'continuum-sentinel', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core', 'continuum-gateway');
   assert.deepEqual(scope(['core/continuum-engine/src/lib.rs']), belowMind);
   // The floor crates (base, host, git) sit below the kernel: a kernel change runs everything above them.
+  assert.deepEqual(scope(['core/continuum-persona-engine/src/persona/unit.rs']), crates('continuum-persona-engine', 'continuum-persona-llama'));
   const aboveFloor = TESTED_CRATES.filter(n => !BELOW_KERNEL.includes(n));
   assert.deepEqual(scope(['core/continuum-kernel/src/lib.rs']), { crates: aboveFloor, cli: false });
   // A floor change runs the floor crate and every crate built on it.
-  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types'].includes(n)), cli: true });
+  assert.deepEqual(scope(['core/continuum-host/src/durable/mod.rs']), { crates: TESTED_CRATES.filter(n => !['continuum-base', 'continuum-service', 'continuum-context', 'continuum-flow', 'continuum-proving-types', 'continuum-persona-engine', 'continuum-persona-llama'].includes(n)), cli: true });
   // continuum-git is used by hands (a citizen's git) and core (the deploy tree): both run, and every crate above hands.
   assert.deepEqual(scope(['core/continuum-git/src/index_lock.rs']), crates('continuum-git', 'continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   // Untested crates reach the tested ones through the graph: llama -> engine -> ...
-  assert.deepEqual(scope(['core/llama/src/lib.rs']), belowMind);
+  assert.deepEqual(scope(['core/llama/src/lib.rs']), crates(...belowMind.crates, 'continuum-persona-llama'));
   assert.deepEqual(scope(['core/continuum-mind/src/a.rs', 'core/continuum-live/src/b.rs']), crates('continuum-live', 'continuum-perception', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));
   // A crate's own manifest is that crate's change; a rename counts both ends.
   assert.deepEqual(scope(['core/continuum-hands/Cargo.toml']), crates('continuum-hands', 'continuum-cognition', 'continuum-academy', 'continuum-mind', 'continuum-dreaming', 'continuum-grid', 'continuum-serving', 'continuum-core'));

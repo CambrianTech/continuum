@@ -5,9 +5,13 @@ use airc_lib::WorkCardId;
 use uuid::Uuid;
 
 use crate::cognition::card_facts::short8;
+use crate::cognition::review_verdict::{derive, ReviewState};
+use crate::experience::binding::ReviewPolicy;
 
 /// PURE: what happens next for the holder of a card whose latest submission is `latest`, given
-/// the outcomes its reviews have reached and whether it is a bench card. The ONE place this is
+/// its DERIVED review state (`review_verdict::derive`: independent passes under the room's policy,
+/// a newer failure sends it back; never "some verdict passed", card 5a94e88e) and whether it is a
+/// bench card. The ONE place this is
 /// said, read by `work/submit`'s receipt, `work/get` and `work/submission`. `None` before anything
 /// is submitted.
 ///
@@ -27,10 +31,10 @@ use crate::cognition::card_facts::short8;
 /// A passed code card is NOT done on the pass: it lands when its pull request merges
 /// (`pull_request`, the card's link). With none linked she is told the move that opens and links
 /// it, never that the work is done (the finishing chain's break 2, 2026-11-08).
-pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkReviewOutcome], graded_at_submit: bool, review: Option<WorkCardId>, pull_request: Option<&airc_work::PullRequestRef>) -> Option<String> {
+pub fn next_after_submission(latest: Option<Uuid>, state: ReviewState, graded_at_submit: bool, review: Option<WorkCardId>, pull_request: Option<&airc_work::PullRequestRef>) -> Option<String> {
     let submission = short8(latest?);
     let pr = pull_request.map(|pr| format!("{}#{}", pr.repo, pr.number));
-    Some(if outcomes.contains(&airc_work::WorkReviewOutcome::Passed) {
+    Some(if state.passed() {
         match (graded_at_submit, &pr) {
             (true, _) => format!("Submission {submission} passed review: the card is done. Nothing more to do on it."),
             (false, Some(pr)) => format!(
@@ -42,8 +46,13 @@ pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkRe
                  work/submit again (the same patch): it opens the pull request for your branch and links it to the card."
             ),
         }
-    } else if outcomes.contains(&airc_work::WorkReviewOutcome::Failed) {
+    } else if let ReviewState::SentBack { .. } = state {
         format!("A reviewer sent submission {submission} back (see reviews). Revise the work and work/submit again.")
+    } else if state == ReviewState::HeadUnrecorded {
+        format!(
+            "Submission {submission} has passing reviews but records no head commit, so no verdict covers what would land \
+             and nothing merges: work/submit again from the pull request's head."
+        )
     } else if graded_at_submit {
         format!(
             "Submitted as {submission}. The test oracle grades it now and posts the verdict in the room \
@@ -55,8 +64,12 @@ pub fn next_after_submission(latest: Option<Uuid>, outcomes: &[airc_work::WorkRe
             Some(pr) => format!("Pull request {pr} carries it; a pass lets the merger land it"),
             None => "No pull request is linked yet; work/submit again (the same patch) opens and links it".to_string(),
         };
+        let counted = match state {
+            ReviewState::Awaiting { passes, required } if passes > 0 => format!(" {passes} of the {required} passing reviews this room requires are in."),
+            _ => String::new(),
+        };
         format!(
-            "Submitted as {submission}. Review card {review} is available to its reviewer. {landing}. Await the review: \
+            "Submitted as {submission}. Review card {review} is available to its reviewer.{counted} {landing}. Await the review: \
              a send-back appears in its reviews. Do not submit again unless it is sent back."
         )
     } else {
@@ -69,3 +82,8 @@ pub fn submission_review_handoff(board: &airc_work::WorkBoardProjection, parent:
     board.review_request(id).map(|_| id)
 }
 
+/// The derived review state of `submission` on `board` under `policy`: the one call every surface
+/// that tells her where her work stands makes.
+pub fn review_state(board: &airc_work::WorkBoardProjection, submission: &airc_work::WorkSubmission, policy: &ReviewPolicy) -> ReviewState {
+    derive(submission, board.submission_reviews_for(submission.submission_id), policy, &super::review::minds())
+}

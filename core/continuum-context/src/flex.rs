@@ -1,5 +1,5 @@
 //! The flexbox: ONE algorithm that shares a budget among claims by floor, min, max and priority
-//! (moved here from `continuum-grounding::rag_budget`, MIND-CONTEXT's module table: "flex moves
+//! (moved here from `continuum-grounding::rag_budget`, CONTINUUM-ENGINE section 5's module table: "flex moves
 //! into continuum-context as the one allocator"). Pure: no I/O, no adapter instance.
 //!
 //! Its one production caller is the act's allocation ([`crate::allocation::allocate`]), which

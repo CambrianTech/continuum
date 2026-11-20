@@ -15,7 +15,7 @@ This document builds on what is already decided and does not repeat it:
 - [PERSONA-CONTEXT-PAGING](PERSONA-CONTEXT-PAGING.md): signals, not constants; paging is the primitive, and
   limits emerge as costs;
 - [ONE-BUDGET](ONE-BUDGET.md): one authority over every resource, and grants that shrink by request;
-- [MIND-CONTEXT-AND-ENGINE-CONFIG](MIND-CONTEXT-AND-ENGINE-CONFIG.md): the codec, levels, epochs and causality.
+- [CONTINUUM-ENGINE.md, a mind's context](CONTINUUM-ENGINE.md): the codec, levels, epochs and causality.
 
 - the grid governance, which this plugs into and does not parallel:
   [GRID-MARKET-CLEARING](GRID-MARKET-CLEARING.md) (nested prices from the pager to the N-node mesh),
@@ -159,7 +159,7 @@ Each is testable, and the scenarios in section 6 test them.
   adding acts stops adding items.
 - **R3. Focus.** Detail goes by causal distance from her current act and by which activity is in focus.
   Everything else folds to a cheaper level that keeps a path back. Nothing is dropped silently, chain heads
-  stay whole, and her newest result stays whole (FOCUS-CONTRACT rule 4; MIND-CONTEXT causality).
+  stay whole, and her newest result stays whole (FOCUS-CONTRACT rule 4; CONTINUUM-ENGINE section 5 causality).
 - **R4. Flex, cleared by price.** Every consumer is a flex item: its basis is its measured current need, its
   minimum is its causal or required floor (a reservation, visible in the books, never traded), and its grow
   and shrink are marginal-value curves measured from outcomes. The container is measured capacity. A claim
@@ -377,7 +377,7 @@ waiting on; one is idle; and the person starts a game partway through.
 
 **Missing:**
 - one pool across minds (today: four fixed private slots);
-- live engine reconfigure and paging verbs (SERVING-ENGINE S1 to S3);
+- live engine reconfigure and paging verbs (CONTINUUM-ENGINE.md slice S1 to S3);
 - fault counting by causal identity;
 - loops L2 to L6 as closed loops (today each is an open-loop rule);
 - the policy loop L7.
@@ -394,7 +394,7 @@ tokens inside her thinking, because the fixed 1,024-token think budget exceeded 
    a lone mind is bounded only by her slot (Cormac on #5607). Until L5 publishes a lane price, step 1 is
    space-bounded only, and the lane time each generation holds is a measured signal, not yet a price.
 2. Beyond her slot: the engine must hold one pool (unified state) and extend a running generation's grant at
-   a step boundary, a verb that does not exist yet (SERVING-ENGINE S1 to S3; owner Fable, engine).
+   a step boundary, a verb that does not exist yet (CONTINUUM-ENGINE.md slice S1 to S3; owner Fable, engine).
 
 Until step 2, `delib.emission.cut_mid_answer` and the think-only cut probe are the measured gap, and S1's
 no-cut criterion applies after step 2 lands.

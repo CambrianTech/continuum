@@ -4,6 +4,24 @@ Card 13c81ced. Joel, 2026-11-10: "Shared residency on one machine is difficult b
 "It's like a resource like any other, just need to do it elegantly, not hacked patches."
 "You don't hard code for rust or anything."
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [Why this exists](#why-this-exists)
+- [The principle: resources flow, like data](#the-principle-resources-flow-like-data)
+- [Every decision is a price](#every-decision-is-a-price)
+- [Cache levels everywhere](#cache-levels-everywhere)
+- [What the users are](#what-the-users-are)
+- [The design: three layers, each holding only its own difference](#the-design-three-layers-each-holding-only-its-own-difference)
+- [Residency over time: resident, transient, pageable](#residency-over-time-resident-transient-pageable)
+- [Built on what exists: the pipeline flows both ways and carries more](#built-on-what-exists-the-pipeline-flows-both-ways-and-carries-more)
+- [Cache tier levels](#cache-tier-levels)
+- [The test that proves the interface](#the-test-that-proves-the-interface)
+- [Migration](#migration)
+- [What has already landed (interim, card 13c81ced)](#what-has-already-landed-interim-card-13c81ced)
+- [Owners](#owners)
+
 ## Why this exists
 
 Several citizens share one machine: agents, residents, and humans. They also share its memory, its
@@ -204,7 +222,7 @@ What changes:
 | Direction | Today | Flowing both ways |
 |---|---|---|
 | A page under pressure | Dropped (evicted), then re-prefilled at minutes per act | Demoted one tier (device to host to flash) at its measured transfer cost, and promoted back by predicted need (warm-ahead) |
-| Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (SERVING-ENGINE S2); a user's game or editor gets its memory back, and gets it again when it quits |
+| Engine capacity | Sized at launch; grows only by relaunch, once per run; never gives memory back | `reconfigure` grows or shrinks live at a frame boundary (CONTINUUM-ENGINE.md slice S2); a user's game or editor gets its memory back, and gets it again when it quits |
 | Seats | Change hands only when an evaluation catches an idle holder | A lease per act, re-decided each tick by temperature and aging (S3, #5914) |
 | Learning | A separate admission waiting on a multi-GB lease | Forward and backward share the frames: learning chunks run in the gaps between decode steps (fork #102), on the transient arena |
 
@@ -223,7 +241,7 @@ its loader and its tier costs:
 
 Build order (each slice proven by its validator first, then a live read):
 
-1. **S2, `reconfigure`** in the fork (SERVING-ENGINE §5): the model never reloads, and grow and
+1. **S2, `reconfigure`** in the fork (CONTINUUM-ENGINE.md 4.5): the model never reloads, and grow and
    shrink are one path. This ends relaunches, the largest live harm (13 in four minutes on
    2026-11-10).
 2. **Tiered demotion in `PagedResourcePool`:** evict means demote one tier, with the KV slots

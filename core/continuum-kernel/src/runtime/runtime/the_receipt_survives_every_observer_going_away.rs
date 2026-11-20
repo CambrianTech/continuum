@@ -6,6 +6,14 @@ pub(super) mod conditional_modules_tests {
 
     /// The shutdown result must survive the disappearance of everyone watching it.
     mod receipt_retention {
+        // The kernel test binary installs no process runtime. Exercise the actual
+        // signal caller: boot-window refusal must not fabricate a terminal receipt.
+        #[tokio::test]
+        async fn a_signal_without_a_runtime_publishes_no_durability_receipt() {
+            assert!(matches!(super::super::signal_runtime(), Err(super::super::ShutdownUnavailable)));
+            super::super::run_signal_shutdown().await;
+            assert!(super::super::shutdown_receipt().is_none());
+        }
         use super::super::*;
         // The ONE recording fixture, borrowed from the dispatch tests rather than
         // reimplemented here.
@@ -38,7 +46,7 @@ pub(super) mod conditional_modules_tests {
             runtime.register(module);
 
             // The only observer disconnects — the CLI died, was interrupted, timed out.
-            let rx = op.begin(Some(runtime), std::time::Duration::ZERO);
+            let rx = op.begin(&runtime, std::time::Duration::ZERO);
             drop(rx);
 
             // Wait for the owner to publish. It is a detached task, so this polls a FRESH
@@ -80,9 +88,9 @@ pub(super) mod conditional_modules_tests {
             let saves = module.saves.clone();
             runtime.register(module);
 
-            let _first = op.begin(Some(runtime.clone()), std::time::Duration::ZERO);
+            let _first = op.begin(&runtime, std::time::Duration::ZERO);
             // A second caller with a runtime it would otherwise stop.
-            let _second = op.begin(Some(runtime), std::time::Duration::ZERO);
+            let _second = op.begin(&runtime, std::time::Duration::ZERO);
 
             let mut receipt = None;
             for _ in 0..200 {
@@ -133,6 +141,7 @@ pub(super) mod conditional_modules_tests {
             let receipt = ShutdownReceipt {
                 modules: Vec::new(),
                 total_ms: 3,
+                custody: Vec::new(),
             };
             tx.send_replace(Some(receipt.clone()));
             assert_eq!(
@@ -434,6 +443,7 @@ pub(super) mod conditional_modules_tests {
                     stop("cognition", ModuleStopOutcome::SaveTimedOut),
                 ],
                 total_ms: 42,
+                custody: Vec::new(),
             };
             assert!(!receipt.state_is_durable());
             assert_eq!(receipt.unsaved().len(), 1);
@@ -454,6 +464,7 @@ pub(super) mod conditional_modules_tests {
             let receipt = ShutdownReceipt {
                 modules: Vec::new(),
                 total_ms: 0,
+                custody: Vec::new(),
             };
             assert!(receipt.state_is_durable());
             assert!(

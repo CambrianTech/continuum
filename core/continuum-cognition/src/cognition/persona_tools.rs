@@ -47,7 +47,7 @@ pub fn authorized_tool_specs(trust: TrustLevel) -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
         .filter(|d| is_command_authorized(d.name, trust))
-        .map(descriptor_to_tool_spec)
+        .filter_map(offerable)
         .collect()
 }
 
@@ -64,7 +64,7 @@ pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
     command_registry_live()
         .iter()
         .filter(|d| d.access_level == AccessLevel::AiSafe)
-        .map(descriptor_to_tool_spec)
+        .filter_map(offerable)
         .collect()
 }
 
@@ -73,8 +73,9 @@ pub fn ai_safe_tool_specs() -> Vec<NativeToolSpec> {
 /// schema are best-effort until the descriptor carries richer metadata (see
 /// module docs); this projection is structured so that richness lands here
 /// without changing any caller.
-pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
-    NativeToolSpec {
+pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> Result<NativeToolSpec, ToolExclusion> {
+    let input_schema = tool_input_schema_from(&d.params_schema).map_err(|why| ToolExclusion { tool: d.name, reason: why.reason() })?;
+    Ok(NativeToolSpec {
         name: d.name.to_string(),
         // The command's own declared DESCRIPTION (headless, compartmentalized) when
         // present; otherwise fall back to a name + param-type handle so the model
@@ -91,8 +92,31 @@ pub fn descriptor_to_tool_spec(d: &CommandDescriptor) -> NativeToolSpec {
         // SDK adapts from. Commands not yet on a base trait carry a `Null` schema;
         // those fall back to an open object (the command still validates its typed
         // params). One source, every interface ([[command-organization]]).
-        input_schema: tool_input_schema_from(&d.params_schema),
-    }
+        input_schema,
+    })
+}
+
+/// A command left off every tool surface: its params cannot be offered as one object a model can call, and an
+/// offered tool with no parameters is a tool she calls with `{}` and is refused for (Benchy, M5 2026-11-17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ToolExclusion {
+    pub tool: &'static str,
+    pub reason: &'static str,
+}
+
+/// `d` as a tool spec, or `None` when it is excluded; each exclusion is probed with the tool and the reason, so a
+/// command missing from her surface is named, never silently absent.
+fn offerable(d: &CommandDescriptor) -> Option<NativeToolSpec> {
+    descriptor_to_tool_spec(d)
+        .inspect_err(|excluded| {
+            continuum_base::probe!(
+                class = "tool.surface.excluded",
+                tool = excluded.tool,
+                reason = excluded.reason,
+                "a command's params cannot be offered as one object: left off the tool surface, never offered empty"
+            );
+        })
+        .ok()
 }
 
 // ─────────────────────────── progressive disclosure ──────────────────
@@ -277,6 +301,27 @@ pub struct MenuLine {
     pub collapsed: String,
 }
 
+impl MenuLine {
+    /// Its levels for a budget: the expansion, and the collapse when its text is smaller. Whether a
+    /// collapse is offered is decided from the text; its cost is charged at this act's density, kept
+    /// below the expansion's where the integers allow and never below its own text's. At a low enough
+    /// density the two still charge the same integer and the ladder has one rung: the framing then
+    /// renders the category as her head holds it (`FramingOffer::expanded`), so her prompt does not
+    /// change mid-epoch (Benchy on the M5, 2026-11-17 22:12Z: density 1 -> 0.899 dropped plasticity's
+    /// collapse, the menu expanded, and 17,316 tokens of his KV re-prefilled).
+    pub fn levels(&self, charge: &dyn Fn(usize) -> u32) -> continuum_context::ladder::Rungs {
+        use continuum_base::token_estimate::GUARD_CHARS_PER_TOKEN;
+        let estimate = |text: &str| text.len().div_ceil(GUARD_CHARS_PER_TOKEN);
+        let (expanded, collapsed) = (estimate(&self.expanded), estimate(&self.collapsed));
+        let whole = charge(expanded);
+        if collapsed + 1 >= expanded {
+            return continuum_context::ladder::Rungs::whole(whole);
+        }
+        let priced = charge(collapsed + 1).min(whole.saturating_sub(1)).max(charge(collapsed));
+        continuum_context::ladder::Rungs::kept(whole, (), [(priced, ())]).0
+    }
+}
+
 /// The menu's categories in its spine order (stable, a byte-stable prefix), each at both levels.
 pub fn menu_lines(tools: &[NativeToolSpec]) -> Vec<MenuLine> {
     let mut by_cat: BTreeMap<&str, Vec<(String, &str)>> = BTreeMap::new();
@@ -354,7 +399,7 @@ pub fn native_offers() -> Vec<super::tool_surface::OfferedTool> {
     command_registry_live()
         .iter()
         .filter(|d| d.native)
-        .map(|d| super::tool_surface::OfferedTool { spec: descriptor_to_tool_spec(d), disclosure: d.disclosure })
+        .filter_map(|d| offerable(d).map(|spec| super::tool_surface::OfferedTool { spec, disclosure: d.disclosure }))
         .chain(verdict_tool_specs().into_iter().map(super::tool_surface::OfferedTool::always))
         .collect()
 }
@@ -431,17 +476,6 @@ pub fn is_yield_turn(name: &str) -> bool {
     name == VERDICT_YIELD_TURN || VERDICT_YIELD_ALIASES.contains(&name)
 }
 
-/// Look up one command by name and project it to a full tool spec — the on-demand
-/// half of progressive disclosure (the catalog gives names; this gives the schema).
-/// `None` when no such command is registered (the caller reports that, never
-/// fabricates a schema — [[fallbacks-are-illegal-fail-loud]]).
-pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
-    command_registry_live()
-        .iter()
-        .find(|d| d.name == name)
-        .map(descriptor_to_tool_spec)
-}
-
 // The on-demand "how do I call this?" tool is the EXISTING `commands/help`
 // ([`CommandsHelp`] in `commands::help`), referenced by [`TOOL_HELP_NAME`].
 // We deliberately do NOT define a parallel describe command here — `commands/help`
@@ -462,14 +496,14 @@ pub fn spec_for_command(name: &str) -> Option<NativeToolSpec> {
 /// Drop the map and llama.cpp rejects the whole turn with a 400 ("definitions not
 /// in {…}") — the bug that kept every tool-enabled persona turn silent until the
 /// command-registry migration exposed the first nested-param tool.
-fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
+fn tool_input_schema_from(schema: &serde_json::Value) -> Result<ToolInputSchema, schema_variants::UnsupportedVariants> {
     if schema.is_null() {
-        return ToolInputSchema {
+        return Ok(ToolInputSchema {
             schema_type: "object".to_string(),
             properties: json!({}),
             required: None,
             definitions: None,
-        };
+        });
     }
     // llama.cpp's GBNF grammar generator rejects JSON-Schema *boolean* subschemas
     // (`true`/`false`) with "Unrecognized schema: true" — but schemars emits `true`
@@ -483,7 +517,28 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
     // `{"not": {}}` = no value), leaving keyword booleans (`nullable: true`,
     // `deprecated: true`) untouched.
     let schema = sanitize_schema_booleans(schema.clone());
-    ToolInputSchema {
+    // Carry the nested-type definitions under the key the refs name. schemars
+    // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
+    let definitions = schema
+        .get("definitions")
+        .or_else(|| schema.get("$defs"))
+        .map(|d| lead_paragraph_descriptions(d.clone()));
+    // An enum-with-data params type (`code/git/merge`) is a `oneOf` of object variants: offer the model the one
+    // object they merge into, never an empty one (schema_variants). A oneOf the merge cannot express is refused:
+    // the tool is never offered with no parameters.
+    match schema_variants::merged_object_variants(&schema) {
+        schema_variants::VariantsMerge::Merged(schema_variants::MergedObject { properties, required }) => {
+            return Ok(ToolInputSchema {
+                schema_type: "object".to_string(),
+                properties: lead_paragraph_descriptions(properties),
+                required: (!required.is_empty()).then_some(required),
+                definitions,
+            });
+        }
+        schema_variants::VariantsMerge::Unsupported(why) => return Err(why),
+        schema_variants::VariantsMerge::NotVariants => {}
+    }
+    Ok(ToolInputSchema {
         schema_type: schema
             .get("type")
             .and_then(|v| v.as_str())
@@ -498,13 +553,8 @@ fn tool_input_schema_from(schema: &serde_json::Value) -> ToolInputSchema {
                 .filter_map(|x| x.as_str().map(String::from))
                 .collect()
         }),
-        // Carry the nested-type definitions under the key the refs name. schemars
-        // (draft-07) emits `definitions`; tolerate `$defs` (2020-12) too.
-        definitions: schema
-            .get("definitions")
-            .or_else(|| schema.get("$defs"))
-            .map(|d| lead_paragraph_descriptions(d.clone())),
-    }
+        definitions,
+    })
 }
 
 /// Keep only the LEADING PARAGRAPH of every `description` in a schema subtree.
@@ -663,6 +713,8 @@ pub struct ToolSurfaceReport {
     /// (`Privileged` / `Internal`) — the single reason, no hunting.
     pub excluded: Vec<(String, AccessLevel)>,
 }
+
+mod schema_variants;
 
 #[cfg(test)]
 mod tests;

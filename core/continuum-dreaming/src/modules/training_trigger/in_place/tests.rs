@@ -51,6 +51,67 @@ fn engine(port: u16) -> EngineIncarnation {
     EngineIncarnation::of(std::process::id(), port).expect("test: this process's start time is readable")
 }
 
+/// Bytes of governed VRAM `authority` has leased out (its capacity is 1 GiB).
+fn leased(authority: &Authority) -> u64 {
+    (1 << 30) - authority.resources.available_for("an observer", crate::resources::ResourceKind::Vram)
+}
+
+/// Seat a learning workspace of `bytes` in `incarnation`'s slot, as a pass leaves one: its lease
+/// in custody, its claim owned by the slot.
+async fn workspace_in(in_place: &InPlace, incarnation: EngineIncarnation, bytes: u64) -> std::sync::Weak<engine_lock::EngineSlot> {
+    let engine = crate::inference::llama_server::LearningEngine::of(incarnation);
+    let workspace = crate::genome::learner::memory::EngineWorkspace::held_for_test(&in_place.authority, &engine, "learning:her:workspace", bytes)
+        .expect("test: the workspace is leased");
+    let slot = in_place.engine(incarnation);
+    let mut held = slot.acquire(None, engine_lock::Phase::Prepare).await;
+    held.workspace = Some(workspace);
+    drop(held);
+    Arc::downgrade(&slot)
+}
+
+// what this catches (the M5, 2026-11-17: the engine relaunched at 22:09:39Z mid-step and a 4.88 GB
+// learning workspace lease stayed pinned, on top of a governed VRAM pool already exhausted): learning
+// state kept for a dead engine incarnation, whose custody claims then never orphan. A dead
+// incarnation's slot is dropped and its workspace lease is released by the next settle on the dead-
+// process proof; an unreadable incarnation and the live one keep theirs; a slot someone still holds
+// releases only once they let go.
+#[tokio::test]
+async fn a_dead_engines_learning_state_is_retired_and_its_leases_released() {
+    let in_place = InPlace::new(authority());
+    let live = engine(1);
+    // The dead one is really dead (this pid under another start time: a pid since reused), since
+    // custody's settle reads the real process; the unreadable one only to the retirement's probe.
+    let dead = EngineIncarnation { port: 2, started_s: live.started_s.saturating_sub(1), ..live };
+    let unreadable = EngineIncarnation { port: 3, ..live };
+    let liveness = |incarnation: &EngineIncarnation| match incarnation.port {
+        2 => Liveness::Dead,
+        3 => Liveness::Unknown,
+        _ => Liveness::Alive,
+    };
+    const MB: u64 = 1 << 20;
+    let dead_slot = workspace_in(&in_place, dead, 5 * MB).await;
+    let unreadable_slot = workspace_in(&in_place, unreadable, 7 * MB).await;
+    let live_slot = workspace_in(&in_place, live, 11 * MB).await;
+    assert_eq!(leased(&in_place.authority), 23 * MB, "three workspaces leased");
+
+    // Someone still holds the dead slot (a fence finishing): retired, but nothing released yet.
+    let still_held = dead_slot.upgrade().expect("test: seated");
+    assert_eq!(in_place.retire_dead_with(live, liveness), 1, "only the dead incarnation is retired");
+    assert_eq!(in_place.authority.custody.held(), (3, 0), "a held slot's claim is not an orphan yet");
+    assert_eq!(in_place.authority.custody.settle_orphans().await, 0);
+    assert_eq!(leased(&in_place.authority), 23 * MB, "nothing released while the slot is held");
+
+    // Let go: the claim orphans, and the settle releases it on the dead-process proof.
+    drop(still_held);
+    assert!(dead_slot.upgrade().is_none(), "the dead incarnation's slot is gone");
+    assert_eq!(in_place.authority.custody.held(), (3, 1), "its workspace claim is an orphan");
+    assert_eq!(in_place.authority.custody.settle_orphans().await, 0, "settled: its process is dead");
+    assert_eq!(leased(&in_place.authority), 18 * MB, "its 5 MB lease is released, the others kept");
+    assert!(unreadable_slot.upgrade().is_some(), "an unreadable incarnation is never taken for dead");
+    assert!(live_slot.upgrade().is_some(), "the live engine's learning state is kept");
+    assert_eq!(in_place.retire_dead_with(live, liveness), 0, "nothing is retired twice");
+}
+
 // what this catches (Codex on B, card 23069702): her learner waiting for her act while holding her
 // bucket's gate, so her own submit stalled behind her background work. The learner waits for her
 // acts first, holding nothing of the trigger; the gate stays free, and once her act ends the pass
@@ -285,7 +346,7 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 #[tokio::test]
 async fn a_drain_counts_the_learning_still_running() {
     let state = Arc::new(TrainingTriggerState::new(authority()));
-    state.spawn_owned(std::future::pending()).await;
+    state.spawn_owned(std::future::pending());
     assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
     assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
 }
@@ -313,7 +374,7 @@ async fn a_save_leaves_a_busy_engine_to_its_step() {
 async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     use crate::runtime::ServiceModule;
     let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
-    trigger.state.spawn_owned(std::future::pending()).await;
+    trigger.state.spawn_owned(std::future::pending());
     assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
     let idle = engine(9);
     drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
@@ -550,4 +611,47 @@ mod live_engine {
         assert_eq!(residencies(engine).await, before, "the engine holds none of hers");
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
     }
+}
+
+#[tokio::test]
+async fn shutdown_joins_a_fence_registered_by_a_running_step() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let owner = state.clone();
+    let (release, started) = tokio::sync::oneshot::channel();
+    let (finished, fence) = tokio::sync::oneshot::channel();
+    state.spawn_owned(async move {
+        started.await.expect("test: release the step");
+        owner.spawn_owned(async move { let _ = finished.send(()); });
+    });
+    let drain = state.drain_operations();
+    tokio::pin!(drain);
+    tokio::select! {
+        biased;
+        _ = &mut drain => panic!("the step is still running"),
+        _ = std::future::ready(()) => {}
+    }
+    release.send(()).expect("test: step is alive");
+    tokio::time::timeout(std::time::Duration::from_secs(2), drain)
+        .await.expect("test: nested fence admitted").expect("test: shutdown joined");
+    fence.await.expect("test: fence completed");
+}
+
+#[tokio::test]
+async fn prepare_waiters_have_no_engine_work_to_drain() {
+    let state = Arc::new(TrainingTriggerState::new(authority()));
+    state.ready.store(true, std::sync::atomic::Ordering::Release);
+    let engine = engine(9);
+    let slot = state.in_place.engine(engine);
+    let held = slot.acquire(None, engine_lock::Phase::Step).await;
+    let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "test".into() };
+    let waiting = state.prepare_bucket(key, Arc::new(Vec::new()), engine);
+    tokio::pin!(waiting);
+    tokio::select! {
+        biased;
+        _ = &mut waiting => panic!("the engine is still held"),
+        _ = std::future::ready(()) => {}
+    }
+    assert_eq!(state.stop_admitting().await, 0);
+    drop(held);
+    assert!(matches!(waiting.await, Err(reason) if reason.contains("shutting down")));
 }

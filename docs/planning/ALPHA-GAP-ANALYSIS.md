@@ -8,7 +8,7 @@
 **Operating rule**: Rust owns runtime logic. TypeScript is UI, schema, generated types, and thin command/transport glue.
 **Template-first rule**: new commands must start from `tools/generator/specs/*.json` and Continuum's command generator. Manual command scaffolds are not acceptable; hand edits are for post-generation behavior only.
 **Architectural mandate**: Rust-first, GPU-first, replay-tested. No patchwork substitutes for the target architecture.
-**Runtime substrate spec**: [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime/RTOS contract every Rust concern inherits. ALPHA-GAP owns sequencing; CBAR-SUBSTRATE owns the substrate behavior the lanes converge on.
+**Runtime substrate spec**: [Continuum Engine](../architecture/CONTINUUM-ENGINE.md) — the runtime/RTOS contract every Rust concern inherits. ALPHA-GAP owns sequencing; CONTINUUM-ENGINE owns the substrate behavior the lanes converge on.
 **Sensory model plan**: [Sensory Model And Experiential Plasticity Plan](../architecture/SENSORY-MODEL-AND-EXPERIENTIAL-PLASTICITY-PLAN.md)
 
 This document is the alpha/gap source of truth. Work should not proceed as disconnected chat threads, private agent branches, or parallel "gap" documents. Each implementation PR must name the issue it advances, land in `canary`, publish validation evidence, and only then be considered for promotion to `main`.
@@ -202,7 +202,7 @@ not what is intended. "Alpha risk" calls out the gap to the alpha gates above.
 | AIRC collaboration | AIRC canary has public `knock` plus forward-secret `approve`/`decrypt-approval` handoff; Continuum PR #1110 pilots repo-local `.airc/` collaboration rules; agent flywheel board #1272 active with codex-main heartbeats | Queue/nudge work tracked in CambrianTech/airc#562; Continuum personas and external agent providers are not yet first-class workers on the shared queue; manager-role transition in progress this session |
 | UI room state | PR #1047 merged to `canary` for stale duplicate General tab recovery | Needs live UI reload validation before `main` promotion |
 | Docker | Phase 1 of Docker tier surface merged (#1297 — `system/docker-tier-stats` IPC + ts-rs DockerTierStats); `scripts/main-promotion-gate.sh` landed (#1399) as the canary->main per-host receipt gate; GPU profile + tier pool eviction (#1238, #1239) still open; historical bulk and mixed responsibility still in the runtime images | Docker can mask failures and slow iteration; tier pool eviction + capability-visible health are the remaining alpha lifts; main promotion still needs linux/amd64 CUDA (#1410) and linux/amd64 Vulkan receipts for the same SHA |
-| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `core/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CBAR-SUBSTRATE) not yet landed |
+| Rust core | Substantial gains this session: PressureBroker bootstrap landed (#1307 PR-1 + #1308 PR-2 IPC + #1310 PR-3 status surface); runtime lease broker added (#1313); cognition migrated for `should_respond` (#1284), `rate_proposals` (#1290/#1291/#1293), `generate_recipe` (#1298/#1301/#1303), `vision-describe` (#1292), and `generate_response` (#1398/#1400/#1402/#1407); inference-llm runtime registration landed (#1404); `PersonaTurnFrame` now carries consolidated inbox, RAG seed, response prompt, and replay schema v2 with captured prompt (#1412); ToolRegistry semantic-search oxidizer PR-1 landed (#1413) | Lane D is no longer unstarted, but the alpha-critical `persona/turn-execute` command (#1409) is still in flight; per-module hardcoded concurrency declarations still present across `core/continuum-core/src/modules/*.rs`; universal base trait + derive macro + scaffold generator (the "low-friction inheritance" triplet from CONTINUUM-ENGINE) not yet landed |
 | Node/TS | Net-negative trend this week: TS cognition deleted through oxidization stacks; `AIDecisionService.generateResponse` is now a thin Rust IPC shim and no longer owns TS slot coordination (#1402/#1407); Lane F ratchet landed for persona cognition dirs (#1401) and expanded to `src/system/ai/server` (#1406); SQLite default config landed (#1271) | Multiple TS daemons still own runtime logic that belongs in continuum-core; Lane F PR-2 still needs CI/pre-push enforcement beyond the local ratchet, and PR-3 still needs forbidden-provider/fallback scans |
 | Config/secrets | `$HOME/.continuum/config.env` is the local source of truth, but empty placeholders and per-process loading have caused false provider availability | Cloud providers can steal local turns and fail; grid nodes cannot yet receive encrypted config consistently |
 | Tests | Many tests exist; the alpha loop still overuses `npm start`/browser/Docker as proof; `no_cpu_fallback_contract.rs` regression test exists for the llama.cpp/ORT paths only — does not cover the Candle-side device selection where the orpheus + inference-grpc CPU fallbacks lived before #1314 | Slow tests hide root causes and discourage TDD; the no-CPU-fallback contract test needs widening to the whole workers tree, not just three whitelisted files |
@@ -285,11 +285,11 @@ Lane claim updates as of 2026-05-18:
   mechanical ratchet itself (the CI gate that prevents *new* verb-shaped TS)
   has not yet landed. Until it does, the deletion progress is reversible.
 - Lane G refresh in flight: this document, the supporting doc cross-links
-  (CBAR-SUBSTRATE precedence rule added), and the lane status table you are
+  (CONTINUUM-ENGINE precedence rule added), and the lane status table you are
   reading.
 - Lane H proposed via continuum#1327
   ([GENOME-FOUNDRY-SENTINEL.md](../architecture/GENOME-FOUNDRY-SENTINEL.md)).
-  Owns the artifact-sharing economy layered on top of CBAR-SUBSTRATE:
+  Owns the artifact-sharing economy layered on top of CONTINUUM-ENGINE:
   tiered genome cache (L1–L5), `WorkingSetManager` + page faults, foundry
   (JIT for SOTA absorption), sentinel-AI (profile-guided optimization
   from lived traces), demand-aligned recall, composer + speculator, and
@@ -1164,7 +1164,7 @@ supporting docs are the specifications its lanes converge on.
 
 **Runtime substrate (load-bearing, read before any runtime/cognition PR):**
 
-- [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+- [Continuum Engine](../architecture/CONTINUUM-ENGINE.md)
   — the RTOS-style runtime contract every Rust module/adapter inherits.
   Substrate provides bounded queues, dependency wakeups, cadence/pressure
   gates, automatic VDD/TDD evidence hooks, and ts-rs exported contracts.
@@ -1205,7 +1205,7 @@ supporting docs are the specifications its lanes converge on.
 If those docs disagree with this one on sequence, update this one first or
 explicitly revise the sequence in the PR. If they disagree with this one on
 the substrate contract (concurrency, scheduling, memory, pressure, telemetry,
-artifact handles), defer to CBAR-SUBSTRATE-ARCHITECTURE.md and reconcile
+artifact handles), defer to CONTINUUM-ENGINE.md and reconcile
 in a follow-up.
 
 ## Immediate Next Actions (Refreshed 2026-05-16, second update)
@@ -1224,7 +1224,7 @@ If you are picking this up, claim explicitly on AIRC before you start.
    both presupposed `RuntimeFrame` / `CognitionTurnFrame`. Lane H's governor
    (alpha-floor) doesn't strictly depend on Lane D, but the persona-cognition
    module catalog entry does — and that's the cognition core. Spec: see
-   [CBAR Substrate Architecture](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+   [Continuum Engine](../architecture/CONTINUUM-ENGINE.md)
    §"The Dataflow Contract" + §"Runtime Frame", plus
    [PERSONA-COGNITION-CONTRACT.md](../architecture/PERSONA-COGNITION-CONTRACT.md)
    §"Core Surfaces" for the full contract.
@@ -1232,7 +1232,7 @@ If you are picking this up, claim explicitly on AIRC before you start.
 2. **Land the universal-trait "for free" triplet.** Unchanged. Codex's
    derive-macro acceptance gate (continuum#1324) added five hard gates the
    macro must clear before landing: thin, contract-preserving, inspectable,
-   tested, no hidden behavior. Spec: CBAR-SUBSTRATE §"The 'For Free' Triplet"
+   tested, no hidden behavior. Spec: CONTINUUM-ENGINE §"The 'For Free' Triplet"
    + §"Acceptance Criteria For Substrate-Done".
 
 3. **Lane H groundwork: substrate-governor.** Continuum#1335 shipped the
@@ -1300,7 +1300,7 @@ If you are picking this up, claim explicitly on AIRC before you start.
 
 11. **Doc refresh closed.** ✓ The whole architecture doc family is now in
     open or merged PRs:
-    - `CBAR-SUBSTRATE-ARCHITECTURE.md` — continuum#1324, deepened with
+    - `CONTINUUM-ENGINE.md` — continuum#1324, deepened with
       dataflow contract, zero-overhead frame entry, spatiotemporal
       reprojection toolkit.
     - `GENOME-FOUNDRY-SENTINEL.md` — continuum#1327, all eleven substantive
@@ -1326,7 +1326,7 @@ What's done since the first refresh:
   CONTINUUM-VISION refresh, stale-section pointers, CBAR-PIECE-5
   end-to-end (4 PRs), PIECE-8 inference-grpc clamps, no-CPU-fallback
   contract widening.
-- 5 open architecture-doc PRs ready for review: #1324 CBAR-SUBSTRATE,
+- 5 open architecture-doc PRs ready for review: #1324 CONTINUUM-ENGINE,
   #1327 GENOME-FOUNDRY-SENTINEL, #1332 PERSONA-COGNITION-CONTRACT,
   #1336 MODULE-CATALOG, #1337 PERSONA-THOUGHT-PROCESS.
 - 2 open coordination-substrate PRs on airc: #642 manager-role,

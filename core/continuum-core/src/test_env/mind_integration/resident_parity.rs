@@ -162,8 +162,12 @@ async fn shell_filesystem() -> Case {
 fn typed_verbs_in_hands() -> Case {
     use crate::sdk_codegen::ActionCommand;
     use continuum_hands::commands::code::{git, github};
-    let verbs: [(&str, continuum_base::tool_disclosure::Disclosure); 10] = [
+    let verbs: [(&str, continuum_base::tool_disclosure::Disclosure); 14] = [
         (git::add::CodeGitAdd::NAME, git::add::CodeGitAdd::DISCLOSURE),
+        (git::merge::CodeGitMerge::NAME, git::merge::CodeGitMerge::DISCLOSURE),
+        (github::pr_checks::CodeGithubPrChecks::NAME, github::pr_checks::CodeGithubPrChecks::DISCLOSURE),
+        (github::pr_diff::CodeGithubPrDiff::NAME, github::pr_diff::CodeGithubPrDiff::DISCLOSURE),
+        (github::pr_merge::CodeGithubPrMerge::NAME, github::pr_merge::CodeGithubPrMerge::DISCLOSURE),
         (git::commit::CodeGitCommit::NAME, git::commit::CodeGitCommit::DISCLOSURE),
         (git::fetch::CodeGitFetch::NAME, git::fetch::CodeGitFetch::DISCLOSURE),
         (git::rebase::CodeGitRebase::NAME, git::rebase::CodeGitRebase::DISCLOSURE),

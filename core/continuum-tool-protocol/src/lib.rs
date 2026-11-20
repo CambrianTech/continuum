@@ -72,7 +72,7 @@ impl ToolCall {
     /// The call's arguments as the tool saw them, in one canonical encoding: compact JSON with
     /// every object's keys sorted, so two calls that ask the same thing encode to the same bytes
     /// whatever order the model wrote their keys in. The random per-call `id` is not part of it.
-    /// This is the single source repeat identity is built from (MIND-CONTEXT invariant 4,
+    /// This is the single source repeat identity is built from (CONTINUUM-ENGINE section 5 invariant 4,
     /// `continuum_context::cause::Fingerprint`). `Value`'s `Display` cannot fail, so no call falls
     /// back to an empty encoding that would collide with every other; its keys come out sorted
     /// because serde_json's map is ordered (without `preserve_order`, which the test below pins).

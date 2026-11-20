@@ -88,7 +88,7 @@ mod tests {
     // what this catches: a model labelled with the wrong arch or hybrid status. The
     // report says DENSE or hybrid from these two reads; a parser that missed a case or
     // a table entry would label a hybrid run dense and hide that the checkpoint path,
-    // the one SERVING-ENGINE.md says costs the most, was never exercised.
+    // the one CONTINUUM-ENGINE.md (serving engine) says costs the most, was never exercised.
     #[test]
     fn arch_and_hybrid_list_are_read_from_their_owners() {
         let source = r#"

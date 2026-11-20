@@ -1,8 +1,10 @@
 # Continuum Documentation
 
-**Organized by theme — each chapter is a self-contained concern.**
+[Product architecture](#start-here) · [Runtime manuals](#runtime-architecture) · [Directory guide](#directory-guide) · [System overviews](#system-overviews)
 
 ---
+
+<a id="start-here"></a>
 
 ## Start here — the canonical architecture (precedence-winning)
 
@@ -17,53 +19,55 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 ---
 
-## Where things live — EVERY directory, with counts
+## Runtime architecture
 
-595 markdown files. This table is the map; it is the thing to fix first when it goes
-stale, because a stale map is why people rebuild what already exists.
+| Design question | Chapter |
+|---|---|
+| How do modules compose, expose commands and run across nodes? | [Module architecture](architecture/MODULE-ARCHITECTURE.md) |
+| How do the parts of one mind run independently and respond to events? | [Concurrent mind and governor](architecture/CONCURRENT-MIND-AND-GOVERNOR.md). The [stage contract](architecture/STAGE-CONTRACT.md) specifies proposed inputs, outputs, wakeups and completion. |
+| How does a governor share capacity among consumers? | [Shared resources](architecture/SHARED-RESOURCES.md) describes the common owner and resource-specific adapters. |
+| How do minds take turns decoding while transfers and preparation proceed? | [Continuum Engine](architecture/CONTINUUM-ENGINE.md) covers admission, the memory model and context reuse. |
+| How does a resident learn on the serving engine? | [In-process learning](architecture/IN-PROCESS-LEARNING.md) describes the design and migration dependencies. |
+| How are native data, entity schemas, typed queries and migrations represented? | [Rust ORM architecture](infrastructure/RUST-ORM-ARCHITECTURE.md) covers the boundary between storage and serving. [Disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs) implement retention accounting. |
+| How does work move between nodes? | [Grid addressing and routing](architecture/GRID-ADDRESSING-AND-ROUTING.md) and [grid capacity](architecture/GRID-ELASTIC-CAPABILITY.md). |
+| How do voice and video reach a resident? | [Live call architecture](live/LIVE-CALL-ARCHITECTURE.md) and [perception facts](architecture/PERCEPTION-FACTS.md). |
+| Where is a slow turn losing time? | [Flow implementation plan](architecture/FLOW-IMPLEMENTATION-PLAN.md) and [runtime probes](architecture/RTOS-DEBUGGER-PROBES.md). |
 
-> **How this index went wrong, so it doesn't again** (2026-08-18): the previous version
-> was last touched 2026-03-04, listed 13 of 28 directories, and omitted **`architecture/`
-> entirely** — the largest directory (120 docs) and the one CLAUDE.md sends you to FIRST
-> for every precedence-winning canonical doc. An index that omits the canonical directory
-> is worse than no index: it looks authoritative and quietly hides the thing you need.
+Revise the chapter that owns the contract and link to it from its callers. When a failure changes the design, link the fixing change and its evidence from the affected rule. Mark proposed behavior until the implementation and live result establish it.
 
-| directory | docs | what lives there |
-|---|---:|---|
-| **[architecture/](architecture/)** | 120 | **The canonical substrate contracts** — CBAR runtime, concurrency style guide, persona/cognition pipeline, genome-foundry-sentinel, inference scheduling, observability, perception surface, content-by-handle. CLAUDE.md's "read first" list is almost entirely here. |
-| **[cognition/](cognition/)** | 21 | The mind's own designs — causal memory graph, acting organism, incredible coder, belief-justification graph, autonomous project loop. |
-| [infrastructure/](infrastructure/) | 107 | Rust workers, daemons, data layer, commands, events, logging, AI providers, GPU memory, entity system, generators, ORM, MCP, security. |
-| [planning/](planning/) | 54 | Roadmaps, gap analyses, phase plans, audits, the activities catalog, open-questions punch lists. **Plans of record live here** — check before trusting a plan you remember. |
-| [personas/](personas/) | 48 | Persona cognition, identity, memory lifecycle, academy, coordination, fine-tuning phases. |
-| [genome/](genome/) | 36 | LoRA training, fine-tuning, Candle/inference pitfalls, mesh distribution, self-evolving genome, scenario library. |
-| [live/](live/) | 25 | Voice, video, WebRTC, VAD, captions, transcription, streaming backbone. |
-| [positron/](positron/) | 22 | UI framework, widgets, scoped state, HUD design, brain HUD. |
-| [papers/](papers/) | 20 | Research papers — expert-paging market, experiential plasticity, grid marketplace, collaborative training. |
-| [activities/](activities/) | 19 | Activities, rooms, recipes, walls, collaborative editing, handle-addressable office. |
-| [grid/](grid/) | 19 | P2P mesh, airc↔continuum bridge, identity/rooms security, ARES kernel, marketplace. |
-| [governance/](governance/) | 9 | Democratic AI society, governance recipes, alignment philosophy, ethical attribution. |
-| [design/](design/) | 9 | Cross-cutting design (incl. `POSITRON-EVERY-CITIZEN.md`, linked at the top of this file). |
-| [testing/](testing/) | 7 | Test strategy, debug-friction findings, trial-run reports. |
-| [sentinel/](sentinel/) | 6 | Pipeline engine, coding-AI foundation, gap analysis. |
-| [serving/](serving/) | 4 | Depth-as-residency, MoE gather/mul_mat_id, grid expert share, field configs. |
-| [benchmarks/](benchmarks/) | 3 | Benchmark method + results ledgers. |
-| [observations/](observations/) | 3 | Live glass-box observations. |
-| [inference/](inference/) | 2 | Inference notes. |
-| [vision/](vision/) | 2 | Vision / VLM. |
-| [widgets/](widgets/) | 2 | Widget-specific design. |
-| [examples/](examples/) · [rag/](rag/) · [reference/](reference/) · [huggingface/](huggingface/) · [hf-deprecation-notices/](hf-deprecation-notices/) | 1 ea. | Small, single-purpose. |
-| [images/](images/) · screenshots/ · design-reference/ | — | Assets. |
+## Directory guide
 
-### ⚠ 51 loose `.md` files at `docs/` root
-
-CLAUDE.md's rule: *"put any markdown architecture or design documents other than readmes
-in docs/* into the appropriate directory OR document if they exist."* The root currently
-holds 51 that predate or ignore it, including several this index links (they stay linked
-until they are filed, so nothing breaks). Filing them is real work — every move risks link
-rot across 595 docs plus CLAUDE.md's own references — so it wants its own pass with a
-link-check, not a drive-by. Until then: **the root is not a category, it is a backlog.**
+| Directory | What lives there |
+|---|---|
+| **[architecture/](architecture/)** | **The canonical substrate contracts** — CBAR runtime, concurrency style guide, persona/cognition pipeline, genome-foundry-sentinel, inference scheduling, observability, perception surface, content-by-handle. CLAUDE.md's "read first" list is almost entirely here. |
+| **[cognition/](cognition/)** | The mind's own designs — causal memory graph, acting organism, incredible coder, belief-justification graph, autonomous project loop. |
+| [infrastructure/](infrastructure/) | Rust workers, daemons, data layer, commands, events, logging, AI providers, GPU memory, entity system, generators, ORM, MCP, security. |
+| [planning/](planning/) | Roadmaps, gap analyses, phase plans, audits, the activities catalog, open-questions punch lists. **Plans of record live here** — check before trusting a plan you remember. |
+| [personas/](personas/) | Persona cognition, identity, memory lifecycle, academy, coordination, fine-tuning phases. |
+| [genome/](genome/) | LoRA training, fine-tuning, Candle/inference pitfalls, mesh distribution, self-evolving genome, scenario library. |
+| [live/](live/) | Voice, video, WebRTC, VAD, captions, transcription, streaming backbone. |
+| [positron/](positron/) | UI framework, widgets, scoped state, HUD design, brain HUD. |
+| [operations/](operations/) · [evidence/](evidence/) | Operating procedures and recorded observations. |
+| [research/](research/) · [paper/](paper/) | Research notes and manuscript sources. |
+| [papers/](papers/) | Research papers — expert-paging market, experiential plasticity, grid marketplace, collaborative training. |
+| [activities/](activities/) | Activities, rooms, recipes, walls, collaborative editing, handle-addressable office. |
+| [grid/](grid/) | P2P mesh, airc↔continuum bridge, identity/rooms security, ARES kernel, marketplace. |
+| [governance/](governance/) | Democratic AI society, governance recipes, alignment philosophy, ethical attribution. |
+| [design/](design/) | Cross-cutting design (incl. `POSITRON-EVERY-CITIZEN.md`, linked at the top of this file). |
+| [testing/](testing/) | Test strategy, debug-friction findings, trial-run reports. |
+| [sentinel/](sentinel/) | Pipeline engine, coding-AI foundation, gap analysis. |
+| [serving/](serving/) | Depth-as-residency, MoE gather/mul_mat_id, grid expert share, field configs. |
+| [benchmarks/](benchmarks/) | Benchmark method + results ledgers. |
+| [observations/](observations/) | Live glass-box observations. |
+| [inference/](inference/) | Inference notes. |
+| [vision/](vision/) | Vision / VLM. |
+| [widgets/](widgets/) | Widget-specific design. |
+| [examples/](examples/) · [rag/](rag/) · [reference/](reference/) · [huggingface/](huggingface/) · [hf-deprecation-notices/](hf-deprecation-notices/) | Small, single-purpose. |
+| [images/](images/) · [assets/](assets/) · [design-reference/](design-reference/) | Illustrations and design references. |
 
 ---
+
+<a id="system-overviews"></a>
 
 ## Foundational (read these first)
 
@@ -74,18 +78,3 @@ link-check, not a drive-by. Until then: **the root is not a category, it is a ba
 | [UNIVERSAL-SENSORY-ARCHITECTURE.md](UNIVERSAL-SENSORY-ARCHITECTURE.md) | Any media in, any media out, for ANY AI -- the multimodal bridge that gives every model every sense |
 | [QUEUE-DRIVEN-COGNITION.md](QUEUE-DRIVEN-COGNITION.md) | Queue items declare RAG requirements -- personas compose generically, zero domain-specific logic |
 | [UNIVERSAL-LEARNING-ARCHITECTURE.md](UNIVERSAL-LEARNING-ARCHITECTURE.md) | Generic pipeline enables training, memory, and beyond-LLM optimization from any activity |
-
----
-
-
----
-
-## Quick Start
-
-1. Read [CONTINUUM-ARCHITECTURE.md](CONTINUUM-ARCHITECTURE.md) — system overview
-2. Find your area in the directory table above, then read that directory
-3. See `system/[module]/` directories for code-level docs
-
----
-
-**Last Updated:** 2026-08-18 — index covers all 28 directories; re-verify counts when adding one.

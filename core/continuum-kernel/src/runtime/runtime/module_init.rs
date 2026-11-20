@@ -193,7 +193,7 @@ impl Runtime {
 
         // The declared dataflow graph (CBAR gap #2): name every one-sided wire once at boot.
         // Not an error yet: production is being declared module by module, so the unfed count
-        // starts high and ratchets down (docs/architecture/CBAR-SUBSTRATE-ARCHITECTURE.md § The
+        // starts high and ratchets down (docs/architecture/CONTINUUM-ENGINE.md § The
         // Declared Dataflow Graph).
         let edges = self.registry.event_edges();
         let graph = super::super::event_graph::orphans(&edges, &[]);

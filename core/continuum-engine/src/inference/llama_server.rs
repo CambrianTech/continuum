@@ -57,7 +57,9 @@ mod convergence_attempt;
 mod reconcile;
 mod shared_pool;
 pub use shared_pool::PoolLaunch;
-pub use reconcile::{ensure_model_serving, ensure_model_serving_if_current};
+pub use reconcile::ensure_model_serving_if_current;
+#[cfg(test)]
+pub use reconcile::ensure_model_serving;
 
 mod smoke;
 use smoke::{
@@ -79,12 +81,13 @@ use pages::{
     PAGE_DIR_GUARD,
 };
 mod genome;
+pub mod genome_catalog;
 mod learn_ledger;
 pub use learn_ledger::{GrantId, GrantShare, LearningEngine, GrantRefusal, GrantTerms, LedgerAnswer, LedgerEngine, LedgerMemory, LedgerSnapshot, Registered, RegisteredGrant};
 mod learn_residency;
 mod learn_step;
 pub use learn_step::{LearnExample, LearnOutcome, RestoreCheckpoint, RestoreOutcome};
-pub use learn_residency::{Checkpoint, CheckpointAnswer, CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
+pub use learn_residency::{Checkpoint, CheckpointAnswer, CoveringLease, FreshShadow, LeaseKind, LearningPlan, LoadedAdapter, MeasuredRow, PlannedKind, PlannedRow, Preflight, PreflightRefusal, RegisteredResidency, ResidencyId, ResidencyRefusal, ResidencyRow, ResidencySubject, ResidencyTerms, RowKind, WeightsPlan};
 mod gene_pages;
 pub use gene_pages::{gene_seats, page_gene, GeneMove, GenePageError, GeneSeat};
 pub(crate) use genome::gene_stage_name;
@@ -141,10 +144,12 @@ pub(crate) use slot_work::slot_work_of;
 mod control;
 mod retirement_refusal;
 pub use retirement_refusal::RetirementRefusal;
+mod prompt_cache_limit;
+pub use prompt_cache_limit::{PromptCacheLimit, PromptCacheRefusal};
 pub use control::{
     EngineRetirementError, EngineRetirementReceipt, EngineRetirementStatus, EnsureOutcome,
-    LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
-    ObservedGeometry, OwnedServingTarget, ServingLifecycleCheck,
+    AdapterChangeRefusal, LlamaServerControl, LlamaServerError, OwnedEngineIdentity, OwnedRestoreSession,
+    ObservedGeometry, OwnedServingTarget, Reconciling, ServingLifecycleCheck,
 };
 mod prepared_launch;
 use prepared_launch::{unsupported_launch_environment, PreparedLocalLaunch};

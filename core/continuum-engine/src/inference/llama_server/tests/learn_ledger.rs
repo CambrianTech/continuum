@@ -170,7 +170,7 @@ async fn a_preflight_refusal_is_typed_and_held_rows_are_evidence() {
     let LedgerAnswer::Ledger(Preflight::Planned(plan)) = process.learning_preflight(&engine_id, 1, &example, None).await.expect("test: the engine answered") else {
         panic!("test: a planned preflight")
     };
-    assert_eq!(plan.requirements.iter().filter(|row| row.kind.ends_with("_required")).map(|row| row.bytes).sum::<u64>(), 6_488_192);
+    assert_eq!(plan.requirements.iter().filter(|row| row.kind != PlannedKind::SharedComputeHeld).map(|row| row.bytes).sum::<u64>(), 6_488_192);
     assert_eq!((plan.reply_rows, plan.served_window), (4, 32_768), "the engine's own count of the reply");
     server.abort();
 }

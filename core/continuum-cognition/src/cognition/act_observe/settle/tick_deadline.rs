@@ -1,10 +1,22 @@
 use super::*;
 
-/// How many times an act's deadline may be extended while its generation advances: the
-/// ceiling is `1 + ACT_EXTENSIONS` bounds, so even a moving act cannot hold the lane past
-/// it (a slow clip still reaches every mind, card ef25bf6c).
-// derived-or-floor: a ceiling — 3x the act bound total (Fable on 6f3218ed); it only ENDS a wait, never shortens one.
-pub(super) const ACT_EXTENSIONS: u32 = 2;
+/// PURE: whether an act at its deadline gets one more bound. Only while its generation is
+/// advancing, and as long as it advances: there is NO ceiling. A moving act is never killed by
+/// elapsed time (Joel, 2026-11-16: "so often it's some dumb mistake and abort because of
+/// JavaScript web dev styled promise or timeout architecture rather than streaming that
+/// sabotaged the mind"). The ceiling it replaces (two extensions, 3x the bound) dropped
+/// generations that were still running: Eitan on enrico, 2026-10-26, extended at 20:43:18 and
+/// 21:08:18 and dropped "at the ceiling" at 21:33:18 with its work and its prefill thrown away.
+/// Fairness between minds is the scheduler's preemption (save her state, run another,
+/// CONTINUUM-ENGINE 4.7.13), never a kill. A condemned engine, an idle or silent slot, or a
+/// new task on it still ends the act at the checkpoint, exactly as before.
+pub(super) fn extends(
+    condemned: bool,
+    previous: Option<crate::inference::llama_server::SlotWork>,
+    now: Option<crate::inference::llama_server::SlotWork>,
+) -> bool {
+    !condemned && crate::inference::llama_server::slot_advanced(previous, now)
+}
 
 /// Await one settle step under the act bound, where the bound is a CHECKPOINT while the
 /// act's own generation advances (card 6f3218ed). IntelMac, 2026-09-27: five of seven
@@ -13,7 +25,7 @@ pub(super) const ACT_EXTENSIONS: u32 = 2;
 /// would raise it is what this tier rarely completes. At the deadline the persona's
 /// pinned slot is read (`llama_server::in_flight_slot`): processing at the first
 /// checkpoint, or the same task with its work moved at a later one, extends by one bound,
-/// up to [`ACT_EXTENSIONS`]. No pinned slot, an idle or silent slot, or a new task on it
+/// for as long as it keeps moving ([`extends`]). No pinned slot, an idle or silent slot, or a new task on it
 /// ends the act exactly as before (`Err(Elapsed)`), so a request lost inside a busy engine
 /// still ends. Registered admission queue intervals are excluded from this
 /// step's watchdog clock: they retain FIFO ownership without a pinned engine
@@ -97,10 +109,7 @@ pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::
                 };
                 // A condemned engine is never extended on: its relaunch cuts this act anyway,
                 // and holding on keeps that relaunch's drain (and the whole node) waiting.
-                if extensions >= ACT_EXTENSIONS
-                    || crate::inference::llama_server::engine_condemned()
-                    || !crate::inference::llama_server::slot_advanced(previous, now)
-                {
+                if !extends(crate::inference::llama_server::engine_condemned(), previous, now) {
                     return Err(Abandoned::at(&queue_rx));
                 }
                 extensions += 1;

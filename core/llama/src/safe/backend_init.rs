@@ -20,7 +20,7 @@ pub(super) static BACKEND_INIT: Once = Once::new();
 /// explicit register call from Rust creates a live reference path the
 /// linker can't strip, forcing the Metal backend to load and register
 /// before the first model is read. Same defensive pattern for CUDA on
-/// Linux + Vulkan on Linux when those features are enabled.
+/// Linux and Windows MSVC, and Vulkan on Linux when those features are enabled.
 /// Whether this build of llama offloads to any GPU backend (Metal, CUDA, Vulkan, ROCm): a context
 /// whose model offloads no layer, or a build with none, resides in host memory.
 pub fn supports_gpu_offload() -> bool {
@@ -58,7 +58,7 @@ pub fn backend_init() {
             #[cfg(all(feature = "metal", target_os = "macos"))]
             ensure_backend_registered("Metal", || sys::ggml_backend_metal_reg());
 
-            #[cfg(all(feature = "cuda", target_os = "linux"))]
+            #[cfg(llama_cuda)]
             ensure_backend_registered("CUDA", || sys::ggml_backend_cuda_reg());
 
             #[cfg(all(feature = "vulkan", target_os = "linux"))]
@@ -118,7 +118,7 @@ pub(super) unsafe fn ensure_backend_registered(
 }
 
 /// Walks the registered backend devices and asserts that — if the build
-/// expected a GPU backend (Mac+metal, Linux+cuda, Linux+vulkan) — at least
+/// expected a GPU backend (Mac+metal, Linux/Windows+cuda, Linux+vulkan) — at least
 /// one non-CPU device is present. Panics with an actionable message if not.
 ///
 /// The point is to catch the failure mode we discovered 2026-04-19: a build
@@ -128,7 +128,7 @@ pub(super) unsafe fn ensure_backend_registered(
 pub(super) unsafe fn assert_gpu_backend_registered_when_expected() {
     let expects_gpu = cfg!(any(
         all(feature = "metal", target_os = "macos"),
-        all(feature = "cuda", target_os = "linux"),
+        llama_cuda,
         all(feature = "vulkan", target_os = "linux"),
     ));
     if !expects_gpu {
@@ -164,7 +164,7 @@ pub(super) unsafe fn assert_gpu_backend_registered_when_expected() {
 
     if !found_gpu {
         panic!(
-            "FATAL: build expected a GPU backend (Mac+metal / Linux+cuda / \
+            "FATAL: build expected a GPU backend (Mac+metal / Linux/Windows+cuda / \
              Linux+vulkan) but the ggml backend registry only has CPU \
              devices after init. Refusing to run inference at CPU speeds \
              dressed as GPU. Registered devices: {:?}. Fix: rebuild with \
@@ -304,17 +304,93 @@ impl Default for ModelParams {
     }
 }
 
+/// Bytes allocated for the loaded model's native weight buffers.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct WeightAllocation {
+    pub device: u64,
+    pub host: u64,
+}
+
+/// The native allocator refused the requested context.
+#[derive(Debug, thiserror::Error)]
+#[error("failed to create context")]
+pub struct ContextCreationRefused;
+
+impl From<ContextCreationRefused> for String {
+    fn from(error: ContextCreationRefused) -> Self {
+        error.to_string()
+    }
+}
+
+/// Model metadata and placement used to size a pooled context without loading its weights.
+pub struct PooledContextPlanner(Model);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContextBufferBytes {
+    pub host: u64,
+    pub device: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ModelLoadError {
+    #[error("invalid path: {0}")]
+    InvalidPath(#[from] std::ffi::NulError),
+    #[error("failed to load model from {}", .0.display())]
+    LoadRefused(std::path::PathBuf),
+}
+
+impl From<ModelLoadError> for String {
+    fn from(error: ModelLoadError) -> Self { error.to_string() }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ContextQuoteError {
+    #[error(transparent)]
+    Model(#[from] ModelLoadError),
+    #[error(transparent)]
+    Context(#[from] ContextCreationRefused),
+    #[error("llama could not account for the pooled context buffers")]
+    BufferAccounting,
+}
+
+impl PooledContextPlanner {
+    pub fn open(path: &Path, n_gpu_layers: i32) -> Result<Self, ModelLoadError> {
+        let params = ModelParams { n_gpu_layers, use_mmap: false };
+        Model::load_impl(path, params, true).map(Self)
+    }
+
+    pub fn quote(&self, params: ContextParams) -> Result<ContextBufferBytes, ContextQuoteError> {
+        let context = self.0.new_pooled_context(params)?;
+        let mut bytes = sys::llama_context_buffer_bytes { host: 0, device: 0 };
+        // SAFETY: the context and writable result both outlive this synchronous query.
+        if unsafe { sys::llama_context_get_buffer_bytes(context.ptr.as_ptr(), &mut bytes) } {
+            Ok(ContextBufferBytes { host: bytes.host, device: bytes.device })
+        } else {
+            Err(ContextQuoteError::BufferAccounting)
+        }
+    }
+}
+
 impl Model {
+    pub fn weight_allocation(&self) -> WeightAllocation {
+        // SAFETY: the model stays loaded throughout this immutable allocation query.
+        let allocation = unsafe { sys::llama_model_weight_allocation(self.ptr.as_ptr()) };
+        WeightAllocation { host: allocation.host as u64, device: allocation.device as u64 }
+    }
+
     /// Load a GGUF model from disk.
     pub fn load(path: impl AsRef<Path>, params: ModelParams) -> Result<Self, String> {
+        Self::load_impl(path.as_ref(), params, false).map_err(String::from)
+    }
+
+    fn load_impl(path: &Path, params: ModelParams, no_alloc: bool) -> Result<Self, ModelLoadError> {
         backend_init();
 
-        let path = path.as_ref();
-        let c_path = CString::new(path.to_string_lossy().as_bytes())
-            .map_err(|e| format!("invalid path: {e}"))?;
+        let c_path = CString::new(path.to_string_lossy().as_bytes())?;
 
         let mut ffi_params = unsafe { sys::llama_model_default_params() };
         ffi_params.n_gpu_layers = params.n_gpu_layers;
+        ffi_params.no_alloc = no_alloc;
         // Upstream 2026-07 replaced `use_mmap: bool` with the load_mode enum
         // (NONE/MMAP/MLOCK/DIRECT_IO — DIRECT_IO is the future NVMe cold-expert read path).
         ffi_params.load_mode = if params.use_mmap {
@@ -325,7 +401,7 @@ impl Model {
 
         let raw = unsafe { sys::llama_model_load_from_file(c_path.as_ptr(), ffi_params) };
         let ptr = NonNull::new(raw)
-            .ok_or_else(|| format!("failed to load model from {}", path.display()))?;
+            .ok_or_else(|| ModelLoadError::LoadRefused(path.to_owned()))?;
 
         Ok(Self { ptr })
     }
@@ -403,6 +479,16 @@ impl Model {
 
     /// Create an inference context.
     pub fn new_context(&self, params: ContextParams) -> Result<Context<'_>, String> {
+        Ok(self.build_context(params, false)?)
+    }
+
+    /// Create a context that produces pooled embeddings without allocating logits.
+    pub fn new_pooled_context(&self, mut params: ContextParams) -> Result<Context<'_>, ContextCreationRefused> {
+        params.embeddings = true;
+        self.build_context(params, true)
+    }
+
+    fn build_context(&self, params: ContextParams, pooled_only: bool) -> Result<Context<'_>, ContextCreationRefused> {
         let mut ffi = unsafe { sys::llama_context_default_params() };
         ffi.n_ctx = params.n_ctx;
         ffi.n_batch = params.n_batch;
@@ -424,6 +510,7 @@ impl Model {
             KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
         };
         ffi.embeddings = params.embeddings;
+        ffi.embeddings_only = pooled_only;
         ffi.pooling_type = match params.pooling_type {
             PoolingType::None => sys::llama_pooling_type_LLAMA_POOLING_TYPE_NONE,
             PoolingType::Mean => sys::llama_pooling_type_LLAMA_POOLING_TYPE_MEAN,
@@ -446,11 +533,13 @@ impl Model {
         }
 
         let raw = unsafe { sys::llama_new_context_with_model(self.ptr.as_ptr(), ffi) };
-        let ctx = NonNull::new(raw).ok_or_else(|| "failed to create context".to_string())?;
+        let ctx = NonNull::new(raw).ok_or(ContextCreationRefused)?;
         Ok(Context {
             ptr: ctx,
             _model: PhantomData,
+            model: self.ptr,
             _observer: observer_bridge,
+            learn_callbacks: None,
         })
     }
 
@@ -475,14 +564,15 @@ impl Model {
     /// Tokenize a string.
     pub fn tokenize(&self, text: &str, add_bos: bool, special: bool) -> Result<Vec<i32>, String> {
         let vocab = unsafe { sys::llama_model_get_vocab(self.ptr.as_ptr()) };
-        let c_text = CString::new(text).map_err(|e| format!("invalid text: {e}"))?;
-        let text_len = c_text.as_bytes().len() as i32;
+        let text_len = i32::try_from(text.len()).map_err(|_| "tokenizer input exceeds native length")?;
+        // llama_tokenize borrows exactly text_len bytes, including embedded NULs.
+        let bytes = text.as_ptr().cast();
 
         // First call with size 0 to get required size (negative = required)
         let required = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 std::ptr::null_mut(),
                 0,
@@ -490,12 +580,12 @@ impl Model {
                 special,
             )
         };
-        let size = required.unsigned_abs() as usize;
+        let size = required.checked_abs().ok_or("tokenizer output exceeds native capacity")? as usize;
         let mut tokens = vec![0i32; size];
         let n = unsafe {
             sys::llama_tokenize(
                 vocab,
-                c_text.as_ptr(),
+                bytes,
                 text_len,
                 tokens.as_mut_ptr(),
                 size as i32,
@@ -523,6 +613,13 @@ impl Model {
                 .ok()
                 .map(String::from)
         }
+    }
+
+    /// Whether the GGUF carries a chat template: the default one (`name` None) or a named one
+    /// (`tokenizer.chat_template.<name>`, e.g. `tool_use`). Reads the pointer only, no copy.
+    pub fn has_chat_template(&self, name: Option<&std::ffi::CStr>) -> bool {
+        let name = name.map_or(std::ptr::null(), std::ffi::CStr::as_ptr);
+        !unsafe { sys::llama_model_chat_template(self.ptr.as_ptr(), name) }.is_null()
     }
 
     /// Convert a token to its UTF-8 string representation.

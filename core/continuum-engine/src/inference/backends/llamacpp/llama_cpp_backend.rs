@@ -1,5 +1,17 @@
 use super::*;
 
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum EmbedPlanError {
+    #[error(transparent)]
+    Quote(#[from] llama::ContextQuoteError),
+    #[error("{0}")]
+    NoWindow(&'static str),
+}
+
+impl From<EmbedPlanError> for String {
+    fn from(error: EmbedPlanError) -> Self { error.to_string() }
+}
+
 impl LlamaCppBackend {
     /// Load a GGUF model.
     pub fn load(config: LlamaCppConfig) -> Result<Self, String> {
@@ -24,6 +36,7 @@ impl LlamaCppBackend {
                 use_mmap: true,
             },
         )?;
+        let weights = model.weight_allocation();
         let caps = ModelCapabilities::from_model(&model);
         log.info(&format!(
             "Loaded {} in {:.2}s (vocab={}, n_ctx_train={}, n_layer={}, \
@@ -40,9 +53,13 @@ impl LlamaCppBackend {
 
         Ok(Self {
             embedding_lane: super::embedding_lane::EmbeddingLane::new(),
+            chat: OnceLock::new(),
             model: Arc::new(model),
             config,
             model_id,
+            weights,
+            embed_planner: OnceLock::new(),
+            embed_residency: OnceLock::new(),
             caps,
             scheduler: OnceLock::new(),
             mtmd: Mutex::new(None),
@@ -50,18 +67,27 @@ impl LlamaCppBackend {
         })
     }
 
-    /// The model's real capability facts (read once at load).
-    /// Where this backend's layers are, as configured: on the GPU when llama offloads to one and
-    /// every layer is offloaded, on the host when none is, split otherwise (never measured: see
-    /// [`super::Placement`]).
-    pub(crate) fn placement(&self) -> super::Placement {
-        let offloads = llama::supports_gpu_offload();
-        match self.config.n_gpu_layers {
-            0 => super::Placement::Host,
-            _ if !offloads => super::Placement::Host,
-            n if n < 0 || u32::try_from(n).is_ok_and(|n| n >= self.model.n_layer()) => super::Placement::Device,
-            _ => super::Placement::Split,
-        }
+    pub(crate) fn pooled_bytes(&self, width: u32) -> Result<super::ContextBytes, EmbedPlanError> {
+        let planner = match self.embed_planner.get() {
+            Some(planner) => planner,
+            None => {
+                let planner = llama::PooledContextPlanner::open(&self.config.model_path, self.config.n_gpu_layers)
+                    .map_err(llama::ContextQuoteError::from)?;
+                self.embed_planner.get_or_init(|| planner)
+            }
+        };
+        let bytes = planner.quote(super::embedding_batch::pooled_params(width))?;
+        Ok(super::ContextBytes { host: bytes.host, device: bytes.device })
+    }
+
+    pub(crate) fn embed_residency(&self) -> Result<&crate::inference::embed_lane_memory::EmbedResidency, EmbedPlanError> {
+        if let Some(residency) = self.embed_residency.get() { return Ok(residency); }
+        let window = super::EmbedWindow::for_model(self.caps.n_ctx_train).ok_or(EmbedPlanError::NoWindow(super::NO_TRAINED_CONTEXT))?;
+        let need = crate::inference::embed_lane_memory::EmbedNeed {
+            weights: super::ContextBytes { device: self.weights.device, host: self.weights.host },
+            context: self.pooled_bytes(window.tokens())?,
+        };
+        Ok(self.embed_residency.get_or_init(|| crate::inference::embed_lane_memory::EmbedResidency::claim(need)))
     }
 
     pub fn capabilities(&self) -> &ModelCapabilities {
@@ -377,6 +403,35 @@ impl LlamaCppBackend {
     /// (error, default, etc.) instead of a silent fallback.
     pub fn model_chat_template(&self) -> Option<String> {
         self.model.chat_template()
+    }
+
+    /// Render one chat turn through the model's own chat handling (llama.cpp common/chat): the
+    /// OpenAI-shaped `request` (messages, tools, tool_choice) with its tools and reasoning. The
+    /// templates load once, at the first turn, and decide there: a GGUF carrying its default OR its
+    /// named `tool_use` template loads its own (common/chat promotes a lone named one to default,
+    /// and any override would mask it); only a GGUF with neither takes `fallback_template`, which is
+    /// asked for at that one init and never per turn. The lock is held for the render alone, so it
+    /// is released before decode. The returned render keeps its parser for every partial and the
+    /// final parse of this request.
+    pub fn render_chat_turn(
+        &self,
+        request: &str,
+        fallback_template: impl FnOnce() -> Option<String>,
+        reasoning: llama::ReasoningFormat,
+    ) -> Result<llama::ChatRender, llama::ChatRefusal> {
+        let templates = self
+            .chat
+            .get_or_init(|| {
+                let native = self.model.has_chat_template(None) || self.model.has_chat_template(Some(c"tool_use"));
+                let fallback = if native { None } else { fallback_template() };
+                llama::ChatTemplates::new(&self.model, fallback.as_deref()).map(Mutex::new)
+            })
+            .as_ref()
+            .map_err(Clone::clone)?;
+        // A render reads the templates and never mutates them, so a lock poisoned by a panicking
+        // render leaves them intact.
+        let templates = templates.lock().unwrap_or_else(std::sync::PoisonError::into_inner); // unwrap_or_else: a poisoned render lock guards immutable templates
+        templates.render(request, reasoning)
     }
 
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.

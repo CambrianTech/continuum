@@ -45,6 +45,21 @@ pub struct SubmissionChanges {
     /// rather than shown nothing.
     pub files: Result<Vec<ChangedFile>, ChangesUnread>,
     pub verdict: Option<SubmissionVerdict>,
+    /// Where her card's checkout stands against this submission.
+    pub revision: Revision,
+}
+
+/// Her checkout against her latest submission. A reviewer judges only what was submitted: commits
+/// past it are a revision nobody can see until she submits it (Benchy on the M5, 2026-11-16: he
+/// pushed a fix after a verdict and waited for a verdict that could not come).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Revision {
+    /// Her checkout is at the submitted head.
+    Submitted,
+    /// Her checkout has moved past the submission, to `head`: unsubmitted work.
+    Unsubmitted { head: String },
+    /// Her checkout's head could not be read (no checkout on this node, or git refused).
+    Unread,
 }
 
 /// One file a submission changes. `added`/`deleted` are `None` for a binary file.

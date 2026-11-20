@@ -21,6 +21,7 @@ use super::*;
 /// A launch whose readiness wait ended while its engine was still alive and loading.
 pub(super) struct LoadingLaunch {
     tail: ReadyTail,
+    terminal: Option<super::control::ReadinessRefusal>,
 }
 
 /// What makes two launches the same launch: everything the engine was started with.
@@ -142,7 +143,7 @@ impl LlamaServerProcess {
         transition: &crate::inference::slots::EndpointTransition,
         tail: ReadyTail,
     ) -> Result<(), LlamaServerError> {
-        let kept = Kept::new(self, tail);
+        let mut kept = Kept::new(self, tail);
         if let Err(error) = self.wait_ready().await {
             kept.settle(&error);
             return Err(error);
@@ -152,11 +153,20 @@ impl LlamaServerProcess {
         };
         // Armed through publication: a publish that fails, or is cancelled at any await before
         // the ledger commits, puts the launch back while its engine lives.
-        let published = self.publish_ready(transition, launch).await;
-        if published.is_ok() {
-            kept.disarm();
+        match self.publish_ready(transition, launch).await {
+            Ok(()) => {
+                kept.disarm();
+                Ok(())
+            }
+            Err(error) => {
+                if let LlamaServerError::ReadinessRefused(reason) = &error {
+                    if let Some(tail) = kept.tail.take() {
+                        *self.loading.lock() = Some(LoadingLaunch { tail, terminal: Some(reason.clone()) });
+                    }
+                }
+                Err(error)
+            }
         }
-        published
     }
 
     /// Keep a launch whose engine is alive, so a later launch can finish it. A restore or an
@@ -171,13 +181,28 @@ impl LlamaServerProcess {
             why = why,
             "kept, so the next launch finishes this engine instead of replacing it"
         );
-        *self.loading.lock() = Some(LoadingLaunch { tail });
+        *self.loading.lock() = Some(LoadingLaunch { tail, terminal: None });
+    }
+
+    /// A readiness timeout can outlive the plan that initiated startup. Publish the observed
+    /// engine under its own contract before reconciliation evaluates the next plan.
+    pub(super) async fn publish_retained_engine(&self, current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        let prepared = self.loading.lock().as_ref().map(|kept| Arc::clone(&kept.tail.prepared));
+        let Some(prepared) = prepared else { return Ok(()) };
+        let endpoint = crate::inference::slots::directory().endpoint(&self.root);
+        let transition = endpoint.transition_if(&|| current() && self.loading.lock().as_ref()
+            .is_some_and(|kept| Arc::ptr_eq(&prepared, &kept.tail.prepared)))
+            .await.map_err(|()| LlamaServerError::Superseded)?;
+        if let Some(tail) = self.recoverable_loading(&prepared)? {
+            self.wait_and_publish(&transition, tail).await?;
+        }
+        Ok(())
     }
 
     /// The kept launch the request may finish, or `None`. A kept launch whose engine is gone is
     /// dropped; one kept for a different launch stays kept, so the launch it was started for can
     /// still finish it.
-    pub(super) fn recoverable_loading(&self, requested: &PreparedLocalLaunch) -> Option<ReadyTail> {
+    pub(super) fn recoverable_loading(&self, requested: &PreparedLocalLaunch) -> Result<Option<ReadyTail>, LlamaServerError> {
         let owned = {
             let child = self.child.lock().unwrap(); // JUSTIFIED: poison means a prior panic mutating the owned child.
             child.as_ref().map(|owned| OwnedNow {
@@ -189,7 +214,7 @@ impl LlamaServerProcess {
         // The owned engine is read first, its lock released, before the kept launch's: the two
         // locks are never held together.
         let mut slot = self.loading.lock();
-        let kept = slot.as_ref()?;
+        let Some(kept) = slot.as_ref() else { return Ok(None) };
         let refusal = recovery_refusal(
             &LaunchContract::of(&kept.tail.prepared),
             &kept.tail.generation,
@@ -198,7 +223,12 @@ impl LlamaServerProcess {
             &LaunchContract::of(requested),
         );
         let pid = kept.tail.child_pid;
-        match refusal {
+        if !matches!(refusal, Some(Refusal::EngineGone(_))) {
+            if let Some(reason) = &kept.terminal {
+                return Err(reason.clone().into());
+            }
+        }
+        Ok(match refusal {
             None => {
                 continuum_base::probe!(target: "continuum_core::inference::llama_server", class = "serving.late_ready.resumed",
                     pid = ?pid,
@@ -226,7 +256,7 @@ impl LlamaServerProcess {
                 slot.take();
                 None
             }
-        }
+        })
     }
 }
 
@@ -467,7 +497,7 @@ mod tests {
         assert!(process.loading.lock().is_some(), "and the launch stays kept for the one it was started for");
         assert_eq!(owned_pid(&process), pid, "the engine is not killed either");
 
-        process.launch_prepared(prepared(&root, dir.path(), "16384"), &|| true, None, None).await.expect("the original launch finishes the late engine");
+        process.finish_pending_readiness(&|| true).await.expect("reconciliation publishes the retained engine independently of the changed request");
         assert!(ledger_published(&root, &generation).await, "after: the SAME generation's ledger is published");
         assert_eq!(owned_pid(&process), pid, "finished, not replaced");
         release(process).await;
@@ -518,7 +548,9 @@ mod tests {
         let fresh = LlamaServerProcess::with_root(root.clone());
         let mut target = super::super::test_fixtures::target("late-model");
         target.placement = LanePlacement::Cpu;
-        let outcome = ensure_model_serving_if_current(&fresh, &target, false, &|| true).await;
+        let gate = crate::inference::serving_lifecycle::LifecycleGate::unowned(true);
+        let operation = gate.try_operation().expect("test: a fresh gate is free");
+        let outcome = ensure_model_serving_if_current(&fresh, &target, false, crate::inference::llama_server::Reconciling { current: &|| true, operation: &operation }).await;
         assert!(matches!(outcome, EnsureOutcome::AlreadyServing), "a healthy engine is adopted, not replaced: {outcome:?}");
         assert!(!fresh.owns_child(), "the restarted core spawned nothing");
     }
@@ -570,6 +602,30 @@ mod tests {
         cell
     }
 
+    #[tokio::test]
+    async fn a_refused_engine_keeps_its_identity_and_diagnostic_without_another_wait() {
+        use crate::inference::child_log::LineWatch;
+        use crate::inference::debug_build_watch::DebugBuildWatch;
+        const TEST: &str = "a_refused_engine_keeps_its_identity_and_diagnostic_without_another_wait";
+        if serve_as_stand_in() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let health = ready(true);
+        let root = fake_engine(Arc::clone(&health), ready(true)).await;
+        let (process, generation, pid, _held) = timed_out_launch(&root, prepared(&root, dir.path(), "16384"), TEST, None).await;
+        let flag = process.loading.lock().as_ref().expect("retained launch").tail.debug_flag.clone();
+        DebugBuildWatch::new(flag).observe("warning: DEBUG BUILD (asserts enabled)");
+        let err = process.finish_pending_readiness(&|| true).await.expect_err("debug build refused");
+        assert!(matches!(err, LlamaServerError::ReadinessRefused(super::super::control::ReadinessRefusal::DebugBuild { .. })));
+        health.store(false, std::sync::atomic::Ordering::SeqCst);
+        let repeated = tokio::time::timeout(Duration::from_secs(2), process.finish_pending_readiness(&|| true))
+            .await.expect("a terminal refusal does not wait for health").expect_err("still refused");
+        assert_eq!(repeated.to_string(), err.to_string());
+        assert_eq!(owned_pid(&process), pid);
+        assert!(!ledger_published(&root, &generation).await);
+        release(process).await;
+    }
     // what this catches (Codex on 07644dc3f): a launch refused before its transition (here a
     // superseded admission; a restoration, receipt or inputs refusal returns at the same side of
     // it) that had already published the unlaunched candidate's `tail_tools` evidence, so the

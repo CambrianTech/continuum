@@ -18,7 +18,7 @@ use std::sync::LazyLock;
 /// with its role. The role is part of the rendered prompt, so a role change is a change.
 fn rendered(req: &TextGenerationRequest) -> Vec<String> {
     let mut out = Vec::with_capacity(req.messages.len() + 2);
-    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or("")));
+    out.push(format!("<system>{}", req.system_prompt.as_deref().unwrap_or(""))); // unwrap_or: no system prompt renders as an empty one
     // The tool surface: Qwen/ChatML templates append it to the END of the system turn,
     // ahead of every message, and it varies per turn (delib.tool_surface.withheld). Left out,
     // a tool-set change broke the engine's prefix at the system turn while this comparison
@@ -52,17 +52,18 @@ pub(crate) fn compare(previous: &[String], now: &[String]) -> PrefixMatch {
                 let shared = other.map_or(0, |before| {
                     before.chars().zip(message.chars()).take_while(|(a, b)| a == b).count()
                 });
-                // Past the `<role>` marker, the message's first non-empty line: a
-                // block's banner (`[steps taken this session]`), whatever leads it.
+                // Past the `<role>` marker, the block's banner (`[steps taken this session]`):
+                // its first non-empty line's bracketed label, whole, or nothing when it has none.
+                // Bounded by the label's own brackets, never by a count of characters.
                 let body = message.split_once('>').map_or(message.as_str(), |(_, rest)| rest);
-                let banner: String = body
+                let banner = body
                     .lines()
-                    .find(|l| !l.trim().is_empty())
-                    .unwrap_or("")
-                    .trim()
-                    .chars()
-                    .take(60)
-                    .collect();
+                    .map(str::trim)
+                    .find(|line| !line.is_empty())
+                    .and_then(|line| line.strip_prefix('['))
+                    .and_then(|line| line.split_once(']'))
+                    .map(|(label, _)| format!("[{label}]"))
+                    .unwrap_or_default(); // unwrap_or_default: a block without a bracketed banner is named by its index alone
                 return PrefixMatch {
                     common_chars: common_chars + shared,
                     total_chars,
@@ -126,9 +127,6 @@ pub(crate) fn extends_whole(previous: &[String], now: &[String]) -> bool {
 /// id) is pinned from one row (Fable on the M5, card 11291f5a). `None` when `now` extends
 /// `previous` whole.
 pub(crate) fn first_divergence(previous: &[String], now: &[String]) -> Option<(String, String, String)> {
-    // The length of the log excerpt each side of the divergence shows: a reader's glimpse, not a
-    // context or prompt budget (nothing is sized by it).
-    const EXCERPT_LEN: usize = 48;
     let label = |i: usize| match i {
         0 => "model".to_string(),
         1 => "system".to_string(),
@@ -137,23 +135,27 @@ pub(crate) fn first_divergence(previous: &[String], now: &[String]) -> Option<(S
     };
     for (i, prev) in previous.iter().enumerate() {
         let Some(cur) = now.get(i) else {
-            return Some((label(i), window_at(prev, 0, EXCERPT_LEN), "(absent)".to_string()));
+            return Some((label(i), token_at(prev, 0), "(absent)".to_string()));
         };
         if prev != cur {
             let at = prev.char_indices().zip(cur.chars()).find(|((_, a), b)| a != b).map_or_else(
                 || prev.len().min(cur.len()), // one is a prefix of the other: they part where the shorter ends
                 |((byte, _), _)| byte,
             );
-            return Some((label(i), window_at(prev, at, EXCERPT_LEN), window_at(cur, at, EXCERPT_LEN)));
+            return Some((label(i), token_at(prev, at), token_at(cur, at)));
         }
     }
     None
 }
 
-/// Up to `n` chars of `s` from byte `at` (snapped to a char boundary).
-fn window_at(s: &str, at: usize, n: usize) -> String {
+/// The rest of the token of `s` that starts at byte `at` (snapped to a char boundary): up to the
+/// next JSON or line delimiter, so a row shows the field that differs (an id, a description),
+/// bounded by the text's own structure rather than a count of characters.
+fn token_at(s: &str, at: usize) -> String {
     let at = (0..=at.min(s.len())).rev().find(|&b| s.is_char_boundary(b)).unwrap_or(0); // unwrap_or: byte 0 is always a boundary
-    s[at..].chars().take(n).collect()
+    let rest = &s[at..];
+    let end = rest.find(['"', ',', '}', ']', '\n']).unwrap_or(rest.len()); // unwrap_or: a token with no delimiter after it runs to the end
+    rest[..end].to_string()
 }
 
 /// PURE: the split, from whether the request extends the last answered one and that one's
@@ -231,7 +233,7 @@ pub fn observe(persona: uuid::Uuid, req: &TextGenerationRequest) {
     let found = LAST.get(&persona).map(|previous| compare(&previous, &now));
     LAST.insert(persona, now);
     let Some(found) = found else { return };
-    let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new()));
+    let (index, banner) = found.first_divergent.clone().unwrap_or((usize::MAX, String::new())); // unwrap_or: no divergence is the identical prompt, probed as index -1
     continuum_base::probe!(
         class = "delib.prompt.common_prefix",
         persona = %persona,
@@ -345,8 +347,8 @@ mod tests {
                 definitions: None,
             },
         };
-        a.tools = Some(vec![tool("code/read")]);
-        b.tools = Some(vec![tool("code/write")]);
+        a.tools = Some(vec![tool("code/read")].into());
+        b.tools = Some(vec![tool("code/write")].into());
         let found = compare(&rendered(&a), &rendered(&b));
         assert_eq!(found.first_divergent.map(|(i, _)| i), Some(1), "the tool surface sits right after the system prompt");
     }

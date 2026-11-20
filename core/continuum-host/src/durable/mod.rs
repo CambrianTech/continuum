@@ -82,6 +82,27 @@ pub fn write_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     staged.replace(Path::new(name))
 }
 
+/// [`write_replace`] for a file whose shape belongs to someone else (a workspace file a tool
+/// edits): the bytes land on a symlink's target, never over the link, and the replacement keeps
+/// the old file's permissions, so editing an executable script or a linked file changes only its
+/// bytes. Still staged, synced and renamed: a crash leaves the old file or the new, never torn.
+pub fn write_replace_keeping(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let target = match std::fs::canonicalize(path) {
+        Ok(real) => real,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(e) => return Err(e),
+    };
+    let (dir, name) = staging::split(&target)?;
+    let mut staged = Staging::new_in(dir)?;
+    staged.write_all(bytes)?;
+    match std::fs::metadata(&target) {
+        Ok(old) => staged.file().set_permissions(cap_std::fs::Permissions::from_std(old.permissions()))?,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e),
+    }
+    staged.replace(Path::new(name))
+}
+
 /// Completes the durability fence of the existing file at `path`: reopened writable (Windows
 /// flushes through the handle, and refuses a read-only handle's flush), then [`fence`].
 pub fn fence_path(path: &Path) -> io::Result<()> {

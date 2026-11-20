@@ -125,7 +125,7 @@ pub struct Timing {
 #[serde(deny_unknown_fields)]
 pub struct ToolCallReduction {
     pub name: Slug,
-    /// The canonical arguments' fingerprint (MIND-CONTEXT invariant 4): repeats are visible
+    /// The canonical arguments' fingerprint (CONTINUUM-ENGINE section 5 invariant 4): repeats are visible
     /// without the words.
     pub args: Sha256,
 }

@@ -4,7 +4,7 @@
 >
 > **Status.** Design proposal. Harnesses are designed against the substrate's named performance covenants and Joel's directive that VDD-record output replaces handwritten timing reports.
 >
-> **Companion to** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) §"Standard VDD Record" + §"One-Line Instrumentation API" and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) Performance Budget tables per Part.
+> **Companion to** [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) §"Standard VDD Record" + §"One-Line Instrumentation API" and [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) Performance Budget tables per Part.
 
 ## Why This Document Exists
 
@@ -12,13 +12,13 @@ The architecture docs name performance covenants: RAG composition < 500ms, vecto
 
 Three principles:
 
-1. **Harnesses produce VDD records, not prose reports.** The substrate's Standard VDD Record format (`CBAR-SUBSTRATE-ARCHITECTURE.md` §"Standard VDD Record") is the output of every harness. Humans paste it into PR comments; machines consume the JSONL form for regression detection. No harness invents its own output schema.
+1. **Harnesses produce VDD records, not prose reports.** The substrate's Standard VDD Record format (`CONTINUUM-ENGINE.md` §"Standard VDD Record") is the output of every harness. Humans paste it into PR comments; machines consume the JSONL form for regression detection. No harness invents its own output schema.
 2. **Per-anchor scoping.** Every harness runs against the substrate's two hardware anchors (MacBook Air UMA-16, RTX 5090 discrete-32+64) at minimum. Intermediate hardware classes interpolate; explicit hardware-class entries can be added per harness as evidence accumulates.
 3. **Baseline-relative, not absolute.** A harness's pass/fail is *relative to a committed baseline*, not to a hand-written budget. Budgets bound expectations; baselines are the regression line. Two PRs ago is the right comparison, not last year's wishful thinking.
 
 ## The Standard VDD Record (Recap)
 
-Every harness emits records of this shape. The schema lives in `CBAR-SUBSTRATE-ARCHITECTURE.md`; reproducing inline so this doc is self-contained:
+Every harness emits records of this shape. The schema lives in `CONTINUUM-ENGINE.md`; reproducing inline so this doc is self-contained:
 
 ```text
 scenario:               # harness-specific scenario name
@@ -130,7 +130,7 @@ The harnesses below are designed against the substrate's named performance coven
 
 ### `cold-start-harness`
 
-Measures time from process exec to first usable substrate. Hard ceiling per CBAR-SUBSTRATE: < 30s before missing-artifact health surface fires.
+Measures time from process exec to first usable substrate. Hard ceiling per CONTINUUM-ENGINE: < 30s before missing-artifact health surface fires.
 
 | Aspect | Value |
 |---|---|
@@ -143,7 +143,7 @@ Measures time from process exec to first usable substrate. Hard ceiling per CBAR
 
 ### `persona-tick-harness`
 
-Measures the substrate's claim that persona scheduling ticks are < 1ms. Verifies CBAR-SUBSTRATE's RTOS rule that the hot path can't block on background work.
+Measures the substrate's claim that persona scheduling ticks are < 1ms. Verifies CONTINUUM-ENGINE's RTOS rule that the hot path can't block on background work.
 
 | Aspect | Value |
 |---|---|
@@ -156,7 +156,7 @@ Measures the substrate's claim that persona scheduling ticks are < 1ms. Verifies
 
 ### `rag-composition-harness`
 
-Measures CBAR-SUBSTRATE's < 500ms RAG composition claim. Drives the rag-composer module from §"Module Catalog II".
+Measures CONTINUUM-ENGINE's < 500ms RAG composition claim. Drives the rag-composer module from §"Module Catalog II".
 
 | Aspect | Value |
 |---|---|
@@ -169,7 +169,7 @@ Measures CBAR-SUBSTRATE's < 500ms RAG composition claim. Drives the rag-composer
 
 ### `vector-search-harness`
 
-Measures CBAR-SUBSTRATE's < 50ms vector search claim. Drives `demand-aligned-recall` against a synthetic engram store of 10k engrams.
+Measures CONTINUUM-ENGINE's < 50ms vector search claim. Drives `demand-aligned-recall` against a synthetic engram store of 10k engrams.
 
 | Aspect | Value |
 |---|---|
@@ -182,7 +182,7 @@ Measures CBAR-SUBSTRATE's < 50ms vector search claim. Drives `demand-aligned-rec
 
 ### `voice-response-harness`
 
-Measures CBAR-SUBSTRATE's < 3s voice response claim. Drives the full chain: audio in → VAD → STT → cognition → composer → TTS → audio out.
+Measures CONTINUUM-ENGINE's < 3s voice response claim. Drives the full chain: audio in → VAD → STT → cognition → composer → TTS → audio out.
 
 | Aspect | Value |
 |---|---|
@@ -247,7 +247,7 @@ Measures Part 9 speculation. Validates that hit-rate-feedback to the governor pr
 
 ### `reprojection-confidence-harness`
 
-Validates CBAR-SUBSTRATE §"Spatiotemporal Reprojection". A slow inference at T returns at T+1.5s; reprojection picks the correct transform + confidence given recorded deltas.
+Validates CONTINUUM-ENGINE §"Spatiotemporal Reprojection". A slow inference at T returns at T+1.5s; reprojection picks the correct transform + confidence given recorded deltas.
 
 | Aspect | Value |
 |---|---|
@@ -386,7 +386,7 @@ The harness framework is "done" when:
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) §"Standard VDD Record" + §"One-Line Instrumentation API"
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) §"Standard VDD Record" + §"One-Line Instrumentation API"
 - [GENOME-FOUNDRY-SENTINEL.md](GENOME-FOUNDRY-SENTINEL.md) Performance Budget tables per Part
 - [PERSONA-COGNITION-CONTRACT.md](PERSONA-COGNITION-CONTRACT.md) §"Acceptance Criteria" — the harnesses verify these claims
 - [MODULE-CATALOG.md](MODULE-CATALOG.md) §"Next Modules To Build" — the modules these harnesses validate

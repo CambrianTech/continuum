@@ -26,7 +26,7 @@ by one question — **what does this mind keep needing?** — and one prediction
 serves every tier: nearest-neighbor over signatures. Gene routing is distance in
 signature space; KV page prefetch is distance in activity space; recall is distance in
 engram space. Three stores, one lookup. (This is
-[selection at every scale](CBAR-SUBSTRATE-ARCHITECTURE.md), applied by the mind to its
+[selection at every scale](CONTINUUM-ENGINE.md), applied by the mind to its
 own state.)
 
 ## Token rent — the promotion signal

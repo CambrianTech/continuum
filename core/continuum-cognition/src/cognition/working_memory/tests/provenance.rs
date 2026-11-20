@@ -167,7 +167,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     // #2 is the active result: it renders whole as the full-result message below, so
     // the ring shows only #1 rather than paying for #2 twice.
     let expected = vec![
-        format!("[result #1; room {room_a}; operation code/search, code/read; saved: read_output({{\"outputId\":\"search-output\"}})] same result"),
+        format!("[result #1; room {room_a}; operation code/search, code/read; saved: tool_output({{\"outputId\":\"search-output\"}})] same result"),
     ];
     let messages = wm.recent_results_messages();
     assert_eq!(
@@ -201,7 +201,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     restored.record_settlement("reported", None);
     shed(&restored, 0);
     assert!(restored.recent_results_messages().join("\n").contains(
-        &format!("[result #1; room {room_a}; operation code/search, code/read; saved: read_output({{\"outputId\":\"search-output\"}}) — collapsed]")
+        &format!("[result #1; room {room_a}; operation code/search, code/read; saved: tool_output({{\"outputId\":\"search-output\"}}) — collapsed]")
     ));
 
     // Regression 735a3183: Kimi's 274-line read disappeared after a poll;
@@ -291,7 +291,7 @@ fn an_old_snapshot_without_acts_restores_without_panic() {
     // #147/#165: a restore IS an interruption, so she wakes oriented, never blank).
     let texts = fresh.recent();
     assert_eq!(
-        fresh.thoughts().into_iter().filter_map(|record| record.text).collect::<Vec<_>>(),
+        fresh.thoughts().into_iter().filter_map(|record| record.text().map(str::to_owned)).collect::<Vec<_>>(),
         ["thinking about the tokenizer"],
         "the legacy ring thought restored into her thought log"
     );

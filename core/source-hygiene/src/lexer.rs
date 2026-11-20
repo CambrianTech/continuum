@@ -275,6 +275,34 @@ pub fn split_code_and_comment(line: &str) -> (&str, Option<&str>) {
     (line, None)
 }
 
+/// A marker comment has to say something after it: a marker with nothing behind it is the
+/// SHAPE of a reason, which is worse than no marker because it silences the guard. Same bar as
+/// the unwrap ratchet's.
+// derived-or-floor: a FLOOR on the length of a COMMENT a human types — it bounds prose, never a token, a second or a rate, and there is nothing here to measure
+// context-budget-exempt: this bounds the length of a COMMENT, not a window, prompt or
+// token budget — the de-hardcode guard matches it on the `CHARS` suffix alone, which is
+// that guard erring toward noise on purpose.
+pub const MIN_REASON_CHARS: usize = 16;
+
+/// Whether `marker` (`derived-or-floor:`, `event-exempt:`) carries a real reason after it, in
+/// the comment on line `index` (0-based) of `lines` or in the contiguous comment block directly
+/// above it. The block-above form exists because an item carries a doc comment, not a trailing
+/// one. One owner for every rule that accepts a reason, so two rules never disagree about one.
+pub fn marker_with_reason(lines: &[&str], index: usize, marker: &str) -> bool {
+    let reason_on = |text: &str| text.split_once(marker).is_some_and(|(_, why)| why.trim().chars().count() >= MIN_REASON_CHARS);
+    if lines.get(index).and_then(|line| split_code_and_comment(line).1).is_some_and(reason_on) {
+        return true;
+    }
+    lines[..index.min(lines.len())]
+        .iter()
+        .rev()
+        .take_while(|l| {
+            let t = l.trim_start();
+            t.starts_with("//") || t.is_empty()
+        })
+        .any(|l| reason_on(l))
+}
+
 /// The byte length of a char (or byte) literal starting at `i`, if one does: `'x'` (any
 /// single byte, `'"'` and `'{'` included) or an escaped `'\x'` (`'\''`, `'\"'`). A lifetime
 /// (`'a`) never has a closing `'` two bytes on, so it is never mistaken for one (Cormac,

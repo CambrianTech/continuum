@@ -223,3 +223,119 @@ mod view {
         );
     }
 }
+
+mod censored_demand {
+    //! Idle pool, one mind, censored demand (Aris on the M5, 2026-11-13, canary 2b17c41df): alone on
+    //! a 247,040-token pool, her grant fell 109,745 -> 43,807 in 50 minutes, every step 1.25 x a
+    //! demand measured from her collapsed view, while her priced need read at least 56,902-99,441.
+    //! Her real requirement path drives each publish (`LaneRequirement` -> `Demand::of` ->
+    //! `DemandFollowing`); the measurement is the arm: her view as rendered after its last
+    //! collapse (before), or at full detail (after: `View::collapsed_growth`).
+    use crate::capacity::window_grant::{Demand, DemandFollowing, WindowPolicy};
+    use crate::inference::planning::serving_plan::SENT_HEADROOM;
+    use crate::inference::planning::window_allocator::observed::Observed;
+    use crate::inference::planning::window_allocator::{test_tokens as t, LaneRequirement};
+    use std::collections::BTreeMap;
+
+    /// `serving.grants` pool_tokens and per_sequence_cap, 21:40:00Z.
+    const POOL: u32 = 247_040;
+    /// Qwen3.6-35B-A3B's trained context.
+    const TRAINED: u32 = 262_144;
+    /// Her grant at 20:42Z, the start of the recorded window.
+    const FIRST_GRANT: u32 = 109_745;
+    /// Her largest live priced bound (`persona.need.censored` at_least, 21:39:06Z) and her
+    /// irreducible window (`working-set.json` floor_tokens): what her need ring reads.
+    const BOUND: u32 = 99_441;
+    const FLOOR: u32 = 26_802;
+    /// What her act holds at full detail: her demand on the act before the window's first collapse
+    /// (`delib.turn.demand` 20:47:48Z, 67,828), inside her recorded priced bounds.
+    const FULL_DETAIL: u32 = 67_828;
+    /// Her `delib.turn.demand` per act, 20:42-21:44Z, as her collapsed view measured it.
+    const RECORDED: [u32; 30] = [
+        49_943, 54_914, 59_643, 67_828, 47_165, 35_046, 39_144, 25_870, 34_135, 37_960, 36_960, 34_219, 34_709, 37_668, 36_287,
+        15_592, 15_592, 34_508, 34_508, 37_283, 41_123, 41_123, 54_885, 44_309, 45_891, 47_018, 45_128, 40_944, 49_415, 54_792,
+    ];
+
+    /// Her wish ring as the working set keeps it (`working_set::requirement_tokens`: the upper
+    /// median of her last 16 demands, at least her newest when it overflowed her window).
+    #[derive(Default)]
+    struct Ring {
+        demands: Vec<u32>,
+        overflow: Option<u32>,
+    }
+
+    impl Ring {
+        fn record(&mut self, demand: u32, served: u32) {
+            self.demands.push(demand);
+            if self.demands.len() > 16 {
+                self.demands.remove(0);
+            }
+            self.overflow = (demand > served).then_some(demand);
+        }
+
+        fn wish(&self) -> u32 {
+            let mut sorted = self.demands.clone();
+            sorted.sort_unstable();
+            let typical = sorted[sorted.len() / 2];
+            self.overflow.map_or(typical, |overflow| typical.max(overflow)) // map_or: a turn that fit leaves her typical turn
+        }
+    }
+
+    /// One publish on the idle pool: her requirement, her demand, her grant from what she holds.
+    fn publish(ring: &Ring, held: u32) -> u32 {
+        let aris = uuid::Uuid::from_u128(0x8044b75b);
+        let need = Observed::AtLeast { at_least: t(BOUND) }.over(Some(t(FLOOR)));
+        let requirement = LaneRequirement::wished(aris, t(ring.wish()), SENT_HEADROOM).held(need);
+        let demand = Demand::of(&requirement, t(TRAINED), POOL, false).expect("test: a held requirement is a demand"); // expect: wished and held, so measured
+        let grants = DemandFollowing.grant(&[Demand { settled: true, ..demand }], &BTreeMap::from([(aris, held)]), POOL);
+        grants[&aris]
+    }
+
+    /// Her grants act by act, and how many acts overflowed (her full-detail act past her grant:
+    /// her view collapsed at its next start), measuring each act with `measure(grant, act)`.
+    fn play(first: u32, ring: &mut Ring, measure: impl Fn(u32, usize) -> u32) -> (Vec<u32>, usize) {
+        let (mut grant, mut grants, mut overflows) = (first, Vec::new(), 0);
+        for act in 0..RECORDED.len() {
+            overflows += usize::from(FULL_DETAIL > grant);
+            ring.record(measure(grant, act), grant);
+            grant = publish(ring, grant);
+            grants.push(grant);
+        }
+        (grants, overflows)
+    }
+
+    // what this catches: the recorded loop, reproduced through the real grant path. Measured from
+    // her collapsed render, her requirement follows the collapse down: her window falls on an idle
+    // pool to below what her act holds at full detail, and she overflows act after act.
+    #[test]
+    fn measured_from_her_collapsed_view_her_window_falls_and_she_overflows() {
+        let (grants, overflows) = play(FIRST_GRANT, &mut Ring::default(), |_, act| RECORDED[act]);
+        let last = *grants.last().expect("test: a recorded act publishes"); // expect: RECORDED is nonempty
+        assert!(last < FIRST_GRANT && last < FULL_DETAIL, "her window fell below her whole act: {grants:?}");
+        assert!(overflows >= RECORDED.len() / 2, "{overflows} of {} acts overflowed: {grants:?}", RECORDED.len());
+    }
+
+    // what this catches: the fix. Measured at full detail, no act overflows while the pool holds her
+    // need, and her window never falls below it on an idle pool, from the grant she held.
+    #[test]
+    fn measured_at_full_detail_her_window_holds_her_whole_act_on_an_idle_pool() {
+        let (grants, overflows) = play(FIRST_GRANT, &mut Ring::default(), |_, _| FULL_DETAIL);
+        assert_eq!(overflows, 0, "{grants:?}");
+        assert!(grants.iter().all(|&g| g >= FULL_DETAIL), "{grants:?}");
+        assert!(grants.windows(2).all(|pair| pair[1] >= pair[0]), "no fall on an idle pool: {grants:?}");
+    }
+
+    // what this catches: the upward probe. From her recorded 43,807 with a ring her collapses filled
+    // (the recorded demands), one act measured at full detail overflows, and the next grant holds it:
+    // she overflows once, never again while the pool holds her need.
+    #[test]
+    fn one_overflow_at_full_detail_is_granted_at_the_next_publish() {
+        let mut ring = Ring::default();
+        for demand in &RECORDED[RECORDED.len() - 16..] {
+            ring.record(*demand, 43_807);
+        }
+        let (grants, overflows) = play(43_807, &mut ring, |_, _| FULL_DETAIL);
+        assert_eq!(overflows, 1, "{grants:?}");
+        assert!(grants[0] >= FULL_DETAIL, "the next publish holds what overflowed: {grants:?}");
+    }
+}

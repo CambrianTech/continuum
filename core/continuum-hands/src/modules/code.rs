@@ -34,6 +34,10 @@ pub struct CodeState {
     /// Who is acting and where, handed in at construction by the layer above the kernel
     /// (never a global).
     pub acting: Arc<dyn crate::identity::acting::ActingProvider>,
+    /// The caller's boards, for the merge gate's card verdicts: bound at boot by the layer that
+    /// holds her airc identity, as the executor is. Unbound, `code/github/pr-merge` refuses (it
+    /// never judges a PR a card may link without the card).
+    pub card_boards: LateBound<dyn crate::commands::code::github::card_verdict::CardBoards>,
 }
 
 impl CodeState {
@@ -49,6 +53,7 @@ impl CodeState {
             shell_sessions,
             rt_handle,
             executor: LateBound::new("code::executor"),
+            card_boards: LateBound::new("code::card_boards"),
         }
     }
 

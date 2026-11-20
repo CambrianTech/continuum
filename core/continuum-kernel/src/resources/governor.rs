@@ -121,6 +121,21 @@ impl ResourceGovernor {
         self.ledger.set_physical_used(kind, bytes);
     }
 
+    /// Ingest a physical reading; one observed earlier than the held reading never overwrites it.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, sample: super::observed::PhysicalSample) -> bool {
+        self.ledger.set_physical_sample(kind, sample)
+    }
+
+    /// The holder of `lease_id` declares its bytes resident.
+    pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
+        self.ledger.landed(lease_id, from)
+    }
+
+    /// Daemon feeds which kind a kind draws on (unified memory: VRAM on RAM), each tick.
+    pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
+        self.ledger.set_backing(kind, backing);
+    }
+
     /// Total self-declared residency of a kind across all measured consumers.
     pub fn measured(&self, kind: ResourceKind) -> u64 {
         self.ledger.measured(kind)
@@ -166,6 +181,23 @@ impl ResourceGovernor {
         self.ledger.release(lease_id)
     }
 
+    pub(super) fn adjust_residency(&mut self, consumer: &str, pools: &[super::daemon::ResidentFloor], change: fn(u64, u64) -> u64) {
+        let mut footprints = Vec::new();
+        for kind in ResourceKind::ALL {
+            let mut resident = self.ledger.measured_by(consumer, kind);
+            let mut floor = self.ledger.reservation(consumer, kind);
+            for pool in pools.iter().filter(|pool| pool.kind == kind) {
+                resident = change(resident, pool.resident);
+                floor = change(floor, pool.resident.saturating_add(pool.headroom));
+            }
+            self.ledger.reserve(consumer, kind, floor);
+            if resident > 0 {
+                footprints.push(ConsumerFootprint { kind, bytes: resident, detail: "native resident allocation".into() });
+            }
+        }
+        self.ledger.set_measured(consumer, footprints);
+    }
+
     pub fn reserve(&mut self, consumer_id: impl Into<String>, kind: ResourceKind, min_bytes: u64) {
         self.ledger.reserve(consumer_id, kind, min_bytes);
     }
@@ -187,6 +219,12 @@ impl ResourceGovernor {
     /// against it, or it can never choose anything as large as what it is running.
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         self.ledger.budget_for_replacing(consumer_id, kind)
+    }
+
+    /// The room beside every other consumer's claim — see
+    /// [`ResourceLeaseLedger::room_beside_others`](super::ledger::ResourceLeaseLedger::room_beside_others).
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        self.ledger.room_beside_others(consumer_id, kind)
     }
 
     // ---- the tick ----------------------------------------------------------

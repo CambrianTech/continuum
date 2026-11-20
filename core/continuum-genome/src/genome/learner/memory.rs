@@ -15,7 +15,7 @@
 
 use super::custody::Claim;
 use super::seat::{lease_rows, register, Authority, Seat, SeatRefusal};
-use crate::inference::llama_server::{LedgerAnswer, PlannedRow, Preflight, ResidencyId, ResidencyRow, ResidencySubject, RowKind};
+use crate::inference::llama_server::{LedgerAnswer, LearningPlan, PlannedKind, Preflight, ResidencyId, ResidencyRow, ResidencySubject, RowKind};
 
 /// One mind's learning memory: the claim on her optimizer residency.
 pub struct MindLearning {
@@ -43,6 +43,25 @@ pub struct EngineWorkspace {
 }
 
 impl EngineWorkspace {
+    /// Test-only: a workspace of `bytes` governed VRAM leased from `authority` and held in its custody
+    /// for `engine`, through the same lease and custody hold `cover` uses: what a learning state owns
+    /// per engine incarnation, for a test of who releases it.
+    #[cfg(any(test, feature = "test-fixtures"))]
+    pub fn held_for_test(authority: &Authority, engine: &crate::inference::llama_server::LearningEngine, consumer: &str, bytes: u64) -> Result<Self, SeatRefusal> {
+        let guard = crate::inference::training_admission::try_training_memory(
+            &authority.resources,
+            crate::inference::serving_lifecycle::Admission::Free(&authority.serving),
+            consumer,
+            crate::resources::ResourceKind::Vram,
+            bytes,
+        )
+        .map_err(SeatRefusal::Unleased)?
+        .map_err(SeatRefusal::AwaitingMemory)?;
+        let admitted = crate::inference::llama_server::LedgerEngine::fixture("held-for-test");
+        let claim = authority.custody.hold(engine, &admitted, ResidencyId::issue(), vec![guard]);
+        Ok(Self { claim, rows: Vec::new(), superseded: Vec::new() })
+    }
+
     /// Whether this workspace covers every row a preflight requires.
     fn covers(&self, required: &[ResidencyRow]) -> bool {
         covered(&self.rows, required)
@@ -124,7 +143,8 @@ pub async fn cover(
         Ok(LedgerAnswer::NoLedger) => return Err(SeatRefusal::NoLedger),
         Err(error) => return Err(SeatRefusal::Unmeasured(error.to_string())),
     };
-    let (optimizer_rows, workspace_rows) = split(&plan.requirements);
+    let (reply_rows, served_window) = (plan.reply_rows, plan.served_window);
+    let (optimizer_rows, workspace_rows) = split(plan, consumer);
     let workspace_residency = match workspace.as_ref() {
         Some(held) if held.covers(&workspace_rows) => held.claim.residency(),
         Some(held) => {
@@ -140,11 +160,11 @@ pub async fn cover(
         Some(_) => {
             return Err(SeatRefusal::Unmeasured(format!(
                 "her optimizer needs more than its measured residency for a {}-row reply in a {}-token window",
-                plan.reply_rows, plan.served_window
+                reply_rows, served_window
             )))
         }
         None => {
-            let leases = lease_rows(authority, consumer, &optimizer_rows).await?;
+            let leases = lease_rows(authority, crate::inference::serving_lifecycle::Admission::Free(&authority.serving), consumer, &optimizer_rows).await?;
             let subject = ResidencySubject::Loaded { lora_id: seat.shadow.id, path: seat.shadow.path.clone() };
             let claim = register(authority, &seat.engine, &seat.ledger, subject, optimizer_rows.clone(), leases).await?;
             let optimizer = claim.residency();
@@ -164,7 +184,7 @@ async fn replace_workspace(
     rows: Vec<ResidencyRow>,
     workspace: &mut Option<EngineWorkspace>,
 ) -> Result<ResidencyId, SeatRefusal> {
-    let leases = lease_rows(authority, &format!("{consumer}:workspace"), &rows).await?;
+    let leases = lease_rows(authority, crate::inference::serving_lifecycle::Admission::Free(&authority.serving), &format!("{consumer}:workspace"), &rows).await?;
     let claim = register(authority, &seat.engine, &seat.ledger, ResidencySubject::Workspace, rows.clone(), leases).await?;
     let residency = claim.residency();
     let mut replacement = EngineWorkspace { claim, rows, superseded: Vec::new() };
@@ -180,17 +200,20 @@ async fn replace_workspace(
 
 /// A preflight's required rows, split into her optimizer's and the engine's workspace; the rows
 /// that describe what serving holds now are evidence and lease nothing.
-fn split(requirements: &[PlannedRow]) -> (Vec<ResidencyRow>, Vec<ResidencyRow>) {
+fn split(plan: LearningPlan, consumer: &str) -> (Vec<ResidencyRow>, Vec<ResidencyRow>) {
     let mut optimizer = Vec::new();
     let mut workspace = Vec::new();
-    for row in requirements {
-        let kind = match row.kind.as_str() {
-            "optimizer_static_required" => RowKind::OptimizerStaticRequired,
-            "optimizer_host_required" => RowKind::OptimizerHostRequired,
-            "shared_compute_required" => RowKind::SharedComputeRequired,
-            _ => continue, // shared_compute_held: what serving holds, never a claim
+    for row in plan.requirements {
+        continuum_base::probe!(class = "training.preflight.row", consumer = consumer, reply_rows = plan.reply_rows,
+            served_window = plan.served_window, kind = ?row.kind, device = %row.device,
+            buffer_type = %row.buffer_type, bytes = row.bytes, host = row.host, "native learning preflight row");
+        let kind = match row.kind {
+            PlannedKind::OptimizerStaticRequired => RowKind::OptimizerStaticRequired,
+            PlannedKind::OptimizerHostRequired => RowKind::OptimizerHostRequired,
+            PlannedKind::SharedComputeRequired => RowKind::SharedComputeRequired,
+            PlannedKind::SharedComputeHeld => continue,
         };
-        let resident = ResidencyRow { device: row.device.clone(), buffer_type: row.buffer_type.clone(), kind, bytes: row.bytes, host: row.host };
+        let resident = ResidencyRow { device: row.device, buffer_type: row.buffer_type, kind, bytes: row.bytes, host: row.host };
         if kind == RowKind::SharedComputeRequired { workspace.push(resident) } else { optimizer.push(resident) }
     }
     (optimizer, workspace)

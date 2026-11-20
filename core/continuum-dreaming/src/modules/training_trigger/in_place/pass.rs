@@ -9,6 +9,11 @@ impl TrainingTriggerState {
     /// for other bases never hide eligible ones behind them.
     pub(crate) async fn learn_in_place(self: &Arc<Self>, engine: EngineIncarnation, served_model: &str) -> Result<(), String> {
         let store = self.durable.require()?;
+        let retired = self.in_place.retire_dead(engine);
+        if retired > 0 {
+            continuum_base::probe!(class = "training.in_place.dead_engines_retired", retired = retired as u64,
+                "learning state held for engine incarnations that died was dropped; custody settles their leases on the dead-process proof");
+        }
         self.in_place.authority.custody.settle_orphans().await;
         let buckets = eligible_buckets(&store, served_model).await?;
         // learning and candidates progress together: a bucket waiting (for her act, her memory, her
@@ -85,6 +90,61 @@ impl TrainingTriggerState {
         Ok(())
     }
 
+    /// Waiting for the bucket and engine changes no resident state. Once both are held,
+    /// run_leased rechecks admission and owns preparation through caller disconnect.
+    pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation) -> Result<Prepared, String> {
+        let lease = self.submit_gates.acquire(&key).await;
+        let slot = self.in_place.engine(engine);
+        let mut held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+        self.run_leased(lease, key, move |state, key| async move {
+            let signature = if rows.is_empty() || held.minds.contains_key(&key) {
+                None
+            } else {
+                drop(held);
+                state.require_ready()?;
+                let started = std::time::Instant::now();
+                let signature = super::super::competence::mint_signature(
+                    format!("inline:{}", key.trait_kind), &key.trait_kind,
+                    rows.iter().flat_map(|row| row.examples.iter()),
+                ).await;
+                continuum_base::probe!(class = "training.in_place.signature_ready", persona = %key.persona_id,
+                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "bucket signature preparation finished outside the engine lock");
+                held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
+                state.require_ready()?;
+                signature
+            };
+            let Some(first) = rows.first() else { return Ok(Prepared::Nothing) };
+            let count = rows.iter().map(|row| row.examples.len()).sum();
+            match seat(&state.in_place.authority, &state, &mut held, &key, first, count, signature, engine).await? {
+                Seating::Seated => {}
+                Seating::NotNow => return Ok(Prepared::Deferred),
+                Seating::AwaitMemory(wait) => return Ok(Prepared::MemoryShort(wait)),
+            }
+            for row in rows.iter() {
+                let total = u32::try_from(row.examples.len()).map_err(|_| format!("submission {} holds too many examples to count", row.id))?;
+                let EngineLearning { minds, workspace } = &mut *held;
+                let Some(seated) = minds.get_mut(&key) else {
+                    return Err(format!("the learner seated for {} left before its cover", key.persona_id));
+                };
+                let learned = start(row.learned, seated.checkpointed.get(&row.id).copied(), seated.progress.get(&row.id).copied());
+                if learned >= total {
+                    continue;
+                }
+                let framed = learn_messages(&row.examples[learned as usize]);
+                return match seated.mind.cover(&state.in_place.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
+                    Ok(()) => Ok(Prepared::Ready),
+                    Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
+                    Err(failure) => {
+                        continuum_base::probe!(class = "training.in_place.deferred", persona = %key.persona_id, reason = %failure,
+                            "her next example's memory was not covered; it is tried again on a later pass");
+                        Ok(Prepared::Deferred)
+                    }
+                };
+            }
+            Ok(Prepared::Nothing)
+        }).await?
+    }
+
     /// Learn bucket `key`'s pending `rows` on `engine` until it stops, then publish what it learned.
     /// Each step: (1) her acts finish, holding nothing; (2) her learner is seated and the example's
     /// memory covered under the bucket's gate and the engine, holding no serving resource, every
@@ -115,13 +175,9 @@ impl TrainingTriggerState {
                 }
             }
             // 2. seat and cover her next example, holding no serving resource
-            let prepare_rows = Arc::clone(&rows);
-            let prepared = match self
-                .run_owned(key.clone(), move |state, key| async move { state.in_place.prepare(&state, &key, &prepare_rows, engine).await })
-                .await
-            {
-                Ok(Ok(prepared)) => prepared,
-                Ok(Err(why)) | Err(why) => {
+            let prepared = match self.prepare_bucket(key.clone(), Arc::clone(&rows), engine).await {
+                Ok(prepared) => prepared,
+                Err(why) => {
                     failure = Some(why);
                     break;
                 }
@@ -138,7 +194,7 @@ impl TrainingTriggerState {
                     break;
                 }
                 Prepared::MemoryShort(wait) => {
-                    memory_short(&key, &wait);
+                    memory_short(&key, AdmissionPhase::Prepare, &wait);
                     pass.deferred = true;
                     break;
                 }
@@ -204,7 +260,7 @@ impl TrainingTriggerState {
                 Next::Stop => break,
                 Next::Fenced => return Ok(pass),
                 Next::MemoryShort(wait) => {
-                    memory_short(&key, &wait);
+                    memory_short(&key, AdmissionPhase::StepRevalidation, &wait);
                     pass.deferred = true;
                     break;
                 }
@@ -246,7 +302,7 @@ impl TrainingTriggerState {
 
     /// Run `operation` as one of the trigger's owned operations, outliving the caller; shutdown
     /// drains it like every other.
-    pub(super) async fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.operations.lock().await.spawn(operation);
+    pub(super) fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.operations.lock().spawn(operation);
     }
 }

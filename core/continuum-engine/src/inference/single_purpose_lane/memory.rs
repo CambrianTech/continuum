@@ -83,37 +83,48 @@ pub fn lane_ram_veto(
 /// later"; a SUSTAINED squeeze still fails loud at the deadline.
 pub const LANE_PRESSURE_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 
-/// The deferring form of the memory veto: poll until pressure clears or the
-/// bounded deadline lapses (then fail loud with the veto's own error). The
-/// veto's error message says "retry when pressure clears" — for a DETACHED
-/// solve/eval there is no operator watching to retry, so the system honors its
-/// own advice for one bounded window. Never a silent wait: each deferred tick
-/// probes, so a stall is visible in the trace, not a mystery hang.
+/// The deferring form of the memory veto: re-judged at every snapshot the memory
+/// pressure monitor publishes (the readings the veto reads are what each publish
+/// carries), until it clears or the bounded deadline lapses (then fail loud with the
+/// veto's own error). The veto's error message says "retry when pressure clears" —
+/// for a DETACHED solve/eval there is no operator watching to retry, so the system
+/// honors its own advice for one bounded window. With no monitor running nothing can
+/// clear it, so the refusal stands at once. Never a silent wait: a deferral probes
+/// whenever its refusal changes, so a stall is visible in the trace, not a mystery hang.
 pub async fn await_lane_memory_headroom(footprint: Option<u64>) -> Result<(), String> {
     let deadline = tokio::time::Instant::now() + LANE_PRESSURE_WAIT;
+    // Subscribed BEFORE the first judgement: a publish between it and the wait is still seen.
+    let mut published = crate::system_resources::MemoryPressureMonitor::subscribe_published();
+    let mut deferred: Option<String> = None;
     loop {
         let verdict = refuse_lane_under_memory_pressure(footprint);
         match verdict {
             Ok(()) => return Ok(()),
             Err(e) => {
-                if tokio::time::Instant::now() >= deadline {
+                let Some(snapshots) = published.as_mut() else {
                     return Err(e);
+                };
+                if deferred.as_deref() != Some(e.as_str()) {
+                    // Log the REFUSAL, not just the pressure level. These are two different
+                    // vetoes — a High/sustained pressure gate, and a hard free-RAM shortfall
+                    // — and only one of them is a spike that clears on its own. Printing
+                    // `level=Normal` beside "waiting for a transient memory spike" while the
+                    // real cause was a lane that could never fit sent a reader looking at the
+                    // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
+                    // `e` the whole time. Whatever we are waiting OUT is the thing to name.
+                    continuum_base::probe!(
+                        class = "lane.memory.pressure_defer",
+                        level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
+                        refusal = %e,
+                        "lane bringup deferred — re-judging the refusal below at each pressure \
+                         snapshot until it clears or the bounded window lapses"
+                    );
                 }
-                // Log the REFUSAL, not just the pressure level. These are two different
-                // vetoes — a High/sustained pressure gate, and a hard free-RAM shortfall
-                // — and only one of them is a spike that clears on its own. Printing
-                // `level=Normal` beside "waiting for a transient memory spike" while the
-                // real cause was a lane that could never fit sent a reader looking at the
-                // pressure monitor for 3 minutes (M5, 2026-08-04) while the answer was in
-                // `e` the whole time. Whatever we are waiting OUT is the thing to name.
-                continuum_base::probe!(
-                    class = "lane.memory.pressure_defer",
-                    level = ?crate::system_resources::MemoryPressureMonitor::current_level(),
-                    refusal = %e,
-                    "lane bringup deferred — retrying the refusal below until it clears \
-                     or the bounded window lapses"
-                );
-                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                match tokio::time::timeout_at(deadline, snapshots.changed()).await {
+                    Ok(Ok(())) => deferred = Some(e),
+                    // the deadline lapsed, or the monitor is gone: nothing more can clear it
+                    Ok(Err(_)) | Err(_) => return Err(e),
+                }
             }
         }
     }

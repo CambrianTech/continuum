@@ -128,6 +128,17 @@ pub(super) static CURRENT_PRESSURE_LEVEL: std::sync::atomic::AtomicU8 = std::syn
 /// treat as "unknown — don't veto on it"). Lock-free read from anywhere.
 pub(super) static CURRENT_AVAILABLE_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// When the poll that produced [`CURRENT_AVAILABLE_BYTES`] began ([`Observed`](crate::resources::Observed) nanos; 0 =
+/// never). Written after the bytes, read before them, so a reader never pairs a newer instant with an
+/// older reading (Codex on #6124: a 2 s cached frame was redated to whenever the ledger asked).
+pub(super) static CURRENT_AVAILABLE_OBSERVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Publish one poll's free bytes with the instant the poll began.
+pub(super) fn publish_available(available: u64, observed: crate::resources::Observed) {
+    CURRENT_AVAILABLE_BYTES.store(available, std::sync::atomic::Ordering::Release);
+    CURRENT_AVAILABLE_OBSERVED.store(observed.nanos(), std::sync::atomic::Ordering::Release);
+}
+
 /// Check if the memory gate is closed (critical pressure sustained).
 /// Subsystems should refuse new allocations when this returns true.
 pub fn is_memory_gate_closed() -> bool {
@@ -166,10 +177,35 @@ pub fn available_from(sys: &sysinfo::System) -> u64 {
     sys.total_memory().saturating_sub(sys.used_memory())
 }
 
+/// One fresh host memory sample: physical total and available (by [`available_from`]), measured
+/// here, by the monitor that owns host memory, for a reader that needs it before the monitor's
+/// first poll (the resource authority's unified pool at boot).
+pub fn sample_host_memory() -> HostMemorySample {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    HostMemorySample { total: sys.total_memory(), available: available_from(&sys) }
+}
+
+/// A host memory sample: bytes of physical RAM and bytes available.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostMemorySample {
+    pub total: u64,
+    pub available: u64,
+}
+
 pub fn current_available_bytes() -> Option<u64> {
     match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
         n => Some(n),
+    }
+}
+
+/// The monitor's last free-bytes reading and the instant its poll began; `None` before the first poll.
+pub fn current_available_reading() -> Option<(u64, crate::resources::Observed)> {
+    let observed = CURRENT_AVAILABLE_OBSERVED.load(std::sync::atomic::Ordering::Acquire);
+    match CURRENT_AVAILABLE_BYTES.load(std::sync::atomic::Ordering::Acquire) {
+        0 => None,
+        n => Some((n, crate::resources::Observed::from_nanos(observed))),
     }
 }
 
@@ -240,20 +276,19 @@ impl PressureLevel {
         }
     }
 
-    /// The swap axis from what the node is DOING with swap (card f26d6568). A file nine
-    /// tenths full is Critical whatever the rate (nowhere left to page). Below that the
-    /// smoothed swap-in + swap-out rate decides, so inert pages a build left behind an
-    /// hour ago read Normal while real paging reads High. With no rate (no counters on
-    /// this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
-    pub fn from_swap_activity(swap_pct: f64, bytes_per_sec: Option<f64>) -> Self {
+    /// The swap axis from what the node is DOING with swap (card f26d6568). Paging that
+    /// would fill the free swap within one half-life is Critical (nowhere left to page).
+    /// Otherwise the smoothed swap-in + swap-out rate decides, so inert pages a build left
+    /// behind an hour ago read Normal while real paging reads High. With no rate (no
+    /// counters on this platform, or the first poll) occupancy decides, as [`Self::from_swap`].
+    pub fn from_swap_activity(swap_used: u64, swap_total: u64, bytes_per_sec: Option<f64>) -> Self {
         use crate::system_resources::swap_activity::{
-            SWAP_FULL_FRACTION, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
+            fills_within_half_life, SWAP_HIGH_BYTES_PER_SEC, SWAP_WARNING_BYTES_PER_SEC,
         };
-        if swap_pct >= SWAP_FULL_FRACTION {
-            return Self::Critical;
-        }
         match bytes_per_sec {
-            None => Self::from_swap(swap_pct),
+            None if swap_total == 0 => Self::Normal,
+            None => Self::from_swap(swap_used as f64 / swap_total as f64),
+            Some(rate) if fills_within_half_life(swap_used, swap_total, rate) => Self::Critical,
             Some(rate) if rate >= SWAP_HIGH_BYTES_PER_SEC => Self::High,
             Some(rate) if rate >= SWAP_WARNING_BYTES_PER_SEC => Self::Warning,
             Some(_) => Self::Normal,
@@ -500,6 +535,16 @@ pub struct PressureSnapshot {
     pub timestamp_ms: u64,
     /// Consecutive polls at this level (for hysteresis — don't react to single spikes)
     pub consecutive_at_level: u32,
+    /// Physical memory the OS compressor occupies, from the host reading; null when the host
+    /// gave no reading this poll.
+    #[ts(type = "number | null")]
+    pub compressed_bytes: Option<u64>,
+    /// Bytes the host needs given back to come out of memory pressure (`host_deficit`): while the
+    /// OS reports pressure, what it has compressed and swapped since it last read normal plus what
+    /// it lacks of its own free target, never less than that target. Zero while the OS reads
+    /// normal, or with no host reading or verdict.
+    #[ts(type = "number")]
+    pub deficit_bytes: u64,
 }
 
 impl Default for PressureSnapshot {
@@ -516,6 +561,8 @@ impl Default for PressureSnapshot {
             held_by_priority: Vec::new(),
             timestamp_ms: 0,
             consecutive_at_level: 0,
+            compressed_bytes: None,
+            deficit_bytes: 0,
         }
     }
 }
@@ -581,6 +628,17 @@ pub trait MemoryReporter: Send + Sync {
     fn shed_load(&self, _level: PressureLevel) {
         // Default: no-op. Override to implement pressure response.
     }
+
+    /// The other half of shedding: the OS reads itself normal with `headroom` bytes it can give
+    /// without re-entering pressure (`HostDeficitReading::headroom`), so a healthy reporter that gave
+    /// memory back may take up to that much again. Returns the bytes it claimed (what it may now
+    /// fill), which the monitor takes off the headroom before offering the rest to the next
+    /// reporter. Independent of `can_shed`: an empty cache may recover even when it cannot
+    /// currently release anything. Called every such poll; keep it cheap when there is nothing to take back.
+    /// Default: nothing taken.
+    fn take_again(&self, _headroom: std::num::NonZeroU64) -> u64 {
+        0
+    }
 }
 
 // =============================================================================
@@ -629,6 +687,8 @@ pub(super) struct MemoryTickState {
     pub(super) started: std::time::Instant,
     /// The smoothed swap traffic the swap axis reads (card f26d6568).
     pub(super) swap_activity: crate::system_resources::swap_activity::SwapActivity,
+    /// The host's memory deficit across polls: what the OS held displaced when last clean.
+    pub(super) host_deficit: super::host_deficit::HostDeficit,
 }
 
 /// Independent memory pressure monitoring system.

@@ -122,7 +122,7 @@ pub struct ResourceLeaseLedger {
     /// absent here has unknown capacity → treated as zero (fail-loud: we refuse
     /// to grant against a resource we have not scanned).
     capacity: BTreeMap<ResourceKind, u64>,
-    leases: BTreeMap<String, ResourceLease>,
+    leases: BTreeMap<String, Held>,
     /// Per-consumer guaranteed floor of a kind. The real-time fairness mechanism
     /// the directive demands: a live video call (bevy/livekit/stt/tts) reserves
     /// bytes that inference can neither grant-into nor reclaim-below. The daemon
@@ -148,6 +148,38 @@ pub struct ResourceLeaseLedger {
     /// `available = capacity − max(granted, physical_used)`. Absent (no physical
     /// monitor) → 0, and `available` degrades to `capacity − granted`.
     physical_used: BTreeMap<ResourceKind, u64>,
+    /// When the accepted physical reading of each kind was observed (its probe's start, Codex on #6124): an
+    /// older observation arriving late never overwrites a newer one.
+    sampled: BTreeMap<ResourceKind, super::observed::Observed>,
+    /// Kinds that draw on another kind's physical bytes ([`CapacitySource::backed_by`]): on unified
+    /// memory, VRAM on RAM. Absent: the kind has its own physical backing (a discrete device).
+    ///
+    /// [`CapacitySource::backed_by`]: super::capacity::CapacitySource::backed_by
+    backing: BTreeMap<ResourceKind, ResourceKind>,
+}
+
+/// A live lease and when its holder declared it landed (Codex on #6124). Landing is never inferred from
+/// the holder's growth: growth beside a lease (the same owner's KV, another process) cannot tell which bytes
+/// are the lease's. A lease is owed in full on top of physical use until its holder declares it resident
+/// AND a physical sample taken after that declaration has been accepted (before it, the reading cannot
+/// include the bytes). A holder that never declares is over-counted (refuses), never under-counted.
+#[derive(Debug, Clone)]
+struct Held {
+    lease: ResourceLease,
+    /// When its holder declared it landed: only a reading observed at or after this can show it. None while
+    /// undeclared.
+    landed_from: Option<super::observed::Observed>,
+}
+
+impl Held {
+    /// This lease's bytes still owed on top of physical use, given the oldest of the accepted observations that
+    /// must show it (its kind's, and its backing pool's on unified memory).
+    fn pending(&self, accepted: Option<super::observed::Observed>) -> u64 {
+        match (self.landed_from, accepted) {
+            (Some(from), Some(sample)) if sample >= from => 0,
+            _ => self.lease.bytes,
+        }
+    }
 }
 
 impl ResourceLeaseLedger {
@@ -164,7 +196,7 @@ impl ResourceLeaseLedger {
     }
 
     pub fn capacity(&self, kind: ResourceKind) -> u64 {
-        self.capacity.get(&kind).copied().unwrap_or(0)
+        self.capacity.get(&kind).copied().unwrap_or(0) // unwrap_or: an unscanned kind grants nothing (fail-closed: no grant against a resource not scanned)
     }
 
     /// Bytes currently spoken for of this kind — sums ALL leases, expired
@@ -173,6 +205,7 @@ impl ResourceLeaseLedger {
     pub fn granted(&self, kind: ResourceKind) -> u64 {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind)
             .map(|l| l.bytes)
             .fold(0u64, |acc, b| acc.saturating_add(b))
@@ -185,10 +218,32 @@ impl ResourceLeaseLedger {
         self.physical_used.insert(kind, bytes);
     }
 
+    /// Ingest `sample` only if it was observed after the reading this kind holds. Returns whether it was accepted.
+    pub fn set_physical_sample(&mut self, kind: ResourceKind, sample: super::observed::PhysicalSample) -> bool {
+        if self.sampled.get(&kind).is_some_and(|&held| held >= sample.observed) {
+            return false;
+        }
+        self.sampled.insert(kind, sample.observed);
+        self.physical_used.insert(kind, sample.used);
+        true
+    }
+
     /// Bytes of this kind physically resident across everyone, as last scanned.
     /// Absent → 0 (no physical monitor for this kind yet).
     pub fn physical_used(&self, kind: ResourceKind) -> u64 {
-        self.physical_used.get(&kind).copied().unwrap_or(0)
+        self.physical_used.get(&kind).copied().unwrap_or(0) // unwrap_or: no physical monitor for this kind; its capacity is unscanned too, so nothing is granted against it
+    }
+
+    /// Daemon sets which kind `kind` draws on, each tick, from its capacity source.
+    pub fn set_backing(&mut self, kind: ResourceKind, backing: Option<ResourceKind>) {
+        match backing {
+            Some(backing) if backing != kind => {
+                self.backing.insert(kind, backing);
+            }
+            _ => {
+                self.backing.remove(&kind);
+            }
+        }
     }
 
     /// What is REALLY spoken for of this kind: the larger of what we have granted
@@ -197,22 +252,93 @@ impl ResourceLeaseLedger {
     /// the max is the un-inversion in one line: it protects a freshly-granted
     /// lease that hasn't allocated (granted > physical) AND refuses to hand out
     /// bytes that are physically gone whoever took them (physical > granted).
+    ///
+    /// A pool other kinds draw on (unified memory: RAM, which the GPU's VRAM is backed by) owes its
+    /// bytes to every kind in it at once: physical use plus every grant not yet resident (a consumer's
+    /// grant past its measured residency, on any kind of the pool), and never less than the pool's
+    /// grants together. So each grant, on either axis, spends the shared headroom the moment it is
+    /// made, once, and the next sample takes over as its bytes land (Codex on #6124).
     pub fn committed(&self, kind: ResourceKind) -> u64 {
-        self.granted(kind).max(self.physical_used(kind))
+        self.remaining_commitment(&self.pool_kinds(kind), self.physical_used(kind), 0)
+    }
+
+    fn remaining_commitment(&self, kinds: &[ResourceKind], resident: u64, released_grant: u64) -> u64 {
+        let promised = kinds.iter().map(|k| self.granted(*k)).fold(0u64, u64::saturating_add);
+        let landing = kinds.iter().map(|k| self.not_yet_resident(*k)).fold(0u64, u64::saturating_add);
+        promised.saturating_sub(released_grant).max(resident.saturating_add(landing))
+    }
+
+    /// The pool `kind` draws on: the kind it is backed by, or itself.
+    fn pool_root(&self, kind: ResourceKind) -> ResourceKind {
+        match self.backing.get(&kind) {
+            Some(&backing) => backing,
+            None => kind,
+        }
+    }
+
+    /// Every kind sharing `kind`'s physical pool: the root and each kind backed by it.
+    fn pool_kinds(&self, kind: ResourceKind) -> Vec<ResourceKind> {
+        let root = self.pool_root(kind);
+        std::iter::once(root).chain(self.backing.iter().filter(|(_, b)| **b == root).map(|(k, _)| *k)).collect()
+    }
+
+    /// Bytes granted on `kind` whose holders have not declared them landed: owed on top of physical use.
+    fn not_yet_resident(&self, kind: ResourceKind) -> u64 {
+        self.leases
+            .values()
+            .filter(|held| held.lease.kind == kind)
+            .map(|held| held.pending(self.observed_for(kind)))
+            .fold(0u64, |acc, b| acc.saturating_add(b))
+    }
+
+    /// The oldest accepted observation that must show a `kind` lease: its own, and on unified memory its backing
+    /// pool's too (both readings have to have been taken after the landing). None until both exist.
+    fn observed_for(&self, kind: ResourceKind) -> Option<super::observed::Observed> {
+        let own = self.sampled.get(&kind).copied()?;
+        match self.backing.get(&kind) {
+            Some(backing) => self.sampled.get(backing).map(|&pool| own.min(pool)),
+            None => Some(own),
+        }
+    }
+
+    /// The holder of `lease_id` declares its bytes resident as of `from`. They stop being owed on top once a
+    /// reading observed at or after `from` is accepted. Missing lease is fail-loud.
+    pub fn landed(&mut self, lease_id: &str, from: super::observed::Observed) -> Result<(), LeaseError> {
+        let held = self.leases.get_mut(lease_id).ok_or_else(|| LeaseError::MissingLease { lease_id: lease_id.to_string() })?;
+        held.landed_from.get_or_insert(from);
+        Ok(())
     }
 
     /// Free headroom of this kind, ignoring reservations — the honest global
     /// remainder the board reports: `capacity − max(granted, physical_used)`.
     /// Never negative (saturating). With no physical monitor (`physical_used == 0`)
     /// this is exactly `capacity − granted`, the pre-un-inversion behavior.
+    ///
+    /// A kind that draws on another's physical bytes (unified memory: VRAM on RAM) is committed by
+    /// OUR residency on it (granted or measured, never every process's host use), and is bounded by
+    /// its backing's availability, so the shared bytes are never spent twice and a process outside
+    /// ours is charged to the host, never to the GPU's working set.
     pub fn available(&self, kind: ResourceKind) -> u64 {
-        self.capacity(kind).saturating_sub(self.committed(kind))
+        self.headroom_after_release(kind, 0, |_, resident| resident)
+    }
+
+    fn headroom_after_release(&self, kind: ResourceKind, released_grant: u64, project: impl Fn(&[ResourceKind], u64) -> u64) -> u64 {
+        let root = self.pool_root(kind);
+        let pool = self.pool_kinds(root);
+        let host = self.remaining_commitment(&pool, project(&pool, self.physical_used(root)), released_grant);
+        let host_room = self.capacity(root).saturating_sub(host);
+        if root == kind {
+            return host_room;
+        }
+        let device = self.remaining_commitment(&[kind], project(&[kind], self.measured(kind)), released_grant);
+        self.capacity(kind).saturating_sub(device).min(host_room)
     }
 
     /// Bytes of `kind` currently held by one specific consumer.
     pub fn granted_to(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind && l.consumer_id == consumer_id)
             .map(|l| l.bytes)
             .fold(0u64, |acc, b| acc.saturating_add(b))
@@ -234,7 +360,7 @@ impl ResourceLeaseLedger {
         self.reservations
             .get(&(kind, consumer_id.to_string()))
             .copied()
-            .unwrap_or(0)
+            .unwrap_or(0) // unwrap_or: no floor reserved is a floor of 0 bytes, a fact, not an unknown
     }
 
     // ---- measurement axis (monitored residency, never reserved) ------------
@@ -292,7 +418,7 @@ impl ResourceLeaseLedger {
     fn reserved_headroom_excluding(&self, exclude_consumer: &str, kind: ResourceKind) -> u64 {
         self.reservations
             .iter()
-            .filter(|((k, c), _)| *k == kind && c != exclude_consumer)
+            .filter(|((k, c), _)| self.pool_root(*k) == self.pool_root(kind) && c != exclude_consumer)
             .map(|((k, c), floor)| {
                 floor.saturating_sub(self.granted_to(c, *k).max(self.measured_by(c, *k)))
             })
@@ -336,9 +462,8 @@ impl ResourceLeaseLedger {
     ///
     /// # The invariant it pins
     ///
-    /// *A machine already serving model X can always re-plan model X.* Anything else
-    /// can only decay, and no learned policy layered on top can recover — it would be
-    /// training against a signal that is wrong by the size of the resident model.
+    /// A resident model can be planned again while peer commitments and floors leave room for it.
+    /// Pending peer grants still consume capacity after the incumbent releases its residency.
     ///
     /// # What it does NOT do
     ///
@@ -348,16 +473,48 @@ impl ResourceLeaseLedger {
     /// planning; `acquire` must keep using `available_for`, or a consumer could grant
     /// itself bytes it has not yet released.
     pub fn budget_for_replacing(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
-        // Never above the device. The add-back is the caller's DECLARED footprint, and
-        // a declaration can exceed what the device holds: the 5090, 2026-09-17 — serving
-        // declared `peak_resident_bytes(144640 ctx)` = 67.5 GB (an f16-KV estimate) on a
-        // 33.6 GB card, the board's available fell to 2.3 GB, and this sum handed the
-        // planner `usable_gb=54` — a budget bigger than the card, which then sized a
-        // window the card could not hold. A replace-myself budget is bounded by
-        // capacity like every other number the ledger speaks.
-        self.available_for(consumer_id, kind)
-            .saturating_add(self.measured_by(consumer_id, kind))
-            .min(self.capacity(kind))
+        let resident = self.measured_by(consumer_id, kind);
+        let landed_grant = self.granted_to(consumer_id, kind).min(resident);
+        self.headroom_after_release(kind, landed_grant, |axes, used| {
+            // A footprint estimate can exceed the physical sample. Each constrained
+            // pool retains the other measured allocations that actually draw from it.
+            let retained = self.measured.iter().flat_map(|(owner, footprints)| {
+                footprints.iter().filter(move |f| axes.contains(&f.kind) && (owner != consumer_id || f.kind != kind))
+            }).map(|f| f.bytes).fold(0u64, u64::saturating_add);
+            used.saturating_sub(resident).max(retained)
+        })
+            .saturating_sub(self.reserved_headroom_excluding(consumer_id, kind))
+    }
+
+    /// The room `consumer_id` may size a successor into when it holds nothing on the board yet:
+    /// the pool's capacity less every OTHER consumer's claim, the largest of its reserved floor, its
+    /// grant and its measured residency. Computed from claims alone, never from `physical_used`, so
+    /// a boot reads it before the consumer's own bytes are attributed and while a predecessor's are
+    /// still leaving (a gap reading reads that `budget_for_replacing` as 0, and a pool launched from
+    /// it is the 2,048-token dark node of card 8569b03d). Every other consumer's floor stays
+    /// outside it: the M5, 2026-11-14 03:35Z, sized its engine with no device room at boot and the
+    /// embed lane's leases were refused at 0 available for the rest of the hour.
+    ///
+    /// Bytes resident that no consumer of ours claims (the OS, other processes) are not in it: on
+    /// unified memory they are the host's to count (the serving host room), on a discrete card the
+    /// next steady read (`budget_for_replacing`) bounds them.
+    pub fn room_beside_others(&self, consumer_id: &str, kind: ResourceKind) -> u64 {
+        let mut others: Vec<&str> = self
+            .reservations
+            .keys()
+            .filter(|(k, _)| *k == kind)
+            .map(|(_, c)| c.as_str())
+            .chain(self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).map(|l| l.consumer_id.as_str()))
+            .chain(self.measured.iter().filter(|(_, fs)| fs.iter().any(|f| f.kind == kind)).map(|(c, _)| c.as_str()))
+            .filter(|c| *c != consumer_id)
+            .collect();
+        others.sort_unstable();
+        others.dedup();
+        let claimed = others
+            .into_iter()
+            .map(|c| self.reservation(c, kind).max(self.granted_to(c, kind)).max(self.measured_by(c, kind)))
+            .fold(0u64, |acc, b| acc.saturating_add(b));
+        self.capacity(kind).saturating_sub(claimed)
     }
 
     /// THE over-commit guard. Grant `req.bytes` of `req.kind` only if they fit
@@ -394,7 +551,7 @@ impl ResourceLeaseLedger {
             expires_at_ms: now_ms.saturating_add(req.ttl_ms),
             reclaim_policy: req.reclaim_policy,
         };
-        self.leases.insert(lease_id, lease.clone());
+        self.leases.insert(lease_id, Held { lease: lease.clone(), landed_from: None });
         Ok(lease)
     }
 
@@ -410,6 +567,7 @@ impl ResourceLeaseLedger {
         let lease = self
             .leases
             .get_mut(lease_id)
+            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
@@ -428,6 +586,7 @@ impl ResourceLeaseLedger {
     pub fn release(&mut self, lease_id: &str) -> Result<ResourceLease, LeaseError> {
         self.leases
             .remove(lease_id)
+            .map(|held| held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })
@@ -445,6 +604,7 @@ impl ResourceLeaseLedger {
         let lease = self
             .leases
             .get_mut(lease_id)
+            .map(|held| &mut held.lease)
             .ok_or_else(|| LeaseError::MissingLease {
                 lease_id: lease_id.to_string(),
             })?;
@@ -462,6 +622,7 @@ impl ResourceLeaseLedger {
     pub fn expire(&self, now_ms: u64) -> Vec<ResourceLease> {
         self.leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.is_expired(now_ms))
             .cloned()
             .collect()
@@ -505,6 +666,7 @@ impl ResourceLeaseLedger {
         let mut candidates: Vec<&ResourceLease> = self
             .leases
             .values()
+            .map(|held| &held.lease)
             .filter(|l| l.kind == kind && l.reclaim_rank(now_ms).is_some())
             .filter(|l| {
                 // Dwell protection — expired bytes are always fair game; a
@@ -515,10 +677,8 @@ impl ResourceLeaseLedger {
         candidates.sort_by(|a, b| {
             let sa = arbiter.reclaim_score(a, &ctx);
             let sb = arbiter.reclaim_score(b, &ctx);
-            // Highest score reclaimed first; NaN-safe; lease_id breaks ties.
-            sb.partial_cmp(&sa)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.lease_id.cmp(&b.lease_id))
+            // Highest score reclaimed first; a total order (NaN included); lease_id breaks ties.
+            sb.total_cmp(&sa).then_with(|| a.lease_id.cmp(&b.lease_id))
         });
 
         // Track each consumer's remaining held bytes as we choose victims, so a
@@ -550,7 +710,7 @@ impl ResourceLeaseLedger {
     }
 
     pub fn lease(&self, lease_id: &str) -> Option<&ResourceLease> {
-        self.leases.get(lease_id)
+        self.leases.get(lease_id).map(|held| &held.lease)
     }
 
     /// The published board. Omits a kind only when it is uncapacitied AND
@@ -562,7 +722,7 @@ impl ResourceLeaseLedger {
         let mut kinds = Vec::new();
         for kind in ResourceKind::ALL {
             let capacity_bytes = self.capacity(kind);
-            let lease_count = self.leases.values().filter(|l| l.kind == kind).count() as u32;
+            let lease_count = self.leases.values().map(|held| &held.lease).filter(|l| l.kind == kind).count() as u32;
             let measured_bytes = self.measured(kind);
             let physical_used_bytes = self.physical_used(kind);
             if capacity_bytes == 0
@@ -586,7 +746,7 @@ impl ResourceLeaseLedger {
                 lease_count,
             });
         }
-        let mut leases: Vec<ResourceLease> = self.leases.values().cloned().collect();
+        let mut leases: Vec<ResourceLease> = self.leases.values().map(|held| held.lease.clone()).collect();
         leases.sort_by(|a, b| a.lease_id.cmp(&b.lease_id));
 
         // Flatten every consumer's latest footprint into stable-ordered

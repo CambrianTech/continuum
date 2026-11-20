@@ -521,7 +521,7 @@ mod tests {
                     o.output.result.custody = custody;
                     let recall = o.render_recall("");
                     assert!(!recall.contains("END_OF_SAVED_RESULT"));
-                    assert!(recall.contains(&format!(r#"Saved result: read_output({{"outputId":"{handle}"}})"#)));
+                    assert!(recall.contains(&format!(r#"Saved result: tool_output({{"outputId":"{handle}"}})"#)));
                     assert_eq!(o.output.result.content, content);
                 }
             }

@@ -162,7 +162,7 @@ pub struct TrainingTriggerState {
     in_place: in_place::InPlace,
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
-    operations: tokio::sync::Mutex<tokio::task::JoinSet<()>>,
+    operations: parking_lot::Mutex<tokio::task::JoinSet<()>>,
     #[cfg(test)]
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
@@ -200,7 +200,7 @@ impl TrainingTriggerState {
             stopping: std::sync::atomic::AtomicBool::new(false),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
-            operations: tokio::sync::Mutex::new(tokio::task::JoinSet::new()),
+            operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]

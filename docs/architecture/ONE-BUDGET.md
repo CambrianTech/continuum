@@ -4,7 +4,7 @@
 Owner of the contract: Fable. Owners of each migration are named in "The rewrite".
 
 **Read first:** [`CONCURRENCY-STYLE-GUIDE.md`](CONCURRENCY-STYLE-GUIDE.md) (the daemon shape),
-[`MIND-CONTEXT-AND-ENGINE-CONFIG.md`](MIND-CONTEXT-AND-ENGINE-CONFIG.md) (the View, which stays the one codec of what she sees).
+[`CONTINUUM-ENGINE.md`](CONTINUUM-ENGINE.md) (the View, which stays the one codec of what she sees).
 
 ## Why
 
@@ -56,7 +56,7 @@ device VRAM / host RAM / volume            (measured capacity)
 ```
 
 A grant changes when capacity or demand changes, in either direction. A consumer reconciles to its new grant: a cache
-sheds to it, a lane resizes live (the engine stays up, SERVING-ENGINE.md), a disk class's owner deletes oldest-first to it,
+sheds to it, a lane resizes live (the engine stays up, CONTINUUM-ENGINE.md), a disk class's owner deletes oldest-first to it,
 a mind's View collapses oldest-first to it. Shrinking a grant IS the eviction request; there is no separate pressure
 alert path, threshold table or `evict_at_least` heuristic.
 
@@ -477,7 +477,7 @@ rebound her. On a unified KV pool (`--kv-unified`) the only hard constraint is t
   default), and the fit's minimum context, the largest measured need on the seat, below which the launch is a typed
   refusal, never a starved start (never upstream's 4,096). No launch reads a plan's transient and no relaunch grows it.
 
-The fork verbs this needs (S1-S3 of SERVING-ENGINE): `cells_used` per sequence (`llama_memory_seq_pos_min/max`), and
+The fork verbs this needs (S1-S3 of CONTINUUM-ENGINE.md (section 4)): `cells_used` per sequence (`llama_memory_seq_pos_min/max`), and
 `cells_needed(prompt, seq)` (tokenize, then the sequence's longest common prefix). `/slots` reports
 `n_prompt_tokens` and `n_prompt_tokens_cache` today, the per-request halves of the second, after the fact.
 
@@ -506,7 +506,7 @@ allocator's GPU tiers. The fork keeps checkpoints only where the core names them
 where the inference needs to see a state of results from its own actions"). Her newest act, its result, a reply she is
 waiting on, and the state her action changed are `Floor::Required` claims at every tier: reserved before anything is
 traded, never shrunk, and `Infeasible` (named, refused) when they cannot all fit, never cut. An oversized newest result
-claims its summary with its handle as the floor, the rest as an increment (MIND-CONTEXT invariant 2). Everything older
+claims its summary with its handle as the floor, the rest as an increment (CONTINUUM-ENGINE section 5 invariant 2). Everything older
 competes by value and collapses to a reopenable level. A loop needs her input to stop reflecting what she did; with the
 causal edge in the claim's type, no source's own rule can drop it (Benchy's 125 identical acts, 10-20).
 
@@ -527,7 +527,7 @@ iterates:
    grant her a larger share of the shared pool for this turn (others' cold pages to RAM, back when her turn ends, a
    temporary grant priced by its switch cost); move pages to RAM; split her turn (an oversized result read in pages);
    serve her alone on the whole pool, every other mind paged out for one turn (the last rung, Joel: "or reduce to one
-   lane in worst case scenario"); grow the pool into free memory once the engine resizes live (SERVING-ENGINE S2);
+   lane in worst case scenario"); grow the pool into free memory once the engine resizes live (CONTINUUM-ENGINE.md slice S2);
    and on the grid place her where the window is larger. Each exists only because every holder is a claim with levels,
    a cost and custody: a fixed slot or a private cap anywhere is the one place the budgeter could not move (Joel: "If
    we follow rich and strict architectural adherence we can always get ourselves out of a bind").
@@ -656,9 +656,9 @@ Both are defects. The contract's answer, as one acceptance test:
 1. The authority's probes see the external app's use on the next tick: free VRAM/RAM fall.
 2. Serving's grant shrinks, as a request (safety contract 1). The engine stays up and gives memory back live:
    cold minds' KV pages GPU -> RAM -> disk (`llama_state_seq_*`), and the active window shrinks through the
-   engine's endpoint (SERVING-ENGINE.md S1-S3). No relaunch, no in-flight turn lost.
+   engine's endpoint (CONTINUUM-ENGINE.md slice S1-S3). No relaunch, no in-flight turn lost.
 3. Each mind's window follows her grant at her next epoch start, never mid-epoch, folding whole chains
-   (MIND-CONTEXT causality).
+   (CONTINUUM-ENGINE section 5 causality).
 4. The app quits: the grant grows, KV pages back, and windows grow at the next epoch starts. Still no
    relaunch.
 

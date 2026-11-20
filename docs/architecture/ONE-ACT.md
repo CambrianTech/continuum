@@ -75,7 +75,7 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
   handles. Today's evidence says that is ~20k tokens for a coding act; the 76-89k prompts were
   history kept verbatim. No fixed number: the validator reports prompt tokens per act and the cold
   re-prefill seconds they imply at the measured rate.
-- **Rules:** MIND-CONTEXT's "flex moves into continuum-context as the one allocator" wins over
+- **Rules:** CONTINUUM-ENGINE section 5's "flex moves into continuum-context as the one allocator" wins over
   ONE-BUDGET 3b's "deleted for cambrian-flex" (the code exists; a replacement must replace it whole).
   HER-TOOLS §Answer ("the view is the only sizer") wins over page_budget.
 
@@ -95,7 +95,7 @@ Each stage: the ONE owner, its invariant, and what wins where docs or code disag
 
 ### 4. Admission (who runs now)
 
-- **Owner:** ONE admission decision per engine (SERVING-ENGINE §1c wins: "admission is memory,
+- **Owner:** ONE admission decision per engine (CONTINUUM-ENGINE.md 4.1c wins: "admission is memory,
   once"; one dispatcher). Today three gates run in series (`resource_admission/lanes.rs`,
   `turn_admission.rs`, `window_grant`); they collapse into one.
 - **Three resources, decided together (Codex, Cormac's bench):** (a) sequence RESIDENCY in bytes
@@ -309,7 +309,7 @@ real same-prompt retry count and useful completed work afterwards. Cold-prefill,
 and fairness work remain separate measured causes and use the same ownership/receipt interfaces.
 ### 5. Engine memory (where her KV lives)
 
-- **Owner:** the serving daemon over ONE separate llama-server process (SERVING-ENGINE §6 wins over
+- **Owner:** the serving daemon over ONE separate llama-server process (CONTINUUM-ENGINE.md 4.6 wins over
   CLAUDE.md 3b's "in-process"; CLAUDE.md is corrected).
 - **Invariant: physical conservation.** On unified memory, weights + every mind's resident KV +
   staging are counted ONCE against the physical pool; a grant or plan never spends bytes that are
@@ -318,7 +318,7 @@ and fairness work remain separate measured causes and use the same ownership/rec
   authority OBSERVED the previous engine's release or verified adoption, never elapsed time or a
   free-memory threshold (branch `fable/launch-from-fit-pool`, on #5770's credit).
 - **No relaunch to resize.** Pool growth is deleted only after launch-from-fit is proven (#5774 is
-  blocked on it). Live resize is the fork's `reconfigure` verb later (SERVING-ENGINE S2).
+  blocked on it). Live resize is the fork's `reconfigure` verb later (CONTINUUM-ENGINE.md slice S2).
 - **Paging:** the actuator for every move of residency (rotation, eviction, restart). Pages are
   saved and restored per mind; a timeout stays `Unresolved` and HOLDS custody (#5772); CPU activity
   proves liveness, not progress.
@@ -812,7 +812,7 @@ growth and turnover cost. The next epoch is prefilled on a shadow sequence in id
 measured growth predicts the overflow. A learned policy may later replace the value function behind
 the same boundary.
 
-**A continuous compression algorithm (Joel).** The context codec (MIND-CONTEXT) is a streaming
+**A continuous compression algorithm (Joel).** The context codec (CONTINUUM-ENGINE section 5) is a streaming
 compressor across minds:
 
 | Compressor | Our system |
@@ -1253,7 +1253,7 @@ state and separate measured safety failures from low activity or slow execution.
 INFERENCE-LANES-REALISTIC, INFERENCE-SCHEDULING-AND-SCARCITY (slot pools, adaptive quantizer),
 KV-CACHE-ECONOMY:28 (`-c = window x lanes`), MINDS-SEATS-AND-ADMISSION:62 (seat = lane),
 CONTEXT-IS-A-CAPABILITY-AXIS:44-66 (lane count), CLAUDE.md 3b's "in-process", ONE-BUDGET 3b's
-"flex_allocate deleted", SERVING-ENGINE §1c's "done" for lane-free deliberation (not done),
+"flex_allocate deleted", CONTINUUM-ENGINE.md 4.1c's "done" for lane-free deliberation (not done),
 planning/AI-LANE-OPEN-QUESTIONS and UNCERTAINTY-IS-THE-SCHEDULER-SIGNAL's "N lanes",
 PHASE3B-WORKING-MEMORY-PLAN's RAG token budget.
 

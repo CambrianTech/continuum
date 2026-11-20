@@ -221,7 +221,7 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     view.turn_over(&continuum_context::cost::Chars, Vec::new(), sources, floor).expect("matching grants");
     let reduced = text(&view);
     assert!(reduced.contains(PATH) && reduced.contains("read 1-498 (all of it)"), "{reduced}");
-    assert!(reduced.contains("read_file") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
+    assert!(reduced.contains("code_read") && reduced.contains("start_line/end_line"), "retrieval remains resolvable: {reduced}");
     assert!(!reduced.contains("I need to inspect"), "pre-read planning must yield: {reduced}");
     assert_eq!(claims(&continuum_context::cost::Chars, sources), demand, "allocation does not rewrite stored wants");
 
@@ -231,4 +231,154 @@ fn planning_detail_yields_to_cursor_and_returns_when_granted() {
     let restored_source = crate::cognition::context_streams::open_views::OpenViews { memory: &restored, persona: uuid::Uuid::nil() };
     view.turn_over(&continuum_context::cost::Chars, Vec::new(), &[&restored_source], whole).expect("matching grants");
     assert!(text(&view).contains(intent.trim()), "the allocation never deleted the note");
+}
+
+/// Her whole read of the file, then an applied edit of it: the edit she has in hand (for the
+/// history tests, which bound what leaves RAM by it).
+pub(super) fn record_read_and_edit(wm: &WorkingMemory) {
+    record(wm, read(1, 498, 498, None));
+    wm.record_receipt_typed(&[edit(PATH)], "[action] code/edit ok: 1 replacement", None, saved("the-edit"));
+}
+
+/// A `code/edit` of `path` that applied, as the executor reports it.
+fn edit(path: &str) -> Observation {
+    Observation {
+        call: ToolCall {
+            id: "edit".into(),
+            name: "code/edit".into(),
+            input: serde_json::json!({ "file_path": path, "old_string": "ConcurrentClaim", "new_string": "ActuateSkipReason::ConcurrentClaim" }),
+        },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: ToolResult { tool_use_id: "edit".into(), content: "ok: 1 replacement".into(), is_error: None, custody: ResultCustody::Whole { handle: "edit".into() } },
+            verb: ToolVerb::classify("code/edit"),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
+/// A `code/git/commit` that landed, as the executor reports it: the act that closes her change.
+fn commit() -> Observation {
+    Observation {
+        call: ToolCall { id: "commit".into(), name: "code/git/commit".into(), input: serde_json::json!({ "message": "the change" }) },
+        output: ToolOutput {
+            image: None,
+            additional_images: None,
+            result: ToolResult { tool_use_id: "commit".into(), content: "ok: committed".into(), is_error: None, custody: ResultCustody::Whole { handle: "commit".into() } },
+            verb: ToolVerb::classify("code/git/commit"),
+            paths: Vec::new(),
+            verdict: Default::default(),
+        },
+        status: ActStatus::Executed,
+    }
+}
+
+/// Her whole read of the 498-line file, then `newer` acts of other output after it, each `size`
+/// chars; with `edits`, an edit of the file she read (by its absolute path in her checkout, when
+/// she stands in one, as Aris's edits named it) and her note on what it did, between her plan and
+/// the newer acts. Returns her note.
+fn working(wm: &WorkingMemory, edits: bool, newer: usize, size: usize) -> &'static str {
+    let edited = wm.scope.lock().as_deref().map_or_else(|| PATH.to_owned(), |checkout| format!("{checkout}/{PATH}")); // map_or_else: no checkout, the path as read
+    let body = (1..=498).map(|n| format!("{n:>6} | line {n}")).collect::<Vec<_>>().join("\n");
+    wm.record_receipt_typed(&[read(1, 498, 498, None)], &format!("[action] code/read {PATH}\n{body}"), None, saved("the-file"));
+    wm.record(&format!("items 1-4 from the review; I will do 4 first. {}", "weighing where ConcurrentClaim is decided. ".repeat(20)));
+    let note = "my edit applied: item 4 is done; next items 1-3";
+    // Each later thought a millisecond after the result it follows, so which one follows a result
+    // is exact whatever the test's pace (live, a thought follows a generation, seconds after it).
+    let think = |text: &str| {
+        let returned = wm.actions.lock().records().last().and_then(|record| record.received_ms).unwrap_or(0); // unwrap_or: every record here carries its time
+        let occurrence = wm.next_entry_seq.fetch_add(1, Ordering::Relaxed);
+        wm.thoughts.lock().push(ThoughtRecord::new(occurrence, text.to_owned(), returned + 1));
+    };
+    if edits {
+        wm.record_receipt_typed(&[edit(&edited)], "[action] code/edit ok: 1 replacement", None, saved("the-edit"));
+        think(note);
+    }
+    for n in 0..newer {
+        wm.record_receipt_typed(&[], &format!("[action] code/shell cargo check {n}\n{}", "warning: unused import\n".repeat(size / 23)), None, saved(&format!("shell-{n}")));
+        think(&format!("cargo check {n}: {}", "the build is still running, polling it again. ".repeat(10)));
+    }
+    note
+}
+
+// what this catches: what her work in hand is, read off typed state. A read made for the change she
+// is making is in hand before any edit (Atlas on the M5, 2026-11-16, card 29f5cd07: reads made to
+// prepare an edit collapsed each other and he re-read one file nine acts running), and her commit
+// closes the change; an applied edit of that file (her read by its checkout-relative path, her edit by its absolute
+// path in the checkout, as Aris's on the M5) puts its newest read and her first thought after the
+// edit's result in hand; the thought she had before the edit is not her note on it; and the edit
+// survives her checkpoint.
+#[test]
+fn an_edit_of_a_file_she_has_open_puts_its_read_and_her_note_on_it_in_hand() {
+    let checkout = || Some("/work/29f11bbd".to_owned());
+    let wm = WorkingMemory::new(8);
+    wm.set_scope(checkout());
+    working(&wm, false, 0, 0);
+    let her_read = wm.actions.lock().records().next().map(|record| record.seq).expect("test: her read is recorded"); // test: recorded above
+    assert_eq!(wm.in_hand().reads, std::collections::HashSet::from([ActSeq(her_read)]), "a read made for her change is in hand before any edit");
+    wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
+    assert_eq!(wm.in_hand(), crate::cognition::working_memory::in_hand::InHand::default(), "her commit closes the change: its reads leave her hand");
+
+    let wm = WorkingMemory::new(8);
+    wm.set_scope(checkout());
+    let note = working(&wm, true, 0, 0);
+    let in_hand = wm.in_hand();
+    let (acts, _) = wm.action_renderings();
+    assert_eq!(in_hand.reads, std::collections::HashSet::from([ActSeq(acts[0].seq)]), "the read of the file she is editing");
+    let thoughts = wm.thoughts();
+    let noted = thoughts.iter().find(|thought| thought.text() == Some(note)).map(|thought| ThoughtOccurrence(thought.occurrence));
+    assert_eq!(in_hand.notes, noted.into_iter().collect::<std::collections::HashSet<ThoughtOccurrence>>(), "her note on what the edit did, never the plan she had before it");
+
+    let restored = WorkingMemory::new(8);
+    restored.restore(wm.snapshot());
+    restored.set_scope(checkout());
+    assert_eq!(restored.in_hand(), in_hand, "her edit in hand survives a restart");
+
+    // Aris after 00:28Z: a whole read, then reads of single regions. The whole read stays the one
+    // her view keeps; a region never replaces it.
+    record(&wm, read(400, 450, 498, None));
+    assert_eq!(wm.in_hand().reads, in_hand.reads, "a later partial read does not replace her whole read");
+}
+
+// what this catches: Aris on the M5, 2026-11-14 00:24-00:28Z. Two overflow turnovers collapsed the
+// file she was editing to its outline and her "item 4 is done" note with it, and she read the file
+// whole again after each. Replayed in shape: her whole read, her plan, the edit and her note, then
+// newer acts and thoughts. A turnover under a grant that holds each source's newest end (her newest
+// act and thought, and her work in hand) keeps the file and her note whole while the newer acts
+// collapse oldest first; without the edit the same start collapses the file.
+#[test]
+fn a_turnover_with_an_open_edit_keeps_the_file_and_her_note_on_it_whole() {
+    use continuum_context::source::Source;
+    use continuum_context::view::{Claim, View};
+    use crate::cognition::context_streams::{actions::Actions, thoughts::Thoughts, ContextMessage};
+
+    let tight = |claims: &[Claim]| claims.iter().map(|claim| claim.floor + claim.newest).collect();
+    let text = |view: &View<ContextMessage>| view.render().map(|m| m.text.clone()).collect::<Vec<_>>().join("\n");
+    let start = |wm: &WorkingMemory| {
+        let actions = Actions { memory: wm, persona: uuid::Uuid::nil() };
+        let thoughts = Thoughts { memory: wm, persona: uuid::Uuid::nil() };
+        let sources: &[&dyn Source<ContextMessage>] = &[&actions, &thoughts];
+        let (view, _) = View::start(&continuum_context::cost::Chars, Vec::new(), sources, tight).expect("matching grants"); // expect: one grant per claim cannot mismatch
+        text(&view)
+    };
+    let file = "   498 | line 498";
+
+    let wm = WorkingMemory::new(8);
+    let note = working(&wm, true, 6, 2_000);
+    let shown = start(&wm);
+    assert!(shown.contains(file) && shown.contains("     1 | line 1\n"), "the file she is editing is whole");
+    assert!(shown.contains(note), "her note on what her edit did is whole");
+    assert!(!shown.contains("cargo check 1\n"), "a newer act than the file collapses: the rest keeps oldest-first");
+
+    // Atlas's case: the file read for the change, no edit yet, newer acts after it: still whole
+    let wm = WorkingMemory::new(8);
+    working(&wm, false, 6, 2_000);
+    assert!(start(&wm).contains(file), "a file read for the change she is making stays whole before her edit");
+
+    // once her commit closes the change, the same start collapses it like any older act
+    wm.record_receipt_typed(&[commit()], "[action] code/git/commit ok", None, saved("the-commit"));
+    assert!(!start(&wm).contains(file), "after her commit the file is an older act and collapses");
 }

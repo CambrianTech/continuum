@@ -8,7 +8,7 @@ use crate::inference::serving_guard::{
 };
 use crate::inference::sse_stream::{OpenAIStreamChunk, STREAM_IDLE_TIMEOUT_SECS};
 
-use crate::ai::types::{ChatMessage, ImageInput, MessageContent};
+use crate::ai::types::{ChatMessage, ContentPart, ImageInput, MessageContent};
 
 use super::embedding::{build_embedding_body, parse_embedding_response, parse_embedding_usage};
 

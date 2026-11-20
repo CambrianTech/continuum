@@ -6,7 +6,7 @@
 //! and counts it once as EXPOSED at its age, in acts since she last asked; when an arriving act asks
 //! the same thing ([`Fingerprint`]) and gets the same outcome ([`ContentHash`]), that is a
 //! RE-REQUEST at the earlier occurrence's age. Held whole, the view renders it as a repeat block
-//! (MIND-CONTEXT invariant 4); held collapsed (its summary, pointer, a fold block or her log), its
+//! (CONTINUUM-ENGINE section 5 invariant 4); held collapsed (its summary, pointer, a fold block or her log), its
 //! whole arrives again. So what a collapse costs is the propensity times the whole it re-sends.
 //! A re-request with a CHANGED outcome (the file was edited) is a new observation: keeping the old
 //! whole would not have spared it, so it only becomes her latest occurrence.

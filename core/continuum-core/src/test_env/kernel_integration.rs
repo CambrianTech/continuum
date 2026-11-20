@@ -476,6 +476,7 @@ mod outcome_projection {
         let running = ShellExecuteResponse {
             execution_id: id.to_string(),
             status: ShellExecutionStatus::Running,
+            cwd: "/w".into(),
             stdout: None,
             stderr: None,
             exit_code: None,
@@ -504,6 +505,7 @@ mod outcome_projection {
             let value = serde_json::to_value(ShellExecuteResponse {
                 execution_id: uuid::Uuid::new_v4().to_string(),
                 status: status.clone(),
+                cwd: "/w".into(),
                 stdout: None,
                 stderr: Some("boom".into()),
                 exit_code: Some(2),

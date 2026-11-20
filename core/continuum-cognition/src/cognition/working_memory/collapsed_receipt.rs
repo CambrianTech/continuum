@@ -53,7 +53,7 @@ impl CollapsedReceipt {
                 room => Some(Uuid::parse_str(room).ok()?),
             },
             operation: operation.to_owned(),
-            handle: params.handle?,
+            handle: params.handle?.into(),
             workspace,
         };
         (receipt.to_string() == text).then_some(receipt)

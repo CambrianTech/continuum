@@ -371,7 +371,7 @@ fn asha_with_hands() -> LlmDeliberationFaculty {
 }
 
 /// The schemas a surface puts on the wire, as bytes.
-fn wire(tools: &crate::cognition::tool_surface::SelectedSurface<'_>) -> String {
+fn wire(tools: &crate::cognition::tool_surface::SelectedSurface) -> String {
     serde_json::to_string(&tools.specs).expect("schemas")
 }
 
@@ -399,7 +399,7 @@ fn view_epoch(faculty: &LlmDeliberationFaculty) -> Option<u64> {
 
 /// Her hands as the act's one allocation chooses them within `window`, beside her framing alone:
 /// the path `prompt_view` takes, without the rest of a prompt.
-fn tools_within<'a>(faculty: &'a LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice<'a>, continuum_context::allocation::ActPlan) {
+fn tools_within(faculty: &LlmDeliberationFaculty, ws: &Workspace, window: u32) -> (crate::cognition::llm_deliberation_faculty::prompt::ToolsChoice, continuum_context::allocation::ActPlan) {
     use continuum_context::allocation::{allocate, id, ActClaims, Head, Span};
     use continuum_context::ladder::Leveled;
     let charge = |tokens: usize| tokens as u32;
@@ -573,4 +573,30 @@ fn a_moves_change_waits_for_her_views_next_start_and_rides_the_tail_until_then()
     assert!(surface.names_of(&adopted).iter().any(|name| name == verb), "the start adopts the set her moves select");
     let next = faculty.prompt_view_within(&moved, 200_000);
     assert_eq!(wire(&next.tools), wire(&adopted), "and holds it");
+}
+
+// what this catches (card 9cf06ade, slice 1): the request and contribute's per-act template clone
+// deep-copying her tool head. A request built from her view carries the view's schemas by pointer,
+// its clone shares them, and its wire JSON is byte-identical to the same schemas as an owned list.
+// Not covered here (slice 2): `retained` and `at_levels` still build a fresh head each act.
+#[test]
+fn the_request_and_its_clone_carry_her_head_without_copying_it() {
+    let faculty = asha_with_hands();
+    let ws = Workspace::new("what changed on the board?");
+    let view = faculty.prompt_view_within(&ws, 200_000);
+    assert!(view.capacity_error.is_none(), "{:?}", view.capacity_error);
+    let head = view.tools.specs.clone().expect("her hands are a surface"); // JUSTIFIED: test fixture
+    let shared = Arc::clone(&head);
+    let binding = faculty.binding.load_full();
+    let reserve = view.completion_reserve;
+    let request = faculty.build_request_within(&binding, reserve, view.messages, Some(shared), view.system, None, Some(ws.room_id), TurnKind::Pass);
+    let template_clone = request.clone();
+    let (Some(sent), Some(cloned)) = (request.tools.as_ref(), template_clone.tools.as_ref()) else {
+        panic!("the request carries her head"); // JUSTIFIED: test fixture
+    };
+    assert!(Arc::ptr_eq(sent, &head), "the request points at the view's schemas");
+    assert!(Arc::ptr_eq(cloned, &head), "the template's per-act clone shares them");
+    let owned: Vec<NativeToolSpec> = head.to_vec();
+    let (shared_wire, owned_wire) = (serde_json::to_string(sent).expect("schemas"), serde_json::to_string(&owned).expect("schemas"));
+    assert_eq!(shared_wire, owned_wire, "the wire bytes are the schemas', whoever holds them");
 }

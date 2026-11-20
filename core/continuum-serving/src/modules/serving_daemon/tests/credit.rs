@@ -269,8 +269,8 @@ async fn a_fully_leased_pool_budgets_nothing_and_the_credit_resurrects_nothing()
     serving_measured_by(&daemon, &authority, Arc::new(std::sync::atomic::AtomicU64::new(engine)));
     until_the_board(&authority, |r| r.own_bytes == engine).await;
 
-    // The negative control: the ladder's first rung would have handed the engine back.
-    assert_eq!(governed_vram_ceiling(&authority), Some(engine), "the rung that resurrected leased-away bytes");
+    // The replacement quote and the host budget both retain the outstanding training lease.
+    assert_eq!(governed_vram_ceiling(&authority), Some(0), "the training lease still owns the entire pool");
 
     let budget = daemon.host_budget_snapshot();
     assert_eq!(budget.host.usable_bytes, 0, "a fully leased pool budgets nothing: no prior, no own bytes back");

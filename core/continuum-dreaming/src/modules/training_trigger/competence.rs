@@ -10,8 +10,8 @@ use crate::genome::signature::GeneSignature;
 
 /// Mint the embedding-space signature of `examples`, named `name` (an inline dataset is named by
 /// its trait). `None` when the mint fails: the learning proceeds and the gene routes by fallback.
-pub(crate) async fn mint_signature(name: String, trait_kind: &str, examples: &[TrainingExample]) -> Option<GeneSignature> {
-    let texts: Vec<String> = examples.iter().map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
+pub(crate) async fn mint_signature<'a>(name: String, trait_kind: &str, examples: impl Iterator<Item = &'a TrainingExample> + Send) -> Option<GeneSignature> {
+    let texts: Vec<String> = examples.map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
     let joined = texts.join("\n");
     let corpus = crate::genome::corpus_ref::CorpusRef {
         name,

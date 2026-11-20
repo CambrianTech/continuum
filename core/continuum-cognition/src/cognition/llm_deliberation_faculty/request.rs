@@ -313,7 +313,8 @@ impl LlmDeliberationFaculty {
         // its prompt. Carried as `max_tokens` verbatim, never re-derived here.
         allowance: u32,
         messages: Vec<ChatMessage>,
-        tools: Option<Vec<NativeToolSpec>>,
+        // Her surface as built: shared, never copied into the request (card 9cf06ade).
+        tools: Option<std::sync::Arc<[NativeToolSpec]>>,
         system_prompt: String,
         stop_sequences: Option<Vec<String>>,
         // The room this turn speaks in — the ACTIVITY identity. It is authoritative
@@ -356,7 +357,7 @@ impl LlmDeliberationFaculty {
             // Greedy override (the eval window) wins over her lived warmth so the
             // reward metric is reproducible; `None` (live cognition) → her own
             // configured temperature. Wait-free read, like `genome` below.
-            temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)),
+            temperature: Some((**self.decoding.load()).unwrap_or(self.temperature)), // unwrap_or: no greedy override is live cognition, at her own temperature
             // Generation is bounded inside the window the prompt was fitted to
             // ([`request_allowance`]): a pass by its grant in the one allocation, an act by
             // the room its prompt leaves (its answer is payload; its think is bounded by

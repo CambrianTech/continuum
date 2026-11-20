@@ -1,0 +1,15 @@
+[package]
+name = "continuum-persona-engine"
+version = "0.1.0"
+edition = "2021"
+description = "The persona engine (CONTINUUM-ENGINE 4.14): one mind decodes at a time; the next is staged as data, the previous retires to RAM, a switch binds in ms. Objects, not launch flags."
+
+[dependencies]
+uuid.workspace = true
+futures.workspace = true
+thiserror.workspace = true
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

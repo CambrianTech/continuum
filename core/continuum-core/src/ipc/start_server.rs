@@ -91,6 +91,9 @@ pub fn start_server(
         &resource_daemon,
         &model_catalog,
     )?;
+    // The engine's host prompt cache answers the host's memory deficit first, and takes its memory
+    // back when the OS reads normal: the one reclaim path for host RAM (card 0f631c46).
+    serving_daemon.give_host_memory_back_first(&pressure_monitor, rt_handle.clone());
 
     pressure_broker_wiring::register_pressure_broker(
         &runtime,

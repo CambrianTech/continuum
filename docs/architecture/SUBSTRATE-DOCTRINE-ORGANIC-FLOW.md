@@ -363,7 +363,7 @@ visible debt.
 ## Reading order for new contributors
 
 1. **This doc** (substrate doctrine) — the WHY behind everything.
-2. **[CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md)** — the runtime contract every module inherits.
+2. **[CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md)** — the runtime contract every module inherits.
 3. **[CONCURRENCY-STYLE-GUIDE.md](CONCURRENCY-STYLE-GUIDE.md)** — the canonical RTOS shape (interval, watch, atomic gate, quarantine).
 4. **[OBSERVABILITY-AS-SUBSTRATE.md](OBSERVABILITY-AS-SUBSTRATE.md)** — half the substrate is structured capture of decisions.
 5. **[PERSONA-COGNITION-PIPELINE.md](PERSONA-COGNITION-PIPELINE.md)** — what a persona actually IS.

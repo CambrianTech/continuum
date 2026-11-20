@@ -1,7 +1,7 @@
 # The Organic Cognition Substrate
 
 > Status: design (2026-06-22). Governing architecture for all persona cognition.
-> Precedence: this defines the SHAPE; [CBAR-SUBSTRATE-ARCHITECTURE](../architecture/CBAR-SUBSTRATE-ARCHITECTURE.md)
+> Precedence: this defines the SHAPE; [CONTINUUM-ENGINE](../architecture/CONTINUUM-ENGINE.md)
 > + [CONCURRENCY-STYLE-GUIDE](../architecture/CONCURRENCY-STYLE-GUIDE.md) define the
 > Rust mechanics every element inherits; [CONCURRENT-MIND-AND-GOVERNOR](../architecture/CONCURRENT-MIND-AND-GOVERNOR.md)
 > is the per-persona workspace this composes into.

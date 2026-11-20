@@ -28,6 +28,8 @@ members = [
     "core/continuum-core",
     "core/continuum-sentinel",
     "core/continuum-kernel",
+    "core/continuum-persona-engine",
+    "core/continuum-persona-llama",
     "core/continuum-store",
     "core/continuum-grid",
     "core/continuum-mind",
@@ -295,7 +297,7 @@ candle-nn = { version = "0.9" }
 candle-transformers = { version = "0.9" }
 
 # Serialization
-serde = { version = "1", features = ["derive"] }
+serde = { version = "1", features = ["derive", "rc"] } # rc: a tool surface is one shared Arc<[NativeToolSpec]> from build to request, never copied per act (card 9cf06ade)
 serde_json = { version = "1", features = ["raw_value"] } # raw_value: a derived field is held as its exact text until decoded, so u128 ids never pass through Value (#5659)
 
 # Database

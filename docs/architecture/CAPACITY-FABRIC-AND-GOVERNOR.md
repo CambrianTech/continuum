@@ -6,7 +6,7 @@ Status: DESIGN (2026-07-16). Supersedes the init-time framing in the pre-existin
 nvidia_monitor,memory_manager,tracker}.rs`, `inference_capability/{probe,registry}.rs`,
 `system_resources/{memory_pressure,disk_pressure,monitor,concurrency}.rs`, the
 `PressureBroker`, `serving_plan.rs`, and `resource_admission.rs`. Read
-`CBAR-SUBSTRATE-ARCHITECTURE.md` and `CONCURRENCY-STYLE-GUIDE.md` first — this obeys both.
+`CONTINUUM-ENGINE.md` and `CONCURRENCY-STYLE-GUIDE.md` first — this obeys both.
 
 ---
 

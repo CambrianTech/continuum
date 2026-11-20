@@ -94,6 +94,11 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             .unwrap(),
     );
     let room = airc.join("ordinary-project").await.unwrap();
+    // Her own review is admitted only where the room declares `self: true` (card 0174211f).
+    let binding = serde_json::json!({"recipe": "project", "params": {"review": {"self": true}}});
+    airc.publish_wall_post_in(&room, crate::experience::binding::RECIPE_WALL_CATEGORY.to_string(), binding.to_string(), None)
+        .await
+        .unwrap();
     let persona = airc.peer_id().as_uuid();
     let name = "public-submission-owner";
     let registry = crate::persona::PersonaAircRuntimeRegistry::new();
@@ -247,6 +252,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             outcome: ReviewOutcome::Failed,
             evidence_text: None,
             evidence: params.artifact.clone(),
+            verified_head: None,
         },
     )
     .await
@@ -279,6 +285,7 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
             review_claim_id: Some(shown(review_claim.as_uuid()).expect("a full id parses")), // expect: a full uuid's own rendering
             outcome: ReviewOutcome::Passed,
             evidence_text: None,
+            verified_head: Some("b".repeat(40)),
             evidence: Some(
                 params
                     .artifact
@@ -294,9 +301,12 @@ pub(super) async fn work_submission_commands_bind_before_publication_and_preserv
         "{:?}",
         reviewed.credit_error
     );
+    // Her own pass, in a room declaring `self: true` (card 0174211f), is admitted to settlement
+    // rather than parked as IndependentReviewRequired; this fixture's staged row is not eligible
+    // evidence, so settlement stops there and nothing trains (measured in CI on e2a947b35).
     assert_eq!(
         reviewed.credit.unwrap().state,
-        reviewed::ReviewedCreditState::IndependentReviewRequired
+        reviewed::ReviewedCreditState::IneligibleEvidence
     );
     let later_revision = Uuid::new_v4();
     let another_claim = CapturedCredit {

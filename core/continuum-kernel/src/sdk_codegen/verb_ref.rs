@@ -2,9 +2,8 @@
 //!
 //! Every handle, marker and refusal the substrate shows her names the verb that acts on it; a
 //! name she cannot call is a handle she cannot open (2026-11-06, the M5: `tool/output` was named
-//! by every folded act, saved result and thought, was not native, and no act called it; and the
-//! slash form it was named by is not the name her tool list offers, which is each command's first
-//! alias, `read_output`). So text never spells a verb. It renders a [`VerbRef`]:
+//! by every folded act, saved result and thought, was not native, and no act called it). So text
+//! never spells a verb. It renders a [`VerbRef`]:
 //!
 //! - it points at the command's TYPE, never a copy of its name, so a rename re-renders every
 //!   reference and a moved or removed command fails to compile where it is named;
@@ -12,7 +11,14 @@
 //! - it renders through [`wire_name`], the same function her offered tool list is named by, so
 //!   the verb in her text is the verb in her function list.
 //!
-//! A rename keeps the old name as a declared alias (`ALIASES`), so her old calls still resolve.
+//! ONE NAME PER VERB, derived from its command path (card d2b6dbce): `work/release` is offered as
+//! `work_release`, for every command, by [`wire_name`] alone. A command's `ALIASES` are other
+//! names it ANSWERS to (the trained reflexes a model types, `read_file`, `bash`), resolved
+//! inbound by `tool_dialect`; they never rename what she is offered. Before this, the first alias
+//! renamed the offer one verb at a time, so one family reached her under two schemes
+//! (`claim_task`, `release_task` beside `work_create`, `work_submit`): Aiko on the M5,
+//! 2026-11-14 04:55Z, reasoned in `work_*` names, found no `work_release`, and called
+//! `work_create` again ("I'm stuck in a loop creating the same duplicate card again").
 //!
 //! Two tiers, by where the text can appear:
 //! - [`VerbRef::in_hands`]: native and in her hands (`Always`, `Core` or `OnDemand`), for text
@@ -41,8 +47,8 @@
 //!     fn outcome(r: &R) -> ToolVerdict { ToolVerdict::of_success(r.success) }
 //! }
 //! const REOPEN: VerbRef<Reopen> = VerbRef::always();
-//! // Rendered as her tool list names it: the first alias under the trained-reflex offer.
-//! assert_eq!(format!("reopen with {REOPEN}"), "reopen with reopen_output");
+//! // Rendered as her tool list names it: derived from its path, never from an alias.
+//! assert_eq!(format!("reopen with {REOPEN}"), "reopen with doc_reopen");
 //! ```
 //! A catalog-only command cannot be named (what this catches: a marker naming a verb that is not
 //! on her native surface, `tool/output` before 2026-11-06):
@@ -91,43 +97,13 @@ use std::marker::PhantomData;
 use super::CommandSpec;
 use continuum_base::tool_disclosure::Disclosure;
 
-/// How a command is NAMED on the wire when offered to a model. Both the offered form and every
-/// declared alias resolve on the way back in, so a style only changes what she is shown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OfferStyle {
-    /// Offer the model's trained reflex: the command's primary alias (`code/read` → `read_file`).
-    TrainedReflex,
-    /// Offer our canonical name, charset-legal (`code/read` → `code_read`).
-    Canonical,
-}
-
-/// The offer policy for a served model: the per-model seam. Today every model is met with its
-/// training (the residents' coder LoRAs are tuned on the trained names); `Canonical` is adopted
-/// here, once, only after a tool-using A/B validates it (#204).
-pub fn offer_style_for(_model: Option<&str>) -> OfferStyle {
-    OfferStyle::TrainedReflex
-}
-
-/// A command's primary alias: the first it declares, the trained reflex it is offered under.
-pub fn primary_alias(aliases: &'static [&'static str]) -> Option<&'static str> {
-    aliases.first().copied()
-}
-
-/// THE wire name of a command under `style`: its primary alias, or its canonical name made
-/// charset-legal (`/` → `_`) when it has none or the style is canonical. Never a raw slash. Her
-/// offered tool list and every verb her text names go through this one function.
-pub fn wire_name(name: &str, primary_alias: Option<&str>, style: OfferStyle) -> String {
-    match (style, primary_alias) {
-        (OfferStyle::TrainedReflex, Some(alias)) => alias.to_owned(),
-        _ => name.replace('/', "_"),
-    }
-}
-
-/// The name her tool list offers a command under, read from its declaration (canonical name
-/// and aliases) through [`wire_name`] and the served model's [`offer_style_for`]. Every verb and
-/// example call her text names is offered through this, so none can disagree with her tools.
-pub fn offered_name_of(name: &str, aliases: &'static [&'static str]) -> String {
-    wire_name(name, primary_alias(aliases), offer_style_for(None))
+/// THE wire name of a command: its command path made charset-legal (`/` → `_`), so
+/// `work/release` is `work_release`. Every command her tool list offers, and every verb her text
+/// names, is named by this one function, so the name she reasons in for one member of a family is
+/// the scheme of every member, and a verb she infers from its siblings exists. Declared aliases
+/// never enter it: they only widen what resolves inbound (`tool_dialect::resolve_wire_name`).
+pub fn wire_name(name: &str) -> String {
+    name.replace('/', "_")
 }
 
 /// A reference to a command in her hands, by its type. Renders as her tool list names it.
@@ -167,9 +143,9 @@ impl<C: CommandSpec> VerbRef<C> {
         C::DISCLOSURE
     }
 
-    /// The name her tool list offers it under, read from the declaration when rendered.
+    /// The name her tool list offers it under ([`wire_name`] of its path).
     pub fn offered(self) -> String {
-        offered_name_of(C::NAME, C::ALIASES)
+        wire_name(C::NAME)
     }
 }
 

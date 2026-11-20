@@ -120,7 +120,7 @@ pub trait CommandSpec {
     /// by the command in its own file so it stays portable; aggregated into one
     /// generated inverse index. Defaults to none.
     const ALIASES: &'static [&'static str] = &[];
-    /// What this command's calls do to the world (MIND-CONTEXT invariant 4): declared HERE,
+    /// What this command's calls do to the world (CONTINUUM-ENGINE section 5 invariant 4): declared HERE,
     /// by the command in its own file, never inferred from its name or output. Defaults to
     /// `Undeclared`, which authorizes nothing: such a call is never a repeat and never taken as
     /// observing, and the replay validator counts it.

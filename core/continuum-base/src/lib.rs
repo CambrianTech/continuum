@@ -5,10 +5,12 @@
 #![deny(clippy::await_holding_lock, clippy::significant_drop_in_scrutinee, clippy::let_underscore_must_use)] // clean on 2026-11-08 (#5858 CI); CI's clippy step enforces it
 
 pub mod audio_constants;
+pub mod capture;
 pub mod config_env;
 pub mod population;
 pub mod home;
 pub mod id_resolve;
+pub mod non_empty_list;
 pub mod non_empty_text;
 pub mod probe;
 pub mod probed;
@@ -21,3 +23,4 @@ pub mod time;
 pub mod token_estimate;
 pub mod tool_disclosure;
 pub mod tool_effect;
+pub mod tool_evidence;

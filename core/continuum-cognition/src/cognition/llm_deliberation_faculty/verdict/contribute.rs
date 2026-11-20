@@ -45,7 +45,9 @@ impl LlmDeliberationFaculty {
         // Her window, from the one determiner (card de7bb6e8). On the shared pool it is her grant. An
         // ungranted mind is measured first (her view records her wish, never submitted), then waits for the
         // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
-        let decided = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_window(
+        // Her window, decided and (a grant) HELD for this act (`decide_and_hold`): a seat being reclaimed
+        // or moved before the hold is waited for within her turn, never a failed turn (card d50e8e66).
+        let (decided, mut act_hold) = match super::admission_clock::stage("deliberation.window_grant", crate::capacity::mind_window::decide_and_hold(
             self.persona_id,
             || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
             || {
@@ -76,13 +78,7 @@ impl LlmDeliberationFaculty {
             }
         };
         let decided_window = decided.tokens();
-        // The grant LEASE this turn is rendered against (size and revision), when she is on the
-        // shared pool: the grant owner reserves that revision at dispatch, after any lane wait.
-        let lease_now = || crate::capacity::window_grant::current_lease(self.persona_id);
-        let mut rendered_lease = match decided {
-            crate::capacity::mind_window::Decided::Granted(_) => lease_now(),
-            _ => None,
-        };
+        let mut rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
         let capacity_readiness = Arc::new(crate::cognition::workspace::CapacityReadiness::new(
             self.persona_id,
             self.binding.clone(),
@@ -303,9 +299,8 @@ impl LlmDeliberationFaculty {
                     }
                     // Verbs she loaded into the tail ride beside the head, callable natively.
                     let tail = std::mem::take(&mut selected.tail);
-                    // Selection and budget accounting borrow the cached schemas. Only the
-                    // owned inference request needs a copy of the selected surface.
-                    let tools = selected.specs.map(std::borrow::Cow::into_owned);
+                    // The request points at the same shared schemas: no copy (card 9cf06ade).
+                    let tools = selected.specs;
 
                     let request = self.build_request_within(
                         &binding,
@@ -473,7 +468,8 @@ impl LlmDeliberationFaculty {
                         "her grant changed between render and dispatch: re-rendered against it, never sent"
                     );
                     grant_rerendered = true;
-                    rendered_lease = lease_now();
+                    act_hold = crate::capacity::window_grant::hold_for_act(self.persona_id); // None: none published, priced at the refusal's own count
+                    rendered_lease = act_hold.as_ref().map(crate::capacity::window_grant::ActHold::lease);
                     fit_window = rendered_lease.map_or(current, |lease| lease.tokens); // map_or: the refusal's own count when no lease is published
                     view = self.prompt_view_with_visual_feedback(ws, fit_window, calibration, visual.as_ref());
                 }

@@ -106,6 +106,7 @@ impl From<ClientError> for FfiError {
                 command,
                 reason,
                 outcome,
+                ..
             } => FfiError::Refused {
                 command,
                 reason,
@@ -167,6 +168,7 @@ impl ServeHandler for CommandHandlerAdapter {
                 command,
                 reason: fe.to_string(),
                 outcome: None,
+                refusal: None,
             })?;
         serde_json::from_str(&result_json).map_err(|e| ClientError::Codec(e.to_string()))
     }
@@ -427,6 +429,7 @@ mod tests {
                 command: "danger".to_string(),
                 reason: "not allowed".to_string(),
                 outcome: None,
+                refusal: None,
             })
         });
         let conn = Connection::new(mock);

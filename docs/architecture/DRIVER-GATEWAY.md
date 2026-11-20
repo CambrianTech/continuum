@@ -41,14 +41,14 @@ The port is stable and configured, never dynamic, because an agent needs a URL i
 | OpenAI Responses | `POST /v1/responses` (incl. `previous_response_id`) | Grok Build, Codex CLI |
 | Discovery | `GET /v1/models` | all |
 
-Tools pass straight through. The agent executes its own tools; the gateway never does. Tool-call parsing and rendering stays the engine's one template owner (SERVING-ENGINE §1 `template`).
+Tools pass straight through. The agent executes its own tools; the gateway never does. Tool-call parsing and rendering stays the engine's one template owner (CONTINUUM-ENGINE.md 4.1 `template`).
 
 **A session is a mind.** Each agent session maps to a driver mind, `PageKey::driver(user, session)`.
 - Session memory is opt-in (`x-continuum-session: on`) until G2 seats driver minds through `MindMemory::seat`: switched on by default, a driver session queued behind resident pins, a 61 s steady-state step against 18 s without (card e3ce65f9).
 - The session id comes from the protocol when it carries one: `previous_response_id`, an `x-session-id` header, or OpenAI's `user` field.
 - Otherwise it is the hash of the conversation's stable head: the system prompt plus the first user message.
 
-A driver mind is seated by `MindMemory::seat` (SERVING-ENGINE §1a) exactly like a resident:
+A driver mind is seated by `MindMemory::seat` (CONTINUUM-ENGINE.md 4.1a) exactly like a resident:
 - it keeps its warm KV and pages to RAM or disk;
 - it is never anonymous transient traffic, so it never evicts a resident unsaved;
 - it is scheduled by the one scheduler (plan goal 9) by its activity temperature, so a busy agent and four residents share the engine fairly.
@@ -84,7 +84,7 @@ The `Responses` API's server-side state is exactly this: the response id names t
 
 | Layer | Owners | Rule |
 |---|---|---|
-| 1. Serving floor | the engine; `MindMemory` (SERVING-ENGINE §1a); the capture owner | One identity, the mind (`PageKey`), for a resident, a fork or a driver session. |
+| 1. Serving floor | the engine; `MindMemory` (CONTINUUM-ENGINE.md 4.1a); the capture owner | One identity, the mind (`PageKey`), for a resident, a fork or a driver session. |
 | 2. Writers | the residents' deliberation faculty; the gateway (every external agent) | Both write the same capture. Neither knows the readers. |
 | 3. Readers of the capture | glass box and replay (act inspector, playback, `serving-replay`); Dreaming (`dataset/from_captures` → training → genes) | They read records, never which system produced them. |
 | 4. Genome | genes selected by what a mind is on, served at `MindMemory::seat` | A gene change calls `forget`, so KV computed under the old genome is never restored. |
@@ -117,7 +117,7 @@ G0 and G1 can start now. G2 waits on MindMemory's `seat`, and G4 on the resident
 |---|---|---|---|
 | `continuum-gateway` | BUILT 10-27 | `continuum-core/src/http` (Anthropic-only endpoint deleted) | The Serving seam's door; depends only on the engine and capture. |
 | `continuum-capture` | BUILT 10-27 | `continuum-cognition`: `prompt_capture`, its store and owner, `mind_room`, `fixture_dir` (1,920 lines moved with history, 38 callers) | One capture and one privacy gate below every writer (faculty, gateway) and reader (inspector, replay, Dreaming). |
-| `continuum-mind-memory` | NEXT | `continuum-engine/src/inference/slots/*` plus the paging block of `turn_admission.rs` | SERVING-ENGINE §1a's owner. A crate keeps every other path from reaching `holders` or the ledger again. |
+| `continuum-mind-memory` | NEXT | `continuum-engine/src/inference/slots/*` plus the paging block of `turn_admission.rs` | CONTINUUM-ENGINE.md 4.1a's owner. A crate keeps every other path from reaching `holders` or the ledger again. |
 | `continuum-providers` | NOTED | the AI provider module's registration in `continuum-core` | The lean `continuum-serve` and the full core must register adapters the same way, without the core. |
 | `continuum-serve` (bin) | NOTED | — | G-lean: the Serving seam alone, learning opt-in. |
 | `*-types` crates | NOTED | wire types shared by two crates (for example `TextGenerationRequest` and the capture records) | Grok Build's pattern (`xai-grok-config-types`): consumers depend on types, not on the engine. Cut where a reader such as `serving-replay` or the act inspector needs records without the engine. |

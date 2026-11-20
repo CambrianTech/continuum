@@ -243,6 +243,29 @@
         assert_eq!(quick, Ok(42));
     }
 
+    // what this catches: an act whose generation is still advancing killed by elapsed time. The
+    // ceiling this replaces (two extensions) dropped Eitan's generation on enrico 2026-10-26 at
+    // its third bound while slot 1 was still decoding. A moving act extends at every checkpoint, for
+    // as many bounds as it keeps moving; it ends only when it stops moving, its slot shows another
+    // task or goes idle, or the engine is condemned.
+    #[test]
+    fn a_moving_act_extends_at_every_checkpoint_and_only_stopping_ends_it() {
+        use crate::inference::llama_server::SlotWork;
+        let at = |work| Some(SlotWork { task: 7, processing: true, work });
+        // ten checkpoints in a row, each with more work done: every one extends (no ceiling)
+        let mut previous = None;
+        for k in 0..10u64 {
+            let now = at(100 + k * 50);
+            assert!(super::extends(false, previous, now), "checkpoint {k}: a moving act is never ended by elapsed time");
+            previous = now;
+        }
+        assert!(!super::extends(false, previous, previous), "no work since the last checkpoint ends it");
+        assert!(!super::extends(false, previous, Some(SlotWork { task: 8, processing: true, work: 9_999 })), "another task on the slot ends it");
+        assert!(!super::extends(false, previous, Some(SlotWork { task: 7, processing: false, work: 9_999 })), "an idle slot ends it");
+        assert!(!super::extends(false, previous, None), "a silent engine is no evidence of progress");
+        assert!(!super::extends(true, previous, at(99_999)), "a condemned engine ends it even while moving");
+    }
+
     // what this catches (card 843d5570): a generation the deadline drops in flight read as a
     // lane wait. enrico, 2026-10-26 (core 839f70216): Eitan's generation ran on slot 1, was
     // extended at 20:43:18 and 21:08:18, and ended at the ceiling at 21:33:18; the drop left

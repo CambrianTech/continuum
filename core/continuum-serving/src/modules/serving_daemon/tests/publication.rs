@@ -511,7 +511,7 @@ fn serving_footprint_fn_resolves_live_catalog_weights() {
             verified: None,
         },
     );
-    let resolve = serving_footprint_fn(catalog.clone());
+    let resolve = serving_footprint_fn(&catalog);
 
     // NotDownloaded (no on-disk weights) → nothing resident yet. Window/lanes
     // are the live serving shape; with no weights they resolve to 0 anyway.
@@ -696,3 +696,63 @@ async fn no_plan_published_means_no_launch() {
     assert!(daemon.reconcile_to_plan().is_none(), "no plan, no launch");
 }
 
+
+// what this catches: a pool step reaching the minds' grants only at serving's next tick (up to a
+// tick late, RTOS rule 10). The grant publisher subscribes to the live pool, so a step alone
+// publishes a fresh evaluation, with no tick run.
+#[tokio::test]
+async fn a_pool_step_publishes_the_grants_without_a_tick() {
+    use crate::inference::engine_residency::EngineIncarnation;
+    let gpu = Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB));
+    let system = Arc::new(SystemResourceMonitor::new());
+    let daemon = Arc::new(ServingDaemonModule::new(
+        gpu,
+        system,
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    ));
+    let mut evaluations = daemon.subscribe_evaluations();
+    evaluations.borrow_and_update();
+    daemon.publish_grants_on_events(&tokio::runtime::Handle::current());
+    let engine = EngineIncarnation {
+        pid: 4_242,
+        started_s: 1_794_000_000,
+        port: 8_090,
+    };
+    daemon
+        .live_pool
+        .send_replace(crate::modules::serving_daemon::live_pool::LivePool::Lowered {
+            tokens: 65_536,
+            on: engine,
+        });
+    // A last-resort bound so a missing subscription fails the test instead of hanging it; the
+    // publication itself is driven by the pool change.
+    tokio::time::timeout(std::time::Duration::from_secs(5), evaluations.changed())
+        .await
+        .expect("the pool step published an evaluation")
+        .expect("the evaluation channel is open");
+}
+
+// what this catches (the M5, 2026-11-15: every ready mind waited up to a 5 s tick for a grant the
+// free cells already held): a ready mind without a grant, or an act's end, reaching the grants only
+// at serving's next tick. `demand_moved` alone publishes a fresh evaluation, with no tick run.
+#[tokio::test]
+async fn a_demand_move_publishes_the_grants_without_a_tick() {
+    let daemon = Arc::new(ServingDaemonModule::new(
+        Arc::new(GpuMemoryManager::simulated("Apple M5 Pro", 53 * GB)),
+        Arc::new(SystemResourceMonitor::new()),
+        test_resource_daemon(),
+        test_catalog(),
+        test_pin_store(),
+    ));
+    let mut evaluations = daemon.subscribe_evaluations();
+    evaluations.borrow_and_update();
+    daemon.publish_grants_on_events(&tokio::runtime::Handle::current());
+    crate::capacity::window_grant::demand_moved();
+    // A last-resort bound so a missing wake fails the test instead of hanging it.
+    tokio::time::timeout(std::time::Duration::from_secs(5), evaluations.changed())
+        .await
+        .expect("the demand move published an evaluation")
+        .expect("the evaluation channel is open");
+}

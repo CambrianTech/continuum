@@ -100,8 +100,12 @@ pub(super) async fn fake_engine(dir: std::path::PathBuf) -> (String, Slots, Arc<
         .route("/props", axum::routing::get(|| async { Json(json!({"total_slots": 2})) }))
         .route("/slots/{slot}", post(page))
         .with_state((dir, slots.clone(), hold.clone()));
+    // The endpoint directory outlives this server; a recycled TCP port is not
+    // the same fixture engine and must not inherit its retirement state.
+    let namespace = format!("/{}", Uuid::new_v4());
+    let app = Router::new().nest(&namespace, app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("test: bind");
-    let root = format!("http://{}", listener.local_addr().expect("test: addr"));
+    let root = format!("http://{}{namespace}", listener.local_addr().expect("test: addr"));
     let server = tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
@@ -167,10 +171,8 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
         act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
     }
     // Mind 3 was paged out at 300; minds 1 and 2 are resident at 150 and 250.
-    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, std::time::Duration::from_secs(10))
-        .await
-        .expect("test: an engine was launched here");
-    stopped.expect("test: the stop saves every resident");
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
+    assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves every resident: {stopped:?}");
     server_a.abort();
 
     // Core B: a new engine, an empty slot set, the same page directory.
@@ -185,6 +187,55 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
         let slot = turn.slot().expect("test: a slot");
         let held = slots_b.lock().expect("test: fixture mutex").get(&slot).cloned();
         assert_eq!(held, Some(format!("{mind}:{last}")), "mind {mind} resumes where she left off");
+        turn.generation_completed();
+    }
+    server_b.abort();
+}
+
+// what this catches (the M5, 2026-11-14 07:48:28Z, #5987 deployed as 7f875ccfd): the stop condemns
+// acts in flight (#5988) and a cut act drops her attribution, so the stop's checkpoint saved only
+// the one resident that was idle; the new engine (new fork pin b5534b531) and core came up with one
+// page and three minds cold (`cold_turn cause="no_page"`). A mind whose act the stop cut is saved
+// from the tokens her slot holds, and both minds restore on the next core's new engine.
+#[tokio::test]
+async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
+    let dir = tempfile::tempdir().expect("test: page dir");
+    let client = reqwest::Client::new();
+    let lanes = Arc::new(Semaphore::new(2));
+
+    // Engine A: two residents, neither ever paged out (no page on disk yet).
+    let (root_a, slots_a, _, server_a) = fake_engine(dir.path().to_path_buf()).await;
+    let (endpoint_a, pool_a) = boot(&root_a, dir.path()).await;
+    for (mind, tokens) in [(1, 100), (2, 200)] {
+        act(&lanes, &pool_a, &client, &root_a, &slots_a, mind, tokens).await;
+    }
+    // Mind 1's next act is sent, the engine prefills part of it, and the stop cuts it.
+    let cut = PageKey::mind(Uuid::from_u128(1)).expect("test: non-nil id");
+    let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(cut), Some(pool_a.clone()), &client, &root_a, 180, std::time::Duration::ZERO)
+        .await
+        .expect("test: her next act admitted");
+    let slot = turn.slot().expect("test: her slot");
+    turn.dispatching();
+    slots_a.lock().expect("test: fixture mutex").insert(slot, "1:180".to_owned());
+    drop(turn); // condemned by the stop: no completion
+
+    let stopped = crate::inference::slots::page_io::checkpoint_endpoint(&client, &root_a, &endpoint_a, || {}).await;
+    assert!(matches!(stopped, crate::inference::slots::page_io::OwnedStopCheckpoint::Saved { .. }), "test: the stop saves: {stopped:?}");
+    server_a.abort();
+
+    // Engine B (another process, as after a fork-pin change; the page format names no build) and a
+    // new core on the same page directory.
+    let (root_b, slots_b, _, server_b) = fake_engine(dir.path().to_path_buf()).await;
+    let (_endpoint_b, pool_b) = boot(&root_b, dir.path()).await;
+    for (mind, held_at_stop) in [(1u128, "1:180"), (2, "2:200")] {
+        let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
+        let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, 300, std::time::Duration::ZERO)
+            .await
+            .expect("test: admitted after the boot");
+        assert_eq!(turn.page_in(), PageIn::Restored, "mind {mind} restores, never cold");
+        let slot = turn.slot().expect("test: a slot");
+        let held = slots_b.lock().expect("test: fixture mutex").get(&slot).cloned();
+        assert_eq!(held.as_deref(), Some(held_at_stop), "mind {mind} resumes what her slot held at the stop");
         turn.generation_completed();
     }
     server_b.abort();
@@ -254,7 +305,7 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
     hold.arrived.notified().await; // mind 1's save is at the engine
     hold.held.store(false, std::sync::atomic::Ordering::Release);
 
-    let settling = crate::inference::slots::page_io::settle(gate, std::time::Duration::from_secs(10));
+    let settling = crate::inference::slots::page_io::settle(gate);
     tokio::pin!(settling);
     assert!(futures::poll!(&mut settling).is_pending(), "the stop waits for the started save");
     assert_eq!(gate.in_flight(), 1, "the save holds its page permit");
@@ -262,7 +313,7 @@ async fn a_transient_save_started_before_the_close_holds_the_stop_until_its_ledg
 
     hold.release.notify_one();
     let settled = settling.await;
-    assert_eq!((settled.in_flight_at_close, settled.cut), (1, 0), "the stop cut nothing");
+    assert_eq!(settled.in_flight_at_close, 1, "the stop waited for the one started save");
     let borrowed = borrow
         .await
         .expect("test: borrow task")

@@ -223,12 +223,18 @@ impl ServingDaemonModule {
         // gauge; never invented.
         let leased_in =
             note_leased_in_peak(crate::inference::resource_admission::take_leased_in_peak());
-        // Each live mind's REQUIREMENT: the untrimmed demand her turns assemble (never
-        // what a window let her send), with headroom, floored at one real turn. Built
-        // once here and carried on the demand by value into the one plan — the
-        // allocator's input, the governed size (card 2eec3977).
+        // Each seated mind's REQUIREMENT: what her view holds at full detail, with headroom, gated
+        // on what her held turns measured. Built once here and carried on the demand by value into
+        // the one plan: the allocator's input, the governed size (card 2eec3977). Before the
+        // registry exists (boot) the seated minds are the residents this host served last, from
+        // the same working set (card 8569b03d): a boot that planned for nobody launched the M5's
+        // engine at a 2,048-token pool beside four minds needing 68-110k each (2026-11-13 19:36Z).
+        let seated_minds = match live.is_empty() {
+            true => self.working_set.remembered_residents(self.seated() as usize),
+            false => live,
+        };
         let requirements =
-            crate::cognition::working_set::requirements_for(&live, &self.working_set);
+            crate::cognition::working_set::requirements_for(&seated_minds, &self.working_set);
         ServingDemand::new(lanes, demand)
             .with_requirements(requirements)
             .with_sent_tokens(sent)

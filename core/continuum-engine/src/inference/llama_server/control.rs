@@ -13,6 +13,9 @@ pub enum LlamaServerError {
     /// Spawn itself failed (binary missing, bad args, OS refused). Loud.
     #[error("llama-server spawn failed: {0}")]
     Spawn(String),
+    /// The live engine answered, but its observed build or placement cannot serve this target.
+    #[error(transparent)]
+    ReadinessRefused(#[from] ReadinessRefusal),
     /// The model GGUF could not be resolved on disk for the requested id.
     #[error("no local GGUF for model '{0}'")]
     ModelNotFound(String),
@@ -35,6 +38,40 @@ pub enum LlamaServerError {
     /// Keep admission suspended and resume observation; never blame the candidate binary.
     #[error("incumbent retirement remains unverified; endpoint suspended: {0}")]
     RetirementPending(String),
+    /// The engine did not apply a host prompt-cache limit (card 494c99f1): it has no host
+    /// cache, it predates the route, or it named its own refusal. Nothing was evicted.
+    #[error("prompt-cache limit refused: {0}")]
+    PromptCacheRefused(super::PromptCacheRefusal),
+
+    /// The engine refused an adapter change (`/lora-adapters/{fresh,load,unload}`), by its answer.
+    #[error("adapter change refused: {0}")]
+    AdapterChange(AdapterChangeRefusal),
+}
+
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum ReadinessRefusal {
+    #[error("{program} reported a debug build. Rebuild in release from the canary pin for the next system startup.")]
+    DebugBuild { program: String },
+    #[error("{program} admitted no GPU placement ({evidence}; residency {residency}). Check backend loading under the core. Last stderr: {stderr}")]
+    CpuPlacement { program: String, evidence: &'static str, residency: String, stderr: String },
+}
+
+/// Why the engine refused an adapter change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AdapterChangeRefusal {
+    /// The adapter is active in a turn in flight (503): the change waits, nothing changed.
+    Busy,
+    /// Any other refusal, with the engine's status and its own words.
+    Refused { status: u16, detail: String },
+}
+
+impl std::fmt::Display for AdapterChangeRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AdapterChangeRefusal::Busy => write!(f, "the adapter is active in a turn in flight"),
+            AdapterChangeRefusal::Refused { status, detail } => write!(f, "status {status}: {detail}"),
+        }
+    }
 }
 
 
@@ -103,6 +140,14 @@ pub struct ObservedGeometry {
 /// Checked at the endpoint's drained lifecycle-admission boundary. Once admitted,
 /// the operation may settle even if newer intent arrives; its result keeps its epoch.
 pub type ServingLifecycleCheck<'a> = dyn Fn() -> bool + Send + Sync + 'a;
+
+/// The reconcile an ensure runs inside: whether its intent is still current, and the serving
+/// operation holding the lifecycle gate (an in-place gene change decides its memory inside it).
+#[derive(Clone, Copy)]
+pub struct Reconciling<'a> {
+    pub current: &'a ServingLifecycleCheck<'a>,
+    pub operation: &'a crate::inference::serving_lifecycle::ServingOperation,
+}
 
 
 /// Evidence handle, not a capacity lease. Dropping it does not abandon the child.
@@ -173,6 +218,11 @@ pub trait LlamaServerControl: Send + Sync {
         false
     }
 
+    /// Finish the retained engine's readiness before comparing it with current demand.
+    async fn finish_pending_readiness(&self, _current: &ServingLifecycleCheck<'_>) -> Result<(), LlamaServerError> {
+        Ok(())
+    }
+
     /// The model id the running server reports serving, or `None` if nothing is
     /// up. `Unreachable` = no server answering (a normal pre-spawn state).
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError>;
@@ -193,6 +243,7 @@ pub trait LlamaServerControl: Send + Sync {
     async fn adopt_genome_in_place(
         &self,
         _target: &ServingTarget,
+        _operation: &crate::inference::serving_lifecycle::ServingOperation,
     ) -> Result<GenomeInPlace, LlamaServerError> {
         Ok(GenomeInPlace::Unsupported)
     }
@@ -331,6 +382,15 @@ pub trait LlamaServerControl: Send + Sync {
         Err(EngineRetirementError::Unsupported)
     }
 
+    /// The retired child's exit as an event, for a waiter that needs it rather than a status
+    /// read: it resolves when the reaper observes the exit, after the child's custody is released.
+    fn engine_exit(
+        &self,
+        _receipt: &EngineRetirementReceipt,
+    ) -> Result<crate::inference::slots::EngineExit, EngineRetirementError> {
+        Err(EngineRetirementError::Unsupported)
+    }
+
     /// The REAL per-slot context window the running server serves, read from
     /// `/props` (`default_generation_settings.n_ctx`). This is the AUTHORITATIVE
     /// model metadata: llama.cpp pads the launch per-slot window (`-c / --parallel`)
@@ -433,6 +493,13 @@ pub trait LlamaServerControl: Send + Sync {
         None
     }
 
+    /// Move the running engine's host prompt-cache limit to `limit_mib` (fork route
+    /// `POST /prompt-cache/limit`, 9269444f6): the cache evicts its oldest states to fit and the
+    /// receipt says what it holds and what it freed. Serving's reclaim lowers it before its heavy
+    /// levers (tier-down, unload), card 494c99f1. A refusal is typed
+    /// ([`LlamaServerError::PromptCacheRefused`]); nothing was evicted then.
+    async fn set_prompt_cache_limit(&self, limit_mib: std::num::NonZeroU64) -> Result<super::PromptCacheLimit, LlamaServerError>;
+
     /// Prove the GPU DECODE path works, not just that the HTTP server is up. A
     /// llama-server can answer `/health`, `/v1/models` and `/props` with 200
     /// while EVERY `llama_decode` returns 500 "Compute error" — observed live in
@@ -519,4 +586,9 @@ pub trait LlamaServerControl: Send + Sync {
     /// as a spawned one's are (card 1d7d6d4c). Default: a fake or remote control has no local
     /// engine to follow.
     fn follow_engine_log(&self) {}
+
+    /// Bring this process's verified live-lane watch to the adopted engine (`lane_registry::sync_live`), so a
+    /// waiter on an adopted engine's identity wakes. The reconcile calls it on every `AlreadyServing`; it costs
+    /// two small file reads when nothing changed. Default: a fake or remote control has no local registry.
+    fn publish_served_lane(&self) {}
 }

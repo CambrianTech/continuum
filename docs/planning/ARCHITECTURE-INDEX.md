@@ -1,13 +1,13 @@
-# JTAG Architecture Documentation Index
+# JTAG architecture planning index
 
 **Parent:** [Planning](README.md)
 
-**Complete system architecture organized by concern**
+This index preserves the JTAG design and its phased roadmap. For current execution, serving, storage and learning contracts, start with the [runtime architecture manuals](../README.md#runtime-architecture).
 
 ## TABLE OF CONTENTS
 
 ### Core Architecture
-1. [CLAUDE.md](../../../CLAUDE.md) - Development guide, deployment, debugging, methodology
+1. [CLAUDE.md](../../CLAUDE.md) - Development guide, deployment, debugging, methodology
 
 ### System Design
 2. [AI-HUMAN-USER-INTEGRATION.md](../personas/AI-HUMAN-USER-INTEGRATION.md) - User hierarchy, first-class citizenship, equal access
@@ -42,7 +42,7 @@
 -> Read [Testing docs](../testing/)
 
 **"How do I deploy and debug?"**
--> Read [CLAUDE.md](../../../CLAUDE.md)
+-> Read [CLAUDE.md](../../CLAUDE.md)
 
 ---
 
@@ -157,7 +157,7 @@
 - Tests -> [Testing docs](../testing/)
 
 **If you're debugging:**
-- Read [CLAUDE.md](../../../CLAUDE.md) for debugging methodology
+- Read [CLAUDE.md](../../CLAUDE.md) for debugging methodology
 - Check logs first (don't guess!)
 - Use screenshot commands
 - Follow scientific development methodology

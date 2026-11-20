@@ -14,7 +14,7 @@ pub trait Arbiter: Send + Sync {
     /// Order `candidates` for THIS tick's `ctx`. INPUT-side attention only — curates the
     /// context the model attends to, never the model's output. It never cuts by a count:
     /// every bid is forwarded, and how much of each she sees is her view's one allocation
-    /// (MIND-CONTEXT, ONE-BUDGET; a top-k spotlight was a cut outside it).
+    /// (CONTINUUM-ENGINE section 5, ONE-BUDGET; a top-k spotlight was a cut outside it).
     fn focus(&self, candidates: Vec<Contribution>, ctx: &FocusContext<'_>) -> Vec<Contribution>;
 }
 

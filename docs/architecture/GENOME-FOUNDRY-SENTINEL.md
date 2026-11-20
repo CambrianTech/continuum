@@ -1,6 +1,6 @@
 # Genome, Foundry, Sentinel-AI: The Artifact-Sharing Economy On Consumer Hardware
 
-> **Substrate contract:** [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — the runtime contract every Rust concern inherits. This document specifies the *artifact economy* that flows on top of that contract.
+> **Substrate contract:** [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — the runtime contract every Rust concern inherits. This document specifies the *artifact economy* that flows on top of that contract.
 > **Lane-shaped roadmap:** [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — implementation lands per Lane H (Substrate Governor + Tiered Genome Cache) once the design here is reviewed.
 > **Status:** design proposal. No code in this document; every API shape shown is a proposed Rust trait targeted at `core/continuum-core/src/genome/`, `foundry/`, and `sentinel/`.
 
@@ -288,7 +288,7 @@ This is the substrate's main observability signal for "this persona's working se
 
 Personas are processes. Each has:
 
-- An independent inbox (per the CBAR-SUBSTRATE "Persona-cognition invariants")
+- An independent inbox (per the CONTINUUM-ENGINE "Persona-cognition invariants")
 - An independent KV cache
 - An independent `WorkingSet`
 - An independent composition state
@@ -944,7 +944,7 @@ pub trait SubstrateGovernor: Send + Sync {
     /// is in §"Hardware Detection" below.
     fn on_hardware_detected(&self, hw: HardwareClass);
 
-    /// Called by PressureBroker (CBAR-SUBSTRATE) when a typed pressure
+    /// Called by PressureBroker (CONTINUUM-ENGINE) when a typed pressure
     /// signal crosses a threshold. Governor decides whether to step the
     /// cascade, hold, or reverse. See §"Adjustment Cascade" for thresholds.
     fn on_pressure_signal(&self, signal: PressureSignal);
@@ -1172,7 +1172,7 @@ async fn governor_loop(state: Arc<GovernorState>, mut rx: mpsc::Receiver<Pressur
 }
 ```
 
-The loop is the only place that mutates `GovernorState`. Everything else reads `current_policy()` (wait-free Arc clone) and reacts to `subscribe()` notifications. No subsystem ever writes to the governor directly — pressure signals flow in through `PressureBroker` (CBAR-SUBSTRATE), policy flows out through Arc subscriptions.
+The loop is the only place that mutates `GovernorState`. Everything else reads `current_policy()` (wait-free Arc clone) and reacts to `subscribe()` notifications. No subsystem ever writes to the governor directly — pressure signals flow in through `PressureBroker` (CONTINUUM-ENGINE), policy flows out through Arc subscriptions.
 
 ### Federation Policy Reconciliation
 
@@ -1238,9 +1238,9 @@ Transitions are emitted as typed events on the trace bus. Each transition carrie
 
 For the engineer landing types: every artifact transition must be observable. A LoRA layer that is "in the pool" but never adopted should appear in a `Created, never adopted` query. A layer that adoption rate is falling for should be visible in attribution. A retired layer's provenance chain should be walkable. The substrate makes these queries first-class so engineers can debug evolution, not guess at it.
 
-## Part 13: Connection To CBAR-SUBSTRATE (Lane H)
+## Part 13: Connection To CONTINUUM-ENGINE (Lane H)
 
-This document specifies the artifact economy. CBAR-SUBSTRATE specifies the runtime contract every cell inherits. They connect at three points:
+This document specifies the artifact economy. CONTINUUM-ENGINE specifies the runtime contract every cell inherits. They connect at three points:
 
 1. **Every cell's `ModuleContext` exposes `DemandAlignedRecall`.** A cell asks for help; the genome pool answers. No cell loads adapters by name.
 2. **`PressureBroker` informs the `SubstrateGovernor`.** Pressure signals from the broker drive the governor's adjustment cascade. The broker keeps owning admission; the governor owns *sizing*.
@@ -1271,7 +1271,7 @@ Substrate is "done" when the following are provable on canary, with PR-attached 
 **Hardware portability:**
 
 - The same Rust binary boots on MacBook Air (16 GB UMA) and on RTX 5090 (32+64 GB) and the governor writes different policies for each. VDD records show different tier sizes / concurrency caps / speculation aggressiveness.
-- A persona round-trip turn produces working output on both anchor configurations within the latency budgets named in CBAR-SUBSTRATE's performance covenant.
+- A persona round-trip turn produces working output on both anchor configurations within the latency budgets named in CONTINUUM-ENGINE's performance covenant.
 
 **Demand-aligned recall:**
 
@@ -1324,7 +1324,7 @@ Real questions the engineer will hit. Tentative answers for each.
 
 ## See Also
 
-- [CBAR-SUBSTRATE-ARCHITECTURE.md](CBAR-SUBSTRATE-ARCHITECTURE.md) — runtime substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
+- [CONTINUUM-ENGINE.md](CONTINUUM-ENGINE.md) — runtime substrate contract. Owns concurrency, scheduling, memory pressure, device pressure, telemetry, artifact handles, lifecycle.
 - [ALPHA-GAP-ANALYSIS.md](../planning/ALPHA-GAP-ANALYSIS.md) — lane-shaped roadmap. Lane H (this document's implementation) lives here.
 - [CONTINUUM-ARCHITECTURE.md](../CONTINUUM-ARCHITECTURE.md) — engine shape; this doc is the genome / foundry / sentinel detail beneath the engine surface.
 - [CONTINUUM-VISION.md](../CONTINUUM-VISION.md) — product vision. The personas this substrate evolves are the personas described there.

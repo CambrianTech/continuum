@@ -1,5 +1,5 @@
 //! What a command declares its calls do to the world. Declared once, by the command itself
-//! (`CommandSpec::EFFECT` in the kernel), and read by the view's repeat rule (MIND-CONTEXT
+//! (`CommandSpec::EFFECT` in the kernel), and read by the view's repeat rule (CONTINUUM-ENGINE section 5
 //! invariant 4, `continuum-context`). It lives on the floor because both reach it and neither may
 //! import the other: the kernel never imports a mind crate, and the view stays a leaf.
 

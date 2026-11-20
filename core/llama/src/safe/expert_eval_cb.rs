@@ -111,6 +111,12 @@ pub enum PoolingType {
 }
 
 impl ContextParams {
+    /// The logical batch width selected by the linked native backend for a default context.
+    pub fn native_batch_width() -> u32 {
+        // SAFETY: this takes no inputs and returns the backend defaults by value.
+        unsafe { sys::llama_context_default_params().n_batch }
+    }
+
     /// The window llama allocates for a requested `n_ctx`: it pads every context to a multiple of
     /// 256 tokens (`llama-context.cpp`, `cparams.n_ctx = GGML_PAD(cparams.n_ctx, 256)`), so what a
     /// context costs is priced on this, never on the request.
@@ -142,10 +148,17 @@ impl Default for ContextParams {
 pub struct Context<'m> {
     pub(super) ptr: NonNull<sys::llama_context>,
     pub(super) _model: PhantomData<&'m Model>,
+    /// The model this context was created from: what its optimizer trains against (`learn.rs`),
+    /// never a model passed in separately.
+    pub(super) model: NonNull<sys::llama_model>,
     /// Keeps the expert-observer bridge alive for the callback's `user_data` pointer.
     /// Declared AFTER `ptr` so it drops after `Drop::drop`'s `llama_free` runs — no
     /// callback can fire against a freed bridge. `None` when no observer was set.
     pub(super) _observer: Option<Box<ExpertObserverBridge>>,
+    /// The learning callbacks' holder (`learn.rs`): the optimizer and the context keep pointers to
+    /// it past a reply, so it lives exactly as long as the context. Declared after `ptr` for the
+    /// same reason as `_observer`. `None` until the context first learns.
+    pub(super) learn_callbacks: Option<Box<super::learn::CallbackHolder>>,
 }
 
 impl<'m> Context<'m> {
@@ -155,6 +168,13 @@ impl<'m> Context<'m> {
     /// valid for the Context's lifetime; callers MUST NOT free it.
     pub fn as_ptr(&mut self) -> *mut sys::llama_context {
         self.ptr.as_ptr()
+    }
+
+    /// Wait until every computation submitted to this context has finished on the device.
+    /// `llama_decode` may return while the device still runs the graph; libllama synchronizes on
+    /// result retrieval, and this is the explicit form.
+    pub fn synchronize(&mut self) {
+        unsafe { sys::llama_synchronize(self.ptr.as_ptr()) }
     }
 
     /// Context window size.

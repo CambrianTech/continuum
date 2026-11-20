@@ -103,7 +103,7 @@ pub(super) fn reconcile_ephemeral_census() -> Vec<crate::inference::lane_registr
             }
             // Dead, or the pid was recycled onto an unrelated process. Either way it
             // holds no VRAM of ours and must not weigh on the decision.
-            lane_registry::remove(rec.pid);
+            lane_registry::remove(rec);
             false
         })
         .collect()
@@ -331,6 +331,19 @@ impl EphemeralServingLane {
         self.proc
             .observe_engine_retirement(&EngineRetirementReceipt { identity })
             .map_err(|e| LlamaServerError::Spawn(e.to_string()))
+    }
+
+    /// Request teardown and wait for the owned child's exit event: returns once the child
+    /// exited and its custody (page dir, resource lease) is released, never on a timer.
+    pub async fn finished(&mut self) -> Result<(), LlamaServerError> {
+        if self.finish().await? == EngineRetirementStatus::Exited {
+            return Ok(());
+        }
+        let generation = self.proc.last_started.lock().clone();
+        let Some(generation) = generation else {
+            return Ok(());
+        };
+        generation.exit().confirmed().await.map_err(|e| LlamaServerError::Spawn(e.to_string()))
     }
 
     /// The OpenAI-compatible `/v1` base url a persona's inference adapter points

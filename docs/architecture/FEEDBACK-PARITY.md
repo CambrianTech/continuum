@@ -66,3 +66,102 @@ that day was one of three problems; each card is an adapter of one mechanism, ne
    use ends; caches are always reclaimable, justified by predicted reuse; one reclaim path for every
    holder. Each resource kind (KV, prompt cache, learner shadow, lock) is an adapter for how its
    bytes go back and come back.
+4. **A result says what it verified, and nothing more.** Glass-boxed on the M5 (2026-11-11,
+   16:20-16:52Z), three resident submissions failed review for one reason: every tool checks FORM and
+   nothing checks MEANING. Aiko's edit removed an `if` header and the file still parsed, so the edit
+   gate (syntax only) then called her correct repair "would have made it unparseable"; Benchy
+   submitted a test that panics on its first `unwrap` without running it; Aris submitted three
+   methods with no caller. A frontier agent checks meaning by habit (it runs the project's checker
+   and reads the result before calling work done). Mechanism below; each tool, language and project
+   kind is an adapter, never a case.
+
+## One outcome for every tool (the seam for problem 4)
+
+Today a tool's result is `ToolOutcome { success: bool, content: String, error: String }`
+(`continuum-cognition/src/cognition/tool_executor/types.rs`): each tool writes its own prose about what
+it did and checked, so "parses" can read as "fine", and a check nobody ran is silent. Refusals already
+have the right shape (`continuum-kernel/src/sdk_codegen/refusal.rs`: a typed cause and `NextMoves`).
+Every outcome takes it:
+
+```
+Outcome {
+    effect:     what changed, each change by handle (file revision, process, card, message),
+    evidence:   [Evidence { kind, verdict: Passed | Failed(fault) | Running(handle), output: handle }],
+    unverified: [kind],          // what this effect invalidated and nothing has checked yet
+    next:       NextMoves,       // the same type a refusal carries
+}
+kind = Form | Build | Test | Lint | Run | Review   // open: a new kind is a new variant, never prose
+```
+
+**Built on the owners that exist, never beside them.** A command already declares its effect class
+once (`continuum_base::tool_effect::ToolEffect`: Observes, Changes, Reopens, Undeclared; read by the
+view's repeat rule), and a refusal already carries `NextMoves`. The outcome extends those: a `Changes`
+command also declares which evidence kinds its effect invalidates, beside `EFFECT` on its spec; the
+evidence kinds live on the floor next to `ToolEffect` so the kernel and the view both read them; the
+per-call `effect` above is the instance of that declared class.
+
+**Rendered once.** One renderer turns an `Outcome` into her text (her text is rendered from typed
+data, never authored prose). "Build: unverified" is printed because the field is there, so no tool can
+word a syntax pass as "the file is fine".
+
+**Checks are declared adapters, never tool code.** A `Checker` adapter knows one kind of project and
+what it can verify: `Form` per language (the parsers `validator_for` already holds), `Build`/`Test`/
+`Lint` per manifest (Cargo.toml, package.json, pyproject.toml, go.mod, a docs linter, a recipe's own
+declared command). The workspace's checkers are DATA: detected from its manifests or declared by its
+recipe; a workspace with none says so (`unverified`, never a guess). A tool declares only its effect;
+the effect names what it invalidates (an edit invalidates `Form` for the file and `Build`/`Test` for
+the project that owns it). A new tool, language or project kind is one adapter or nothing.
+
+**Checks run as tasks, results arrive as events.** The checker scheduler runs what the effect
+invalidated as background task handles (never awaited in the act, never polled); each terminal result
+is an event addressed to her (problem 2), updating the `evidence` of the outcome it belongs to. On
+submit, the outstanding checks of the submitted head are run and their results are part of the
+submission, so a failure reaches her before a reviewer does.
+
+**Delivery is problem 2's path, never per feature.** Check results, review verdicts, process ends and
+refusals reach her view by her typed address. A review verdict filed on a card is delivered to the
+author because it is addressed to her (card 759556ba), not because someone found her room: on
+2026-11-11 three verdicts sent on airc never reached the residents (Benchy's ledger, 11 minutes later:
+"unknown: whether Fable passes").
+
+**The contract's invariants** (Codex's review of this design, 2026-11-11 17:00Z; each is pinned by the
+outliers' tests before any migration):
+1. **Evidence binds what it checked**: the exact file or tree revision, the checker's command, config,
+   environment and scope. A result for an older revision never marks a newer edit verified. Verdicts
+   are `Passed | Failed(fault) | Running(handle) | Inconclusive(cause)`: a cancelled, lost or
+   infrastructure-failed check (a runner's DNS, a dead checker process) is Inconclusive, never Failed
+   and never a quiet Running.
+2. **The effect reports partial, unknown and NO change too**: a tool that fails partway says what it
+   changed and what it cannot tell; a call that changed nothing says so and is never `ok` with a write.
+   Twice on 2026-11-11 a `search_replace` whose search and replace were identical answered `ok`,
+   rewrote the same bytes, and was taken as a fix (Benchy 16:01Z; Aiko 16:52Z, who then spent twelve
+   minutes believing a missing `if` header was restored).
+   A refusal names its OWN cause from the edit, never a generic one: a `search_replace` whose
+   replacement ends with lines that already follow the matched text is told exactly that ("your
+   replacement's last 2 lines, `return true;` and `}`, already follow your match"), not the
+   line-range advice (Aiko, 2026-11-11 17:37Z, after three refusals whose text named another cause).
+3. **Raw output is never deleted**: stdout, stderr, exit status and artifacts stay reachable by handle;
+   the renderer wraps evidence, and migrating a tool never drops what it used to show.
+4. **A pass proves its check, nothing more**: Build/Test passed means that declared check passed, not
+   that the change is correct, good, or free of dead code. The renderer says which check.
+5. **No new scheduler**: checks run under the existing task and resource authority (the same handles
+   her shell work uses); a check superseded by a newer edit is cancelled with its process custody
+   preserved (owner-lost vs confirmed-dead, card ce191b8c).
+6. **A submission's evidence is Pending until the exact head's checks are terminal**: published at
+   once as Draft/Pending, never as verified; "a failure reaches her before a reviewer" holds only when
+   the review waits on terminal evidence. A workspace with no checker, or docs only, is Unverified,
+   never Failed. A manifest alone does not declare a command (pyproject.toml does not mean pytest):
+   a checker is declared by the recipe or the workspace, or detected only where the manifest itself
+   names it.
+
+**Build order** (outliers first, per the methodical process):
+1. Outlier A: `code/edit` on a Rust project, `Form` (syn) + `Build` (cargo) evidence.
+2. Outlier B, maximally different: a Python project with no build step (`Form` + `Test` via pytest)
+   and a docs-only workspace (`Lint` or nothing). If one `Outcome` fits all three without forcing, the
+   interface is proven; otherwise redesign before step 3.
+3. The derive: `ToolContract` gains the effect declaration; existing tools migrate; their hand-written
+   result prose is deleted, and a ratchet counts tools still returning a bare string.
+4. Submission evidence, then verdict delivery through the same path.
+
+**What it deletes:** per-tool success/failure prose, the edit gate's own wording, `ToolOutcome`'s
+`success: bool` + strings, and hand delivery of reviews. Card 3fafcc2c (owner Fable).

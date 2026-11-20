@@ -26,9 +26,12 @@ pub enum AdoptedCheckpointRefusal {
     IdentityUnverified,
     #[error("adopted checkpoint intent changed")]
     IntentChanged,
-    /// The save itself failed; its detail is display-only.
-    #[error("adopted checkpoint save failed: {0}")]
-    Save(String),
+    /// The page-write negotiation failed before any save; its detail is the engine's.
+    #[error("adopted checkpoint page admission failed: {0}")]
+    Admission(String),
+    /// A resident's save ended without a confirmed page.
+    #[error("adopted checkpoint save of slot {slot}: {kind:?}")]
+    Save { slot: u32, kind: crate::inference::slots::SaveFailure },
     #[error("adopted replacement intent changed after checkpoint")]
     IntentChangedAfterCheckpoint,
 }

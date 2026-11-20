@@ -15,8 +15,8 @@ use continuum_context::source::{Item, Source};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::card_facts::state_str;
-use crate::cognition::work_preconditions::{CardRole, Held, NextMove};
-use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, SubmissionChanges};
+use crate::cognition::work_preconditions::{CardRole, Held, NextMove, WorkVerb};
+use crate::cognition::workspace::{AwaitingResubmission, ChangedFile, ChangesUnread, EndedClaim, FileChange, HeldWork, Revision, SubmissionChanges};
 
 /// The occurrence of a held card's rendering: its card, the state entry it belongs to, and the
 /// rendered projection itself (`whole`).
@@ -106,8 +106,20 @@ impl HeldWorkStream {
             }
             None => String::new(),
         };
+        // A reviewer judges only a submission: commits past it wait until she submits them.
+        let revised = match &changes.revision {
+            Revision::Unsubmitted { head } => {
+                lines.push(format!(
+                    "your checkout is now at {head}, past this submission: that revision is not submitted, so no reviewer \
+                     can judge it; call {} with card_id {id} to submit it",
+                    WorkVerb::Submit.offered()
+                ));
+                "; revision not submitted"
+            }
+            Revision::Submitted | Revision::Unread => "",
+        };
         let whole = lines.join("\n");
-        let pointer = format!("[my work] submission {submission} on card {id}: {summary}{verdict}");
+        let pointer = format!("[my work] submission {submission} on card {id}: {summary}{verdict}{revised}");
         let occurrence = element(
             self.persona,
             Producer::Work,
@@ -397,6 +409,7 @@ mod tests {
                 outcome: airc_work::WorkReviewOutcome::Failed,
                 evidence: Some(evidence.into()),
             }),
+            revision: Revision::Submitted,
         };
         let work = HeldWork { holds: vec![card], submissions: vec![changes], ..Default::default() };
         let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
@@ -406,6 +419,33 @@ mod tests {
         assert!(text.contains("  modified core/continuum-prompt/src/lib.rs (+3 -1)"), "{text}");
         assert!(text.contains("verdict: FAILED") && text.contains(evidence), "the reviewer's words, verbatim: {text}");
         assert!(items[1].pointer().is_some_and(|p| p.text().contains("2 file(s) changed") && p.text().contains("FAILED")), "collapsed, the count and the verdict stay");
+        assert!(!text.contains("not submitted"), "a checkout at its submission owes no submit: {text}");
+    }
+
+    // what this catches: Benchy on the M5, 2026-11-16 12:49Z. After a FAILED verdict he pushed a fix
+    // (c0f3513d1) and said he would keep watching for verdicts, but a reviewer judges only a
+    // submission and he had made none. Her checkout past its submission is said as unsubmitted, with
+    // the verb that submits it under the name her tool list offers, and stays in the collapsed pointer.
+    #[test]
+    fn a_revision_past_a_failed_submission_is_said_unsubmitted_with_its_move() {
+        let card = held(1, CardState::InProgress, None, 10);
+        let id = shown_form(card.card.card_id.as_uuid());
+        let changes = SubmissionChanges {
+            card: card.card.card_id, title: card.card.title.clone(), submission: airc_work::SubmissionId::from_u128(9),
+            base: "abc123".into(), head: "def456".into(), files: Ok(Vec::new()),
+            verdict: Some(SubmissionVerdict {
+                reviewer: airc_core::PeerId::from_uuid(uuid::Uuid::from_u128(2)),
+                outcome: airc_work::WorkReviewOutcome::Failed,
+                evidence: None,
+            }),
+            revision: Revision::Unsubmitted { head: "c0f3513d1aa".into() },
+        };
+        let work = HeldWork { holds: vec![card], submissions: vec![changes], ..Default::default() };
+        let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();
+        let text = items[1].full().text();
+        let submit = WorkVerb::Submit.offered();
+        assert!(text.contains("c0f3513d1aa") && text.contains("not submitted") && text.contains(&format!("call {submit} with card_id {id}")), "{text}");
+        assert!(items[1].pointer().is_some_and(|p| p.text().contains("revision not submitted")), "collapsed, the owed submit stays");
     }
 
     // what this catches: a submission whose commits are not in her checkout rendering nothing, so
@@ -416,6 +456,7 @@ mod tests {
         let changes = SubmissionChanges {
             card: card.card.card_id, title: card.card.title.clone(), submission: airc_work::SubmissionId::from_u128(9),
             base: "abc123".into(), head: "def456".into(), files: Err(ChangesUnread::NoCheckout), verdict: None,
+            revision: Revision::Unread,
         };
         let work = HeldWork { holds: vec![card], submissions: vec![changes], ..Default::default() };
         let items = HeldWorkStream { persona: uuid::Uuid::from_u128(7), work: std::sync::Arc::new(work) }.items();

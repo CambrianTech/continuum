@@ -244,9 +244,20 @@ impl ModelCapabilities {
 pub struct LlamaCppBackend {
     /// One temporary embedding context is admitted per loaded model.
     pub(super) embedding_lane: super::embedding_lane::EmbeddingLane,
+    /// The model's chat templates (its GGUF template, or the catalog's), loaded at the first chat
+    /// turn and kept for every render. `ChatTemplates` is `Send`, not `Sync`: renders take this
+    /// lock and release it before decode. Declared before `model`, so it drops first.
+    pub(super) chat: OnceLock<Result<Mutex<llama::ChatTemplates>, llama::ChatRefusal>>,
     pub(super) model: Arc<Model>,
     pub(super) config: LlamaCppConfig,
     pub(super) model_id: String,
+    /// Native weight buffer allocations reported by the loaded model.
+    pub(super) weights: llama::WeightAllocation,
+    /// Model metadata used to quote a pooled context before leasing its buffers.
+    pub(super) embed_planner: OnceLock<llama::PooledContextPlanner>,
+    /// The embed lane's resident claim, made at its first embed and cleared when this backend is
+    /// dropped: the embedder's whole need stays reserved between embeds.
+    pub(super) embed_residency: OnceLock<crate::inference::embed_lane_memory::EmbedResidency>,
     /// Real model capabilities, read once at load. The authority for the
     /// context window — never a per-tier guess.
     pub(super) caps: ModelCapabilities,

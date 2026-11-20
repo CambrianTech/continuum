@@ -325,8 +325,8 @@ pub fn directed_lane_wait_ms() -> (u64, u64, u32) {
     DIRECTED_LANE_WAIT_MS.p50_p90()
 }
 /// HOW LONG A LANE IS HELD HERE — each `ServingLanePermit`'s own lifetime (queue
-/// admission → release), in ms. Already probed per release as `admission.lane.released
-/// held_ms`; a probe is not a number the substrate can compute with, and this is the
+/// admission → release), in ms. Summed per window in `admission.lane.tally held_ms`;
+/// a probe is not a number the substrate can compute with, and this is the
 /// one the lane wait's bound is derived FROM: the lanes' measured turn time.
 pub(super) static LANE_HOLD_MS: WaitRing = WaitRing::new();
 /// Record one serving-lane permit's held time. Called from the permit's `Drop`.
