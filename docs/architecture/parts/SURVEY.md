@@ -15,7 +15,7 @@ copies in the same change.
      - 19 health checks in 15 files, while `ServiceModule` has no health method.
      - Parents hand-write their child loops: STT then TTS shutdown appears twice almost line for line (`continuum-live/src/live/audio/resource_lifecycle.rs:212-250`, `continuum-core/src/modules/live/voice_module/resources.rs:75-105`), and the grid loops over its transports in four places (`continuum-grid/src/grid/mod.rs:266, 292, 337, 517`).
    - **What already exists:** the only folding base is `Lifecycle` (`continuum-persona-engine/src/persona/lifecycle.rs:6`), used only inside that crate. The runtime does fan drain, save and shutdown over its modules (`runtime/runtime/runtime.rs:52-68`).
-   - **Target:** the [lifecycle](LIFECYCLE.md) on the `Part` root (`continuum-base::part`, decided with Codex), with [model parts](MODELS.md) as the first family. Owner: Fable. Done so far: `Part` identity for the 13 speech backends (#6204, approved).
+   - **Target:** the [lifecycle](LIFECYCLE.md) on the `Part` root (`continuum-base::part`, decided with Codex), with [model parts](MODELS.md) as the first family. Owner: Fable. Done so far: `Part` identity for the 13 speech backends (#6204, approved); `Lifecycle`, the composite walk and her five parts on it (#6206).
 2. **Pressure, footprint, leases and admission: parallel models.**
    - **Overlapping bases:** `ResourcePool` (16 implementors; `paging/pool.rs:188`), `ResourceConsumer` (10; `resources/consumer.rs:126`), `FootprintSource` (1), `EvictionRegistry` (`gpu/eviction_registry.rs:101`) and `BrainRegion::pressure_profile`.
    - **The resulting copies:**
