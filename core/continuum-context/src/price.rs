@@ -175,13 +175,19 @@ impl ActTimeFit {
         let fitted = self.fresh.line().map(|line| (line, self.fresh.mean_x));
         let measured_cost = decode.slope > decode.slope_se && prefill.slope > prefill.slope_se;
         let cold = measured_cost.then(|| (Line::cold(observed.context), self.observed.mean_x));
-        let composed = fitted.into_iter().chain(cold).map(|(fresh, typical)| (ActTime { decode, prefill, fresh, observed, output, curve: Curve::Composed }, typical));
+        let composed = |(fresh, typical): (Line, f64)| (ActTime { decode, prefill, fresh, observed, output, curve: Curve::Composed }, typical);
         // When the parts are noise but her whole act's seconds rise with context measurably, that
         // curve prices her: contention hides the per-token trend, never the act's (Aris on the M5,
         // 2026-11-11: decode and prefill slopes inside their errors over 1,340 acts, the whole act
         // 1.26 s per 1k tokens held, +/- 0.21).
         let whole = (ActTime { decode, prefill, fresh: Line::cold(observed.context), observed, output, curve: Curve::Whole }, self.observed.mean_x);
-        for (time, typical) in composed.chain([whole]) {
+        // Her own measurements before any assumption: the fitted parts, then her whole act's curve,
+        // and only then the cold reading (every held token prefilled again). Cold ahead of her whole
+        // act priced Aris at 671-689 s per act for an 85k window against her measured 67 s mean (the
+        // M5, 2026-11-14: her fresh tokens fall as her context grows, so the composed slope is
+        // negative; her whole act rises 0.22 s per 1k tokens held, 1.9 times its error).
+        let candidates = fitted.map(composed).into_iter().chain([whole]).chain(cold.map(composed));
+        for (time, typical) in candidates {
             if time.seconds_per_token(typical) > time.seconds_per_token_se(typical) {
                 return ContextPrice::Measured(time);
             }
