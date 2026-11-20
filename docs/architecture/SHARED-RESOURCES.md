@@ -221,9 +221,15 @@ device. Each gets time according to the shape of its need:
 
 The rules:
 
-- **Every piece yields.** Work goes to a device in pieces: one decode step, one prefill chunk, a
-  small render command buffer. The longest piece that cannot yield is the floor under every
-  deadline, so it is measured per consumer and shrunk.
+- **Every piece yields, and what is already queued counts.** Work goes to a device in pieces: one
+  decode step, one prefill chunk, a small render command buffer. Short pieces already submitted
+  can still run as one uninterruptible sequence, so the governor accounts for all submitted work
+  through completion fences on each device queue, bounds the outstanding submissions before it
+  spends slack, and measures and shrinks the longest non-yielding piece per consumer.
+- **A deadline travels with the work it waits on.** A transfer or a prefill is throughput work
+  until a ready speaker or a due frame needs it; then it inherits that consumer's deadline, minus
+  the measured work still downstream, through the shared pending handle. Coalesced work follows its
+  earliest live subscriber and relaxes when that subscriber leaves (Codex's review, 2026-11-20).
 - **Admission by feasibility.** Each consumer declares its shape and reports its measured cost per
   piece. A periodic consumer is admitted at the level of detail whose deadlines stay feasible with
   everything already admitted; if none is, it is offered a lower level, never a silent miss.
@@ -242,7 +248,9 @@ The rules:
 
 Measured per consumer: deadline misses, piece-time distribution and level of detail held; for the
 whole device, decode tokens/s with renders against without (LIVE-AVATAR-BUDGET receipts B1 and
-B6).
+B6). The replay that tests it: a cold speaker arriving during repeated avatar deadlines with a
+backlog of learning work, reporting ready-to-first-output, visible frame misses and queue-to-fence
+time against the no-learning control.
 
 ## Built on what exists: the pipeline flows both ways and carries more
 

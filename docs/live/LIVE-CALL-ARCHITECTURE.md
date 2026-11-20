@@ -250,16 +250,37 @@ from CBAR, Joel's real-time perception engine:
   there, what is on screen, what is happening) and refines it where her attention goes. She never
   has a blank where a participant or a region should be.
 
-**A fast voice, augmented by deep thought.** A turn starts two things under one turn identity: her
-quick voice (a small, fast model speaking as her, from her context) and her deep mind on the
-served base. The quick voice opens: an acknowledgement, the first clause, a backchannel. The deep
-reply merges in behind it. The output owner tracks what has been spoken, revises the continuation
-not yet spoken, and speaks a correction if the deep reply changes a claim already delivered. A new
-turn supersedes speech not yet spoken. The deep reply always arrives unless superseded: the fast
-layer buys latency, never replaces depth. Her avatar's visemes and gestures follow the audio
-actually going out, so her face moves with the quick voice from the first syllable. Seeing works
-the same way: the cheap signals say where to look now, and her deep look says what it means when
-it lands, refining the estimate she already sees.
+**Hearing and speaking are fused the same way.** Comprehension and speech are not separate
+pipelines with a model call in between. They are the same kind of living estimate as her sight,
+with fast and deep layers fused:
+
+- **Comprehension, fast first.** As a participant speaks, fast layers (transcription, a small model)
+  build her running understanding word by word. Deeper layers refine it as they finish: meaning,
+  intent, what it implies for the work.
+- **Speech, fast first, deep merged in.** Her quick voice (a small, fast model speaking as her, from
+  her context) can open at once: an acknowledgement, a first clause, a backchannel. Her deep mind on
+  the served base works under the same turn identity, and its thought merges into the speech still
+  to come. By the time she finishes talking she has given the considered answer, if the moment
+  needed one. The output owner tracks what has been spoken, revises the continuation not yet
+  spoken, and speaks a correction if deeper thought changes a claim already delivered. A new turn
+  supersedes speech not yet spoken. Her avatar's visemes and gestures follow the audio actually
+  going out, so her face moves from the first syllable.
+- **The "if" is a learned, amygdala-like decision.** How much depth a moment needs (none, a little,
+  a full deliberation; a glance, or a detailed look at a frame) is decided fast, from the fused
+  state, by a small learned model, the same way a cheap detector tells deep vision it is needed. It
+  is a routing and priority decision, never a gate on whether she may think: depth stays available
+  and can be pulled in at any point of the turn. The decision learns from our own receipts (a
+  correction she had to speak, a deep answer nobody needed), never from a fixed threshold.
+- **One representation for hearing and speaking.** A word she hears and a word she is about to say
+  are events on the same stream, so what she comprehends and what she plans to say inform each
+  other as they form. Human cortex works this way: in Wernicke's area, the left posterior superior
+  temporal gyrus is active both while listening and before speaking, encoding whole upcoming words
+  before the motor stages and from the earliest point of production (Silva et al., Science, with
+  Flinker's Perspective).
+
+The result appears quick and smart at once: she sees and hears in detail and speaks in depth, as
+people do, because every layer fuses, emits and subscribes to events, as in CBAR or any good game
+engine, rather than waiting on the one before it.
 
 **All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
 deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
