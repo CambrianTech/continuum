@@ -149,8 +149,7 @@ impl ServingDaemonModule {
 
 /// Why a demand the publisher received holds no grant after it. A need no sequence or pool can hold
 /// is named before what she waits on.
-fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, waits: Option<DispatchWait>) -> Waiting {
-    let need = d.need.get();
+fn waiting_reason(d: &Demand<uuid::Uuid>, _pool: u32, waits: Option<DispatchWait>) -> Waiting {
     match waits {
 
         _ if crate::capacity::window_grant::is_grant_retiring(d.mind) => Waiting::Reclaiming,
