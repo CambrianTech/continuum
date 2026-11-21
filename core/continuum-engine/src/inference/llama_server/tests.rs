@@ -150,6 +150,10 @@ impl FakeControl {
 
 #[async_trait]
 impl LlamaServerControl for FakeControl {
+    fn stream_layout(&self) -> crate::inference::llama_server::StreamLayout {
+        crate::inference::llama_server::StreamLayout::Roster
+    }
+
     fn owned_serving_target(&self) -> Option<OwnedServingTarget> {
         self.verified_launch.clone()
     }

@@ -237,11 +237,12 @@ pub fn spawn_stage<S: Stage>(mut stage: S, capacity: Capacity) -> (StageInput<S:
     });
     let input = StageInput { inbox: Arc::clone(&inbox) };
     let worker_inbox = Arc::clone(&inbox);
+    let stops = StopsOnExit(Arc::clone(&inbox));
     let task = tokio::spawn(async move {
         // Marks the stage stopped however the worker ends: drained and closed, or its handler
         // panicked (the task's future is dropped as the panic unwinds). A waiting producer wakes
         // and gets its input back instead of waiting on a slot nothing will take.
-        let _stops = StopsOnExit(Arc::clone(&inbox));
+        let _stops = stops;
         loop {
             // Everything waiting is taken in one wake and handled in order: the lock is held for the
             // take alone, never across the work.

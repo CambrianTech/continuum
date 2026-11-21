@@ -41,6 +41,26 @@ pub struct ReplayRequestParams {
     #[serde(default)]
     #[ts(optional)]
     pub tool_schema_override: Option<ToolSchemaOverride>,
+    /// Which mind the engine serves the replay as. `isolated` (the default) is a stranger with
+    /// no cached state; `resident` is the source persona herself, so her parked blocks are reused
+    /// as her next live turn would reuse them. Either way the replay's capture is owned by a
+    /// separate replay identity, so a replay never enters her history or her learning.
+    #[serde(default)]
+    pub identity: ReplayIdentity,
+}
+
+/// Which mind the engine serves a replay as.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, TS, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReplayIdentity {
+    /// A fresh mind with nothing cached: a cold turn.
+    #[default]
+    Isolated,
+    /// The source persona's own mind: her parked blocks are reused as live. It changes her native
+    /// KV cache (and the checkpoint a stop saves from it), never her memory, history or learning.
+    /// Interleaving with her live loop is safe (one serial queue per mind, reuse checked against the
+    /// prompt) but spoils a measurement, so hold and despawn her first.
+    Resident,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS, JsonSchema)]
@@ -89,6 +109,8 @@ impl From<&TextGenerationResponse> for ReplayOutcome {
 pub struct ReplayRequestResult {
     /// Separate capture owner/cache identity. Inspect it with cognition/playback.
     pub replay_persona_id: String,
+    /// Which mind the engine served it as: `isolated` (cold) or `resident` (her own parked blocks).
+    pub identity: ReplayIdentity,
     /// Submission cursor; list this replay identity to inspect its terminal event.
     pub selected: String,
     pub source_persona_id: String,
@@ -221,6 +243,8 @@ struct Provenance {
     model_from_response: bool,
     persona: Uuid,
     cursor: String,
+    /// Which mind the engine served the replay as.
+    identity: ReplayIdentity,
 }
 
 impl Provenance {
@@ -281,13 +305,18 @@ fn prepare(
     let replay = Uuid::new_v4();
     let room = Uuid::new_v4();
     let request_id = Uuid::new_v4().to_string();
-    // Fresh identity isolates KV ownership. Prompt/model/genome/sampling remain recorded.
-    request.persona_id = Some(replay.to_string());
+    // The capture is always owned by the fresh replay identity, so a replay never enters her
+    // history or learning. The engine serves it as a stranger (cold) or as her own mind (warm).
+    let served_as = match p.identity {
+        ReplayIdentity::Isolated => replay,
+        ReplayIdentity::Resident => persona,
+    };
+    request.persona_id = Some(served_as.to_string());
     request.room_id = Some(room.to_string());
     request.request_id = Some(request_id.clone());
     request.provider = Some(p.provider.clone());
     request.purpose = Some("cognition/replay-request".into());
-    let provenance = Provenance { input_comparison, model_from_response, persona, cursor: p.selected.clone() };
+    let provenance = Provenance { input_comparison, model_from_response, persona, cursor: p.selected.clone(), identity: p.identity };
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -312,7 +341,7 @@ fn prepare(
 impl ActionCommand for CognitionReplayRequest {
     const NAME: &'static str = "cognition/replay-request";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, hash-bound collapsed-receipt omission, or one named tool schema override, using an explicit provider and isolated cache identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
+    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, hash-bound collapsed-receipt omission, or one named tool schema override, using an explicit provider, served as a fresh mind (identity isolated, cold) or as the source persona herself (identity resident, her parked blocks reused); the capture is always owned by a separate replay identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or writes her memory, history or learning; a resident replay does change her native KV cache and the checkpoint a stop saves from it, so a measuring run snapshots and restores her preserved blocks. Fresh inference, not deterministic full-mind replay.";
     type Params = ReplayRequestParams;
     type Output = ReplayRequestResult;
 
@@ -383,6 +412,7 @@ async fn execute(
             capture.finish(Some(&response), None);
             Ok(ReplayRequestResult {
                 replay_persona_id: replay_persona.to_string(),
+                identity: provenance.identity,
                 selected,
                 source_persona_id: provenance.persona.to_string(),
                 source_selected: provenance.cursor,
@@ -465,6 +495,7 @@ mod tests {
             omit_message_indices: Vec::new(),
             expected_request_sha256: None,
             tool_schema_override: None,
+            identity: ReplayIdentity::Isolated,
         };
         let read =
             || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
@@ -490,6 +521,13 @@ mod tests {
             "all prompt/model/genome/sampling fields stay captured"
         );
         assert_eq!(prepared.original_max_tokens, Some(16_384));
+        // what this catches: a resident replay served as a stranger (cold, unlike her live turn), or
+        // its capture written as hers (a replay entering her history and learning).
+        let resident = ReplayRequestParams { identity: ReplayIdentity::Resident, ..p.clone() };
+        let served = prepare(read(), &resident, persona).expect("prepare resident replay");
+        assert_eq!(served.request.persona_id.as_deref(), Some(persona.to_string().as_str()), "a resident replay is served as her own mind");
+        assert_ne!(served.call.persona_id, persona, "its capture is still owned by a separate replay identity");
+        assert_eq!(served.provenance.identity, ReplayIdentity::Resident);
         // A diagnostic changes only named historical pointers, never tool protocol or settings.
         let mut diagnostic = request.clone();
         let wm = crate::cognition::working_memory::WorkingMemory::new(8);

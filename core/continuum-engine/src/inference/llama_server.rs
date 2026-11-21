@@ -66,6 +66,8 @@ use smoke::{
     scratch_slot_for, smoke_answer_tokens, smoke_attempt, smoke_attempt_verdict, smoke_seat,
     smoke_verdict, SmokeCap, SmokeSeat, SmokeVerdict,
 };
+mod stream_layout;
+pub use stream_layout::StreamLayout;
 mod target;
 pub use target::{
     cold_expert_offload_ot, main_lane_placement, placement_from_config, serving_pool_kind, AdapterEntry,

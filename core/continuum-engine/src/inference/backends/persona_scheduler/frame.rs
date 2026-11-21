@@ -1,77 +1,105 @@
-//! Which turn the next frame advances (CONTINUUM-ENGINE 4.13/4.15). A frame is one step: one prefill
-//! chunk or one decoded token, never a whole turn, so a mind with a long cold prompt never holds the
-//! engine while a mind with a short tail waits behind her (the M5, 2026-11-18, build 88074d9300:
-//! turns served whole, back to back, waited 300-360 s behind one another's prefills).
+//! Which turn the Core advances next (CONTINUUM-ENGINE 4.13/4.15): one mind at a time, and a turn
+//! in progress runs to its end. Joel, 2026-11-21: "you don't cut it up, run single lane; context
+//! switching is faster."
 //!
-//! The rule, in order:
-//! 1. the active mind's turn that is decoding continues: one mind decodes until she stops, and a
-//!    switch mid-answer would only add a switch;
-//! 2. otherwise the turn with the least prefill left goes first, its remaining tokens discounted by
-//!    how long it has waited, so a short tail never waits behind a long prompt and a long prompt
-//!    still ages to the front;
-//! 3. ties go to the active mind (no switch).
+//! The policy this replaces gave every ready turn a slice of a one-second service budget, so a turn
+//! was cut into frames shared with every other ready mind. On the M5 (build 56913f640b, 2026-11-21
+//! 04:14-04:29 UTC) that meant 20 to 520 switches per turn at 12 to 25 ms each, up to 8.5 s of
+//! switching inside one turn, for no gain to the turn being cut. Its reason was cold prompts (the
+//! M5, 2026-11-18: whole turns back to back, short tails waiting 300-360 s behind cold prefills);
+//! the same 2026-11-21 read showed most turns reusing 71 to 98% of their prompt. Whether a cold
+//! prompt still needs its own handling is measured, not assumed.
 //!
-//! The policy is this one pure function, so the owner of goal 9's scheduler replaces it here and
-//! nowhere else.
+//! So: the bound mind's turn, once started, keeps the Core until it ends. When no turn is in
+//! progress, turns waiting at least half a second go oldest first. Below that threshold,
+//! remaining prefill cost and age decide. Affinity breaks ties.
 
-/// A turn as the frame sees it.
+/// A turn as the pick sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
     /// Her mind is the one bound to the decoding stream now.
     pub active: bool,
-    /// Her prompt is prefilled and she is producing tokens.
-    pub decoding: bool,
+    /// Her turn has begun: prefilling or decoding.
+    pub started: bool,
     /// Prompt tokens still to prefill (0 once decoding).
     pub remaining: usize,
-    /// Milliseconds since her turn was submitted.
+    /// Milliseconds since admission or her most recent completed frame.
     pub waited_ms: u64,
 }
 
 impl Candidate {
-    /// Remaining work discounted by age: tokens per second waited, plus one so a fresh turn is its
-    /// own size. Ballpark by design; only the order matters.
-    fn cost(&self) -> u128 {
-        (self.remaining as u128 * 1_000) / (1_000 + u128::from(self.waited_ms))
+    fn before(&self, other: &Self) -> std::cmp::Ordering {
+        // derived-or-floor: a half-second queue wait meets the interactive stall threshold.
+        // At the next free boundary, age takes precedence over estimated prefill cost.
+        const WAIT_BUDGET_MS: u64 = 500;
+        if self.waited_ms.max(other.waited_ms) >= WAIT_BUDGET_MS {
+            return other.waited_ms.cmp(&self.waited_ms)
+                .then(self.remaining.cmp(&other.remaining))
+                .then(other.active.cmp(&self.active));
+        }
+        let discounted = |turn: &Self, by: &Self| turn.remaining as u128 * (1_000 + u128::from(by.waited_ms));
+        discounted(self, other)
+            .cmp(&discounted(other, self))
+            .then(other.waited_ms.cmp(&self.waited_ms))
+            .then(other.active.cmp(&self.active))
     }
 }
 
-/// The index of the turn the next frame advances, or `None` for no turns.
+/// The index of the turn the Core advances next, or `None` for no turns.
 pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
-    if let Some(decoding) = turns.iter().position(|turn| turn.active && turn.decoding) {
-        return Some(decoding);
+    if let Some(running) = turns.iter().position(|turn| turn.active && turn.started) {
+        return Some(running);
     }
-    turns
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, turn)| (turn.cost(), !turn.active))
-        .map(|(index, _)| index)
+    turns.iter().enumerate().min_by(|(_, a), (_, b)| a.before(b)).map(|(index, _)| index)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn turn(active: bool, decoding: bool, remaining: usize, waited_ms: u64) -> Candidate {
-        Candidate { active, decoding, remaining, waited_ms }
+    fn turn(active: bool, started: bool, remaining: usize, waited_ms: u64) -> Candidate {
+        Candidate { active, started, remaining, waited_ms }
     }
 
-    // what this catches: a mind's cold prompt holding the engine while a short tail waits (the M5,
-    // 2026-11-18: whole turns back to back, 300-360 s waits). The short tail goes first; the active
-    // mind's answer in progress is never cut for a switch; a long prompt still reaches the front by
-    // waiting; equal costs keep the mind already bound.
     #[test]
-    fn a_short_tail_never_waits_behind_a_long_prompt_and_an_answer_is_never_cut() {
+    fn a_cold_turn_gets_the_next_boundary_after_its_wait_budget() {
+        let warm = turn(true, false, 0, 0);
+        assert_eq!(pick(&[warm, turn(false, false, 60_000, 499)]), Some(0));
+        let overdue = turn(false, false, 60_000, 500);
+        assert_eq!(pick(&[warm, overdue]), Some(1));
+        assert_eq!(pick(&[turn(true, false, 1, 501), overdue]), Some(0));
+    }
+
+    // what this catches: a turn in progress cut up to serve other minds (the 2026-11-21 read: 20 to
+    // 520 switches per turn), a turn waiting forever behind fresh short ones, and a needless switch
+    // on a tie.
+    #[test]
+    fn a_turn_in_progress_runs_to_its_end_and_a_long_wait_still_comes_forward() {
         assert_eq!(pick(&[]), None);
-        let long_active = turn(true, false, 60_000, 0);
-        let short = turn(false, false, 300, 0);
-        assert_eq!(pick(&[long_active, short]), Some(1), "the short tail switches in at the chunk boundary");
-
+        let prefilling = turn(true, true, 60_000, 0);
+        assert_eq!(pick(&[turn(false, false, 300, 90_000), prefilling]), Some(1), "an overdue turn waits for the running one to end");
         let answering = turn(true, true, 0, 0);
-        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering]), Some(1), "her answer finishes first");
-
+        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering]), Some(1), "an answer in progress is never cut");
         let aged = turn(false, false, 60_000, 600_000);
         assert_eq!(pick(&[turn(false, false, 1_000, 0), aged]), Some(1), "ten minutes of waiting brings a long prompt forward");
-
         assert_eq!(pick(&[turn(false, false, 500, 0), turn(true, false, 500, 0)]), Some(1), "a tie keeps the bound mind");
+    }
+
+    // what this catches (Codex on #6208 at 162fbe5fa7): an aged and a fresh one-token tail rounding to
+    // the same cost, affinity winning every such tie, and the bound mind's repeated arrivals starving
+    // an older mind.
+    #[test]
+    fn a_bound_mind_that_keeps_arriving_never_starves_an_older_one() {
+        assert_eq!(pick(&[turn(true, false, 1, 5), turn(false, false, 1, 90_000)]), Some(1), "the aged one-token tail goes first");
+        assert_eq!(pick(&[turn(true, false, 0, 0), turn(false, false, 0, 1)]), Some(1), "equal cost goes to the longer wait");
+
+        // The bound mind answers and arrives again, fully cached, round after round; the older mind,
+        // also fully cached, waits. It is served on the first round it is ready, not never.
+        let mut older = turn(false, false, 0, 0);
+        let served = (1..=5u64).find(|round| {
+            older.waited_ms = round * 2_000;
+            pick(&[turn(true, false, 0, 0), older]) == Some(1)
+        });
+        assert_eq!(served, Some(1), "the older mind is served on its first round");
     }
 }
