@@ -49,6 +49,8 @@ pub(super) enum Fact {
 /// One finished turn: where her seconds went. Built by the engine from its own counters (no work),
 /// written here.
 pub(super) struct TurnRow {
+    /// The submitted request this turn served, so its completion joins its transitions by identity.
+    pub request: Option<super::RequestId>,
     pub persona: uuid::Uuid,
     pub one_off: bool,
     pub prompt_tokens: u64,
@@ -76,6 +78,7 @@ impl TurnRow {
     fn write(self) {
         continuum_base::probe!(
             class = "persona.engine.turn",
+            request = ?self.request.as_ref().map(super::RequestId::as_str),
             persona = %self.persona,
             one_off = self.one_off,
             prompt_tokens = self.prompt_tokens,

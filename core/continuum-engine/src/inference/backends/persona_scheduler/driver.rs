@@ -805,6 +805,7 @@ impl Driver<'_, '_> {
     fn row(turn: &Turn, generated: usize) -> record::TurnRow {
         let ms = record::whole_ms;
         record::TurnRow {
+            request: turn.req.request.clone(),
             persona: turn.id.0,
             one_off: turn.one_off,
             prompt_tokens: turn.prompt.len() as u64,
