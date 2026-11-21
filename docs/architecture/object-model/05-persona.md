@@ -504,3 +504,35 @@ brain part or really more generically anything with this event based worker pare
   wakes it. The default does nothing, so a component holding nothing pays nothing.
 - Nothing new, nothing done: the engine never delivers a state frame whose number the component
   already handled, so unchanged input cannot reach a handler and cannot be redone.
+
+### Need: each part says how much it wants to act; a tree of cheap decisions honors it
+
+Joel, 2026-11-21: "It's really up to each concern to just decide if it wants to service or do anything.
+In theory you also have higher level RTOS level orchestration as to how often. With each part maybe
+asking for a particular level of priority or need so they can self direct but the decision can be made
+at a high level or tree like RAGE too ... I really really need to do work or you know I kind of do or I
+barely care ... decisions by the queue size, events received elsewhere all in serial portions if need
+be since it's low effort."
+
+- **A part speaks for itself.** Every component publishes its `Need` beside its presence: Urgent (a
+  human addressed her; a result she waited on arrived), Want (held work has a next step; a prepared
+  answer waits), Content (nothing new; happy to rest). The engine stamps it with facts the part cannot
+  fake: its intake depth, how long its oldest input has waited, the new frames since it last ran.
+- **Most parts never need a decision.** A component waiting on its intake costs nothing; senses,
+  salience and the digest simply run when their input arrives. Need matters only where capacity is
+  scarce (the Core first, then GPU embedding, disk, network): a part asks a capacity's dispatcher with
+  its need.
+- **Orchestration is a tree of serial, cheap decisions (RAGE's job scheduler).** Within a mind, her
+  parts' needs fold into hers (the highest, with her presence). Across minds, the Core's dispatcher
+  (SAGE's flow `Scheduler`: classes, aging, yield requests) picks the next mind by need, then waiting
+  age (nobody starves), then switch cost (the mind already in the Core is cheaper). Across nodes the
+  same fold, so the grid places work by need. A component's static `QOS` is its class floor; `Need`
+  is the live signal above it.
+- **What it fixes.** On 6cd73968f0 every resident queued with equal standing and waited a p50 56 s.
+  With need, a content mind does not queue at all; an urgent one is next and the running turn is asked
+  to yield at its next safe point; held work proceeds when nothing urgent waits.
+
+Order: (1) `Need` in SAGE (`ctx.need(level)`, published with intake depth, wait age and frames since
+last run), validated; (2) the mind folds her parts' needs; (3) the Core's next-mind choice through
+the flow `Scheduler` by her need. Gate: an addressed resident waits less than one turn's length for
+the Core, and content residents take zero Core turns.
