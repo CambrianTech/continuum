@@ -674,3 +674,23 @@ sees from her prompt frames. The `Component` lifecycle is engine-owned, with def
 
 For a mind, being swapped out of the Core is her willResignActive (her parts save, then rest); being next
 in line is her willEnterForeground, which the Prepare component issues.
+
+**Focus decides, and the genome is parts like the rest of her (Joel, 2026-11-21: "dreams can lose priority
+when she's actively working. It's more signal and consciousness or focus ... all of this can be more organic
+and still get everything done ... the genome to also follow the same adjustments for paging in and out,
+weighting of each genomic layer, analyzing what and how to get better ... finding genome shared / cos
+distances, analyzing thoughts, background memory processes, research online. All part of mind").**
+- Dreaming's need follows her presence and focus: Content while she is Acting on work (it neither
+  competes for the Core nor crowds her attention), Want when she rests. No schedule; her attention.
+- A gene layer is a component whose need is its relevance to what she is doing now (novelty and
+  similarity of her current activity against what the layer was learned on): relevant pages in, idle
+  rests and pages out (`rest()` and prepare-to-wake applied to adapters; the paged genome is its
+  lifecycle).
+- A layer's weight for a turn is state a small appraisal part publishes from her focus and the layer's
+  measured fitness; the Core reads it when it composes the turn's genes, at frame lag 0.
+- A fitness part watches her outcomes (reviews, surprises, corrections) and publishes where she is
+  weak; dreaming and training subscribe, so learning is pulled by gaps, never pushed by a timer.
+- Novelty against the shared gene catalog (cosine distance over the layers' embeddings) separates a
+  lesson that is new (mint) from one near an existing gene (reuse or fork).
+- Analyzing thoughts, background memory processes and online research are components with their own
+  stimuli and outputs; research is a long act, a handle emitting what it finds as it finds it.
