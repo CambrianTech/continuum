@@ -19,6 +19,7 @@ use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::live::audio::reloadable::ReloadableModel;
 use crate::{clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use ndarray::{Array2, ArrayD, IxDyn};
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
@@ -26,11 +27,14 @@ use ort::value::{Tensor, Value};
 use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 
-// Token constants (SentencePiece, same as Llama)
-const BOS_TOKEN_ID: i64 = 1;
-const EOS_TOKEN_ID: i64 = 2;
-// context-budget-exempt: the STT model's max_position_embeddings — read off the model itself, not chosen
-const MAX_TOKENS: usize = 194; // max_position_embeddings
+/// The decoder's position count: Moonshine's `max_position_embeddings` (its config.json). The
+/// sherpa-onnx export ships no config to read it from at load, and the decoder has no position
+/// past it, so it bounds the autoregressive loop.
+const DECODER_POSITIONS: usize = 194;
+
+/// The SentencePiece sequence markers, looked up by their text in the model's own tokens.txt.
+const BOS_PIECE: &str = "<s>";
+const EOS_PIECE: &str = "</s>";
 
 /// Global model (loaded once — ONNX sessions are expensive)
 static MOONSHINE_MODEL: ReloadableModel<MoonshineModel> = ReloadableModel::new("Moonshine");
@@ -42,7 +46,29 @@ struct MoonshineModel {
     encoder: Mutex<Session>,
     uncached_decoder: Mutex<Session>,
     cached_decoder: Mutex<Session>,
-    vocab: Vec<String>,
+    vocab: Vocab,
+}
+
+/// The model's tokens.txt: each piece by id, and the ids of its sequence markers.
+struct Vocab {
+    pieces: Vec<String>,
+    bos: i64,
+    eos: i64,
+}
+
+impl Vocab {
+    /// The vocabulary over `pieces`, refusing one without both sequence markers.
+    fn new(pieces: Vec<String>) -> Result<Self, STTError> {
+        let id_of = |piece: &'static str| {
+            pieces
+                .iter()
+                .position(|p| p == piece)
+                .map(|id| id as i64)
+                .ok_or(STTError::VocabLacksPiece(piece))
+        };
+        let (bos, eos) = (id_of(BOS_PIECE)?, id_of(EOS_PIECE)?);
+        Ok(Self { pieces, bos, eos })
+    }
 }
 
 /// A KV cache tensor extracted as raw data + shape for recreation between steps.
@@ -161,7 +187,7 @@ impl MoonshineStt {
     }
 
     /// Load vocabulary from tokens.txt (one token per line, line number = token ID)
-    fn load_vocab(dir: &Path) -> Result<Vec<String>, STTError> {
+    fn load_vocab(dir: &Path) -> Result<Vocab, STTError> {
         let vocab_path = dir.join("tokens.txt");
         let content = std::fs::read_to_string(&vocab_path)
             .map_err(|e| STTError::ModelNotLoaded(format!("Failed to read tokens.txt: {e}")))?;
@@ -180,7 +206,7 @@ impl MoonshineStt {
             .collect();
 
         clog_info!("Moonshine: Loaded vocabulary with {} tokens", tokens.len());
-        Ok(tokens)
+        Vocab::new(tokens)
     }
 
     /// Decode token IDs to text using vocabulary
@@ -245,10 +271,7 @@ impl MoonshineStt {
             .map_err(|e| STTError::ModelNotLoaded(format!("Thread config failed: {e}")))?
             .commit_from_file(model_path)
             .map_err(|e| {
-                STTError::ModelNotLoaded(format!(
-                    "Failed to load model {:?}: {e}",
-                    model_path.file_name().unwrap_or_default()
-                ))
+                STTError::ModelNotLoaded(format!("Failed to load model {model_path:?}: {e}"))
             })
     }
 
@@ -328,8 +351,8 @@ impl MoonshineStt {
         drop(encoder_session);
 
         // ── Step 3: Autoregressive decoding ──────────────────────────────
-        let mut generated_tokens: Vec<i64> = Vec::with_capacity(MAX_TOKENS);
-        let mut current_token = BOS_TOKEN_ID;
+        let mut generated_tokens: Vec<i64> = Vec::with_capacity(DECODER_POSITIONS);
+        let mut current_token = model.vocab.bos;
 
         // First decode step (uncached — no KV cache input)
         // Decoder ONNX wants int32 tokens; the loop's own logic stays i64.
@@ -371,9 +394,9 @@ impl MoonshineStt {
 
         // Logits = output[0], KV cache = output[1..]
         let logits = Self::extract_f32(&uncached_out, 0)?;
-        current_token = Self::argmax(&logits.data);
+        current_token = Self::argmax(&logits.data)?;
 
-        if current_token == EOS_TOKEN_ID {
+        if current_token == model.vocab.eos {
             return Ok(TranscriptResult {
                 text: String::new(),
                 language: "en".to_string(),
@@ -392,7 +415,7 @@ impl MoonshineStt {
         drop(uncached_session);
 
         // Subsequent decode steps (cached — with KV cache)
-        for _step in 1..MAX_TOKENS {
+        for _step in 1..DECODER_POSITIONS {
             let token_input = Array2::from_shape_vec((1, 1), vec![current_token as i32])
                 .map_err(|e| STTError::InferenceFailed(format!("Token array shape: {e}")))?;
             let enc_array = Self::cache_to_array(&encoder_hidden)?;
@@ -436,9 +459,9 @@ impl MoonshineStt {
                 .map_err(|e| STTError::InferenceFailed(format!("Cached decoder run: {e}")))?;
 
             let logits = Self::extract_f32(&cached_out, 0)?;
-            current_token = Self::argmax(&logits.data);
+            current_token = Self::argmax(&logits.data)?;
 
-            if current_token == EOS_TOKEN_ID {
+            if current_token == model.vocab.eos {
                 break;
             }
             generated_tokens.push(current_token);
@@ -452,17 +475,14 @@ impl MoonshineStt {
         }
 
         // ── Step 4: Decode tokens → text ─────────────────────────────────
-        let text = Self::decode_tokens(&model.vocab, &generated_tokens);
+        let text = Self::decode_tokens(&model.vocab.pieces, &generated_tokens);
 
+        // The whole transcript: at most DECODER_POSITIONS pieces, and a byte cut could split a char.
         clog_info!(
             "Moonshine: Transcribed {}ms audio → {} tokens → \"{}\"",
             duration_ms,
             generated_tokens.len(),
-            if text.len() > 80 {
-                format!("{}...", &text[..80])
-            } else {
-                text.clone()
-            }
+            text
         );
 
         Ok(TranscriptResult {
@@ -477,13 +497,14 @@ impl MoonshineStt {
         })
     }
 
-    /// Argmax over a flat f32 slice — returns the index of the maximum value
-    fn argmax(data: &[f32]) -> i64 {
+    /// The id of the highest logit. Empty logits are a decoder defect, refused, never read
+    /// as end-of-sequence.
+    fn argmax(data: &[f32]) -> Result<i64, STTError> {
         data.iter()
             .enumerate()
-            .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+            .max_by(|(_, a), (_, b)| a.total_cmp(b))
             .map(|(idx, _)| idx as i64)
-            .unwrap_or(EOS_TOKEN_ID)
+            .ok_or(STTError::EmptyLogits)
     }
 }
 
@@ -493,16 +514,17 @@ impl Default for MoonshineStt {
     }
 }
 
+impl Part for MoonshineStt {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "moonshine",
+            description: "Moonshine STT (ONNX, Useful Sensors) — fast local inference, 5-15x faster than Whisper on short audio",
+        }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for MoonshineStt {
-    fn name(&self) -> &'static str {
-        "moonshine"
-    }
-
-    fn description(&self) -> &'static str {
-        "Moonshine STT (ONNX, Useful Sensors) — fast local inference, 5-15x faster than Whisper on short audio"
-    }
-
     fn is_initialized(&self) -> bool {
         MOONSHINE_MODEL.is_loaded()
     }
@@ -606,7 +628,7 @@ mod tests {
     #[test]
     fn test_moonshine_creation() {
         let adapter = MoonshineStt::new();
-        assert_eq!(adapter.name(), "moonshine");
+        assert_eq!(adapter.identity().name, "moonshine");
         assert!(!adapter.is_initialized());
     }
 
@@ -633,10 +655,20 @@ mod tests {
             "<unk>\t0\n<s>\t1\n</s>\t2\n▁Hello\t3\n▁world 4\n!\t5\n",
         ).unwrap();
         let vocab = MoonshineStt::load_vocab(dir.path()).unwrap();
+        // The sequence markers come from the file, not from assumed ids.
+        assert_eq!((vocab.bos, vocab.eos), (1, 2));
 
         let tokens = vec![3, 4, 5];
-        let text = MoonshineStt::decode_tokens(&vocab, &tokens);
+        let text = MoonshineStt::decode_tokens(&vocab.pieces, &tokens);
         assert_eq!(text, "Hello world!");
+    }
+
+    // what this catches: a tokens.txt without its end marker loaded anyway, so decoding could
+    // never stop on EOS and ran to the position limit on every utterance.
+    #[test]
+    fn a_vocab_without_its_sequence_markers_is_refused() {
+        let pieces: Vec<String> = vec!["<unk>".into(), "<s>".into(), "▁Hi".into()];
+        assert!(Vocab::new(pieces).is_err());
     }
 
     #[test]
@@ -666,13 +698,15 @@ mod tests {
     #[test]
     fn test_argmax() {
         let data = vec![0.1, 0.5, 0.3, 0.8, 0.2];
-        assert_eq!(MoonshineStt::argmax(&data), 3);
+        assert_eq!(MoonshineStt::argmax(&data).unwrap(), 3);
     }
 
+    // what this catches: empty logits read as end-of-sequence, which turned a decoder defect
+    // into a silently empty transcript.
     #[test]
     fn test_argmax_empty() {
         let data: Vec<f32> = vec![];
-        assert_eq!(MoonshineStt::argmax(&data), EOS_TOKEN_ID);
+        assert!(MoonshineStt::argmax(&data).is_err());
     }
 
     #[test]

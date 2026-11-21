@@ -9,6 +9,8 @@
 //! - Trait-based abstraction
 //! - Factory creation by name
 
+use continuum_base::part::Part;
+
 pub mod adaptive;
 pub mod metrics;
 pub mod production;
@@ -62,13 +64,7 @@ pub struct VADResult {
 /// Implementations must be Send + Sync for multi-threaded use.
 /// Follows polymorphism pattern for runtime swappable algorithms.
 /// All methods are SYNC - VAD detection is pure computation, no async needed.
-pub trait VoiceActivityDetection: Send + Sync {
-    /// Algorithm name
-    fn name(&self) -> &'static str;
-
-    /// Algorithm description
-    fn description(&self) -> &'static str;
-
+pub trait VoiceActivityDetection: Part + Send + Sync {
     /// Is the VAD initialized and ready?
     fn is_initialized(&self) -> bool;
 

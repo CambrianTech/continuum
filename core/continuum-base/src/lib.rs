@@ -12,6 +12,7 @@ pub mod home;
 pub mod id_resolve;
 pub mod non_empty_list;
 pub mod non_empty_text;
+pub mod part;
 pub mod probe;
 pub mod probed;
 pub mod repo_id;

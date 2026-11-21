@@ -5,6 +5,7 @@
 
 use super::{VADError, VADResult, VoiceActivityDetection};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
+use continuum_base::part::{Identity, Part};
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -131,15 +132,13 @@ impl Default for SileroRawVAD {
     }
 }
 
+impl Part for SileroRawVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "silero-raw", description: "Silero VAD (raw ONNX Runtime, no external crates)" }
+    }
+}
+
 impl VoiceActivityDetection for SileroRawVAD {
-    fn name(&self) -> &'static str {
-        "silero-raw"
-    }
-
-    fn description(&self) -> &'static str {
-        "Silero VAD (raw ONNX Runtime, no external crates)"
-    }
-
     fn is_initialized(&self) -> bool {
         SILERO_SESSION.get().is_some()
     }

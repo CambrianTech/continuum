@@ -24,6 +24,7 @@ use crate::gpu::memory_manager::{GpuPriority, GpuSubsystem};
 use crate::gpu::tracker::GpuModelTracker;
 use crate::live::audio::reloadable::ReloadableModel;
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,6 +49,27 @@ static POCKET_MODEL: ReloadableModel<Mutex<PocketState>> = ReloadableModel::new(
 
 /// GPU allocation tracking for Pocket-TTS model (~400MB CPU/GPU)
 static POCKET_GPU: GpuModelTracker = GpuModelTracker::new("Pocket-TTS");
+
+/// Did HuggingFace refuse a pocket-tts download for access (401 unauthorized, 403 gated)?
+/// Read off the hub client's typed error anywhere in the cause chain, never its text.
+fn hub_access_refused(error: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(error), |cause| cause.source())
+        .filter_map(|cause| cause.downcast_ref::<pocket_tts_hf_hub::api::sync::ApiError>())
+        .any(|api| matches!(hub_status(api), Some(401 | 403)))
+}
+
+/// The HTTP status a hub call was answered with, when it was answered with one.
+fn hub_status(error: &pocket_tts_hf_hub::api::sync::ApiError) -> Option<u16> {
+    use pocket_tts_hf_hub::api::sync::ApiError;
+    match error {
+        ApiError::RequestError(request) => match request.as_ref() {
+            pocket_tts_ureq::Error::Status(code, _) => Some(*code),
+            pocket_tts_ureq::Error::Transport(_) => None,
+        },
+        ApiError::TooManyRetries(last) => hub_status(last),
+        _ => None,
+    }
+}
 
 /// Loaded model + cached voice states
 struct PocketState {
@@ -165,14 +187,13 @@ impl PocketTTS {
         name: &str,
     ) -> Result<pocket_tts::ModelState, TTSError> {
         // Try local file first, then download from HF
-        let file_path = Self::find_voice_embedding(name)
-            .map(Ok)
-            .unwrap_or_else(|| {
+        let file_path = match Self::find_voice_embedding(name) {
+            Some(local) => local,
+            None => {
                 let hf_path = format!("hf://kyutai/pocket-tts/embeddings/{name}.safetensors");
                 clog_info!("Pocket-TTS: Downloading preset voice '{}' from HF", name);
                 pocket_tts::weights::download_if_necessary(&hf_path).map_err(|e| {
-                    let msg = format!("{e}");
-                    if msg.contains("403") || msg.contains("401") {
+                    if hub_access_refused(e.as_ref()) {
                         TTSError::ModelNotLoaded(format!(
                             "Pocket-TTS voice '{name}' requires HuggingFace access. \
                                  Accept terms at: https://huggingface.co/kyutai/pocket-tts \
@@ -181,8 +202,9 @@ impl PocketTTS {
                     } else {
                         TTSError::SynthesisFailed(format!("Voice download failed: {e}"))
                     }
-                })
-            })?;
+                })?
+            }
+        };
 
         clog_info!(
             "Pocket-TTS: Loading preset voice '{}' from {:?}",
@@ -221,10 +243,7 @@ impl PocketTTS {
 
         let voice_state = if let Some(wav_path) = voice_wav {
             // Voice cloning from reference WAV audio
-            clog_info!(
-                "Pocket-TTS: Cloning voice from {:?}",
-                wav_path.file_name().unwrap_or_default()
-            );
+            clog_info!("Pocket-TTS: Cloning voice from {:?}", wav_path);
             state
                 .model
                 .get_voice_state(wav_path)
@@ -288,16 +307,17 @@ impl Default for PocketTTS {
     }
 }
 
+impl Part for PocketTTS {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "pocket",
+            description: "Pocket-TTS (100M, Candle) — fast CPU TTS with voice cloning from reference audio",
+        }
+    }
+}
+
 #[async_trait]
 impl TextToSpeech for PocketTTS {
-    fn name(&self) -> &'static str {
-        "pocket"
-    }
-
-    fn description(&self) -> &'static str {
-        "Pocket-TTS (100M, Candle) — fast CPU TTS with voice cloning from reference audio"
-    }
-
     fn is_initialized(&self) -> bool {
         POCKET_MODEL.is_loaded()
     }
@@ -317,8 +337,7 @@ impl TextToSpeech for PocketTTS {
         let model = tokio::task::spawn_blocking(|| {
             pocket_tts::TTSModel::load(DEFAULT_VARIANT)
                 .map_err(|e| {
-                    let msg = format!("{e}");
-                    if msg.contains("403") || msg.contains("status code 403") {
+                    if hub_access_refused(e.as_ref()) {
                         TTSError::ModelNotLoaded(
                             "Pocket-TTS model is gated on HuggingFace. \
                              To enable: 1) Accept terms at https://huggingface.co/kyutai/pocket-tts \
@@ -426,7 +445,7 @@ mod tests {
     #[test]
     fn test_pocket_tts_basics() {
         let adapter = PocketTTS::new();
-        assert_eq!(adapter.name(), "pocket");
+        assert_eq!(adapter.identity().name, "pocket");
         assert!(!adapter.is_initialized());
         assert_eq!(adapter.default_voice(), "alba");
     }

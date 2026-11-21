@@ -11,6 +11,7 @@
 use super::{STTError, SpeechToText, TranscriptResult};
 use crate::{clog_debug, clog_info, clog_warn};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -127,29 +128,41 @@ enum ServerEvent {
     Unknown,
 }
 
-/// OpenAI Realtime STT Adapter
+/// An OpenAI API key: the credential the Realtime adapter cannot exist without.
+pub struct OpenAIApiKey(String);
+
+impl OpenAIApiKey {
+    /// The key in `OPENAI_API_KEY`, or why that variable cannot be read.
+    pub fn from_env() -> Result<Self, std::env::VarError> {
+        std::env::var("OPENAI_API_KEY").map(Self)
+    }
+}
+
+/// OpenAI Realtime STT Adapter. It cannot exist without its API key.
 pub struct OpenAIRealtimeSTT {
-    api_key: Option<String>,
+    api_key: OpenAIApiKey,
     config: TurnDetection,
     initialized: Mutex<bool>,
 }
 
 impl OpenAIRealtimeSTT {
-    pub fn new() -> Self {
+    /// The adapter over an API key, with the default (semantic VAD) turn detection.
+    pub fn new(api_key: OpenAIApiKey) -> Self {
+        Self::with_config(api_key, TurnDetection::default())
+    }
+
+    /// The adapter over an API key, with a custom turn detection config.
+    pub fn with_config(api_key: OpenAIApiKey, config: TurnDetection) -> Self {
         Self {
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-            config: TurnDetection::default(),
+            api_key,
+            config,
             initialized: Mutex::new(false),
         }
     }
 
-    /// Create with custom turn detection config
-    pub fn with_config(config: TurnDetection) -> Self {
-        Self {
-            api_key: std::env::var("OPENAI_API_KEY").ok(),
-            config,
-            initialized: Mutex::new(false),
-        }
+    /// The adapter over `OPENAI_API_KEY`, or why that key cannot be read.
+    pub fn from_env() -> Result<Self, std::env::VarError> {
+        OpenAIApiKey::from_env().map(Self::new)
     }
 
     /// Convert f32 samples to base64 PCM16
@@ -170,10 +183,7 @@ impl OpenAIRealtimeSTT {
         samples: Vec<f32>,
         _language: Option<&str>,
     ) -> Result<TranscriptResult, STTError> {
-        let api_key = self
-            .api_key
-            .as_ref()
-            .ok_or_else(|| STTError::ModelNotLoaded("OPENAI_API_KEY not set".into()))?;
+        let api_key = &self.api_key.0;
 
         // Connect to Realtime API
         let url = format!("{REALTIME_API_URL}?model=gpt-4o-realtime-preview");
@@ -217,7 +227,7 @@ impl OpenAIRealtimeSTT {
         let update_event = ClientEvent::SessionUpdate {
             session: session_config,
         };
-        let json = serde_json::to_string(&update_event)
+        let json = serde_json::to_string(&update_event) // OpenAI Realtime websocket wire protocol
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
         write
@@ -231,7 +241,7 @@ impl OpenAIRealtimeSTT {
         for chunk in samples.chunks(chunk_size) {
             let audio_b64 = Self::samples_to_base64(chunk);
             let append_event = ClientEvent::AudioAppend { audio: audio_b64 };
-            let json = serde_json::to_string(&append_event)
+            let json = serde_json::to_string(&append_event) // OpenAI Realtime websocket wire protocol
                 .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
             write
@@ -242,7 +252,7 @@ impl OpenAIRealtimeSTT {
 
         // Commit audio buffer
         let commit_event = ClientEvent::AudioCommit;
-        let json = serde_json::to_string(&commit_event)
+        let json = serde_json::to_string(&commit_event) // OpenAI Realtime websocket wire protocol
             .map_err(|e| STTError::InferenceFailed(format!("JSON error: {e}")))?;
 
         write
@@ -311,33 +321,22 @@ impl OpenAIRealtimeSTT {
     }
 }
 
-impl Default for OpenAIRealtimeSTT {
-    fn default() -> Self {
-        Self::new()
+impl Part for OpenAIRealtimeSTT {
+    fn identity(&self) -> Identity {
+        Identity {
+            name: "openai-realtime",
+            description: "OpenAI Realtime API with streaming transcription and semantic VAD",
+        }
     }
 }
 
 #[async_trait]
 impl SpeechToText for OpenAIRealtimeSTT {
-    fn name(&self) -> &'static str {
-        "openai-realtime"
-    }
-
-    fn description(&self) -> &'static str {
-        "OpenAI Realtime API with streaming transcription and semantic VAD"
-    }
-
     fn is_initialized(&self) -> bool {
-        *self.initialized.lock() && self.api_key.is_some()
+        *self.initialized.lock()
     }
 
     async fn initialize(&self) -> Result<(), STTError> {
-        if self.api_key.is_none() {
-            return Err(STTError::ModelNotLoaded(
-                "OPENAI_API_KEY environment variable not set".into(),
-            ));
-        }
-
         *self.initialized.lock() = true;
         clog_info!("OpenAI Realtime STT: Initialized (semantic VAD enabled)");
         Ok(())

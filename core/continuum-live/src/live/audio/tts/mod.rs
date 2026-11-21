@@ -13,6 +13,8 @@
 //!
 //! Uses trait-based polymorphism for runtime flexibility.
 
+use continuum_base::part::Part;
+
 pub(crate) mod normalize;
 mod kokoro;
 mod orpheus;
@@ -102,6 +104,30 @@ pub enum TTSError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// A model path an API that takes text cannot take, because it is not UTF-8.
+    #[error("model path {0:?} is not UTF-8")]
+    NonUtf8Path(std::path::PathBuf),
+
+    /// A model's own config beside its weights could not be read as that config.
+    #[error("model config {path:?} unreadable: {cause}")]
+    ModelConfig {
+        path: std::path::PathBuf,
+        #[source]
+        cause: serde_json::Error,
+    },
+
+    /// A voice id that names no speaker: neither the adapter's default voice nor a number.
+    #[error("voice is neither the default voice nor a speaker number: {0}")]
+    SpeakerUnparsable(#[source] std::num::ParseIntError),
+
+    /// A speaker the model does not have.
+    #[error("speaker {speaker} is out of range: the model has {speakers} speakers")]
+    SpeakerOutOfRange { speaker: u32, speakers: u32 },
+
+    /// No voices directory where the model's voices live.
+    #[error("no voices directory under {0:?}")]
+    NoVoicesDir(std::path::PathBuf),
 }
 
 /// Voice information
@@ -132,13 +158,7 @@ pub struct SynthesisResult {
 ///
 /// Implement this for each TTS backend (Kokoro, ElevenLabs, etc.)
 #[async_trait]
-pub trait TextToSpeech: Send + Sync {
-    /// Adapter name (e.g., "kokoro", "elevenlabs")
-    fn name(&self) -> &'static str;
-
-    /// Human-readable description
-    fn description(&self) -> &'static str;
-
+pub trait TextToSpeech: Part + Send + Sync {
     /// Check if adapter is ready for use
     fn is_initialized(&self) -> bool;
 
@@ -238,7 +258,7 @@ impl TTSRegistry {
 
     /// Register an adapter (order matters — first registered = highest priority)
     pub fn register(&mut self, adapter: Arc<dyn TextToSpeech>) {
-        let name = adapter.name();
+        let name = adapter.identity().name;
         clog_info!("TTS: Registering adapter '{}'", name);
         self.adapters.insert(name, adapter);
         self.priority.push(name);
@@ -284,11 +304,9 @@ impl TTSRegistry {
             .collect()
     }
 
-    /// Check if any adapter is initialized
+    /// Is there an active adapter, and is it loaded?
     pub fn is_initialized(&self) -> bool {
-        self.get_active()
-            .map(|a| a.is_initialized())
-            .unwrap_or(false)
+        self.get_active().is_some_and(|a| a.is_initialized())
     }
 }
 
@@ -411,11 +429,11 @@ pub async fn synthesize(
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
     clog_info!(
-        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        "TTS: voice '{}' → '{}' (gender hint {:?}) for '{}'",
         voice,
         resolved,
-        gender_hint.unwrap_or("any"),
-        adapter.name()
+        gender_hint,
+        adapter.identity().name
     );
     match adapter.synthesize(text, &resolved).await {
         Ok(mut result) => {
@@ -434,7 +452,7 @@ pub async fn synthesize(
             // are for tests, not for a persona's mouth.
             let candidates = ["kokoro", "pocket", "orpheus", "piper"];
             for name in candidates {
-                if name == adapter.name() {
+                if name == adapter.identity().name {
                     continue;
                 }
                 let Some(next) = get_registry().read().get(name) else {
@@ -453,7 +471,7 @@ pub async fn synthesize(
                 if let Ok(mut result) = next.synthesize(text, &re_resolved).await {
                     continuum_base::probe!(
                         class = "tts.fallthrough",
-                        from = adapter.name(),
+                        from = adapter.identity().name,
                         to = name,
                         error = %active_err,
                         "active TTS adapter failed — utterance served by the next local adapter"
@@ -501,8 +519,8 @@ pub async fn initialize_with_preference(preferred: Option<&str>) -> Result<(), T
         if let Some(adapter) = adapter {
             match adapter.initialize().await {
                 Ok(()) => {
-                    // Use adapter.name() which returns &'static str
-                    let static_name = adapter.name();
+                    // Use adapter.identity().name which returns &'static str
+                    let static_name = adapter.identity().name;
                     clog_info!("TTS: '{}' initialized successfully", static_name);
                     let _ = registry.write().set_active(static_name);
                     return Ok(());
@@ -548,24 +566,15 @@ pub async fn synthesize_with(
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
     clog_info!(
-        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        "TTS: voice '{}' → '{}' (gender hint {:?}) for '{}'",
         voice,
         resolved,
-        gender_hint.unwrap_or("any"),
+        gender_hint,
         adapter_name
     );
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)
-}
-
-/// Get available voices from active adapter
-pub fn available_voices() -> Vec<VoiceInfo> {
-    get_registry()
-        .read()
-        .get_active()
-        .map(|a| a.available_voices())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -585,7 +594,7 @@ mod tests {
 
         // First registered adapter becomes active
         let active = registry.get_active().expect("Should have active adapter");
-        assert_eq!(active.name(), "silence");
+        assert_eq!(active.identity().name, "silence");
     }
 
     #[test]
@@ -598,10 +607,10 @@ mod tests {
         let silence = registry
             .get("silence")
             .expect("Should find silence adapter");
-        assert_eq!(silence.name(), "silence");
+        assert_eq!(silence.identity().name, "silence");
 
         let kokoro = registry.get("kokoro").expect("Should find kokoro adapter");
-        assert_eq!(kokoro.name(), "kokoro");
+        assert_eq!(kokoro.identity().name, "kokoro");
 
         // Unknown adapter returns None
         assert!(registry.get("nonexistent").is_none());
@@ -614,11 +623,11 @@ mod tests {
         registry.register(Arc::new(KokoroTTS::new()));
 
         // Initially silence is active (first registered)
-        assert_eq!(registry.get_active().unwrap().name(), "silence");
+        assert_eq!(registry.get_active().unwrap().identity().name, "silence");
 
         // Switch to kokoro
         registry.set_active("kokoro").expect("Should succeed");
-        assert_eq!(registry.get_active().unwrap().name(), "kokoro");
+        assert_eq!(registry.get_active().unwrap().identity().name, "kokoro");
 
         // Invalid adapter name
         assert!(registry.set_active("nonexistent").is_err());

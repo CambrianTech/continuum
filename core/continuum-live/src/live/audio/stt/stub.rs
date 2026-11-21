@@ -7,6 +7,7 @@ use super::{STTError, SpeechToText, TranscriptResult, TranscriptSegment};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_debug, clog_info};
 use async_trait::async_trait;
+use continuum_base::part::{Identity, Part};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Minimum audio duration for transcription (ms)
@@ -16,7 +17,7 @@ const STUB_MIN_AUDIO_MS: i64 = 500;
 /// Confidence score returned by stub (0.0-1.0)
 const STUB_CONFIDENCE: f32 = 0.95;
 
-/// Default language code
+/// The language of the stub's canned transcripts (all English)
 const STUB_DEFAULT_LANGUAGE: &str = "en";
 
 /// Stub STT Adapter
@@ -50,16 +51,14 @@ impl StubSTT {
     }
 }
 
+impl Part for StubSTT {
+    fn identity(&self) -> Identity {
+        Identity { name: "stub", description: "Stub STT adapter for testing (returns dummy text)" }
+    }
+}
+
 #[async_trait]
 impl SpeechToText for StubSTT {
-    fn name(&self) -> &'static str {
-        "stub"
-    }
-
-    fn description(&self) -> &'static str {
-        "Stub STT adapter for testing (returns dummy text)"
-    }
-
     fn is_initialized(&self) -> bool {
         self.initialized.load(Ordering::Relaxed)
     }
@@ -91,7 +90,7 @@ impl SpeechToText for StubSTT {
         }
 
         let text = self.generate_dummy_text(duration_ms);
-        let lang = language.unwrap_or(STUB_DEFAULT_LANGUAGE).to_string();
+        let lang = language.unwrap_or(STUB_DEFAULT_LANGUAGE).to_string(); // the stub detects nothing: its canned text is English, so that is its fixture's language
 
         clog_debug!(
             "StubSTT: Generated dummy transcription for {}ms audio: \"{}\"",

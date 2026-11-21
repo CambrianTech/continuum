@@ -16,6 +16,7 @@
 use super::{VADError, VADResult, VoiceActivityDetection};
 use continuum_base::audio_constants::AUDIO_SAMPLE_RATE;
 use crate::{clog_info, clog_warn};
+use continuum_base::part::{Identity, Part};
 use ndarray::{Array1, Array2};
 use once_cell::sync::OnceCell;
 use ort::session::builder::GraphOptimizationLevel;
@@ -85,16 +86,15 @@ impl SileroVAD {
 
         // Get model preference from SILERO_VAD_MODEL env var
         let model_name =
-            std::env::var("SILERO_VAD_MODEL").unwrap_or_else(|_| "silero_vad.onnx".to_string());
+            std::env::var("SILERO_VAD_MODEL").unwrap_or_else(|_| "silero_vad.onnx".to_string()); // Silero's published model file name; the variable only picks another variant
 
         // Search for the model in common locations
-        let candidates = vec![
-            PathBuf::from(format!("models/vad/{model_name}")),
-            dirs::data_dir()
-                .unwrap_or_default()
-                .join(format!("silero/{model_name}")),
-            PathBuf::from(format!("/usr/local/share/silero/{model_name}")),
-        ];
+        let mut candidates = vec![PathBuf::from(format!("models/vad/{model_name}"))];
+        // A platform with no data directory has no candidate there (never a cwd-relative one).
+        if let Some(data_dir) = dirs::data_dir() {
+            candidates.push(data_dir.join(format!("silero/{model_name}")));
+        }
+        candidates.push(PathBuf::from(format!("/usr/local/share/silero/{model_name}")));
 
         for path in &candidates {
             if path.exists() {
@@ -183,15 +183,13 @@ impl Default for SileroVAD {
     }
 }
 
+impl Part for SileroVAD {
+    fn identity(&self) -> Identity {
+        Identity { name: "silero", description: "ML-based Silero VAD (accurate background noise rejection)" }
+    }
+}
+
 impl VoiceActivityDetection for SileroVAD {
-    fn name(&self) -> &'static str {
-        "silero"
-    }
-
-    fn description(&self) -> &'static str {
-        "ML-based Silero VAD (accurate background noise rejection)"
-    }
-
     fn is_initialized(&self) -> bool {
         SILERO_SESSION.get().is_some()
     }
@@ -314,7 +312,7 @@ mod tests {
     #[test]
     fn test_silero_creation() {
         let vad = SileroVAD::new();
-        assert_eq!(vad.name(), "silero");
+        assert_eq!(vad.identity().name, "silero");
         assert!(!vad.is_initialized());
     }
 
