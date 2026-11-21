@@ -1314,6 +1314,11 @@ The fills themselves are by design, and one checkpoint at her stable end serves 
 
 #### 4.7.3 The contract across the seam
 
+- **At launch**, the seated minds supply demand and the backend declares its physical streams.
+  The native scheduler has one decoding stream and one staging stream. Serving charges the two
+  fixed stream costs before fitting KV into the host and device grants. It rounds each stream's
+  window down to native alignment within the fitted pool and the model's trained ceiling.
+  After launch, admission and prompt fitting use the geometry the running engine reports.
 - **Core to engine, per request:** her prompt's boundaries as token positions: the head end, the
   stable end (where her changing tail starts), and each activity's span. The request already
   carries `view_messages` spans for this. The engine keeps a checkpoint exactly at the stable end
