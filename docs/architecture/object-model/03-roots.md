@@ -219,6 +219,25 @@ The governor answers a demand with a typed outcome:
 
 A cleared grant is a lease (today's `ThroughputLease` is one).
 
+**The Core owns its budget.** One mind decodes on a Core at a time, so nothing divides a Core's memory
+among minds. The `Core` owns, and nothing outside it decides:
+- **its budget:** its KV capacity and sequence cap, as the engine measures them;
+- **its occupant:** the mind decoding now;
+- **its cache:** the pages of minds that were recently on it, kept warm while room remains and paged to
+  RAM at a boundary, with the release confirmed, when the next mind needs the room;
+- **its queue and its next-mind policy.**
+
+A mind asks the Core for a turn with a `Demand` (her need, her value, her switch cost). The Core answers
+`Granted` when it is her turn (her window is her need, up to the cap), `Waiting` with the event that
+will wake her, or `Infeasible` only when her need exceeds the cap, with the numbers. A mind never holds
+a standing window. Each persona's `Residency` records where her pages are; only the Core moves them.
+The node's governor gives the Core its share of the device beside rendering, speech and embeddings:
+that is the only division, between kinds of work, never among the minds on one Core.
+
+What it replaces: the serving daemon's per-mind grants on the engine's pool and their "owed" state,
+and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
+while one mind held 98,304 tokens of a Core that decodes one mind at a time).
+
 **Choosing the next mind on the Core** is the same rule at its finest grain. Among the ready demands,
 run the one whose expected gain in value per unit of Core time is highest, counting the switch it
 would cost. Run it until its next natural boundary or until another demand's loss from waiting
