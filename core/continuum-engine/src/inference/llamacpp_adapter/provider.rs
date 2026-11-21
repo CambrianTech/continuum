@@ -430,7 +430,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // thinking tags, with her think budget. A media turn's is plain. Built here, on her act's
         // thread; the engine only samples.
         let sampler = backend.turn_sampler(chat_render.as_ref().map(|(render, _)| render), &sampling, think_budget.map(|budget| budget.0))?;
-        let result: Result<(String, usize), InferenceError> = if collected_media.is_empty() {
+        let result: Result<crate::inference::backends::llamacpp::Answer, InferenceError> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             // RTOS timing probe: this is the actual LLM forward pass —
             // by far the dominant cost (95%+ on LCD tier per
@@ -548,7 +548,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
         };
-        let (written, tokens) = result?;
+        let crate::inference::backends::llamacpp::Answer { text: written, facts } = result?;
+        let tokens = facts.generated;
         // What she wrote, read by the render that produced her prompt: content, reasoning and her
         // native calls (assembled by the one owner the streamed path uses). A media turn's output
         // is its text.
@@ -609,12 +610,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
             finish_reason,
             model: backend.model_id().to_string(),
             provider: LLAMACPP_PROVIDER_ID.to_string(),
-            usage: UsageMetrics {
-                input_tokens: 0, // backend doesn't return this currently; future enhancement
-                output_tokens: tokens as u32,
-                total_tokens: tokens as u32,
-                estimated_cost: None,
-            },
+            // What the Core measured of her turn, never an estimate: her prompt counted exactly, what
+            // her held state covered, and the time each phase took.
+            usage: facts.usage(),
             response_time_ms: elapsed.as_millis() as u64,
             request_id: format!("llamacpp-{}", continuum_base::time::EpochMs::now().millis()),
             content,
@@ -623,7 +621,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             reasoning,
             routing: None,
             error: None,
-            timing: None,
+            timing: Some(facts.timing()),
         };
         crate::ai::stream_sinks::deliver_whole(&sink, &response).await;
         Ok(response)

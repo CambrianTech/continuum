@@ -92,7 +92,7 @@ async fn qwen35_persona_style_chat_produces_coherent_short_reply() {
     // strip_think_blocks then leaves empty output. Validated 2026-04-20:
     // model produced correct '12 × 7 = 84' inside <think> but never
     // reached the visible-text phase before max_tokens.
-    let (text, n_tokens) = backend
+    let continuum_core::inference::backends::llamacpp::Answer { text, facts } = backend
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(context_length).expect("explicit test allocation")),
             None,
@@ -101,6 +101,7 @@ async fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         .collect()
         .await
         .expect("generate");
+    let n_tokens = facts.generated;
 
     eprintln!("[full] tokens={n_tokens} text={text:?}");
 
@@ -165,7 +166,7 @@ async fn qwen35_scheduler_json_grammar_returns_object() {
         ..SamplingConfig::chat()
     };
 
-    let (text, n_tokens) = backend
+    let continuum_core::inference::backends::llamacpp::Answer { text, facts } = backend
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             None,
@@ -179,6 +180,7 @@ async fn qwen35_scheduler_json_grammar_returns_object() {
         .collect()
         .await
         .expect("generate");
+    let n_tokens = facts.generated;
 
     eprintln!("[json-grammar] tokens={n_tokens} text={text:?}");
     assert!(n_tokens > 0, "no tokens generated");

@@ -139,16 +139,16 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         .expect("warm-up generate failed");
     eprintln!(
         "[smoke] warm-up: {} tokens in {}ms ({:.1} tok/s) — text={:?}",
-        warm_result.1,
+        warm_result.facts.generated,
         warm_start.elapsed().as_millis(),
-        warm_result.1 as f64 / warm_start.elapsed().as_secs_f64(),
-        warm_result.0
+        warm_result.facts.generated as f64 / warm_start.elapsed().as_secs_f64(),
+        warm_result.text
     );
 
     // Real measurement: 100 tokens, longer output, isolated decode rate.
     eprintln!("[smoke] measurement generation (100 tokens)...");
     let gen_start = Instant::now();
-    let (text, tokens) = backend
+    let continuum_core::inference::backends::llamacpp::Answer { text, facts } = backend
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             None,
@@ -162,6 +162,7 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         .collect()
         .await
         .expect("measurement generate failed");
+    let tokens = facts.generated;
     let elapsed_secs = gen_start.elapsed().as_secs_f64();
     let tokens_per_sec = tokens as f64 / elapsed_secs;
 

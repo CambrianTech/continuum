@@ -16,14 +16,14 @@ use std::time::Instant;
 
 use llama::{FlashAttn, KvCacheType, LoraAdapter, Model, ModelParams};
 
-use super::persona_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, SchedulerError, TokenEvent};
+use super::persona_scheduler::{GenerationRequest, Scheduler, SchedulerConfig, SchedulerError, TokenEvent, TurnFacts};
 use super::SamplingConfig;
 use crate::runtime;
 
 mod validate_embedding_model;
 pub use validate_embedding_model::*;
 mod llama_cpp_backend;
-pub use llama_cpp_backend::{TurnAnswer, TurnPrompt};
+pub use llama_cpp_backend::{Answer, TurnAnswer, TurnPrompt};
 mod embedding_lane;
 mod embedding_batch;
 pub(crate) use embedding_batch::{ContextBytes, EmbedWindow, EmbeddingBatch, NO_TRAINED_CONTEXT};

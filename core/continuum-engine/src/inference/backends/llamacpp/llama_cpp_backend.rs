@@ -195,7 +195,7 @@ impl LlamaCppBackend {
         max_tokens: usize,
         sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), InferenceError> {
+    ) -> Result<Answer, InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
@@ -228,7 +228,7 @@ impl LlamaCppBackend {
         max_tokens: usize,
         sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), InferenceError> {
+    ) -> Result<Answer, InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
@@ -255,7 +255,7 @@ impl LlamaCppBackend {
         mut sampler: llama::TurnSampler,
         stop_sequences: &[&str],
         kind: llama::MediaKind,
-    ) -> Result<(String, usize), InferenceError> {
+    ) -> Result<Answer, InferenceError> {
         let log = runtime::logger("llamacpp");
         let start = Instant::now();
         let mtmd = self.ensure_mtmd()?;
@@ -321,6 +321,7 @@ impl LlamaCppBackend {
             }
         };
         let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;
+        let prefill = start.elapsed();
         log.info(&format!(
             "mtmd eval done ({:?}): prompt+media consumed {} positions in {}ms",
             kind,
@@ -373,7 +374,17 @@ impl LlamaCppBackend {
             start.elapsed().as_millis(),
             tokens_generated as f64 / start.elapsed().as_secs_f64().max(0.001)
         ));
-        Ok((output, tokens_generated))
+        let elapsed = start.elapsed();
+        let facts = TurnFacts {
+            // the positions the projector consumed
+            prompt_tokens: usize::from(n_past),
+            reused_tokens: 0,
+            generated: tokens_generated,
+            prefill,
+            decode: elapsed.saturating_sub(prefill),
+            elapsed,
+        };
+        Ok(Answer { text: output, facts })
     }
 
     pub fn model_id(&self) -> &str {
@@ -580,28 +591,29 @@ pub struct TurnAnswer {
     stops: Vec<String>,
 }
 
+/// What the model wrote, with what the engine measured of writing it.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub text: String,
+    pub facts: TurnFacts,
+}
+
 impl TurnAnswer {
-    pub async fn collect(mut self) -> Result<(String, usize), InferenceError> {
+    pub async fn collect(mut self) -> Result<Answer, InferenceError> {
         let mut output = String::new();
         loop {
             match self.events.recv().await {
                 Some(TokenEvent::Token(piece)) => {
                     output.push_str(&piece);
                 }
-                Some(TokenEvent::Done {
-                    tokens_generated,
-                    elapsed_ms,
-                }) => {
-                    // The scheduler's own count is the receipt; a per-piece tally here
-                    // was never read (rustc: value assigned is never read).
-                    let n_decoded = tokens_generated;
+                Some(TokenEvent::Done(facts)) => {
                     let elapsed = self.started.elapsed();
                     runtime::logger("llamacpp").info(&format!(
                         "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",
-                        n_decoded,
+                        facts.generated,
                         elapsed.as_secs_f64(),
-                        n_decoded as f64 / elapsed.as_secs_f64().max(0.001),
-                        elapsed_ms,
+                        facts.generated as f64 / elapsed.as_secs_f64().max(0.001),
+                        facts.elapsed.as_millis(),
                         self.prompt_chars
                     ));
                     // Trim trailing stop sequence(s) — scheduler emits them
@@ -611,7 +623,7 @@ impl TurnAnswer {
                             output.truncate(output.len() - s.len());
                         }
                     }
-                    return Ok((output, n_decoded));
+                    return Ok(Answer { text: output, facts });
                 }
                 Some(TokenEvent::Exceeded(exceeded)) => {
                     // The Core's own numbers outrank any window cached from a plan: her caller

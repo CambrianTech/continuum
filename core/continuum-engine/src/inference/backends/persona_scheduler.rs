@@ -57,8 +57,8 @@ use uuid::Uuid;
 pub enum TokenEvent {
     /// One generated token piece (UTF-8 fragment from the tokenizer).
     Token(String),
-    /// Generation finished cleanly (EOG / max_tokens / stop sequence).
-    Done { tokens_generated: usize, elapsed_ms: u64 },
+    /// Generation finished cleanly (EOG / max_tokens / stop sequence), with what the Core measured of it.
+    Done(TurnFacts),
     /// Refused at the door: her prompt and the reply she asked for do not fit one stream. Her caller
     /// refits to `capacity`; resending the same request cannot succeed.
     Exceeded(Exceeded),
@@ -72,6 +72,64 @@ pub enum TokenEvent {
 pub struct Exceeded {
     pub prompt_tokens: usize,
     pub capacity: usize,
+}
+
+/// What the Core measured of a turn it answered: her caller reports these, never estimates them
+/// (2026-11-21: the response said `input_tokens: 0` and no timing, so cognition priced her prompt from
+/// an estimate and saw no reuse while the Core had counted both).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnFacts {
+    /// Her prompt's tokens, counted exactly.
+    pub prompt_tokens: usize,
+    /// Of those, how many her held state already covered (no prefill).
+    pub reused_tokens: usize,
+    /// Tokens she wrote.
+    pub generated: usize,
+    pub prefill: std::time::Duration,
+    pub decode: std::time::Duration,
+    /// From submission to her last token.
+    pub elapsed: std::time::Duration,
+}
+
+impl TurnFacts {
+    /// Her turn's token counts as a response reports them.
+    pub fn usage(&self) -> crate::ai::types::UsageMetrics {
+        crate::ai::types::UsageMetrics {
+            input_tokens: wire_count(self.prompt_tokens),
+            output_tokens: wire_count(self.generated),
+            total_tokens: wire_count(self.prompt_tokens.saturating_add(self.generated)),
+            estimated_cost: None,
+        }
+    }
+
+    /// Her turn's phases as a response reports them: what was reused, what was prefilled and how
+    /// fast, what was decoded and how fast.
+    pub fn timing(&self) -> crate::ai::types::GenerationTiming {
+        let prefilled = self.prompt_tokens.saturating_sub(self.reused_tokens);
+        crate::ai::types::GenerationTiming {
+            cached_tokens: wire_count(self.reused_tokens),
+            prefill_tokens: wire_count(prefilled),
+            prefill_ms: self.prefill.as_secs_f64() * 1000.0,
+            prefill_tokens_per_second: rate(prefilled, self.prefill),
+            decode_tokens: wire_count(self.generated),
+            decode_ms: self.decode.as_secs_f64() * 1000.0,
+            decode_tokens_per_second: rate(self.generated, self.decode),
+        }
+    }
+}
+
+/// A token count as the response's `u32` fields carry it; a count past `u32` is past every context,
+/// so the clamp never changes a real count.
+fn wire_count(tokens: usize) -> u32 {
+    tokens.min(u32::MAX as usize) as u32
+}
+
+/// Tokens per second over a phase; a phase that processed no tokens took no rate.
+fn rate(tokens: usize, took: std::time::Duration) -> f64 {
+    if tokens == 0 || took.is_zero() {
+        return 0.0;
+    }
+    tokens as f64 / took.as_secs_f64()
 }
 
 /// A turn's prompt as token ids and where her view ends in them, computed by the submitter on its
@@ -295,4 +353,32 @@ pub enum SchedulerError {
     NoRuntime,
     #[error("the persona scheduler was given no window, so its stages have no capacity")]
     NoWindow,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // what this catches: the in-process response saying `input_tokens: 0` and no timing while the
+    // Core had counted her prompt and its reuse exactly (2026-11-21), so cognition priced her prompt
+    // from an estimate and saw no reuse. The response carries what the Core measured.
+    #[test]
+    fn a_turns_response_carries_what_the_core_measured() {
+        let facts = TurnFacts {
+            prompt_tokens: 24_000,
+            reused_tokens: 22_000,
+            generated: 300,
+            prefill: Duration::from_secs(10),
+            decode: Duration::from_secs(15),
+            elapsed: Duration::from_secs(26),
+        };
+        let usage = facts.usage();
+        assert_eq!((usage.input_tokens, usage.output_tokens, usage.total_tokens), (24_000, 300, 24_300));
+        let timing = facts.timing();
+        assert_eq!((timing.cached_tokens, timing.prefill_tokens, timing.decode_tokens), (22_000, 2_000, 300));
+        assert_eq!((timing.prefill_tokens_per_second, timing.decode_tokens_per_second), (200.0, 20.0));
+        let all_reused = TurnFacts { reused_tokens: 24_000, prefill: Duration::ZERO, ..facts };
+        assert_eq!((all_reused.timing().prefill_tokens, all_reused.timing().prefill_tokens_per_second), (0, 0.0), "nothing prefilled, no rate");
+    }
 }

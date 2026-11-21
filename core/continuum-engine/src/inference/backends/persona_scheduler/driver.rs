@@ -329,7 +329,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
             Ok(Advanced::Continues) => {}
-            Ok(Advanced::Done { tokens_generated, elapsed_ms }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, elapsed_ms }),
+            Ok(Advanced::Done { tokens_generated }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 driver.end(turns.remove(index), Ending::Refused(refused));
@@ -404,7 +404,7 @@ struct Spent {
 enum Advanced {
     Continues,
     /// She answered: what her `TokenEvent::Done` will say.
-    Done { tokens_generated: usize, elapsed_ms: u64 },
+    Done { tokens_generated: usize },
 }
 
 /// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
@@ -774,23 +774,16 @@ impl Driver<'_, '_> {
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
     fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
-        let done = |turn: &Turn, generated: usize| {
-            let took = turn.submitted.elapsed();
-            Advanced::Done {
-                tokens_generated: generated,
-                elapsed_ms: took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis())),
-            }
-        };
         // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
         // her blocks computed stays hers.
         if self.model.is_eog_token(token) || turn.cancel.load(Ordering::Acquire) {
-            return Ok(done(turn, generated));
+            return Ok(Advanced::Done { tokens_generated: generated });
         }
         // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
         self.emit.send(emit::Out::Token { answer: turn.answer, token });
         let generated = generated + 1;
         if generated >= turn.req.max_tokens {
-            return Ok(done(turn, generated));
+            return Ok(Advanced::Done { tokens_generated: generated });
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
@@ -814,6 +807,19 @@ impl Driver<'_, '_> {
     /// what her blocks did not hold, decode), so the one-mind gate (switch in ms, decode near the
     /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live. Built
     /// from her counters here; written by Record.
+    /// What her caller is told the Core measured of her answered turn: the same measurements her row
+    /// records, so the response never estimates a count the Core already has.
+    fn facts(turn: &Turn, generated: usize) -> super::TurnFacts {
+        super::TurnFacts {
+            prompt_tokens: turn.prompt.len(),
+            reused_tokens: turn.spent.reused,
+            generated,
+            prefill: turn.spent.prefill,
+            decode: turn.spent.decode,
+            elapsed: turn.submitted.elapsed(),
+        }
+    }
+
     fn row(turn: &Turn, generated: usize) -> record::TurnRow {
         let ms = record::whole_ms;
         record::TurnRow {

@@ -175,7 +175,7 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
     sampling.top_k = 0;
     sampling.top_p = 1.0;
     sampling.repeat_penalty = 1.0;
-    let (text, tokens) = backend
+    let continuum_core::inference::backends::llamacpp::Answer { text, facts } = backend
         .generate_with_image(GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             &prompt,
             &image,
@@ -184,6 +184,7 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
             &["<|im_end|>", "<|endoftext|>"],
         )
         .expect("generate_with_image should produce a description");
+    let tokens = facts.generated;
     eprintln!(
         "[vision-int] generated {} tokens in {}ms ({:.1} tok/s)",
         tokens,
