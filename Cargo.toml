@@ -415,6 +415,7 @@ earshot = "0.1"
 ed25519-dalek = { version = "2", features = ["rand_core", "serde"] }
 fs2 = "0.4"
 futures = "0.3"
+event-listener = "5.4"
 hound = "3.5"
 ignore = "0.4"
 image = "0.25"

@@ -6,7 +6,6 @@ description = "The persona engine (CONTINUUM-ENGINE 4.14): one mind decodes at a
 
 [dependencies]
 uuid.workspace = true
-futures.workspace = true
 thiserror.workspace = true
 
 [lints.clippy]
