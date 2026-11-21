@@ -9,7 +9,7 @@ use super::*;
 fn incarnation(epoch: u64) -> StageIncarnation {
     StageIncarnation {
         stage: StageId::named("recall"),
-        mind: MindId(Uuid::from_u128(7)),
+        owner: OwnerId(Uuid::from_u128(7)),
         epoch,
     }
 }
@@ -37,7 +37,7 @@ fn only_a_later_incarnation_of_the_same_stage_and_mind_supersedes() {
     assert!(!incarnation(2).is_superseded_by(&incarnation(1)));
     assert!(!incarnation(1).is_superseded_by(&incarnation(1)));
     let other_mind = StageIncarnation {
-        mind: MindId(Uuid::from_u128(8)),
+        owner: OwnerId(Uuid::from_u128(8)),
         ..incarnation(9)
     };
     assert!(!incarnation(1).is_superseded_by(&other_mind));
@@ -493,7 +493,7 @@ mod topics {
 
     /// A worker that reports each revision it is handed, and handles one only when the test
     /// releases it (so a test can hold it busy).
-    struct Part {
+    struct Listener {
         seen: mpsc::UnboundedSender<u64>,
         gate: Arc<Semaphore>,
     }
@@ -512,7 +512,7 @@ mod topics {
         }
     }
 
-    impl Stage for Part {
+    impl Stage for Listener {
         type Input = Seen;
         const QOS: Qos = Qos::Work;
         async fn handle(&mut self, input: Seen) {
@@ -526,7 +526,7 @@ mod topics {
     fn part(open: bool) -> (crate::StageInput<Seen>, crate::StageWorker<Seen>, mpsc::UnboundedReceiver<u64>, Arc<Semaphore>) {
         let (seen, rx) = mpsc::unbounded_channel();
         let gate = Arc::new(Semaphore::new(if open { Semaphore::MAX_PERMITS } else { 0 }));
-        let (input, worker) = spawn_stage(Part { seen, gate: Arc::clone(&gate) }, Capacity::granted(std::num::NonZeroUsize::MIN));
+        let (input, worker) = spawn_stage(Listener { seen, gate: Arc::clone(&gate) }, Capacity::granted(std::num::NonZeroUsize::MIN));
         (input, worker, rx, gate)
     }
 
@@ -544,7 +544,8 @@ mod topics {
         assert!(reader.latest().is_none(), "nothing published yet");
         assert_eq!(publisher.publish(1, by()).through, 1);
         let (input, worker, mut seen, gate) = part(false);
-        reader.clone().attach(input);
+        reader.clone().attach(&input);
+        drop(input); // the delivery holds the only other handle: the part ends with its publisher
         gate.add_permits(1);
         assert_eq!(seen.recv().await, Some(1), "handed the current value on attach");
         // Busy: the part holds no permit while 2, 3 and 4 are published.
@@ -572,9 +573,9 @@ mod topics {
         let (fast_in, _fast, mut fast, _) = part(true);
         let (slow_in, _slow, mut slow, slow_gate) = part(false);
         let (gone_in, gone, _, _) = part(true);
-        subscribe.attach(fast_in);
-        subscribe.attach(slow_in);
-        subscribe.attach(gone_in);
+        subscribe.attach(&fast_in);
+        subscribe.attach(&slow_in);
+        subscribe.attach(&gone_in);
         gone.stop();
         // The slow part holds one input and one waits: the third emit must wait for its room.
         assert_eq!(emitter.emit(1).await.through, 1);

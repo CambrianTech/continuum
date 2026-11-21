@@ -23,7 +23,7 @@ impl StageId {
 
 /// The mind a stage serves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct MindId(pub Uuid);
+pub struct OwnerId(pub Uuid);
 
 /// One running instance of a stage for one mind. A new incarnation (restart, migration,
 /// re-host) adopts the previous one's open obligations with a durable receipt and fences its
@@ -31,7 +31,7 @@ pub struct MindId(pub Uuid);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct StageIncarnation {
     pub stage: StageId,
-    pub mind: MindId,
+    pub owner: OwnerId,
     pub epoch: u64,
 }
 
@@ -39,7 +39,7 @@ impl StageIncarnation {
     /// Whether `other` is a later incarnation of the same stage for the same mind: the one rule
     /// that fences a stale incarnation's mutations.
     pub fn is_superseded_by(&self, other: &StageIncarnation) -> bool {
-        self.stage == other.stage && self.mind == other.mind && other.epoch > self.epoch
+        self.stage == other.stage && self.owner == other.owner && other.epoch > self.epoch
     }
 }
 

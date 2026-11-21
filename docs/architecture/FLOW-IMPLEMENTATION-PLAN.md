@@ -49,7 +49,7 @@
    - **utility**: ambient thought, perception enrichers, gene exams;
    - **background**: dreams, training, consolidation.
 5. **Each owner is a serial queue** that targets a class. Her newer signal supersedes her waiting one and keeps her place. Utility and background queues are bounded and shed their oldest. Nothing piles up (Joel; "Backpressure is intrinsic").
-6. **One event-driven dispatcher per capacity**, the `continuum-flow` primitive.
+6. **One event-driven dispatcher per capacity**, the `continuum-sage` primitive.
    - It owns its ready set, wakes on events (submitted, freed, page landed, aging instant), and never polls.
    - It is a pure scheduler (decisions, testable in microseconds) plus a thin actor.
 7. **Two preemption verbs** (Cormac): *yield compute* (stop at a decode step or batch boundary, keep memory) and *release memory* (page out or stop). A mind's act yields compute by finishing its step and pages out only if memory is wanted. A training job pauses at a batch boundary and keeps its graph.
@@ -78,7 +78,7 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
   dependencies by type (`getAnalyzerOfType<T>()`), and implements one handler. `CBP_ElevationAnalyzer`
   is 71 lines, most of them boilerplate.
 
-`continuum-flow` therefore ships a **`Stage`** alongside the capacity dispatcher:
+`continuum-sage` therefore ships a **`Stage`** alongside the capacity dispatcher:
 
 ```rust
 pub trait Stage: Send + 'static {
@@ -120,7 +120,7 @@ under ~100 lines).
   1 / predicted service time. This is optimal for convex delay costs in heavy traffic; the traffic-light
   form is max-pressure control.
 - Priority rises smoothly with the wait, so nobody is stuck in the turn lane, and there is no class bump
-  at a quantum (`continuum-flow`'s current step aging is that threshold and is replaced).
+  at a quantum (`continuum-sage`'s current step aging is that threshold and is replaced).
 
 **Predicted service time.** A request's cost is known before it runs:
 - prefill = tokens to prefill ÷ the engine's rate at that depth;
@@ -177,7 +177,7 @@ this same mistake.
      content already committed to its owner (the codec, a store).
    - A *reliable* stage never drops: when full, the producer gets backpressure (an `Err` it must handle,
      or an awaited send), and a restart recovers durable work before re-subscribing.
-   - `continuum-flow::Stage` encodes this as its overflow policy, so a tool result can never ride a
+   - `continuum-sage::Stage` encodes this as its overflow policy, so a tool result can never ride a
      dropping queue. Fixture: a full queue receiving distinct tool results and a cancellation keeps every
      committed result reachable; only wake signals collapse.
 2. **A bounded wait for background needs an explicit share** (Codex).
@@ -326,7 +326,7 @@ The top live-latency items, in order:
 | step | what | owner | proves |
 |---|---|---|---|
 | 0 | Hold #5558 commits 3-5; keep 4579b4711 live | Fable | done 14:20Z |
-| 1 | `continuum-flow` primitive + **simulator** (pure scheduler, fake engine, virtual clock; §6 cases) | Fable | every case in §6 green in seconds |
+| 1 | `continuum-sage` primitive + **simulator** (pure scheduler, fake engine, virtual clock; §6 cases) | Fable | every case in §6 green in seconds |
 | 2 | Engine compute as the first capacity: one dispatcher replaces lanes, adapter semaphore and the act gate; in-flight gauge and directed class move into it; warm-ahead becomes a utility-class use of free capacity (no reserved scratch slot) | Fable (dispatcher), Codex (admission/allocator/pager seams) | sim: directed waits < one decode step, gauge exact, warm-ahead intact; live: slot wait, act median |
 | 3 | KV memory admission: `MindMemory::seat` + RAM paging (fork #79, #70) as the release-memory verb | Fable, Codex | sim: no resident overwritten unsaved; live: switch freeze ~0.1 s |
 | 4 | Training and examiner as consumers: compute yield at batch boundary, memory lease kept; fork yield windows and TrainingHolds-as-scheduler deleted; S7 stop-drain fixture (920619c5) | Cormac | sim: training's worst-case wait bounded; live: resident decode during training |
@@ -496,12 +496,12 @@ down (no residents involved):
   `~/.continuum/evidence/2026-10-28-working-window/` (`replay_window.sh` is the serving-down
   window script: trap and watchdog, restart on any exit).
 
-**The simulator** (`continuum-flow::sim`) puts scheduling and engine changes on a virtual clock:
+**The simulator** (`continuum-sage::sim`) puts scheduling and engine changes on a virtual clock:
 - The engine model is calibrated from `llama-bench` at depth and from the measured multi-stream
   aggregate.
 - It reproduced the live gate removal (simulated 76 -> 57 s, live 122 -> 84 s) before forecasting
   anything.
-- Run with `cargo test -p continuum-flow --release -- --nocapture`. Each case prints what a live read
+- Run with `cargo test -p continuum-sage --release -- --nocapture`. Each case prints what a live read
   reports.
 
 **Order for any speed change:** first the simulator or dyno forecast, then the dyno on real code,

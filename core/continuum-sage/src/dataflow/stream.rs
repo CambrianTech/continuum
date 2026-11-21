@@ -31,7 +31,7 @@ impl<T> Clone for Event<T> {
 #[async_trait]
 trait Subscriber<T>: Send + Sync {
     /// False when the subscriber's worker has stopped.
-    async fn deliver(&self, event: Event<T>) -> bool;
+    async fn deliver(&self, event: &Event<T>) -> bool;
 }
 
 struct Intake<I>(StageInput<I>);
@@ -42,7 +42,8 @@ where
     T: Send + Sync + 'static,
     I: From<Event<T>> + Send + 'static,
 {
-    async fn deliver(&self, event: Event<T>) -> bool {
+    async fn deliver(&self, event: &Event<T>) -> bool {
+        let event = event.clone(); // each subscriber is handed its own handle (an Arc)
         self.0.send(I::from(event)).await.is_ok()
     }
 }
@@ -75,11 +76,11 @@ pub fn stream<T: Send + Sync + 'static>(topic: TopicName) -> (Emitter<T>, Subscr
 
 impl<T: Send + Sync + 'static> Subscribe<T> {
     /// Hand every event emitted from now on to the worker behind `input`.
-    pub fn attach<I>(&self, input: StageInput<I>)
+    pub fn attach<I>(&self, input: &StageInput<I>)
     where
         I: From<Event<T>> + Send + 'static,
     {
-        self.subscribers.lock().push(Arc::new(Intake(input)));
+        self.subscribers.lock().push(Arc::new(Intake(input.clone())));
     }
 }
 
@@ -92,7 +93,7 @@ impl<T: Send + Sync + 'static> Emitter<T> {
         let subscribers = self.subscribers.lock().clone();
         let mut stopped: Vec<Arc<dyn Subscriber<T>>> = Vec::new();
         for subscriber in subscribers {
-            if !subscriber.deliver(event.clone()).await {
+            if !subscriber.deliver(&event).await {
                 stopped.push(subscriber);
             }
         }

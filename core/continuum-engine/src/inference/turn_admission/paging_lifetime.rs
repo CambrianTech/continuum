@@ -24,12 +24,12 @@ impl Drop for Interest {
     }
 }
 
-/// The page IO's result travels to its requester as a handoff (`continuum_flow::dataflow::handoff`): if
+/// The page IO's result travels to its requester as a handoff (`continuum_sage::dataflow::handoff`): if
 /// the requester vanishes first, a verified restore still belongs to its activity, so the
 /// admission is dropped with the delivery after the terminal receipt and ledger updates, and its
 /// own drop keeps the residency (nothing was sent: `Dispatch::Unsent`).
-const PAGE_IO_RESULT: continuum_flow::dataflow::TopicName =
-    continuum_flow::dataflow::TopicName("inference/kv_page.result");
+const PAGE_IO_RESULT: continuum_sage::dataflow::TopicName =
+    continuum_sage::dataflow::TopicName("inference/kv_page.result");
 
 impl TurnAdmission {
     pub(super) async fn retain_paging<F, Fut>(
@@ -41,7 +41,7 @@ impl TurnAdmission {
         F: FnOnce(Self, Arc<AtomicBool>) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = Result<Self, String>> + Send + 'static,
     {
-        use continuum_flow::dataflow::{handoff, Settled};
+        use continuum_sage::dataflow::{handoff, Settled};
         let interested = Arc::new(AtomicBool::new(true));
         let mut interest = Interest {
             active: interested.clone(),

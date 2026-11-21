@@ -2869,7 +2869,6 @@ dependencies = [
  "continuum-engine",
  "continuum-engram",
  "continuum-experience",
- "continuum-flow",
  "continuum-genome",
  "continuum-grounding",
  "continuum-hands",
@@ -2881,6 +2880,7 @@ dependencies = [
  "continuum-positron",
  "continuum-prompt",
  "continuum-rooms",
+ "continuum-sage",
  "continuum-service",
  "continuum-text-analysis",
  "continuum-vitals",
@@ -3108,12 +3108,12 @@ dependencies = [
  "continuum-airc-protocol",
  "continuum-base",
  "continuum-cli-lifecycle",
- "continuum-flow",
  "continuum-host",
  "continuum-kernel",
  "continuum-persona-engine",
  "continuum-persona-llama",
  "continuum-process",
+ "continuum-sage",
  "continuum-saved-state",
  "continuum-service",
  "continuum-tool-protocol",
@@ -3188,19 +3188,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "continuum-flow"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "continuum-base",
- "futures-util",
- "parking_lot",
- "tokio",
- "tracing",
- "uuid",
-]
-
-[[package]]
 name = "continuum-gateway"
 version = "0.1.0"
 dependencies = [
@@ -3227,10 +3214,10 @@ dependencies = [
  "candle-nn",
  "continuum-base",
  "continuum-engine",
- "continuum-flow",
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
+ "continuum-sage",
  "continuum-saved-state",
  "dashmap",
  "futures",
@@ -3516,6 +3503,7 @@ dependencies = [
  "continuum-positron",
  "continuum-process",
  "continuum-rooms",
+ "continuum-sage",
  "continuum-store",
  "continuum-text-analysis",
  "dashmap",
@@ -3690,6 +3678,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-sage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-base",
+ "futures-util",
+ "parking_lot",
+ "tokio",
  "tracing",
  "uuid",
 ]

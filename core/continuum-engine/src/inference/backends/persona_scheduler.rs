@@ -328,10 +328,10 @@ impl Scheduler {
         // one step (Record) per item, and a full stage holds the driver's push until it drains, so
         // nothing waiting outgrows what serving admitted (Codex, 2026-11-19: the owner supplies it).
         let window = usize::try_from(config.n_ctx).ok().and_then(std::num::NonZeroUsize::new).ok_or(SchedulerError::NoWindow)?;
-        let capacity = continuum_flow::Capacity::granted(window);
-        let (emit, emit_worker) = continuum_flow::spawn_stage(emit::Emit::new(Arc::clone(&model)), capacity);
+        let capacity = continuum_sage::Capacity::granted(window);
+        let (emit, emit_worker) = continuum_sage::spawn_stage(emit::Emit::new(Arc::clone(&model)), capacity);
         let (snapshot_tx, snapshot) = tokio::sync::watch::channel(record::Record::empty(incarnation.get()));
-        let (record, record_worker) = continuum_flow::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx), capacity);
+        let (record, record_worker) = continuum_sage::spawn_stage(record::Record::new(incarnation.get(), snapshot_tx), capacity);
         let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
         let (state_tx, state) = tokio::sync::watch::channel(EngineState::Starting(incarnation));
         let runtime = tokio::runtime::Handle::current();

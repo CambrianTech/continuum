@@ -1,5 +1,5 @@
 [package]
-name = "continuum-flow"
+name = "continuum-sage"
 version = "0.1.0"
 edition = "2021"
 description = "Work flows through queues, never locks: quality-of-service classes, a serial queue per owner, and one event-driven dispatcher per capacity that owns its ready heap, ages waiting work so nothing starves, and asks lower classes to yield. CONTINUUM-ENGINE.md 4.1c."

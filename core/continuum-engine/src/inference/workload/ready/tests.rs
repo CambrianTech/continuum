@@ -13,11 +13,11 @@ fn ms(n: u64) -> At {
     At::from_origin(Duration::from_millis(n))
 }
 
-fn mind(n: u128) -> MindId {
-    MindId(uuid::Uuid::from_u128(n))
+fn mind(n: u128) -> OwnerId {
+    OwnerId(uuid::Uuid::from_u128(n))
 }
 
-fn seq(at: u64, (engine, id): (EngineIncarnation, u64), who: MindId, change: SequenceChange) -> Stamped<WorkloadEvent> {
+fn seq(at: u64, (engine, id): (EngineIncarnation, u64), who: OwnerId, change: SequenceChange) -> Stamped<WorkloadEvent> {
     Stamped { at: ms(at), event: WorkloadEvent::Sequence { engine, sequence: SequenceId(id), mind: who, change } }
 }
 

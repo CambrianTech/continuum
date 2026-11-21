@@ -1,5 +1,5 @@
 use super::*;
-use continuum_flow::{spawn_stage, Capacity, Qos, Stage};
+use continuum_sage::{spawn_stage, Capacity, Qos, Stage};
 use std::num::NonZeroUsize;
 
 /// What the test stages take: an item, or a record stage's barrier.

@@ -91,10 +91,11 @@ impl<T: Send + Sync + 'static> Reader<T> {
     /// Wake the worker behind `input` with the current value and then each change, until the
     /// publisher or the worker goes away. The delivery waits for the worker's room (backpressure),
     /// and changes made meanwhile coalesce into the newest.
-    pub fn attach<I>(mut self, input: StageInput<I>)
+    pub fn attach<I>(mut self, input: &StageInput<I>)
     where
         I: From<Snapshot<T>> + Send + 'static,
     {
+        let input = input.clone(); // this delivery keeps its own handle to the worker
         tokio::spawn(async move {
             let current = self.rx.borrow_and_update().clone(); // the borrow ends before the await
             if let Some(current) = current {

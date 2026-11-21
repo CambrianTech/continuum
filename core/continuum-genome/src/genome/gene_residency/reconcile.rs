@@ -1,7 +1,7 @@
 //! A turn changes the desired residency. One queued wake covers all changes
 //! since the worker last read the phenotype state.
 use super::GeneResidency;
-use continuum_flow::{spawn_stage, Capacity, Overflow, PushError, Qos, Stage, StageInput, StageWorker};
+use continuum_sage::{spawn_stage, Capacity, Overflow, PushError, Qos, Stage, StageInput, StageWorker};
 use parking_lot::Mutex;
 use std::sync::{Arc, Weak};
 
