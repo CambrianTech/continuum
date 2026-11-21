@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use continuum_base::capture::CaptureSink;
-use continuum_kernel::runtime::stage::MindId;
+use continuum_flow::dataflow::MindId;
 
 use super::{EngineIncarnation, SequenceChange, SequenceId, StepId, StepWork, WorkloadEvent};
 

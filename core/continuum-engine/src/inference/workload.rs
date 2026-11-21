@@ -12,7 +12,7 @@
 //! Records flow through [`continuum_base::capture::CaptureSink`]: `Noop` unless someone is
 //! recording, and a replay or gate takes only a `CompleteInterval`.
 
-use continuum_kernel::runtime::stage::MindId;
+use continuum_flow::dataflow::MindId;
 
 use super::engine_residency::EngineIncarnation;
 

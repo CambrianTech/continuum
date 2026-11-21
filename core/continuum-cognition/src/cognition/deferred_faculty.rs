@@ -8,7 +8,7 @@
 //! cognition analog, at the faculty layer.
 //!
 //! A [`DeferredFaculty`] wraps an inner [`Faculty`] as a stage on the kernel's stage runner
-//! (`continuum_kernel::runtime::stage`, the M0 stage contract): the inner's expensive work runs
+//! (`continuum_flow::dataflow`, the M0 stage contract): the inner's expensive work runs
 //! on the stage's **own** task, while the hot-path `contribute()` is non-blocking:
 //!
 //! 1. `contribute()` submits the current world to the stage (latest wins, never blocks,
@@ -39,7 +39,7 @@
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use continuum_kernel::runtime::stage::{
+use continuum_flow::dataflow::{
     Cost, ExecutionCost, InputRevision, MindId, Provenance, Ran, ResidencyCost, RunOutcome, Stage,
     StageContext, StageId, StageIncarnation, StageRunner, TopicName, Triggers,
 };

@@ -6,6 +6,12 @@ description = "Work flows through queues, never locks: quality-of-service classe
 
 [dependencies]
 tokio = { workspace = true }
+continuum-base = { path = "../continuum-base" } # probes on the dataflow graph's seams
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true } # continuum_base::probe! expands to it
+parking_lot = { workspace = true } # an artifact's settle slot: held only for a swap, never across an await
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

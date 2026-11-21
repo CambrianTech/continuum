@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use continuum_base::capture::{At, CaptureId, CompleteInterval};
-use continuum_kernel::runtime::stage::MindId;
+use continuum_flow::dataflow::MindId;
 
 use super::{EngineIncarnation, SequenceChange, SequenceId, StepId, WorkloadEvent};
 
