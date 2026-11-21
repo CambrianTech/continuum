@@ -94,7 +94,10 @@ enum Tenure {
     OneOff,
 }
 
+mod ending;
 mod history;
+
+use ending::{Ending, Stop};
 use history::{Boundary, History, Boundaries};
 
 /// A bound mind's blocks, as the tier that holds them in the context reports them.
@@ -299,31 +302,36 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                 );
             }
             match woke {
-                Some(Some(submission)) => driver.take(submission, &mut turns),
-                // Every handle dropped: Emit ends once it has drained what it holds.
-                Some(None) => return,
+                Some(Some(submission)) => {
+                    if let Some(stop) = driver.take(submission, &mut turns) {
+                        driver.acknowledge(stop, &stages_on);
+                    }
+                }
+                // Every handle dropped: every admitted turn ends, its records are written, and Emit
+                // ends once it has drained what it holds.
+                Some(None) => {
+                    for turn in std::mem::take(&mut turns) {
+                        driver.end(turn, Ending::Closed);
+                    }
+                    driver.settle_records(&stages_on);
+                    return;
+                }
                 None => {} // the stages took what waited
             }
             continue;
         }
         while let Ok(submission) = requests.try_recv() {
-            driver.take(submission, &mut turns);
+            if let Some(stop) = driver.take(submission, &mut turns) {
+                driver.acknowledge(stop, &stages_on);
+            }
         }
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
             Ok(Advanced::Continues) => {}
-            Ok(Advanced::Done(done)) => {
-                let turn = turns.remove(index);
-                driver.finish_one_off(&turn);
-                driver.emit.send(emit::Out::End { answer: turn.answer, event: done });
-            }
+            Ok(Advanced::Done { tokens_generated, elapsed_ms }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, elapsed_ms }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
-                let turn = turns.remove(index);
-                let ended = transition::At::Refused { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), reason: refused.to_string() };
-                driver.transition(&turn, ended);
-                driver.finish_one_off(&turn);
-                driver.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
+                driver.end(turns.remove(index), Ending::Refused(refused));
             }
         }
     }
@@ -395,7 +403,8 @@ struct Spent {
 /// What a step did to its turn.
 enum Advanced {
     Continues,
-    Done(TokenEvent),
+    /// She answered: what her `TokenEvent::Done` will say.
+    Done { tokens_generated: usize, elapsed_ms: u64 },
 }
 
 /// The one context: `STREAMS` sequences (the active mind's and the next one's).
@@ -450,16 +459,19 @@ impl Driver<'_, '_> {
 
     /// Route what arrived: a turn into the frame loop (refused once the stop has suspended every
     /// mind), or the stop's suspend.
-    fn take(&mut self, submission: Submission, turns: &mut Vec<Turn>) {
+    /// A stop is handed back, not acknowledged here: the loop writes its last records first.
+    #[must_use = "a stop must be acknowledged once its records are written"]
+    fn take(&mut self, submission: Submission, turns: &mut Vec<Turn>) -> Option<Stop> {
         match submission {
             Submission::Turn(req) if self.stopping => {
                 tell(&req.response_tx, TokenEvent::Error("the engine is stopping: her minds are preserved, and her turn starts after it restarts".into()));
+                None
             }
-            Submission::Turn(req) => self.admit(req, turns),
-            Submission::Suspend(reply) => {
-                let suspended = self.suspend(turns);
-                report(reply, suspended);
+            Submission::Turn(req) => {
+                self.admit(req, turns);
+                None
             }
+            Submission::Suspend(reply) => Some(Stop { reply, suspended: self.suspend(turns) }),
         }
     }
 
@@ -470,9 +482,8 @@ impl Driver<'_, '_> {
     /// it is the commit point. A mind not preserved is reported, never silently dropped.
     fn suspend(&mut self, turns: &mut Vec<Turn>) -> Suspended {
         self.stopping = true;
-        for turn in turns.drain(..) {
-            self.finish_one_off(&turn);
-            self.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error("the engine is stopping: her state is preserved".into()) });
+        for turn in std::mem::take(turns) {
+            self.end(turn, Ending::Stopping);
         }
         let minds: Vec<_> = self.parked.values().chain(self.engine.units())
             .filter(|mind| resident(mind)).map(|mind| mind.id()).collect();
@@ -653,9 +664,8 @@ impl Driver<'_, '_> {
             let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };
             self.transition(turn, progress);
         }
-        if let Ok(Advanced::Done(TokenEvent::Done { tokens_generated, .. })) = &advanced {
+        if let Ok(Advanced::Done { .. }) = &advanced {
             self.report_footprint(turn.id, turn.one_off);
-            self.record.send(record::Fact::Turn(Self::row(turn, *tokens_generated)));
         }
         advanced
     }
@@ -766,10 +776,10 @@ impl Driver<'_, '_> {
     fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize) -> Result<Advanced, TurnError> {
         let done = |turn: &Turn, generated: usize| {
             let took = turn.submitted.elapsed();
-            Advanced::Done(TokenEvent::Done {
+            Advanced::Done {
                 tokens_generated: generated,
                 elapsed_ms: took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis())),
-            })
+            }
         };
         // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
         // her blocks computed stays hers.

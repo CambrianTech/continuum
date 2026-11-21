@@ -40,10 +40,13 @@ pub(super) fn whole_ms(span: Duration) -> u64 {
 pub(super) enum Fact {
     /// The engine worked from `started` to `ended`.
     Busy { started: Instant, ended: Instant },
-    /// A turn reached a transition (admitted, first frame).
+    /// A turn reached a transition (admitted, frame started, first progress, refused).
     Transition(super::transition::Transition),
-    /// A turn ended.
+    /// A turn ended with an answer.
     Turn(TurnRow),
+    /// Answered once every fact sent before it has been written: the stage is FIFO, so a stop
+    /// acknowledges only after its last turns' records are written.
+    Barrier(tokio::sync::oneshot::Sender<()>),
 }
 
 /// One finished turn: where her seconds went. Built by the engine from its own counters (no work),
@@ -170,6 +173,11 @@ impl Stage for Record {
             Fact::Turn(row) => {
                 row.write();
                 self.close_window(self.last_end);
+            }
+            Fact::Barrier(written) => {
+                if written.send(()).is_err() {
+                    continuum_base::probe!(class = "persona.engine.barrier_unheard", "a stop stopped waiting for its records to be written");
+                }
             }
         }
     }
