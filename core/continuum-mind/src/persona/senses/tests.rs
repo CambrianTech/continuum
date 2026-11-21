@@ -7,7 +7,7 @@ use airc_core::{PeerId, TranscriptEvent};
 use continuum_airc_protocol::ConversationEvent;
 use continuum_sage::dataflow::{Event, InputRevision, Reader, TopicName};
 
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::feed::{classify, Arrival, Fed};
@@ -16,7 +16,6 @@ use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::salience::{BoardChange, Expectation, ObservedVerdict, SalienceLevel, SalienceReason};
 use super::Calling;
 use crate::cognition::conversation::Wake;
-use crate::persona::awareness::AwarenessSnapshot;
 use crate::persona::perception_region::PerceptionRegion;
 
 const ROOM_A: Uuid = Uuid::from_u128(0xa);
@@ -83,7 +82,6 @@ fn heard(event: TranscriptEvent, through: u64) -> Sensed {
 struct Kimi {
     resident: super::Resident,
     calling: Reader<Calling>,
-    strip: watch::Receiver<AwarenessSnapshot>,
     /// Her mind's home, where her acts save.
     home: std::path::PathBuf,
 }
@@ -91,15 +89,15 @@ struct Kimi {
 impl Kimi {
     fn start(me: Uuid) -> Self {
         let dir = tempfile::tempdir().expect("a temp dir"); // JUSTIFIED: a test without a temp dir has nothing to run on
-        let (mut region, strip) = PerceptionRegion::boot(PeerId::from_uuid(me), dir.path(), 1_000, 0);
+        let (mut region, _strip) = PerceptionRegion::boot(PeerId::from_uuid(me), dir.path(), 1_000, 0);
         let home = dir.path().to_path_buf();
         std::mem::forget(dir);
         region.set_identity_facts(vec![HUMAN], vec![CARD]);
         region.join(ROOM_A, "career-wrangler");
         region.set_dial(AttentionDial::default(), 0);
-        let resident = super::start(me, "Kimi", region, strip.clone()).expect("a fresh mind's calling topic is unclaimed"); // JUSTIFIED: her bus is new here, so nothing has claimed it
+        let resident = super::start(me, "Kimi", region).expect("a fresh mind's calling topic is unclaimed"); // JUSTIFIED: her bus is new here, so nothing has claimed it
         let calling = resident.handle().calling();
-        Self { resident, calling, strip, home }
+        Self { resident, calling, home }
     }
 
     async fn tell(&self, act: Sensed) {
@@ -123,7 +121,7 @@ impl Kimi {
     }
 
     fn unread(&self, room: Uuid) -> Option<u32> {
-        self.strip.borrow().lines.iter().find(|line| line.activity == room).map(|line| line.unread)
+        self.resident.handle().awareness(0)?.lines.iter().find(|line| line.activity == room).map(|line| line.unread)
     }
 }
 

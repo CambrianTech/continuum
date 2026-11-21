@@ -57,6 +57,10 @@ pub(super) struct Senses {
     /// What calls her, on her mind's bus.
     pub(super) calling: Publisher<Calling>,
     pub(super) published: Calling,
+    /// Her awareness strip, on her mind's bus.
+    pub(super) strip: Publisher<crate::persona::awareness::AwarenessSnapshot>,
+    /// The strip last published, without its clock: republished only when what she perceives moved.
+    pub(super) strip_published: Option<crate::persona::awareness::AwarenessSnapshot>,
     pub(super) due_at: Option<u64>,
     /// A saved continuation calls her with `Resume` until she takes it.
     pub(super) resume_pending: bool,
@@ -104,6 +108,8 @@ impl Component for Senses {
             Sensed::Due => {}
         }
         self.schedule_due(now, ctx);
+        // Her strip first: a part woken by what calls her reads a strip at least as new.
+        self.publish_strip(now, ctx);
         self.publish(now, ctx);
     }
 }
@@ -178,6 +184,19 @@ impl Senses {
     /// Every activity loud enough to have woken her that she has not perceived yet.
     fn pending(&self) -> std::collections::BTreeSet<Uuid> {
         self.region.activities().into_iter().filter(|activity| self.region.is_pending(*activity)).collect()
+    }
+
+    /// Publish her awareness strip, when what she perceives moved (its clock alone is not a move).
+    fn publish_strip(&mut self, now: u64, ctx: &Ctx<Self>) {
+        let mut strip = self.region.snapshot(now);
+        let at_ms = strip.at_ms;
+        strip.at_ms = 0;
+        if self.strip_published.as_ref() == Some(&strip) {
+            return;
+        }
+        self.strip_published = Some(strip.clone());
+        strip.at_ms = at_ms;
+        ctx.publish(&mut self.strip, strip);
     }
 
     /// Publish what calls her, when it changed.

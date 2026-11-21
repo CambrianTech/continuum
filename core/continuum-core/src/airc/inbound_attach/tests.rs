@@ -348,7 +348,7 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     const ROOM: Uuid = Uuid::from_u128(0x2026_1030_0028);
     let persona = Uuid::from_u128(0x2026_1030_0029);
     let dir = tempfile::tempdir().expect("her mind dir");
-    let (mut region, awareness) = crate::persona::perception_region::PerceptionRegion::boot(
+    let (mut region, _awareness) = crate::persona::perception_region::PerceptionRegion::boot(
         PeerId::from_uuid(persona),
         dir.path(),
         1_000,
@@ -356,7 +356,7 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     );
     region.join(ROOM, "general");
     region.set_dial(crate::cognition::attention::AttentionDial::default(), 0);
-    let resident = crate::persona::senses::start(persona, "Aiko", region, awareness).expect("a fresh mind's calling topic is unclaimed");
+    let resident = crate::persona::senses::start(persona, "Aiko", region).expect("a fresh mind's calling topic is unclaimed");
     let mut calling = resident.handle().calling();
     let bus = MessageBus::new();
 
@@ -390,7 +390,7 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
         matches!(called, Ok(Some(crate::cognition::conversation::Wake::Perceive { activity, .. })) if activity == ROOM),
         "a line addressed to her in her room still wakes her: {called:?}"
     );
-    let unread = resident.handle().awareness(0).lines.iter().find(|line| line.activity == ROOM).map(|line| line.unread);
+    let unread = resident.handle().awareness(0).and_then(|strip| strip.lines.iter().find(|line| line.activity == ROOM).map(|line| line.unread));
     assert_eq!(unread, Some(1), "the peer command was never something she perceived; only the line was");
 }
 

@@ -65,7 +65,7 @@ pub(super) async fn her_senses_took(me: uuid::Uuid, wake: crate::cognition::conv
 /// choice of where to pick up, including her mind room for a private thought), never in
 /// a held-claim or home room the substrate would pick for her.
 pub(super) fn her_continuation_room(me: uuid::Uuid, now_ms: u64) -> Option<uuid::Uuid> {
-    crate::persona::senses::of(me)?.awareness(now_ms).continuation.map(|c| c.activity)
+    crate::persona::senses::of(me)?.awareness(now_ms)?.continuation.map(|c| c.activity)
 }
 
 /// Sleep until `at`, or forever when there is nothing to recheck.

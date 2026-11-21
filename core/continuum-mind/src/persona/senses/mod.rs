@@ -13,6 +13,7 @@
 //! [`PerceptionRegion`]: super::perception_region::PerceptionRegion
 
 mod feed;
+mod digest;
 mod worker;
 
 pub use feed::{classify, hear, install_room_attacher, Fed};
@@ -25,7 +26,7 @@ use continuum_base::time::EpochMs;
 use continuum_sage::dataflow::{OwnerId, Reader, TopicName};
 use continuum_sage::component::{start as start_part, Bus, Key, Running, Taken, Teller};
 use parking_lot::RwLock;
-use tokio::sync::watch;
+
 use uuid::Uuid;
 
 use super::awareness::AwarenessSnapshot;
@@ -46,29 +47,33 @@ pub struct Calling {
 /// The topic `Calling` is published on.
 pub const CALLING: TopicName = TopicName("mind/calling");
 
+/// Her awareness strip, on her mind's bus: every activity's moment and unread, her continuation, her
+/// dial. The one copy her readers and her parts read (her digest watches it).
+pub const AWARENESS: TopicName = TopicName("mind/awareness");
+
 /// Where her verbs and readers reach her senses. Cheap to clone.
 #[derive(Clone)]
 pub struct Handle {
     senses: Teller<Senses>,
-    awareness: watch::Receiver<AwarenessSnapshot>,
+    awareness: Reader<AwarenessSnapshot>,
     calling: Reader<Calling>,
 }
 
 impl Handle {
-    /// Her awareness strip as of `now_ms`: the newest one her senses published, read without
-    /// waiting on them.
-    pub fn awareness(&self, now_ms: u64) -> AwarenessSnapshot {
-        // Published when something moved; read at the reader's time (never earlier), so a
-        // window that closed since is read closed.
-        let mut snapshot = self.awareness.borrow().clone();
+    /// Her awareness strip as of `now_ms`: the newest one her senses published, read without waiting
+    /// on them; `None` before her senses have taken anything in.
+    pub fn awareness(&self, now_ms: u64) -> Option<AwarenessSnapshot> {
+        // Published when something moved; read at the reader's time (never earlier), so a window
+        // that closed since is read closed.
+        let mut snapshot = (*self.awareness.latest()?.value).clone();
         snapshot.at_ms = snapshot.at_ms.max(now_ms);
-        snapshot
+        Some(snapshot)
     }
 
-    /// When anything she perceives last moved (the newest timed event across her
-    /// activities); `None` before any has.
+    /// When anything she perceives last moved (the newest timed event across her activities);
+    /// `None` before any has.
     pub fn moved_at_ms(&self) -> Option<u64> {
-        self.awareness.borrow().lines.iter().map(|line| line.last_activity_ms).filter(|ms| *ms > 0).max()
+        self.awareness.latest()?.value.lines.iter().map(|line| line.last_activity_ms).filter(|ms| *ms > 0).max()
     }
 
     /// What calls her now.
@@ -82,13 +87,15 @@ impl Handle {
     }
 }
 
-/// A resident's senses, owned by her conversation: dropping it takes her off the feed. Her mind's
-/// bus lives here, so the parts started on it later share it.
+/// A resident's parts, owned by her conversation: dropping it takes her off the feed and stops them.
+/// Her mind's bus lives here, so every part started on it shares it.
 pub struct Resident {
     persona: Uuid,
     handle: Handle,
     bus: Arc<Bus>,
     _senses: Running<Senses>,
+    /// Her channel digest; absent where no runtime registry exists to page her room from (a test).
+    _digest: Option<Running<digest::Digest>>,
 }
 
 impl Resident {
@@ -110,31 +117,45 @@ impl Drop for Resident {
 
 static RESIDENTS: LazyLock<RwLock<HashMap<Uuid, Handle>>> = LazyLock::new(Default::default);
 
-/// Start her senses on `region`, a part of her on her own mind's bus, hearing the one feed.
-/// `agent_name` is how a line addresses her (`PersonaIdentity::mentions`).
-pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion, awareness: watch::Receiver<AwarenessSnapshot>) -> Result<Resident, Taken> {
+/// Start her parts on her own mind's bus: her senses on `region`, hearing the one feed, and her
+/// channel digest watching what her senses publish. `agent_name` is how a line addresses her
+/// (`PersonaIdentity::mentions`).
+pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> Result<Resident, Taken> {
+    let now = EpochMs::now().millis();
     // A saved continuation calls her with `Resume` first; asking the region once takes it.
-    let resume_pending = matches!(region.wake_for(EpochMs::now().millis()), Some(crate::cognition::conversation::Wake::Resume));
+    let resume_pending = matches!(region.wake_for(now), Some(crate::cognition::conversation::Wake::Resume));
     let bus = Arc::new(Bus::new());
     let calling = bus.reader::<Calling>(CALLING, Key::ONE);
-    let says = bus.publisher::<Calling>(CALLING, Key::ONE)?;
+    let awareness = bus.reader::<AwarenessSnapshot>(AWARENESS, Key::ONE);
     let senses = Senses {
         persona,
         peer: airc_core::PeerId::from_uuid(persona),
         identity: PersonaIdentity::new(persona, agent_name.to_string()),
         region,
         admission: None,
-        calling: says,
+        calling: bus.publisher::<Calling>(CALLING, Key::ONE)?,
         published: Calling::default(),
+        strip: bus.publisher::<AwarenessSnapshot>(AWARENESS, Key::ONE)?,
+        strip_published: None,
         due_at: None,
         resume_pending,
         served_due: None,
     };
-    let running = start_part(senses, &bus, OwnerId(persona), EpochMs::now().millis());
+    let running = start_part(senses, &bus, OwnerId(persona), now);
+    let digest = crate::persona::PersonaAircRuntimeRegistry::try_global().map(|registry| {
+        let digest = digest::Digest {
+            persona,
+            builder: crate::cognition::channel_substrate::global_channel_digest_builder(),
+            personas: Arc::new(registry),
+            digests: crate::cognition::channel_substrate::global_channel_digest_buffer(),
+            built: continuum_sage::component::LastSeen::default(),
+        };
+        start_part(digest, &bus, OwnerId(persona), now)
+    });
     let handle = Handle { senses: running.teller(), awareness, calling };
     RESIDENTS.write().insert(persona, handle.clone());
     continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her senses are on the one feed");
-    Ok(Resident { persona, handle, bus, _senses: running })
+    Ok(Resident { persona, handle, bus, _senses: running, _digest: digest })
 }
 
 /// Her senses on this core; `None` when she is not resident here.

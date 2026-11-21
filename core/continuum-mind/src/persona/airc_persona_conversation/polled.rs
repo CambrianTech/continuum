@@ -19,11 +19,8 @@ pub(super) const SEEN_RING: usize = 128;
 /// Her perception: booted from her durable state, then owned by her senses worker on the core's
 /// one feed once her name is known (object model 5.7). Dropping it takes her off the feed.
 pub(super) struct MindFeed {
-    /// Her region and its strip, until her senses take them.
-    booted: Option<(
-        crate::persona::perception_region::PerceptionRegion,
-        tokio::sync::watch::Receiver<crate::persona::awareness::AwarenessSnapshot>,
-    )>,
+    /// Her region, until her senses take it.
+    booted: Option<crate::persona::perception_region::PerceptionRegion>,
     pub(super) senses: Option<crate::persona::senses::Resident>,
 }
 
@@ -40,7 +37,7 @@ impl MindFeed {
         // Turn budget 0: the awareness strip's context share is unread until the
         // loop's Wake consumer composes it, so it reports 0 rather than a guess.
         let now = EpochMs::now().millis();
-        let (mut region, strip) = crate::persona::perception_region::PerceptionRegion::boot(
+        let (mut region, _strip) = crate::persona::perception_region::PerceptionRegion::boot(
             airc_core::PeerId::from_uuid(persona),
             &dir,
             0,
@@ -53,7 +50,7 @@ impl MindFeed {
                 region.restore_private_continuation(private, now);
             }
         }
-        Some(Self { booted: Some((region, strip)), senses: None })
+        Some(Self { booted: Some(region), senses: None })
     }
 }
 
@@ -293,8 +290,8 @@ impl AircPersonaConversation {
             return None;
         };
         if mind.senses.is_none() {
-            if let Some((region, strip)) = mind.booted.take() {
-                match crate::persona::senses::start(persona, &agent_name, region, strip) {
+            if let Some(region) = mind.booted.take() {
+                match crate::persona::senses::start(persona, &agent_name, region) {
                     Ok(senses) => mind.senses = Some(senses),
                     Err(taken) => {
                         continuum_base::probe!(class = "mind.feed.unbooted", persona = %persona, topic = taken.0.0, "her mind's calling topic already has a writer; her senses did not start");

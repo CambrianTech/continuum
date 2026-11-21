@@ -83,7 +83,7 @@ impl RagSource for AwarenessRagSource {
         if ctx.persona_id != self.persona_id {
             return RagDelivery::empty(AWARENESS);
         }
-        let Some(snapshot) = crate::persona::senses::of(self.persona_id).map(|senses| senses.awareness(ctx.now_ms)) else {
+        let Some(snapshot) = crate::persona::senses::of(self.persona_id).and_then(|senses| senses.awareness(ctx.now_ms)) else {
             return RagDelivery::empty(AWARENESS);
         };
         let lines = self.lines_for_turn(&snapshot, ctx.airc_room.map(|r| r.as_uuid())).await;

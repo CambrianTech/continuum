@@ -85,19 +85,6 @@ pub(super) fn register_persona_registry_modules(
     ));
     // CARD CARRY: one owner keeps residents' committed card work on origin (2026-10-17).
     runtime.register(Arc::new(crate::modules::card_carry::CardCarryModule::new()));
-    // SubstrateGovernor — the deterministic cognitive-region scheduler daemon.
-    // Schedules the ChannelDigestRegion: per live persona it pre-stages the
-    // persona's current-channel digest into the SHARED digest buffer
-    // (channel_substrate globals) that AircRagSource peeks. Flood-safe — building
-    // a digest runs NO inference (element embeddings are lazy). Slice 2C live.
-    let digest_region: Arc<dyn crate::runtime::BrainRegion> = Arc::new(
-        crate::cognition::channel_digest_region::ChannelDigestRegion::with_buffer(
-            crate::cognition::channel_substrate::global_channel_digest_builder(),
-            Arc::new(registry.clone())
-                as Arc<dyn crate::cognition::channel_digest_region::PersonaChannelReader>,
-            crate::cognition::channel_substrate::global_channel_digest_buffer(),
-        ),
-    );
     // Every mind's resident result bodies answer to the one memory owner: they stay in RAM
     // until the monitor sheds, never a size cap of ours (Joel, 2026-10-29).
     // The shared channel-element cache is rebuildable (airc is the record): RAM sizes it, it sheds
@@ -144,7 +131,7 @@ pub(super) fn register_persona_registry_modules(
         })),
     );
     runtime.register(Arc::new(
-        crate::persona::substrate_governor::SubstrateGovernor::new(vec![digest_region, dream_region, credit_region], registry.clone())
+        crate::persona::substrate_governor::SubstrateGovernor::new(vec![dream_region, credit_region], registry.clone())
             .with_pressure_gate(pressure_monitor.subscribe()),
     ));
     let instance_manager = Arc::new(
