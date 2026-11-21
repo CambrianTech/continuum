@@ -16,6 +16,7 @@ from them (chapter 8).
 | `Source` | partial trait | `continuum-context::source` | five view-feeding traits |
 | `Durable` | partial trait | `continuum-saved-state` | eight persistence traits |
 | `Demand` | concrete type, read by policies | `continuum-base::demand`; cleared by the governor in `continuum-kernel` | the request side of about 150 Lease, Permit, Grant, Gate and Admission types |
+| `Presence` | concrete type with a measured wake cost, held by every `Holder` | `continuum-base::presence`; moved only by the part that holds the bytes | the three unrelated lifecycles of minds (`Roles` and `parked`), models (`EngineState`) and genes (an unevicted map), 1.5 |
 
 ## 3.1 `Part`
 
@@ -221,13 +222,17 @@ A cleared grant is a lease (today's `ThroughputLease` is one).
 
 **The Core is a CPU core for minds.** Joel, 2026-11-21: "We swap ONE agent in per core, fast, often, at
 negligible sub second time to do so, all its memory like a cpu core, hence its name. If you have math
-dividing up context amongst persona it's all wrong." A Core is one model on one compute unit with one
-context. One mind is swapped into it at a time and has all of it; the others are saved, as a process's
+dividing up context amongst persona it's all wrong." A Core is one compute unit's executor (4.11).
+One mind is swapped into it at a time and has all of it; the others are saved, as a process's
 registers are, and swapped back in a fraction of a second (a switch measured at about 21 ms between
-residents, 0.6). The Core owns, and nothing outside it decides:
-- **its context:** one, its capacity measured by the engine, whole to whichever mind is in it (4.11);
+residents on the M5, 0.6). Its models are residents like its minds (3.9): each awake model has one
+context, and waking another model is a deeper, rarer swap the Core prices. The Core owns, and nothing
+outside it decides:
+- **its contexts:** one per awake model, its capacity measured by the engine, whole to whichever mind
+  is in it (4.11);
 - **its occupant:** the mind swapped in now;
-- **its cache:** the saved pages of minds recently on it, kept warm while room remains;
+- **its residents:** the saved pages of minds, the models and the genes it holds, each at its level of
+  presence (3.9);
 - **its next-mind policy** (below).
 
 **Nothing divides a Core among minds, at any grain, anywhere.** No grant, share, lane, seat, slot,
@@ -341,3 +346,47 @@ What it replaces: every request type that today asks for a resource in its own v
 the window allocator's needs, the `LeaseRequest`s, admission gates and their permits, and the
 serving planner's demands. The answers they receive become leases and typed outcomes on one
 governor (Codex's lineage, chapter 4.3).
+
+## 3.9 `Presence`: one lifecycle for everything that occupies a device
+
+A mind's pages, a model's weights and context, a gene, a learning context and a derived cache are the
+same thing to the hardware: bytes that are expensive to bring close and cheap to keep while someone uses
+them. Today each has its own lifecycle (1.5). They get one, because the decision about each is the same
+decision.
+
+```rust
+pub enum Level { Acting, Attentive, Present, AtRest }   // chapter 0's rings of fidelity, for any resident
+
+pub struct Presence {
+    pub level: Level,
+    pub tiers: TierMap,                  // where its bytes are: device, RAM, flash, a peer
+    pub wake: Measured<WakeCost>,        // time to reach Acting from each tier, on this compute unit
+    pub footprint: Measured<Footprint>,  // bytes per tier at each level
+    pub pinned: Option<CompletionId>,    // held while a completion on it is outstanding
+}
+```
+
+- **Every resident has one.** A mind: acting is her occupancy of a Core; attentive, her pages warm on
+  the device; present, her pages in RAM; at rest, on flash with her durable self. A model: acting, a
+  Core is running it; attentive, its weights and context on the device; present, its weights in the page
+  cache; at rest, on disk or a hub. A gene: composed into the occupant's step, resident on the device, in
+  RAM, on flash. The same four levels, the same transitions, the same custody.
+- **One price moves all of them.** The demand's price (0.3, 3.8) is computed once over the tree, and
+  every resident is promoted while its value exceeds what its bytes and its wake cost would buy for
+  someone else, and demoted coolest first when the room is needed. A model is kept awake by the minds
+  that need it, exactly as a mind's pages are kept warm by her next turn.
+- **A model switch is a deep wake, not a special case.** Waking a model is the same transition as waking
+  a mind, priced by its measured wake: on the M5, about 16.5 s to load a 20.4 GB model with its file
+  likely in the page cache, against about 21 ms to swap one mind for another. That cost alone makes it
+  rare: the Core runs the minds that share the awake model while that is cheaper, and switches models
+  when a demand's value outweighs the wake. Nothing forbids it and nothing schedules it by rule.
+- **Prefetch runs strictly below demand.** Promoting the next mind's pages or the next model's weights
+  never competes with the occupant: it uses idle bandwidth and cells she is not using, and yields the
+  moment she needs them (a port of RAGE found same-priority prefetch stalled the frame).
+- **A wake cost is measured on the unit that pays it** (2.8): per resident kind, tier and compute unit,
+  re-measured when any of them changes, with a population prior until then.
+
+Every `Holder` (4.3) holds its residents' `Presence`; only the holder moves their bytes, and the
+governor reads every presence through the same footprint query. What it replaces: `Roles` with the
+driver's `parked` map, `EngineState` as a model's lifecycle, the gene map, the KV slot pool's slot
+keying, and the footprint registry's separate residency labels.

@@ -90,7 +90,7 @@ render; Cormac for the genome; Fable for the rest.
 
 | Change | Deletes | Owner |
 |---|---|---|
-| The Core owns its budget (chapter 3.8) | the serving daemon's per-mind grants (`serving_daemon/grants.rs`, `capacity::window_grant`) and their owed and `no_grant` states; the window allocator's sizing of minds; the lane planner (`serving_plan/max_lanes.rs` with `MAX_LANES = 8`); `MIN_KNEE_LANES = 2`; `MIN_SERVE_CTX = 2048`; health's `MINDS_PER_LANE_STARVED_ABOVE = 2` (it judges starvation by minds per lane); the hosting reconciler's seat bound (`persona.roster.bounded`: seats = lanes × minds per lane, which left two of four residents unseated on the M5, 2026-11-21) | Fable (Core), Codex (callers), the allocator card's resident (2eec3977) for its deletion |
+| The Core owns its budget (chapters 3.8 and 4.11; ordered in 11.4) | the serving daemon's per-mind grants (`serving_daemon/grants.rs`, `capacity::window_grant`) and their owed and `no_grant` states; the window allocator's sizing of minds; the lane planner (`serving_plan/max_lanes.rs` with `MAX_LANES = 8`); `MIN_KNEE_LANES = 2`; `MIN_SERVE_CTX = 2048`; health's `MINDS_PER_LANE_STARVED_ABOVE = 2` (it judges starvation by minds per lane); the hosting reconciler's seat bound (`persona.roster.bounded`: seats = lanes × minds per lane, which left two of four residents unseated on the M5, 2026-11-21) | Fable (Core), Codex (callers), the allocator card's resident (2eec3977) for its deletion |
 | `Holder` (pool, residency, cache) | `ResourcePool`, `ResourceConsumer`, `MemoryReporter`, `DeviceTenant`, `StagingResidency`, `VoiceReclaimLever`, `DiskReporter` as traits | Codex |
 | `Monitor` | `Daemon`, `DaemonChannel`, `GpuMonitor` and `CapacitySource` as separate roots, the hand-written interval monitors | Codex |
 | `Estimator`, `Fusion`, `Region`, `FusionRegion`, `Faculty` | `BrainRegion`, ready buffers, `RagSourceFaculty` | Fable |
@@ -122,3 +122,29 @@ The plan is finished when the ratchets added in phase A read zero on canary:
 
 Each ratchet only falls. Each phase's progress is its ratchets' numbers, reported on canary with the
 SHA and date, and recorded in the plan table of CLAUDE.md.
+
+## 11.4 After the audit of 2026-11-21: what goes first
+
+The audit (1.5) found the object model's own pieces right (one occupant per Core, hydration, custody,
+pure salience) and two things in front of them wrong: the lane era still planning, sizing and granting
+in front of the Core, and a clock running her mind. Those go first, ahead of the remaining lineage
+phases, each as one change measured live before the next (11.1).
+
+| # | Change | Deletes | Owner |
+|---|---|---|---|
+| 1 | Review of 1.5, 2.8, 2.9, 3.9, 4.11 and 5.7 | nothing; no code before it | Joel, Codex |
+| 2 | Simulator assertions, red: 4.11's eight invariants and 5.7's gate on the dyno | nothing | Fable (Core, mind), Codex (custody replays: stage, save and reclaim overlapping) |
+| 3 | One unified context per awake model; capacity published (4.11 steps 3 and 4) | `STREAMS`, `n_ctx_seq` as a limit, the door, `mind_window` and `window_grant` on deliberation's path | Fable |
+| 4 | Governance has nothing to divide (4.11's table) | the lane planner, grants, permits, seats, per-slot windows, lane-keyed health, the roster's seat bound | Codex (serving, admission, health, grid), Fable (engine, cognition) |
+| 5 | `Measured<T>`, `Prior<T>` and the `ComputeUnit` descriptor in `continuum-base`; the unit's probes | the thirty numbers of 1.5, each moved to a measurement or a prior, row by row | Fable (types), each owner for its numbers |
+| 6 | `Presence` (3.9): residents for minds, models and genes; the pager with Codex's custody | `parked`, `EngineState` as a lifecycle, the gene map, the KV slot pool's slot keying | Fable (Core), Codex (`Holder`) |
+| 7 | The streamed, typed turn (4.11 invariants 6 and 7) | collect-whole, the JSON seam, the second argument parse, string failures, estimates of measured facts | Fable |
+| 8 | Her own mind's events (5.7): senses as her part, receipts as percepts, surprise from receipts, attention the only waker, time as her scheduled events | the self-tick, the act question, the text wake rule, the sentinels and teacher texts, grading facts in the work path | Fable |
+| 9 | The next-mind policy with value and switch cost; a second model may wake (4.11 invariant 8) | `frame::pick`'s threshold; the refusal of a second model and of unloading | Fable |
+
+Rows 3, 4 and 5 may run in parallel by owner; row 8 depends on none of the Core rows and starts with
+row 2.
+
+New ratchets, added with row 2, only falling: numeric `const` items read by a `Policy` (row 5); timers,
+ticks and intervals that start a mind's turn (row 8); words of the lane era in identifiers (`lane`,
+`slot`, `seat`, `per_mind`, `n_ctx_seq`) outside tests (rows 3 and 4).

@@ -2,7 +2,7 @@
 
 [The object model](README.md) · previous: [The core today](01-today.md) · next: [The roots](03-roots.md)
 
-Seven principles shape every type in this book. Each says what to do and why.
+Nine principles shape every type in this book. Each says what to do and why.
 
 ## 2.1 Lineage: each generation holds only its difference
 
@@ -78,3 +78,33 @@ trait with the same verbs as an existing one is a second lineage, and the existi
 instead. A name that collides with another crate's name for a different thing is renamed. Names
 describe what a thing is in the domain (a part, a model, a transport), never how it was built (a
 module, a daemon, a handler).
+
+## 2.8 Measured, never written: no number is for one machine
+
+The repo runs on hardware nobody here owns: a laptop with unified memory, a discrete GPU an owner also
+games on, a phone, a grid node. A number written into the code or this book is one machine's
+measurement applied to all of them (1.5 lists thirty, from `STREAMS = 2` to a 25-minute act deadline).
+So a bound is a type, not a literal:
+
+- **`Measured<T>`** is a value with its probe, the hardware and model it was taken on, its time and its
+  spread. Policies take `Measured` inputs. A literal cannot be passed where a `Measured` is expected,
+  so a constant is a compile error, not a review comment.
+- **`Prior<T>`** is what a policy uses before its own measurement exists: learned from the population
+  (other nodes and other minds measured on the same kind of hardware and model), carried with that
+  provenance, and replaced by the first local measurement. A prior is data, never a literal.
+- **The hardware is a descriptor, measured.** Each `ComputeUnit` (a GPU, the Neural Engine, a CPU) is
+  probed when it is discovered and again when its model, backend or driver changes: decode and prefill
+  rates by context length, model load and wake times per tier, page save and restore rates, whether two
+  of its workloads together beat one swapping. This is RAGE's tunables-as-data (chapter 0, "Missions
+  are scripts"), with the data measured on the console it runs on instead of authored for one.
+- **A receipt is not a rule.** "On the M5, two sequences decoding split the rate" is that unit's
+  measurement and stays in this book as evidence; the rule is that each unit acts on its own.
+
+## 2.9 Everything streams, end to end
+
+A token, a percept, a receipt and a page move as events from the part that produced them to every part
+that consumes them, and nothing in between collects them whole. A seam that accumulates a stream and
+hands it on at the end turns a live voice into a recording and a mind's early thought into a late one.
+A stream ends with a typed end that says why (2.5), never a count someone compares afterwards, and the
+producer's measured facts (how many tokens, how many reused, how long) travel with it, so no consumer
+estimates what was measured.

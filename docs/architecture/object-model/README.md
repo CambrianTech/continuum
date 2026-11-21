@@ -65,7 +65,7 @@ Part ............................................. identity, generation; parts, 
 └─ Persona ....................................... one resident, made of her branches
 
 Demand ........ asks           Policy ..... decides       Check ....... judges       Sink ........ records
-Source ........ feeds a view    Durable .... outlives a process
+Source ........ feeds a view    Durable .... outlives a process   Presence .... occupies a device, at a level
 ```
 
 The crates follow the same direction: a floor of leaf crates that know nothing of Continuum, a

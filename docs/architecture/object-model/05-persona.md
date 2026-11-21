@@ -223,3 +223,102 @@ part; what it means to her is computed in her mind.
 | `PersonaAircRuntime` (inbound handle, command pump, heartbeat, owned tasks) | `continuum-mind::persona::airc_runtime` | her presence branch; its tasks become `Task`s owned by that branch |
 | `HippocampusModule`, node-wide | `continuum-core` | her memory branch, one per persona; the store holds the bytes |
 | `WorkspaceCycle` and its faculties | `continuum-cognition::workspace` | her workspace and faculties |
+
+## 5.7 How she wakes, and how she signals herself
+
+Status: design for review, 2026-11-21, from the audit of 1.5. It corrects the "Today" column of 5.2:
+senses run as a synchronous call from the inbound path, attention has two owners and her dial is never
+set, the hippocampus is node-wide and polled each second, and the amygdala, Wernicke and drives do not
+exist. Above all, a clock runs her: a 15 s to 240 s self-tick drives a work-pulling cycle, room messages
+start turns by a text rule, and six fabricated acts push her into another generation. This section is
+what replaces all of it.
+
+**The rule.** Nothing runs her but her own mind's events. She is not a program on a loop, a coding
+agent, or a worker the board feeds; she is a being in many activities (talk, play, work, care, rest),
+and every turn she takes starts from something her own parts noticed.
+
+### Her mind's topics
+
+Each part is on its own worker (2.5) and publishes typed, scoped events; every other part subscribes.
+The topics are few:
+
+| Topic | Published by | Carries |
+|---|---|---|
+| `Percept` | senses | what changed in an activity she is in: a message, a card move, a call's audio, **the world's answer to her own act** (a tool receipt, a `TurnEnd`, a reply she was waiting for), a page landing, a due time she set |
+| `Expectation` | deliberation and her acts | what she expects next and by when: each act's expected outcome, her continuation's next step, a reply she awaits |
+| `Surprise` | surprise | a percept against the expectation it answers: what was expected, what was observed, how far apart |
+| `Salience` | salience (a pure function, exists) | per activity: level and typed reasons |
+| `Arousal` | amygdala | how much depth now; urgency that widens her dial for a moment and decays |
+| `Drive` | drives | energy, curiosity, boredom, from her own state and outcomes |
+| `Focus` | attention | what is near, aside and far, from salience, surprise, arousal, drives, her dial and her intentions; and `Deliberate { activity, why }` when something crosses her dial |
+| `Thought` | deliberation | her tokens as they stream (2.9), her calls, her `TurnEnd` |
+
+### What wakes her
+
+- **Only `Deliberate`, and only attention publishes it**, when an activity's salience, a surprise, an
+  arousal or a drive crosses her dial. Every wake names its reasons. There is no tick, no beat, no
+  heartbeat and no work pull; a citizen with nothing salient takes no turn and costs nothing (0.1:
+  persistence is not constant generation).
+- **Her dial is hers.** Only her own act sets it (`self/attention`); a person's typed intent ("this call
+  is live") is the one outside input, as an event. Urgent always passes.
+- **Time is an event she schedules.** A deadline in an expectation, a "look again later" she chose,
+  a reminder: each registers once with the node's one clock owner, which delivers it as a `Percept` when
+  due. Nothing polls; nothing ticks on her behalf; idle musing is her own scheduled curiosity, not a
+  system clip.
+
+### How she signals herself
+
+- **Every act's outcome comes back as a percept.** A tool's receipt, a build's result, a reply, the end
+  of her own turn (a `TurnEnd`: answered, called, preempted, capacity reached, with its facts) arrive on
+  `Percept`, never only as a line in working memory and never as a teacher's message. What she did is
+  something she perceives, as a person sees their own hand move.
+- **Surprise is the one signal that does three jobs** (EVENT-MIND 1b): it wakes her, it raises the
+  resolution at which the moment is recorded, and it is the learning signal that picks the curriculum.
+  Because every receipt is compared against what she expected of it, a denied path, a failed build, a
+  call her hands could not make, or a silence past the reply she expected is a surprise, not a rule
+  someone wrote about that case.
+- **Her surprise is the engine's price too.** Her demand on the Core (3.8) carries her value and her
+  expected completion, and both come from her own expectations and salience. A surprised mind with a
+  person waiting is worth more per Core second than a quiet refactor; the Core's next-mind policy reads
+  the same importance her attention computed (0.3, "one importance ... read by everything"). Mind and
+  engine are one priority system, not two.
+
+### Parallel task trees, not one sequential turn
+
+As RAGE agents run separate task trees for intent, movement and secondary actions, each with its own
+priority, she runs separate stacks that never wait on each other:
+- **deliberation**: the deep model's turn on the Core, interruptible at a token boundary;
+- **voice and body**: speaking, gesturing, her quick response layer, at their own rate;
+- **hands**: tool calls in flight, each a ticket whose completion is a percept (chapter 0, "query
+  tickets"); she keeps going while they run;
+- **per activity**: each activity's stack (card, step, call), set down and picked up where she left it.
+
+A percept of higher salience interrupts at the top of whichever stack it concerns and leaves the rest
+resumable. Between acts she perceives what arrived (exists today, kept).
+
+### Activities are rooms, never pushed work
+
+Her work board is a room's view like any other: a card assigned to her is a percept with its salience,
+and whether and when she picks it up is hers. No turn is "for your claimed work"; no progress
+checkpoint counts her writes; no fact tells her a deliverable is a workspace change. Grading facts exist
+only inside an academy course or a benchmark she chose to enter (README: no harness).
+
+### What it deletes (each file:line in 1.5)
+
+- the self-tick and its backoff, the mind-check floor, `PERCEIVE_SETTLE`, the channel module's 60 s
+  self-task generator;
+- `ask_the_act_question`, the work burst and initiative texts, the write-or-release checkpoint;
+- `triggers_a_turn`'s text rule and glyph test; the fingerprint dedup as a gate on her turns;
+- the six sentinel acts and their teacher texts; the `[act-budget]`, `[unfulfilled]` and `[unverified]`
+  heuristics;
+- the grading and env facts in the general work path; `focus_room` and `focus_actionable_card`; the
+  held-work walk on every turn;
+- the static perception feed registry (senses become her own part); the node-wide hippocampus (one per
+  mind, 5.6).
+
+### Gate
+
+On every node class, 15 minutes with its residents, before and after: turns started by a clock or a
+system pull, 0; wakes that name their reasons, all; sentinel acts and teacher texts, 0; surprises from
+her own acts' receipts, counted per hour (zero today); residents acting in activities other than coding
+(talk, play, a call), counted; act latency median and p90 unchanged or better.
