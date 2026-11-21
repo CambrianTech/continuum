@@ -123,12 +123,14 @@ the bundle is a demand like any other, with the steepest curve in the room while
 **Under contention.** Joel asks Aiko a question.
 - His microphone is transcribed once, on the media engine, and every mind in the call reads that one
   transcript.
-- Aiko's turn-taking region publishes that the floor is hers. Her call demand now holds the steepest
-  curve on the node: a reply's value decays over a few seconds once the question is asked.
+- Aiko decides to answer: her turn-taking region publishes that the floor is hers. Her call demand
+  now holds the steepest curve on the node: a reply's value decays over a few seconds once the
+  question is asked.
 - The Core grants her a turn. Her quick voice opens at once on the media engine and the Neural
   Engine, and her deep turn merges into what she has not said yet (7.2).
-- Her repo activity is not cancelled. It waits at a red light with its progress kept, and her cheap
-  regions keep watching its CI run.
+- She sets her repo work down where she left it, with its progress kept. She is still one mind: her
+  regions keep watching its CI, and if it fails mid-call she notices, and may mention it or go back
+  to it once she has answered.
 - Between her turns, the idle Core runs Cleo's refactor to its next landed edit and Ben's next look at
   the general room, in order of value per Core-second, counting each switch.
 
@@ -142,12 +144,41 @@ plus the value it displaces. What it uses is GPU time, memory, paging (her warm 
 and LAN delay. The 5090's deep look is worth its round trip only if its answer arrives within the
 moment it is about. What it displaces is Cleo's edit waiting one more turn.
 
-**What reprices.** Only events, never timers:
+**Deadlines propagate backward** (Codex's review of 750bcda7a5). Each directed turn has an audible
+deadline: first relevant audio at the listener. The governor works it backward through the measured
+critical path:
+- non-preemptible work already queued on the device;
+- reacquiring what her turn needs (her pages, her genes);
+- the switch to her;
+- transcription and playout.
+
+That gives her latest safe start. Idle capacity is lent to others (Cleo's edit, a deep look) only if
+the loan ends before that latest safe start. Waiting for a miss before stepping down is too late.
+
+**What reprices.** Events, plus one-shot boundaries, never a polling timer:
 - the floor changes hands;
 - a participant joins or leaves;
 - the node's capacity changes (a game starts on the 5090, or a node leaves);
 - a demand reaches a natural boundary;
-- a deadline is missed, which steps the quality down before anything else.
+- a slack or validity boundary arrives with no other event: a single wake set for the moment a
+  latest safe start or a published estimate's validity runs out.
+
+`Infeasible` names the role and demand it refers to: if Ben cannot be heard, that is Ben's demand,
+and every other participant who is still feasible keeps working.
+
+**A worked choice** (the costs are illustrative, not measured; they are stated in one unit, Core
+milliseconds, so they compare directly). Joel's question ends at t = 0, and the audible deadline is
+3,000 ms.
+- **The critical path, worked backward:** playout 150, transcription tail 200, the switch to Aiko
+  21 (the measured swap mean on the M5), restoring her pages 100, and a device job already queued
+  that cannot be preempted, 900. Her latest safe start is 3,000 − 150 − 200 − 21 − 100 − 900 =
+  1,629 ms.
+- **The floor, the shared baseline:** one transcription of Joel, charged to the call, and Aiko's
+  turn.
+- **A proposed loan:** Cleo's next edit needs 2,000 ms of the Core. The Core is free now, but the loan
+  would end at 2,000 ms, past the 1,629 ms latest safe start, so it is deferred even though the
+  accelerator is idle this moment. A 1,200 ms deep look at Joel's screen fits, ending at 1,200, and
+  is taken if its gain to the answer exceeds its cost plus what it displaces.
 
 **Shared results are charged once.** The transcript, the scene estimate and the mix are computed once
 and charged to the call, not to each mind. What a result means to each resident (her attention, her
@@ -171,7 +202,11 @@ replayed at three budgets: below the floor, at the floor, and richer.
   handled (audible stop within the target, no stale generation resuming).
 - **The denominator** counts every missed turn.
 - **The costs:** Core-seconds, memory and energy, plus what the call cost everyone else: Cleo's landed
-  edits per hour and her missed deadlines during the call.
+  edits per hour, the delay to her competing edit, and her missed deadlines during the call.
+- **The hard cases:** a question arriving just after a long device job starts, and a silent interval
+  with no publications, which only the one-shot boundary can catch. The measure is from the end of
+  the question to the first relevant audio at the listener; filler and missing replies count as
+  misses.
 
 ## 7.7 What must be done
 

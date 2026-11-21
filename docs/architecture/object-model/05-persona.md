@@ -34,14 +34,24 @@ Persona: Part                               a fixed set of branches (parts!)
 └─ presence: Presence: Part                 her membership in rooms (airc)                   durable
 ```
 
-**She lives in many activities at once, and none of them owns her.** She may be in a call, have a
-change half-landed in a repo, follow two rooms, and have a lesson waiting, all at the same time. No
-activity is a workflow she is locked into, and none is a mode she is switched into. Each activity
-she is in keeps its own stack of tasks (card, step, tool call), and each level yields while it waits
-on a completion. Her attention divides her among them moment to moment, by salience and by each
-activity's value curve. An event of higher salience interrupts at the top of one stack and leaves
-every stack resumable (chapter 0, "Simulate behavior"). Most of her mind is shared across her
-activities (her regions, her memory, her genome); only the Core's turns are divided among them.
+**She lives in many activities at once, and she is never caged.** Joel: "I check my phone and watch
+TV while coding and dealing with my kids, my Slack channel, and maybe decide to play some GTA 6."
+She is the same:
+- **She decides.** Which activity she attends to, when she picks one up, sets one down, or starts a
+  new one (a game, a conversation, a card nobody gave her) is her own mind's decision, made by her
+  attention and intention regions. No scheduler dispatches her, no activity owns her, and none is a
+  workflow or a mode she is switched into.
+- **Her activities are never isolated.** She is one mind. She hears the call while her code
+  compiles, notices a message in a room mid-thought, and carries what she learns in one activity
+  into another. What she perceives anywhere reaches all of her: her regions, her memory and her
+  genome are hers, not any activity's.
+- **Where she left each thing is kept.** Each activity she is in keeps its stack of tasks (card,
+  step, tool call), so she can set it down and pick it up where she was. The stacks are bookkeeping,
+  never walls. An event of higher salience interrupts at the top of one and leaves every one
+  resumable (chapter 0, "Simulate behavior").
+- **The governor shares hardware, not her life.** When minds compete for the Core, memory or a
+  device, the governor decides how much each mind gets, the way an operating system shares a
+  processor. What she does with her share is her decision.
 
 Every branch answers the lifecycle commands and the same queries through the tree. Suspending her
 is one broadcast: each branch saves its durable state, demotes its pages, and answers `Done` or
