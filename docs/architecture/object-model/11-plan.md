@@ -90,7 +90,7 @@ render; Cormac for the genome; Fable for the rest.
 
 | Change | Deletes | Owner |
 |---|---|---|
-| The Core owns its budget (chapter 3.8) | the serving daemon's per-mind grants (`serving_daemon/grants.rs`, `capacity::window_grant`) and their owed and `no_grant` states; the window allocator's sizing of minds; the lane planner (`serving_plan/max_lanes.rs` with `MAX_LANES = 8`); `MIN_KNEE_LANES = 2`; `MIN_SERVE_CTX = 2048`; health's `MINDS_PER_LANE_STARVED_ABOVE = 2` (it judges starvation by minds per lane) | Fable (Core), Codex (callers), the allocator card's resident (2eec3977) for its deletion |
+| The Core owns its budget (chapter 3.8) | the serving daemon's per-mind grants (`serving_daemon/grants.rs`, `capacity::window_grant`) and their owed and `no_grant` states; the window allocator's sizing of minds; the lane planner (`serving_plan/max_lanes.rs` with `MAX_LANES = 8`); `MIN_KNEE_LANES = 2`; `MIN_SERVE_CTX = 2048`; health's `MINDS_PER_LANE_STARVED_ABOVE = 2` (it judges starvation by minds per lane); the hosting reconciler's seat bound (`persona.roster.bounded`: seats = lanes × minds per lane, which left two of four residents unseated on the M5, 2026-11-21) | Fable (Core), Codex (callers), the allocator card's resident (2eec3977) for its deletion |
 | `Holder` (pool, residency, cache) | `ResourcePool`, `ResourceConsumer`, `MemoryReporter`, `DeviceTenant`, `StagingResidency`, `VoiceReclaimLever`, `DiskReporter` as traits | Codex |
 | `Monitor` | `Daemon`, `DaemonChannel`, `GpuMonitor` and `CapacitySource` as separate roots, the hand-written interval monitors | Codex |
 | `Estimator`, `Fusion`, `Region`, `FusionRegion`, `Faculty` | `BrainRegion`, ready buffers, `RagSourceFaculty` | Fable |
