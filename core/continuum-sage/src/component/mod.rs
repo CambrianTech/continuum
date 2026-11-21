@@ -19,11 +19,13 @@
 mod bus;
 mod ctx;
 mod known;
+mod observe;
 mod need;
 
 pub use bus::{Bus, Key, Taken};
 pub use ctx::Ctx;
 pub use known::{Known, LastSeen, Novelty, Seen};
+pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
 pub use need::{need_key, Need, Urgency, NEED};
 
 use std::future::Future;
@@ -162,10 +164,45 @@ struct Worker<P: Component> {
     /// Its need on its owner's bus (same keying and defect rule as its presence).
     need: Option<crate::dataflow::Publisher<Need>>,
     published_need: Option<Need>,
+    /// Its observation switch, and what it measured while switched on.
+    observe: crate::dataflow::Reader<Observe>,
+    telemetry: Option<crate::dataflow::Publisher<Telemetry>>,
+    measured: Telemetry,
+    /// The last frame handled per topic, while watched: a gap is frames a coalescing reader skipped.
+    last_frames: std::collections::HashMap<TopicName, u64>,
     now: Presence,
 }
 
 impl<P: Component> Worker<P> {
+    /// One watched input's numbers, published as its telemetry.
+    fn measure(&mut self, took: std::time::Duration, from: Option<InputRevision>) {
+        let skipped = match from {
+            Some(frame) => match self.last_frames.insert(frame.topic, frame.through) {
+                Some(last) => frame.through.saturating_sub(last + 1),
+                // Its first frame on this topic since it was watched: nothing to compare.
+                None => 0,
+            },
+            // An act or a timer carries no frame.
+            None => 0,
+        };
+        let waiting = match self.ctx.current_need() {
+            Some(need) => need.waiting,
+            // Before its intake exists nothing waits in it.
+            None => 0,
+        };
+        self.measured = Telemetry {
+            handled: self.measured.handled + 1,
+            last_handle: took,
+            max_handle: self.measured.max_handle.max(took),
+            waiting,
+            frames_skipped: self.measured.frames_skipped + skipped,
+        };
+        if let Some(publisher) = self.telemetry.as_mut() {
+            self.ctx.publish(publisher, self.measured);
+        }
+        continuum_base::probe!(class = "sage.component.handled", component = P::NAME, took_us = took.as_micros() as u64, waiting = waiting, frames_skipped = skipped, "a watched component handled an input");
+    }
+
     /// Publish its need when it changed: its urgency and its intake depth now.
     fn publish_need(&mut self) {
         let Some(need) = self.ctx.current_need() else { return };
@@ -200,11 +237,16 @@ impl<P: Component> Stage for Worker<P> {
     async fn handle(&mut self, delivered: Delivered<P::Input>) {
         match delivered.what {
             What::Input(input) => {
+                let watched = self.observe.latest().is_some_and(|switch| *switch.value == Observe::Timing);
+                let started = watched.then(std::time::Instant::now);
                 self.enter(Presence::Acting);
                 self.ctx.begin(delivered.from);
                 self.component.handle(input, &mut self.ctx).await;
                 self.enter(Presence::Ready);
                 self.publish_need();
+                if let Some(started) = started {
+                    self.measure(started.elapsed(), delivered.from);
+                }
             }
             What::Rest if self.now == Presence::Resting => {}
             What::Rest => {
@@ -294,6 +336,10 @@ pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) 
         presence: claim(bus, PRESENCE, P::NAME),
         need: claim(bus, NEED, P::NAME),
         published_need: None,
+        observe: bus.reader::<Observe>(OBSERVE, presence_key(P::NAME)),
+        telemetry: claim(bus, TELEMETRY, P::NAME),
+        measured: Telemetry::default(),
+        last_frames: std::collections::HashMap::new(),
         now: Presence::Ready,
     };
     if let Some(publisher) = worker.presence.as_mut() {

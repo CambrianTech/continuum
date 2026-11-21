@@ -241,3 +241,31 @@ async fn a_part_decides_on_its_own_frontier_from_what_it_knows() {
     assert_eq!((last.novelty(&7), last.novelty(&8)), (Novelty::KNOWN, Novelty::FRONTIER));
     assert_eq!(Novelty::new(1.5), None);
 }
+
+// what this catches: per-component analysis that costs everyone always, or that needs code in the
+// component. Off by default (no telemetry is published); switched on by publishing to its observe
+// topic, the engine times each input and publishes the numbers as state; switched off, it stops.
+#[tokio::test]
+async fn a_component_is_watched_only_while_its_switch_is_on() {
+    let bus = Bus::new();
+    let mut switch = match bus.publisher::<Observe>(OBSERVE, presence_key("alarm")) {
+        Ok(switch) => switch,
+        Err(taken) => return assert_eq!(Some(taken), None, "the switch is unclaimed"),
+    };
+    let mut telemetry = bus.reader::<Telemetry>(TELEMETRY, presence_key("alarm"));
+    let (rang, mut rings) = tokio::sync::mpsc::unbounded_channel();
+    let alarm = start(Alarm { rang }, &bus, OwnerId(Uuid::from_u128(6)), 1);
+    let by = || crate::dataflow::Provenance { by: RunId { incarnation: StageIncarnation { stage: StageId::named("test"), owner: OwnerId(Uuid::from_u128(6)), epoch: 1 }, seq: 1 }, from: Vec::new() };
+    assert!(alarm.tell(AlarmIn::Ring("unwatched")).await);
+    assert_eq!(rings.recv().await, Some("unwatched"));
+    assert!(telemetry.latest().is_none(), "off: nothing measured");
+    switch.publish(Observe::Timing, by());
+    assert!(alarm.tell(AlarmIn::Ring("watched")).await);
+    assert_eq!(rings.recv().await, Some("watched"));
+    let measured = telemetry.changed().await.map(|t| *t.value);
+    assert_eq!(measured.map(|t| t.handled), Ok(1), "on: each input is timed and published");
+    switch.publish(Observe::Off, by());
+    assert!(alarm.tell(AlarmIn::Ring("off again")).await);
+    assert_eq!(rings.recv().await, Some("off again"));
+    assert_eq!(telemetry.latest().map(|t| t.value.handled), Some(1), "off again: it stops");
+}
