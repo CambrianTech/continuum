@@ -11,46 +11,28 @@ use serde_json::Value;
 /// Wrap a `finish_body` call: measure elapsed time and output byte size,
 /// then emit them via tracing as structured events keyed by `act_id`.
 ///
-/// Returns the same `serde_json::Value` that the inner function produces.
-pub fn audit_finish_body<F>(
+/// Accepts the pre-built base body (from `build_base_body`) so it measures
+/// only the finish step — the same pattern the production path uses.
+/// Returns the original Result from `finish_fn`, plus logs audit data.
+pub fn audit_finish_body<F, R>(
     act_id: &str,
+    body: &mut Value,
     finish_fn: F,
-) -> Value
+) -> R
 where
-    F: FnOnce(&mut Value) -> Result<(), anyhow::Error>,
+    F: FnOnce(&mut Value) -> R,
 {
     let start = Instant::now();
 
-    // Build the body inside an inner scope so we can measure the full span.
-    let mut body = Value::Object(serde_json::map::Map::new());
-    if let Err(e) = finish_fn(&mut body) {
-        tracing::warn!(
-            target: "json_audit",
-            act = %act_id,
-            error = %e,
-            phase = "finish_body_failed",
-        );
-        return body;
-    }
+    let result = finish_fn(body);
 
     let elapsed_ms = start.elapsed().as_secs_f64() * 1_000.0;
 
     // Serialize to get the byte size (the same path the HTTP layer uses).
-    let json_bytes = match serde_json::to_vec(&body) {
-        Ok(bytes) => bytes,
-        Err(e) => {
-            tracing::warn!(
-                target: "json_audit",
-                act = %act_id,
-                error = %e,
-                phase = "serialize_failed",
-                elapsed_ms,
-            );
-            return body;
-        }
+    let json_bytes_len = match serde_json::to_vec(body) {
+        Ok(bytes) => bytes.len(),
+        Err(_) => -1, // serialization failed — report negative as sentinel
     };
-
-    let json_bytes_len = json_bytes.len();
 
     tracing::info!(
         target: "json_audit",
@@ -60,7 +42,7 @@ where
         phase = "finish_body_done",
     );
 
-    body
+    result
 }
 
 #[cfg(test)]
@@ -69,22 +51,21 @@ mod tests {
 
     #[test]
     fn audit_wraps_a_simple_fn() {
-        let mut called = false;
-        let result = audit_finish_body("test-1", |v: &mut Value| {
+        let mut body = serde_json::json!({});
+        let result: Result<(), anyhow::Error> = audit_finish_body("test-1", &mut body, |v: &mut Value| {
             v["hello"] = serde_json::json!("world");
-            called = true;
             Ok(())
         });
-        assert!(called);
-        assert_eq!(result["hello"], "world");
+        assert_eq!(result, Ok(()));
+        assert_eq!(body["hello"], "world");
     }
 
     #[test]
-    fn audit_reports_on_error() {
-        let result = audit_finish_body("test-2", |_v: &mut Value| {
+    fn audit_returns_result_on_error() {
+        let mut body = serde_json::json!({});
+        let result: Result<(), anyhow::Error> = audit_finish_body("test-2", &mut body, |_v: &mut Value| {
             Err(anyhow::anyhow!("boom"))
         });
-        // Should return an empty object and log the error.
-        assert!(result.is_object());
+        assert!(result.is_err());
     }
 }
