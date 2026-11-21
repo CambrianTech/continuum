@@ -320,6 +320,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 let turn = turns.remove(index);
+                let ended = transition::At::Refused { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), reason: refused.to_string() };
+                driver.transition(&turn, ended);
                 driver.finish_one_off(&turn);
                 driver.emit.send(emit::Out::End { answer: turn.answer, event: TokenEvent::Error(refused.to_string()) });
             }
