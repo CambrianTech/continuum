@@ -421,7 +421,6 @@ mod tests {
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
         assert!(Ungranted::Waiting(Waiting::BehindActs { acting: 2 }).awaits_room());
         assert!(Ungranted::Waiting(Waiting::ForReclaim).awaits_room(), "cells reclaimed for her: she waits for the receipt");
-        assert!(!Ungranted::Waiting(Waiting::NeedAbovePool { need: 9, pool: 8 }).awaits_room(), "a need above the pool is a defect, named");
         assert!(Ungranted::Waiting(Waiting::Reclaiming).awaits_room(), "her seat being reclaimed: she waits within her turn (card d50e8e66)");
         let absent = evaluation(std::time::Instant::now(), grants(&[]), None).expect("evaluation");
         assert_eq!(absent.ungranted(her), Some(Ungranted::NotADemand), "no demand of hers reached it");

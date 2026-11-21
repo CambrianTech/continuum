@@ -7,11 +7,8 @@ use super::*;
 use crate::cognition::working_set::{requirements_for, WorkingSetRegistry};
 use crate::inference::planning::window_allocator::Measure;
 
-// what this catches (Cormac on #5833 at 867179538): an unpriced mind left `Measure::Wished`, whose
-// observed need is the wish target (her untrimmed assembly x headroom, the inflation #5833 removes
-// from the priced path), so every mind not yet priced still gated on it. Her act records her
-// irreducible window; the governor's need for her is exactly that window, and her wish stays her
-// target only.
+// what this catches (Cormac on #5833 at 867179538): an unpriced mind's need is her irreducible
+// window, recorded as a measured governed size — the governor reads that, never the wish target.
 #[test]
 fn an_unpriced_minds_need_is_her_irreducible_window_never_her_wish() {
     let home = tempfile::tempdir().expect("isolated fixture storage");
@@ -35,7 +32,7 @@ fn an_unpriced_minds_need_is_her_irreducible_window_never_her_wish() {
     let requirement = &requirements_for(&[persona], &reg)[0];
     let wish = requirement.measure.target().map(|t| t.get()).expect("her wish is measured");
     assert!(wish > floor, "precondition: her wish ({wish}) is far above what she must hold ({floor})");
-    let Measure::Held { need, .. } = requirement.measure else { panic!("her irreducible window is a held need: {requirement:?}") };
-    assert_eq!(need.value().get(), floor, "the governor's need for her is her irreducible window, never the wish");
+    let Measure::Measured { governed } = requirement.measure else { panic!("her irreducible window is a measured need: {requirement:?}") };
+    assert_eq!(governed.value().get(), floor, "the governor's need for her is her irreducible window, never the wish");
     assert!(floor <= window, "inside the trained context and her grant: {floor}");
 }

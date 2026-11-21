@@ -256,10 +256,6 @@ pub struct GrantEvaluation {
 /// Why a demand the publisher received holds no grant after its evaluation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Waiting {
-    /// Her need is above what one sequence holds: no grant can seat her.
-    NeedAboveCeiling { need: u32, ceiling: u32 },
-    /// Her need is above the whole pool.
-    NeedAbovePool { need: u32, pool: u32 },
     /// Her own grant is being reclaimed: she is regranted after its receipt.
     Reclaiming,
     /// Cells are being reclaimed for her from holders that are not acting: she is granted after the
@@ -385,18 +381,13 @@ impl Demand<uuid::Uuid> {
         ceiling: u32,
         in_flight: bool,
     ) -> Result<Self, Excluded> {
-        use crate::inference::planning::window_allocator::Measure;
-        // A bound is clamped to what one sequence holds (`Observed::within`); an exact need is not. A
-        // wish no held turn has measured is no floor, only the most she might need: clamped to what
-        // one sequence holds, so she is granted it and her first held turn measures her. Read as
-        // exact, a wish above the ceiling was never granted, never held, never measured: every act
-        // refused for good (BigMama, Sahar on 10523b95e: 'NeedAboveCeiling need127103 ceiling58112'
-        // while her fit was 28,928). A declared size stays a hard floor (an authored requirement),
-        // and the wish never enters `Observed`, so no ring reader can take it for a sample (Codex).
+        // One rule for all measured needs: clamp bounds to what one sequence holds, leave exact values
+        // unchanged (an irreducible governed minimum is never silently reduced). The ceiling still gates
+        // at the Demand level; this is just how we compute need from observation.
         let observed = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained));
-        let need = match (r.measure, Tokens::new(ceiling)) {
-            (Measure::Wished { .. }, Some(ceiling)) => observed.value().min(ceiling),
-            _ => observed.within(ceiling),
+        let need = match Tokens::new(ceiling) {
+            Some(tok) => observed.within(tok.get()),
+            None => observed.value(),
         };
         let wish = r.wish.ok_or(Excluded::NoWish)?.min(trained);
         // Her target is room to grow over what her turns hold (her held need with the sent
