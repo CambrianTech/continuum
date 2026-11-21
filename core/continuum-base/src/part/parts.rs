@@ -21,6 +21,7 @@ use futures::task::{Spawn, SpawnExt};
 use parking_lot::Mutex;
 
 use super::completion::{Answer, Completion, OperationId, Request};
+use super::sequence::{Sequence, Turn};
 use super::{Generation, Lifecycle, Outcome, Verb};
 
 /// The executor a part's owner runs its verbs on: the node's worker, behind the `futures` seam so
@@ -49,6 +50,23 @@ struct Entry<K, P: ?Sized> {
     key: K,
     generation: Generation,
     part: Arc<P>,
+    /// This generation's admission order: its verbs run one at a time, in the order admitted.
+    sequence: Arc<Sequence>,
+}
+
+impl<K: Clone, P: ?Sized> Entry<K, P> {
+    /// Admit this part to an operation, taking its next turn. Called under the owner's lock.
+    fn admit(&self) -> Admitted<K, P> {
+        Admitted { key: self.key.clone(), generation: self.generation, part: Arc::clone(&self.part), turn: self.sequence.ticket() }
+    }
+}
+
+/// One part admitted to an operation, with its place in that part's order.
+struct Admitted<K, P: ?Sized> {
+    key: K,
+    generation: Generation,
+    part: Arc<P>,
+    turn: Turn,
 }
 
 /// A replaced part, held until its shutdown is done.
@@ -76,6 +94,7 @@ type Bound<K, P> = (Completion<K, <P as Lifecycle>::Error>, Vec<Task<K, P>>);
 /// One part's verb, bound and ready to spawn once the lock is released.
 struct Task<K: Clone + Send + Sync, P: ?Sized + Lifecycle> {
     part: Arc<P>,
+    turn: Turn,
     watch: Watch<K, P::Error>,
     /// Set for a retiring part's shutdown, so its success releases it.
     owner: Option<Weak<Inner<K, P>>>,
@@ -110,7 +129,7 @@ where
             let mut state = self.inner.state.lock();
             state.generations += 1;
             let generation = Generation::from_counter(state.generations);
-            let entry = Entry { key, generation, part };
+            let entry = Entry { key, generation, part, sequence: Arc::default() };
             let tasks = if let Some(index) = state.live.iter().position(|present| present.key == entry.key) {
                 let old = std::mem::replace(&mut state.live[index], entry);
                 self.retire(&mut state, old, None).1
@@ -142,7 +161,7 @@ where
     pub fn act(&self, verb: Verb) -> Completion<K, P::Error> {
         let (completion, tasks) = {
             let mut state = self.inner.state.lock();
-            let admitted = state.live.iter().map(|entry| (entry.key.clone(), entry.generation, Arc::clone(&entry.part))).collect();
+            let admitted = state.live.iter().map(Entry::admit).collect();
             let bound = Self::bind(&mut state, Request { operation: OperationId::mint(), verb, follows: None }, admitted, None);
             drop(state); // released before any task is spawned
             bound
@@ -191,7 +210,7 @@ where
     /// Hold `old` as retiring under a newly bound shutdown, returning it; the caller spawns the task
     /// once the lock is released.
     fn retire(&self, state: &mut State<K, P>, old: Entry<K, P>, follows: Option<OperationId>) -> Bound<K, P> {
-        let admitted = vec![(old.key.clone(), old.generation, Arc::clone(&old.part))];
+        let admitted = vec![old.admit()];
         let request = Request { operation: OperationId::mint(), verb: Verb::Shutdown, follows };
         let (shutdown, tasks) = Self::bind(state, request, admitted, Some(&Arc::downgrade(&self.inner)));
         state.retiring.push(Retiring { entry: old, shutdown: shutdown.attach() });
@@ -202,16 +221,16 @@ where
     fn bind(
         state: &mut State<K, P>,
         request: Request,
-        admitted: Vec<(K, Generation, Arc<P>)>,
+        admitted: Vec<Admitted<K, P>>,
         owner: Option<&Weak<Inner<K, P>>>,
     ) -> Bound<K, P> {
-        let completion = Completion::new(request, admitted.iter().map(|(key, generation, _)| (key.clone(), *generation)).collect());
+        let completion = Completion::new(request, admitted.iter().map(|admitted| (admitted.key.clone(), admitted.generation)));
         state.operations.retain(|known| known.verb() != request.verb || !known.snapshot().is_settled());
         state.operations.push(completion.attach());
         let tasks = admitted
             .into_iter()
             .enumerate()
-            .map(|(slot, (_, _, part))| Task { part, watch: Watch::new(&completion, slot), owner: owner.cloned() })
+            .map(|(slot, admitted)| Task { part: admitted.part, turn: admitted.turn, watch: Watch::new(&completion, slot), owner: owner.cloned() })
             .collect();
         (completion, tasks)
     }
@@ -235,7 +254,10 @@ where
     K: Clone + PartialEq + Send + Sync + 'static,
     P: ?Sized + Lifecycle + 'static,
 {
-    let Task { part, mut watch, owner } = task;
+    let Task { part, turn, mut watch, owner } = task;
+    // Every verb admitted on this part before this one settles first: a late Resume can never run
+    // after the Shutdown admitted behind it. A task dropped while waiting never ran: `NotStarted`.
+    turn.arrive().await;
     watch.stage = Stage::Running;
     let answer = match part.act(verb).await {
         Outcome::Done => Answer::Done,
@@ -259,6 +281,7 @@ where
     } else {
         watch.settle(answer);
     }
+    drop(turn); // the next verb admitted on this part may run
 }
 
 /// How far one part's task got, so a dropped task records the truth.

@@ -123,7 +123,8 @@ impl<K, E> Completion<K, E> {
 }
 
 impl<K: Clone + Send + Sync, E: Clone + Send + Sync> Completion<K, E> {
-    pub(super) fn new(request: Request, admitted: Vec<(K, Generation)>) -> Self {
+    pub(super) fn new(request: Request, admitted: impl IntoIterator<Item = (K, Generation)>) -> Self {
+        let admitted: Vec<(K, Generation)> = admitted.into_iter().collect();
         let answers = vec![Answer::Running; admitted.len()];
         let Request { operation, verb, follows } = request;
         let record = Record { operation, verb, follows, admitted, state: Mutex::new((Revision(0), answers)), changed: Event::new() };

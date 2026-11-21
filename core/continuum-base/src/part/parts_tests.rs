@@ -6,7 +6,7 @@ use futures::executor::{block_on, ThreadPool};
 use futures::future::FutureObj;
 use futures::task::SpawnError;
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
 
 type Error = &'static str;
 
@@ -23,22 +23,25 @@ enum Step {
 }
 
 /// A part that answers each verb with its next scripted step (done once the script runs out), and
-/// counts how many times a verb actually ran.
+/// records each verb it actually ran, in order.
 struct Probe {
     name: &'static str,
     script: Mutex<VecDeque<Step>>,
-    acts: AtomicUsize,
+    verbs: Mutex<Vec<Verb>>,
 }
 
 impl Probe {
     fn scripted(name: &'static str, steps: impl IntoIterator<Item = Step>) -> Arc<Self> {
-        Arc::new(Self { name, script: Mutex::new(steps.into_iter().collect()), acts: AtomicUsize::new(0) })
+        Arc::new(Self { name, script: Mutex::new(steps.into_iter().collect()), verbs: Mutex::new(Vec::new()) })
     }
     fn done(name: &'static str) -> Arc<Self> {
         Self::scripted(name, [])
     }
     fn acts(&self) -> usize {
-        self.acts.load(Ordering::SeqCst)
+        self.verbs.lock().len()
+    }
+    fn verbs(&self) -> Vec<Verb> {
+        self.verbs.lock().clone()
     }
 }
 
@@ -55,8 +58,8 @@ impl Part for Probe {
 #[async_trait]
 impl Lifecycle for Probe {
     type Error = Error;
-    async fn act(&self, _verb: Verb) -> Outcome<Error> {
-        self.acts.fetch_add(1, Ordering::SeqCst);
+    async fn act(&self, verb: Verb) -> Outcome<Error> {
+        self.verbs.lock().push(verb);
         let step = self.script.lock().pop_front();
         match step {
             None => Outcome::Done,
@@ -307,4 +310,80 @@ fn a_task_the_executor_drops_reads_not_started_or_cancelled_never_running() {
         let walk = parts.act(Verb::Prepare);
         assert_eq!(answers(&walk.snapshot()), vec![("silero", expected)]);
     }
+}
+
+/// An executor that holds every task until the test hands them on, in the order it chooses.
+#[derive(Default)]
+struct Held {
+    tasks: Mutex<Vec<FutureObj<'static, ()>>>,
+}
+
+impl Spawn for Held {
+    fn spawn_obj(&self, future: FutureObj<'static, ()>) -> Result<(), SpawnError> {
+        self.tasks.lock().push(future);
+        Ok(())
+    }
+}
+
+impl Held {
+    fn take(&self) -> Vec<FutureObj<'static, ()>> {
+        std::mem::take(&mut *self.tasks.lock())
+    }
+}
+
+fn held_owner() -> (Arc<Held>, Parts<&'static str, dyn Kind>) {
+    let held = Arc::new(Held::default());
+    let parts = Parts::new(Arc::clone(&held) as Executor);
+    (held, parts)
+}
+
+fn run_on(pool: &Executor, task: FutureObj<'static, ()>) {
+    if let Err(error) = pool.spawn_obj(task) {
+        panic!("the test pool refused a task: {error}");
+    }
+}
+
+// what this catches: a verb admitted before a part's replacement running after its shutdown, when
+// the executor starts the shutdown first (Codex, review of fcc99a0a14: a delayed Resume rebinding
+// resources on a retired generation).
+#[test]
+fn a_late_resume_never_runs_after_the_shutdown_admitted_behind_it() {
+    let (held, parts) = held_owner();
+    let first = Probe::done("whisper");
+    parts.insert("whisper", Arc::clone(&first) as Arc<dyn Kind>);
+    let resume = parts.act(Verb::Resume);
+    parts.insert("whisper", Probe::done("whisper"));
+    let (_, _, shutdown) = only_retiring(&parts);
+    let Ok([resume_task, shutdown_task]) = <[_; 2]>::try_from(held.take()) else { panic!("a resume and a shutdown were admitted") };
+
+    let pool = pool();
+    run_on(&pool, shutdown_task);
+    run_on(&pool, resume_task);
+    assert!(block_on(resume.settled()).is_done());
+    wait_for(&shutdown, "whisper", &Answer::Done);
+    assert_eq!(first.verbs(), vec![Verb::Resume, Verb::Shutdown], "the retired part ran a verb after its shutdown");
+}
+
+// what this catches: a task dropped before its turn stalling every verb admitted behind it on the
+// same part, or holding back a sibling.
+#[test]
+fn a_dropped_turn_never_stalls_the_verbs_behind_it_or_a_sibling() {
+    let (held, parts) = held_owner();
+    let first = Probe::done("whisper");
+    parts.insert("whisper", Arc::clone(&first) as Arc<dyn Kind>);
+    let sibling = Probe::done("kokoro");
+    parts.insert("kokoro", Arc::clone(&sibling) as Arc<dyn Kind>);
+    let suspend = parts.act(Verb::Suspend);
+    parts.insert("whisper", Probe::done("whisper"));
+    let (_, _, shutdown) = only_retiring(&parts);
+    let Ok([whisper_suspend, kokoro_suspend, whisper_shutdown]) = <[_; 3]>::try_from(held.take()) else { panic!("three tasks were admitted") };
+
+    drop(whisper_suspend);
+    let pool = pool();
+    run_on(&pool, whisper_shutdown);
+    run_on(&pool, kokoro_suspend);
+    wait_for(&shutdown, "whisper", &Answer::Done);
+    assert_eq!(answers(&block_on(suspend.settled())), vec![("whisper", Answer::NotStarted), ("kokoro", Answer::Done)]);
+    assert_eq!(first.verbs(), vec![Verb::Shutdown], "the dropped suspend ran, or the shutdown never did");
+    assert_eq!(sibling.verbs(), vec![Verb::Suspend]);
 }

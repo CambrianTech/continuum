@@ -8,6 +8,7 @@ mod completion;
 mod lifecycle;
 mod outcome;
 mod parts;
+mod sequence;
 
 use std::num::NonZeroU64;
 
