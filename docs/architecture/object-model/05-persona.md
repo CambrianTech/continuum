@@ -479,3 +479,16 @@ freshness is measured in frames (latest published minus the frame read), waking 
 exists", and staleness is a visible gap in frame numbers, never a timeout. The wall clock remains only
 for deadlines she sets, on the node's one clock. Gate for the grounding pipeline: at turn assembly,
 every input's frame lag is 0 (the pipeline ran ahead of her, so assembly is copying).
+
+**Rest is as important as action (Joel, 2026-11-21: "salience and signal, not chaos and useless work or
+iteration. Sleeping or not acting in an independent concern/worker is as important as action. It
+enables elsewhere or other concerns to act").** On one Core every turn a mind takes is time another
+waits: on 6cd73968f0 (2026-11-21 20:03-20:18Z) every resident was always ready and each waited a p50
+56 s for the Core. So:
+- A component with no new input frame does nothing and publishes nothing; unchanged is a silent answer.
+- Her momentum is earned by salience, not by having acted: she continues only when her last turn
+  produced a new frame worth acting on (a write, a result, a changed expectation); otherwise she rests
+  (`Presence::AtRest`, 3.9) while her parts keep perceiving.
+- Measured per turn: whether it produced a new frame or nothing. Turns that produce nothing are the
+  waste; removing them shows up directly as less time waiting for the Core. (Health report the same
+  hour: 16 acts, 0 writes.)
