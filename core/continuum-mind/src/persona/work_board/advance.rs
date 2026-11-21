@@ -390,7 +390,7 @@ enum ResidentFinish {
 fn resident_finish(actor: Option<Uuid>, pr_linked: bool, current: &CardState) -> ResidentFinish {
     match (actor, current) {
         (None, _) => ResidentFinish::Proceed,
-        (Some(_), CardState::Merged) => ResidentFinish::StayMerged, // merged card is terminal; never downgrade by finish
+        (Some(_), CardState::Merged) => ResidentFinish::Proceed, // merged card closes on resident finish — merge was delivery
         (Some(_), _) if pr_linked => ResidentFinish::AwaitMerge,
         (Some(_), _) => ResidentFinish::Proceed,
     }
