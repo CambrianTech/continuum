@@ -20,6 +20,8 @@ mod identity;
 mod publication;
 mod runner;
 mod stage;
+mod state;
+mod stream;
 mod topic;
 mod triggers;
 
@@ -33,6 +35,8 @@ pub use runner::{PublishedOutput, PublishedState, Ran, StageRunner};
 pub use stage::{RunOutcome, Stage, StageContext};
 pub use topic::{InputRevision, Provenance, TopicKind, TopicName};
 pub use triggers::Triggers;
+pub use state::{state, Ended, Publisher, Reader, Snapshot};
+pub use stream::{stream, Emitter, Event, Subscribe};
 
 #[cfg(test)]
 mod tests;
