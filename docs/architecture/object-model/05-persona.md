@@ -576,3 +576,19 @@ part decides independently and no coordinator tells the color finder the terrain
 novelty is familiarity over time: a person, room, topic or kind of event she has never met is frontier;
 one she has met a hundred times is familiar unless it breaks pattern; Surprise is the case where her
 expectation was specific and was contradicted.
+
+**Dreaming is a part of her like any other (Joel, 2026-11-21: "And dreams etc are potential also
+brain.part concerns and workers with events out and in? No?").** Yes. Her dream part is a `Component`:
+it subscribes to her experience (turns, receipts, the reviews her work got), her presence, and the
+Core's published capabilities and free capacity; its need is Content while she acts, Want when there is
+unconsolidated experience and she rests (sleep is when dreaming runs), Urgent when a reviewed correction
+waits to become a gene; it emits lessons, candidate genes and consolidated memories, which her genome
+and memory parts subscribe to; it inherits rest, so it gives back its working memory when she wakes to
+act. It also removes a defect class: today dreaming and review run on ticks and timers
+(`dream_consolidation` is a governor-ticked `BrainRegion`; the training trigger keeps its own timers),
+so a typed refusal (the 5090 on 2026-11-21: `FormatUnenforceable` for a JSON schema, retried about
+every 30 s) is retried on a clock forever. As a component the refusal is input: its need drops to
+Content and nothing runs until a relevant frame changes (the engine's capabilities topic gaining schema
+support), and that change wakes it. Order: (1) the schema-to-grammar path in the Core; (2) the engine
+publishes its capabilities as state; (3) the dream part moves onto `Component` with the other
+`BrainRegion`s, and its timers and the tick are deleted.
