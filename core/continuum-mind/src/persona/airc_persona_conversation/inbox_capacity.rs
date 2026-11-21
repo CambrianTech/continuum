@@ -9,6 +9,7 @@ pub(super) fn live_stream_missed(live_since_tick: u64, admitted: usize, first_ti
 
 /// Re-subscribe with a bounded backoff (1 s doubling to 30 s). `None` only
 /// when the citizen's subscribe is refused for good.
+const BACKOFF_CEILING_SECS: u64 = 30;
 pub(super) async fn reopen_live_stream(
     runtime: &dyn AircCitizen,
     persona: uuid::Uuid,
@@ -20,7 +21,7 @@ pub(super) async fn reopen_live_stream(
         // ended on a room join or a daemon restart is back in one hop.
         if *attempt > 0 {
             let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5))
-                .min(std::time::Duration::from_secs(30));
+                .min(std::time::Duration::from_secs(BACKOFF_CEILING_SECS));
             tokio::time::sleep(delay).await;
         }
         match runtime.subscribe_all_rooms().await {
