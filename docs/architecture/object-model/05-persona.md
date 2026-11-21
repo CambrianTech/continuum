@@ -613,3 +613,21 @@ credit acceptance steps per tick with a cadence hint (acts when a review verdict
 moved, the `BrainRegion` trait and the governor's tick dispatch are deleted. Order: (1) the four
 regions; (2) `DeferredFaculty` off `StageRunner`, the runner deleted; (3) pool eviction as `rest()` on a
 pressure frame; (4) the 17 ticked modules, one at a time.
+
+**Intermediate parents, extracted where a pattern repeats (Joel, 2026-11-21: "you can take subcomponents
+of Component, Brain.Part or so on and come up with intermediates when you find a pattern that many nodes
+share but the current parent does not").** The class tree grows downward from `Component` by the
+pattern-bubbling rule, each intermediate extracted at its SECOND real instance so two different cases
+shape it:
+- **Projector** (keyed cached rendering): watch a state; per key, know the moment last rendered from;
+  render the expensive value only when that moment moved; publish it keyed for readers at frame lag 0. A
+  projector declares only its source topic, key, moment and `render(key)`; watching, the `Known`
+  comparison, publishing and need come from the parent. First instance: the channel digest
+  (a4927bf139). Second: the next grounding source moved off turn-time computation (recall, board,
+  roster), and CBAR's per-region CNNs are the same shape.
+- **Detector** (stream in, change events out): keeps only its last frame per entity and emits appeared,
+  moved, changed, gone; Awareness subscribes to every detector and holds the world. Extracted with
+  Awareness (the room feed plus a second detector).
+- **Part of a mind (Brain.Part)**: what a mind adds to any component: started on her bus with her
+  identity, rests when she rests, its need folds into hers. A node's component (the feed) is a
+  `Component` and not a part of a mind. Extracted when her parts (digest, amygdala) need the same fold.
