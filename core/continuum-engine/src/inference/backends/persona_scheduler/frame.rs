@@ -11,9 +11,8 @@
 //! prompt still needs its own handling is measured, not assumed.
 //!
 //! So: the bound mind's turn, once started, keeps the Core until it ends. When no turn is in
-//! progress, the next is the one with the least remaining work discounted by how long it has
-//! waited, so a long wait brings any prompt forward and no mind starves; an equal cost goes to the
-//! longer wait, and only a full tie keeps the mind already bound, which saves a switch.
+//! progress, turns waiting at least half a second go oldest first. Below that threshold,
+//! remaining prefill cost and age decide. Affinity breaks ties.
 
 /// A turn as the pick sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,13 +28,15 @@ pub(super) struct Candidate {
 }
 
 impl Candidate {
-    /// Whether this turn goes before `other`: less remaining work discounted by age (tokens per
-    /// second waited, plus one so a fresh turn is its own size), compared exactly by cross-
-    /// multiplying, so short tails never round to a tie; then the longer wait; only then the mind
-    /// already bound, which saves a switch. Codex on #6208 at 162fbe5fa7: integer division made an
-    /// aged and a fresh one-token tail both cost zero, and affinity won every such tie, so a bound
-    /// mind that kept arriving starved an older one.
     fn before(&self, other: &Self) -> std::cmp::Ordering {
+        // derived-or-floor: a half-second queue wait meets the interactive stall threshold.
+        // At the next free boundary, age takes precedence over estimated prefill cost.
+        const WAIT_BUDGET_MS: u64 = 500;
+        if self.waited_ms.max(other.waited_ms) >= WAIT_BUDGET_MS {
+            return other.waited_ms.cmp(&self.waited_ms)
+                .then(self.remaining.cmp(&other.remaining))
+                .then(other.active.cmp(&self.active));
+        }
         let discounted = |turn: &Self, by: &Self| turn.remaining as u128 * (1_000 + u128::from(by.waited_ms));
         discounted(self, other)
             .cmp(&discounted(other, self))
@@ -58,6 +59,15 @@ mod tests {
 
     fn turn(active: bool, started: bool, remaining: usize, waited_ms: u64) -> Candidate {
         Candidate { active, started, remaining, waited_ms }
+    }
+
+    #[test]
+    fn a_cold_turn_gets_the_next_boundary_after_its_wait_budget() {
+        let warm = turn(true, false, 0, 0);
+        assert_eq!(pick(&[warm, turn(false, false, 60_000, 499)]), Some(0));
+        let overdue = turn(false, false, 60_000, 500);
+        assert_eq!(pick(&[warm, overdue]), Some(1));
+        assert_eq!(pick(&[turn(true, false, 1, 501), overdue]), Some(0));
     }
 
     // what this catches: a turn in progress cut up to serve other minds (the 2026-11-21 read: 20 to
