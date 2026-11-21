@@ -25,8 +25,28 @@ mod frame;
 mod reuse;
 mod geometry;
 mod sampling;
+mod admission;
+mod transition;
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
+
+/// A submitted generation request's identity (the adapter request's `request_id`), the one id that
+/// crosses from her deliberation into the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestId(Arc<str>);
+
+impl RequestId {
+    #[must_use]
+    pub fn new(id: &str) -> Self {
+        Self(Arc::from(id))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 
 use std::sync::Arc;
 
@@ -81,6 +101,11 @@ pub struct GenerationRequest {
     /// The persona whose mind this turn continues. `None` is a one-off (a probe, a test rig): it
     /// runs as a mind of its own and its blocks are released when the turn ends.
     pub persona_id: Option<Uuid>,
+    /// The submitted request's identity, carried through every transition this turn reports, so a
+    /// stall says how far it got. `None` when the caller sent none.
+    pub request: Option<RequestId>,
+    /// When the turn was handed to the scheduler, so the driver's admission reports how long it waited.
+    pub submitted: std::time::Instant,
 }
 
 /// The context the scheduler creates. Its window holds [`continuum_persona_llama::STREAMS`] minds'
@@ -105,10 +130,33 @@ pub(super) enum Submission {
     Suspend(tokio::sync::oneshot::Sender<Suspended>),
 }
 
+/// What a stop can say about the records of the turns it ended. The record stage confirms it
+/// processed them, in order, into the log; whether each line reached disk is the log sink's, so a
+/// settle reports the sink's failed writes in its window instead of claiming them written (Codex on
+/// #6208 at 162fbe5fa7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Records {
+    /// Every record sent before the stop was processed into the log; `write_failures` counts the
+    /// probe-log writes that failed since the previous settle (0: none reported).
+    Processed { write_failures: u64 },
+    /// The record stage ended before confirming them: they may be lost.
+    Unconfirmed,
+}
+
+impl Default for Records {
+    /// A stop that ended no turns: nothing to lose.
+    fn default() -> Self {
+        Self::Processed { write_failures: 0 }
+    }
+}
+
 /// What a suspend preserved (CONTINUUM-ENGINE 4.16): how many minds it published, and every mind it
 /// could not preserve, with why. A mind it could not preserve is held only by the live process.
 #[derive(Debug, Clone, Default)]
 pub struct Suspended {
+    /// Whether the records of the turns this stop ended were confirmed written: telemetry, so it
+    /// never changes custody, and a stop that preserved every mind says so even when it is not.
+    pub records: Records,
     pub preserved: usize,
     pub retained: Vec<(Uuid, String)>,
 }
@@ -123,6 +171,16 @@ pub struct Scheduler {
 
 /// The engine the stop suspends: the last one spawned in this process.
 static SUSPENDS: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Submission>>> = std::sync::Mutex::new(None);
+
+/// What a stop's report adds about its turns' records: nothing when processed with no failed write.
+fn records_note(records: Records) -> String {
+    match records {
+        Records::Processed { write_failures: 0 } => String::new(),
+        Records::Processed { write_failures } => format!("; {write_failures} probe-log writes failed since the last stop, so some turn records may not be on disk"),
+        Records::Unconfirmed => "; the records of the turns it ended were not confirmed processed".into(),
+    }
+}
+
 
 /// The engine's part in a stop (CONTINUUM-ENGINE 4.16, Codex on 2990b44831): its root suspend,
 /// through the kernel's `SettleBeforeStop`, before native contexts are released. Each mind leaves the
@@ -147,10 +205,12 @@ impl crate::runtime::extensions::SettleBeforeStop for EngineSettle {
                 return Vec::new(); // the engine already ended, and with it every mind it held
             }
             match tokio::time::timeout(cap, suspended).await {
+                // Records are telemetry: unconfirmed ones never change custody, and the report says so.
                 Ok(Ok(suspended)) if suspended.retained.is_empty() => {
-                    vec![crate::runtime::HeldCustody { endpoint: format!("persona_engine: {} minds preserved", suspended.preserved), process: None, state: crate::runtime::CustodyState::Saved }]
+                    let endpoint = format!("persona_engine: {} minds preserved{}", suspended.preserved, records_note(suspended.records));
+                    vec![crate::runtime::HeldCustody { endpoint, process: None, state: crate::runtime::CustodyState::Saved }]
                 }
-                Ok(Ok(suspended)) => held(&format!("{} minds not preserved: {:?}", suspended.retained.len(), suspended.retained)),
+                Ok(Ok(suspended)) => held(&format!("{} minds not preserved: {:?}{}", suspended.retained.len(), suspended.retained, records_note(suspended.records))),
                 Ok(Err(_)) => held("the engine ended before it reported its suspend"),
                 Err(_) => held("the suspend did not finish within the stop's cap"),
             }
@@ -183,9 +243,9 @@ impl Scheduler {
             .name("persona-scheduler".to_string())
             .spawn(move || {
                 driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record, stages_on: runtime.clone() });
-                emit_worker.stop();
-                record_worker.stop();
-                let (emit, record) = runtime.block_on(async { tokio::join!(emit_worker.join(), record_worker.join()) });
+                // No stop: the stages end once their last producer is gone and they have drained, so
+                // answer ends a closing driver handed to its drain owner still reach their callers.
+                let (emit, record) = runtime.block_on(driver::finish(emit_worker, record_worker));
                 for failure in [emit, record].into_iter().filter_map(Result::err) {
                     tracing::error!(%failure, "persona stage failed at shutdown");
                 }

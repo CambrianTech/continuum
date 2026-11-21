@@ -276,7 +276,7 @@
         let bound = std::time::Duration::from_secs(1500);
         let start = tokio::time::Instant::now();
         let dispatched = super::until_act_stalls(start + bound, bound, None, async {
-            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None);
+            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None, None);
             std::future::pending::<()>().await
         })
         .await;
@@ -306,7 +306,7 @@
                 true
             }
             async fn contribute(&self, _ws: &Workspace) -> Option<Contribution> {
-                let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None);
+                let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None, None);
                 std::future::pending().await
             }
         }
@@ -376,7 +376,7 @@
         let start = tokio::time::Instant::now();
         let condemned = async { tokio::time::sleep(std::time::Duration::from_secs(120)).await };
         let ended = super::until_act_stalls_or(start + bound, bound, None, async {
-            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None);
+            let _witness = crate::cognition::generation_drop::InFlight::arm("Eitan", None, None, None);
             std::future::pending::<()>().await
         }, condemned)
         .await;

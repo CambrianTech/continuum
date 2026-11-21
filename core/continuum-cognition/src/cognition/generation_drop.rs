@@ -100,6 +100,8 @@ pub(crate) fn partial_from_chunks(
 /// receipt is written.
 pub(crate) struct InFlight {
     persona: String,
+    /// The adapter request this generation was submitted as: the id the engine's transitions carry.
+    request: Option<String>,
     /// The bound this turn STATED for itself on the wire — her measured expectation with
     /// headroom ([`crate::inference::turn_bound::from_expectation`]). A generation dropped
     /// while still inside it was healthy work, and the bound that reaped it (an outer act
@@ -117,6 +119,7 @@ impl InFlight {
     /// adapter, when this caller owns it.
     pub fn arm(
         persona: &str,
+        request: Option<&str>,
         turn_bound: Option<Duration>,
         chunks: Option<UnboundedReceiver<GenerationChunk>>,
     ) -> Self {
@@ -125,6 +128,7 @@ impl InFlight {
         crate::cognition::llm_deliberation_faculty::admission_clock::note_dispatched();
         Self {
             persona: persona.to_string(),
+            request: request.map(str::to_owned),
             turn_bound,
             started: Instant::now(),
             chunks,
@@ -170,6 +174,7 @@ impl Drop for InFlight {
         let act = crate::cognition::llm_deliberation_faculty::admission_clock::current_act();
         continuum_base::probe!(
             class = "persona.generation.dropped",
+            request = ?self.request,
             persona = %self.persona,
             turn = ?act.map(|a| a.turn),
             step = ?act.map(|a| a.step),
