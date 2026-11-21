@@ -172,7 +172,7 @@ answered with a number. Each has one owner and one rule:
 | How many acting? | One per Core at a time, summed over every Core the grid offers her: her node's and remote Cores priced by the market (chapter 3.8). Which ones act is need: stimuli, deadlines and value. | each Core, across the grid |
 | How many attentive? | Whatever fits those Cores' caches, by importance: no count. | the Cores' caches |
 | When does one wake or rest? | When a stimulus clears her wake condition; she steps down when idle or when the cache needs the room. | her attention, and the Core's cache pressure |
-| What size? | Her measured need for this turn, up to the Core's sequence cap. | her `Demand`, granted by the Core |
+| What size? | Her measured need for this turn, up to the Core's whole context (4.11). | her `Demand`, granted by the Core |
 
 So "how many" is never configured: it follows from the Core's measured capacity, each mind's measured
 need, importance and switch cost. The lane-era counts this replaces are listed in chapter 11 (phase D,

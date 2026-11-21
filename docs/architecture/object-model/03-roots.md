@@ -221,15 +221,15 @@ A cleared grant is a lease (today's `ThroughputLease` is one).
 
 **The Core owns its budget.** One mind decodes on a Core at a time, so nothing divides a Core's memory
 among minds. The `Core` owns, and nothing outside it decides:
-- **its budget:** its KV capacity and sequence cap, as the engine measures them;
+- **its budget:** its one context's capacity, as the engine measures it, whole to whichever mind is in it (4.11);
 - **its occupant:** the mind decoding now;
 - **its cache:** the pages of minds that were recently on it, kept warm while room remains and paged to
   RAM at a boundary, with the release confirmed, when the next mind needs the room;
 - **its queue and its next-mind policy.**
 
 A mind asks the Core for a turn with a `Demand` (her need, her value, her switch cost). The Core answers
-`Granted` when it is her turn (her window is her need, up to the cap), `Waiting` with the event that
-will wake her, or `Infeasible` only when her need exceeds the cap, with the numbers. A mind never holds
+`Granted` when it is her turn (her window is her need, up to the whole context), `Waiting` with the event that
+will wake her, or `Infeasible` only when her essential need exceeds the whole context, with the numbers. A mind never holds
 a standing window. Each persona's `Residency` records where her pages are; only the Core moves them.
 The node's governor gives the Core its share of the device beside rendering, speech and embeddings,
 and beside any other Core on the same device (two models, or two engines on a large device). That is

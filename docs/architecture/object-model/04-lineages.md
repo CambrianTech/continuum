@@ -255,3 +255,142 @@ becomes a cadence floor only where one is needed.
 - **Sinks:** turn credit, workspace, lane, placement, rag, prompt, grid, pager, frames.
 - **Durable values:** ledgers, activity and step state, recall traces, epoch watermarks, and every
   saved state today in `continuum-saved-state`.
+
+## 4.11 The `Core`: one model, one context, one mind in it at a time
+
+Status: design for review, 2026-11-21 (Fable; Codex reviews custody and the governor's side). No code
+until it is agreed. It is the object section 3.8 ("The Core owns its budget") names, and the place
+RAGE's slot hydration (chapter 0, "Slots, hydrated from descriptors") becomes a type.
+
+**What it is.** A Core is one model loaded on one compute unit with one context, and the mind
+swapped into it has the whole of that context. It is RAGE's active slot: a resident entering it is
+hydrated from her descriptor (her pages, her genes, her sampler), acts, and steps out as cache. Only
+one mind decodes on a Core at a time (section 3.8), so the Core's memory is never divided among
+minds, at any grain, by anyone.
+
+**Why it needs designing now (receipts, the M5).**
+- The persona engine opens its context with a constant two sequences, "the active mind's and the
+  next one's" (`persona_scheduler/driver.rs` `STREAMS`), without a unified KV buffer, so llama.cpp
+  divides the context in half per sequence. Live at 7a5fd04ec8 (2026-11-21 15:44:35Z):
+  `n_ctx 122368, n_ctx_seq 61184, n_seq_max 2`. The mind acting can never use more than half of a
+  context only she is decoding in.
+- At 24,320 per half (07:31-07:57Z), seven turns decoded into the half's end (`from=24320 count=1`)
+  and died mid-answer while the other half held nobody decoding.
+- The answer written that morning (c0f87b4503) refused turns at a door sized to the half
+  (`StreamCapacity`, `Infeasible`, `TokenEvent::Exceeded`): a refusal over the wrong number, where
+  the defect was the division. It is deleted by this design, not tuned.
+
+### The object
+
+```
+Part
+└─ Core<M: Model>                 a Loaded<M> and a Holder: the model's weights and the one context
+   ├─ context: Context            the KV pool, unified: capacity and free cells as the engine measures them
+   ├─ occupant: Occupant          the mind decoding now; her stream may span the whole context
+   ├─ next: Staging               the next mind's restore or prefill, in cells the occupant is not using
+   ├─ cache: Residents            pages of minds recently on the Core, warm while room remains
+   ├─ pager: Pager                moves pages between tiers by handle (the persona engine's `Tier`)
+   └─ next_mind: Policy<Ready, Next>   who goes next, and for how long (section 3.8's rule)
+```
+
+- **It descends from what exists.** `Loaded<M>` (4.1) gives it the model's lifecycle; `Holder` (4.3)
+  gives it the footprint query and the reclaim command the governor drives. The Core adds only what
+  is its own: the context, who is in it, and who is next.
+- **Its parts already exist in pieces.** The persona engine's `PersonaEngine` holds `active`,
+  `staged` and `retiring`, and its `Tier` moves blocks: that is occupant, next, cache and pager. The
+  scheduler's frame pick is the next-mind policy. This design names them as one object and removes
+  what divides it.
+- **What a mind holds is a handle, never a share.** Her `Residency` (chapter 5) records where her
+  pages are; only the Core moves them. She holds no window between turns.
+
+### Its contract
+
+**Commands in** (each answered by a `Completion`, chapter 3.1):
+- `Turn { demand: Demand, input: TurnInput }`, where `TurnInput` is everything the turn is made of,
+  as types: her prompt as token ids with her view's end, her sampler (built by the render that
+  produced her prompt, so a call she starts has the shape her tools declare), her stops, her genes.
+  The answer streams her tokens and ends with a typed `TurnEnd` (below).
+- `Reclaim { bytes }` from the node's governor (it is a `Holder`): cache first, the occupant last.
+- The lifecycle commands: `Suspend` preserves every resident; `Resume` restores them.
+
+**Publications out** (one generation-tagged snapshot, chapter 3.8 "One publication"):
+- `capacity`: the context's measured size in tokens and bytes, the one number every reader uses for
+  "how big can her turn be";
+- `occupant`, `next`, and each cached resident's residency (device, RAM, disk);
+- per turn: her tokens, and her `TurnEnd`.
+
+**Answers to a demand** are section 3.8's, against the whole context: `Granted` when it is her turn;
+`Waiting` with the event that wakes her (the occupant's boundary, a page landing); `Infeasible`
+before admission only when her essential need (what her newest turn cannot go below) exceeds the
+Core's capacity, with both numbers, so placement can move her to a larger Core. Never a refusal
+sized to a fraction of the context, and never a refusal once she is admitted.
+
+**`TurnEnd`**, typed, so nothing downstream reads text to learn what happened: `Answered` (a stop,
+end of generation), `Called` (her tool calls, decoded against their contracts), `Preempted` (a red
+light: her progress and pages kept, she resumes), `CapacityReached` (the whole context is full at a
+token boundary: her written tokens kept, her next turn's view collapses oldest first).
+
+### Invariants (each a simulator assertion before it is code)
+
+1. **One context, never divided.** The context opens with a unified KV buffer: every sequence
+   addresses every cell. The number of sequences is how many minds can be bound at once (the
+   occupant and the one being staged), never a division of the cells. No constant chooses it; the
+   occupant's stream may reach the context's full capacity.
+2. **Capacity is a measurement.** The context's size is the Core's share of the device (the node's
+   governor, by demand) divided by the model's measured bytes per token, bounded by the model's
+   trained context. It changes live with the share, never by relaunch.
+3. **The occupant comes first.** Staging and cache use cells the occupant is not using. When she
+   needs more, the coolest cached resident pages out, then the staged one; nothing takes her cells.
+   A page leaves the device only when its save is confirmed (custody, section 3.8).
+4. **Her output grows from the context.** `max_tokens` is her demand's expected reply, a value for
+   the next-mind policy, not a reservation and not a ceiling below capacity. She writes while cells
+   exist anywhere in the context.
+5. **Every reader sizes from one publication.** Cognition fits her view to `capacity`; nothing reads
+   a per-sequence size, a launch-time division or a cached plan. Her view collapses oldest first only
+   when the whole context cannot hold her need (section 3.8, "Her context budget is her focus").
+6. **Nothing in a turn aborts.** An admitted turn ends in one of its `TurnEnd`s. No timeout, no
+   fallback, no refusal mid-generation; a condition the Core cannot serve now is a `Waiting` with its
+   event.
+7. **Types across every seam.** The render hands the Core typed input and receives typed output;
+   the Core reports typed ends. No JSON crosses the in-process chat seam, no call's arguments travel
+   as text to be parsed twice, and no reader sniffs raw output for what the parser already decided
+   (`chat_turn.rs` `rsplit_once("<function=")`, cognition's `parse_tool_calls(reasoning)`).
+
+### What it deletes
+
+| Today | Why it goes |
+|---|---|
+| `STREAMS` and the non-unified context (`persona_scheduler/driver.rs`) | the division itself (invariant 1) |
+| `n_ctx_seq` as a limit (`persona_scheduler/geometry.rs`; `in_process_engine.rs` reporting it as her window) | capacity is the whole context (invariants 1, 5) |
+| `StreamCapacity`, `Infeasible`, `TokenEvent::Exceeded` (`persona_scheduler/admission.rs`, c0f87b4503) | a refusal sized to the half; the demand's `Infeasible` is against capacity (contract) |
+| `InferenceError::Sampler` (7a5fd04ec8) | a mid-turn abort (invariant 6); a render that cannot build a sampler is a defect named where the render is made |
+| `TokenEvent::Error(String)`, `Ending::reason() -> String`, `ChatRefusal { message: String }` on the turn path | typed `TurnEnd` (invariant 7) |
+| the JSON round trip at the chat seam (`chat_boundary.cpp` `.dump()`, `chat_turn.rs` `serde_json::from_str`) and the executor's second parse of call arguments | typed input and output (invariant 7) |
+| cognition's think-only, cut and thought-cut sentinels as pushed acts | her act's receipt is her perception (EVENT-MIND); a `TurnEnd` she can read replaces a teacher's message |
+| the serving grants, window allocator and lane planner listed in chapter 11 phase D | already on the plan; this is the object they hand their decisions to |
+
+### How it is proven
+
+- **Simulator first** (the dyno, CONTINUUM-ENGINE §7.0): one assertion per invariant, red against
+  today's code. Invariant 1's: a lone acting mind on a context of N reaches position N - 1 with no
+  other mind decoding.
+- **Live, on the M5, 15 minutes at four or more residents**, before and after: the acting mind's
+  largest position against capacity; decode and prefill tokens per second (a unified buffer must not
+  cost either); turns ending `CapacityReached` while the context had room, 0; refusals, 0;
+  `inference.turn.wrote_nothing` with a function marker, 0; act latency median and p90.
+- **The persona engine gets smaller.** Each step lands with more lines removed than added.
+
+### Order
+
+1. Agree this section (Joel, Codex).
+2. The simulator assertions, red.
+3. Invariant 1 and 2: the llama binding exposes `kv_unified`; the Core opens one unified context;
+   `STREAMS` and `n_ctx_seq` as a limit go; capacity is published. One change, one deploy, the live
+   read above.
+4. Invariant 5: cognition and `in_process_engine.rs` read `capacity`; the door and
+   `TokenEvent::Exceeded` are deleted.
+5. Invariants 3 and 4: occupant-first paging inside the one context; `max_tokens` becomes the demand's
+   expectation.
+6. Invariants 6 and 7: typed `TurnEnd`, the typed chat seam, the sentinels and text sniffers deleted.
+
+Each step is one change, measured live before the next.
