@@ -14,7 +14,7 @@ use std::num::NonZeroU64;
 pub use completion::{Answer, Completion, OperationId, Revision, Snapshot};
 pub use lifecycle::{Lifecycle, Verb};
 pub use outcome::{Outcome, Settling};
-pub use parts::{Executor, Parts};
+pub use parts::{Executor, Parts, Rejoin, Retry};
 
 /// Who a part is: the name callers address it by and what it is, in a sentence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

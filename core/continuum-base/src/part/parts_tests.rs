@@ -5,47 +5,45 @@ use futures::channel::oneshot;
 use futures::executor::{block_on, ThreadPool};
 use futures::future::FutureObj;
 use futures::task::SpawnError;
-use std::sync::atomic::AtomicUsize;
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 type Error = &'static str;
 
 /// A kind of part the owner holds through `dyn`.
 trait Kind: Lifecycle<Error = Error> {}
 
-/// How a test part answers a verb.
-enum Plan {
-    Done,
+/// How a test part answers one verb.
+enum Step {
     Fails,
     /// Waits for the gate, then is done.
-    Gated(Mutex<Option<oneshot::Receiver<()>>>),
+    Gated(oneshot::Receiver<()>),
     /// Answers `Pending`; the rest finishes when the gate opens.
-    PendingUntil(Mutex<Option<oneshot::Receiver<()>>>),
+    PendingUntil(oneshot::Receiver<()>),
 }
 
+/// A part that answers each verb with its next scripted step (done once the script runs out), and
+/// counts how many times a verb actually ran.
 struct Probe {
     name: &'static str,
-    plan: Plan,
+    script: Mutex<VecDeque<Step>>,
     acts: AtomicUsize,
 }
 
 impl Probe {
-    fn new(name: &'static str, plan: Plan) -> Arc<Self> {
-        Arc::new(Self { name, plan, acts: AtomicUsize::new(0) })
+    fn scripted(name: &'static str, steps: impl IntoIterator<Item = Step>) -> Arc<Self> {
+        Arc::new(Self { name, script: Mutex::new(steps.into_iter().collect()), acts: AtomicUsize::new(0) })
     }
     fn done(name: &'static str) -> Arc<Self> {
-        Self::new(name, Plan::Done)
-    }
-    fn gated(name: &'static str) -> (Arc<Self>, oneshot::Sender<()>) {
-        let (open, gate) = oneshot::channel();
-        (Self::new(name, Plan::Gated(Mutex::new(Some(gate)))), open)
-    }
-    fn pending(name: &'static str) -> (Arc<Self>, oneshot::Sender<()>) {
-        let (open, gate) = oneshot::channel();
-        (Self::new(name, Plan::PendingUntil(Mutex::new(Some(gate)))), open)
+        Self::scripted(name, [])
     }
     fn acts(&self) -> usize {
         self.acts.load(Ordering::SeqCst)
     }
+}
+
+fn gate() -> (oneshot::Sender<()>, oneshot::Receiver<()>) {
+    oneshot::channel()
 }
 
 impl Part for Probe {
@@ -59,21 +57,15 @@ impl Lifecycle for Probe {
     type Error = Error;
     async fn act(&self, _verb: Verb) -> Outcome<Error> {
         self.acts.fetch_add(1, Ordering::SeqCst);
-        match &self.plan {
-            Plan::Done => Outcome::Done,
-            Plan::Fails => Outcome::Failed("device lost"),
-            Plan::Gated(gate) => {
-                let gate = gate.lock().take();
-                let Some(gate) = gate else { return Outcome::Failed("gate already used") };
-                match gate.await {
-                    Ok(()) => Outcome::Done,
-                    Err(oneshot::Canceled) => Outcome::Failed("gate dropped"),
-                }
-            }
-            Plan::PendingUntil(gate) => {
-                let gate = gate.lock().take();
-                gate.map_or(Outcome::Done, |gate| Outcome::pending(async move { gate.await.map_err(|oneshot::Canceled| "gate dropped") }))
-            }
+        let step = self.script.lock().pop_front();
+        match step {
+            None => Outcome::Done,
+            Some(Step::Fails) => Outcome::Failed("device lost"),
+            Some(Step::Gated(gate)) => match gate.await {
+                Ok(()) => Outcome::Done,
+                Err(oneshot::Canceled) => Outcome::Failed("gate dropped"),
+            },
+            Some(Step::PendingUntil(gate)) => Outcome::pending(async move { gate.await.map_err(|oneshot::Canceled| "gate dropped") }),
         }
     }
 }
@@ -81,7 +73,7 @@ impl Lifecycle for Probe {
 impl Kind for Probe {}
 
 fn pool() -> Executor {
-    match ThreadPool::builder().pool_size(2).create() {
+    match ThreadPool::builder().pool_size(4).create() {
         Ok(pool) => Arc::new(pool),
         Err(error) => panic!("a test thread pool: {error}"),
     }
@@ -105,17 +97,47 @@ fn wait_for(completion: &Completion<&'static str, Error>, key: &str, answer: &An
     });
 }
 
+
+fn joined(rejoin: Rejoin<&'static str, Error>) -> Completion<&'static str, Error> {
+    match rejoin {
+        Rejoin::Joined(completion) => completion,
+        Rejoin::Expired => panic!("the operation is still held"),
+    }
+}
+
+fn only_retiring(parts: &Parts<&'static str, dyn Kind>) -> (&'static str, Generation, Completion<&'static str, Error>) {
+    let Ok([held]) = <[_; 1]>::try_from(parts.retiring()) else { panic!("exactly one part is retiring") };
+    held
+}
+
+/// Run `call` on `callers` threads at once: every thread is spawned before any is joined, so the
+/// calls race. A thread that panicked has already failed the test; its panic is re-raised.
+fn concurrently<T: Send>(callers: usize, call: impl Fn() -> T + Sync) -> Vec<T> {
+    std::thread::scope(|scope| {
+        let mut threads = Vec::with_capacity(callers);
+        for _ in 0..callers {
+            threads.push(scope.spawn(&call));
+        }
+        threads
+            .into_iter()
+            .map(|thread| match thread.join() {
+                Ok(value) => value,
+                Err(panic) => std::panic::resume_unwind(panic),
+            })
+            .collect()
+    })
+}
+
 // what this catches: a walk that runs parts one after another, drops a failure from the report, or
 // reorders the parts.
 #[test]
 fn a_slow_and_a_failing_part_hold_back_no_one_and_both_are_reported() {
     let parts = owner();
-    let (slow, open) = Probe::gated("slow");
-    let fast = Probe::done("fast");
-    parts.insert("slow", slow);
-    parts.insert("broken", Probe::new("broken", Plan::Fails));
-    parts.insert("fast", Arc::clone(&fast) as Arc<dyn Kind>);
-    let walk = parts.act(OperationId::new(), Verb::Shutdown);
+    let (open, slow_gate) = gate();
+    parts.insert("slow", Probe::scripted("slow", [Step::Gated(slow_gate)]));
+    parts.insert("broken", Probe::scripted("broken", [Step::Fails]));
+    parts.insert("fast", Probe::done("fast"));
+    let walk = parts.act(Verb::Shutdown);
     wait_for(&walk, "fast", &Answer::Done);
     wait_for(&walk, "broken", &Answer::Failed("device lost"));
     assert_eq!(answers(&walk.snapshot())[0], ("slow", Answer::Running), "the slow part is still releasing");
@@ -130,32 +152,51 @@ fn a_slow_and_a_failing_part_hold_back_no_one_and_both_are_reported() {
 #[test]
 fn a_dropped_observer_cancels_nothing_and_a_new_one_reattaches_by_operation() {
     let parts = owner();
-    let (slow, open) = Probe::gated("slow");
-    parts.insert("slow", Arc::clone(&slow) as Arc<dyn Kind>);
+    let (open, slow_gate) = gate();
+    parts.insert("slow", Probe::scripted("slow", [Step::Gated(slow_gate)]));
     parts.insert("fast", Probe::done("fast"));
-    let operation = OperationId::new();
-    let observer = parts.act(operation, Verb::Suspend);
+    let observer = parts.act(Verb::Suspend);
+    let operation = observer.operation();
     wait_for(&observer, "fast", &Answer::Done);
     drop(observer);
-    let Some(reattached) = parts.completion(operation) else { panic!("the owner still holds the operation") };
+    let reattached = joined(parts.rejoin(operation));
     assert_eq!(answers(&reattached.snapshot()), vec![("slow", Answer::Running), ("fast", Answer::Done)]);
     assert!(open.send(()).is_ok());
     assert!(block_on(reattached.settled()).is_done());
 }
 
-// what this catches: a retry of the same operation reissuing a verb a part already ran.
+// what this catches: two callers retrying one operation at the same moment running its verb twice
+// (Codex, review of e59cccfe28: check-then-start across a released lock).
 #[test]
-fn the_same_operation_asked_twice_runs_each_verb_once() {
+fn concurrent_rejoins_of_one_operation_run_each_verb_once() {
     let parts = owner();
-    let (slow, open) = Probe::gated("slow");
+    let (open, slow_gate) = gate();
+    let slow = Probe::scripted("slow", [Step::Gated(slow_gate)]);
     parts.insert("slow", Arc::clone(&slow) as Arc<dyn Kind>);
-    let operation = OperationId::new();
-    let first = parts.act(operation, Verb::Prepare);
-    let again = parts.act(operation, Verb::Prepare);
-    assert_eq!(first.operation(), again.operation());
+    let operation = parts.act(Verb::Prepare).operation();
+    let rejoined = concurrently(8, || joined(parts.rejoin(operation)).operation());
+    assert!(rejoined.iter().all(|seen| *seen == operation));
     assert!(open.send(()).is_ok());
-    assert!(block_on(again.settled()).is_done());
-    assert_eq!(slow.acts(), 1, "the retry ran the verb a second time");
+    assert!(block_on(joined(parts.rejoin(operation)).settled()).is_done());
+    assert_eq!(slow.acts(), 1, "a rejoin ran the verb again");
+}
+
+// what this catches: a settled operation pruned by a newer operation of another verb, so a late
+// replay of it runs again (Codex's A/B/A), and a superseded one replaying instead of expiring.
+#[test]
+fn a_b_a_rejoins_the_first_and_a_superseded_operation_expires_without_running() {
+    let parts = owner();
+    let part = Probe::done("kokoro");
+    parts.insert("kokoro", Arc::clone(&part) as Arc<dyn Kind>);
+    let a = parts.act(Verb::Prepare);
+    assert!(block_on(a.settled()).is_done());
+    let b = parts.act(Verb::Suspend);
+    assert!(block_on(b.settled()).is_done());
+    assert!(block_on(joined(parts.rejoin(a.operation())).settled()).is_done(), "A is still held after B");
+    let newer = parts.act(Verb::Prepare);
+    assert!(block_on(newer.settled()).is_done());
+    assert!(matches!(parts.rejoin(a.operation()), Rejoin::Expired), "A is superseded by a newer Prepare");
+    assert_eq!(part.acts(), 3, "a rejoin ran a verb");
 }
 
 // what this catches: a replaced part released before its shutdown is done (its only strong handle
@@ -164,7 +205,8 @@ fn the_same_operation_asked_twice_runs_each_verb_once() {
 #[test]
 fn a_replaced_part_is_held_until_its_pending_shutdown_is_done_and_its_replacement_is_untouched() {
     let parts = owner();
-    let (first, finish) = Probe::pending("whisper");
+    let (finish, rest) = gate();
+    let first = Probe::scripted("whisper", [Step::PendingUntil(rest)]);
     let first_alive = Arc::downgrade(&first);
     parts.insert("whisper", first);
     parts.insert("kokoro", Probe::done("kokoro"));
@@ -172,33 +214,58 @@ fn a_replaced_part_is_held_until_its_pending_shutdown_is_done_and_its_replacemen
     let newest = parts.insert("whisper", Arc::clone(&replacement) as Arc<dyn Kind>);
     assert_eq!(parts.keys().iter().map(|(key, _)| *key).collect::<Vec<_>>(), vec!["whisper", "kokoro"]);
 
-    let Ok([(_, retired, shutdown)]) = <[_; 1]>::try_from(parts.retiring()) else { panic!("one part is retiring") };
+    let (_, retired, shutdown) = only_retiring(&parts);
     assert!(retired < newest);
     wait_for(&shutdown, "whisper", &Answer::Pending);
     assert!(first_alive.upgrade().is_some(), "a pending shutdown released its part");
 
     assert!(finish.send(()).is_ok());
     wait_for(&shutdown, "whisper", &Answer::Done);
-    block_on(async {
-        while !parts.retiring().is_empty() {
-            futures::pending!();
-        }
-    });
+    assert!(parts.retiring().is_empty(), "a done shutdown is still held: Done and release are one step");
     assert!(first_alive.upgrade().is_none(), "the old part is released once its shutdown is done");
     assert_eq!(replacement.acts(), 0, "the replacement was shut down by its predecessor");
 }
 
-// what this catches: a failed shutdown releasing its part, and a retry that is not linked to it.
+// what this catches: a failed shutdown letting its part go, two concurrent retries both starting a
+// shutdown, an observer seeing no attempt mid-retry, and a retry not linked to the failure (Codex,
+// review of e59cccfe28).
 #[test]
-fn a_failed_shutdown_stays_retiring_and_its_retry_names_the_failure() {
+fn concurrent_retries_of_a_failed_shutdown_start_exactly_one_linked_attempt() {
     let parts = owner();
-    parts.insert("piper", Probe::new("piper", Plan::Fails));
+    let (open, second_attempt) = gate();
+    let piper = Probe::scripted("piper", [Step::Fails, Step::Gated(second_attempt)]);
+    parts.insert("piper", Arc::clone(&piper) as Arc<dyn Kind>);
     parts.insert("piper", Probe::done("piper"));
-    let Ok([(key, generation, failed)]) = <[_; 1]>::try_from(parts.retiring()) else { panic!("one part is retiring") };
+    let (key, generation, failed) = only_retiring(&parts);
     wait_for(&failed, "piper", &Answer::Failed("device lost"));
-    assert_eq!(parts.retiring().len(), 1, "a failed shutdown let its part go");
-    let Some(retry) = parts.retry_retiring(&key, generation) else { panic!("the retiring part is found") };
-    assert_eq!(retry.follows(), Some(failed.operation()));
+
+    let outcomes = concurrently(8, || match parts.retry_retiring(&key, generation) {
+        Retry::Started(attempt) => (true, attempt.operation(), attempt.follows()),
+        Retry::Running(attempt) => (false, attempt.operation(), attempt.follows()),
+        Retry::NotRetiring => panic!("the failed part is still retiring"),
+    });
+    assert_eq!(outcomes.iter().filter(|(started, _, _)| *started).count(), 1, "exactly one retry starts an attempt");
+    let attempt = outcomes[0].1;
+    assert!(outcomes.iter().all(|(_, operation, follows)| *operation == attempt && *follows == Some(failed.operation())));
+    let (_, _, successor) = only_retiring(&parts);
+    assert_eq!(successor.operation(), attempt, "an observer saw no attempt, or a different one, mid-retry");
+
+    assert!(open.send(()).is_ok());
+    wait_for(&successor, "piper", &Answer::Done);
+    assert!(parts.retiring().is_empty(), "a done shutdown is still held: Done and release are one step");
+    assert_eq!(piper.acts(), 2, "one failed shutdown and one retry, nothing more");
+    assert!(matches!(parts.retry_retiring(&key, generation), Retry::NotRetiring), "a released part was retried again");
+}
+
+// what this catches: generations minted outside the lock, so two concurrent replacements of one
+// key leave an older generation live and a newer one retiring.
+#[test]
+fn concurrent_replacements_of_one_key_leave_the_newest_generation_live() {
+    let parts = owner();
+    let issued = concurrently(16, || parts.insert("silero", Probe::done("silero")));
+    let Ok([(_, live)]) = <[_; 1]>::try_from(parts.keys()) else { panic!("one live part") };
+    assert_eq!(Some(&live), issued.iter().max(), "the newest generation is the live one");
+    assert!(parts.retiring().iter().all(|(_, retiring, _)| *retiring < live));
 }
 
 /// An executor that misbehaves in one of the three ways an executor can.
@@ -235,9 +302,9 @@ fn a_task_the_executor_drops_reads_not_started_or_cancelled_never_running() {
         (Faulty::DropsAfterOnePoll, Answer::Cancelled),
     ] {
         let parts: Parts<&'static str, dyn Kind> = Parts::new(Arc::new(executor));
-        let (silero, _gate) = Probe::gated("silero");
-        parts.insert("silero", silero);
-        let walk = parts.act(OperationId::new(), Verb::Prepare);
+        let (_open, silero_gate) = gate();
+        parts.insert("silero", Probe::scripted("silero", [Step::Gated(silero_gate)]));
+        let walk = parts.act(Verb::Prepare);
         assert_eq!(answers(&walk.snapshot()), vec![("silero", expected)]);
     }
 }

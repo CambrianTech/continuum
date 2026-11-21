@@ -11,20 +11,14 @@ use uuid::Uuid;
 
 use super::{Generation, Verb};
 
-/// One request. Asking again with the same id rejoins it; a new id is a new request.
+/// One operation, minted by the owner that runs it ([`Parts::act`](super::Parts::act)). Holding it
+/// lets an observer rejoin; it can never start work.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OperationId(pub Uuid);
+pub struct OperationId(Uuid);
 
 impl OperationId {
-    #[must_use]
-    pub fn new() -> Self {
+    pub(super) fn mint() -> Self {
         Self(Uuid::new_v4())
-    }
-}
-
-impl Default for OperationId {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
