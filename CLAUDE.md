@@ -376,6 +376,17 @@ per-pair norms), no CPU/GPU transfers that are not needed, and its exhaustive ch
 iterated on its simulator first (section 7.0: the dyno, serving-replay, the context replay; scenarios recorded from our own
 faults), then posts act time, stage time, memory and quality before and after on a live node.
 
+## 🛑 STOP — If You Are About To Add a Worker, Task, Region, Tick Or Timer
+
+**Required first read:** [docs/architecture/SAGE.md](docs/architecture/SAGE.md). Every worker is a SAGE
+`Component` (`core/continuum-sage`): it declares only its stimuli (topics it hears or watches on its
+owner's `Bus`), its outputs (topics it says), its handler and its need; the engine gives it the worker,
+provenance, timers on the one `Clock`, presence, rest and switchable observation. Never a hand-spawned
+task, a `BrainRegion`, a governor tick, a module `tick_interval`, a sleep or a timer. The heartbeat is the
+frame counter, not a clock; rest is as important as action. SAGE.md lists what still moves onto it and
+what it measured.
+
+
 ## 🛑 STOP — If You Are About To Add a Monitor, Broker, Pool, Region, Or Any Concurrent Concern
 
 **Required first read** before adding ANY new tokio task, watch channel, pressure source, resource pool, brain region, or background tick — or before touching any file under `core/continuum-core/src/{runtime,paging,system_resources}/`:
