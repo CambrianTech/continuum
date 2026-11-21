@@ -6,6 +6,8 @@ use super::*;
 pub struct TurnPrompt<'a> {
     pub text: &'a str,
     pub stable_prefix: Option<&'a str>,
+    /// The submitted request's id, carried into the engine's transitions.
+    pub request: Option<&'a str>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -554,6 +556,7 @@ impl LlamaCppBackend {
         // top_k/top_p/repeat_penalty fields with no-op defaults.
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
         let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
+        let prompt_tokens = prompt.len();
         let req = GenerationRequest {
             prompt,
             view_end,
@@ -563,11 +566,21 @@ impl LlamaCppBackend {
             active_loras: resolved_loras,
             response_tx,
             persona_id,
+            request: turn.request.map(super::super::persona_scheduler::RequestId::new),
+            submitted: Instant::now(),
         };
 
         if let Err(refused) = self.scheduler(allocation)?.enqueue(req) {
             return Err(refused.to_string());
         }
+        continuum_base::probe!(
+            class = "persona.engine.enqueued",
+            request = ?turn.request,
+            persona = ?persona_id,
+            prompt_tokens = prompt_tokens,
+            since_submit = ?gen_start.elapsed(),
+            "a turn was handed to the scheduler"
+        );
 
         Ok(TurnAnswer { events: response_rx, started: gen_start, prompt_chars: prompt_len_chars, stops: stop_sequences.iter().map(|s| s.to_string()).collect() })
     }

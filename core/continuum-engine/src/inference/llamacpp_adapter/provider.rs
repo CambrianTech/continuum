@@ -135,6 +135,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
         request: TextGenerationRequest,
         dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
+        // The monotonic origin of every later transition's `since_enter` (`inference.generate.enter`).
+        let entered = Instant::now();
         let allocation = self.allocation()?;
         // Her think term: a stated zero budget renders no thinking; any other budget is bounded by
         // the template's own thinking tags below; none stated is the model's default.
@@ -237,6 +239,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 class = "inference.generate.enter",
                 model = request.model.as_deref().unwrap_or("?"), // unwrap_or: the probe names an unnamed model "?"
                 persona_id = request.persona_id.as_deref().unwrap_or(""), // unwrap_or: a request for no persona probes an empty id
+                request = ?request.request_id.as_deref(),
                 msg_count = request.messages.len(),
                 max_tokens = ?request.max_tokens,
                 has_system_prompt = request.system_prompt.is_some(),
@@ -380,6 +383,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let stable_for_blocking = stable_prefix.clone();
         let stop_for_closure = stop_owned.clone();
         let sampling_for_closure = sampling.clone();
+        let request_for_blocking = request.request_id.clone();
         // Parse the wire-format persona_id (Option<String> on the public
         // request type) to Option<Uuid> for the typed scheduler API. A
         // malformed UUID drops to None rather than failing the request —
@@ -413,6 +417,14 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 "inference.forward.text",
                 async move {
                     let answer = tokio::task::spawn_blocking(move || {
+                    // Brackets for the wait between entry and the engine's admission: a full
+                    // blocking pool delays this line, a gene load delays the next.
+                    continuum_base::probe!(
+                        class = "inference.generate.worker_started",
+                        request = ?request_for_blocking,
+                        since_enter = ?entered.elapsed(),
+                        "the blocking worker began this generation"
+                    );
                     let stop_refs: Vec<&str> =
                         stop_for_closure.iter().map(|s| s.as_str()).collect();
                     // Page in each requested gene (idempotent) before generation.
@@ -421,13 +433,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     for (id, path, _) in &genes_for_closure {
                         backend_for_blocking.ensure_adapter(id, path)?;
                     }
+                    continuum_base::probe!(
+                        class = "inference.generate.genes_ready",
+                        request = ?request_for_blocking,
+                        genes = genes_for_closure.len(),
+                        since_enter = ?entered.elapsed(),
+                        "her genes are loaded for this generation"
+                    );
                     let active_loras: Vec<(String, f32)> = genes_for_closure
                         .iter()
                         .map(|(id, _, scale)| (id.clone(), *scale))
                         .collect();
                     backend_for_blocking.submit_for_persona(
                         allocation, persona_id,
-                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref() },
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), request: request_for_blocking.as_deref() },
                         max_tokens,
                         sampling_for_closure,
                         &stop_refs,

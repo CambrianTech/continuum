@@ -25,8 +25,27 @@ mod frame;
 mod reuse;
 mod geometry;
 mod sampling;
+mod transition;
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
+
+/// A submitted generation request's identity (the adapter request's `request_id`), the one id that
+/// crosses from her deliberation into the engine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestId(Arc<str>);
+
+impl RequestId {
+    #[must_use]
+    pub fn new(id: &str) -> Self {
+        Self(Arc::from(id))
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 
 use std::sync::Arc;
 
@@ -81,6 +100,11 @@ pub struct GenerationRequest {
     /// The persona whose mind this turn continues. `None` is a one-off (a probe, a test rig): it
     /// runs as a mind of its own and its blocks are released when the turn ends.
     pub persona_id: Option<Uuid>,
+    /// The submitted request's identity, carried through every transition this turn reports, so a
+    /// stall says how far it got. `None` when the caller sent none.
+    pub request: Option<RequestId>,
+    /// When the turn was handed to the scheduler, so the driver's admission reports how long it waited.
+    pub submitted: std::time::Instant,
 }
 
 /// The context the scheduler creates. Its window holds [`continuum_persona_llama::STREAMS`] minds'
