@@ -536,3 +536,29 @@ Order: (1) `Need` in SAGE (`ctx.need(level)`, published with intake depth, wait 
 last run), validated; (2) the mind folds her parts' needs; (3) the Core's next-mind choice through
 the flow `Scheduler` by her need. Gate: an addressed resident waits less than one turn's length for
 the Core, and content residents take zero Core turns.
+
+**Where need comes from: novelty, awareness, appraisal (Joel, 2026-11-21: "a cnn for an existing section
+knows it wasn't that important it run again and be interpolated, but if new, big deal ... a yolo series
+of events ... does the yolo sage task keep this state or is there another that maintains knowledge of
+all things? ... or another part of the mind like amygdala, some other cheaper alg, does this for a
+variety of signals?").** Three levels, as in CBAR:
+- **A part's need is its own novelty.** It keeps its last input and output; a new frame is compared
+  cheaply (a hash, a delta, a distance). Barely changed: Content, and it republishes or interpolates its
+  last output without the heavy work. New: its need rises with how much changed.
+- **Detectors emit change; Awareness holds what is.** A detector (a YOLO pass, a room's feed, the board)
+  keeps only its previous frame and emits events (appeared, moved, changed, gone). One Awareness part
+  (the world model) subscribes to every detector and keeps object permanence (each entity, its last
+  state, when seen, how sure), published as state per entity. Her perception region is this for rooms
+  today; generalized, it is one owner of knowledge, with detectors cheap and replaceable.
+- **An amygdala appraises cheaply which moments deserve depth.** It subscribes to many signals
+  (detector change, salience, surprise against her expectations) and scores in milliseconds how much a
+  moment matters; that score raises the need of expensive parts (a deep multimodal look at a new thing
+  in frame, deliberation). Coarse first, exact only for the few that matter. `salience.rs` is this
+  appraisal for rooms today; 5.7's `Arousal` topic is its output.
+- **So** a part's need = its novelty, raised by the amygdala; the mind's orchestrator only settles
+  contention (who leads her next turn; shares of her window and GPU); her folded need goes to the Core,
+  the node's to the grid.
+
+Order: (1) novelty-derived need in `Component` helpers (compare last frame, set need in one call);
+(2) the amygdala as a component over her salience signals; (3) Awareness split out of Senses as the one
+world model, Senses becoming the room detector that feeds it; (4) the mind's orchestrator over her parts.
