@@ -20,6 +20,8 @@ mod identity;
 mod publication;
 mod runner;
 mod stage;
+mod state;
+mod stream;
 mod topic;
 mod triggers;
 
@@ -27,12 +29,14 @@ pub use artifact::{artifact, handoff, Arrival, Awaited, Handoff, Produces, Settl
 pub use control::{ControlRequest, StopReceipt, StopRefusal};
 pub use cost::{Cost, ExecutionCost, ModelTier, ResidencyCost};
 pub use dependent::{spawn_when_ready, DependentStage, Inputs};
-pub use identity::{MindId, RunId, StageId, StageIncarnation};
+pub use identity::{OwnerId, RunId, StageId, StageIncarnation};
 pub use publication::{Publication, Published};
 pub use runner::{PublishedOutput, PublishedState, Ran, StageRunner};
 pub use stage::{RunOutcome, Stage, StageContext};
 pub use topic::{InputRevision, Provenance, TopicKind, TopicName};
 pub use triggers::Triggers;
+pub use state::{state, Ended, Publisher, Reader, Snapshot};
+pub use stream::{stream, Emitter, Event, Subscribe};
 
 #[cfg(test)]
 mod tests;

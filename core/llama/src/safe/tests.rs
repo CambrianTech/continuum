@@ -69,8 +69,8 @@
     fn batch_allocated_push_clear() {
         let mut b = Batch::allocated(8, 1);
         assert_eq!(b.n_tokens(), 0);
-        b.push(42, 0, &[0], true);
-        b.push(43, 1, &[0], true);
+        b.push(42, Pos::at(0), &[0], true);
+        b.push(43, Pos::at(1), &[0], true);
         assert_eq!(b.n_tokens(), 2);
         b.clear();
         assert_eq!(b.n_tokens(), 0);

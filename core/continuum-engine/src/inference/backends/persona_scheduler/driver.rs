@@ -12,13 +12,13 @@ use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine,
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier, STREAMS};
-use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
+use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
-use continuum_flow::{Outbox, StageInput};
+use continuum_sage::{Outbox, StageInput};
 
-use super::{admission, emit, frame, preserve, record, reuse, sampling, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{admission, emit, frame, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -26,7 +26,7 @@ use crate::runtime;
 /// Why a turn did not complete. The mind stays in the engine's custody either way.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TurnError {
-    /// Her turn's sampler could not be built as asked (a think bound llama.cpp refused).
+    /// Her sampler refused a step (a token its grammar could not accept, named by llama.cpp).
     #[error("her sampler was refused: {0}")]
     Sampler(#[from] llama::ChatRefusal),
     #[error(transparent)]
@@ -127,7 +127,7 @@ struct Driver<'c, 'm> {
     model: &'m Model,
     batch: NonZeroUsize,
     /// The most one mind's stream holds (the applied `n_ctx_seq`): a prompt it cannot fit is refused at the door.
-    capacity: admission::StreamCapacity,
+    capacity: admission::Capacity,
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
@@ -238,7 +238,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         return;
     };
     let geometry = EngineGeometry::applied(incarnation, &ctx, config);
-    let capacity = admission::StreamCapacity::new(geometry.n_ctx_seq as usize);
+    let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
     let mut tier = UnifiedTier::new(&mut ctx);
@@ -329,7 +329,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
             Ok(Advanced::Continues) => {}
-            Ok(Advanced::Done { tokens_generated, elapsed_ms }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, elapsed_ms }),
+            Ok(Advanced::Done { tokens_generated, end }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, end }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 driver.end(turns.remove(index), Ending::Refused(refused));
@@ -348,7 +348,6 @@ struct Turn {
     prompt: Vec<i32>,
     basis: Basis,
     genes: Genes,
-    sampler: llama::Sampler,
     phase: Phase,
     submitted: Instant,
     ready_since: Instant,
@@ -371,7 +370,7 @@ enum Phase {
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
-    Decoding { token: i32, pos: i32, generated: usize },
+    Decoding { token: i32, pos: Pos, generated: usize },
 }
 
 /// Where a turn's time went, for its one probe row.
@@ -405,10 +404,10 @@ struct Spent {
 enum Advanced {
     Continues,
     /// She answered: what her `TokenEvent::Done` will say.
-    Done { tokens_generated: usize, elapsed_ms: u64 },
+    Done { tokens_generated: usize, end: super::TurnEnd },
 }
 
-/// The one context: `STREAMS` sequences (the active mind's and the next one's).
+/// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
 fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Context<'m>, StartError> {
     let streams = u32::try_from(STREAMS).map_err(|_| StartError::Context("stream count exceeds a sequence count".into()))?;
     model
@@ -549,47 +548,39 @@ impl Driver<'_, '_> {
         Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone(), blocks: file })
     }
 
-    /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
-    /// or sampler that cannot be built is refused at once, before it waits for a frame.
+    /// Take a submission into the frame loop: its token ids and its sampler, both built on her own
+    /// thread. A turn the stream cannot hold is refused at once, before it waits for a frame.
     fn admit(&mut self, mut req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
         };
-        // A prompt this Core's stream cannot hold is refused at the door, with the numbers, before
-        // any prefill is spent on it.
+        // A turn this Core's stream cannot hold, prompt and asked-for reply, is refused at the door
+        // with the numbers, before any prefill is spent on it; her caller refits to the stream.
         if let Err(infeasible) = self.capacity.admit(req.prompt.len()) {
             let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity };
             self.record.send(record::Fact::Transition(transition::Transition { request: req.request.clone(), persona: id.0, one_off, at }));
-            tell(&req.response_tx, TokenEvent::Error(infeasible.to_string()));
+            tell(&req.response_tx, TokenEvent::Exceeded(super::Exceeded { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity }));
             return;
         }
-        // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.
-        match sampling::sampler(self.model, &req.sampling).map_err(TurnError::from) {
-            Ok(sampler) => {
-                let prompt = std::mem::take(&mut req.prompt);
-                let basis = Basis { genes: signature(&req.active_loras) };
-                let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-                let boundary = req.view_end;
-                self.answers += 1;
-                let answer = emit::AnswerSeq(self.answers);
-                let cancel = Arc::new(AtomicBool::new(false));
-                self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
-                let submitted = Instant::now();
-                if one_off { self.live_one_offs.insert(id); }
-                let admitted = transition::Transition {
-                    request: req.request.clone(),
-                    persona: id.0,
-                    one_off,
-                    at: transition::At::Admitted { queue_depth: turns.len() + 1, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
-                };
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
-                self.record.send(record::Fact::Transition(admitted));
-            }
-            Err(refused) => {
-                tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
-            }
-        }
+        let prompt = std::mem::take(&mut req.prompt);
+        let basis = Basis { genes: signature(&req.active_loras) };
+        let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
+        let boundary = req.view_end;
+        self.answers += 1;
+        let answer = emit::AnswerSeq(self.answers);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
+        let submitted = Instant::now();
+        if one_off { self.live_one_offs.insert(id); }
+        let admitted = transition::Transition {
+            request: req.request.clone(),
+            persona: id.0,
+            one_off,
+            at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
+        };
+        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+        self.record.send(record::Fact::Transition(admitted));
     }
 
     /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
@@ -619,7 +610,7 @@ impl Driver<'_, '_> {
                     Phase::Decoding { .. } => (true, 0),
                 };
                 let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { active: active == Some(turn.id), started, remaining, waited_ms }
+                frame::Candidate { urgency: turn.req.urgency, active: active == Some(turn.id), started, remaining, waited_ms }
             })
             .collect();
         frame::pick(&candidates).map(|chosen| eligible[chosen])
@@ -760,7 +751,7 @@ impl Driver<'_, '_> {
         let end = pos.saturating_add(self.batch.get()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
-        let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
+        let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
         self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
@@ -773,33 +764,35 @@ impl Driver<'_, '_> {
             return Ok(());
         }
         let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
-        let token = self.engine.tier().sample(&mut turn.sampler, at);
+        let token = self.engine.tier().sample(&mut turn.req.sampler, at)?;
         self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
-        let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
+        let pos = Pos::try_from(end).map_err(|_| TurnError::TooLong)?;
         turn.phase = Phase::Decoding { token, pos, generated: 0 };
         Ok(())
     }
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
-    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize) -> Result<Advanced, TurnError> {
-        let done = |turn: &Turn, generated: usize| {
-            let took = turn.submitted.elapsed();
-            Advanced::Done {
-                tokens_generated: generated,
-                elapsed_ms: took.as_secs().saturating_mul(1000).saturating_add(u64::from(took.subsec_millis())),
-            }
-        };
+    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
+        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
+        if self.model.is_eog_token(token) {
+            return done(super::TurnEnd::Finished);
+        }
         // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
         // her blocks computed stays hers.
-        if self.model.is_eog_token(token) || turn.cancel.load(Ordering::Acquire) {
-            return Ok(done(turn, generated));
+        if turn.cancel.load(Ordering::Acquire) {
+            return done(super::TurnEnd::Stopped);
         }
         // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
         self.emit.send(emit::Out::Token { answer: turn.answer, token });
         let generated = generated + 1;
+        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
         if generated >= turn.req.max_tokens {
-            return Ok(done(turn, generated));
+            return done(super::TurnEnd::AtCap);
+        }
+        // Her reply grows into the context; at its last position her turn ends, everything kept.
+        if !self.capacity.holds(pos) {
+            return done(super::TurnEnd::CapacityReached);
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
@@ -813,9 +806,9 @@ impl Driver<'_, '_> {
         self.engine.settle()?;
         turn.spent.gpu += landing.elapsed();
         let sampling = Instant::now();
-        let next = self.engine.tier().sample(&mut turn.sampler, 0);
+        let next = self.engine.tier().sample(&mut turn.req.sampler, 0)?;
         turn.spent.sample += sampling.elapsed();
-        turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated };
+        turn.phase = Phase::Decoding { token: next, pos: pos.advanced(1).map_err(|_| TurnError::TooLong)?, generated };
         Ok(Advanced::Continues)
     }
 
@@ -823,6 +816,20 @@ impl Driver<'_, '_> {
     /// what her blocks did not hold, decode), so the one-mind gate (switch in ms, decode near the
     /// chip's rate, reuse >= 80%, no turn waiting behind another's whole prompt) is read live. Built
     /// from her counters here; written by Record.
+    /// What her caller is told the Core measured of her answered turn: the same measurements her row
+    /// records, so the response never estimates a count the Core already has.
+    fn facts(turn: &Turn, generated: usize, end: super::TurnEnd) -> super::TurnFacts {
+        super::TurnFacts {
+            prompt_tokens: turn.prompt.len(),
+            reused_tokens: turn.spent.reused,
+            generated,
+            prefill: turn.spent.prefill,
+            decode: turn.spent.decode,
+            elapsed: turn.submitted.elapsed(),
+            end,
+        }
+    }
+
     fn row(turn: &Turn, generated: usize) -> record::TurnRow {
         let ms = record::whole_ms;
         record::TurnRow {
@@ -851,17 +858,26 @@ impl Driver<'_, '_> {
         }
     }
 
-    /// Make `id` the active mind: her parked state comes back (or a new mind starts), the previous
-    /// mind moves out to the RAM tier and is parked, or forgotten if she was a one-off.
+    /// Make `id` the active mind: the occupant moves out to the RAM tier first and is parked (or
+    /// forgotten if she was a one-off), then her parked state comes back (or a new mind starts) into
+    /// the stream the occupant emptied. The Core's context is one stream, whole to whoever is in it
+    /// (`continuum_persona_llama::STREAMS`), so nobody moves in until the occupant is out.
     ///
     /// A retirement a refused copy-out left behind is finished first, so it is retried rather than
     /// skipped and the retiring mind is never staged while still in custody (Codex on #6140). A
-    /// copy-out refused during this handoff leaves next bound; it is retried right after, and again
-    /// at the start of the next turn if the tier still refuses.
+    /// refused copy-out keeps the occupant's stream bound: the next mind waits, and the copy-out is
+    /// retried at the start of the next turn.
     fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
         self.retire_previous()?;
         if self.engine.active() == Some(id) {
             return Ok(());
+        }
+        if self.engine.active().is_some() {
+            match self.engine.retire_active() {
+                Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
+                Err(refused) => return Err(refused.into()),
+            }
+            self.retire_previous()?;
         }
         let mind = match self.parked.remove(&id) {
             Some(parked) => parked,

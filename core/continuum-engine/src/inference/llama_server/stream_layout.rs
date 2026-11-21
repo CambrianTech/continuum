@@ -2,6 +2,7 @@
 #[derive(Debug, Copy, Clone)]
 pub enum StreamLayout {
     Roster,
+    /// The in-process Core: one stream, the occupant's, holding the whole pool (object model 4.11).
     PersonaScheduler,
 }
 
@@ -24,7 +25,8 @@ impl StreamLayout {
         let share = pool / u64::from(self.sequences(roster));
         match self {
             Self::Roster => share.min(u64::from(u32::MAX)) as u32,
-            // The pinned native context pads each physical stream to 256 tokens.
+            // The Core's whole pool, bounded by the model's trained context; the pinned native
+            // context pads its stream to 256 tokens.
             Self::PersonaScheduler => {
                 let tokens = share.min(u64::from(trained)) as u32;
                 tokens - tokens % 256
@@ -37,15 +39,18 @@ impl StreamLayout {
 mod tests {
     use super::StreamLayout;
 
+    // what this catches: the Core's context divided among streams again (2026-11-21: two streams
+    // halved it, and seven turns died at the half's end while the other half held nobody decoding).
+    // The mind swapped in gets the whole pool, bounded only by the model's trained context.
     #[test]
-    fn native_pool_charges_two_streams_and_fits_native_padding() {
+    fn the_core_holds_the_whole_pool_in_one_stream_up_to_the_trained_context() {
         let layout = StreamLayout::PersonaScheduler;
         for roster in [1, 5] {
-            assert_eq!(layout.sequences(roster), 2);
-            assert_eq!(layout.window(511, roster, 98_304), 0);
+            assert_eq!(layout.sequences(roster), 1, "the roster never divides the Core");
+            assert_eq!(layout.window(511, roster, 98_304), 256);
+            assert_eq!(layout.window(121_600, roster, 262_144), 121_600 - 121_600 % 256, "the whole pool");
+            assert_eq!(layout.window(121_600, roster, 98_304), 98_304, "the trained context bounds it");
             assert_eq!(layout.window(121_600, roster, 32_767), 32_512);
-            assert_eq!(layout.window(121_600, roster, 98_304), 60_672);
-            assert_eq!(layout.window(121_600, roster, 32_768), 32_768);
         }
     }
 }

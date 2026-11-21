@@ -9,7 +9,7 @@ use super::*;
 fn incarnation(epoch: u64) -> StageIncarnation {
     StageIncarnation {
         stage: StageId::named("recall"),
-        mind: MindId(Uuid::from_u128(7)),
+        owner: OwnerId(Uuid::from_u128(7)),
         epoch,
     }
 }
@@ -37,7 +37,7 @@ fn only_a_later_incarnation_of_the_same_stage_and_mind_supersedes() {
     assert!(!incarnation(2).is_superseded_by(&incarnation(1)));
     assert!(!incarnation(1).is_superseded_by(&incarnation(1)));
     let other_mind = StageIncarnation {
-        mind: MindId(Uuid::from_u128(8)),
+        owner: OwnerId(Uuid::from_u128(8)),
         ..incarnation(9)
     };
     assert!(!incarnation(1).is_superseded_by(&other_mind));
@@ -233,7 +233,8 @@ async fn published(runner: &StageRunner<Echo>, want: i64) -> PublishedOutput<i64
     let mut sub = runner.subscribe();
     tokio::time::timeout(Duration::from_secs(2), async {
         loop {
-            if let Some(out) = sub.borrow_and_update().latest.clone() {
+            let latest = sub.borrow_and_update().latest.clone();
+            if let Some(out) = latest {
                 if out.output == want {
                     return out;
                 }
@@ -481,5 +482,118 @@ mod dataflow {
         warm.fail("superseded");
         result.produce(40);
         assert!(matches!(joined.settled().await.settled, Settled::Ready(v) if *v == 40));
+    }
+}
+
+/// State and stream topics: the CBAR half of the substrate a persona's parts run on (5.7).
+mod topics {
+    use super::*;
+    use crate::{spawn_stage, Capacity, Qos, Stage};
+    use tokio::sync::{mpsc, Semaphore};
+
+    /// A worker that reports each revision it is handed, and handles one only when the test
+    /// releases it (so a test can hold it busy).
+    struct Listener {
+        seen: mpsc::UnboundedSender<u64>,
+        gate: Arc<Semaphore>,
+    }
+
+    struct Seen(u64);
+
+    impl From<Snapshot<u64>> for Seen {
+        fn from(snapshot: Snapshot<u64>) -> Self {
+            Seen(*snapshot.value)
+        }
+    }
+
+    impl From<Event<u64>> for Seen {
+        fn from(event: Event<u64>) -> Self {
+            Seen(*event.value)
+        }
+    }
+
+    impl Stage for Listener {
+        type Input = Seen;
+        const QOS: Qos = Qos::Work;
+        async fn handle(&mut self, input: Seen) {
+            if let Ok(permit) = self.gate.acquire().await {
+                permit.forget();
+            }
+            assert!(self.seen.send(input.0).is_ok(), "the test reads every value its part is handed");
+        }
+    }
+
+    fn part(open: bool) -> (crate::StageInput<Seen>, crate::StageWorker<Seen>, mpsc::UnboundedReceiver<u64>, Arc<Semaphore>) {
+        let (seen, rx) = mpsc::unbounded_channel();
+        let gate = Arc::new(Semaphore::new(if open { Semaphore::MAX_PERMITS } else { 0 }));
+        let (input, worker) = spawn_stage(Listener { seen, gate: Arc::clone(&gate) }, Capacity::granted(std::num::NonZeroUsize::MIN));
+        (input, worker, rx, gate)
+    }
+
+    fn by() -> Provenance {
+        Provenance { by: RunId { incarnation: incarnation(1), seq: 1 }, from: Vec::new() }
+    }
+
+    // what this catches: a part woken by polling a state, or replaying every intermediate value of
+    // something only the latest of matters (her dial, an activity's view). Attached, it is handed
+    // the current value, then each change; changes made while it is busy coalesce into the newest;
+    // and when the publisher goes away the part's worker ends with it.
+    #[tokio::test]
+    async fn a_state_wakes_its_part_with_the_newest_value_and_ends_with_its_publisher() {
+        let (mut publisher, reader) = state::<u64>(TopicName("her/dial"));
+        assert!(reader.latest().is_none(), "nothing published yet");
+        assert_eq!(publisher.publish(1, by()).through, 1);
+        let (input, worker, mut seen, gate) = part(false);
+        reader.clone().attach(&input);
+        drop(input); // the delivery holds the only other handle: the part ends with its publisher
+        gate.add_permits(1);
+        assert_eq!(seen.recv().await, Some(1), "handed the current value on attach");
+        // Busy: the part holds no permit while 2, 3 and 4 are published.
+        for value in 2..=4 {
+            publisher.publish(value, by());
+        }
+        gate.add_permits(Semaphore::MAX_PERMITS - 1);
+        let mut after = Vec::new();
+        drop(publisher);
+        while let Some(value) = seen.recv().await {
+            after.push(value);
+        }
+        assert_eq!(after.last(), Some(&4), "the newest value always arrives");
+        assert!(after.len() < 3, "intermediate values coalesce: {after:?}");
+        assert_eq!(reader.latest().map(|s| s.revision.through), Some(4));
+        assert!(worker.join().await.is_ok(), "the part ends with its last producer");
+    }
+
+    // what this catches: a percept seen by one part and lost to another, reordered, or dropped
+    // because a subscriber was slow. Every subscriber gets every event in order; an emit waits
+    // for a busy subscriber's room; a stopped subscriber is let go without stopping the others.
+    #[tokio::test]
+    async fn every_event_reaches_every_subscriber_in_order_and_a_slow_one_holds_the_producer() {
+        let (mut emitter, subscribe) = stream::<u64>(TopicName("her/percepts"));
+        let (fast_in, _fast, mut fast, _) = part(true);
+        let (slow_in, _slow, mut slow, slow_gate) = part(false);
+        let (gone_in, gone, _, _) = part(true);
+        subscribe.attach(&fast_in);
+        subscribe.attach(&slow_in);
+        subscribe.attach(&gone_in);
+        gone.stop();
+        // The slow part holds one input and one waits: the third emit must wait for its room.
+        assert_eq!(emitter.emit(1).await.through, 1);
+        emitter.emit(2).await;
+        {
+            let mut third = std::pin::pin!(emitter.emit(3));
+            for _ in 0..8 {
+                assert!(futures_util::poll!(third.as_mut()).is_pending(), "an emit waits for a busy subscriber instead of dropping");
+                tokio::task::yield_now().await;
+            }
+            slow_gate.add_permits(Semaphore::MAX_PERMITS);
+            third.await;
+        }
+        // The stopped subscriber never holds an emit: this one completes.
+        emitter.emit(4).await;
+        for expected in 1..=4 {
+            assert_eq!(fast.recv().await, Some(expected));
+            assert_eq!(slow.recv().await, Some(expected));
+        }
     }
 }

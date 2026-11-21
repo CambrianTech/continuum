@@ -36,7 +36,7 @@ pub struct AttachRegistry {
     socket: PathBuf,
     bus: Arc<MessageBus>,
     rt: tokio::runtime::Handle,
-    attached: std::sync::Mutex<std::collections::HashSet<RoomId>>,
+    attached: parking_lot::Mutex<std::collections::HashSet<RoomId>>,
 }
 
 static ATTACHES: std::sync::OnceLock<Arc<AttachRegistry>> = std::sync::OnceLock::new();
@@ -46,7 +46,7 @@ impl AttachRegistry {
     /// Idempotent; the first install wins.
     pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
         // A mind's perception feed attaches the rooms her region holds through this registry.
-        crate::persona::perception_feed::install_room_attacher(|room| {
+        crate::persona::senses::install_room_attacher(|room| {
             if let Some(registry) = AttachRegistry::try_global() {
                 registry.ensure_attached(room);
             }
@@ -57,7 +57,7 @@ impl AttachRegistry {
                     socket,
                     bus,
                     rt,
-                    attached: std::sync::Mutex::new(std::collections::HashSet::new()),
+                    attached: parking_lot::Mutex::new(std::collections::HashSet::new()),
                 })
             })
             .clone()
@@ -69,11 +69,8 @@ impl AttachRegistry {
 
     /// Bridge `room`'s transcript onto the bus — at most one stream per room.
     pub fn ensure_attached(&self, room: RoomId) {
-        let fresh = self
-            .attached
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(room);
+        // The set is held for one insert (parking_lot: no poison to launder).
+        let fresh = self.attached.lock().insert(room);
         if fresh {
             continuum_base::probe!(
                 class = "airc.attach.room_bridged",
@@ -415,17 +412,8 @@ pub async fn publish_transcript_event(
             return Ok(());
         }
     }
-    let fed = crate::persona::perception_feed::feed(&conversation, EpochMs::now().millis());
-    if fed > 0 {
-        continuum_base::probe!(
-            class = "mind.feed.event",
-            room = %event.room_id.as_uuid(),
-            from = %event.peer_id.as_uuid(),
-            event_id = %event.event_id.as_uuid(),
-            residents = fed,
-            "a room event fed to resident minds"
-        );
-    }
+    // Every resident's senses hear it through the one feed; each takes what is hers.
+    crate::persona::senses::hear(conversation).await;
     // The room's verdict settles staged credit in `reviewed::bridge_review`, AFTER the
     // review is verified (signed by its author, accepted in the room's projection,
     // admitted by the room's self-review policy). It used to settle here, on any
@@ -567,7 +555,7 @@ fn posted_from_envelope(
             .and_then(|s| uuid::Uuid::parse_str(s).ok()),
         _ => None,
     }
-    .unwrap_or_else(|| event.event_id.as_uuid());
+    .unwrap_or_else(|| event.event_id.as_uuid()); // unwrap_or: a line with no inline messageId was never persisted under an id of its own, so airc's event id is its one identity
     let mut line = posted_line(event, content)?;
     line.message_id = message_id;
     line.author = airc_core::PeerId::from_uuid(sender_id);

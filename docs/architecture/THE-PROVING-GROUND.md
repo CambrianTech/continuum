@@ -27,7 +27,7 @@ already, built at different times by different agents, and forgotten between ses
 |---|---|---|
 | Context dyno (`continuum-context/examples/replay*`) | real `View` and `levels` on real captures; turnovers, re-reads, reuse | re-models the core's fit rules (a copy that drifts); one mind; no engine, time or memory; asserts nothing; not in CI |
 | `contend` (`continuum-engine/.../planning/contention.rs`) | minds on one engine under admission policies, virtual clock, measured rates required | analytic engine; no view, no memory, no paging; aggregated workload |
-| `continuum-flow::sim` (branch `fable/continuum-flow`, off canary) | the real flow scheduler on an engine calibrated to the M5; reproduced a live gate change | off canary; one calibration; no memory model |
+| `continuum-sage::sim` (branch `fable/continuum-sage`, off canary) | the real flow scheduler on an engine calibrated to the M5; reproduced a live gate change | off canary; one calibration; no memory model |
 | `serving-replay` (CONTINUUM-ENGINE.md slice S0) | a real `llama-server` with page-in, page-out, slot save and restore | serial acts; generates a fixed count, not her reply; paging policy copied from core; not in CI |
 | `capacity/sim.rs` ("the gym") | the production `AllocationPolicy` through capacity timelines (a game eats the GPU) | synthetic; no time, latency, KV or paging; scenarios in code, not data |
 | Grid: `capacity/{grid,gossip,grid_budget,market,settlement}.rs`, `run_symmetric_grid` | production placement and gossip on synthetic snapshots; partitions, joins, churn | no prices wired, no time, no transfer cost; `placement-decisions.jsonl` (176K recorded) never replayed; GRID-MARKET-CLEARING's sim scenarios unbuilt |
@@ -81,7 +81,7 @@ predicts reality.
   - checkpoint costs;
   - prefix reuse as exact token-prefix matching.
 
-  Starts from `continuum-flow::sim`'s calibrated engine and `contend`'s replay, merged into one.
+  Starts from `continuum-sage::sim`'s calibrated engine and `contend`'s replay, merged into one.
 - **The person and their apps:** a timeline of external memory and CPU use (a game, Photoshop, a build),
   a person's messages and their patience (how long they wait before it hurts).
 - **The minds' choices:** replayed from captures (section 4), with a behaviour model for counterfactuals.
@@ -269,9 +269,9 @@ The proving ground is trusted only as far as it is shown to be right.
 
 ## 8. Build order: join what exists, copy nothing
 
-1. **One world model for one node:** merge `continuum-flow::sim`'s calibrated engine and `contend`'s replay
+1. **One world model for one node:** merge `continuum-sage::sim`'s calibrated engine and `contend`'s replay
    into one engine model, add memory and paging costs, and load node profiles from the measured state files.
-   Bring `continuum-flow` to canary.
+   Bring `continuum-sage` to canary.
 2. **The system on it:** drive the production view (replacing the dyno's re-modelled fit rules), the emission
    classifier, admission and `capacity/sim`'s `AllocationPolicy` through their seams. Scenarios become data
    files (the deferred serde loading in `capacity/sim`).
@@ -297,7 +297,7 @@ The proving ground is trusted only as far as it is shown to be right.
 with its source, date and error: memory by tier, bytes of state per token, prefill and decode rates as
 functions of concurrency, page-in and page-out costs by tier, checkpoint cost. It is produced from a node's
 own `~/.continuum/state/{decode-knee,prefill-rate,serving-rates}.json`, its engine log and a bench run. The
-`continuum-flow::sim` M5 constants (decode `30.5 * n^0.865`, prefill `304 / sqrt(n)`, yield `0.1 s`) become
+`continuum-sage::sim` M5 constants (decode `30.5 * n^0.865`, prefill `304 / sqrt(n)`, yield `0.1 s`) become
 the first profile file, with their 2026-10-28 source, and leave the code.
 
 **One engine model, behind one trait:** `EngineModel` answers, for a set of in-flight jobs, the rate each job

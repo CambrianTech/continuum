@@ -12,7 +12,7 @@
 //! Records flow through [`continuum_base::capture::CaptureSink`]: `Noop` unless someone is
 //! recording, and a replay or gate takes only a `CompleteInterval`.
 
-use continuum_kernel::runtime::stage::MindId;
+use continuum_sage::dataflow::OwnerId;
 
 use super::engine_residency::EngineIncarnation;
 
@@ -24,7 +24,7 @@ pub struct SequenceId(pub u64);
 #[derive(Debug, Clone, PartialEq)]
 pub enum WorkloadEvent {
     /// Something happened to one mind's sequence.
-    Sequence { engine: EngineIncarnation, sequence: SequenceId, mind: MindId, change: SequenceChange },
+    Sequence { engine: EngineIncarnation, sequence: SequenceId, mind: OwnerId, change: SequenceChange },
     /// The engine began one step on the sequences it chose, recorded when the step began, so the
     /// ready set it chose from is the one at that moment.
     StepBegan { engine: EngineIncarnation, step: StepId, chosen: Vec<SequenceId> },

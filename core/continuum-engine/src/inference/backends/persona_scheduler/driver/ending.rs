@@ -4,7 +4,7 @@
 //! ended turns with no record). A stop is acknowledged only once those records are processed.
 
 use continuum_base::probe_writes::Reading;
-use continuum_flow::Outbox;
+use continuum_sage::Outbox;
 use tokio::sync::oneshot;
 
 use super::super::Records;
@@ -26,7 +26,7 @@ pub(super) struct Suspension {
 /// How an admitted turn left the engine.
 pub(super) enum Ending {
     /// She answered: EOG, a stop sequence, or max_tokens.
-    Answered { tokens_generated: usize, elapsed_ms: u64 },
+    Answered { tokens_generated: usize, end: super::super::TurnEnd },
     /// A step was refused or failed, or her caller hung up.
     Refused(TurnError),
     /// The engine is stopping: what her blocks computed stays hers.
@@ -53,9 +53,9 @@ impl Driver<'_, '_> {
     /// mind released, and its caller told.
     pub(super) fn end(&mut self, turn: Turn, ending: Ending) {
         let event = match ending {
-            Ending::Answered { tokens_generated, elapsed_ms } => {
+            Ending::Answered { tokens_generated, end } => {
                 self.record.send(record::Fact::Turn(Self::row(&turn, tokens_generated)));
-                TokenEvent::Done { tokens_generated, elapsed_ms }
+                TokenEvent::Done(Self::facts(&turn, tokens_generated, end))
             }
             unanswered => {
                 let reason = unanswered.reason();
@@ -105,8 +105,8 @@ pub(super) fn hand_off<E: Send + 'static>(mut emit: Outbox<E>, on: &tokio::runti
 /// here raced that drain and dropped the ends it had not yet pushed). Every producer is the
 /// driver's or the drain owner's, and both end, so this always returns.
 pub(in super::super) async fn finish<E, R>(
-    emit: continuum_flow::StageWorker<E>,
-    record: continuum_flow::StageWorker<R>,
+    emit: continuum_sage::StageWorker<E>,
+    record: continuum_sage::StageWorker<R>,
 ) -> (Result<(), tokio::task::JoinError>, Result<(), tokio::task::JoinError>) {
     tokio::join!(emit.join(), record.join())
 }

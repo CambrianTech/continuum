@@ -10,7 +10,7 @@
 
 use std::time::{Duration, Instant};
 
-use continuum_flow::{Qos, Stage};
+use continuum_sage::{Qos, Stage};
 use continuum_persona_engine::protocol::EngineSnapshot;
 use tokio::sync::watch;
 

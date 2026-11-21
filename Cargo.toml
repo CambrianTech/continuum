@@ -19,7 +19,7 @@ members = [
     "core/continuum-tool-protocol",
     "core/continuum-gateway",
     "core/continuum-base",
-    "core/continuum-flow",
+    "core/continuum-sage",
     "core/continuum-git",
     "core/continuum-host",
     "core/continuum-saved-state",

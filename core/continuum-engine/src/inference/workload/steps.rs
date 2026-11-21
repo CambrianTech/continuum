@@ -12,7 +12,7 @@
 use std::time::{Duration, Instant};
 
 use continuum_base::capture::CaptureSink;
-use continuum_kernel::runtime::stage::MindId;
+use continuum_sage::dataflow::OwnerId;
 
 use super::{EngineIncarnation, SequenceChange, SequenceId, StepId, StepWork, WorkloadEvent};
 
@@ -128,7 +128,7 @@ impl Reader<'_> {
             }
             Record::Sequence { seq, at_us, task, mind, change } => {
                 self.sequenced(seq);
-                let event = WorkloadEvent::Sequence { engine, sequence: SequenceId(task), mind: MindId(mind), change: change.typed() };
+                let event = WorkloadEvent::Sequence { engine, sequence: SequenceId(task), mind: OwnerId(mind), change: change.typed() };
                 self.sink.record(self.when(at_us)?, event);
             }
             Record::Missed { seq, count } => {

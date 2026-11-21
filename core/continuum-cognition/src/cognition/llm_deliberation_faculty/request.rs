@@ -242,7 +242,7 @@ impl LlmDeliberationFaculty {
                     None,
                 );
                 let result = _admission
-                    .run(adapter.generate_admitted(request, terms, sink.clone()))
+                    .run(self.urgency_of(ws), adapter.generate_admitted(request, terms, sink.clone()))
                     .await;
                 witness.disarm();
                 result
@@ -258,7 +258,7 @@ impl LlmDeliberationFaculty {
                     Some(receiver),
                 );
                 let result = _admission
-                    .run(adapter.generate_admitted(request, terms, sink))
+                    .run(self.urgency_of(ws), adapter.generate_admitted(request, terms, sink))
                     .await;
                 witness.disarm();
                 result

@@ -46,12 +46,13 @@ use continuum_base::time::EpochMs;
 use crate::persona::airc_citizen::AircCitizen;
 use crate::cognition::conversation::{IncomingMessage, PersonaConversation, CATCH_UP_PAGE, INBOX_CAPACITY};
 use airc_core::TranscriptEvent;
-use airc_lib::FilteredEventStream;
 use async_trait::async_trait;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use super::durable_history::event_from_row;
+
+#[cfg(test)]
+use super::durable_history::event_from_row; // the tests build store rows into events
 
 mod polled;
 pub use polled::*;

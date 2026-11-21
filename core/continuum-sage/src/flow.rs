@@ -17,6 +17,8 @@ enum Event<K> {
     Submit { ticket: Ticket, owner: K, qos: Qos, start: oneshot::Sender<Result<watch::Receiver<bool>, Dropped>> },
     Release(Ticket),
     Resize(usize),
+    /// Waiting work reached its next aging instant (from the node's clock).
+    Age,
 }
 
 /// A handle to one capacity's dispatcher. Cheap to clone; every clone feeds the same queue.
@@ -88,7 +90,7 @@ impl<K: Clone + Eq + Hash + Send + 'static> Flow<K> {
     /// Start the dispatcher for a capacity of `capacity` units.
     pub fn spawn(capacity: usize, aging: Aging) -> Self {
         let (events, inbox) = mpsc::unbounded_channel();
-        tokio::spawn(dispatch(Scheduler::new(capacity, aging), inbox));
+        tokio::spawn(dispatch(Scheduler::new(capacity, aging), inbox, events.downgrade()));
         Self { events, tickets: Arc::new(AtomicU64::new(0)) }
     }
 
@@ -124,7 +126,9 @@ impl<K: Clone + Eq + Hash + Send + 'static> Flow<K> {
     }
 }
 
-async fn dispatch<K: Clone + Eq + Hash>(mut scheduler: Scheduler<K>, mut inbox: mpsc::UnboundedReceiver<Event<K>>) {
+async fn dispatch<K: Clone + Eq + Hash + Send + 'static>(mut scheduler: Scheduler<K>, mut inbox: mpsc::UnboundedReceiver<Event<K>>, me: mpsc::WeakUnboundedSender<Event<K>>) {
+    // The next aging instant, armed on the node's clock; dropping it cancels the wake.
+    let mut aging: Option<(Instant, crate::clock::Alarm)> = None;
     let mut starting: HashMap<Ticket, oneshot::Sender<Result<watch::Receiver<bool>, Dropped>>> = HashMap::new();
     let mut yielding: HashMap<Ticket, watch::Sender<bool>> = HashMap::new();
     loop {
@@ -149,10 +153,18 @@ async fn dispatch<K: Clone + Eq + Hash>(mut scheduler: Scheduler<K>, mut inbox: 
             }
         }
         let wake = scheduler.next_wakeup(now.into_std()).map(Instant::from_std);
-        let event = tokio::select! {
-            event = inbox.recv() => event,
-            () = async { match wake { Some(at) => tokio::time::sleep_until(at).await, None => std::future::pending().await } } => continue,
-        };
+        if wake != aging.as_ref().map(|(at, _)| *at) {
+            aging = wake.map(|at| {
+                let me = me.clone();
+                let alarm = crate::clock::at(at, move || {
+                    if me.upgrade().is_some_and(|events| events.send(Event::Age).is_err()) {
+                        continuum_base::probe!(class = "sage.flow.ended", "waiting work aged after its dispatcher ended");
+                    }
+                });
+                (at, alarm)
+            });
+        }
+        let event = inbox.recv().await;
         match event {
             None => return,
             Some(Event::Submit { ticket, owner, qos, start }) => {
@@ -169,6 +181,8 @@ async fn dispatch<K: Clone + Eq + Hash>(mut scheduler: Scheduler<K>, mut inbox: 
                 scheduler.release(ticket);
             }
             Some(Event::Resize(capacity)) => scheduler.resize(capacity),
+            // The armed instant passed; the next pass arms the one after it.
+            Some(Event::Age) => aging = None,
         }
     }
 }

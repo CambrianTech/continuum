@@ -368,6 +368,20 @@ impl LlmDeliberationFaculty {
         !self.surface.hands().is_empty()
     }
 
+    /// How much her mind needs this turn (object model 5.7, Need): Urgent when someone addressed
+    /// her, Want when she has hands to act, Content otherwise. The Core ranks waiting turns by it,
+    /// and her lane class follows it until lanes go.
+    pub(super) fn urgency_of(&self, ws: &Workspace) -> continuum_sage::component::Urgency {
+        use continuum_sage::component::Urgency;
+        if ws.attention.requires_priority() {
+            Urgency::Urgent
+        } else if self.is_work_turn(ws) {
+            Urgency::Want
+        } else {
+            Urgency::Content
+        }
+    }
+
     /// What kind of turn this is, for its allowance: a work turn is an ACT; anything
     /// else is a PASS.
     pub fn turn_kind(&self, ws: &Workspace) -> TurnKind {

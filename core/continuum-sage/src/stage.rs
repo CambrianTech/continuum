@@ -126,6 +126,11 @@ impl<T> Clone for StageInput<T> {
 }
 
 impl<T> StageInput<T> {
+    /// How many inputs wait in its intake now: a fact its scheduler reads, never a size it sets.
+    pub fn waiting(&self) -> usize {
+        self.inbox.pending.lock().unwrap_or_else(|e| e.into_inner()).ready.len() // a poisoned slot still holds plain data: keep serving it
+    }
+
     /// Put `item` in the pending slot and signal, without waiting. A `Reliable` stage whose slot is
     /// taken hands the item back (`Full`) and drops nothing; a `KeepNewest` stage replaces the
     /// pending input and returns how many it dropped (0 or 1); a stopped stage hands it back

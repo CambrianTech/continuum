@@ -13,6 +13,8 @@ pub(super) enum At {
         /// Turns in the queue, hers included.
         queue_depth: usize,
         prompt_tokens: usize,
+        /// How much her mind needs it: the queue ranks by it.
+        urgency: continuum_sage::component::Urgency,
         /// Since her turn was handed to the scheduler.
         since_submit_ms: u64,
     },
@@ -27,7 +29,7 @@ pub(super) enum At {
         /// Whether reaching her took a switch from another mind.
         switched: bool,
     },
-    /// Her turn was refused at the door: its prompt leaves no room in one stream. It was never
+    /// Her turn was refused at the door: the whole context cannot hold her prompt. It was never
     /// admitted, so it has no other transition.
     Infeasible { prompt_tokens: usize, capacity: usize },
     /// Her turn ended without an answer: refused, failed, or her caller hung up. Every admitted turn
@@ -92,13 +94,14 @@ impl Transition {
         // The same shape the adapter logs (`Some("…")`), so the two ends join exactly.
         let request = self.request.as_ref().map(RequestId::as_str);
         match self.at {
-            At::Admitted { queue_depth, prompt_tokens, since_submit_ms } => continuum_base::probe!(
+            At::Admitted { queue_depth, urgency, prompt_tokens, since_submit_ms } => continuum_base::probe!(
                 class = "persona.engine.admitted",
                 request = ?request,
                 incarnation = incarnation,
                 persona = %self.persona,
                 one_off = self.one_off,
                 queue_depth = queue_depth,
+                urgency = ?urgency,
                 prompt_tokens = prompt_tokens,
                 since_submit_ms = since_submit_ms,
                 "the driver took a turn into its queue"
@@ -123,7 +126,7 @@ impl Transition {
                 one_off = self.one_off,
                 prompt_tokens = prompt_tokens,
                 capacity = capacity,
-                "a turn refused at the door: its prompt leaves no room in one stream"
+                "a turn refused at the door: the whole context cannot hold her prompt"
             ),
             At::Refused { since_admit_ms, reason } => continuum_base::probe!(
                 class = "persona.engine.refused",

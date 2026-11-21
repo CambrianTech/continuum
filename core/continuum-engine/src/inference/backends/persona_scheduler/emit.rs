@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use continuum_flow::{Qos, Stage};
+use continuum_sage::{Qos, Stage};
 use llama::Model;
 use tokio::sync::mpsc::UnboundedSender;
 

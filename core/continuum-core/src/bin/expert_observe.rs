@@ -32,7 +32,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use continuum_core::capacity::expert_observer::LiveExpertObserver;
-use llama::{Batch, ContextParams, ExpertObserver, Model, ModelParams, Sampler};
+use llama::{Batch, ContextParams, ExpertObserver, Model, ModelParams, Pos, Sampler};
 
 /// Labelled corpus: each domain gets its OWN observer, fed several diverse prompts so the
 /// per-domain sample is dense. The point is a COHERENT workload per observer (what a persona
@@ -140,17 +140,17 @@ fn drive_prompt(
     let tokens = model
         .tokenize(prompt, true, false)
         .map_err(|e| format!("tokenize: {e:?}"))?;
-    let mut n_cur: i32 = 0;
+    let mut n_cur = Pos::ZERO;
     for chunk in tokens.chunks(512) {
         let mut batch = Batch::allocated(512, 1);
-        let last_global = n_cur as usize + chunk.len() - 1;
+        let last = chunk.len() - 1;
         for (i, tok) in chunk.iter().enumerate() {
-            let pos = n_cur + i as i32;
-            batch.push(*tok, pos, &[0], (n_cur as usize + i) == last_global);
+            let pos = n_cur.advanced(i).map_err(|e| e.to_string())?;
+            batch.push(*tok, pos, &[0], i == last);
         }
         ctx.decode(&batch)
             .map_err(|e| format!("prefill decode: {e:?}"))?;
-        n_cur += chunk.len() as i32;
+        n_cur = n_cur.advanced(chunk.len()).map_err(|e| e.to_string())?;
     }
 
     let mut sampler = Sampler::greedy();
@@ -163,7 +163,7 @@ fn drive_prompt(
         batch.push(token, n_cur, &[0], true);
         ctx.decode(&batch)
             .map_err(|e| format!("gen decode: {e:?}"))?;
-        n_cur += 1;
+        n_cur = n_cur.advanced(1).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -183,7 +183,7 @@ fn main() -> Result<(), String> {
     let model_path = args
         .get(1)
         .ok_or_else(|| "usage: expert_observe <model.gguf> [n_gen_per_prompt]".to_string())?;
-    let n_gen: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(48);
+    let n_gen: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(48); // JUSTIFIED: this diagnostic's documented default when no count is given
 
     let model = Model::load(
         PathBuf::from(model_path),
@@ -326,7 +326,7 @@ fn main() -> Result<(), String> {
         let own_only: HashSet<_> = hot_sets[li]
             .1
             .iter()
-            .filter(|k| membership.get(*k).copied().unwrap_or(0) == 1)
+            .filter(|k| membership.get(*k).copied().unwrap_or(0) == 1) // JUSTIFIED: an expert absent from the tally is in no hot set
             .copied()
             .collect();
         let mut base_mass = 0u64;

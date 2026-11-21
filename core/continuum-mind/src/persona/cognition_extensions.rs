@@ -16,7 +16,7 @@ pub fn install() {
     ext::install_card_carry(crate::persona::card_carry::request);
     ext::install_credit_sink(Arc::new(TrainingCredit));
     ext::install_cognition_pulse(crate::persona::cognition_pulse::touch);
-    ext::install_mark_perceived(crate::persona::perception_feed::mark_perceived);
+    ext::install_mark_perceived(crate::persona::senses::mark_perceived);
     ext::install_remote_binding(|root, name| {
         crate::persona::remote_lane_factory::is_remote_bound(root, name).map_err(|e| e.to_string())
     });

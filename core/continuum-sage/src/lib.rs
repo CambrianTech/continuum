@@ -24,6 +24,9 @@ mod outbox;
 mod qos;
 mod scheduler;
 mod stage;
+pub mod clock;
+pub mod dataflow;
+pub mod component;
 pub mod sim;
 
 pub use flow::{Flow, Grant, Refused};

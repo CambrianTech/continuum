@@ -23,13 +23,13 @@
 //!   (its hands surface, the ACT allowance, the work lane priority) with none of a
 //!   card's deliverable contract.
 //! - Her default hands: no card binds them, so they stand in her own workspace. The
-//!   moment she claims or creates a card, the next beat's gate finds it held and the
+//!   moment she claims or creates a card, her next cycle's gate finds it held and the
 //!   held-work turn takes over, unchanged.
-//! - PACED BY HER OWN HEARTBEAT, no timer of its own: only the self-tick offers it
-//!   ([`Initiative::Offered`]), so it runs at the beat `next_beat_after` sets. A turn in
-//!   which she acted or spoke is engagement (the engaged beat); a pass is not, so the
-//!   beat backs off toward rest exactly as a fruitless musing did. A message turn never
-//!   offers it: the message snaps her beat to engaged, and that beat offers it.
+//! - PACED BY HER OWN MIND, no timer of its own: only a self-cycle offers it
+//!   ([`Initiative::Offered`]), so it runs when her mind wakes her. A turn in
+//!   which she acted or spoke is engagement (she continues at once); a pass is not, so
+//!   she rests until something calls her, as a fruitless musing did. A message turn never
+//!   offers it: after answering she continues, and that cycle offers it.
 //! - ASKED AGAIN ONLY ON SOMETHING NEW: after a pass, the next offer waits until something
 //!   she perceives has moved ([`Initiative::on_beat`]); on unchanged perception her prompt
 //!   is the same and so is the question.
@@ -46,9 +46,9 @@ use crate::persona::supervisor::HostedPersona;
 /// Whether the caller's cadence offers her an initiative turn when she holds nothing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Initiative {
-    /// Her own heartbeat (the self-tick, paced by `next_beat_after`) offers it.
+    /// A self-cycle (her own mind woke her, or her momentum) offers it.
     Offered,
-    /// A message turn: the speak question was this turn's; her next beat offers it.
+    /// A message turn: the speak question was this turn's; her next cycle offers it.
     NotOffered,
 }
 

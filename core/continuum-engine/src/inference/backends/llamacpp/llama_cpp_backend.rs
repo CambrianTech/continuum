@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::inference_error::InferenceError;
 
 /// A turn's prompt and the head of it her next act will hold unchanged (her view, without the
 /// generation prompt), which the engine checkpoints her at. `None` for a turn with no view.
@@ -6,6 +7,8 @@ use super::*;
 pub struct TurnPrompt<'a> {
     pub text: &'a str,
     pub stable_prefix: Option<&'a str>,
+    /// How much her mind needs this turn: the Core ranks waiting turns by it.
+    pub urgency: continuum_sage::component::Urgency,
     /// The submitted request's id, carried into the engine's transitions.
     pub request: Option<&'a str>,
 }
@@ -192,15 +195,15 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         image_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), String> {
+    ) -> Result<Answer, InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
             image_bytes,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences,
             llama::MediaKind::Image,
         )
@@ -225,15 +228,15 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         audio_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), String> {
+    ) -> Result<Answer, InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
             audio_bytes,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences,
             llama::MediaKind::Audio,
         )
@@ -251,10 +254,10 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         media_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        mut sampler: llama::TurnSampler,
         stop_sequences: &[&str],
         kind: llama::MediaKind,
-    ) -> Result<(String, usize), String> {
+    ) -> Result<Answer, InferenceError> {
         let log = runtime::logger("llamacpp");
         let start = Instant::now();
         let mtmd = self.ensure_mtmd()?;
@@ -265,7 +268,7 @@ impl LlamaCppBackend {
                         "model {}'s mmproj does not declare vision support — \
                          caller passed an image but the projector is text-only or audio-only",
                         self.model_id
-                    ));
+                    ).into());
                 }
             }
             llama::MediaKind::Audio => {
@@ -274,7 +277,7 @@ impl LlamaCppBackend {
                         "model {}'s mmproj does not declare audio support — \
                          caller passed audio but the projector is text-only or vision-only",
                         self.model_id
-                    ));
+                    ).into());
                 }
             }
         }
@@ -306,7 +309,7 @@ impl LlamaCppBackend {
 
         // Eval text + media into the context, advancing n_past.
         let eval_params = llama::MtmdEvalParams {
-            n_past: 0,
+            n_past: llama::Pos::ZERO,
             n_batch: self.config.n_batch as i32,
             seq_id: 0,
             logits_last: true,
@@ -320,6 +323,7 @@ impl LlamaCppBackend {
             }
         };
         let n_past = eval_result.map_err(|e| format!("mtmd eval ({:?}) failed: {e}", kind))?;
+        let prefill = start.elapsed();
         log.info(&format!(
             "mtmd eval done ({:?}): prompt+media consumed {} positions in {}ms",
             kind,
@@ -327,31 +331,8 @@ impl LlamaCppBackend {
             start.elapsed().as_millis()
         ));
 
-        // Sample-until-done loop. Uses the native sampler and
-        // single-seq, no scheduler. EOG / max_tokens / stop-sequence are
-        // the three exit conditions, same shape.
-        let mut sampler = if sampling.temperature <= 0.0 && sampling.grammar.is_none() {
-            llama::Sampler::greedy()
-        } else {
-            let mut chain = llama::Sampler::chain();
-            if let Some(g) = sampling.grammar.as_ref() {
-                chain = chain.grammar(&self.model, g, "root");
-            }
-            if sampling.top_k > 0 {
-                chain = chain.top_k(sampling.top_k as i32);
-            }
-            if sampling.top_p > 0.0 && sampling.top_p < 1.0 {
-                chain = chain.top_p(sampling.top_p as f32, 1);
-            }
-            chain = chain.penalties(self.model.n_vocab(), 64, sampling.repeat_penalty, 0.0, 0.0);
-            let temp = if sampling.temperature > 0.0 {
-                sampling.temperature as f32
-            } else {
-                0.01
-            };
-            chain.temp(temp).dist(42).build()
-        };
-
+        // Sample-until-done loop, single-seq, no scheduler, with the sampler the provider built for
+        // her turn. EOG / max_tokens / stop-sequence are the three exit conditions.
         let mut output = String::new();
         let mut pos = n_past;
         let mut tokens_generated = 0usize;
@@ -361,10 +342,11 @@ impl LlamaCppBackend {
         // mtmd_helper_eval_chunks with logits_last=true, the final
         // text-batch's last token has logits set and llama_get_logits_ith
         // honors -1 as that position.
-        loop {
-            let token = sampler.sample(&ctx, -1);
+        let capacity = super::super::persona_scheduler::Capacity::new(ctx.n_ctx() as usize);
+        let end = loop {
+            let token = sampler.sample(&ctx, -1)?;
             if self.model.is_eog_token(token) {
-                break;
+                break TurnEnd::Finished;
             }
             let piece = self.model.token_to_piece(token);
             output.push_str(&piece);
@@ -372,20 +354,22 @@ impl LlamaCppBackend {
             // Stop sequence early-exit — same end-of-output trim shape
             // as the scheduler path.
             if stop_sequences.iter().any(|s| output.ends_with(s)) {
-                break;
+                break TurnEnd::Stopped;
             }
             if tokens_generated >= max_tokens {
-                break;
+                break TurnEnd::AtCap;
             }
-            // Push the sampled token back so the next decode can advance.
+            if !capacity.holds(pos) {
+                break TurnEnd::CapacityReached;
+            }
+            // Push the sampled token back so the next decode can advance; a refused decode is the
+            // turn's failure, never a quietly shorter answer.
             let mut batch = llama::Batch::allocated(1, 1);
             batch.push(token, pos, &[0], true);
-            if let Err(e) = ctx.decode(&batch) {
-                log.warn(&format!("decode failed mid-generation: {e}"));
-                break;
-            }
-            pos += 1;
-        }
+            ctx.decode(&batch)?;
+            let Ok(next) = pos.advanced(1) else { break TurnEnd::CapacityReached };
+            pos = next;
+        };
 
         log.info(&format!(
             "generate_with_image done: {} tokens in {}ms ({:.1} tok/s)",
@@ -393,7 +377,18 @@ impl LlamaCppBackend {
             start.elapsed().as_millis(),
             tokens_generated as f64 / start.elapsed().as_secs_f64().max(0.001)
         ));
-        Ok((output, tokens_generated))
+        let elapsed = start.elapsed();
+        let facts = TurnFacts {
+            // the positions the projector consumed
+            prompt_tokens: usize::from(n_past),
+            reused_tokens: 0,
+            generated: tokens_generated,
+            prefill,
+            decode: elapsed.saturating_sub(prefill),
+            elapsed,
+            end,
+        };
+        Ok(Answer { text: output, facts })
     }
 
     pub fn model_id(&self) -> &str {
@@ -444,6 +439,20 @@ impl LlamaCppBackend {
         templates.render(request, reasoning)
     }
 
+    /// Her turn's sampler on this model: from `render` when her turn has one (its tool grammar,
+    /// generation prompt and thinking tags, with `think_budget`), else from `sampling` alone.
+    pub fn turn_sampler(
+        &self,
+        render: Option<&llama::ChatRender>,
+        sampling: &SamplingConfig,
+        think_budget: Option<u32>,
+    ) -> Result<llama::TurnSampler, llama::ChatRefusal> {
+        match render {
+            Some(render) => render.sampler(&self.model, sampling.knobs(), think_budget),
+            None => llama::TurnSampler::plain(&self.model, sampling.knobs(), sampling.grammar.as_deref()),
+        }
+    }
+
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self
@@ -459,14 +468,10 @@ impl LlamaCppBackend {
     }
 
     /// Lazily spawn (or get) the persona scheduler. Single instance per backend: it owns the context
-    /// and the driver thread. Its window holds `STREAMS` minds' windows (the active mind and the next),
-    /// whatever sequence count the launch carried: one mind decodes at a time.
+    /// and the driver thread. The allocation is the Core's whole context, and the mind swapped in has
+    /// all of it: one mind decodes at a time, so nothing divides it among minds.
     pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
-        let per_mind = self.effective_context_length(allocation)?;
-        let streams = u32::try_from(continuum_persona_llama::STREAMS).map_err(|_| "stream count exceeds native representation")?;
-        let total_n_ctx = per_mind
-            .checked_mul(streams)
-            .ok_or("context allocation exceeds native representation")?;
+        let total_n_ctx = self.effective_context_length(allocation)?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
             (
                 allocation,
@@ -509,7 +514,7 @@ impl LlamaCppBackend {
         persona_id: Option<uuid::Uuid>,
         turn: TurnPrompt<'_>,
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
     ) -> Result<TurnAnswer, String> {
@@ -550,10 +555,6 @@ impl LlamaCppBackend {
                 .collect::<Result<Vec<_>, String>>()?
         };
 
-        // Caller passes the full SamplingConfig (the value-object pattern
-        // — adding fields like `grammar` doesn't require changing this
-        // signature). Previously this path silently overwrote the caller's
-        // top_k/top_p/repeat_penalty fields with no-op defaults.
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
         let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
         let prompt_tokens = prompt.len();
@@ -561,11 +562,12 @@ impl LlamaCppBackend {
             prompt,
             view_end,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
             active_loras: resolved_loras,
             response_tx,
             persona_id,
+            urgency: turn.urgency,
             request: turn.request.map(super::super::persona_scheduler::RequestId::new),
             submitted: Instant::now(),
         };
@@ -594,28 +596,29 @@ pub struct TurnAnswer {
     stops: Vec<String>,
 }
 
+/// What the model wrote, with what the engine measured of writing it.
+#[derive(Debug, Clone)]
+pub struct Answer {
+    pub text: String,
+    pub facts: TurnFacts,
+}
+
 impl TurnAnswer {
-    pub async fn collect(mut self) -> Result<(String, usize), String> {
+    pub async fn collect(mut self) -> Result<Answer, InferenceError> {
         let mut output = String::new();
         loop {
             match self.events.recv().await {
                 Some(TokenEvent::Token(piece)) => {
                     output.push_str(&piece);
                 }
-                Some(TokenEvent::Done {
-                    tokens_generated,
-                    elapsed_ms,
-                }) => {
-                    // The scheduler's own count is the receipt; a per-piece tally here
-                    // was never read (rustc: value assigned is never read).
-                    let n_decoded = tokens_generated;
+                Some(TokenEvent::Done(facts)) => {
                     let elapsed = self.started.elapsed();
                     runtime::logger("llamacpp").info(&format!(
                         "Generated {} tokens in {:.3}s ({:.1} tok/s, scheduler={}ms, prompt={}chars)",
-                        n_decoded,
+                        facts.generated,
                         elapsed.as_secs_f64(),
-                        n_decoded as f64 / elapsed.as_secs_f64().max(0.001),
-                        elapsed_ms,
+                        facts.generated as f64 / elapsed.as_secs_f64().max(0.001),
+                        facts.elapsed.as_millis(),
                         self.prompt_chars
                     ));
                     // Trim trailing stop sequence(s) — scheduler emits them
@@ -625,15 +628,50 @@ impl TurnAnswer {
                             output.truncate(output.len() - s.len());
                         }
                     }
-                    return Ok((output, n_decoded));
+                    return Ok(Answer { text: output, facts });
+                }
+                Some(TokenEvent::Exceeded(exceeded)) => {
+                    // The Core's own numbers outrank any window cached from a plan: her caller
+                    // refits to them, never resends this request.
+                    return Err(refit_to(exceeded));
                 }
                 Some(TokenEvent::Error(e)) => {
-                    return Err(format!("scheduler error: {e}"));
+                    return Err(InferenceError::Transient(format!("scheduler error: {e}")));
                 }
                 None => {
-                    return Err("scheduler closed without Done event".to_string());
+                    return Err(InferenceError::Transient("scheduler closed without Done event".to_string()));
                 }
             }
         }
+    }
+}
+
+/// The Core's refusal as the typed error her caller refits on. Counts outside the error's token
+/// range are a broken receipt, not a number to clamp (as `serving_guard` types a measured overflow).
+fn refit_to(exceeded: crate::inference::backends::persona_scheduler::Exceeded) -> InferenceError {
+    match (u32::try_from(exceeded.prompt_tokens), u32::try_from(exceeded.capacity)) {
+        (Ok(requested), Ok(available)) => InferenceError::ContextExceeded { requested, available },
+        _ => InferenceError::Protocol("the Core's refusal counts exceed the typed error's token range".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a turn the Core refused at its door for want of room reaching her caller as
+    // a transient fault (text), so it was resent unchanged; it must arrive as `ContextExceeded` with
+    // the Core's own numbers, the one refusal cognition refits on (the M5, 2026-11-21).
+    #[tokio::test]
+    async fn a_turn_the_core_cannot_fit_reaches_its_caller_as_context_exceeded() {
+        let (refusal, events) = tokio::sync::mpsc::unbounded_channel();
+        let exceeded = crate::inference::backends::persona_scheduler::Exceeded { prompt_tokens: 24_202, capacity: 24_320 };
+        assert!(refusal.send(TokenEvent::Exceeded(exceeded)).is_ok());
+        let answer = TurnAnswer { events, started: Instant::now(), prompt_chars: 0, stops: Vec::new() };
+        let refused = answer.collect().await;
+        assert!(
+            matches!(refused, Err(InferenceError::ContextExceeded { requested: 24_202, available: 24_320 })),
+            "{refused:?}"
+        );
     }
 }

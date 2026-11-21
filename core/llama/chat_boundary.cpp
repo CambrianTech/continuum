@@ -4,7 +4,7 @@
 // update parses with it directly (Codex on #6142: no re-serialized render per partial). Exceptions
 // terminate on this side of the Rust FFI boundary.
 #include "chat.h"
-#include "reasoning-budget.h"
+#include "sampling.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -134,26 +134,16 @@ extern "C" void continuum_chat_render_free(continuum_chat_render *render) noexce
     delete render;
 }
 
-// What the sampler and the caller need, once: the prompt, the grammar and its lazy triggers, the
-// preserved tokens, the extra stops and the thinking tags (no parser state: it stays native).
+// What the caller needs, once: the prompt, its generation prompt and the extra stops. The grammar,
+// its triggers, the preserved tokens and the thinking tags stay native: the render builds her
+// sampler from them (continuum_turn_sampler_from_render), as it keeps its parser.
 extern "C" int continuum_chat_render_describe(const continuum_chat_render *render, continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         const auto &params = render->params;
-        common_json triggers = common_json::array();
-        for (const auto &trigger : params.grammar_triggers) {
-            triggers.push_back({{"type", static_cast<int>(trigger.type)}, {"value", trigger.value}, {"token", trigger.token}});
-        }
         const common_json description = {
             {"prompt", params.prompt},
             {"generation_prompt", params.generation_prompt},
-            {"grammar", params.grammar},
-            {"grammar_lazy", params.grammar_lazy},
-            {"grammar_triggers", triggers},
-            {"preserved_tokens", params.preserved_tokens},
             {"additional_stops", params.additional_stops},
-            {"supports_thinking", params.supports_thinking},
-            {"thinking_start_tag", params.thinking_start_tag},
-            {"thinking_end_tags", params.thinking_end_tags},
         };
         reply->out = owned(description.dump());
     }, reply);
@@ -180,25 +170,128 @@ extern "C" int continuum_chat_render_content_only(int reasoning, continuum_chat_
     }, reply);
 }
 
-// llama.cpp's reasoning-budget sampler (what llama-server ran for reasoning_budget_tokens): counts
-// tokens after `start_tag` and, once `budget` is spent, forces the first of `end_tags`
-// (`n_end_tags` strings). The sampler returned is owned by the chain the caller adds it to.
-extern "C" int continuum_chat_reasoning_budget(const llama_model *model, const char *start_tag,
-        const char *const *end_tags, size_t n_end_tags, int32_t budget, continuum_chat_reply *reply) noexcept {
+// A turn's sampler: llama.cpp's common_sampler, the object llama-server sampled every turn with. It
+// owns the grammar (applied only outside her reasoning, accepted only for what it applies to), the
+// generation-prompt prefill, the reasoning budget, and the distribution chain, so the engine never
+// re-implements any of them (the M5, 2026-11-21: residents moved in-process sampled with no tool
+// grammar, wrote calls with undeclared parameters, and the render's parser dropped every one).
+struct continuum_turn_sampler {
+    common_sampler *sampler;
+    ~continuum_turn_sampler() { common_sampler_free(sampler); }
+};
+
+// The knobs a request states; everything else is llama.cpp's default, as llama-server ran it.
+struct continuum_sampling_knobs {
+    float temperature;
+    int32_t top_k;
+    float top_p;
+    float repeat_penalty;
+};
+
+static common_params_sampling knobbed(const continuum_sampling_knobs *knobs) {
+    common_params_sampling params;
+    params.temp = knobs->temperature;
+    params.top_k = knobs->top_k;
+    params.top_p = knobs->top_p;
+    params.penalty_repeat = knobs->repeat_penalty;
+    return params;
+}
+
+static void made(const llama_model *model, common_params_sampling &params, continuum_chat_reply *reply) {
+    common_sampler *sampler = common_sampler_init(model, params);
+    if (sampler == nullptr) {
+        throw std::runtime_error("llama.cpp made no sampler for these parameters");
+    }
+    reply->out = new continuum_turn_sampler{sampler};
+}
+
+// The sampler `render` describes for its turn, as llama-server derives one from the same chat
+// params (tools/server/server-common.cpp and server-schema.cpp): the tool-call grammar with its lazy
+// triggers (a one-token trigger word becomes a token trigger and must be preserved), the generation
+// prompt, and a reasoning budget of `turn->think_budget` tokens bounded by the template's thinking tags
+// (< 0: the model's default, unbounded).
+struct continuum_turn_sampling {
+    continuum_sampling_knobs knobs;
+    int32_t think_budget;
+};
+
+extern "C" int continuum_turn_sampler_from_render(const llama_model *model, const continuum_chat_render *render,
+        const continuum_turn_sampling *turn, continuum_chat_reply *reply) noexcept {
     return guarded([&] {
         const llama_vocab *vocab = llama_model_get_vocab(model);
-        std::vector<llama_tokens> starts = { common_tokenize(vocab, start_tag, false, true) };
-        std::vector<llama_tokens> ends;
-        for (size_t i = 0; i < n_end_tags; ++i) {
-            ends.push_back(common_tokenize(vocab, end_tags[i], false, true));
+        const auto &chat = render->params;
+        auto params = knobbed(&turn->knobs);
+        if (!chat.grammar.empty()) {
+            params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_TOOL_CALLS, chat.grammar);
         }
-        if (starts.front().empty() || ends.empty() || ends.front().empty()) {
-            throw std::invalid_argument("the template names no thinking start or end tag to bound");
+        params.grammar_lazy = chat.grammar_lazy;
+        for (const auto &text : chat.preserved_tokens) {
+            const auto ids = common_tokenize(vocab, text, false, true);
+            if (ids.size() == 1) {
+                params.preserved_tokens.insert(ids[0]);
+            }
         }
-        llama_sampler *sampler = common_reasoning_budget_init(vocab, starts, ends, ends.front(), budget);
-        if (sampler == nullptr) {
-            throw std::runtime_error("llama.cpp made no reasoning-budget sampler");
+        for (const auto &trigger : chat.grammar_triggers) {
+            if (trigger.type != COMMON_GRAMMAR_TRIGGER_TYPE_WORD) {
+                params.grammar_triggers.push_back(trigger);
+                continue;
+            }
+            const auto ids = common_tokenize(vocab, trigger.value, false, true);
+            if (ids.size() != 1) {
+                params.grammar_triggers.push_back(trigger);
+                continue;
+            }
+            if (params.preserved_tokens.count(ids[0]) == 0) {
+                throw std::runtime_error("grammar trigger word is not a preserved token: " + trigger.value);
+            }
+            params.grammar_triggers.push_back({COMMON_GRAMMAR_TRIGGER_TYPE_TOKEN, trigger.value, ids[0]});
         }
-        reply->out = sampler;
+        if (params.grammar_lazy && params.grammar_triggers.empty()) {
+            throw std::runtime_error("the template's lazy grammar names no trigger");
+        }
+        params.generation_prompt = chat.generation_prompt;
+        if (!chat.thinking_end_tags.empty()) {
+            params.reasoning_budget_tokens = turn->think_budget;
+            params.reasoning_budget_start = common_tokenize(vocab, chat.thinking_start_tag, false, true);
+            for (const auto &tag : chat.thinking_end_tags) {
+                if (!tag.empty()) {
+                    params.reasoning_budget_end.push_back(common_tokenize(vocab, tag, false, true));
+                }
+            }
+            if (!params.reasoning_budget_end.empty()) {
+                params.reasoning_budget_forced = params.reasoning_budget_end.front();
+            }
+        }
+        made(model, params, reply);
     }, reply);
+}
+
+// A sampler for a turn with no chat render (the media path): the knobs, and `grammar` when the
+// request demands a shape (nullable).
+extern "C" int continuum_turn_sampler_plain(const llama_model *model, const continuum_sampling_knobs *knobs,
+        const char *grammar, continuum_chat_reply *reply) noexcept {
+    return guarded([&] {
+        auto params = knobbed(knobs);
+        if (grammar != nullptr && grammar[0] != '\0') {
+            params.grammar = common_grammar(COMMON_GRAMMAR_TYPE_OUTPUT_FORMAT, grammar);
+        }
+        made(model, params, reply);
+    }, reply);
+}
+
+// Her next token from output `idx` of the last decode, accepted into every stage that tracks what
+// she wrote (the grammar, the reasoning budget, the penalties). LLAMA_TOKEN_NULL when a stage
+// refused, with why in `reply`.
+extern "C" llama_token continuum_turn_sampler_sample(continuum_turn_sampler *turn, llama_context *ctx, int32_t idx,
+        continuum_chat_reply *reply) noexcept {
+    llama_token next = LLAMA_TOKEN_NULL;
+    const int refused = guarded([&] {
+        next = common_sampler_sample(turn->sampler, ctx, idx);
+        common_sampler_accept(turn->sampler, next, true);
+    }, reply);
+    return refused == 0 ? next : LLAMA_TOKEN_NULL;
+}
+
+extern "C" void continuum_turn_sampler_free(continuum_turn_sampler *turn) noexcept {
+    delete turn;
 }

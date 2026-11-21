@@ -7,7 +7,7 @@ publish = false
 [dependencies]
 continuum-persona-engine = { path = "../continuum-persona-engine" }
 continuum-persona-llama = { path = "../continuum-persona-llama" }
-continuum-flow = { path = "../continuum-flow" }
+continuum-sage = { path = "../continuum-sage" }
 continuum-process = { path = "../continuum-process" }
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { path = "../continuum-kernel" }

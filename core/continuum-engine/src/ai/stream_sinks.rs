@@ -102,6 +102,21 @@ pub async fn deliver(sink: &UnboundedSender<GenerationChunk>, chunk: GenerationC
     }
 }
 
+/// A whole answer delivered to `sink` by a backend that produced it at once (a one-shot endpoint,
+/// the in-process engine's collected turn): its reasoning, then its text, each as one chunk. A
+/// capability statement, not a fallback: there was no partial output to stream.
+pub async fn deliver_whole(sink: &UnboundedSender<GenerationChunk>, response: &crate::ai::types::TextGenerationResponse) {
+    if sink.is_closed() {
+        return; // no observer: nothing to clone for
+    }
+    if let Some(reasoning) = response.reasoning.as_ref().filter(|reasoning| !reasoning.is_empty()) {
+        deliver(sink, GenerationChunk::Reasoning(reasoning.clone())).await;
+    }
+    if !response.text.is_empty() {
+        deliver(sink, GenerationChunk::Token(response.text.clone())).await;
+    }
+}
+
 /// The stream id a caller stamped on the params, if any.
 pub fn stream_id_of(params: &serde_json::Value) -> Option<Uuid> {
     params

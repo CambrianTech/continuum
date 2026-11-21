@@ -10,7 +10,9 @@ pub(super) enum GenerationAdmission {
 }
 
 impl GenerationAdmission {
-    pub(super) async fn run<F: std::future::Future>(self, call: F) -> F::Output {
+    /// Run the admitted call carrying her need into the engine for the call's lifetime.
+    pub(super) async fn run<F: std::future::Future>(self, urgency: continuum_sage::component::Urgency, call: F) -> F::Output {
+        let call = crate::inference::need::with_urgency(urgency, call);
         match self {
             Self::AdapterOwned => call.await,
             Self::SharedLocal { _lane } => {
@@ -112,12 +114,11 @@ impl LlmDeliberationFaculty {
         // A turn she has hands for takes the non-directed Work priority: a mind is for
         // thinking and doing, so no card or deliverable decides it (`is_work_turn`).
         let lane_wait_started = std::time::Instant::now();
-        let priority = if ws.attention.requires_priority() {
-            crate::inference::resource_admission::LanePriority::Directed
-        } else if self.is_work_turn(ws) {
-            crate::inference::resource_admission::LanePriority::Work
-        } else {
-            crate::inference::resource_admission::LanePriority::Ambient
+        // Her need (object model 5.7) decides her lane class until lanes go (book 11.4 row 4).
+        let priority = match self.urgency_of(ws) {
+            continuum_sage::component::Urgency::Urgent => crate::inference::resource_admission::LanePriority::Directed,
+            continuum_sage::component::Urgency::Want => crate::inference::resource_admission::LanePriority::Work,
+            continuum_sage::component::Urgency::Content => crate::inference::resource_admission::LanePriority::Ambient,
         };
         let expected = match priority {
             crate::inference::resource_admission::LanePriority::Work => expected_turn,

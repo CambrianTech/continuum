@@ -1,9 +1,15 @@
-//! [`UnifiedTier`]: the persona engine's residency tier on one libllama context, as on the M5's unified
-//! memory. Two execution streams: the active mind decodes in one while the next mind binds into the
-//! other; every other mind's blocks stay in host memory exactly as she left them. A move out is the
-//! fork's native save (her stream empties); a move in is its native bind (her blocks take an empty
-//! stream, answering to the sequence she is bound as). Both are synchronous copies, so the fence a
-//! move returns has already landed.
+//! [`UnifiedTier`]: the persona engine's residency tier on one libllama context, the Core's (object
+//! model 4.11). One execution stream, the occupant's, holding the whole context: the mind swapped in
+//! has all of it. Every other mind's blocks stay in host memory exactly as she left them. A swap moves
+//! the occupant out first (the fork's native save: her rows copied to her blocks, her stream emptied)
+//! and then moves the next mind in (its native bind into the emptied stream). Both are synchronous
+//! copies, so the fence a move returns has already landed.
+//!
+//! One stream, because the fork moves a mind by copying her own stream's rows (it requires per-stream
+//! KV), and llama.cpp sizes each stream at the context divided by the stream count: a second stream to
+//! bind the next mind into would halve the occupant's context, and buys nothing while a swap is a
+//! synchronous copy (2026-11-21: a 24,320-token half held seven dying turns while the other half held
+//! nobody decoding). The next mind's prefetch lives in host memory, where her blocks already are.
 
 use std::cell::Cell;
 
@@ -12,13 +18,13 @@ use std::sync::Arc;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Sampler};
+use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
-/// Execution streams one context holds: the active mind's and the next mind's. The context is
-/// created with this many sequences; no more are ever decoded at once (one decodes, one binds).
-pub const STREAMS: usize = 2;
+/// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
+/// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
+pub const STREAMS: usize = 1;
 
-/// One of the context's two execution streams, by the sequence id the context knows it as.
+/// The context's execution stream, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stream(i32);
 
@@ -123,8 +129,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     }
 
     /// The last position `mind`'s stream holds, while she is bound.
-    pub fn position_of(&self, mind: MindId) -> Option<i32> {
-        self.stream_of(mind).map(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
+    pub fn position_of(&self, mind: MindId) -> Option<Pos> {
+        self.stream_of(mind).and_then(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
     }
 
     /// How many decodes on this context reused a built graph (libllama's counter).
@@ -132,14 +138,16 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.ctx.graphs_reused()
     }
 
-    /// Sample her next token from output `i` of the last decode. Like [`Self::logits_ith`], reading the
-    /// logits synchronizes, so it also attests the last decode landed.
-    pub fn sample(&self, sampler: &mut Sampler, i: i32) -> i32 {
-        let token = sampler.sample(self.ctx, i);
+    /// Sample her next token from output `i` of the last decode with her turn's sampler. Like
+    /// [`Self::logits_ith`], reading the logits synchronizes, so it also attests the last decode
+    /// landed. A step her sampler refuses (a token its grammar cannot accept) is named, never a
+    /// token.
+    pub fn sample(&self, sampler: &mut TurnSampler, i: i32) -> Result<i32, ChatRefusal> {
+        let token = sampler.sample(self.ctx, i)?;
         if let Some(landed) = &self.in_flight {
             landed.set(true);
         }
-        token
+        Ok(token)
     }
 
     /// The bytes `mind`'s stream holds, while she is bound (her footprint in the context).
@@ -172,12 +180,12 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         if self.streams.iter().flatten().any(|held| held.persona == mind.persona) {
             return Err(refused(mind, "already bound"));
         }
-        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(mind, "both streams are bound"))?;
+        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(mind, "the occupant has not moved out"))?;
         let stream = stream_at(slot);
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the
         // evidence, never this tier's bookkeeping.
-        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()) >= 0 {
+        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
             return Err(refused(mind, "her stream already holds another sequence's state"));
         }
         self.last_rebind = None;
@@ -233,7 +241,7 @@ impl Tier for UnifiedTier<'_, '_> {
 #[derive(Clone)]
 pub struct Step {
     pub tokens: Vec<i32>,
-    pub from: i32,
+    pub from: Pos,
     pub logits_at_end: bool,
     /// The gene set she decodes under. The tier applies it only when it differs from the set
     /// already on the context, and only for her: no step is decoded under another mind's genes.
@@ -271,9 +279,9 @@ impl Execute for UnifiedTier<'_, '_> {
         let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
         // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart
         // at 0, a failed turn's partial tail), so her stream never holds two tokens at one position.
-        if self.ctx.memory_seq_pos_max(stream.seq()) >= step.from {
+        if self.ctx.memory_seq_pos_max(stream.seq()).is_some_and(|held| held >= step.from) {
             self.settle()?;
-            if !self.ctx.memory_seq_rm(stream.seq(), step.from, -1) {
+            if !self.ctx.memory_seq_truncate(stream.seq(), step.from) {
                 return Err(refused(mind, "the engine could not drop her positions"));
             }
         }
@@ -286,18 +294,19 @@ impl Execute for UnifiedTier<'_, '_> {
         let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
         let count = i32::try_from(step.tokens.len()).map_err(|_| refused(mind, "a step longer than a batch can hold"))?;
         let mut batch = Batch::allocated(count, 1);
-        for (offset, (i, &token)) in (0..count).zip(step.tokens.iter().enumerate()) {
-            batch.push(token, step.from + offset, &[stream.seq()], step.logits_at_end && i == last);
+        for (i, &token) in step.tokens.iter().enumerate() {
+            let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
+            batch.push(token, pos, &[stream.seq()], step.logits_at_end && i == last);
         }
         self.ctx.decode(&batch).map_err(|message| {
             // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
             // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
-            let occupied: Vec<(usize, Option<MindId>, i32)> =
+            let occupied: Vec<(usize, Option<MindId>, Option<Pos>)> =
                 self.streams.iter().enumerate().map(|(at, held)| (at, *held, self.ctx.memory_seq_pos_max(stream_at(at).seq()))).collect();
             continuum_base::probe!(
                 class = "persona.engine.decode_refused",
                 persona = ?mind,
-                from = step.from,
+                from = step.from.get(),
                 tokens = count,
                 n_ctx = self.ctx.n_ctx(),
                 n_ctx_seq = self.ctx.n_ctx_seq(),
