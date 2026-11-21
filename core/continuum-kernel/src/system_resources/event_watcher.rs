@@ -3,29 +3,21 @@
 //! Observes filesystem events via the `notify` crate and feeds budgeted size deltas into each
 //! [`TrackedDir`](super::disk_reporters::TrackedDir), so reporters see a live **estimate**
 //! (last_walk baseline + accumulated delta) rather than a frozen number.
-//!
-//! Budget: each processing tick may spend at most [`EVENT_BUDGET_MS`] ms doing `stat` calls.
-//! Events received when the budget is exhausted are still counted in `event_count`, so reporters
-//! can report "N changes since last scan" alongside the estimate.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 
-use notify::{Event as NotifyEvent, EventType, RecursiveMode, RecommendedWatcher};
+use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher};
 use parking_lot::RwLock;
-use tokio::sync::mpsc;
 
 use super::disk_reporters::TrackedDir;
-
-/// Maximum time spent on stat calls per processing tick (100 ms).
-const EVENT_BUDGET_MS: u64 = 100;
 
 /// Watches filesystem events on tracked directories and feeds size deltas into TrackedDirs.
 pub struct EventWatcher {
     dirs: Vec<Arc<TrackedDir>>,
     /// Last known sizes for each path we've seen (for delta calculation).
-    prev_sizes: Arc<RwLock<HashMap<std::path::PathBuf, u64>>>,
+    prev_sizes: Arc<RwLock<HashMap<PathBuf, u64>>>,
 }
 
 impl EventWatcher {
@@ -36,46 +28,106 @@ impl EventWatcher {
         }
     }
 
-    /// Spawns the watcher as an async task.
+    /// Spawns the notify watcher and returns it (caller must keep alive).
     pub fn spawn(self) {
-        let (tx, rx) = tokio::sync::mpsc::channel::<Result<NotifyEvent, notify::Error>>(1024);
+        let dirs = self.dirs.clone();
+        let prev_sizes = self.prev_sizes.clone();
 
-        let mut watcher = RecommendedWatcher::new_with_receiver(
-            move |res: Result<NotifyEvent, _>| {
-                if let Err(e) = res {
-                    eprintln!("EventWatcher: notify error: {}", e);
-                }
-            },
-            rx,
-            notify::Config::default(),
-        )
-        .expect("Failed to create EventWatcher");
+        let mut watcher = match notify::recommended_watcher(move |event: notify::Result<NotifyEvent>| {
+            if let Ok(ev) = event {
+                process_event(&dirs, &prev_sizes, &ev);
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("EventWatcher: failed to create watcher: {}", e);
+                return;
+            }
+        };
 
-        // Watch all paths
         for dir in &self.dirs {
-            if let Err(e) = watcher.watch(dir.path(), RecursiveMode::Recursive) {
-                eprintln!("EventWatcher: failed to watch {:?}: {}", dir.path(), e);
+            if let Err(e) = watcher.watch(dir.path(), notify::RecursiveMode::Recursive) {
+                eprintln!(
+                    "EventWatcher: failed to watch {:?}: {}",
+                    dir.path(), e
+                );
             }
         }
 
-        tokio::spawn(async move { Self::run(self, watcher).await });
+        // Keep the watcher alive — it runs on its own internal receiver thread.
+        std::mem::forget(watcher);
+    }
+}
+
+/// Check if an event is relevant for size tracking (create, modify, remove).
+fn is_relevant(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_)
+    )
+}
+
+/// Process a single filesystem event, updating TrackedDir deltas.
+fn process_event(
+    dirs: &[Arc<TrackedDir>],
+    prev_sizes: &Arc<RwLock<HashMap<PathBuf, u64>>>,
+    event: &NotifyEvent,
+) {
+    if !is_relevant(&event.kind) {
+        return;
     }
 
-    async fn run(mut self, mut watcher: RecommendedWatcher) {
-        let mut rx = mpsc::channel::<Result<NotifyEvent, notify::Error>>(1024);
-        // Reconnect the receiver to our channel for receiving
-        drop(rx); // We don't need this one; the watcher's internal receiver is used internally
+    let path = match event.paths.first() {
+        Some(p) => p.clone(),
+        None => return,
+    };
 
-        loop {
-            match tokio::time::timeout(Duration::from_secs(1), async {
-                // This won't work directly — we need to access the internal receiver.
-                // Let me restructure.
-                unimplemented!()
-            })
-            .await
-            {
-                _ => {}
+    // Skip noise directories
+    if path.file_name().map_or(false, |n| n == ".git" || n == "target") {
+        return;
+    }
+
+    let meta = std::fs::metadata(&path);
+
+    match (meta, &event.kind) {
+        (Ok(m), EventKind::Remove(_)) => {
+            // File was deleted — record negative delta.
+            let mut sizes = prev_sizes.write();
+            if let Some(prev_size) = sizes.remove(&path) {
+                for dir in dirs {
+                    if path.starts_with(dir.path()) {
+                        dir.observe_event(-(prev_size as i64));
+                    }
+                }
             }
         }
+        (Ok(m), _) => {
+            // File created or modified — record size change.
+            let mut sizes = prev_sizes.write();
+            let new_size = m.len();
+            if let Some(prev_size) = sizes.insert(path.clone(), new_size) {
+                for dir in dirs {
+                    if path.starts_with(dir.path()) {
+                        let delta = new_size as i64 - prev_size as i64;
+                        dir.observe_event(delta);
+                    }
+                }
+            } else {
+                // First time seeing this file — no previous size, so delta is 0
+                sizes.insert(path.clone(), new_size);
+            }
+        }
+        (Err(_), EventKind::Remove(_)) => {
+            // File already gone when we tried to stat it — treat as full deletion.
+            let mut sizes = prev_sizes.write();
+            if let Some(prev_size) = sizes.remove(&path) {
+                for dir in dirs {
+                    if path.starts_with(dir.path()) {
+                        dir.observe_event(-(prev_size as i64));
+                    }
+                }
+            }
+        }
+        _ => {} // Other errors or non-relevant events — ignore.
     }
 }
