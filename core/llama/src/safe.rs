@@ -21,6 +21,8 @@ pub use optimizer_slots::{OptimizerLease, Role, Slot};
 pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod persona;
 pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
+mod position;
+pub use position::{Pos, PosOutOfRange};
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]

@@ -307,7 +307,7 @@ impl LlamaCppBackend {
 
         // Eval text + media into the context, advancing n_past.
         let eval_params = llama::MtmdEvalParams {
-            n_past: 0,
+            n_past: llama::Pos::ZERO,
             n_batch: self.config.n_batch as i32,
             seq_id: 0,
             logits_last: true,
@@ -362,7 +362,9 @@ impl LlamaCppBackend {
                 log.warn(&format!("decode failed mid-generation: {e}"));
                 break;
             }
-            pos += 1;
+            // The decode above already refused any position its context cannot hold, so this never ends early.
+            let Ok(next) = pos.advanced(1) else { break };
+            pos = next;
         }
 
         log.info(&format!(

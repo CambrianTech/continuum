@@ -215,7 +215,7 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
 #[test]
 #[ignore = "requires target+draft GGUFs + 20-60s; run manually with --ignored --nocapture"]
 fn qwen35_4b_spec_dec_throughput() {
-    use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
+    use llama::{Batch, ContextParams, Model, ModelParams, Pos, Sampler};
 
     let target_path = qwen35_4b_target_path();
     assert!(
@@ -294,7 +294,7 @@ fn qwen35_4b_spec_dec_throughput() {
         let mut batch = Batch::allocated(prompt_len, 1);
         for (i, &tok) in prompt_tokens.iter().enumerate() {
             let want = i == prompt_tokens.len() - 1;
-            batch.push(tok, i as i32, &[0], want);
+            batch.push(tok, Pos::try_from(i).expect("a position a sequence can address"), &[0], want);
         }
         target_ctx.decode(&batch).expect("target prompt decode");
     }
@@ -303,7 +303,7 @@ fn qwen35_4b_spec_dec_throughput() {
         let mut batch = Batch::allocated(prompt_len, 1);
         for (i, &tok) in prompt_tokens.iter().enumerate() {
             let want = i == prompt_tokens.len() - 1;
-            batch.push(tok, i as i32, &[0], want);
+            batch.push(tok, Pos::try_from(i).expect("a position a sequence can address"), &[0], want);
         }
         draft_ctx.decode(&batch).expect("draft prompt decode");
     }
@@ -314,7 +314,7 @@ fn qwen35_4b_spec_dec_throughput() {
     // --- Spec-dec loop ---
     let gen_start = Instant::now();
     let mut output_tokens: Vec<i32> = Vec::with_capacity(max_output);
-    let mut pos: i32 = prompt_len;
+    let mut pos = Pos::try_from(prompt_tokens.len()).expect("a position a sequence can address");
     let mut draft_proposed: usize = 0;
     let mut draft_accepted: usize = 0;
     let mut spec_iterations: usize = 0;
@@ -329,7 +329,7 @@ fn qwen35_4b_spec_dec_throughput() {
         batch.push(last_token, pos, &[0], true);
         draft_ctx.decode(&batch).expect("draft seed decode");
     }
-    pos += 1;
+    pos = pos.advanced(1).expect("a position a sequence can address");
 
     'outer: while output_tokens.len() < max_output {
         if target_model.is_eog_token(last_token) {
@@ -347,7 +347,7 @@ fn qwen35_4b_spec_dec_throughput() {
             drafts.push(next);
             // feed next into draft so it can produce draft[k+1]
             let mut batch = Batch::allocated(1, 1);
-            batch.push(next, pos + k as i32, &[0], true);
+            batch.push(next, pos.advanced(k).expect("a position a sequence can address"), &[0], true);
             if draft_ctx.decode(&batch).is_err() {
                 break;
             }
@@ -364,7 +364,7 @@ fn qwen35_4b_spec_dec_throughput() {
         // --- (b) Target validates all K drafts in ONE decode ---
         let mut tgt_batch = Batch::allocated(k_drafted as i32, 1);
         for (i, &tok) in drafts.iter().enumerate() {
-            tgt_batch.push(tok, pos + i as i32, &[0], true);
+            tgt_batch.push(tok, pos.advanced(i).expect("a position a sequence can address"), &[0], true);
         }
         target_ctx
             .decode(&tgt_batch)
@@ -410,15 +410,15 @@ fn qwen35_4b_spec_dec_throughput() {
                 // Mismatch at position `accepted`. Target rejected drafts[accepted].
                 // Correction token `c` replaces drafts[accepted] at position pos+accepted.
                 //
-                // memory_seq_rm(seq_id, p0, p1) removes KV entries with positions in
-                // [p0, p1). Passing p1 = -1 means "to the end". So we cut everything
+                // memory_seq_truncate(seq_id, from) removes KV entries at `from` and after,
+                // so we cut everything
                 // from pos+accepted inclusive — BOTH contexts had drafts[accepted] or
                 // later cached there and none of that is valid anymore.
                 output_tokens.push(c);
                 last_token = c;
-                let cut_pos = pos + accepted as i32;
-                let _ = target_ctx.memory_seq_rm(0, cut_pos, -1);
-                let _ = draft_ctx.memory_seq_rm(0, cut_pos, -1);
+                let cut_pos = pos.advanced(accepted).expect("a position a sequence can address");
+                let _ = target_ctx.memory_seq_truncate(0, cut_pos);
+                let _ = draft_ctx.memory_seq_truncate(0, cut_pos);
                 // Push c at cut_pos into BOTH contexts so their KV extends with the
                 // real next token. Off-by-one in the previous version: we pushed at
                 // cut_pos-1 which collided with the last accepted token already in KV.
@@ -428,7 +428,7 @@ fn qwen35_4b_spec_dec_throughput() {
                 let mut dbatch = Batch::allocated(1, 1);
                 dbatch.push(c, cut_pos, &[0], true);
                 draft_ctx.decode(&dbatch).expect("draft sync decode");
-                pos = cut_pos + 1;
+                pos = cut_pos.advanced(1).expect("a position a sequence can address");
             }
             None => {
                 // All K accepted. Take target's sample at position K-1 as bonus.
@@ -437,7 +437,7 @@ fn qwen35_4b_spec_dec_throughput() {
                 let bonus = target_sampler.sample(&target_ctx, (k_drafted - 1) as i32);
                 output_tokens.push(bonus);
                 last_token = bonus;
-                let bonus_pos = pos + k_drafted as i32;
+                let bonus_pos = pos.advanced(k_drafted).expect("a position a sequence can address");
                 // No rewind needed — every position up to pos+k_drafted-1 is valid
                 // in both KVs. We just append bonus_pos onto both.
                 let mut tbatch = Batch::allocated(1, 1);
@@ -446,7 +446,7 @@ fn qwen35_4b_spec_dec_throughput() {
                 let mut dbatch = Batch::allocated(1, 1);
                 dbatch.push(bonus, bonus_pos, &[0], true);
                 draft_ctx.decode(&dbatch).expect("draft bonus-sync decode");
-                pos = bonus_pos + 1;
+                pos = bonus_pos.advanced(1).expect("a position a sequence can address");
             }
         }
     }

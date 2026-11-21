@@ -12,7 +12,7 @@ use continuum_persona_engine::engine::{DecodeError, HandoffError, PersonaEngine,
 use continuum_persona_engine::persona::{Epoch, Footprint, Held, MindId, PersonaId, PersonaParts, PersonaUnit};
 use continuum_persona_engine::residency::TierRefusal;
 use continuum_persona_llama::{Blocks, Genes, Step, UnifiedTier, STREAMS};
-use llama::{ContextParams, FlashAttn, LoraAdapter, Model};
+use llama::{ContextParams, FlashAttn, LoraAdapter, Model, Pos};
 use uuid::Uuid;
 
 use super::geometry::StopsOnExit;
@@ -370,7 +370,7 @@ enum Phase {
     /// Her prompt from `pos` is still to prefill.
     Prefilling { pos: usize },
     /// `token` is sampled and not yet emitted; it is decoded at `pos` if she goes on.
-    Decoding { token: i32, pos: i32, generated: usize },
+    Decoding { token: i32, pos: Pos, generated: usize },
 }
 
 /// Where a turn's time went, for its one probe row.
@@ -751,7 +751,7 @@ impl Driver<'_, '_> {
         let end = pos.saturating_add(self.batch.get()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
-        let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
+        let from = Pos::try_from(pos).map_err(|_| TurnError::TooLong)?;
         let len = chunk.len();
         self.engine.submit(Step { tokens: chunk.to_vec(), from, logits_at_end: last, genes: Arc::clone(&turn.genes) })?;
         if !last {
@@ -767,13 +767,13 @@ impl Driver<'_, '_> {
         let token = self.engine.tier().sample(&mut turn.req.sampler, at)?;
         self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
-        let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
+        let pos = Pos::try_from(end).map_err(|_| TurnError::TooLong)?;
         turn.phase = Phase::Decoding { token, pos, generated: 0 };
         Ok(())
     }
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
-    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: i32, generated: usize) -> Result<Advanced, TurnError> {
+    fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
         let done = |turn: &Turn, generated: usize| {
             let took = turn.submitted.elapsed();
             Advanced::Done {
@@ -806,7 +806,7 @@ impl Driver<'_, '_> {
         let sampling = Instant::now();
         let next = self.engine.tier().sample(&mut turn.req.sampler, 0)?;
         turn.spent.sample += sampling.elapsed();
-        turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated };
+        turn.phase = Phase::Decoding { token: next, pos: pos.advanced(1).map_err(|_| TurnError::TooLong)?, generated };
         Ok(Advanced::Continues)
     }
 

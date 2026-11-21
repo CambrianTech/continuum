@@ -360,13 +360,23 @@ impl<'m> Context<'m> {
         unsafe { sys::llama_get_model(self.ptr.as_ptr()) }
     }
 
-    /// Free the KV cache for a given sequence id (positions [p0, p1)).
-    /// Use `p0=-1, p1=-1` to remove the whole sequence. Required when
-    /// reusing a seq_id slot in a shared multi-sequence context.
-    pub fn memory_seq_rm(&mut self, seq_id: i32, p0: i32, p1: i32) -> bool {
+    /// Drop everything `seq_id` holds. False when the engine could not.
+    pub fn memory_seq_clear(&mut self, seq_id: i32) -> bool {
+        self.memory_seq_rm(seq_id, -1)
+    }
+
+    /// Drop what `seq_id` holds at `from` and after, keeping what precedes it. False when the
+    /// engine could not.
+    pub fn memory_seq_truncate(&mut self, seq_id: i32, from: super::Pos) -> bool {
+        self.memory_seq_rm(seq_id, from.native())
+    }
+
+    /// llama.cpp's removal over `[from, end)`, where its `-1` means "from the start": the two named
+    /// operations above are the only callers, so no caller passes a sentinel.
+    fn memory_seq_rm(&mut self, seq_id: i32, from: sys::llama_pos) -> bool {
         unsafe {
             let mem = sys::llama_get_memory(self.ptr.as_ptr());
-            sys::llama_memory_seq_rm(mem, seq_id, p0, p1)
+            sys::llama_memory_seq_rm(mem, seq_id, from, -1)
         }
     }
 
@@ -380,14 +390,14 @@ impl<'m> Context<'m> {
         }
     }
 
-    /// Highest absolute KV position currently held for `seq_id`, or -1 if
-    /// the sequence is empty. Used by the batch scheduler to know what
-    /// `pos` to assign the next token in a continuous-batching loop.
-    pub fn memory_seq_pos_max(&self, seq_id: i32) -> i32 {
-        unsafe {
+    /// The highest position `seq_id` holds, or `None` when it holds nothing. Used by the batch
+    /// scheduler to know what position to give the next token.
+    pub fn memory_seq_pos_max(&self, seq_id: i32) -> Option<super::Pos> {
+        let native = unsafe {
             let mem = sys::llama_get_memory(self.ptr.as_ptr());
             sys::llama_memory_seq_pos_max(mem, seq_id)
-        }
+        };
+        super::Pos::from_native(native)
     }
 }
 
@@ -461,7 +471,7 @@ impl Batch {
     /// Append a token to an `allocated` batch. Panics if called on a
     /// `for_tokens` batch, if the batch is already at capacity, or if
     /// `seq_ids.len() > n_seq_max`.
-    pub fn push(&mut self, token: i32, pos: i32, seq_ids: &[i32], want_logits: bool) {
+    pub fn push(&mut self, token: i32, pos: super::Pos, seq_ids: &[i32], want_logits: bool) {
         let (n_seq_max, capacity) = match self.storage {
             BatchStorage::Allocated {
                 n_seq_max,
@@ -490,7 +500,7 @@ impl Batch {
         // each slot, so keeping llama's allocation intact is required.
         unsafe {
             *self.inner.token.add(idx) = token;
-            *self.inner.pos.add(idx) = pos;
+            *self.inner.pos.add(idx) = pos.native();
             *self.inner.n_seq_id.add(idx) = seq_ids.len() as i32;
             let seq_slot = *self.inner.seq_id.add(idx);
             for (i, &sid) in seq_ids.iter().enumerate() {

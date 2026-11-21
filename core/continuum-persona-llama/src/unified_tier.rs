@@ -18,7 +18,7 @@ use std::sync::Arc;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, TurnSampler};
+use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Pos, TurnSampler};
 
 /// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
 /// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
@@ -129,8 +129,8 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
     }
 
     /// The last position `mind`'s stream holds, while she is bound.
-    pub fn position_of(&self, mind: MindId) -> Option<i32> {
-        self.stream_of(mind).map(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
+    pub fn position_of(&self, mind: MindId) -> Option<Pos> {
+        self.stream_of(mind).and_then(|stream| self.ctx.memory_seq_pos_max(stream.seq()))
     }
 
     /// How many decodes on this context reused a built graph (libllama's counter).
@@ -185,7 +185,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the
         // evidence, never this tier's bookkeeping.
-        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()) >= 0 {
+        if blocks.saved == Saved::Never && self.ctx.memory_seq_pos_max(stream.seq()).is_some() {
             return Err(refused(mind, "her stream already holds another sequence's state"));
         }
         self.last_rebind = None;
@@ -241,7 +241,7 @@ impl Tier for UnifiedTier<'_, '_> {
 #[derive(Clone)]
 pub struct Step {
     pub tokens: Vec<i32>,
-    pub from: i32,
+    pub from: Pos,
     pub logits_at_end: bool,
     /// The gene set she decodes under. The tier applies it only when it differs from the set
     /// already on the context, and only for her: no step is decoded under another mind's genes.
@@ -279,9 +279,9 @@ impl Execute for UnifiedTier<'_, '_> {
         let stream = self.stream_of(mind).ok_or_else(|| refused(mind, "not bound"))?;
         // A step at `from` replaces whatever she held from there (a re-decoded last token, a restart
         // at 0, a failed turn's partial tail), so her stream never holds two tokens at one position.
-        if self.ctx.memory_seq_pos_max(stream.seq()) >= step.from {
+        if self.ctx.memory_seq_pos_max(stream.seq()).is_some_and(|held| held >= step.from) {
             self.settle()?;
-            if !self.ctx.memory_seq_rm(stream.seq(), step.from, -1) {
+            if !self.ctx.memory_seq_truncate(stream.seq(), step.from) {
                 return Err(refused(mind, "the engine could not drop her positions"));
             }
         }
@@ -294,18 +294,19 @@ impl Execute for UnifiedTier<'_, '_> {
         let last = step.tokens.len().checked_sub(1).ok_or_else(|| refused(mind, "an empty step"))?;
         let count = i32::try_from(step.tokens.len()).map_err(|_| refused(mind, "a step longer than a batch can hold"))?;
         let mut batch = Batch::allocated(count, 1);
-        for (offset, (i, &token)) in (0..count).zip(step.tokens.iter().enumerate()) {
-            batch.push(token, step.from + offset, &[stream.seq()], step.logits_at_end && i == last);
+        for (i, &token) in step.tokens.iter().enumerate() {
+            let pos = step.from.advanced(i).map_err(|_| refused(mind, "a step past what a sequence can address"))?;
+            batch.push(token, pos, &[stream.seq()], step.logits_at_end && i == last);
         }
         self.ctx.decode(&batch).map_err(|message| {
             // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
             // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
-            let occupied: Vec<(usize, Option<MindId>, i32)> =
+            let occupied: Vec<(usize, Option<MindId>, Option<Pos>)> =
                 self.streams.iter().enumerate().map(|(at, held)| (at, *held, self.ctx.memory_seq_pos_max(stream_at(at).seq()))).collect();
             continuum_base::probe!(
                 class = "persona.engine.decode_refused",
                 persona = ?mind,
-                from = step.from,
+                from = step.from.get(),
                 tokens = count,
                 n_ctx = self.ctx.n_ctx(),
                 n_ctx_seq = self.ctx.n_ctx_seq(),
