@@ -18,9 +18,11 @@
 
 mod bus;
 mod ctx;
+mod need;
 
 pub use bus::{Bus, Key, Taken};
 pub use ctx::Ctx;
+pub use need::{need_key, Need, Urgency, NEED};
 
 use std::future::Future;
 
@@ -155,10 +157,29 @@ struct Worker<P: Component> {
     /// Its presence on its owner's bus; `None` when another component of the same name already
     /// publishes there (a wiring defect, probed at start).
     presence: Option<crate::dataflow::Publisher<Presence>>,
+    /// Its need on its owner's bus (same keying and defect rule as its presence).
+    need: Option<crate::dataflow::Publisher<Need>>,
+    published_need: Option<Need>,
     now: Presence,
 }
 
 impl<P: Component> Worker<P> {
+    /// Publish its need when it changed: its urgency and its intake depth now.
+    fn publish_need(&mut self) {
+        let Some(need) = self.ctx.current_need() else { return };
+        self.say_need(need);
+    }
+
+    fn say_need(&mut self, need: Need) {
+        if self.published_need == Some(need) {
+            return;
+        }
+        self.published_need = Some(need);
+        if let Some(publisher) = self.need.as_mut() {
+            self.ctx.publish(publisher, need);
+        }
+    }
+
     fn enter(&mut self, presence: Presence) {
         if presence == self.now {
             return;
@@ -181,6 +202,7 @@ impl<P: Component> Stage for Worker<P> {
                 self.ctx.begin(delivered.from);
                 self.component.handle(input, &mut self.ctx).await;
                 self.enter(Presence::Ready);
+                self.publish_need();
             }
             What::Rest if self.now == Presence::Resting => {}
             What::Rest => {
@@ -243,42 +265,46 @@ impl<P: Component> Teller<P> {
     }
 }
 
+/// Claim a topic the engine publishes for a component; a second component of the same name on one
+/// bus is a wiring defect, probed, and runs without it.
+fn claim<T: Send + Sync + 'static>(bus: &Bus, topic: TopicName, name: &'static str) -> Option<crate::dataflow::Publisher<T>> {
+    match bus.publisher::<T>(topic, presence_key(name)) {
+        Ok(publisher) => Some(publisher),
+        Err(taken) => {
+            continuum_base::probe!(class = "sage.component.topic_taken", component = name, topic = taken.0 .0, "another component of this name already publishes this on its bus");
+            None
+        }
+    }
+}
+
 /// Start `component` for `owner` on its owner's `bus`: its subscriptions, its worker, its context. One
 /// input in hand and one waiting (the double buffer); every producer waits for room.
 pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) -> Running<P> {
     let mut wiring = Wiring { bus, attach: Vec::new() };
     component.wire(&mut wiring);
     let incarnation = StageIncarnation { stage: StageId::named(P::NAME), owner, epoch };
-    let presence = match bus.publisher::<Presence>(PRESENCE, presence_key(P::NAME)) {
-        Ok(publisher) => Some(publisher),
-        Err(taken) => {
-            continuum_base::probe!(class = "sage.component.presence_taken", component = P::NAME, topic = taken.0 .0, "another component of this name already publishes its presence on this bus");
-            None
-        }
+    // The context needs the component's own input for its timers, which exists only once the
+    // worker does: the worker is spawned with a context that receives it before any input.
+    let slot = ctx::InputSlot::default();
+    let mut worker = Worker {
+        component,
+        ctx: Ctx::new(RunId { incarnation, seq: 0 }, &slot),
+        presence: claim(bus, PRESENCE, P::NAME),
+        need: claim(bus, NEED, P::NAME),
+        published_need: None,
+        now: Presence::Ready,
     };
-    let (input, worker) = spawn_worker(component, RunId { incarnation, seq: 0 }, presence);
+    if let Some(publisher) = worker.presence.as_mut() {
+        worker.ctx.publish(publisher, Presence::Ready);
+    }
+    // A fresh intake holds nothing, and it has said nothing yet: content.
+    worker.say_need(Need { urgency: Urgency::Content, waiting: 0 });
+    let (input, worker) = spawn_stage(worker, Capacity::granted(std::num::NonZeroUsize::MIN));
+    slot.fill(&input);
     for attach in wiring.attach {
         attach(&input);
     }
     Running { input, worker }
-}
-
-fn spawn_worker<P: Component>(
-    component: P,
-    run: RunId,
-    mut presence: Option<crate::dataflow::Publisher<Presence>>,
-) -> (Intake<P::Input>, StageWorker<Delivered<P::Input>>) {
-    // The context needs the component's own input for its timers, which exists only once the
-    // worker does: the worker is spawned with a context that receives it before any input.
-    let slot = ctx::InputSlot::default();
-    let ctx = Ctx::new(run, &slot);
-    if let Some(publisher) = presence.as_mut() {
-        ctx.publish(publisher, Presence::Ready);
-    }
-    let worker = Worker { component, ctx, presence, now: Presence::Ready };
-    let (input, worker) = spawn_stage(worker, Capacity::granted(std::num::NonZeroUsize::MIN));
-    slot.fill(&input);
-    (input, worker)
 }
 
 #[cfg(test)]

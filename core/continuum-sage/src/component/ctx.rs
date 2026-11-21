@@ -38,11 +38,13 @@ pub struct Ctx<P: Component> {
     myself: InputSlot<P::Input>,
     /// Its pending deadlines on the node's clock; dropping one cancels it.
     timers: HashMap<Key, crate::clock::Alarm>,
+    /// How much it wants to act, in its own judgment; published by the engine after each input.
+    urgency: super::Urgency,
 }
 
 impl<P: Component> Ctx<P> {
     pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>) -> Self {
-        Self { run, from: None, myself: myself.clone(), timers: HashMap::new() }
+        Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content }
     }
 
     pub(super) fn begin(&mut self, from: Option<InputRevision>) {
@@ -53,6 +55,19 @@ impl<P: Component> Ctx<P> {
     /// Who produced what is published now, from which input.
     pub fn provenance(&self) -> Provenance {
         Provenance { by: self.run, from: self.from.into_iter().collect() }
+    }
+
+    /// Say how much it wants to act. The engine publishes it, with its intake depth beside it,
+    /// once this input is handled; it stands until the component says otherwise.
+    pub fn need(&mut self, urgency: super::Urgency) {
+        self.urgency = urgency;
+    }
+
+    /// Its need as the engine publishes it: its urgency and the inputs waiting in its intake;
+    /// `None` before its intake exists.
+    pub(super) fn current_need(&self) -> Option<super::Need> {
+        let waiting = self.myself.0.get()?.waiting();
+        Some(super::Need { urgency: self.urgency, waiting })
     }
 
     /// Publish a state this component writes, stamped with its provenance.

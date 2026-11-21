@@ -149,3 +149,43 @@ async fn every_component_rests_visibly_and_its_next_input_wakes_it() {
     // Awake again once it has handled it: Acting while it ran, Ready after.
     while presence.changed().await.map(|p| *p.value).ok() != Some(Presence::Ready) {}
 }
+
+/// Says how much it wants to act from what it is handed.
+struct Asker;
+
+enum AskerIn {
+    Addressed,
+    Settled,
+}
+
+impl Component for Asker {
+    type Input = AskerIn;
+    const NAME: &'static str = "asker";
+    const QOS: Qos = Qos::Work;
+    fn wire(&self, _: &mut Wiring<'_, Self>) {}
+    async fn handle(&mut self, input: AskerIn, ctx: &mut Ctx<Self>) {
+        ctx.need(match input {
+            AskerIn::Addressed => Urgency::Urgent,
+            AskerIn::Settled => Urgency::Content,
+        });
+    }
+}
+
+// what this catches: a component's wish to act decided for it, or decided with no facts. It says its
+// own urgency; the engine publishes it on its owner's bus with its intake depth beside it, starting
+// Content, and a tree folds needs by urgency first.
+#[tokio::test]
+async fn a_component_says_its_own_need_and_the_engine_publishes_it_with_its_intake() {
+    let bus = Bus::new();
+    let mut need = bus.reader::<Need>(NEED, need_key("asker"));
+    let asker = start(Asker, &bus, OwnerId(Uuid::from_u128(4)), 1);
+    assert_eq!(need.latest().map(|n| *n.value), Some(Need { urgency: Urgency::Content, waiting: 0 }), "content until it says otherwise");
+    assert!(asker.tell(AskerIn::Addressed).await);
+    while need.changed().await.map(|n| n.value.urgency).ok() != Some(Urgency::Urgent) {}
+    assert!(asker.tell(AskerIn::Settled).await);
+    while need.changed().await.map(|n| n.value.urgency).ok() != Some(Urgency::Content) {}
+    let busy = Need { urgency: Urgency::Want, waiting: 3 };
+    let urgent = Need { urgency: Urgency::Urgent, waiting: 0 };
+    assert_eq!(busy.max(urgent), urgent, "urgency decides before queue depth");
+    assert_eq!(busy.max(Need { urgency: Urgency::Want, waiting: 1 }), busy, "among equals, more waiting");
+}
