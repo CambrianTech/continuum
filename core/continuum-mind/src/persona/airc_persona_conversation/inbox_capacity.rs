@@ -1,5 +1,7 @@
 use super::*;
 
+const BACKOFF_CEILING_SECS: u64 = 30;
+
 /// The live stream is dead when a catch-up tick admits events from the store
 /// while no live frame arrived since the previous tick. The first tick after
 /// (re)open is exempt: it legitimately admits the backlog.
@@ -20,7 +22,7 @@ pub(super) async fn reopen_live_stream(
         // ended on a room join or a daemon restart is back in one hop.
         if *attempt > 0 {
             let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5))
-                .min(std::time::Duration::from_secs(30));
+                .min(std::time::Duration::from_secs(BACKOFF_CEILING_SECS));
             tokio::time::sleep(delay).await;
         }
         match runtime.subscribe_all_rooms().await {
@@ -548,12 +550,8 @@ impl AircPersonaConversation {
         let body_preview = match event.body.as_ref() {
             None => "<none>".to_string(),
             Some(b) => match b.as_text() {
-                Some(t) => t.chars().take(160).collect(),
-                None => serde_json::to_string(b)
-                    .unwrap_or_else(|e| format!("<unserializable: {e}>"))
-                    .chars()
-                    .take(160)
-                    .collect(),
+                Some(t) => t.to_string(),
+                None => format!("{b:?}"),
             },
         };
         let message = match attention.perception {
@@ -605,3 +603,4 @@ impl AircPersonaConversation {
         Some(Arc::unwrap_or_clone(message))
     }
 }
+
