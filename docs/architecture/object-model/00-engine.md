@@ -2,7 +2,7 @@
 
 [The object model](README.md) · next: [The core today](01-today.md)
 
-The design ideal, before any type. Continuum is an engine in the sense a game studio means: a
+The design ideal, before any type. Continuum's engine, SAGE (README), is an engine in the sense a game studio means: a
 runtime that keeps a dense, living world present on hardware too small to hold it, at a frame rate
 that does not slip. The world is a society of citizens. The hardware is whatever its owner has.
 This chapter states the brief, takes what Rockstar's RAGE and our own CBAR learned about meeting a

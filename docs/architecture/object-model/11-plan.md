@@ -133,7 +133,7 @@ phases, each as one change measured live before the next (11.1).
 | # | Change | Deletes | Owner |
 |---|---|---|---|
 | 1 | Review of 1.5, 2.8, 2.9, 3.9, 4.11 and 5.7 | nothing; no code before it | Joel, Codex |
-| 2 | Simulator assertions, red: 4.11's eight invariants and 5.7's gate on the dyno | nothing | Fable (Core, mind), Codex (custody replays: stage, save and reclaim overlapping) |
+| 2 | Simulator assertions, red: 4.11's eight invariants and 5.7's gate on the dyno, including two awake models whose capacity generations coincide (a delayed save from one never frees the other's cells), and a shrink observed three ways: the target, the backend's bytes returned, and a second holder actually acquiring them (Codex, 73fe648b0c) | nothing | Fable (Core, mind), Codex (custody replays: stage, save and reclaim overlapping) |
 | 3 | One unified context per awake model; capacity published (4.11 steps 3 and 4) | `STREAMS`, `n_ctx_seq` as a limit, the door, `mind_window` and `window_grant` on deliberation's path | Fable |
 | 4 | Governance has nothing to divide (4.11's table) | the lane planner, grants, permits, seats, per-slot windows, lane-keyed health, the roster's seat bound | Codex (serving, admission, health, grid), Fable (engine, cognition) |
 | 5 | `Measured<T>`, `Prior<T>` and the `ComputeUnit` descriptor in `continuum-base`; the unit's probes | the thirty numbers of 1.5, each moved to a measurement or a prior, row by row | Fable (types), each owner for its numbers |

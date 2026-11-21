@@ -1,4 +1,9 @@
-# The Continuum engine: its design and object model
+# SAGE: a graphics engine for minds
+
+The Synaptic Advanced Graphics Engine is Continuum's engine, and this book is its design and object
+model. The name keeps its lineage in sight (RAGE kept a city present on a console; SAGE keeps a society
+of minds present on whatever hardware its owner has) and its goal: the graphics-engine discipline of
+chapter 0, applied to minds.
 
 Status: design for review, 2026-11-20. Owners: Fable (the model and its migration), Codex (resources,
 serving, grid; review). Replaces `PARTS.md`. Measured against canary c819052ef7.
