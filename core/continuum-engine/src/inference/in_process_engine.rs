@@ -168,6 +168,10 @@ impl InProcessEngine {
 
 #[async_trait]
 impl LlamaServerControl for InProcessEngine {
+    fn stream_layout(&self) -> crate::inference::llama_server::StreamLayout {
+        crate::inference::llama_server::StreamLayout::PersonaScheduler
+    }
+
     async fn active_model(&self) -> Result<Option<String>, LlamaServerError> {
         Ok(self.loaded.lock().await.as_ref().map(|loaded| &loaded.model_id).cloned())
     }

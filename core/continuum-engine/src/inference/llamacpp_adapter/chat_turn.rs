@@ -153,18 +153,37 @@ pub(super) struct ParsedTurn {
     pub(super) tool_calls: Option<Vec<ToolCall>>,
 }
 
+/// Native generation output and the effective stop set used to produce it.
+pub(super) struct GeneratedTurn<'a> {
+    pub(super) written: &'a str,
+    pub(super) tokens: usize,
+    pub(super) end: GenerationEnd,
+    pub(super) stops: &'a [String],
+}
+
 impl ParsedTurn {
     /// A turn that kept no text and no call, told apart by its raw tail and the stop it ended on: a
     /// stop string firing where her call began, the model ending inside its thinking, or a call the
     /// parse dropped (Aiko, 20 turns from 15:36Z 2026-11-19, text 0, reasoning only).
-    pub(super) fn probe_if_empty(&self, written: &str, tokens: usize, end: GenerationEnd, stops: &[String]) {
+    pub(super) fn probe_if_empty(&self, output: GeneratedTurn<'_>, request: &TextGenerationRequest) {
+        let GeneratedTurn { written, tokens, end, stops } = output;
         if !self.text.is_empty() || self.tool_calls.as_ref().is_some_and(|calls| !calls.is_empty()) {
             return;
         }
+        // Diagnostic only: correlate a Qwen function marker with this render's own request.
+        // A marker in generated text is never authority to dispatch a call.
+        let marker = written.rsplit_once("<function=").and_then(|(_, rest)| rest.split_once('>'))
+            .map(|(name, _)| name)
+            .filter(|name| !name.is_empty() && name.len() <= 128 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b)));
+        let offered = marker.map(|name| request.tools.as_deref().into_iter().flatten()
+            .chain(request.tail_tools.as_deref().into_iter().flatten()).any(|tool| tool.name == name));
         let chars: Vec<char> = written.chars().collect();
         let tail: String = chars[chars.len().saturating_sub(160)..].iter().collect();
         continuum_base::probe!(
             class = "inference.turn.wrote_nothing",
+            persona = ?request.persona_id,
+            function_marker = ?marker,
+            offered_on_request = ?offered,
             tokens = tokens as u64,
             end = ?end,
             stop = ?stops.iter().find(|stop| written.ends_with(stop.as_str())),

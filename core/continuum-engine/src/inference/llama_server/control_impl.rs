@@ -2,6 +2,10 @@
 use super::*;
 #[async_trait]
 impl LlamaServerControl for LlamaServerProcess {
+    fn stream_layout(&self) -> crate::inference::llama_server::StreamLayout {
+        crate::inference::llama_server::StreamLayout::Roster
+    }
+
     fn paging_recovery_required(&self) -> bool {
         crate::inference::slots::directory()
             .endpoint(&self.root)

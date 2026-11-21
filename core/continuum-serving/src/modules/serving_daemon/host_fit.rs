@@ -133,10 +133,10 @@ impl PoolFit {
     }
 
     /// The pool the engine launches with, in tokens.
-    pub(super) fn pool(self, sequences: u32) -> u64 {
+    pub(super) fn pool(self, sequences: u32, minimum_window: u32) -> u64 {
         match self {
             Self::Unmeasured { demand } | Self::Fits { demand, .. } => demand,
-            Self::Bounded { demand, fit, .. } => fit.max(u64::from(MIN_SERVE_CTX) * u64::from(sequences)).min(demand),
+            Self::Bounded { demand, fit, .. } => fit.max(u64::from(minimum_window) * u64::from(sequences)).min(demand),
         }
     }
 }
@@ -203,11 +203,23 @@ mod tests {
     fn the_pool_is_the_demand_until_the_host_bounds_it() {
         let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
         let host = |r| Rooms { host: Some(r), device: None };
-        assert_eq!(pool_fit(100_000, Some(&fp), Rooms { host: None, device: None }, 0, 5, 262_144).pool(5), 100_000, "no reading: the demand stands");
+        assert_eq!(pool_fit(100_000, Some(&fp), Rooms { host: None, device: None }, 0, 5, 262_144).pool(5, MIN_SERVE_CTX), 100_000, "no reading: the demand stands");
         assert!(matches!(pool_fit(100_000, Some(&fp), host(room(60 * GB, 0, 0)), 0, 5, 262_144), PoolFit::Fits { .. }));
         let starved = pool_fit(100_000, Some(&fp), host(room(GB, 0, 0)), 0, 5, 262_144);
         assert!(matches!(starved, PoolFit::Bounded { fit: 0, by: Bound::Host(_), .. }));
-        assert_eq!(starved.pool(5), 5 * u64::from(MIN_SERVE_CTX), "never below one least window per sequence");
+        assert_eq!(starved.pool(5, MIN_SERVE_CTX), 5 * u64::from(MIN_SERVE_CTX), "never below one least window per sequence");
+    }
+
+    #[test]
+    fn native_pool_requires_the_fixed_bytes_of_both_streams() {
+        use crate::inference::llama_server::StreamLayout;
+        let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
+        let layout = StreamLayout::PersonaScheduler;
+        let sequences = layout.sequences(1);
+        let room = fp.weights_bytes + fp.compute_buffer_per_lane() * 3 / 2;
+        assert!(fp.window_within(room, 1) > 0);
+        let fit = pool_fit(48_000, Some(&fp), Rooms { host: None, device: Some(room) }, 0, sequences, fp.context_window);
+        assert_eq!(fit.pool(sequences, layout.minimum_window(MIN_SERVE_CTX)), 0);
     }
 
     // what this catches (the M5, 2026-11-14 01:22Z: the embedder's 186,908,672 B lease refused at
@@ -220,6 +232,6 @@ mod tests {
         let fit = pool_fit(1_000_000, Some(&fp), rooms, 0, 5, 262_144);
         assert!(matches!(fit, PoolFit::Bounded { by: Bound::Device { room }, .. } if room == 25 * GB), "{fit:?}");
         let host_only = pool_fit(1_000_000, Some(&fp), Rooms { device: None, ..rooms }, 0, 5, 262_144);
-        assert!(fit.pool(5) < host_only.pool(5), "the device's room is the smaller");
+        assert!(fit.pool(5, MIN_SERVE_CTX) < host_only.pool(5, MIN_SERVE_CTX), "the device's room is the smaller");
     }
 }

@@ -14,6 +14,7 @@ pub mod non_empty_list;
 pub mod non_empty_text;
 pub mod probe;
 pub mod probed;
+pub mod probe_writes;
 pub mod repo_id;
 pub mod reserved_rooms;
 pub mod secrets;

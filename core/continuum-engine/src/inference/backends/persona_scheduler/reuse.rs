@@ -54,9 +54,7 @@ impl Miss {
 }
 
 /// The tokens two sequences share from their start.
-pub(super) fn common_prefix(a: &[i32], b: &[i32]) -> usize {
-    a.iter().zip(b).take_while(|(x, y)| x == y).count()
-}
+pub(super) use continuum_persona_engine::turn::common_prefix;
 
 /// One of her checkpoints as reuse sees it: the tokens it holds through (exclusive end) and its basis.
 #[derive(Clone, Copy)]
@@ -69,28 +67,33 @@ pub(super) struct Kept<'a, B> {
 /// the furthest one both histories hold unchanged under the same genes. Her head's checkpoint
 /// serves a turnover, which changes her view but not her head (the M5, 2026-11-19, 48a1dc80cd: 17
 /// of 30 turns re-prefilled from 0 behind an unchanged head, ~180k of 422,847 tokens).
-pub(super) fn choose<'a, B: PartialEq + 'a>(held: History<'_, B>, kept: impl IntoIterator<Item = Kept<'a, B>>, next: History<'_, B>) -> Reuse {
-    let (held_tokens, prompt, basis) = (held.tokens, next.tokens, next.basis);
-    // The prompt extends her whole held history (her own generated tokens included): append.
-    if let continuum_persona_engine::turn::Prefill::Append { from } = continuum_persona_engine::turn::plan(held, next) {
-        return Reuse::Append { from };
+pub(super) struct Decision {
+    pub shared: usize,
+    pub action: Reuse,
+}
+
+pub(super) fn choose<'a, B: PartialEq + 'a>(held: History<'_, B>, kept: impl IntoIterator<Item = Kept<'a, B>>, next: History<'_, B>) -> Decision {
+    let comparison = held.compare(&next);
+    let shared = comparison.shared;
+    let decide = |action| Decision { shared, action };
+    let (held, prompt, basis) = (held.tokens, next.tokens, next.basis);
+    if let continuum_persona_engine::turn::Prefill::Append { from } = comparison.prefill {
+        return decide(Reuse::Append { from });
     }
-    let held = held_tokens;
     let mut kept = kept.into_iter().peekable();
     if kept.peek().is_none() {
-        return Reuse::Restart(if held.is_empty() { Miss::Cold } else { Miss::NoCheckpoint });
+        return decide(Reuse::Restart(if held.is_empty() { Miss::Cold } else { Miss::NoCheckpoint }));
     }
     let mut same_genes = kept.filter(|kept| kept.basis == basis).peekable();
     if same_genes.peek().is_none() {
-        return Reuse::Restart(Miss::Basis);
+        return decide(Reuse::Restart(Miss::Basis));
     }
     // A checkpoint's end must be held unchanged by both, and leave a token to sample from.
-    let shared = common_prefix(held, prompt);
-    same_genes
+    decide(same_genes
         .map(|kept| kept.end)
         .filter(|end| *end > 0 && *end < prompt.len() && *end <= shared)
         .max()
-        .map_or(Reuse::Restart(Miss::Diverged), |from| Reuse::Rewind { from })
+        .map_or(Reuse::Restart(Miss::Diverged), |from| Reuse::Rewind { from }))
 }
 
 #[cfg(test)]
@@ -113,20 +116,20 @@ mod tests {
         let mut next: Vec<i32> = (0..80).collect();
         next.extend([900, 901, 902]); // a new trailer and her call, rendered differently
         let kept = [Kept { end: 80, basis: &genes }];
-        assert_eq!(choose(h(&held, &genes), kept, h(&next, &genes)), Reuse::Rewind { from: 80 });
+        assert_eq!(choose(h(&held, &genes), kept, h(&next, &genes)).action, Reuse::Rewind { from: 80 });
 
         let mut early: Vec<i32> = (0..40).collect();
         early.push(777); // her view itself changed (a new epoch): before her checkpoint
         early.extend(41..90);
-        assert_eq!(choose(h(&held, &genes), kept, h(&early, &genes)), Reuse::Restart(Miss::Diverged));
+        assert_eq!(choose(h(&held, &genes), kept, h(&early, &genes)).action, Reuse::Restart(Miss::Diverged));
 
-        assert_eq!(choose(h(&held, &genes), kept, h(&next, &"tuned")), Reuse::Restart(Miss::Basis));
-        assert_eq!(choose(h(&held, &genes), [], h(&next, &genes)), Reuse::Restart(Miss::NoCheckpoint));
-        assert_eq!(choose(h(&[], &genes), [], h(&next, &genes)), Reuse::Restart(Miss::Cold));
+        assert_eq!(choose(h(&held, &genes), kept, h(&next, &"tuned")).action, Reuse::Restart(Miss::Basis));
+        assert_eq!(choose(h(&held, &genes), [], h(&next, &genes)).action, Reuse::Restart(Miss::NoCheckpoint));
+        assert_eq!(choose(h(&[], &genes), [], h(&next, &genes)).action, Reuse::Restart(Miss::Cold));
 
         let mut extends = held.clone();
         extends.extend([5, 6]);
-        assert_eq!(choose(h(&held, &genes), kept, h(&extends, &genes)), Reuse::Append { from: 100 });
+        assert_eq!(choose(h(&held, &genes), kept, h(&extends, &genes)).action, Reuse::Append { from: 100 });
     }
 
     // what this catches (the M5, 2026-11-19, 48a1dc80cd: 17 of 30 turns re-prefilled from 0 behind
@@ -140,17 +143,17 @@ mod tests {
         let kept = [Kept { end: 80, basis: &genes }, Kept { end: 20, basis: &genes }];
         let mut turned: Vec<i32> = (0..20).collect();
         turned.extend(500..560); // a new epoch: her view re-rendered behind the same head
-        assert_eq!(choose(h(&held, &genes), kept, h(&turned, &genes)), Reuse::Rewind { from: 20 });
+        assert_eq!(choose(h(&held, &genes), kept, h(&turned, &genes)).action, Reuse::Rewind { from: 20 });
 
         let mut trailer: Vec<i32> = (0..80).collect();
         trailer.push(900);
-        assert_eq!(choose(h(&held, &genes), kept, h(&trailer, &genes)), Reuse::Rewind { from: 80 });
+        assert_eq!(choose(h(&held, &genes), kept, h(&trailer, &genes)).action, Reuse::Rewind { from: 80 });
 
         let mut head_changed: Vec<i32> = vec![777];
         head_changed.extend(1..90);
-        assert_eq!(choose(h(&held, &genes), kept, h(&head_changed, &genes)), Reuse::Restart(Miss::Diverged));
+        assert_eq!(choose(h(&held, &genes), kept, h(&head_changed, &genes)).action, Reuse::Restart(Miss::Diverged));
 
         let mixed = [Kept { end: 80, basis: &"tuned" }, Kept { end: 20, basis: &genes }];
-        assert_eq!(choose(h(&held, &genes), mixed, h(&trailer, &genes)), Reuse::Rewind { from: 20 }, "only her checkpoints under these genes count");
+        assert_eq!(choose(h(&held, &genes), mixed, h(&trailer, &genes)).action, Reuse::Rewind { from: 20 }, "only her checkpoints under these genes count");
     }
 }

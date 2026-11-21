@@ -7,6 +7,7 @@ use crate::scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
 use crate::Qos;
 use std::collections::HashMap;
 use std::hash::Hash;
+use std::future::Future;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -94,24 +95,29 @@ impl<K: Clone + Eq + Hash + Send + 'static> Flow<K> {
     /// Queue work for `owner` at `qos`; resolves when it may start, or at once with why it left
     /// the queue without running (`Refused::Dropped`: superseded by the owner's newer work, or
     /// shed from a full utility/background queue), or `Refused::Stopped` if the dispatcher has.
-    pub async fn submit(&self, owner: K, qos: Qos) -> Result<Grant, Refused> {
+    pub fn submit(&self, owner: K, qos: Qos) -> impl Future<Output = Result<Grant, Refused>> + Send + 'static {
         let ticket = Ticket(self.tickets.fetch_add(1, Ordering::Relaxed));
         let (start, started) = oneshot::channel();
-        self.events.send(Event::Submit { ticket, owner, qos, start }).map_err(|_| Refused::Stopped)?;
-        let mut pending = Pending { ticket, events: self.events.clone(), armed: true };
-        let outcome = started.await.map_err(|_| Refused::Stopped)?;
-        pending.armed = false;
-        let yield_asked = outcome.map_err(Refused::Dropped)?;
-        let events = self.events.clone();
-        Ok(Grant {
-            ticket,
-            events: Box::new(move |t| {
-                let _ = events.send(Event::Release(t)); // a stopped dispatcher has nothing to release
-            }),
-            yield_asked,
-        })
+        // Enqueue now. Observing the start event later requires no worker of its own.
+        let queued = self.events.send(Event::Submit { ticket, owner, qos, start }).map_err(|_| Refused::Stopped);
+        let mut pending = Pending { ticket, events: self.events.clone(), armed: queued.is_ok() };
+        async move {
+            queued?;
+            let outcome = started.await.map_err(|_| Refused::Stopped)?;
+            let events = pending.events.clone();
+            pending.armed = false;
+            // Move the entire cancellation guard into the completion handle.
+            drop(pending);
+            let yield_asked = outcome.map_err(Refused::Dropped)?;
+            Ok(Grant {
+                ticket,
+                events: Box::new(move |t| {
+                    let _ = events.send(Event::Release(t)); // a stopped dispatcher has nothing to release
+                }),
+                yield_asked,
+            })
+        }
     }
-
     /// The capacity changed (an engine relaunched with another slot count).
     pub fn resize(&self, capacity: usize) {
         let _ = self.events.send(Event::Resize(capacity)); // a stopped dispatcher has no capacity

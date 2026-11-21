@@ -3220,6 +3220,7 @@ dependencies = [
  "candle-nn",
  "continuum-base",
  "continuum-engine",
+ "continuum-flow",
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
@@ -3602,9 +3603,11 @@ dependencies = [
 name = "continuum-persona-llama"
 version = "0.1.0"
 dependencies = [
+ "continuum-base",
  "continuum-persona-engine",
  "llama",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 

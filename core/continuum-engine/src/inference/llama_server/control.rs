@@ -215,6 +215,8 @@ pub enum EngineRetirementError {
 /// fake to exercise the pure reconcile decision without a live process.
 #[async_trait]
 pub trait LlamaServerControl: Send + Sync {
+    fn stream_layout(&self) -> StreamLayout;
+
     /// Scoped physical paging uncertainty requires the normal owned-engine
     /// replacement path even when model identity and HTTP health are unchanged.
     fn paging_recovery_required(&self) -> bool {
