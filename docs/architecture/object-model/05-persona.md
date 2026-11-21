@@ -708,3 +708,32 @@ learning. Or academy level work").**
 - **Dreaming (simulation):** at rest she replays and varies her experience, rehearses imagined variations
   and practices against what happened: learning from simulated episodes. Consolidation is a side effect.
 - **Academy:** deliberate coursework she chooses: the only place grading belongs.
+
+**Learning is one always-on process; its duty cycle follows what she is doing (Joel, 2026-11-21: "Two
+forms of conscious learning, one more course like, an activity truly and room, more like benchmarks, and
+conscious learning for every action ... Dreaming is maybe also an activity but synthesized from
+experiences and maybe highly impactful amygdala flagged data, good or bad ... more akin to a gym or
+synthesized realm, more flexible and self directed than academy ... learning is always on in all
+regardless and maybe higher duty cycle while unconscious or during academy coursework, benchmarks").**
+
+| She is | Learning duty | Signal |
+|---|---|---|
+| acting (her normal work) | low: folded in during the Core's idle gaps | every act's outcome |
+| in academy or a benchmark (focused activities) | high, between items | the activity's graded outcomes |
+| dreaming / resting | highest | synthesized episodes |
+
+- The duty is the learning component's need: unlearned signal weight against Core idleness; an
+  amygdala-flagged moment (big surprise, strong correction, good or bad) jumps the queue.
+- Every act: tool receipts (typed success/failure), her surprise tally (stated expectation against
+  verdict), reviews, a human's correction (Surprise in salience) become labelled rows (context, act,
+  outcome) in a buffer; small LoRA steps run on the same loaded model when the Core is idle.
+- Academy and benchmarks: focused activities, the only place grading lives, learning hot between items.
+- Dreaming is the gym: conscious learning and academy without a teacher, its curriculum what the amygdala
+  flagged: replay that context, try variations of what she did, score them with verifiers that exist
+  (tests, re-running the tool), one real moment becoming many practiced ones (prompt captures, turn
+  replay, `academy::gym`, tool sandboxes exist; the new part is choosing episodes by amygdala flags).
+- Ground first: (1) a validator measuring one LoRA step's time and memory on the M5 before anything is
+  wired live (the backward pass on a 35B-A3B MoE is the hard cost; 11-20: BigMama refused an 11.5 MiB
+  learning Prepare 29 times on zero governed VRAM); (2) plan goal 8's acceptance test (a reviewed
+  correction applied on unseen tasks, kept after restart, against the base without the gene); (3) the
+  learning component's state on the health report, so a stall is never silent.
