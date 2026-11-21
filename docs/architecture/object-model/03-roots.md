@@ -231,8 +231,11 @@ A mind asks the Core for a turn with a `Demand` (her need, her value, her switch
 `Granted` when it is her turn (her window is her need, up to the cap), `Waiting` with the event that
 will wake her, or `Infeasible` only when her need exceeds the cap, with the numbers. A mind never holds
 a standing window. Each persona's `Residency` records where her pages are; only the Core moves them.
-The node's governor gives the Core its share of the device beside rendering, speech and embeddings:
-that is the only division, between kinds of work, never among the minds on one Core.
+The node's governor gives the Core its share of the device beside rendering, speech and embeddings,
+and beside any other Core on the same device (two models, or two engines on a large device). That is
+the only division: between Cores and kinds of work, by demand, never a fixed split, and never among the
+minds on one Core. When a Core's share shrinks it gives back cached pages first and its occupant's
+window last.
 
 What it replaces: the serving daemon's per-mind grants on the engine's pool and their "owed" state,
 and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
