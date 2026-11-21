@@ -29,6 +29,8 @@ pub(super) struct Candidate {
 
 impl Candidate {
     fn before(&self, other: &Self) -> std::cmp::Ordering {
+        // derived-or-floor: a half-second queue wait meets the interactive stall threshold.
+        // At the next free boundary, age takes precedence over estimated prefill cost.
         const WAIT_BUDGET_MS: u64 = 500;
         if self.waited_ms.max(other.waited_ms) >= WAIT_BUDGET_MS {
             return other.waited_ms.cmp(&self.waited_ms)
