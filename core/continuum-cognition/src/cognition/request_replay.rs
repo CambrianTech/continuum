@@ -46,8 +46,7 @@ pub struct ReplayRequestParams {
     /// as her next live turn would reuse them. Either way the replay's capture is owned by a
     /// separate replay identity, so a replay never enters her history or her learning.
     #[serde(default)]
-    #[ts(optional)]
-    pub identity: Option<ReplayIdentity>,
+    pub identity: ReplayIdentity,
 }
 
 /// Which mind the engine serves a replay as.
@@ -308,7 +307,7 @@ fn prepare(
     let request_id = Uuid::new_v4().to_string();
     // The capture is always owned by the fresh replay identity, so a replay never enters her
     // history or learning. The engine serves it as a stranger (cold) or as her own mind (warm).
-    let served_as = match p.identity.unwrap_or_default() {
+    let served_as = match p.identity {
         ReplayIdentity::Isolated => replay,
         ReplayIdentity::Resident => persona,
     };
@@ -317,7 +316,7 @@ fn prepare(
     request.request_id = Some(request_id.clone());
     request.provider = Some(p.provider.clone());
     request.purpose = Some("cognition/replay-request".into());
-    let provenance = Provenance { input_comparison, model_from_response, persona, cursor: p.selected.clone(), identity: p.identity.unwrap_or_default() };
+    let provenance = Provenance { input_comparison, model_from_response, persona, cursor: p.selected.clone(), identity: p.identity };
     Ok(Prepared {
         request,
         call: PromptCall {
@@ -496,7 +495,7 @@ mod tests {
             omit_message_indices: Vec::new(),
             expected_request_sha256: None,
             tool_schema_override: None,
-            identity: None,
+            identity: ReplayIdentity::Isolated,
         };
         let read =
             || prompt_capture::detail(dir.path(), persona, &cursor).expect("original capture");
@@ -524,7 +523,7 @@ mod tests {
         assert_eq!(prepared.original_max_tokens, Some(16_384));
         // what this catches: a resident replay served as a stranger (cold, unlike her live turn), or
         // its capture written as hers (a replay entering her history and learning).
-        let resident = ReplayRequestParams { identity: Some(ReplayIdentity::Resident), ..p.clone() };
+        let resident = ReplayRequestParams { identity: ReplayIdentity::Resident, ..p.clone() };
         let served = prepare(read(), &resident, persona).expect("prepare resident replay");
         assert_eq!(served.request.persona_id.as_deref(), Some(persona.to_string().as_str()), "a resident replay is served as her own mind");
         assert_ne!(served.call.persona_id, persona, "its capture is still owned by a separate replay identity");
