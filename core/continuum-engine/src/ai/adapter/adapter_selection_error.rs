@@ -168,6 +168,24 @@ impl AdapterRegistry {
         })
     }
 
+    /// Query the providers present at entry. Each probe owns its handle so registration
+    /// can change during I/O. Results retain the registry's priority order.
+    pub async fn query_available<T, F>(
+        registry: &tokio::sync::RwLock<Self>,
+        query: impl Fn(String, Arc<dyn AIProviderAdapter>) -> F,
+    ) -> Vec<T>
+    where
+        F: std::future::Future<Output = T>,
+    {
+        let providers: Vec<_> = {
+            let registry = registry.read().await;
+            registry.priority_order.iter().filter_map(|id| {
+                registry.adapters.get(id).map(|adapter| (id.clone(), Arc::clone(adapter)))
+            }).collect()
+        };
+        futures::future::join_all(providers.into_iter().map(|(id, adapter)| query(id, adapter))).await
+    }
+
     /// Get available adapters (those that initialized successfully)
     pub fn available(&self) -> Vec<&str> {
         self.priority_order

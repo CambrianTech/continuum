@@ -15,8 +15,10 @@ name = "persona_switch"
 required-features = ["test-fixtures"]
 
 [dependencies]
+continuum-base = { path = "../continuum-base" } # probe!: a refused decode reports what the engine held
 continuum-persona-engine = { path = "../continuum-persona-engine" }
 llama = { path = "../llama" }
+tracing.workspace = true # probe! expands to tracing
 thiserror.workspace = true
 uuid.workspace = true
 

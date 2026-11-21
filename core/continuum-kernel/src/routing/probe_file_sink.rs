@@ -70,7 +70,6 @@
 //! `ProbeRouterLayer` already uses. Not load-bearing today.
 
 use std::collections::HashSet;
-use std::fs::OpenOptions;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -87,24 +86,23 @@ use super::probe_span_meta::{
 };
 
 /// Env var carrying a directory path for rolling JSONL probe capture.
-/// Daily rotation, last `DEFAULT_MAX_LOG_FILES` retained, disk usage
+/// Size rotation under `capped_appender`'s one limit, disk usage
 /// bounded by design. The ONLY env-based entry point — per
 /// `[[auto-clean-is-structural-not-operational]]` any substrate writer
 /// that grows incrementally MUST auto-clean structurally.
 ///
-/// Single-file mode is reachable in-code via
-/// [`JsonlProbeFileSink::new`] for tests + explicit forensic capture;
-/// it is deliberately NOT exposed as an env var to keep operators on
-/// the bounded-by-design path.
+/// There is no single-file mode: every sink rolls (the unbounded constructor
+/// had no production caller and is deleted, #6208).
 pub const ENV_PROBE_DIR: &str = "CONTINUUM_PROBE_DIR";
 
 /// Env var carrying the comma-separated class filter. Empty/unset =
 /// all classes pass through.
 pub const ENV_PROBE_CLASSES: &str = "CONTINUUM_PROBE_CLASSES";
 
-/// Default retention for the rolling-file mode — last 7 days. Matches
-/// the fmt-layer rolling retention so operators learn one number.
-pub const DEFAULT_MAX_LOG_FILES: usize = 7;
+/// Generations the rolling sink keeps: the appender's own `KEEP`, the number the broker's
+/// rotation pool budgets against, never a second count (this sink kept 7 against its 8).
+pub use crate::routing::capped_appender::KEEP as DEFAULT_MAX_LOG_FILES;
+
 
 /// The live probe ledger; the rotation pool that governs its generations names it too.
 pub const PROBE_LEDGER_FILE: &str = "continuum-probes.jsonl";
@@ -116,15 +114,10 @@ pub const PROBE_LEDGER_FILE: &str = "continuum-probes.jsonl";
 /// in-process, this one persists to disk. Both visit the same
 /// tracing event independently; neither blocks the other.
 pub struct JsonlProbeFileSink {
-    /// On-disk target. In single-file mode this is the file path; in
-    /// rolling mode this is the directory holding dated rotation files.
-    /// Same field surfaces both modes so logging / tests don't need to
-    /// branch on the mode.
+    /// On-disk target: the directory holding the dated rotation files.
     target: PathBuf,
-    /// `Box<dyn Write + Send>` wraps whichever underlying writer the
-    /// constructor chose — `BufWriter<File>` for single-file mode,
-    /// `BufWriter<RollingFileAppender>` for rolling mode. Identical
-    /// hot-path code regardless of mode.
+    /// `Box<dyn Write + Send>`: `BufWriter<RollingFileAppender>` in
+    /// production, any writer in tests (a disk that refuses writes).
     writer: Mutex<Box<dyn Write + Send>>,
     /// Empty set = no filter (all classes pass). Non-empty = only
     /// classes in this set get persisted.
@@ -179,41 +172,10 @@ impl std::error::Error for ProbeFileSinkError {
 }
 
 impl JsonlProbeFileSink {
-    /// Construct a sink writing to a single file at `path`.
-    /// **Single-file / forensic mode** — append-only, no rotation,
-    /// grows unbounded. Use [`new_rolling`](Self::new_rolling) for
-    /// production captures per the
-    /// `[[auto-clean-is-structural-not-operational]]` doctrine.
-    ///
-    /// Empty `allowed_classes` = all classes pass. File is opened in
-    /// append mode (created if missing). Buffer flushes per line via
-    /// `BufWriter::new`'s default + explicit `flush` after each event
-    /// (chosen for `tail -f`-ability — operators expect the line to
-    /// appear immediately, not after the buffer fills).
-    pub fn new<P: AsRef<Path>>(
-        path: P,
-        allowed_classes: HashSet<String>,
-    ) -> Result<Self, ProbeFileSinkError> {
-        let path = path.as_ref().to_path_buf();
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(|source| ProbeFileSinkError::OpenFailed {
-                path: path.clone(),
-                source,
-            })?;
-        Ok(Self {
-            target: path,
-            writer: Mutex::new(Box::new(BufWriter::new(file))),
-            allowed_classes,
-        })
-    }
-
     /// Construct a sink writing to a **rotating** JSONL file under
-    /// `dir`. **Rolling / production mode.** Daily rotation, retains
-    /// last `max_log_files` days (default
-    /// [`DEFAULT_MAX_LOG_FILES`] when called via env). Disk usage
+    /// `dir`, rotated at `capped_appender::MAX_LOG_BYTES` and keeping
+    /// `max_log_files` generations (`DEFAULT_MAX_LOG_FILES`, the appender's `KEEP`: the bound the
+    /// `PressureBroker`'s rotation pool budgets against. Disk usage
     /// bounded by design.
     ///
     /// Implements `[[auto-clean-is-structural-not-operational]]`:
@@ -239,14 +201,9 @@ impl JsonlProbeFileSink {
         // Size-rotated, not clock-rotated — see [`crate::routing::capped_appender`]. The
         // probe stream is the HIGHEST-volume writer in the substrate (one JSON line per
         // load-bearing decision across every tokio task), so a clock-based "bound" is even
-        // less of one here than for the fmt log. `max_log_files` keeps its meaning: how many
-        // generations survive. What changes is that a generation now has a size.
-        let appender = crate::routing::capped_appender::CappedAppender::with_limits(
-            &dir,
-            PROBE_LEDGER_FILE,
-            crate::routing::capped_appender::MAX_LOG_BYTES,
-            max_log_files,
-        )
+        // less of one here than for the fmt log. A generation has the appender's size; how many
+        // survive is `max_log_files` (`DEFAULT_MAX_LOG_FILES` is the appender's `KEEP`).
+        let appender = crate::routing::capped_appender::CappedAppender::with_limits(&dir, PROBE_LEDGER_FILE, crate::routing::capped_appender::MAX_LOG_BYTES, max_log_files)
         .map_err(|source| ProbeFileSinkError::OpenFailed {
             path: dir.clone(),
             source,
@@ -260,8 +217,7 @@ impl JsonlProbeFileSink {
 
     /// Construct from `CONTINUUM_PROBE_DIR` + `CONTINUUM_PROBE_CLASSES`.
     /// The ONLY env-based entry point — rolling mode, structural
-    /// auto-clean, bounded disk usage. Single-file mode is reachable
-    /// only via [`new`](Self::new) in-code for tests + forensic capture.
+    /// auto-clean, bounded disk usage.
     ///
     /// Returns `Err(EnvVarUnset)` if `CONTINUUM_PROBE_DIR` is missing —
     /// callers treat that as "sink intentionally disabled, install no
@@ -277,24 +233,28 @@ impl JsonlProbeFileSink {
                     .filter(|c| !c.is_empty())
                     .collect::<HashSet<_>>()
             })
-            .unwrap_or_default();
+            .unwrap_or_default(); // JUSTIFIED: an unset class filter is documented as "every class passes", not an unknown
         Self::new_rolling(dir, allowed_classes, DEFAULT_MAX_LOG_FILES)
     }
 
-    /// The on-disk target the sink writes to. In single-file mode this
-    /// is the file path; in rolling mode this is the directory holding
-    /// the dated rotation files. Useful for tests + boot logging.
+    /// The directory the sink rolls its dated files in. Useful for
+    /// tests + boot logging.
     pub fn target(&self) -> &Path {
         &self.target
     }
 
     /// Write one ProbeEvent as a JSONL line. Flushes immediately so
-    /// `tail -f` works. Errors are dropped silently — a sink that
-    /// can't write its line to disk SHOULDN'T panic the persona
-    /// service loop. The next event tries again; persistent failures
-    /// surface via the file's apparent staleness, not a substrate
-    /// crash.
+    /// `tail -f` works. A line it cannot write never fails its caller (a
+    /// probe is telemetry); it is counted in `continuum_base::probe_writes`,
+    /// so a reader that claims records reached the log says how many did not.
     fn write_one(&self, captured_at_ms: u64, ev: &ProbeEvent) {
+        if !self.wrote(captured_at_ms, ev) {
+            continuum_base::probe_writes::count_failure();
+        }
+    }
+
+    /// Whether the line was serialized, written and flushed.
+    fn wrote(&self, captured_at_ms: u64, ev: &ProbeEvent) -> bool {
         #[derive(Serialize)]
         struct OnDiskEnvelope<'a> {
             captured_at_ms: u64,
@@ -313,15 +273,13 @@ impl JsonlProbeFileSink {
             fields: &ev.fields,
         };
 
-        let Ok(line) = serde_json::to_string(&envelope) else {
-            return;
+        let Ok(line) = serde_json::to_string(&envelope) else { // disk format: the JSONL line this sink exists to write
+            return false;
         };
         let Ok(mut guard) = self.writer.lock() else {
-            return; // poisoned lock — sink is effectively dead; don't crash callers
+            return false; // poisoned lock — sink is effectively dead; don't crash callers
         };
-        if writeln!(guard, "{line}").is_ok() {
-            let _ = guard.flush();
-        }
+        writeln!(guard, "{line}").and_then(|()| guard.flush()).is_ok()
     }
 }
 
