@@ -189,3 +189,55 @@ async fn a_component_says_its_own_need_and_the_engine_publishes_it_with_its_inta
     assert_eq!(busy.max(urgent), urgent, "urgency decides before queue depth");
     assert_eq!(busy.max(Need { urgency: Urgency::Want, waiting: 1 }), busy, "among equals, more waiting");
 }
+
+/// Runs its heavy pass only where its terrain is new to it, like CBAR's color finder at the frontier.
+struct Finder {
+    covered: Seen<(i32, i32)>,
+    heavy_passes: u32,
+    reported: tokio::sync::mpsc::UnboundedSender<(Urgency, u32)>,
+}
+
+struct Tile(i32, i32);
+
+impl Component for Finder {
+    type Input = Tile;
+    const NAME: &'static str = "finder";
+    const QOS: Qos = Qos::Work;
+    fn wire(&self, _: &mut Wiring<'_, Self>) {}
+    async fn handle(&mut self, Tile(x, y): Tile, ctx: &mut Ctx<Self>) {
+        let novelty = self.covered.novelty(&(x, y));
+        let urgency = if novelty == Novelty::FRONTIER { Urgency::Urgent } else { Urgency::Content };
+        if urgency == Urgency::Urgent {
+            self.heavy_passes += 1;
+        }
+        self.covered.learn(&(x, y));
+        ctx.need(urgency);
+        assert!(self.reported.send((urgency, self.heavy_passes)).is_ok(), "the test reads every tile");
+    }
+}
+
+// what this catches: a part told by a coordinator what is new, or one that only knows its last frame.
+// It measures novelty against its own coverage over its whole history: an unseen tile is frontier (it
+// runs its heavy pass, Urgent); a tile it covered before is familiar (Content, no pass), even after
+// other tiles came between; and familiarity grows with each meeting.
+#[tokio::test]
+async fn a_part_decides_on_its_own_frontier_from_what_it_knows() {
+    let (reported, mut tiles) = tokio::sync::mpsc::unbounded_channel();
+    let finder = start(Finder { covered: Seen::default(), heavy_passes: 0, reported }, &Bus::new(), OwnerId(Uuid::from_u128(5)), 1);
+    for tile in [Tile(0, 0), Tile(0, 1), Tile(0, 0)] {
+        assert!(finder.tell(tile).await);
+    }
+    assert_eq!(tiles.recv().await, Some((Urgency::Urgent, 1)), "frontier");
+    assert_eq!(tiles.recv().await, Some((Urgency::Urgent, 2)), "frontier");
+    assert_eq!(tiles.recv().await, Some((Urgency::Content, 2)), "covered before, with another tile between: familiar, no pass");
+    let mut seen = Seen::default();
+    assert_eq!(seen.novelty(&"a newcomer"), Novelty::FRONTIER);
+    seen.learn(&"a newcomer");
+    let once = seen.novelty(&"a newcomer");
+    seen.learn(&"a newcomer");
+    assert!(seen.novelty(&"a newcomer") < once && once < Novelty::FRONTIER, "familiarity grows with each meeting");
+    let mut last = LastSeen::default();
+    last.learn(&7);
+    assert_eq!((last.novelty(&7), last.novelty(&8)), (Novelty::KNOWN, Novelty::FRONTIER));
+    assert_eq!(Novelty::new(1.5), None);
+}

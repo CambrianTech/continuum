@@ -18,10 +18,12 @@
 
 mod bus;
 mod ctx;
+mod known;
 mod need;
 
 pub use bus::{Bus, Key, Taken};
 pub use ctx::Ctx;
+pub use known::{Known, LastSeen, Novelty, Seen};
 pub use need::{need_key, Need, Urgency, NEED};
 
 use std::future::Future;
