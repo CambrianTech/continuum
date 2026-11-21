@@ -57,6 +57,20 @@ fn main() {
         .include(submodule.join("vendor"))
         .file(manifest_dir.join("chat_boundary.cpp"))
         .compile("continuum_chat_boundary");
+    // Her genome's native edge (a fresh shadow, common/common.h): compiled before llama-common is
+    // linked below, like the chat boundary.
+    println!("cargo:rerun-if-changed=genome_boundary.cpp");
+    cc::Build::new()
+        .cpp(true)
+        .std("c++17")
+        .flag_if_supported("/EHsc")
+        .flag_if_supported("/utf-8")
+        .include(submodule.join("include"))
+        .include(submodule.join("ggml/include"))
+        .include(submodule.join("common"))
+        .include(submodule.join("vendor"))
+        .file(manifest_dir.join("genome_boundary.cpp"))
+        .compile("continuum_genome_boundary");
     println!("cargo:rerun-if-changed={}", submodule.display());
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=msvc_cache.rs");

@@ -22,6 +22,8 @@ sha2 = { workspace = true } # streamed producer-output identity shared with cach
 
 [features]
 embedding-model-tests = []
+# A lesson on a real model (src/safe/lesson_tests.rs): needs CONTINUUM_TEST_LEARN_MODEL.
+learning-model-tests = []
 default = []
 metal = []
 cuda = []
