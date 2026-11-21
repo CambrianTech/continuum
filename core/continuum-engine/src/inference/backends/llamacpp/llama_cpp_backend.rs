@@ -1,4 +1,5 @@
 use super::*;
+use crate::ai::inference_error::InferenceError;
 
 /// A turn's prompt and the head of it her next act will hold unchanged (her view, without the
 /// generation prompt), which the engine checkpoints her at. `None` for a turn with no view.
@@ -595,7 +596,7 @@ pub struct TurnAnswer {
 }
 
 impl TurnAnswer {
-    pub async fn collect(mut self) -> Result<(String, usize), String> {
+    pub async fn collect(mut self) -> Result<(String, usize), InferenceError> {
         let mut output = String::new();
         loop {
             match self.events.recv().await {
@@ -627,13 +628,48 @@ impl TurnAnswer {
                     }
                     return Ok((output, n_decoded));
                 }
+                Some(TokenEvent::Exceeded(exceeded)) => {
+                    // The Core's own numbers outrank any window cached from a plan: her caller
+                    // refits to them, never resends this request.
+                    return Err(refit_to(exceeded));
+                }
                 Some(TokenEvent::Error(e)) => {
-                    return Err(format!("scheduler error: {e}"));
+                    return Err(InferenceError::Transient(format!("scheduler error: {e}")));
                 }
                 None => {
-                    return Err("scheduler closed without Done event".to_string());
+                    return Err(InferenceError::Transient("scheduler closed without Done event".to_string()));
                 }
             }
         }
+    }
+}
+
+/// The Core's refusal as the typed error her caller refits on. Counts outside the error's token
+/// range are a broken receipt, not a number to clamp (as `serving_guard` types a measured overflow).
+fn refit_to(exceeded: crate::inference::backends::persona_scheduler::Exceeded) -> InferenceError {
+    match (u32::try_from(exceeded.prompt_tokens), u32::try_from(exceeded.capacity)) {
+        (Ok(requested), Ok(available)) => InferenceError::ContextExceeded { requested, available },
+        _ => InferenceError::Protocol("the Core's refusal counts exceed the typed error's token range".into()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // what this catches: a turn the Core refused at its door for want of room reaching her caller as
+    // a transient fault (text), so it was resent unchanged; it must arrive as `ContextExceeded` with
+    // the Core's own numbers, the one refusal cognition refits on (the M5, 2026-11-21).
+    #[tokio::test]
+    async fn a_turn_the_core_cannot_fit_reaches_its_caller_as_context_exceeded() {
+        let (refusal, events) = tokio::sync::mpsc::unbounded_channel();
+        let exceeded = crate::inference::backends::persona_scheduler::Exceeded { prompt_tokens: 24_202, capacity: 24_320 };
+        assert!(refusal.send(TokenEvent::Exceeded(exceeded)).is_ok());
+        let answer = TurnAnswer { events, started: Instant::now(), prompt_chars: 0, stops: Vec::new() };
+        let refused = answer.collect().await;
+        assert!(
+            matches!(refused, Err(InferenceError::ContextExceeded { requested: 24_202, available: 24_320 })),
+            "{refused:?}"
+        );
     }
 }

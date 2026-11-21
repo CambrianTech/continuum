@@ -27,9 +27,9 @@ pub(super) enum At {
         /// Whether reaching her took a switch from another mind.
         switched: bool,
     },
-    /// Her turn was refused at the door: its prompt leaves no room in one stream. It was never
+    /// Her turn was refused at the door: her prompt and the reply she asked for do not fit one stream. It was never
     /// admitted, so it has no other transition.
-    Infeasible { prompt_tokens: usize, capacity: usize },
+    Infeasible { prompt_tokens: usize, reply_tokens: usize, capacity: usize },
     /// Her turn ended without an answer: refused, failed, or her caller hung up. Every admitted turn
     /// ends in exactly one of this or `persona.engine.turn`.
     Refused {
@@ -115,15 +115,16 @@ impl Transition {
                 switched = switched,
                 "a turn's first frame began"
             ),
-            At::Infeasible { prompt_tokens, capacity } => continuum_base::probe!(
+            At::Infeasible { prompt_tokens, reply_tokens, capacity } => continuum_base::probe!(
                 class = "persona.engine.infeasible",
                 request = ?request,
                 incarnation = incarnation,
                 persona = %self.persona,
                 one_off = self.one_off,
                 prompt_tokens = prompt_tokens,
+                reply_tokens = reply_tokens,
                 capacity = capacity,
-                "a turn refused at the door: its prompt leaves no room in one stream"
+                "a turn refused at the door: her prompt and reply do not fit one stream"
             ),
             At::Refused { since_admit_ms, reason } => continuum_base::probe!(
                 class = "persona.engine.refused",

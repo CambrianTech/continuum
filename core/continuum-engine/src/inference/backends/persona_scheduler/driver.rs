@@ -556,12 +556,12 @@ impl Driver<'_, '_> {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
         };
-        // A prompt this Core's stream cannot hold is refused at the door, with the numbers, before
-        // any prefill is spent on it.
-        if let Err(infeasible) = self.capacity.admit(req.prompt.len()) {
-            let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity };
+        // A turn this Core's stream cannot hold, prompt and asked-for reply, is refused at the door
+        // with the numbers, before any prefill is spent on it; her caller refits to the stream.
+        if let Err(infeasible) = self.capacity.admit(req.prompt.len(), req.max_tokens) {
+            let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, reply_tokens: infeasible.reply_tokens, capacity: infeasible.capacity };
             self.record.send(record::Fact::Transition(transition::Transition { request: req.request.clone(), persona: id.0, one_off, at }));
-            tell(&req.response_tx, TokenEvent::Error(infeasible.to_string()));
+            tell(&req.response_tx, TokenEvent::Exceeded(super::Exceeded { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity }));
             return;
         }
         // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.

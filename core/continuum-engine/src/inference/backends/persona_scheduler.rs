@@ -62,8 +62,19 @@ pub enum TokenEvent {
     Token(String),
     /// Generation finished cleanly (EOG / max_tokens / stop sequence).
     Done { tokens_generated: usize, elapsed_ms: u64 },
+    /// Refused at the door: her prompt and the reply she asked for do not fit one stream. Her caller
+    /// refits to `capacity`; resending the same request cannot succeed.
+    Exceeded(Exceeded),
     /// Generation failed: a refused move, a decode error.
     Error(String),
+}
+
+/// A turn too large for one stream, as its caller refits: her prompt's exact count and what one
+/// stream holds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Exceeded {
+    pub prompt_tokens: usize,
+    pub capacity: usize,
 }
 
 /// A turn's prompt as token ids and where her view ends in them, computed by the submitter on its

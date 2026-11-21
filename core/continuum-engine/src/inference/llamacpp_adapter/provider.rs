@@ -4,6 +4,7 @@
 //! without crossing the file limit.
 
 use super::*;
+use crate::ai::inference_error::InferenceError;
 
 #[async_trait]
 impl AIProviderAdapter for LlamaCppAdapter {
@@ -130,11 +131,36 @@ impl AIProviderAdapter for LlamaCppAdapter {
         Ok(())
     }
 
+    /// Convenience drain over [`generate_stream`], as every streaming adapter has it.
     async fn generate_text(
         &self,
         request: TextGenerationRequest,
         dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
+        crate::ai::stream_sinks::drain_generation(|sink| self.generate_stream(request, sink, dispatched)).await
+    }
+
+    /// The text form of [`generate_stream_checked`], for callers outside the typed seam.
+    async fn generate_stream(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
+    ) -> Result<TextGenerationResponse, String> {
+        self.generate_stream_checked(request, sink, dispatched).await.map_err(|error| error.to_string())
+    }
+
+    /// One turn on the in-process engine, its failure typed at this seam: a turn the Core cannot
+    /// fit arrives as `ContextExceeded` with the Core's own numbers, so her caller refits once
+    /// instead of resending it as a transient fault (the M5, 2026-11-21: seven turns failed at the
+    /// stream's end; as text each was retried unchanged). Every other failure is `Transient`, as
+    /// it was. The engine collects the whole turn, so the answer reaches `sink` whole.
+    async fn generate_stream_checked(
+        &self,
+        request: TextGenerationRequest,
+        sink: tokio::sync::mpsc::UnboundedSender<crate::ai::adapter::GenerationChunk>,
+        dispatched: crate::ai::adapter::Dispatched,
+    ) -> Result<TextGenerationResponse, InferenceError> {
         // The monotonic origin of every later transition's `since_enter` (`inference.generate.enter`).
         let entered = Instant::now();
         let allocation = self.allocation()?;
@@ -264,7 +290,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 let prompt = super::chat_turn::prompt_of(&described)?;
                 Ok((prompt, render, described))
             });
-            let (prompt, render, described) = turn.map_err(|refused| refused.to_string())?; // the adapter trait's error is text
+            let (prompt, render, described) = turn.map_err(|refused| refused.to_string())?; // a render refusal is Transient, as it was
             (prompt, Vec::new(), Some((render, described)))
         } else {
             let mut collected_media: Vec<(llama::MediaKind, Vec<u8>)> = Vec::new();
@@ -406,7 +432,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
             .collect();
 
-        let result: Result<(String, usize), String> = if collected_media.is_empty() {
+        let result: Result<(String, usize), InferenceError> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             // RTOS timing probe: this is the actual LLM forward pass —
             // by far the dominant cost (95%+ on LCD tier per
@@ -477,7 +503,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     "llamacpp_adapter: LoRA genes {names:?} requested with media — not supported \
                      on the multimodal bypass path (v1). Genes apply only on the text scheduler \
                      path; send the gene-bearing request without media."
-                ));
+                ).into());
             }
             if collected_media.len() > 1 {
                 let kinds: Vec<String> = collected_media
@@ -490,7 +516,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                      generate_with_media accepts &[(MediaKind, Vec<u8>)]",
                     collected_media.len(),
                     kinds.join(", ")
-                ));
+                ).into());
             }
             let Some((kind, media_bytes)) = collected_media.into_iter().next() else {
                 return Err("llamacpp_adapter: the media path was taken with no media item".into());
@@ -523,6 +549,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 })
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
+            .map_err(InferenceError::from)
         };
         let (written, tokens) = result?;
         // What she wrote, read by the render that produced her prompt: content, reasoning and her
@@ -536,7 +563,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     turn.probe_if_empty(output, &request);
                     (turn.text, turn.reasoning, turn.tool_calls)
                 }
-                Err(refused) => return Err(refused.to_string()),
+                Err(refused) => return Err(refused.to_string().into()),
             },
             None => (written, None, None),
         };
@@ -580,7 +607,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // model's actual EOS tokens stop generation (handled inside the
         // scheduler via `is_eog_token`) and don't leak as text.
 
-        Ok(TextGenerationResponse {
+        let response = TextGenerationResponse {
             text,
             finish_reason,
             model: backend.model_id().to_string(),
@@ -600,7 +627,9 @@ impl AIProviderAdapter for LlamaCppAdapter {
             routing: None,
             error: None,
             timing: None,
-        })
+        };
+        crate::ai::stream_sinks::deliver_whole(&sink, &response).await;
+        Ok(response)
     }
 
     /// Embeddings via the backend's dedicated embedding-mode context. The loaded

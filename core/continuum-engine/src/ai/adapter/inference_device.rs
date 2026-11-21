@@ -632,17 +632,7 @@ pub trait AIProviderAdapter: super::DispatchTermsPolicy + Send + Sync {
         dispatched: super::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
         let response = self.generate_text(request, dispatched).await?;
-        if sink.is_closed() {
-            return Ok(response); // No observer: keep the result without cloning discarded chunks.
-        }
-        if let Some(reasoning) = response.reasoning.as_ref() {
-            if !reasoning.is_empty() {
-                crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Reasoning(reasoning.clone())).await;
-            }
-        }
-        if !response.text.is_empty() {
-            crate::ai::stream_sinks::deliver(&sink, GenerationChunk::Token(response.text.clone())).await;
-        }
+        crate::ai::stream_sinks::deliver_whole(&sink, &response).await;
         Ok(response)
     }
 
