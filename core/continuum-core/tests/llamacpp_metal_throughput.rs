@@ -132,7 +132,7 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             None,
-            TurnPrompt { text: "Reply OK.", stable_prefix: None, request: None }, 10, backend.turn_sampler(None, &SamplingConfig::chat(), None).expect("plain sampler"), &[], &[])
+            TurnPrompt { text: "Reply OK.", stable_prefix: None, urgency: Default::default(), request: None }, 10, backend.turn_sampler(None, &SamplingConfig::chat(), None).expect("plain sampler"), &[], &[])
         .expect("submit test turn")
         .collect()
         .await
@@ -152,7 +152,7 @@ async fn qwen35_4b_metal_throughput_via_bundled_llamacpp() {
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             None,
-            TurnPrompt { text: "Count from 1 to 50, separated by commas.", stable_prefix: None, request: None },
+            TurnPrompt { text: "Count from 1 to 50, separated by commas.", stable_prefix: None, urgency: Default::default(), request: None },
             100,
             backend.turn_sampler(None, &SamplingConfig::chat(), None).expect("plain sampler"),
             &[],

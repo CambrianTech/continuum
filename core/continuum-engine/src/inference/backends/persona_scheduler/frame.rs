@@ -11,12 +11,16 @@
 //! prompt still needs its own handling is measured, not assumed.
 //!
 //! So: the bound mind's turn, once started, keeps the Core until it ends. When no turn is in
-//! progress, turns waiting at least half a second go oldest first. Below that threshold,
+//! progress, the most urgent waiting turn goes next (object model 5.7, Need: each mind says how much
+//! she needs her turn: Urgent when addressed, Want with work in hand, Content otherwise); within one
+//! urgency, turns waiting at least half a second go oldest first. Below that threshold,
 //! remaining prefill cost and age decide. Affinity breaks ties.
 
 /// A turn as the pick sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
+    /// How much her mind needs this turn.
+    pub urgency: continuum_sage::component::Urgency,
     /// Her mind is the one bound to the decoding stream now.
     pub active: bool,
     /// Her turn has begun: prefilling or decoding.
@@ -50,15 +54,20 @@ pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
     if let Some(running) = turns.iter().position(|turn| turn.active && turn.started) {
         return Some(running);
     }
-    turns.iter().enumerate().min_by(|(_, a), (_, b)| a.before(b)).map(|(index, _)| index)
+    turns
+        .iter()
+        .enumerate()
+        .min_by(|(_, a), (_, b)| b.urgency.cmp(&a.urgency).then_with(|| a.before(b)))
+        .map(|(index, _)| index)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use continuum_sage::component::Urgency;
 
     fn turn(active: bool, started: bool, remaining: usize, waited_ms: u64) -> Candidate {
-        Candidate { active, started, remaining, waited_ms }
+        Candidate { urgency: Urgency::Want, active, started, remaining, waited_ms }
     }
 
     #[test]
@@ -101,5 +110,20 @@ mod tests {
             pick(&[turn(true, false, 0, 0), older]) == Some(1)
         });
         assert_eq!(served, Some(1), "the older mind is served on its first round");
+    }
+
+    // what this catches: an addressed mind waiting behind minds that only want to continue, or a
+    // turn in progress cut for her. The most urgent waiting turn goes next, however long the others
+    // waited; within one urgency the existing rules hold; a running turn still runs to its end.
+    #[test]
+    fn the_most_urgent_waiting_turn_goes_next_and_a_running_turn_still_ends() {
+        let with = |urgency, active, started, waited_ms| Candidate { urgency, active, started, remaining: 100, waited_ms };
+        let addressed = with(Urgency::Urgent, false, false, 0);
+        let continuing = with(Urgency::Want, false, false, 90_000);
+        let musing = with(Urgency::Content, true, false, 120_000);
+        assert_eq!(pick(&[continuing, musing, addressed]), Some(2), "urgency before age and affinity");
+        assert_eq!(pick(&[musing, continuing]), Some(1), "Want before Content");
+        let running = with(Urgency::Content, true, true, 0);
+        assert_eq!(pick(&[addressed, running]), Some(1), "the running turn ends first; she is next");
     }
 }

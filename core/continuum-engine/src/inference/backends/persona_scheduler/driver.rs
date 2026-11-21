@@ -577,7 +577,7 @@ impl Driver<'_, '_> {
             request: req.request.clone(),
             persona: id.0,
             one_off,
-            at: transition::At::Admitted { queue_depth: turns.len() + 1, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
+            at: transition::At::Admitted { queue_depth: turns.len() + 1, urgency: req.urgency, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
         };
         turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
         self.record.send(record::Fact::Transition(admitted));
@@ -610,7 +610,7 @@ impl Driver<'_, '_> {
                     Phase::Decoding { .. } => (true, 0),
                 };
                 let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { active: active == Some(turn.id), started, remaining, waited_ms }
+                frame::Candidate { urgency: turn.req.urgency, active: active == Some(turn.id), started, remaining, waited_ms }
             })
             .collect();
         frame::pick(&candidates).map(|chosen| eligible[chosen])

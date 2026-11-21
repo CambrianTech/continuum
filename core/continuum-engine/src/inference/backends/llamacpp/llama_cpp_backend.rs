@@ -7,6 +7,8 @@ use crate::ai::inference_error::InferenceError;
 pub struct TurnPrompt<'a> {
     pub text: &'a str,
     pub stable_prefix: Option<&'a str>,
+    /// How much her mind needs this turn: the Core ranks waiting turns by it.
+    pub urgency: continuum_sage::component::Urgency,
     /// The submitted request's id, carried into the engine's transitions.
     pub request: Option<&'a str>,
 }
@@ -565,6 +567,7 @@ impl LlamaCppBackend {
             active_loras: resolved_loras,
             response_tx,
             persona_id,
+            urgency: turn.urgency,
             request: turn.request.map(super::super::persona_scheduler::RequestId::new),
             submitted: Instant::now(),
         };

@@ -96,7 +96,7 @@ async fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(context_length).expect("explicit test allocation")),
             None,
-            TurnPrompt { text: &prompt, stable_prefix: None, request: None }, 2500, backend.turn_sampler(None, &sampling, None).expect("plain sampler"), &stop, &[])
+            TurnPrompt { text: &prompt, stable_prefix: None, urgency: Default::default(), request: None }, 2500, backend.turn_sampler(None, &sampling, None).expect("plain sampler"), &stop, &[])
         .expect("submit test turn")
         .collect()
         .await
@@ -170,7 +170,7 @@ async fn qwen35_scheduler_json_grammar_returns_object() {
         .submit_for_persona(
             GenerationAllocation::new(std::num::NonZeroU32::new(32768).expect("explicit test allocation")),
             None,
-            TurnPrompt { text: &prompt, stable_prefix: None, request: None },
+            TurnPrompt { text: &prompt, stable_prefix: None, urgency: Default::default(), request: None },
             128,
             backend.turn_sampler(None, &sampling, None).expect("plain sampler"),
             &["<|im_end|>", "<|endoftext|>"],

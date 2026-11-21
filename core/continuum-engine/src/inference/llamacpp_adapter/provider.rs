@@ -403,6 +403,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let stable_for_blocking = stable_prefix.clone();
         let stop_for_closure = stop_owned.clone();
         let request_for_blocking = request.request_id.clone();
+        // Her need rides this call's scope; read here, before the blocking hop leaves it.
+        let urgency = crate::inference::need::current();
         // Parse the wire-format persona_id (Option<String> on the public
         // request type) to Option<Uuid> for the typed scheduler API. A
         // malformed UUID drops to None rather than failing the request —
@@ -470,7 +472,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         .collect();
                     backend_for_blocking.submit_for_persona(
                         allocation, persona_id,
-                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), request: request_for_blocking.as_deref() },
+                        crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), urgency, request: request_for_blocking.as_deref() },
                         max_tokens,
                         sampler,
                         &stop_refs,

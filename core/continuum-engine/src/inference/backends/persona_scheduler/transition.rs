@@ -13,6 +13,8 @@ pub(super) enum At {
         /// Turns in the queue, hers included.
         queue_depth: usize,
         prompt_tokens: usize,
+        /// How much her mind needs it: the queue ranks by it.
+        urgency: continuum_sage::component::Urgency,
         /// Since her turn was handed to the scheduler.
         since_submit_ms: u64,
     },
@@ -92,13 +94,14 @@ impl Transition {
         // The same shape the adapter logs (`Some("…")`), so the two ends join exactly.
         let request = self.request.as_ref().map(RequestId::as_str);
         match self.at {
-            At::Admitted { queue_depth, prompt_tokens, since_submit_ms } => continuum_base::probe!(
+            At::Admitted { queue_depth, urgency, prompt_tokens, since_submit_ms } => continuum_base::probe!(
                 class = "persona.engine.admitted",
                 request = ?request,
                 incarnation = incarnation,
                 persona = %self.persona,
                 one_off = self.one_off,
                 queue_depth = queue_depth,
+                urgency = ?urgency,
                 prompt_tokens = prompt_tokens,
                 since_submit_ms = since_submit_ms,
                 "the driver took a turn into its queue"
