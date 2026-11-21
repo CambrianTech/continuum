@@ -193,15 +193,15 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         image_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), String> {
+    ) -> Result<(String, usize), InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
             image_bytes,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences,
             llama::MediaKind::Image,
         )
@@ -226,15 +226,15 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         audio_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
-    ) -> Result<(String, usize), String> {
+    ) -> Result<(String, usize), InferenceError> {
         self.generate_with_media(
             allocation,
             prompt_with_marker,
             audio_bytes,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences,
             llama::MediaKind::Audio,
         )
@@ -252,10 +252,10 @@ impl LlamaCppBackend {
         prompt_with_marker: &str,
         media_bytes: &[u8],
         max_tokens: usize,
-        sampling: SamplingConfig,
+        mut sampler: llama::TurnSampler,
         stop_sequences: &[&str],
         kind: llama::MediaKind,
-    ) -> Result<(String, usize), String> {
+    ) -> Result<(String, usize), InferenceError> {
         let log = runtime::logger("llamacpp");
         let start = Instant::now();
         let mtmd = self.ensure_mtmd()?;
@@ -266,7 +266,7 @@ impl LlamaCppBackend {
                         "model {}'s mmproj does not declare vision support — \
                          caller passed an image but the projector is text-only or audio-only",
                         self.model_id
-                    ));
+                    ).into());
                 }
             }
             llama::MediaKind::Audio => {
@@ -275,7 +275,7 @@ impl LlamaCppBackend {
                         "model {}'s mmproj does not declare audio support — \
                          caller passed audio but the projector is text-only or vision-only",
                         self.model_id
-                    ));
+                    ).into());
                 }
             }
         }
@@ -328,31 +328,8 @@ impl LlamaCppBackend {
             start.elapsed().as_millis()
         ));
 
-        // Sample-until-done loop. Uses the native sampler and
-        // single-seq, no scheduler. EOG / max_tokens / stop-sequence are
-        // the three exit conditions, same shape.
-        let mut sampler = if sampling.temperature <= 0.0 && sampling.grammar.is_none() {
-            llama::Sampler::greedy()
-        } else {
-            let mut chain = llama::Sampler::chain();
-            if let Some(g) = sampling.grammar.as_ref() {
-                chain = chain.grammar(&self.model, g, "root");
-            }
-            if sampling.top_k > 0 {
-                chain = chain.top_k(sampling.top_k as i32);
-            }
-            if sampling.top_p > 0.0 && sampling.top_p < 1.0 {
-                chain = chain.top_p(sampling.top_p as f32, 1);
-            }
-            chain = chain.penalties(self.model.n_vocab(), 64, sampling.repeat_penalty, 0.0, 0.0);
-            let temp = if sampling.temperature > 0.0 {
-                sampling.temperature as f32
-            } else {
-                0.01
-            };
-            chain.temp(temp).dist(42).build()
-        };
-
+        // Sample-until-done loop, single-seq, no scheduler, with the sampler the provider built for
+        // her turn. EOG / max_tokens / stop-sequence are the three exit conditions.
         let mut output = String::new();
         let mut pos = n_past;
         let mut tokens_generated = 0usize;
@@ -363,7 +340,7 @@ impl LlamaCppBackend {
         // text-batch's last token has logits set and llama_get_logits_ith
         // honors -1 as that position.
         loop {
-            let token = sampler.sample(&ctx, -1);
+            let token = sampler.sample(&ctx, -1)?;
             if self.model.is_eog_token(token) {
                 break;
             }
@@ -445,6 +422,20 @@ impl LlamaCppBackend {
         templates.render(request, reasoning)
     }
 
+    /// Her turn's sampler on this model: from `render` when her turn has one (its tool grammar,
+    /// generation prompt and thinking tags, with `think_budget`), else from `sampling` alone.
+    pub fn turn_sampler(
+        &self,
+        render: Option<&llama::ChatRender>,
+        sampling: &SamplingConfig,
+        think_budget: Option<u32>,
+    ) -> Result<llama::TurnSampler, llama::ChatRefusal> {
+        match render {
+            Some(render) => render.sampler(&self.model, sampling.knobs(), think_budget),
+            None => llama::TurnSampler::plain(&self.model, sampling.knobs(), sampling.grammar.as_deref()),
+        }
+    }
+
     /// Ensure a LoRA adapter is loaded (idempotent). Used by genome paging.
     pub fn ensure_adapter(&self, id: &str, path: &Path) -> Result<(), String> {
         let mut guard = self
@@ -510,7 +501,7 @@ impl LlamaCppBackend {
         persona_id: Option<uuid::Uuid>,
         turn: TurnPrompt<'_>,
         max_tokens: usize,
-        sampling: SamplingConfig,
+        sampler: llama::TurnSampler,
         stop_sequences: &[&str],
         active_loras: &[(String, f32)],
     ) -> Result<TurnAnswer, String> {
@@ -551,10 +542,6 @@ impl LlamaCppBackend {
                 .collect::<Result<Vec<_>, String>>()?
         };
 
-        // Caller passes the full SamplingConfig (the value-object pattern
-        // — adding fields like `grammar` doesn't require changing this
-        // signature). Previously this path silently overwrote the caller's
-        // top_k/top_p/repeat_penalty fields with no-op defaults.
         // Tokenized here, on this act's own thread, so the engine thread never tokenizes.
         let (prompt, view_end) = super::super::persona_scheduler::prepare(&self.model, prompt, turn.stable_prefix)?;
         let prompt_tokens = prompt.len();
@@ -562,7 +549,7 @@ impl LlamaCppBackend {
             prompt,
             view_end,
             max_tokens,
-            sampling,
+            sampler,
             stop_sequences: stop_sequences.iter().map(|s| s.to_string()).collect(),
             active_loras: resolved_loras,
             response_tx,

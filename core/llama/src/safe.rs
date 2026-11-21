@@ -14,7 +14,7 @@ pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod chat;
-pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, ThinkBound};
+pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, SamplingKnobs, TurnSampler};
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};

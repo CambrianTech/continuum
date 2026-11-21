@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
-use llama::{Batch, BindRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, Sampler};
+use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, TurnSampler};
 
 /// Execution streams one context holds: the active mind's and the next mind's. The context is
 /// created with this many sequences; no more are ever decoded at once (one decodes, one binds).
@@ -132,14 +132,16 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         self.ctx.graphs_reused()
     }
 
-    /// Sample her next token from output `i` of the last decode. Like [`Self::logits_ith`], reading the
-    /// logits synchronizes, so it also attests the last decode landed.
-    pub fn sample(&self, sampler: &mut Sampler, i: i32) -> i32 {
-        let token = sampler.sample(self.ctx, i);
+    /// Sample her next token from output `i` of the last decode with her turn's sampler. Like
+    /// [`Self::logits_ith`], reading the logits synchronizes, so it also attests the last decode
+    /// landed. A step her sampler refuses (a token its grammar cannot accept) is named, never a
+    /// token.
+    pub fn sample(&self, sampler: &mut TurnSampler, i: i32) -> Result<i32, ChatRefusal> {
+        let token = sampler.sample(self.ctx, i)?;
         if let Some(landed) = &self.in_flight {
             landed.set(true);
         }
-        token
+        Ok(token)
     }
 
     /// The bytes `mind`'s stream holds, while she is bound (her footprint in the context).

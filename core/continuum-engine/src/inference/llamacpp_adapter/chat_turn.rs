@@ -7,9 +7,9 @@
 //! the calls are assembled by [`native_tool_calls::assemble`] (what the streamed path uses). One
 //! [`llama::ChatRender`] serves the request from its render to its final parse.
 //!
-//! Into the sampler from the render: its extra stops, and a think budget bounded by its thinking tags
-//! (the reasoning-budget sampler llama-server ran). Not yet: its grammar, lazy triggers and preserved
-//! tokens (slice 2).
+//! Her sampler is the render's (`llama::ChatRender::sampler`, upstream's common_sampler from the same chat
+//! params llama-server derives one from): the lazy tool grammar, the generation prompt and the think
+//! budget. Its extra stops go to the engine's stop matching.
 
 use continuum_tool_protocol::GenerationEnd;
 use serde_json::{json, Value};
@@ -36,7 +36,8 @@ pub(super) enum ChatTurnError {
 }
 
 /// What the render describes, read as a type: the prompt the engine decodes from, the generation
-/// prompt it ends with, the template's extra stops, and its thinking tags.
+/// prompt it ends with, and the template's extra stops. Its grammar, triggers and thinking tags stay
+/// native: the render builds her sampler from them (`llama::ChatRender::sampler`).
 #[derive(serde::Deserialize)]
 pub(super) struct Described {
     prompt: Option<String>,
@@ -44,22 +45,9 @@ pub(super) struct Described {
     generation_prompt: String,
     #[serde(default)]
     pub(super) additional_stops: Vec<String>,
-    #[serde(default)]
-    supports_thinking: bool,
-    #[serde(default)]
-    thinking_start_tag: String,
-    #[serde(default)]
-    thinking_end_tags: Vec<String>,
 }
 
 impl Described {
-    /// The bound a think `budget` puts on this template, or `None` when it does not think (no start
-    /// tag to count from, no end tag to force): a budget on it is moot.
-    pub(super) fn think_bound(&self, budget: u32) -> Option<llama::ThinkBound> {
-        let thinks = self.supports_thinking && !self.thinking_start_tag.is_empty() && !self.thinking_end_tags.is_empty();
-        thinks.then(|| llama::ThinkBound { start_tag: self.thinking_start_tag.clone(), end_tags: self.thinking_end_tags.clone(), budget })
-    }
-
     /// The prompt without its generation prompt: what a later act that keeps these messages holds
     /// unchanged. `None` when the prompt does not end in its own generation prompt.
     fn held(&self) -> Option<&str> {

@@ -634,35 +634,6 @@ impl SamplerChainBuilder {
         self.add(s)
     }
 
-    /// Add a GBNF grammar constraint. Forces output to match the grammar
-    /// — invalid tokens get probability zero. `grammar_root` is the
-    /// start-symbol name in the grammar (typically "root"). Use this to
-    /// enforce JSON output or any other structured format.
-    ///
-    /// Needs the model's vocab — pass the loaded `Model` so the chain
-    /// can wire the grammar against the right token table. Belongs early
-    /// in the chain (before temp / dist), so the constraint applies
-    /// before probabilistic sampling.
-    pub fn grammar(self, model: &Model, grammar_str: &str, grammar_root: &str) -> Self {
-        let g = std::ffi::CString::new(grammar_str).expect("grammar contains nul");
-        let r = std::ffi::CString::new(grammar_root).expect("grammar_root contains nul");
-        let s = unsafe {
-            let vocab = sys::llama_model_get_vocab(model.ptr.as_ptr());
-            sys::llama_sampler_init_grammar(vocab, g.as_ptr(), r.as_ptr())
-        };
-        // llama.cpp returns NULL on grammar parse failure. Adding a null
-        // sampler to the chain crashes inside llama_sampler_sample on
-        // first use (verified 2026-04-20: 'scheduler closed without Done
-        // event' for all personas when JSON grammar didn't parse). Skip
-        // the null pointer rather than ship a corrupted chain — caller
-        // gets unconstrained sampling instead of a crash.
-        if s.is_null() {
-            eprintln!("[safe.rs] grammar parse failed for root='{grammar_root}' — skipping (chain unconstrained)");
-            return self;
-        }
-        self.add(s)
-    }
-
     pub fn build(self) -> Sampler {
         Sampler { ptr: self.chain }
     }

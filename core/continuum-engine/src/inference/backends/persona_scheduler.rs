@@ -24,7 +24,6 @@ mod record;
 mod frame;
 mod reuse;
 mod geometry;
-mod sampling;
 mod admission;
 mod transition;
 
@@ -52,8 +51,6 @@ use std::sync::Arc;
 
 use llama::{KvCacheType, LoraAdapter, Model};
 use uuid::Uuid;
-
-use super::SamplingConfig;
 
 /// Token event streamed from the scheduler to the requester.
 #[derive(Debug)]
@@ -102,7 +99,9 @@ pub struct GenerationRequest {
     /// follows.
     pub view_end: Option<usize>,
     pub max_tokens: usize,
-    pub sampling: SamplingConfig,
+    /// Her turn's sampler, built on her own thread by the render that produced her prompt
+    /// (`LlamaCppBackend::turn_sampler`): the engine thread only samples with it.
+    pub sampler: llama::TurnSampler,
     pub stop_sequences: Vec<String>,
     /// Genes for this turn: `(id, handle, scale)`, resolved by the backend before enqueue. Empty is
     /// the base model.

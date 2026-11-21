@@ -180,7 +180,7 @@ fn qwen2_vl_describes_image_via_rust_pipeline() {
             &prompt,
             &image,
             120, // max_tokens — keep test cheap
-            sampling,
+            backend.turn_sampler(None, &sampling, None).expect("plain sampler"),
             &["<|im_end|>", "<|endoftext|>"],
         )
         .expect("generate_with_image should produce a description");

@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::geometry::StopsOnExit;
 use continuum_flow::{Outbox, StageInput};
 
-use super::{admission, emit, frame, preserve, record, reuse, sampling, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{admission, emit, frame, preserve, record, reuse, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -26,7 +26,7 @@ use crate::runtime;
 /// Why a turn did not complete. The mind stays in the engine's custody either way.
 #[derive(Debug, thiserror::Error)]
 pub(super) enum TurnError {
-    /// Her turn's sampler could not be built as asked (a think bound llama.cpp refused).
+    /// Her sampler refused a step (a token its grammar could not accept, named by llama.cpp).
     #[error("her sampler was refused: {0}")]
     Sampler(#[from] llama::ChatRefusal),
     #[error(transparent)]
@@ -348,7 +348,6 @@ struct Turn {
     prompt: Vec<i32>,
     basis: Basis,
     genes: Genes,
-    sampler: llama::Sampler,
     phase: Phase,
     submitted: Instant,
     ready_since: Instant,
@@ -549,8 +548,8 @@ impl Driver<'_, '_> {
         Ok(preserve::PreservedMind { persona: id.0, epoch: her.epoch().0, basis: parts.genome.genes.clone(), held: parts.tokens.held.clone(), blocks: file })
     }
 
-    /// Take a submission into the frame loop: its token ids and its sampler, built once. A prompt
-    /// or sampler that cannot be built is refused at once, before it waits for a frame.
+    /// Take a submission into the frame loop: its token ids and its sampler, both built on her own
+    /// thread. A turn the stream cannot hold is refused at once, before it waits for a frame.
     fn admit(&mut self, mut req: GenerationRequest, turns: &mut Vec<Turn>) {
         let (id, one_off) = match req.persona_id {
             Some(persona) => (PersonaId(persona), false),
@@ -564,32 +563,24 @@ impl Driver<'_, '_> {
             tell(&req.response_tx, TokenEvent::Exceeded(super::Exceeded { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity }));
             return;
         }
-        // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.
-        match sampling::sampler(self.model, &req.sampling).map_err(TurnError::from) {
-            Ok(sampler) => {
-                let prompt = std::mem::take(&mut req.prompt);
-                let basis = Basis { genes: signature(&req.active_loras) };
-                let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
-                let boundary = req.view_end;
-                self.answers += 1;
-                let answer = emit::AnswerSeq(self.answers);
-                let cancel = Arc::new(AtomicBool::new(false));
-                self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
-                let submitted = Instant::now();
-                if one_off { self.live_one_offs.insert(id); }
-                let admitted = transition::Transition {
-                    request: req.request.clone(),
-                    persona: id.0,
-                    one_off,
-                    at: transition::At::Admitted { queue_depth: turns.len() + 1, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
-                };
-                turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
-                self.record.send(record::Fact::Transition(admitted));
-            }
-            Err(refused) => {
-                tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
-            }
-        }
+        let prompt = std::mem::take(&mut req.prompt);
+        let basis = Basis { genes: signature(&req.active_loras) };
+        let genes: Genes = req.active_loras.iter().map(|(_, adapter, scale)| (Arc::clone(adapter), *scale)).collect::<Vec<_>>().into();
+        let boundary = req.view_end;
+        self.answers += 1;
+        let answer = emit::AnswerSeq(self.answers);
+        let cancel = Arc::new(AtomicBool::new(false));
+        self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
+        let submitted = Instant::now();
+        if one_off { self.live_one_offs.insert(id); }
+        let admitted = transition::Transition {
+            request: req.request.clone(),
+            persona: id.0,
+            one_off,
+            at: transition::At::Admitted { queue_depth: turns.len() + 1, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
+        };
+        turns.push(Turn { req, id, one_off, prompt, basis, genes, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+        self.record.send(record::Fact::Transition(admitted));
     }
 
     /// The turn the next frame advances: a mind is one serial queue, so only her oldest turn is a
@@ -773,7 +764,7 @@ impl Driver<'_, '_> {
             return Ok(());
         }
         let at = i32::try_from(len - 1).map_err(|_| TurnError::TooLong)?;
-        let token = self.engine.tier().sample(&mut turn.sampler, at);
+        let token = self.engine.tier().sample(&mut turn.req.sampler, at)?;
         self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
@@ -813,7 +804,7 @@ impl Driver<'_, '_> {
         self.engine.settle()?;
         turn.spent.gpu += landing.elapsed();
         let sampling = Instant::now();
-        let next = self.engine.tier().sample(&mut turn.sampler, 0);
+        let next = self.engine.tier().sample(&mut turn.req.sampler, 0)?;
         turn.spent.sample += sampling.elapsed();
         turn.phase = Phase::Decoding { token: next, pos: pos + 1, generated };
         Ok(Advanced::Continues)

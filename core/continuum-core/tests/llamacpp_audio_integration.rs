@@ -220,7 +220,7 @@ fn qwen2_audio_describes_clip_via_rust_pipeline() {
             &prompt,
             &audio,
             120, // max_tokens — keep test cheap
-            sampling,
+            backend.turn_sampler(None, &sampling, None).expect("plain sampler"),
             &[], // no extra stops; rely on EOS
         )
         .expect("generate_with_audio runs against the loaded backend");

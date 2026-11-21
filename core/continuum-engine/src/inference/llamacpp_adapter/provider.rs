@@ -369,13 +369,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .max_tokens
             .map(|n| n as usize)
             .unwrap_or_else(|| backend.n_ctx_train() as usize); // unwrap_or_else: a caller with no cap decodes to the model's trained context, never a guessed one
-        let mut sampling = sampling_config_from_request(&request);
-        // Her think budget, bounded by the template's own thinking tags (what llama-server enforced
-        // for reasoning_budget_tokens). No budget stated is the model's default.
-        sampling.think = match (think_budget, &chat_render) {
-            (Some(budget), Some((_, described))) => described.think_bound(budget.0),
-            _ => None,
-        };
+        let sampling = sampling_config_from_request(&request);
         // Where her next act stops matching this prompt (her view, CONTINUUM-ENGINE 4.15): the engine
         // checkpoints her there and her next act prefills only what follows.
         let stable_prefix = match &chat_render {
@@ -408,7 +402,6 @@ impl AIProviderAdapter for LlamaCppAdapter {
         let prompt_for_blocking = prompt.clone();
         let stable_for_blocking = stable_prefix.clone();
         let stop_for_closure = stop_owned.clone();
-        let sampling_for_closure = sampling.clone();
         let request_for_blocking = request.request_id.clone();
         // Parse the wire-format persona_id (Option<String> on the public
         // request type) to Option<Uuid> for the typed scheduler API. A
@@ -432,6 +425,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
             .map(|a| (a.name.clone(), std::path::PathBuf::from(&a.path), a.scale as f32))
             .collect();
 
+        // Her sampler, from the render that produced her prompt when she has one: its tool grammar
+        // (a call she starts can name only the parameters her tools declare), generation prompt and
+        // thinking tags, with her think budget. A media turn's is plain. Built here, on her act's
+        // thread; the engine only samples.
+        let sampler = backend.turn_sampler(chat_render.as_ref().map(|(render, _)| render), &sampling, think_budget.map(|budget| budget.0))?;
         let result: Result<(String, usize), InferenceError> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.
             // RTOS timing probe: this is the actual LLM forward pass —
@@ -474,7 +472,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         allocation, persona_id,
                         crate::inference::backends::llamacpp::TurnPrompt { text: &prompt_for_blocking, stable_prefix: stable_for_blocking.as_deref(), request: request_for_blocking.as_deref() },
                         max_tokens,
-                        sampling_for_closure,
+                        sampler,
                         &stop_refs,
                         &active_loras,
                     )
@@ -535,21 +533,20 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         allocation,                            &prompt_for_blocking,
                             &media_bytes,
                             max_tokens,
-                            sampling_for_closure,
+                            sampler,
                             &stop_refs,
                         ),
                         llama::MediaKind::Audio => backend_for_blocking.generate_with_audio(
                         allocation,                            &prompt_for_blocking,
                             &media_bytes,
                             max_tokens,
-                            sampling_for_closure,
+                            sampler,
                             &stop_refs,
                         ),
                     }
                 })
             )
             .map_err(|e| format!("generate_with_media task panicked: {e}"))?
-            .map_err(InferenceError::from)
         };
         let (written, tokens) = result?;
         // What she wrote, read by the render that produced her prompt: content, reasoning and her
