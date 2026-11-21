@@ -592,3 +592,24 @@ Content and nothing runs until a relevant frame changes (the engine's capabiliti
 support), and that change wakes it. Order: (1) the schema-to-grammar path in the Core; (2) the engine
 publishes its capabilities as state; (3) the dream part moves onto `Component` with the other
 `BrainRegion`s, and its timers and the tick are deleted.
+
+**One parent for every worker: the inventory (Joel, 2026-11-21: "Exactly a component not a brain part.
+Should brainregion be a component? Wondering if this is true for all if you found one").** "Brain
+region" is a role, not a class. Every worker framework in the tree is a `Component` waiting to happen
+(counted 2026-11-21 on fable/refusal-at-door):
+
+| Framework | Implementors | What it is, and what it becomes |
+|---|---|---|
+| `BrainRegion` (kernel) | 4 + a test | "work for persona X when the governor ticks": a component woken by its event |
+| `ServiceModule` with `tick_interval: Some` | 17 of 102 | ticked node modules: each moves to the event it polls for |
+| `StageRunner` / `DependentStage` | 2 | an older worker contract beside `Component` (`DeferredFaculty`): migrated, deleted |
+| `ResourcePool` + `PressureBroker` | 14 pools | eviction under pressure: `Component::rest` on a pressure frame |
+| `Stage` (SAGE flow) | 22 | the substrate `Component` stands on; engine internals may stay raw stages |
+
+The four `BrainRegion`s: hippocampus's tick is empty (it bumps a counter: deleted); the channel digest
+pre-stages per tick (becomes a component recomputing when her room moves, publishing the digest per room
+as state for grounding at frame lag 0); dream consolidation consolidates per tick (the dream component);
+credit acceptance steps per tick with a cadence hint (acts when a review verdict arrives). With them
+moved, the `BrainRegion` trait and the governor's tick dispatch are deleted. Order: (1) the four
+regions; (2) `DeferredFaculty` off `StageRunner`, the runner deleted; (3) pool eviction as `rest()` on a
+pressure frame; (4) the 17 ticked modules, one at a time.
