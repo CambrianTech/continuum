@@ -52,7 +52,7 @@ mod tests {
     #[test]
     fn audit_wraps_a_simple_fn() {
         let mut body = serde_json::json!({});
-        let result: Result<(), anyhow::Error> = audit_finish_body("test-1", &mut body, |v: &mut Value| {
+        let result: Result<(), Box<dyn std::error::Error>> = audit_finish_body("test-1", &mut body, |v: &mut Value| {
             v["hello"] = serde_json::json!("world");
             Ok(())
         });
@@ -63,8 +63,8 @@ mod tests {
     #[test]
     fn audit_returns_result_on_error() {
         let mut body = serde_json::json!({});
-        let result: Result<(), anyhow::Error> = audit_finish_body("test-2", &mut body, |_v: &mut Value| {
-            Err(anyhow::anyhow!("boom"))
+        let result: Result<(), Box<dyn std::error::Error>> = audit_finish_body("test-2", &mut body, |_v: &mut Value| {
+            Err("boom".into())
         });
         assert!(result.is_err());
     }
