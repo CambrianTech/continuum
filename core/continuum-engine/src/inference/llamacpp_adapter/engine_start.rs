@@ -54,7 +54,7 @@ pub struct EngineKv {
 pub struct EngineLaunch {
     pub model_id: String,
     pub gguf_path: std::path::PathBuf,
-    /// One mind's window; the scheduler's context holds `STREAMS` of them.
+    /// The Core's whole context: the mind swapped in has all of it (one stream, `STREAMS`).
     pub context: NonZeroU32,
     /// Tokens per decode call. A whole number of ubatches (the learner's chunk walk needs it).
     pub n_batch: NonZeroU32,

@@ -210,16 +210,18 @@ mod tests {
         assert_eq!(starved.pool(5, MIN_SERVE_CTX), 5 * u64::from(MIN_SERVE_CTX), "never below one least window per sequence");
     }
 
+    // what this catches: the Core charged for a second stream it does not hold (2026-11-21: two
+    // streams' fixed bytes, and half the context each). Its one stream's fixed bytes are charged once:
+    // a room below them fits nothing, and a room the old second stream would have starved now fits.
     #[test]
-    fn native_pool_requires_the_fixed_bytes_of_both_streams() {
+    fn native_pool_charges_the_fixed_bytes_of_its_one_stream() {
         use crate::inference::llama_server::StreamLayout;
         let fp = crate::inference::planning::serving_plan::footprint::footprint_from_parts("m", 20 * GB, 262_144, true, None).expect("test: a footprint");
         let layout = StreamLayout::PersonaScheduler;
         let sequences = layout.sequences(1);
-        let room = fp.weights_bytes + fp.compute_buffer_per_lane() * 3 / 2;
-        assert!(fp.window_within(room, 1) > 0);
-        let fit = pool_fit(48_000, Some(&fp), Rooms { host: None, device: Some(room) }, 0, sequences, fp.context_window);
-        assert_eq!(fit.pool(sequences, layout.minimum_window(MIN_SERVE_CTX)), 0);
+        let pool_in = |room| pool_fit(48_000, Some(&fp), Rooms { host: None, device: Some(room) }, 0, sequences, fp.context_window).pool(sequences, layout.minimum_window(MIN_SERVE_CTX));
+        assert_eq!(pool_in(fp.weights_bytes + fp.compute_buffer_per_lane() / 2), 0, "below one stream's fixed bytes");
+        assert!(pool_in(fp.weights_bytes + fp.compute_buffer_per_lane() * 3 / 2) > 0, "one stream's fixed bytes, and room for her tokens");
     }
 
     // what this catches (the M5, 2026-11-14 01:22Z: the embedder's 186,908,672 B lease refused at

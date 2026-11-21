@@ -1,9 +1,15 @@
-//! [`UnifiedTier`]: the persona engine's residency tier on one libllama context, as on the M5's unified
-//! memory. Two execution streams: the active mind decodes in one while the next mind binds into the
-//! other; every other mind's blocks stay in host memory exactly as she left them. A move out is the
-//! fork's native save (her stream empties); a move in is its native bind (her blocks take an empty
-//! stream, answering to the sequence she is bound as). Both are synchronous copies, so the fence a
-//! move returns has already landed.
+//! [`UnifiedTier`]: the persona engine's residency tier on one libllama context, the Core's (object
+//! model 4.11). One execution stream, the occupant's, holding the whole context: the mind swapped in
+//! has all of it. Every other mind's blocks stay in host memory exactly as she left them. A swap moves
+//! the occupant out first (the fork's native save: her rows copied to her blocks, her stream emptied)
+//! and then moves the next mind in (its native bind into the emptied stream). Both are synchronous
+//! copies, so the fence a move returns has already landed.
+//!
+//! One stream, because the fork moves a mind by copying her own stream's rows (it requires per-stream
+//! KV), and llama.cpp sizes each stream at the context divided by the stream count: a second stream to
+//! bind the next mind into would halve the occupant's context, and buys nothing while a swap is a
+//! synchronous copy (2026-11-21: a 24,320-token half held seven dying turns while the other half held
+//! nobody decoding). The next mind's prefetch lives in host memory, where her blocks already are.
 
 use std::cell::Cell;
 
@@ -14,11 +20,11 @@ use continuum_persona_engine::persona::MindId;
 use continuum_persona_engine::residency::{Completion, Direction, Execute, Fence, FenceTag, Native, Tier, TierRefusal};
 use llama::{Batch, BindRefusal, ChatRefusal, Context, LoraAdapter, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal, TurnSampler};
 
-/// Execution streams one context holds: the active mind's and the next mind's. The context is
-/// created with this many sequences; no more are ever decoded at once (one decodes, one binds).
-pub const STREAMS: usize = 2;
+/// Execution streams the Core's context holds: the occupant's, which is the whole context. Not a
+/// tuning number: the fork's move needs a stream per bound mind, and the Core binds only its occupant.
+pub const STREAMS: usize = 1;
 
-/// One of the context's two execution streams, by the sequence id the context knows it as.
+/// The context's execution stream, by the sequence id the context knows it as.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Stream(i32);
 
@@ -174,7 +180,7 @@ impl<'c, 'm> UnifiedTier<'c, 'm> {
         if self.streams.iter().flatten().any(|held| held.persona == mind.persona) {
             return Err(refused(mind, "already bound"));
         }
-        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(mind, "both streams are bound"))?;
+        let slot = self.streams.iter().position(Option::is_none).ok_or_else(|| refused(mind, "the occupant has not moved out"))?;
         let stream = stream_at(slot);
         // A mind with nothing to bind starts on this stream as it is, so it must hold nothing (the
         // context may have been in use before this tier wrapped it). The engine's own memory is the

@@ -451,14 +451,10 @@ impl LlamaCppBackend {
     }
 
     /// Lazily spawn (or get) the persona scheduler. Single instance per backend: it owns the context
-    /// and the driver thread. Its window holds `STREAMS` minds' windows (the active mind and the next),
-    /// whatever sequence count the launch carried: one mind decodes at a time.
+    /// and the driver thread. The allocation is the Core's whole context, and the mind swapped in has
+    /// all of it: one mind decodes at a time, so nothing divides it among minds.
     pub(super) fn scheduler(&self, allocation: GenerationAllocation) -> Result<&Scheduler, String> {
-        let per_mind = self.effective_context_length(allocation)?;
-        let streams = u32::try_from(continuum_persona_llama::STREAMS).map_err(|_| "stream count exceeds native representation")?;
-        let total_n_ctx = per_mind
-            .checked_mul(streams)
-            .ok_or("context allocation exceeds native representation")?;
+        let total_n_ctx = self.effective_context_length(allocation)?;
         let (bound, scheduler) = self.scheduler.get_or_init(|| {
             (
                 allocation,

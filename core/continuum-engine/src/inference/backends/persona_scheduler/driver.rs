@@ -407,7 +407,7 @@ enum Advanced {
     Done { tokens_generated: usize, elapsed_ms: u64 },
 }
 
-/// The one context: `STREAMS` sequences (the active mind's and the next one's).
+/// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
 fn context<'m>(model: &'m Model, config: &SchedulerConfig) -> Result<llama::Context<'m>, StartError> {
     let streams = u32::try_from(STREAMS).map_err(|_| StartError::Context("stream count exceeds a sequence count".into()))?;
     model
@@ -842,17 +842,26 @@ impl Driver<'_, '_> {
         }
     }
 
-    /// Make `id` the active mind: her parked state comes back (or a new mind starts), the previous
-    /// mind moves out to the RAM tier and is parked, or forgotten if she was a one-off.
+    /// Make `id` the active mind: the occupant moves out to the RAM tier first and is parked (or
+    /// forgotten if she was a one-off), then her parked state comes back (or a new mind starts) into
+    /// the stream the occupant emptied. The Core's context is one stream, whole to whoever is in it
+    /// (`continuum_persona_llama::STREAMS`), so nobody moves in until the occupant is out.
     ///
     /// A retirement a refused copy-out left behind is finished first, so it is retried rather than
     /// skipped and the retiring mind is never staged while still in custody (Codex on #6140). A
-    /// copy-out refused during this handoff leaves next bound; it is retried right after, and again
-    /// at the start of the next turn if the tier still refuses.
+    /// refused copy-out keeps the occupant's stream bound: the next mind waits, and the copy-out is
+    /// retried at the start of the next turn.
     fn switch_to(&mut self, id: PersonaId, one_off: bool) -> Result<(), TurnError> {
         self.retire_previous()?;
         if self.engine.active() == Some(id) {
             return Ok(());
+        }
+        if self.engine.active().is_some() {
+            match self.engine.retire_active() {
+                Ok(_) | Err(HandoffError::CopyOut { .. }) => {}
+                Err(refused) => return Err(refused.into()),
+            }
+            self.retire_previous()?;
         }
         let mind = match self.parked.remove(&id) {
             Some(parked) => parked,

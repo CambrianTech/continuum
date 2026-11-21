@@ -1,8 +1,8 @@
 //! The persona engine on a real model: N minds take turns through `PersonaEngine` over the
-//! `UnifiedTier`, one decoding at a time. Each turn stages the next mind (her copy-in), hands off
-//! (after the active mind's decode landed), releases the previous mind (her copy-out to RAM), then
-//! submits the new mind's steps. Reports the switch (stage + handoff + release) and the decode rate,
-//! separately and together.
+//! `UnifiedTier`, one decoding at a time, in the Core's one stream (the mind swapped in holds the
+//! whole window). Each turn moves the occupant out (her copy-out to RAM, once her decode landed),
+//! stages the next mind into the emptied stream (her copy-in), hands off, then submits the new mind's
+//! steps. Reports the switch (copy-out + stage + handoff) and the decode rate, separately and together.
 //!
 //! cargo run --release --features metal,test-fixtures --example persona_switch -- <model.gguf> <minds> <prompt_tokens> <decode_tokens> <rounds>
 
@@ -116,9 +116,9 @@ fn main() -> Result<(), String> {
 
     llama::backend_init();
     let model = Model::load(model_path, ModelParams::default())?;
-    // two execution streams (active + next); each holds one mind's whole window
+    // the Core's one stream: the mind swapped in holds the whole window
     let window = (prompt_tokens + decode_tokens * rounds + 64) as u32;
-    let params = ContextParams { n_ctx: window * 2, n_batch: 2048, n_ubatch: 2048, n_seq_max: 2, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
+    let params = ContextParams { n_ctx: window, n_batch: 2048, n_ubatch: 2048, n_seq_max: 1, flash_attn: FlashAttn::Enabled, ..ContextParams::default() };
     let mut ctx = model.new_context(params)?;
     adopted_context_is_refused(&model, &mut ctx)?;
     a_refused_newer_epoch_keeps_her_parked_blocks(&model, &mut ctx)?;
@@ -143,12 +143,14 @@ fn main() -> Result<(), String> {
         // the next mind in turn order (the scheduler's choice in the engine; round-robin here)
         let next = parked.remove(0);
         let t = Instant::now();
+        // the occupant moves out first: one stream, whole to whoever is in it
+        if engine.active().is_some() {
+            engine.retire_active().map_err(|e| e.to_string())?;
+            parked.push(engine.release_retired().map_err(|e| format!("{e:?}"))?);
+        }
         engine.stage(next).map_err(|r| r.reason.to_string())?;
         let rebind = engine.tier().last_rebind();
         engine.handoff().map_err(|e| e.to_string())?;
-        if engine.retiring().is_some() {
-            parked.push(engine.release_retired().map_err(|e| format!("{e:?}"))?);
-        }
         let switched = t.elapsed();
         if turn > 0 {
             switches.push(switched);

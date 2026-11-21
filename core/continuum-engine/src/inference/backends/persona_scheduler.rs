@@ -118,8 +118,8 @@ pub struct GenerationRequest {
     pub submitted: std::time::Instant,
 }
 
-/// The context the scheduler creates. Its window holds [`continuum_persona_llama::STREAMS`] minds'
-/// windows (the active mind's and the next one's); no sequence count is configurable, and no
+/// The context the scheduler creates: the Core's whole context, one stream ([`continuum_persona_llama::STREAMS`]),
+/// whole to the mind swapped in; no sequence count is configurable, and no
 /// attention kernel either: the scheduler moves minds through per-sequence copy-out, which needs an
 /// untransposed V, so its context is always flash attention ([`driver`] owns that, not its caller).
 #[derive(Debug, Clone)]
