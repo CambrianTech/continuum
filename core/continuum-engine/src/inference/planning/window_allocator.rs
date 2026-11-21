@@ -651,7 +651,7 @@ mod tests {
         let unknown = LaneRequirement::unmeasured(Uuid::new_v4());
         assert_eq!((unknown.measure.target(), unknown.measure.observed_need()), (None, None));
         let measured = LaneRequirement::wished(Uuid::new_v4(), t(56_057), 1.25);
-        assert_eq!(measured.measure, Measure::Wished { target: t(70_071) });
+        assert_eq!(measured.measure, Measure::Measured { governed: t(70_071) });
         let a = allocate(&[measured.clone(), unknown.clone()], &[qwen27b()], &budget(30), u32::MAX).expect("fits");
         assert_eq!((a.lanes, a.window, a.served.clone()), (1, a.window, vec![measured.persona]), "only the measured mind is packed");
         assert_eq!(a.unserved, vec![unknown.persona], "the unmeasured mind waits for her first view, unsized");
