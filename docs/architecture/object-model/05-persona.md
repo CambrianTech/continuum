@@ -469,3 +469,13 @@ events and anything can observe it").**
   a peer's component is observed exactly as a local one. Only the transport under the bus differs.
 - Validator (seconds, any machine): every serial step on a turn's path is a queue insert or a state
   read, measured per step; the gate is the slowest one under 10 ms.
+
+**The heartbeat is a frame counter, not a clock (Joel, 2026-11-21: "counter heartbeat here is like
+RAGE's frame counter and CBAR's video frame").** Every publication's `InputRevision { topic, through }`
+is its frame number; a `Snapshot` is a frame and its provenance names the input frames it was built
+from. A state reader is a video consumer: it takes the newest finished frame and skips any it fell
+behind on (coalescing); an event stream is the lane where no frame is skipped. Inside a mind,
+freshness is measured in frames (latest published minus the frame read), waking means "a newer frame
+exists", and staleness is a visible gap in frame numbers, never a timeout. The wall clock remains only
+for deadlines she sets, on the node's one clock. Gate for the grounding pipeline: at turn assembly,
+every input's frame lag is 0 (the pipeline ran ahead of her, so assembly is copying).
