@@ -226,7 +226,7 @@ mod the_pool_fits_the_host {
         assert_eq!(need, 478_382 + u64::from(crate::inference::planning::MIN_SERVE_CTX), "the grants' 1.25 over 382,706, plus the scratch sequence");
         let fit = pool_fit(need, Some(&fp), host(room), CACHE_MIB * MIB, SEQUENCES, TRAINED);
         assert_eq!(fit, PoolFit::Fits { demand: need, fit: 566_990 }, "the room would hold 566,990: never filled");
-        let pool = fit.pool(SEQUENCES);
+        let pool = fit.pool(SEQUENCES, crate::inference::planning::MIN_SERVE_CTX);
         assert_eq!(pool, 480_430);
         let freed = demand(&fp) - pool;
         assert_eq!(freed, 142_643);
@@ -239,7 +239,7 @@ mod the_pool_fits_the_host {
         // The engine it replaces returns its measured anonymous bytes (24,969,922,712 B).
         let replacing = HostRoom::of(&HostMemoryReading { free_bytes: 32_000 * MIB, ..reading }, swap, 24_969_922_712);
         assert!(matches!(pool_fit(need, Some(&fp), host(replacing), CACHE_MIB * MIB, SEQUENCES, TRAINED), PoolFit::Fits { .. }), "a replaced engine's bytes come back");
-        assert_eq!(pool_fit(need, Some(&fp), Rooms { host: None, device: None }, CACHE_MIB * MIB, SEQUENCES, TRAINED).pool(SEQUENCES), need, "no reading: never a dark node");
+        assert_eq!(pool_fit(need, Some(&fp), Rooms { host: None, device: None }, CACHE_MIB * MIB, SEQUENCES, TRAINED).pool(SEQUENCES, crate::inference::planning::MIN_SERVE_CTX), need, "no reading: never a dark node");
     }
 }
 

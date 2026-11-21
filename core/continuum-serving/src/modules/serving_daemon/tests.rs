@@ -84,6 +84,10 @@ impl FakeServer {
 
 #[async_trait]
 impl LlamaServerControl for FakeServer {
+    fn stream_layout(&self) -> crate::inference::llama_server::StreamLayout {
+        crate::inference::llama_server::StreamLayout::Roster
+    }
+
     fn paging_recovery_required(&self) -> bool {
         self.paging_endpoint
             .as_ref()
