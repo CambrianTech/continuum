@@ -32,35 +32,20 @@ because the monolith is why every change is slow, risky and stacked on the last 
 
 Rules, in force now:
 1. No one edits a Rust file over 1,000 lines; the only change that touches one breaks it apart (CI gate).
-2. Agents: don't let your build slow the residents. Build with common sense, beside serving with
-   bounded jobs (`-j 2`, one shared target dir), with serving down, or in CI, whichever proves the fix
-   fastest (a build beside the lanes downgraded the M5's residents to a 7B on 10-20). Joel, 10-26: "Its
-   rules because you lack common sense ... You can build either way too. Ideally you were supposed to
-   break this up into much smaller crates so it wouldn't be so bad." This rule never limits a
-   persona: she codes continuum on the node that hosts her, so she builds while it serves ("Let them
-   build"). Never gate, redirect or cancel a citizen's build; if hers slows serving, that is the
-   scheduler's to share, never a rule to enforce on her.
-3. Every live change gets a 15-minute read on live residents; worse than canary means the node goes
-   back to canary at once. No "clean hours", no stacked fixes.
+2. Build and deploy each coherent runtime change locally on the development node you own before check-in.
+   Use the supported shutdown, build and restart path. Verify the running core and engine, including
+   source revision, build time and artifact identity. Coordinate shared hardware with its owner.
+   The scheduler shares resources with residents performing their own builds.
+3. Replay the fault and compare exact 15-minute windows on real residents at realistic context and load.
+   Record timing, memory, output quality and durable learning. Investigate regressions and fix forward
+   before promotion. After local verification, check in and obtain independent review and CI on the exact head.
 4. No new unwrap, fallback or head clip: the ratchets fail the build; clean crates get compiler denies.
 
-**Development maintenance is authorized (Joel, 2026-10-22).** Development is distinct from
-production installs. Preserving identity, data, jobs and unfinished work does not require
-keeping every development binary running. When a runtime consumes resources needed to repair
-the product, coordinate with its machine/deployment owner, gracefully stop the relevant runtime
-and its automatic restart owner, verify serving is down, build and test, then restart through
-the supported lifecycle and verify the running revision and behavior. Ordinary authorized
-development maintenance does not require another human approval.
+**Development maintenance is authorized.** The agent who owns the node owns the deployment through
+restart and live verification. Record incomplete shutdown receipts and repair the lifecycle that produced
+them. An operator-authorized development restart proceeds with the recorded risk. Keep the restart
+scoped to its target and check resident state when serving resumes.
 
-Use common sense: broken personas are a reason to repair the system, not a reason to preserve
-broken uptime while the team waits. The rule is that an agent's build must not slow the
-residents (bounded jobs, or serving down, or CI), not CI-only development or a ban on building on
-that machine, and never a limit on a persona's own builds. Choose a coordinated
-serving-down local build, an available non-serving executor, or CI according to what gets the
-fix proven promptly. Do not impose production continuity requirements on development by default.
-Protect unrelated users and owner work; retain durable state and a recovery path. Review and
-validation still apply. A refusal must identify a concrete condition and a usable recovery or
-execution path; repeated polling and manual retry suppression are not a completed repair.
 Phases, in order; each owner works its area in parallel:
 - **0 Stabilize.** Nodes run plain canary; features in a large file wait for its split.
 - **1 Split every file over 1,000 lines** by owner (pure moves, test counts unchanged, one PR per
