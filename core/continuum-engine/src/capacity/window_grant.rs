@@ -385,10 +385,9 @@ impl Demand<uuid::Uuid> {
         // unchanged (an irreducible governed minimum is never silently reduced). The ceiling still gates
         // at the Demand level; this is just how we compute need from observation.
         let observed = r.measure.observed_need().ok_or(Excluded::NeedUnobserved)?.map(|need| need.min(trained));
-        let need = if let Some(ceiling) = Tokens::new(ceiling) {
-            observed.within(ceiling)
-        } else {
-            observed
+        let need = match Tokens::new(ceiling) {
+            Some(tok) => observed.within(tok.get()),
+            None => observed.value(),
         };
         let wish = r.wish.ok_or(Excluded::NoWish)?.min(trained);
         // Her target is room to grow over what her turns hold (her held need with the sent
