@@ -323,20 +323,55 @@ system pull, 0; wakes that name their reasons, all; sentinel acts and teacher te
 her own acts' receipts, counted per hour (zero today); residents acting in activities other than coding
 (talk, play, a call), counted; act latency median and p90 unchanged or better.
 
-### Order (11.4 row 8), each slice one deploy and a live read
+### Built as CBAR: the whole persona is workers on topics
 
-1. **No clock decides for her.** The self-tick wake (`SELF_TICK_MS = 15_000` backing off to
-   `SELF_TICK_REST_CAP_MS = 240_000`, `service_loop/beat_outcome.rs`; `Wake::Tick` in
-   `wake_select.rs`) and its `BeatClock` go. The mind-check poll (`mind_check_floor`: 15, 5 or 2 minutes
-   by dial) becomes only the due time she scheduled (her continuation's expectation), delivered by
-   the one clock owner. Deferred input is retried when the capacity it waited for frees, never on a
-   beat. Gate: turns started by a clock 0; every `persona.turn.mind_wake` names its reason.
-2. **Her acts come back as percepts.** Tool receipts and the Core's `TurnEnd` enter her senses;
-   surprise compares each with what the act expected. The six sentinel acts and their teacher texts
-   go. Gate: sentinel acts 0; surprises from her own receipts counted.
-3. **Messages pass through her attention.** A room message is a percept; salience against her dial
-   decides whether she deliberates (`triggers_a_turn`'s text rule goes); `self/attention` becomes a
-   live tool. Gate: every turn's wake carries salience reasons.
-4. **No pushed work.** `ask_the_act_question`, the work burst and initiative texts, the
-   write-or-release checkpoint and the grading facts in the work path go; her board is a room she
-   perceives. Gate: no turn's stimulus text is written by the system.
+Joel, 2026-11-21: "CBAR. The entire mind and really the persona should be event driven." Read as built
+(1.5), she is one sequential task per persona looping on a `select!` over seven sources, two of them
+timers (`service_loop/wake_select.rs`), with her regions called synchronously from it or polled. Deleting
+the timers from that loop would still leave a loop. The persona is rebuilt on the substrate instead, so
+there is no loop to put a timer in.
+
+**The substrate (`continuum-flow`), completing what chapter 3.1 names.** Today it has the worker (a
+`Stage` on its own task with bounded intake) and an `Outbox`; it lacks the other half of CBAR:
+- `State<T>`: a topic holding the latest value with its revision and its publisher's identity. One
+  writer (its owner, 2.6); any number of readers, who read the newest value without waiting on the
+  writer and are woken when the revision moves (CBAR's invalidation: a change wakes exactly what depends
+  on it; RAGE's double-buffered publications). For what she perceives as state: an activity's view, her
+  dial, her expectation, her focus.
+- `Stream<T>`: a topic whose every event reaches every subscriber, each through its own bounded intake
+  with backpressure, never dropped (CBAR's reliable lane). For what must each be seen: a percept, a
+  receipt, a surprise, a request to deliberate.
+- The worker's control lane: lifecycle commands (suspend, resume, shutdown) on a reserved lane that
+  data can never block (CBAR's `QueueThread` abort/flush, chapter 3.1's lifecycle commands).
+
+**Her parts, each a worker, each waking only on what it subscribes to:**
+
+| Part | Subscribes to | Publishes |
+|---|---|---|
+| Senses | room events from the inbound attach (her memberships); her hands' receipts; the Core's `TurnEnd` | `Stream<Percept>`; `State<ActivityView>` per activity |
+| Expectation | her own acts and continuation (from Deliberation) | `State<Expectation>` per activity |
+| Surprise | `Percept`, `Expectation` | `Stream<Surprise>` |
+| Salience | `Percept`, `Surprise` (a pure function, exists) | `State<Salience>` per activity |
+| Attention | `Salience`, `Surprise`, `Arousal`, `Drive`; her dial, set only by her acts | `State<Focus>`; `Stream<Deliberate>` |
+| Deliberation | `Deliberate` | `Stream<Thought>` (tokens, calls, `TurnEnd`); her acts to her hands |
+| Hands | her acts | `Stream<Receipt>` back to Senses |
+| Clock (the node's one) | deadlines parts register (her expectation's due time) | a due `Percept` |
+
+Deliberation is the only part that asks the Core for a turn (with a `Demand`, 3.8), so it is the only
+expensive one; every other part is arithmetic on its inputs. Her turn machinery that exists (custody of
+admitted inputs, obligations, the workspace cycle, act and observe) moves inside Deliberation's worker
+unchanged, triggered by `Deliberate` carrying the percepts that crossed her dial instead of by a select.
+
+**Order, each one change with its validator, and a live read once she runs on it:**
+1. `State<T>`, `Stream<T>` and the control lane in `continuum-flow`, with tests (the library first;
+   lands with its first user, step 2).
+2. Senses and Attention as workers: the inbound attach feeds Senses (the static `perception_feed`
+   registry goes); Attention publishes `Deliberate`; the service loop takes its wakes from `Deliberate`
+   only, so its timers, its tick, its text wake rule and its region poll are deleted with its select.
+3. Hands and the Core's `TurnEnd` publish to Senses; Expectation and Surprise as workers; the sentinel
+   acts and teacher texts go.
+4. Deliberation becomes the worker the service loop's remaining body moves into; the loop is deleted.
+5. The pushed-work machinery goes (`ask_the_act_question`, work burst, initiative, grading facts).
+
+Gates: turns started by a clock 0; every wake names the percepts that crossed her dial; sentinel acts 0;
+surprises from her own receipts counted; act latency unchanged or better.
