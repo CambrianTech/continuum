@@ -53,14 +53,13 @@ impl HostRoom {
     }
 }
 
-/// One seated mind's claim on the pool, from her requirement (`window_allocator::Measure`).
+/// One seated mind's claim on the pool: her governed minimum need (the irreducible window size
+/// from her Measure). All prior types collapsed into one — headroom is applied uniformly in
+/// need_with_growth so every claim gets growth room equally.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MindClaim {
-    /// A held turn measured her floor: the pool holds it with the growth margin her grant uses
-    /// (`Demand::of`'s target, `SENT_HEADROOM` over her need).
-    Held { need: u64 },
-    /// No held turn yet: her own measured wish or declared size is her floor, as is.
-    Own { target: u64 },
+    /// The governed minimum this mind requires of the pool (capped at trained window).
+    Required { size: u64 },
 }
 
 /// What the seated minds need of the pool: each claim (capped at the trained window), plus the
