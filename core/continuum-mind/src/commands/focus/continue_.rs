@@ -96,11 +96,11 @@ impl ActionCommand for FocusContinue {
 
     async fn run(&self, ctx: &Ctx, p: FocusContinueParams) -> Result<FocusContinueResult, CommandError> {
         let caller = ctx.caller.as_ref().ok_or_else(|| {
-            CommandError::Denied("focus/continue is self-set but this dispatch carries no caller identity".into())
+            CommandError::Denied("a continuation is self-set, and this dispatch carries no caller identity".into())
         })?;
         if caller.source != CallerSource::LocalPersona {
             return Err(CommandError::Denied(
-                "focus/continue writes a resident persona's own mind; this caller has none here".into(),
+                "a continuation is written to a resident persona's own mind, and this caller has none here".into(),
             ));
         }
         let persona = caller.peer_id.as_uuid();
@@ -141,13 +141,18 @@ impl ActionCommand for FocusContinue {
         let wakes_at_ms = continuation.as_ref().and_then(|c| c.expectation.as_ref()).and_then(|e| e.by_ms);
         let held = continuation.is_some();
 
-        let dir = crate::persona::perception_feed::mind_dir(persona)
+        let dir = crate::persona::senses::mind_dir(persona)
             .ok_or_else(|| CommandError::Invalid("no persistent home to keep your mind state in".into()))?;
-        let saved = crate::persona::perception_feed::with_region(persona, |region| {
-            region.set_continuation(continuation.clone(), now);
-            region.save(&dir, now)
-        })
-        .ok_or_else(|| CommandError::Invalid("your perception region is not running on this core".into()))?;
+        let senses = crate::persona::senses::of(persona)
+            .ok_or_else(|| CommandError::Invalid("your senses are not running on this core".into()))?;
+        let (saved_tx, saved_rx) = tokio::sync::oneshot::channel();
+        let told = senses
+            .tell(crate::persona::senses::Sensed::Continuation { continuation: continuation.clone(), dir, saved: saved_tx })
+            .await;
+        let saved = match saved_rx.await {
+            Ok(saved) if told => saved,
+            _ => return Err(CommandError::Invalid("your senses stopped before taking your continuation".into())),
+        };
         saved.map_err(|e| CommandError::Internal(format!("your continuation was set but could not be saved: {e}")))?;
         // A private continuation is sealed in her mind store (sink 10), never in
         // mind-state.json; an open one, or a clear, removes any sealed one left behind.
@@ -171,7 +176,7 @@ fn expectation_from(p: &FocusContinueParams, now_ms: u64) -> Option<Expectation>
     if text.is_none() && by_ms.is_none() && verdict.is_none() {
         return None;
     }
-    Some(Expectation { text: text.unwrap_or_default(), by_ms, verdict })
+    Some(Expectation { text: text.unwrap_or_default(), by_ms, verdict }) // unwrap_or_default: an expectation given only as a deadline or a verdict has no words, and empty text is how Expectation carries that
 }
 
 #[cfg(test)]

@@ -229,31 +229,33 @@ impl PendingInput {
             }
         }
     }
-    /// Cancellation never takes an input out of custody. Multiple parked inputs
-    /// wait independently; a small new request does not evict a larger old one.
-    pub(crate) async fn at_next_beat(&self, beat: std::time::Duration) -> Option<IncomingMessage> {
+    /// The first retained input whose capacity owner frees, when it does; pending while none
+    /// waits on capacity. Cancellation never takes an input out of custody, and parked inputs
+    /// wait independently: a small new request does not evict a larger old one.
+    pub(crate) async fn when_capacity_frees(&self) -> IncomingMessage {
         use futures_util::stream::{FuturesUnordered, StreamExt};
-        if self.inputs.is_empty() {
-            if self.self_refusals.is_empty() {
-        tokio::time::sleep(beat).await;
-            } else {
-                std::future::pending::<()>().await;
-    }
-            return None;
-    }
         let mut waits = self
             .inputs
             .iter()
-            .map(|input| async move {
-                match &input.capacity {
-                    Some(refusal) => wait_capacity(refusal).await,
-                    None => tokio::time::sleep(beat).await,
-    }
+            .filter_map(|input| input.capacity.as_ref().map(|refusal| (input, refusal)))
+            .map(|(input, refusal)| async move {
+                wait_capacity(refusal).await;
                 input.message.clone()
             })
             .collect::<FuturesUnordered<_>>();
-        waits.next().await
+        match waits.next().await {
+            Some(message) => message,
+            None => std::future::pending().await,
+        }
     }
+
+    /// A retained input deferred with no capacity owner to wait on: retried at her next wake of
+    /// any kind, never on a clock.
+    pub(crate) fn deferred_without_owner(&self) -> Option<IncomingMessage> {
+        let input = self.inputs.iter().find(|input| input.capacity.is_none())?;
+        Some(input.message.clone())
+    }
+
     pub(crate) fn settle(
         &mut self,
         message: &IncomingMessage,
@@ -373,7 +375,6 @@ mod tests {
     async fn capacity_custody_is_quiet_and_new_input_cannot_evict_it() {
         use crate::cognition::act_observe::SettleStep;
         use crate::cognition::workspace::PromptCapacityError;
-        use std::time::Duration;
         let original = line(1, 1, "large original");
         let newer = line(2, 2, "small new input");
         let engram = Some(Uuid::new_v4());
@@ -388,12 +389,10 @@ mod tests {
         let mut pending = PendingInput::default();
         pending.settle(&original, engram, TurnAttention::HumanOpportunity, &refusal);
         assert!(!pending.permits_self_tick());
-        assert!(tokio::time::timeout(
-            Duration::from_secs(30),
-            pending.at_next_beat(Duration::from_secs(1))
-        )
-        .await
-        .is_err());
+        assert!(
+            futures_util::FutureExt::now_or_never(pending.when_capacity_frees()).is_none(),
+            "an input refused for capacity waits for its owner, never a beat"
+        );
         pending.settle(
             &newer,
             None,
@@ -404,7 +403,7 @@ mod tests {
         assert_eq!(pending.wake_engram_for(&original), engram);
         pending.payload_changed(&newer);
         assert_eq!(
-            pending.at_next_beat(Duration::from_secs(1)).await,
+            pending.deferred_without_owner(),
             Some(original.clone())
         );
         let SettleStep::CapacityRefused { error, .. } = refusal else {
@@ -435,12 +434,10 @@ mod tests {
             pending.self_refusals.contains_key(&original.room_id),
             "unrelated room input and completed work cannot unpark the original continuation"
         );
-        assert!(tokio::time::timeout(
-            Duration::from_secs(30),
-            pending.at_next_beat(Duration::from_secs(1))
-        )
-        .await
-        .is_err());
+        assert!(
+            futures_util::FutureExt::now_or_never(pending.when_capacity_frees()).is_none(),
+            "an input refused for capacity waits for its owner, never a beat"
+        );
     }
 
     // Regression 2e3f0eab: the actual wake owner waits the existing cadence,
@@ -450,7 +447,6 @@ mod tests {
         use crate::cognition::act_observe::SettleStep;
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::PersonaConversation;
-        use std::time::Duration;
         let original = line(1, 1, "original directed request");
         let newer = line(2, 2, "newer directed request");
         let cause = Some(Uuid::new_v4());
@@ -464,10 +460,10 @@ mod tests {
         let mut conversation =
             ScriptedConversation::new().with_events(vec![Ok(Some(newer.clone()))]);
         conversation.prime().await.unwrap();
-        let beat = Duration::from_secs(3);
-        assert!(tokio::time::timeout(beat / 2, pending.at_next_beat(beat)).await.is_err());
+
+
         assert_eq!(pending.message(), Some(&original), "cancelled wake retains custody");
-        let retry = pending.at_next_beat(beat).await.unwrap();
+        let retry = pending.deferred_without_owner().expect("a deferral with no capacity owner is retried at her next wake");
         assert_eq!(retry, original);
         assert_eq!(pending.wake_engram_for(&original), cause);
         // Presence may disappear while waiting; the admitted human opportunity
@@ -514,7 +510,7 @@ mod tests {
             },
         );
         assert!(
-            pending.at_next_beat(beat).await.is_none(),
+            pending.deferred_without_owner().is_none(),
             "a genuine Pass is terminal"
         );
         assert!(pending.attention_for(&original).is_none());

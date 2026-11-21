@@ -17,7 +17,7 @@ pub(super) fn announce_turn_start(ctx: &HostedPersona, trigger: TurnTrigger<'_>,
     // She takes in this room up to this line: her region's view of it drains, so the
     // same line cannot also wake a Perceive turn (EVENT-MIND §1b).
     if !admitted_retry {
-        crate::persona::perception_feed::mark_perceived(
+        crate::persona::senses::mark_perceived(
             ctx.identity.peer_id.as_uuid(),
             turn_room,
             msg.lamport,

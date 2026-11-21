@@ -1,66 +1,4 @@
 use super::*;
-
-/// The live stream is dead when a catch-up tick admits events from the store
-/// while no live frame arrived since the previous tick. The first tick after
-/// (re)open is exempt: it legitimately admits the backlog.
-pub(super) fn live_stream_missed(live_since_tick: u64, admitted: usize, first_tick: bool) -> bool {
-    !first_tick && live_since_tick == 0 && admitted > 0 && admitted != usize::MAX
-}
-
-/// Re-subscribe with a bounded backoff (1 s doubling to 30 s). `None` only
-/// when the citizen's subscribe is refused for good.
-pub(super) async fn reopen_live_stream(
-    runtime: &dyn AircCitizen,
-    persona: uuid::Uuid,
-    reason: &'static str,
-    attempt: &mut u32,
-) -> Option<FilteredEventStream> {
-    loop {
-        // Back off BETWEEN retries, never before the first attempt: a stream that
-        // ended on a room join or a daemon restart is back in one hop.
-        if *attempt > 0 {
-            let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5))
-                .min(std::time::Duration::from_secs(30));
-            tokio::time::sleep(delay).await;
-        }
-        match runtime.subscribe_all_rooms().await {
-            Ok(next) => {
-                continuum_base::probe!(
-                    class = "persona.inbound.stream_reopened",
-                    persona = %persona,
-                    reason = reason,
-                    attempt = *attempt,
-                    "live stream re-opened by the pump"
-                );
-                *attempt = 0;
-                return Some(next);
-            }
-            Err(e) => {
-                *attempt = attempt.saturating_add(1);
-                continuum_base::probe!(
-                    class = "persona.inbound.stream_reopen_failed",
-                    persona = %persona,
-                    attempt = *attempt,
-                    error = %e,
-                    "live stream re-open failed; retrying"
-                );
-                if *attempt >= 8 {
-                    // The one branch that leaves a citizen without a live path for
-                    // good — the condition card e592b633 was filed about. Say it
-                    // in its own class, not buried in the retry rows.
-                    continuum_base::probe!(
-                        class = "persona.inbound.pump_gave_up",
-                        persona = %persona,
-                        attempts = *attempt,
-                        "live stream could not be re-opened after repeated refusals; the store catch-up is her only path now"
-                    );
-                    return None;
-                }
-            }
-        }
-    }
-}
-
 impl AircPersonaConversation {
     pub(super) async fn next_message_inner(
         &mut self,
@@ -148,7 +86,6 @@ impl AircPersonaConversation {
             let polled = if self.refresh_pending {
                 Polled::Membership
             } else {
-                let active = self.inbox.is_some();
                 let inbox = &mut self.inbox;
                 let epoch = &mut self.membership_epoch;
                 tokio::select! {
@@ -164,15 +101,6 @@ impl AircPersonaConversation {
                             None => std::future::pending().await,
                         }
                     } => Polled::Event(ev),
-                    // QUIET WATCHDOG (2026-09-04): live streams went silent ~2 min after
-                    // prime — 12 citizens received 172 events in the first two minutes,
-                    // 2 citizens 5 events in the next two, and an operator line at +12 min
-                    // reached nobody — with no lag error ever surfacing here. The daemon
-                    // marks a slow subscriber lagged and its "resume from the sink" never
-                    // delivers. So: when nothing has arrived for a window, ask the durable
-                    // store whether the room moved on; if it did, the stream is dead —
-                    // re-open it and replay the gap, exactly as a membership change does.
-                    _ = tokio::time::sleep_until(self.next_catch_up), if active => Polled::Quiet,
                     _ = std::future::ready(()), if !wait => return Ok(None),
                 }
             };
@@ -205,14 +133,6 @@ impl AircPersonaConversation {
                 Polled::Membership => {
                     self.refresh_pending = true;
                     "room membership changed at runtime — refreshing the subscription snapshot"
-                }
-                Polled::Quiet => {
-                    // The pump owns the store catch-up on its own clock; the loop's
-                    // deadline is only a wake so a long idle never blocks the backlog.
-                    // No forced re-open here: a re-open resets nothing now, but it is
-                    // also not a remedy — the store catch-up is.
-                    self.next_catch_up = tokio::time::Instant::now() + CATCH_UP_EVERY;
-                    continue;
                 }
             };
             {
@@ -298,12 +218,6 @@ impl AircPersonaConversation {
 
 #[async_trait]
 impl PersonaConversation for AircPersonaConversation {
-    fn take_wakes(
-        &mut self,
-    ) -> Option<tokio::sync::mpsc::Receiver<crate::cognition::conversation::Wake>> {
-        self.mind.as_mut().and_then(|m| m.wakes.take())
-    }
-
     /// Eagerly opens the airc subscribe stream. Idempotent — calling
     /// twice is a no-op after the first.
     ///
@@ -512,24 +426,14 @@ impl AircPersonaConversation {
         // continuum's own clients apply. Teaching the decoder the CLI's shape
         // needs that shape, and the reason string alone cannot supply it; a
         // decoder arm written against a GUESSED body is how presence frames
-        // become fabricated perception. So: capture the kind and a bounded
-        // preview, and let the next fix be written against a fact.
+        // become fabricated perception. So: capture the kind and the body,
+        // and let the next fix be written against a fact.
         //
-        // Bounded to 160 chars and emitted only on the ALREADY-firing filtered
-        // line — no new event, no new flood ([[the stream-chunk skip stays
-        // deliberately unprobed]]).
+        // Emitted only on the ALREADY-firing filtered line, which fires only on a decode
+        // fault (known non-perception is classified away before here): the whole body, as
+        // its own Debug shape, so the decoder is written against the fact and nothing is cut.
         let event_kind = format!("{:?}", event.kind);
-        let body_preview = match event.body.as_ref() {
-            None => "<none>".to_string(),
-            Some(b) => match b.as_text() {
-                Some(t) => t.chars().take(160).collect(),
-                None => serde_json::to_string(b)
-                    .unwrap_or_else(|e| format!("<unserializable: {e}>"))
-                    .chars()
-                    .take(160)
-                    .collect(),
-            },
-        };
+        let body_preview = format!("{:?}", event.body);
         let message = match attention.perception {
             Ok(message) => message,
             Err(reason) => {

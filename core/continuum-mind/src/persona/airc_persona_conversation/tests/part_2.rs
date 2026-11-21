@@ -28,11 +28,8 @@ use super::*;
         let incoming = perceptual_from_event(&media_event).expect("caption turn");
         assert_eq!(incoming.text, row.text);
         assert_eq!(incoming.media.len(), 1);
-        let (sender, rendered) = crate::cognition::conversation::room_event::room_turn_from_event(&media_event).unwrap();
-        let attention = AttentionEvent::classify(Arc::new(media_event.clone())).unwrap();
-        let classified = attention.perception.unwrap();
-        assert_eq!(SeenRooms::fingerprint(sender, &rendered),
-            SeenRooms::fingerprint(classified.peer_id, &classified.render_content()));
+        assert!(crate::cognition::conversation::room_event::room_turn_from_event(&media_event).is_ok(), "the hydrated row decodes as a room turn");
+        assert!(AttentionEvent::classify(Arc::new(media_event.clone())).is_some_and(|attention| attention.perception.is_ok()), "and is perceived");
         assert!(incoming.render_room_update().contains("contents not loaded"));
         let restored: IncomingMessage = serde_json::from_value(serde_json::to_value(&incoming).unwrap()).unwrap();
         assert_eq!(restored.media, incoming.media);
@@ -64,19 +61,6 @@ use super::*;
         assert!(perceptual_from_event(&native).is_err(), "attachments must not bypass stream filtering");
     }
 
-    // what this catches: the same line under two ids (the sender's message id
-    // and the say's event id) admitting twice.
-    #[test]
-    pub(super) fn the_same_line_under_a_second_id_is_seen_by_fingerprint() {
-        let mut seen = SeenRooms::default();
-        let room = Uuid::new_v4();
-        let peer = Uuid::new_v4();
-        let fp = SeenRooms::fingerprint(peer, "one line");
-        assert!(!seen.was_seen_text(room, fp));
-        seen.note_text(room, fp);
-        assert!(seen.was_seen_text(room, fp));
-        assert!(!seen.was_seen_text(room, SeenRooms::fingerprint(peer, "another line")));
-    }
 
     /// Regression test for the slice-13.6 reviewer fix to PR #1514:
     /// `next_message` MUST refuse if `prime` wasn't called first.

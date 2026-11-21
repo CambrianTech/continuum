@@ -121,7 +121,7 @@ pub struct Me<'a> {
 }
 
 /// One spoken line above her cursor, reduced to what salience needs. Built once
-/// at the core's single inbound seam (`perception_feed`), never from a digest.
+/// at the core's single inbound seam (the one feed into her senses), never from a digest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpeechLine {
     pub sender: Uuid,

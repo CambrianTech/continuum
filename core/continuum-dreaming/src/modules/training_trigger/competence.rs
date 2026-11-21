@@ -133,7 +133,7 @@ pub(crate) async fn decide(
     // expectations against the room's verdicts, every activity folded by counts).
     // `S(C)` is this until the model surprise is measured per competence
     // (GENE-REUSE-FORK-MINT.md §3). Not yet judged is not low.
-    let surprise = crate::persona::perception_feed::awareness_of(persona_id, now_ms)
+    let surprise = crate::persona::senses::of(persona_id).map(|senses| senses.awareness(now_ms))
         .and_then(|a| a.verdict_surprise());
     let decision = decide_with_pending(
         surprise.map_or(Surprise::NotYetMeasured, |v| Surprise::Measured { s: v.s }),

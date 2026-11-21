@@ -41,32 +41,12 @@ pub(super) async fn serve_persona_loop_inner(
     // agent contract per the cognition pipeline doc.
     let mut outcome = ServeOutcome::default();
 
-    // Never-stop heartbeat: a persona is not a request→response handler that goes
-    // idle between messages — it is a mind that always gets time. The loop now
-    // selects between the airc wire and a periodic tick; on a tick the deliberation
-    // concern runs over the CURRENT world-state (no inbound message), so the persona
-    // pursues its own open intentions and goes idle only when its own judgment says
-    // there is nothing to do. [[organic-substrate-continuous-concern-scheduler]].
-    // Each persona beats at ITS OWN rhythm — there is no shared metronome. The tempo comes
-    // from the being's own life: quick while there's something to engage, drifting toward
-    // restful when it's alone (exponential backoff to a cap). Different beings living
-    // different moments beat at different rates, so they never tick in lockstep — the
-    // thundering herd that made six minds stampede one model isn't scheduled-around, it
-    // simply never forms. A stable identity-derived phase desyncs even the first beat.
-    // [[design-the-persona-as-a-being]] [[idle-is-self-directed-free-time]].
-    let engaged_beat = std::time::Duration::from_millis(SELF_TICK_MS);
-    let rest_cap = std::time::Duration::from_millis(SELF_TICK_REST_CAP_MS);
-    let phase = std::time::Duration::from_millis(
-        (ctx.identity.peer_id.as_uuid().as_u128() as u64) % SELF_TICK_MS,
-    );
-    let mut beat = BeatClock {
-        engaged: engaged_beat,
-        rest_cap,
-        next: engaged_beat + phase,
-    };
-    // Burst fingerprint of the last cycle (message OR self-tick), so a heartbeat
+    // Her mind wakes her, never a clock (object model 5.7): a message on the wire, or what
+    // her senses publish as calling her (a loud room past her dial, her continuation falling
+    // due, resuming after a restart). With nothing calling, she rests until something does.
+    // Burst fingerprint of the last cycle (message OR self-cycle), so a mind wake
     // over an unchanged world is free. Shared by both paths: a message turn updates
-    // it, so the very next tick doesn't re-deliberate the same burst.
+    // it, so the very next self-cycle doesn't re-deliberate the same burst.
     let mut last_burst_fp: u64 = 0;
     // Roster-name memory for engram attribution: harvested from each turn's
     // composed roster delivery (zero extra I/O — the shared projection already
@@ -102,7 +82,6 @@ pub(super) async fn serve_persona_loop_inner(
             &opts,
             &deferred_input,
             &mut mind,
-            beat.next,
         )
         .await;
         if matches!(wake, Wake::Idle) {
@@ -123,13 +102,13 @@ pub(super) async fn serve_persona_loop_inner(
         // ADMIT THE TURN, or leave because the node is stopping.
         //
         // Taken the moment a wake is produced, BEFORE the match, because the
-        // `Wake::Tick` arm does its self-tick deliberation INLINE and then `continue`s —
+        // `Wake::Mind` arm does its self-cycle deliberation INLINE and then `continue`s —
         // it never reaches the code below it. A permit taken after the match would have
         // counted inbound turns and silently missed every self-directed one: turns that have
         // consumed input and written nothing.
         //
         // Held to the end of the loop body, so it is released on EVERY exit path — the
-        // `continue` at the end of the tick arm included. A manual decrement would have to
+        // `continue` at the end of the mind arm included. A manual decrement would have to
         // be repeated at each of them, and would be missed at the next one added.
         let Some(_turn) = crate::cognition::turn_ingress::admit() else {
             continuum_base::probe!(
@@ -147,12 +126,13 @@ pub(super) async fn serve_persona_loop_inner(
         let msg = match wake {
             Wake::Stop => break,
             Wake::Idle => continue,
-            Wake::Tick | Wake::Mind { .. } => {
+            Wake::Mind { .. } => {
                 if deferred_input.take_ready_self(wake_room) {
                     last_burst_fp = 0;
                 }
                 // Never waited for by a stop: a self-tick consumes no external input (S4b).
                 let _self_tick = crate::cognition::turn_ledger::begin_self_tick();
+                let before = last_burst_fp;
                 serve_self_tick(
                     ctx,
                     conversation,
@@ -160,17 +140,19 @@ pub(super) async fn serve_persona_loop_inner(
                     &mut last_burst_fp,
                     wake_room,
                     pending_before_wake,
-                    &mut beat,
                     &mut deferred_input,
                 )
                 .await;
+                // Her own momentum: a cycle that drove her work continues at once.
+                if last_burst_fp != before {
+                    mind.continuing = Some(wake_room);
+                }
                 continue;
             }
-            // A message means life in the room — snap back to a quick beat so she's present
-            // and responsive, not drifting in rest.
             Wake::Msg(m) | Wake::Retry(m) => {
                 if admitted_retry { deferred_input.resume_input(&m); }
-                beat.next = beat.engaged;
+                // Having answered, she returns to what she was doing.
+                mind.continuing = Some(None);
                 m
             }
         };
@@ -338,7 +320,7 @@ pub(super) async fn serve_persona_loop_inner(
         )
         .await;
         let workspace_burst = build_turn_burst(ctx, &composed, trigger, now_ms, wake_engram).with_effects(Some(effects.clone()));
-        // Mark this world-state as just-deliberated so the next heartbeat tick doesn't
+        // Mark this world-state as just-deliberated so the next self-cycle doesn't
         // re-run the same burst (the message path and the self-tick share the gate;
         // own chat is excluded so this reply can't re-trigger a self-tick, while her
         // own active work is folded in so the tick advances it — see burst_fingerprint).
