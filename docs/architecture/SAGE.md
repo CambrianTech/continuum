@@ -117,7 +117,7 @@ become a gene; emits lessons and candidate genes; a refusal is input, never retr
 | 20c6586616 | JSON schema enforced through her render, not refused | dream review refusals 62 (50 min) -> 0; 5-6 typed verdicts and 2 superseding facts per 15 min |
 | a4927bf139 | channel digest as a component | built only when her room moved; exposed the regression below |
 | 20c6586616, a4927bf139 | (regression) dreams ran as her on the Core | prefix reuse p50 0.94 -> 0.0, prefills 40-76 s, act p50 241 s: a dream overwrote her conversation's cached state |
-| d47f197b56 | a dream runs as a one-off on the Core | read pending (23:21-23:36Z); keep if reuse returns near 0.94 and act near 75 s, else back to 50fb953ba1 |
+| d47f197b56 | a dream runs as a one-off on the Core | prefix reuse p50 0.0 -> 0.94 (25 of 33 turns resumed by rewind); prefill p50 4.6 s, p90 34 s; act p50 241 -> 104 s (75 s before dreams ran: dreams now take real Core time, the next lever is a Content turn yielding at a decode boundary); 0 refused, 0 schema refusals; 16 one-off turns |
 
 Lessons the reads taught: a change that only moves work can still move a cost (dreams resuming cost
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
