@@ -243,9 +243,9 @@ impl Scheduler {
             .name("persona-scheduler".to_string())
             .spawn(move || {
                 driver::run(&model, &config, driver::Start { incarnation, state: state_tx, requests: request_rx, emit, record, stages_on: runtime.clone() });
-                emit_worker.stop();
-                record_worker.stop();
-                let (emit, record) = runtime.block_on(async { tokio::join!(emit_worker.join(), record_worker.join()) });
+                // No stop: the stages end once their last producer is gone and they have drained, so
+                // answer ends a closing driver handed to its drain owner still reach their callers.
+                let (emit, record) = runtime.block_on(driver::finish(emit_worker, record_worker));
                 for failure in [emit, record].into_iter().filter_map(Result::err) {
                     tracing::error!(%failure, "persona stage failed at shutdown");
                 }

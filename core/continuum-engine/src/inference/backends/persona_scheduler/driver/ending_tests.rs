@@ -123,3 +123,28 @@ async fn a_closed_engine_hands_a_full_emit_to_a_drain_owner_in_order() {
     }
     assert_eq!(heard, (0..8).collect::<Vec<_>>(), "in the order they were sent");
 }
+
+// what this catches (Codex on 8f386fb4e1): the driver thread closing Emit's intake right after a
+// closing driver handed its full outbox to the drain owner, so ends the drain had not yet pushed
+// came back refused and were dropped. Shutdown here is the thread's own: hand off, then `finish`.
+#[tokio::test]
+async fn shutdown_with_a_full_emit_delivers_every_end_before_the_stages_finish() {
+    let (delivered, mut caller) = tokio::sync::mpsc::unbounded_channel();
+    let (emit_input, emit_worker) = spawn_stage(Delivers(delivered), one());
+    let (record_input, record_worker) = spawn_stage(Answers, one());
+    let mut emit = Outbox::new(emit_input);
+    for n in 0..8 {
+        emit.send(Fact::Numbered(n));
+    }
+    assert!(emit.waiting() > 0, "Emit is full: ends wait behind it");
+    drop(record_input); // the closed driver's record outbox, already settled
+
+    let _drain = hand_off(emit, &tokio::runtime::Handle::current());
+    let (emit_ended, record_ended) = finish(emit_worker, record_worker).await;
+    assert!(emit_ended.is_ok() && record_ended.is_ok(), "both stages end on their own");
+    let mut heard = Vec::new();
+    while let Ok(output) = caller.try_recv() {
+        heard.push(output);
+    }
+    assert_eq!(heard, (0..8).collect::<Vec<_>>(), "every end reached its caller, in order, before the stages finished");
+}

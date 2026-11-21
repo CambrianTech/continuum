@@ -99,6 +99,18 @@ pub(super) fn hand_off<E: Send + 'static>(mut emit: Outbox<E>, on: &tokio::runti
     on.spawn(async move { emit.drain().await })
 }
 
+/// The driver thread's last act: wait for both stages to end, never closing their intake. A stage
+/// ends once its last producer is gone and it has handled what it took, so what a closing driver
+/// handed to its drain owner still reaches its callers (Codex on 8f386fb4e1: stopping Emit's intake
+/// here raced that drain and dropped the ends it had not yet pushed). Every producer is the
+/// driver's or the drain owner's, and both end, so this always returns.
+pub(in super::super) async fn finish<E, R>(
+    emit: continuum_flow::StageWorker<E>,
+    record: continuum_flow::StageWorker<R>,
+) -> (Result<(), tokio::task::JoinError>, Result<(), tokio::task::JoinError>) {
+    tokio::join!(emit.join(), record.join())
+}
+
 /// Every record sent so far is processed, confirmed by the record stage answering a barrier it reaches
 /// after them (it is FIFO), with the probe-log writes that failed since `seen`. Emit is flushed but
 /// never awaited: a caller that stopped reading her answer never holds the stop (Codex on 8e597e1bcd).

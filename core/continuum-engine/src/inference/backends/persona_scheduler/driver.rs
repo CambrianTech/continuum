@@ -98,6 +98,7 @@ mod ending;
 mod history;
 
 use ending::{Ending, Stop, Suspension};
+pub(super) use ending::finish;
 use history::{Boundary, History, Boundaries};
 
 /// A bound mind's blocks, as the tier that holds them in the context reports them.
