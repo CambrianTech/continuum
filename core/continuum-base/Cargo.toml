@@ -11,7 +11,12 @@ sha2.workspace = true # tool_evidence: a check is bound to the exact bytes it re
 dirs = { workspace = true }
 tracing.workspace = true
 uuid.workspace = true
+async-trait.workspace = true # Lifecycle::act is called through dyn parts
+event-listener.workspace = true # Completion wakes every observer on each answer
+futures.workspace = true # the executor seam (task::Spawn) parts run their verbs on
+parking_lot.workspace = true
 
 [dev-dependencies]
 serde_json = { workspace = true } # non_empty_list: the empty list is refused at the parse
 tempfile = { workspace = true }
+futures = { workspace = true, features = ["thread-pool"] } # parts tests run verbs on a real pool

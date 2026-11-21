@@ -2743,8 +2743,12 @@ dependencies = [
 name = "continuum-base"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "chrono",
  "dirs 5.0.1",
+ "event-listener",
+ "futures",
+ "parking_lot",
  "serde",
  "serde_json",
  "sha2",
