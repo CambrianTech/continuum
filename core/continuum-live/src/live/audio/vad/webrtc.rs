@@ -108,15 +108,15 @@ impl VoiceActivityDetection for WebRtcVAD {
             return Err(VADError::InvalidAudio("Empty samples".into()));
         }
 
-        // Earshot's 16 kHz API specifies 160/320/480 samples. Normalize to
-        // 480 (30 ms), padding only the final partial chunk. Never classify a
-        // short transport packet as silence merely because it is short.
-        const CHUNK_SIZE: usize = 480;
+        // Earshot's 16 kHz API takes 10/20/30 ms frames (160/320/480 samples).
+        // Normalize to the 30 ms frame, padding only the final partial chunk. Never
+        // classify a short transport packet as silence merely because it is short.
+        const EARSHOT_FRAME: usize = 16_000 * 30 / 1000; // 30 ms at predict_16khz's 16 kHz
         let mut speech_chunks = 0;
         let mut total_chunks = 0;
         let mut detector = self.detector.lock();
-        for chunk in samples.chunks(CHUNK_SIZE) {
-            let mut frame = [0i16; CHUNK_SIZE];
+        for chunk in samples.chunks(EARSHOT_FRAME) {
+            let mut frame = [0i16; EARSHOT_FRAME];
             frame[..chunk.len()].copy_from_slice(chunk);
             let speech = detector.predict_16khz(&frame).map_err(|e| {
                 VADError::InferenceFailed(format!("Earshot prediction failed: {e:?}"))

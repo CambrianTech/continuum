@@ -19,6 +19,7 @@ use ndarray;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use parking_lot::Mutex;
+use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
@@ -41,9 +42,20 @@ struct KokoroModel {
     sample_rate: u32,
 }
 
-/// Max phoneme/token length for Kokoro v1.0
-// context-budget-exempt: Kokoro's own phoneme-token input limit (a fixed property of the model), not a text-context bound
-const MAX_TOKEN_LENGTH: usize = 510;
+/// Kokoro v1.0's input positions (its PL-BERT `max_position_embeddings`): 510 phoneme tokens
+/// between the two pad tokens. The ONNX export ships no config to read it from at load.
+const KOKORO_POSITIONS: usize = 512;
+
+/// The tokenizer.json section Kokoro's vocab lives in (HuggingFace tokenizer format, on disk).
+#[derive(serde::Deserialize)]
+struct TokenizerFile {
+    model: TokenizerModel,
+}
+
+#[derive(serde::Deserialize)]
+struct TokenizerModel {
+    vocab: HashMap<String, i64>,
+}
 
 /// Available Kokoro voices
 const KOKORO_VOICES: &[(&str, &str, &str)] = &[
@@ -124,30 +136,11 @@ impl KokoroTTS {
         if tokenizer_path.exists() {
             let content = std::fs::read_to_string(&tokenizer_path).map_err(TTSError::IoError)?;
 
-            let parsed: serde_json::Value = serde_json::from_str(&content).map_err(|e| {
-                TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json: {e}"))
+            // Typed straight off the file: no Value tree to walk and clone.
+            let tokenizer: TokenizerFile = serde_json::from_str(&content).map_err(|e| {
+                TTSError::ModelNotLoaded(format!("Failed to parse tokenizer.json model.vocab: {e}"))
             })?;
-
-            let vocab_obj = parsed
-                .get("model")
-                .and_then(|m| m.get("vocab"))
-                .ok_or_else(|| {
-                    TTSError::ModelNotLoaded("tokenizer.json missing model.vocab section".into())
-                })?;
-
-            let raw: HashMap<String, i64> =
-                serde_json::from_value(vocab_obj.clone()).map_err(|e| {
-                    TTSError::ModelNotLoaded(format!(
-                        "Failed to parse vocab from tokenizer.json: {e}"
-                    ))
-                })?;
-
-            let mut vocab = HashMap::new();
-            for (key, value) in raw {
-                if let Some(ch) = key.chars().next() {
-                    vocab.insert(ch, value);
-                }
-            }
+            let vocab = Self::vocab_by_char(tokenizer.model.vocab);
 
             clog_info!(
                 "Kokoro vocab loaded from tokenizer.json: {} entries",
@@ -168,19 +161,20 @@ impl KokoroTTS {
 
         let raw: HashMap<String, i64> = serde_json::from_str(&content)
             .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to parse vocab.json: {e}")))?;
-
-        let mut vocab = HashMap::new();
-        for (key, value) in raw {
-            if let Some(ch) = key.chars().next() {
-                vocab.insert(ch, value);
-            }
-        }
+        let vocab = Self::vocab_by_char(raw);
 
         clog_info!(
             "Kokoro vocab loaded from vocab.json: {} entries",
             vocab.len()
         );
         Ok(vocab)
+    }
+
+    /// Kokoro's vocab keys are single phoneme characters; key each id by its character.
+    fn vocab_by_char(raw: HashMap<String, i64>) -> HashMap<char, i64> {
+        raw.into_iter()
+            .filter_map(|(key, id)| key.chars().next().map(|ch| (ch, id)))
+            .collect()
     }
 
     /// Load voice embedding from .bin file
@@ -245,7 +239,7 @@ impl KokoroTTS {
     /// Call espeak-ng to phonemize text (same as Piper, but returns raw IPA string)
     fn phonemize(text: &str) -> Result<String, TTSError> {
         let espeak_ng_bin =
-            std::env::var("ESPEAK_NG_BIN").unwrap_or_else(|_| "espeak-ng".to_string());
+            std::env::var("ESPEAK_NG_BIN").unwrap_or_else(|_| "espeak-ng".to_string()); // espeak-ng's own binary name, found on PATH; the variable only overrides it
         let output = Command::new(espeak_ng_bin)
             .args(["-v", "en-us", "-q", "--ipa=3"])
             .arg(text)
@@ -286,10 +280,16 @@ impl KokoroTTS {
         // End padding token
         tokens.push(0);
 
-        // Enforce max length
-        if tokens.len() > MAX_TOKEN_LENGTH + 2 {
-            tokens.truncate(MAX_TOKEN_LENGTH + 2);
-            // Ensure end padding
+        // The model has no position past KOKORO_POSITIONS: the tail it cannot speak is cut,
+        // loudly, and the end pad restored.
+        if tokens.len() > KOKORO_POSITIONS {
+            clog_warn!(
+                "Kokoro: {} phoneme tokens exceed the model's {} positions; the last {} are not spoken",
+                tokens.len(),
+                KOKORO_POSITIONS,
+                tokens.len() - KOKORO_POSITIONS
+            );
+            tokens.truncate(KOKORO_POSITIONS);
             let last = tokens.len() - 1;
             tokens[last] = 0;
         }
@@ -309,7 +309,9 @@ impl KokoroTTS {
         }
 
         let voice_id = Self::normalize_voice(voice);
-        let mut model = session.lock();
+        let mut guard = session.lock();
+        // One &mut to the model, so its fields (voice cache, voices dir, session) borrow apart.
+        let model = &mut *guard;
 
         // Step 1: Phonemize text via espeak-ng
         let phonemes = Self::phonemize(text)?;
@@ -332,14 +334,10 @@ impl KokoroTTS {
 
         // Step 3: Get voice embedding for this token count
         // Load voice if not cached
-        if !model.voice_cache.contains_key(voice_id) {
-            let embeddings = Self::load_voice_embedding(&model.voices_dir, voice_id)?;
-            model.voice_cache.insert(voice_id.to_string(), embeddings);
-        }
-
-        let voice_embeddings = model.voice_cache.get(voice_id).ok_or_else(|| {
-            TTSError::VoiceNotFound(format!("Voice '{voice_id}' missing from cache after load"))
-        })?;
+        let voice_embeddings = match model.voice_cache.entry(voice_id.to_string()) {
+            Entry::Occupied(cached) => cached.into_mut(),
+            Entry::Vacant(slot) => slot.insert(Self::load_voice_embedding(&model.voices_dir, voice_id)?),
+        };
 
         // Select style vector based on token count (clamped to available range)
         let style_idx = token_count.min(voice_embeddings.len().saturating_sub(1));
@@ -443,10 +441,9 @@ impl TextToSpeech for KokoroTTS {
         };
 
         // Find voices directory
-        let voices_dir = Self::find_voices_dir().unwrap_or_else(|| {
-            clog_warn!("Kokoro voices directory not found, using models/kokoro/voices");
-            crate::live::audio::model_root::voice_model_path("kokoro/voices")
-        });
+        let voices_dir = Self::find_voices_dir().ok_or_else(|| {
+            TTSError::NoVoicesDir(crate::live::audio::model_root::voice_model_path("kokoro"))
+        })?;
 
         // Load vocab
         let vocab = Self::load_vocab()?;
@@ -641,12 +638,12 @@ mod tests {
         let mut vocab = HashMap::new();
         vocab.insert('a', 10);
 
-        // Create a string longer than MAX_TOKEN_LENGTH
+        // Create a string longer than the model's positions
         let long_input: String = "a".repeat(600);
         let tokens = KokoroTTS::tokenize(&long_input, &vocab);
         assert!(
-            tokens.len() <= MAX_TOKEN_LENGTH + 2,
-            "Should not exceed max length + padding"
+            tokens.len() <= KOKORO_POSITIONS,
+            "Should not exceed the model's positions, pads included"
         );
         assert_eq!(tokens[0], 0, "Start padding");
         assert_eq!(

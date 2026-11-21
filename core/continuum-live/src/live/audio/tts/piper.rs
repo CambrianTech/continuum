@@ -28,8 +28,47 @@ static PIPER_GPU: GpuModelTracker = GpuModelTracker::new("Piper");
 /// Piper model wrapper
 struct PiperModel {
     session: Session,
-    sample_rate: u32,
+    /// The model's speaker count and output rate, read from its own `.onnx.json`.
+    voice: PiperVoiceConfig,
     phonemizer: Phonemizer,
+}
+
+/// The one voice Piper advertises: the model's first speaker.
+const DEFAULT_VOICE: &str = "default";
+
+/// The facts a Piper voice config (`<model>.onnx.json`) states about its model.
+#[derive(serde::Deserialize)]
+struct PiperVoiceConfig {
+    num_speakers: u32,
+    audio: PiperAudioConfig,
+}
+
+#[derive(serde::Deserialize)]
+struct PiperAudioConfig {
+    sample_rate: u32,
+}
+
+impl PiperVoiceConfig {
+    /// Read the config beside the model (a disk format Piper's exporter writes).
+    fn load(path: &std::path::Path) -> Result<Self, TTSError> {
+        let file = std::fs::File::open(path)?;
+        serde_json::from_reader(std::io::BufReader::new(file))
+            .map_err(|cause| TTSError::ModelConfig { path: path.to_path_buf(), cause })
+    }
+
+    /// The speaker a voice id names: the advertised default voice is speaker 0 and a number
+    /// names that speaker. Any other id, or a speaker the model does not have, is refused.
+    fn speaker_id(&self, voice: &str) -> Result<i64, TTSError> {
+        let speaker = if voice == DEFAULT_VOICE {
+            0
+        } else {
+            voice.parse::<u32>().map_err(TTSError::SpeakerUnparsable)?
+        };
+        if speaker >= self.num_speakers {
+            return Err(TTSError::SpeakerOutOfRange { speaker, speakers: self.num_speakers });
+        }
+        Ok(i64::from(speaker))
+    }
 }
 
 /// Piper TTS Adapter
@@ -57,16 +96,17 @@ impl PiperTTS {
         }
 
         use crate::live::audio::model_root::voice_model_path;
-        let candidates = [
+        let mut candidates = vec![
             voice_model_path("piper/en_US-libritts_r-medium.onnx"), // Primary
             voice_model_path("piper/en_US-amy-medium.onnx"),        // Alternative
             voice_model_path("piper/piper.onnx"),                   // Generic
             voice_model_path("tts/piper.onnx"),
-            dirs::data_dir()
-                .unwrap_or_default()
-                .join("piper/en_US-libritts_r-medium.onnx"),
-            PathBuf::from("/usr/local/share/piper/en_US-libritts_r-medium.onnx"),
         ];
+        // A platform with no data directory has no candidate there (never a cwd-relative one).
+        if let Some(data_dir) = dirs::data_dir() {
+            candidates.push(data_dir.join("piper/en_US-libritts_r-medium.onnx"));
+        }
+        candidates.push(PathBuf::from("/usr/local/share/piper/en_US-libritts_r-medium.onnx"));
 
         candidates.into_iter().find(|path| path.exists())
     }
@@ -75,7 +115,7 @@ impl PiperTTS {
     fn synthesize_sync(
         session: &Arc<Mutex<PiperModel>>,
         text: &str,
-        voice: &str, // Speaker ID for multi-speaker models (0-246 for LibriTTS)
+        voice: &str, // "default" (speaker 0) or a speaker number the model has
         _speed: f32, // TODO: Implement speed control via length_scale parameter
     ) -> Result<SynthesisResult, TTSError> {
         if text.is_empty() {
@@ -83,7 +123,8 @@ impl PiperTTS {
         }
 
         let mut model = session.lock();
-        let sample_rate = model.sample_rate; // Cache before mutable borrow
+        let sample_rate = model.voice.audio.sample_rate; // Cache before mutable borrow
+        let speaker_id = model.voice.speaker_id(voice)?;
 
         // Phonemize text to get phoneme IDs using model's phonemizer
         let phoneme_ids = model.phonemizer.text_to_phoneme_ids(text);
@@ -93,9 +134,6 @@ impl PiperTTS {
         let text_array = ndarray::Array2::from_shape_vec((1, len), phoneme_ids)
             .map_err(|e| TTSError::SynthesisFailed(format!("Failed to reshape input: {e}")))?;
 
-        // Speaker ID (for multi-speaker models like LibriTTS which has 247 speakers)
-        // Parse voice as speaker ID, default to 0 if invalid
-        let speaker_id: i64 = voice.parse().unwrap_or(0).clamp(0, 246);
         let sid_array = ndarray::Array1::from_vec(vec![speaker_id]);
 
         // Inference parameters from model config
@@ -201,18 +239,18 @@ impl TextToSpeech for PiperTTS {
                 .commit_from_file(&model_path)?
         };
 
-        // Load phonemizer from model config
+        // Load phonemizer and the model's voice facts from the model's own config
         let config_path = model_path.with_extension("onnx.json");
-        let phonemizer = Phonemizer::load_from_config(
-            config_path
-                .to_str()
-                .unwrap_or("models/piper/en_US-libritts_r-medium.onnx.json"),
-        )
-        .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {e}")))?;
+        let config_path_text = config_path
+            .to_str()
+            .ok_or_else(|| TTSError::NonUtf8Path(config_path.clone()))?;
+        let phonemizer = Phonemizer::load_from_config(config_path_text)
+            .map_err(|e| TTSError::ModelNotLoaded(format!("Failed to load phonemizer: {e}")))?;
+        let voice = PiperVoiceConfig::load(&config_path)?;
 
         let model = PiperModel {
             session,
-            sample_rate: 22050,
+            voice,
             phonemizer,
         };
 
@@ -255,7 +293,7 @@ impl TextToSpeech for PiperTTS {
 
     fn available_voices(&self) -> Vec<VoiceInfo> {
         vec![VoiceInfo {
-            id: "default".to_string(),
+            id: DEFAULT_VOICE.to_string(),
             name: "LibriTTS (High Quality)".to_string(),
             language: "en-US".to_string(),
             gender: Some("neutral".to_string()),
@@ -264,7 +302,7 @@ impl TextToSpeech for PiperTTS {
     }
 
     fn default_voice(&self) -> &str {
-        "default"
+        DEFAULT_VOICE
     }
 }
 
@@ -288,4 +326,15 @@ mod tests {
         assert_eq!(voices[0].id, "default");
     }
 
+    // what this catches: an unparsable voice id spoken as speaker 0 and an out-of-range speaker
+    // clamped to a guessed ceiling; the speaker count is the model's own config.
+    #[test]
+    fn a_speaker_is_one_the_model_has() {
+        let config: PiperVoiceConfig =
+            serde_json::from_str(r#"{"num_speakers": 3, "audio": {"sample_rate": 22050}}"#).unwrap();
+        assert_eq!(config.speaker_id(DEFAULT_VOICE).unwrap(), 0);
+        assert_eq!(config.speaker_id("2").unwrap(), 2);
+        assert!(config.speaker_id("3").is_err(), "the model has speakers 0..3");
+        assert!(config.speaker_id("af_bella").is_err(), "another adapter's voice is no speaker");
+    }
 }

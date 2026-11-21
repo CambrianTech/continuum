@@ -17,7 +17,7 @@ const STUB_MIN_AUDIO_MS: i64 = 500;
 /// Confidence score returned by stub (0.0-1.0)
 const STUB_CONFIDENCE: f32 = 0.95;
 
-/// Default language code
+/// The language of the stub's canned transcripts (all English)
 const STUB_DEFAULT_LANGUAGE: &str = "en";
 
 /// Stub STT Adapter
@@ -90,7 +90,7 @@ impl SpeechToText for StubSTT {
         }
 
         let text = self.generate_dummy_text(duration_ms);
-        let lang = language.unwrap_or(STUB_DEFAULT_LANGUAGE).to_string();
+        let lang = language.unwrap_or(STUB_DEFAULT_LANGUAGE).to_string(); // the stub detects nothing: its canned text is English, so that is its fixture's language
 
         clog_debug!(
             "StubSTT: Generated dummy transcription for {}ms audio: \"{}\"",

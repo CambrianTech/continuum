@@ -86,16 +86,15 @@ impl SileroVAD {
 
         // Get model preference from SILERO_VAD_MODEL env var
         let model_name =
-            std::env::var("SILERO_VAD_MODEL").unwrap_or_else(|_| "silero_vad.onnx".to_string());
+            std::env::var("SILERO_VAD_MODEL").unwrap_or_else(|_| "silero_vad.onnx".to_string()); // Silero's published model file name; the variable only picks another variant
 
         // Search for the model in common locations
-        let candidates = vec![
-            PathBuf::from(format!("models/vad/{model_name}")),
-            dirs::data_dir()
-                .unwrap_or_default()
-                .join(format!("silero/{model_name}")),
-            PathBuf::from(format!("/usr/local/share/silero/{model_name}")),
-        ];
+        let mut candidates = vec![PathBuf::from(format!("models/vad/{model_name}"))];
+        // A platform with no data directory has no candidate there (never a cwd-relative one).
+        if let Some(data_dir) = dirs::data_dir() {
+            candidates.push(data_dir.join(format!("silero/{model_name}")));
+        }
+        candidates.push(PathBuf::from(format!("/usr/local/share/silero/{model_name}")));
 
         for path in &candidates {
             if path.exists() {

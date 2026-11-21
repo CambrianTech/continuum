@@ -104,6 +104,30 @@ pub enum TTSError {
 
     #[error("IO error: {0}")]
     IoError(#[from] std::io::Error),
+
+    /// A model path an API that takes text cannot take, because it is not UTF-8.
+    #[error("model path {0:?} is not UTF-8")]
+    NonUtf8Path(std::path::PathBuf),
+
+    /// A model's own config beside its weights could not be read as that config.
+    #[error("model config {path:?} unreadable: {cause}")]
+    ModelConfig {
+        path: std::path::PathBuf,
+        #[source]
+        cause: serde_json::Error,
+    },
+
+    /// A voice id that names no speaker: neither the adapter's default voice nor a number.
+    #[error("voice is neither the default voice nor a speaker number: {0}")]
+    SpeakerUnparsable(#[source] std::num::ParseIntError),
+
+    /// A speaker the model does not have.
+    #[error("speaker {speaker} is out of range: the model has {speakers} speakers")]
+    SpeakerOutOfRange { speaker: u32, speakers: u32 },
+
+    /// No voices directory where the model's voices live.
+    #[error("no voices directory under {0:?}")]
+    NoVoicesDir(std::path::PathBuf),
 }
 
 /// Voice information
@@ -280,11 +304,9 @@ impl TTSRegistry {
             .collect()
     }
 
-    /// Check if any adapter is initialized
+    /// Is there an active adapter, and is it loaded?
     pub fn is_initialized(&self) -> bool {
-        self.get_active()
-            .map(|a| a.is_initialized())
-            .unwrap_or(false)
+        self.get_active().is_some_and(|a| a.is_initialized())
     }
 }
 
@@ -407,10 +429,10 @@ pub async fn synthesize(
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
     clog_info!(
-        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        "TTS: voice '{}' → '{}' (gender hint {:?}) for '{}'",
         voice,
         resolved,
-        gender_hint.unwrap_or("any"),
+        gender_hint,
         adapter.identity().name
     );
     match adapter.synthesize(text, &resolved).await {
@@ -544,24 +566,15 @@ pub async fn synthesize_with(
 
     let resolved = resolve_voice_gendered(adapter.as_ref(), voice, gender_hint);
     clog_info!(
-        "TTS: voice '{}' → '{}' (gender={}) for '{}'",
+        "TTS: voice '{}' → '{}' (gender hint {:?}) for '{}'",
         voice,
         resolved,
-        gender_hint.unwrap_or("any"),
+        gender_hint,
         adapter_name
     );
     let mut result = adapter.synthesize(text, &resolved).await?;
     result.voice_name = Some(resolved);
     Ok(result)
-}
-
-/// Get available voices from active adapter
-pub fn available_voices() -> Vec<VoiceInfo> {
-    get_registry()
-        .read()
-        .get_active()
-        .map(|a| a.available_voices())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

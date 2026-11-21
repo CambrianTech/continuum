@@ -71,25 +71,19 @@ impl VoiceModule {
         let reg = registry.read();
 
         let adapters: Vec<serde_json::Value> = reg
-            .list()
-            .iter()
-            .map(|(name, initialized)| {
-                let desc = reg
-                    .get(name)
-                    .map(|a| a.identity().description.to_string())
-                    .unwrap_or_default();
+            .identities()
+            .into_iter()
+            .map(|(identity, initialized)| {
                 serde_json::json!({
-                    "name": name,
+                    "name": identity.name,
                     "initialized": initialized,
-                    "description": desc,
+                    "description": identity.description,
                 })
             })
             .collect();
 
-        let active = reg
-            .get_active()
-            .map(|a| a.identity().name.to_string())
-            .unwrap_or_default();
+        // No active adapter is `null`, never an empty name.
+        let active = reg.get_active().map(|a| a.identity().name);
 
         Ok(CommandResult::Json(serde_json::json!({
             "adapters": adapters,
@@ -220,16 +214,21 @@ impl VoiceModule {
             .poll_transcriptions(call_id.as_deref())
             .await;
 
-        log_info!(
-            "module",
-            "voice_poll_transcriptions",
-            "Polled {} transcriptions{}",
-            entries.len(),
-            call_id
-                .as_deref()
-                .map(|c| format!(" for call {}", &c[..8.min(c.len())]))
-                .unwrap_or_default()
-        );
+        match call_id.as_deref() {
+            Some(call) => log_info!(
+                "module",
+                "voice_poll_transcriptions",
+                "Polled {} transcriptions for call {}",
+                entries.len(),
+                call
+            ),
+            None => log_info!(
+                "module",
+                "voice_poll_transcriptions",
+                "Polled {} transcriptions across every call",
+                entries.len()
+            ),
+        }
 
         Ok(CommandResult::Json(serde_json::json!({
             "transcriptions": entries,
