@@ -130,14 +130,24 @@ pub(super) enum Submission {
     Suspend(tokio::sync::oneshot::Sender<Suspended>),
 }
 
-/// Whether a stop's last turn records were confirmed written by the record stage.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// What a stop can say about the records of the turns it ended. The record stage confirms it
+/// processed them, in order, into the log; whether each line reached disk is the log sink's, so a
+/// settle reports the sink's failed writes in its window instead of claiming them written (Codex on
+/// #6208 at 162fbe5fa7).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Records {
-    /// Every record sent before the stop is written (or the engine ended none).
-    #[default]
-    Written,
+    /// Every record sent before the stop was processed into the log; `write_failures` counts the
+    /// probe-log writes that failed since the previous settle (0: none reported).
+    Processed { write_failures: u64 },
     /// The record stage ended before confirming them: they may be lost.
     Unconfirmed,
+}
+
+impl Default for Records {
+    /// A stop that ended no turns: nothing to lose.
+    fn default() -> Self {
+        Self::Processed { write_failures: 0 }
+    }
 }
 
 /// What a suspend preserved (CONTINUUM-ENGINE 4.16): how many minds it published, and every mind it
@@ -162,11 +172,12 @@ pub struct Scheduler {
 /// The engine the stop suspends: the last one spawned in this process.
 static SUSPENDS: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Submission>>> = std::sync::Mutex::new(None);
 
-/// What a stop's report adds about its turns' records: nothing when written.
-fn records_note(records: Records) -> &'static str {
+/// What a stop's report adds about its turns' records: nothing when processed with no failed write.
+fn records_note(records: Records) -> String {
     match records {
-        Records::Written => "",
-        Records::Unconfirmed => "; the records of the turns it ended were not confirmed written",
+        Records::Processed { write_failures: 0 } => String::new(),
+        Records::Processed { write_failures } => format!("; {write_failures} probe-log writes failed since the last stop, so some turn records may not be on disk"),
+        Records::Unconfirmed => "; the records of the turns it ended were not confirmed processed".into(),
     }
 }
 

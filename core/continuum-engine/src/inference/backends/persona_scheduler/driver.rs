@@ -136,6 +136,8 @@ struct Driver<'c, 'm> {
     /// Where each GPU step's span and each finished turn's row go; measured and written off this
     /// thread.
     record: Outbox<record::Fact>,
+    /// The probe-log write failures counted at the last settle: a stop reports those since.
+    log_failures: continuum_base::probe_writes::Reading,
     /// Answers opened by this engine, numbering each.
     answers: u64,
     /// Where the stop preserves minds and the start resumes them (`None`: this node has no home to
@@ -258,6 +260,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         live_one_offs: HashSet::new(),
         emit: Outbox::new(emit),
         record: Outbox::new(record),
+        log_failures: continuum_base::probe_writes::Reading::now(),
         answers: 0,
         store: store.ok(),
         model_id: config.model.clone(),
@@ -311,15 +314,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
                         driver.acknowledge(stop, &stages_on);
                     }
                 }
-                // Every handle dropped: every admitted turn ends, its records are written, and Emit
-                // ends once it has drained what it holds.
-                Some(None) => {
-                    for turn in std::mem::take(&mut turns) {
-                        driver.end(turn, Ending::Closed);
-                    }
-                    driver.settle_records(&stages_on);
-                    return;
-                }
+                // Every handle dropped: every admitted turn ends and its caller is told.
+                Some(None) => return driver.close(&mut turns, &stages_on),
                 None => {} // the stages took what waited
             }
             continue;

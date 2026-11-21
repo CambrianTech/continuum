@@ -6,12 +6,18 @@
     use tempfile::tempdir;
     use tracing_subscriber::prelude::*;
 
-    /// Helper: read every JSONL line from the sink path back as
-    /// parsed JSON Values. Lets tests assert on field presence /
-    /// content without re-implementing the on-disk shape.
-    fn read_jsonl(path: &Path) -> Vec<Value> {
+    /// Helper: read every JSONL line the rolling sink wrote under `dir`
+    /// back as parsed JSON Values (none when it wrote nothing). Lets tests
+    /// assert on field presence / content without re-implementing the
+    /// on-disk shape.
+    fn read_jsonl(dir: &Path) -> Vec<Value> {
+        let rolled = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .find(|path| path.file_name().is_some_and(|name| name.to_string_lossy().starts_with("continuum-probes")));
+        let Some(rolled) = rolled else { return Vec::new() };
         let mut content = String::new();
-        File::open(path)
+        File::open(rolled)
             .unwrap()
             .read_to_string(&mut content)
             .unwrap();
@@ -47,9 +53,9 @@
     #[test]
     fn unfiltered_sink_persists_every_class() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -82,12 +88,12 @@
         // NOT `personality.foo` (the dot guard prevents partial-
         // word collisions). Per the docstring's rule 3.
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
         let mut allowed = HashSet::new();
         allowed.insert("persona".to_string());
 
-        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, allowed, DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -119,12 +125,12 @@
         // `CONTINUUM_PROBE_CLASSES=*` to deliberately request the
         // firehose.
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
         let mut allowed = HashSet::new();
         allowed.insert("*".to_string());
 
-        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, allowed, DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -146,13 +152,13 @@
         // picture. The filter must support both shapes in the same
         // HashSet without rule contention.
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
         let mut allowed = HashSet::new();
         allowed.insert("cognition.analyze.parse".to_string()); // exact
         allowed.insert("persona.turn".to_string()); // namespace
 
-        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, allowed, DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -208,12 +214,12 @@
     #[test]
     fn class_filter_drops_unallowed_classes() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
         let mut allowed = HashSet::new();
         allowed.insert("persona.render.exit".to_string());
 
-        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, allowed, DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -236,9 +242,9 @@
         // consumer, not a generic tracing forwarder. Keeps the
         // probe log signal-rich.
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -261,9 +267,9 @@
         // command's execution." Mirrors the
         // `probe_event_carries_uri_chain` test in probe_router.
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -289,9 +295,9 @@
     #[test]
     fn time_sync_span_close_persists_timing_to_jsonl() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -318,9 +324,9 @@
     #[test]
     fn time_probe_span_close_persists_timing_to_jsonl() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -352,9 +358,9 @@
     #[test]
     fn plain_span_close_does_not_persist_to_jsonl() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -396,9 +402,9 @@
         use crate::routing::ProbeRouterLayer;
 
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
-        let sink = JsonlProbeFileSink::new(&path, HashSet::new()).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         let router = ProbeRouterLayer::new();
         let mut rx = router.subscribe("timing");
 
@@ -453,12 +459,12 @@
     #[test]
     fn class_filter_applies_to_timing_spans() {
         let dir = tempdir().unwrap();
-        let path = dir.path().join("probes.jsonl");
+        let path = dir.path().to_path_buf();
 
         let mut allowed = HashSet::new();
         allowed.insert("persona.render.exit".to_string());
 
-        let sink = JsonlProbeFileSink::new(&path, allowed).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(&path, allowed, DEFAULT_MAX_LOG_FILES).unwrap();
         let subscriber = tracing_subscriber::registry()
             .with(crate::routing::UriCaptureLayer::new())
             .with(sink);
@@ -486,7 +492,7 @@
     #[test]
     fn new_rolling_writes_to_dated_file_in_target_dir() {
         let dir = tempdir().unwrap();
-        let sink = JsonlProbeFileSink::new_rolling(dir.path(), HashSet::new(), 7).unwrap();
+        let sink = JsonlProbeFileSink::new_rolling(dir.path(), HashSet::new(), DEFAULT_MAX_LOG_FILES).unwrap();
         // target() reports the DIRECTORY in rolling mode, not a file.
         assert_eq!(sink.target(), dir.path());
 
@@ -522,4 +528,28 @@
             content.contains("\"class\":\"rolling.test\""),
             "expected probe class in rolled file, got: {content:?}"
         );
+    }
+
+    /// A disk that refuses every write.
+    struct Refuses;
+
+    impl std::io::Write for Refuses {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::other("disk full"))
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Err(std::io::Error::other("disk full"))
+        }
+    }
+
+    // what this catches (Codex on #6208 at 162fbe5fa7): a probe line the sink could not write dropped
+    // silently, so a stop's settle claimed its records reached the log when none did.
+    #[test]
+    fn a_line_the_sink_cannot_write_is_counted() {
+        let sink = JsonlProbeFileSink { target: PathBuf::from("refuses"), writer: Mutex::new(Box::new(Refuses)), allowed_classes: HashSet::new() };
+        let before = continuum_base::probe_writes::Reading::now();
+        tracing::subscriber::with_default(tracing_subscriber::registry().with(sink), || {
+            continuum_base::probe!(class = "persona.engine.turn", "a turn row");
+        });
+        assert!(continuum_base::probe_writes::Reading::now().since(before) >= 1, "the refused write is counted");
     }

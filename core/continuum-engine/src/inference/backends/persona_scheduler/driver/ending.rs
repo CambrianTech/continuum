@@ -1,8 +1,9 @@
 //! How an admitted turn leaves the engine. One owner (`Driver::end`) ends every admitted turn, so
 //! each ends in exactly one terminal record: its turn row when answered, else
 //! `persona.engine.refused` with why (Codex on ce8a894e93: a stop and a closed submission channel
-//! ended turns with no record). A stop is acknowledged only once those records are written.
+//! ended turns with no record). A stop is acknowledged only once those records are processed.
 
+use continuum_base::probe_writes::Reading;
 use continuum_flow::Outbox;
 use tokio::sync::oneshot;
 
@@ -66,8 +67,8 @@ impl Driver<'_, '_> {
         self.emit.send(emit::Out::End { answer: turn.answer, event });
     }
 
-    /// Acknowledge a stop: its native suspend result as it is, with whether the records of the turns
-    /// it ended were confirmed written.
+    /// Acknowledge a stop: its native suspend result as it is, with what the records of the turns it
+    /// ended can be said to be.
     pub(super) fn acknowledge(&mut self, stop: Stop, stages_on: &tokio::runtime::Handle) {
         let records = self.settle_records(stages_on);
         let Suspension { preserved, retained } = stop.suspension;
@@ -76,20 +77,45 @@ impl Driver<'_, '_> {
 
     /// Settle what a stop must not lose before it is acknowledged, or the loop ends ([`settle`]).
     pub(super) fn settle_records(&mut self, stages_on: &tokio::runtime::Handle) -> Records {
-        stages_on.block_on(settle(&mut self.emit, &mut self.record, record::Fact::Barrier))
+        stages_on.block_on(settle(&mut self.emit, &mut self.record, record::Fact::Barrier, &mut self.log_failures))
+    }
+
+    /// Every submission handle was dropped: every admitted turn ends, its records are settled, and
+    /// what Emit still holds (answer ends included) passes to a drain owner on the stage runtime, so
+    /// a caller still reading gets her answer's end in order and this thread ends without waiting on
+    /// Emit (Codex on #6208 at 162fbe5fa7: a full Emit dropped them with the driver).
+    pub(super) fn close(mut self, turns: &mut Vec<Turn>, stages_on: &tokio::runtime::Handle) {
+        for turn in turns.drain(..) {
+            self.end(turn, Ending::Closed);
+        }
+        self.settle_records(stages_on);
+        hand_off(self.emit, stages_on);
     }
 }
 
-/// Every record sent so far is written, confirmed by the record stage answering a barrier it reaches
-/// after them (it is FIFO). Emit is flushed but never awaited: a caller that stopped reading her answer
-/// never holds the stop (Codex on 8e597e1bcd). A record stage that ended first reads `Unconfirmed`.
-pub(super) async fn settle<E, R>(emit: &mut Outbox<E>, record: &mut Outbox<R>, barrier: impl FnOnce(oneshot::Sender<()>) -> R) -> Records {
+/// Give `emit` to a task that hands over everything it holds, in order, then drops it, which ends
+/// its stage once that stage has handled the rest.
+pub(super) fn hand_off<E: Send + 'static>(mut emit: Outbox<E>, on: &tokio::runtime::Handle) -> tokio::task::JoinHandle<()> {
+    on.spawn(async move { emit.drain().await })
+}
+
+/// Every record sent so far is processed, confirmed by the record stage answering a barrier it reaches
+/// after them (it is FIFO), with the probe-log writes that failed since `seen`. Emit is flushed but
+/// never awaited: a caller that stopped reading her answer never holds the stop (Codex on 8e597e1bcd).
+/// A record stage that ended first reads `Unconfirmed`.
+pub(super) async fn settle<E, R>(
+    emit: &mut Outbox<E>,
+    record: &mut Outbox<R>,
+    barrier: impl FnOnce(oneshot::Sender<()>) -> R,
+    seen: &mut Reading,
+) -> Records {
     emit.flush();
-    let (written, answered) = oneshot::channel();
-    record.send(barrier(written));
+    let (processed, answered) = oneshot::channel();
+    record.send(barrier(processed));
     record.drain().await;
     if answered.await.is_ok() {
-        Records::Written
+        let now = Reading::now();
+        Records::Processed { write_failures: now.since(std::mem::replace(seen, now)) }
     } else {
         continuum_base::probe!(class = "persona.engine.records_unconfirmed", "the record stage ended before confirming a stop's last records");
         Records::Unconfirmed
