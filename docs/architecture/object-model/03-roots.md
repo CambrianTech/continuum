@@ -242,16 +242,23 @@ window last.
   need as its essential floor, the warm minds' pages as quality steps above it. Minds never negotiate
   with the governor themselves, and Cores negotiate with each other only through the governor's
   prices (GRID-MARKET-CLEARING §2's nesting).
-- **Fewer Cores, never starved ones.** When the governor cannot grant a Core its floor, the Core count
+- **Fewer Cores, never starved ones.** When the governor cannot grant a Core its floor (a second model, or a second compute unit losing its share), the Core count
   drops: its minds move, as cached pages awaiting their turn, to a Core serving the same model, and its
   memory goes to the Cores that remain. A Core that cannot hold one mind's turn is scrap; fewer Cores
   serving whole turns are a smaller engine that still runs.
-- **More Cores only when measured faster.** Cores on one device share its compute and memory
-  bandwidth, so each runs slower: the scheduler that advanced four sequences per decode gave each about
-  2 tokens per second, against the full rate for one mind at a time (`persona_scheduler`, deployed
-  6404cf3b15). One Core per device is the default. A second is granted only when the measured result
-  is better: the waiting minds' saved time against the slowdown every Core on the device then suffers,
-  plus the second Core's memory. Both moves are priced, with hysteresis, so the count does not flap.
+- **One Core per model per compute unit; known ahead of time, not priced.** Decode is bound by memory
+  bandwidth: each token reads the model's active weights. Two Cores of one model on one device read
+  them twice through the same bandwidth and split the rate. Batching inside one Core did not help
+  either: four sequences per decode gave each about 2 tokens per second, against the full rate for one
+  mind at a time (`persona_scheduler`, deployed 6404cf3b15); a mixture of experts activating different
+  experts per sequence is the likely reason (an inference, not measured). With a swap near 21 ms, a
+  second Core does not buy latency either: a live reply preempts at a token boundary. A second Core
+  exists only where it is known to be better:
+  - **a different model** (a small quick voice beside the deep model);
+  - **a different compute unit with its own bandwidth** (a second GPU, the Neural Engine, a grid node).
+
+  A startup probe per compute unit and model confirms each Core delivers its expected rate; the live
+  system never splits a Core to find out.
 
 **Custody through every change** (Codex's review of 4a5807f2cc):
 - **The occupant's floor holds until her release.** A Core's floor covers the mind decoding now until
