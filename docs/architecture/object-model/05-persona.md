@@ -168,9 +168,9 @@ answered with a number. Each has one owner and one rule:
 
 | Question | Answer | Owner |
 |---|---|---|
-| How many residents? | Unlimited: a resident at rest is her durable state. Existence is never a node's decision. | identity (airc) |
-| How many acting? | One per Core at a time (chapter 3.8). | the Core |
-| How many attentive? | Whatever fits the Core's cache, by importance: no count. | the Core's cache |
+| How many residents? | Unlimited: a thousand is fine, and new ones can be spawned at will. A resident at rest is her durable state; existence is never a node's decision. | identity (airc) |
+| How many acting? | One per Core at a time, summed over every Core the grid offers her: her node's and remote Cores priced by the market (chapter 3.8). Which ones act is need: stimuli, deadlines and value. | each Core, across the grid |
+| How many attentive? | Whatever fits those Cores' caches, by importance: no count. | the Cores' caches |
 | When does one wake or rest? | When a stimulus clears her wake condition; she steps down when idle or when the cache needs the room. | her attention, and the Core's cache pressure |
 | What size? | Her measured need for this turn, up to the Core's sequence cap. | her `Demand`, granted by the Core |
 
