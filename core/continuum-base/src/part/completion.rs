@@ -28,6 +28,14 @@ impl Default for OperationId {
     }
 }
 
+/// What an owner is asked to do: the operation, its verb, and the failed operation it retries, if any.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Request {
+    pub(super) operation: OperationId,
+    pub(super) verb: Verb,
+    pub(super) follows: Option<OperationId>,
+}
+
 /// How many answers a record has taken: every change of any slot advances it by one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Revision(pub u64);
@@ -93,11 +101,17 @@ pub struct Completion<K, E> {
 
 impl<K, E> Clone for Completion<K, E> {
     fn clone(&self) -> Self {
-        Self { record: Arc::clone(&self.record) }
+        self.attach()
     }
 }
 
 impl<K, E> Completion<K, E> {
+    /// Another observer of the same record.
+    #[must_use]
+    pub fn attach(&self) -> Self {
+        Self { record: Arc::clone(&self.record) }
+    }
+
     #[must_use]
     pub fn operation(&self) -> OperationId {
         self.record.operation
@@ -115,8 +129,9 @@ impl<K, E> Completion<K, E> {
 }
 
 impl<K: Clone + Send + Sync, E: Clone + Send + Sync> Completion<K, E> {
-    pub(super) fn new(operation: OperationId, verb: Verb, follows: Option<OperationId>, admitted: Vec<(K, Generation)>) -> Self {
+    pub(super) fn new(request: Request, admitted: Vec<(K, Generation)>) -> Self {
         let answers = vec![Answer::Running; admitted.len()];
+        let Request { operation, verb, follows } = request;
         let record = Record { operation, verb, follows, admitted, state: Mutex::new((Revision(0), answers)), changed: Event::new() };
         Self { record: Arc::new(record) }
     }

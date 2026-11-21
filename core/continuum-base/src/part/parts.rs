@@ -11,7 +11,7 @@ use std::sync::{Arc, Weak};
 use futures::task::{Spawn, SpawnExt};
 use parking_lot::{Mutex, RwLock};
 
-use super::completion::{Answer, Completion, OperationId};
+use super::completion::{Answer, Completion, OperationId, Request};
 use super::{Generation, Lifecycle, Outcome, Verb};
 
 /// The executor a part's owner runs its verbs on: the node's worker, behind the `futures` seam so
@@ -110,7 +110,7 @@ where
         }
         let admitted: Vec<(K, Generation, Arc<P>)> =
             self.inner.live.read().iter().map(|entry| (entry.key.clone(), entry.generation, Arc::clone(&entry.part))).collect();
-        self.start(operation, verb, None, admitted, None)
+        self.start(Request { operation, verb, follows: None }, admitted, None)
     }
 
     /// The operation `operation`, if this owner still holds it: how a new observer reattaches.
@@ -134,7 +134,7 @@ where
             let mut retiring = self.inner.retiring.lock();
             let index = retiring.iter().position(|held| &held.key == key && held.generation == generation)?;
             if !retiring[index].shutdown.snapshot().is_settled() {
-                return Some(retiring[index].shutdown.clone());
+                return Some(retiring[index].shutdown.attach());
             }
             retiring.remove(index)
         };
@@ -145,8 +145,8 @@ where
     fn retire(&self, old: Entry<K, P>, follows: Option<OperationId>) -> Completion<K, P::Error> {
         let retiring = Retirement { owner: Arc::downgrade(&self.inner), key: old.key.clone(), generation: old.generation };
         let admitted = vec![(old.key.clone(), old.generation, Arc::clone(&old.part))];
-        let shutdown = self.start(OperationId::new(), Verb::Shutdown, follows, admitted, Some(&retiring));
-        self.inner.retiring.lock().push(Retiring { key: old.key, generation: old.generation, part: old.part, shutdown: shutdown.clone() });
+        let shutdown = self.start(Request { operation: OperationId::new(), verb: Verb::Shutdown, follows }, admitted, Some(&retiring));
+        self.inner.retiring.lock().push(Retiring { key: old.key, generation: old.generation, part: old.part, shutdown: shutdown.attach() });
         // A shutdown that finished before it was held has already tried to release it; release now.
         if shutdown.snapshot().is_done() {
             release(&self.inner, &shutdown);
@@ -154,23 +154,16 @@ where
         shutdown
     }
 
-    fn start(
-        &self,
-        operation: OperationId,
-        verb: Verb,
-        follows: Option<OperationId>,
-        admitted: Vec<(K, Generation, Arc<P>)>,
-        retiring: Option<&Retirement<K, P>>,
-    ) -> Completion<K, P::Error> {
-        let completion = Completion::new(operation, verb, follows, admitted.iter().map(|(key, generation, _)| (key.clone(), *generation)).collect());
+    fn start(&self, request: Request, admitted: Vec<(K, Generation, Arc<P>)>, retiring: Option<&Retirement<K, P>>) -> Completion<K, P::Error> {
+        let verb = request.verb;
+        let completion = Completion::new(request, admitted.iter().map(|(key, generation, _)| (key.clone(), *generation)).collect());
         self.remember(&completion);
         for (slot, (_, _, part)) in admitted.into_iter().enumerate() {
-            let watch = Watch::new(completion.clone(), slot);
-            let retiring = retiring.cloned();
-            let task = drive(part, verb, watch, retiring);
-            // A refused task is dropped unpolled, so its slot already reads `NotStarted`.
-            if self.inner.executor.spawn(task).is_err() {
-                completion.record(slot, Answer::NotStarted);
+            let task = drive(part, verb, Watch::new(&completion, slot), retiring.cloned());
+            // A refused task is dropped unpolled, so its slot already reads `NotStarted`; the
+            // refusal itself goes to the log, where the node's operator reads it.
+            if let Err(refused) = self.inner.executor.spawn(task) {
+                tracing::warn!(error = %refused, ?verb, "the executor refused a part's verb");
             }
         }
         completion
@@ -180,7 +173,7 @@ where
     fn remember(&self, completion: &Completion<K, P::Error>) {
         let mut operations = self.inner.operations.lock();
         operations.retain(|known| known.verb() != completion.verb() || !known.snapshot().is_settled());
-        operations.push(completion.clone());
+        operations.push(completion.attach());
     }
 }
 
@@ -228,8 +221,8 @@ struct Watch<K: Clone + Send + Sync, E: Clone + Send + Sync> {
 }
 
 impl<K: Clone + Send + Sync, E: Clone + Send + Sync> Watch<K, E> {
-    const fn new(completion: Completion<K, E>, slot: usize) -> Self {
-        Self { completion, slot, stage: Stage::Queued }
+    fn new(completion: &Completion<K, E>, slot: usize) -> Self {
+        Self { completion: completion.attach(), slot, stage: Stage::Queued }
     }
 
     fn settle(&mut self, answer: Answer<E>) {

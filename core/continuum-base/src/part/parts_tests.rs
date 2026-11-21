@@ -67,12 +67,12 @@ impl Lifecycle for Probe {
                 let Some(gate) = gate else { return Outcome::Failed("gate already used") };
                 match gate.await {
                     Ok(()) => Outcome::Done,
-                    Err(_) => Outcome::Failed("gate dropped"),
+                    Err(oneshot::Canceled) => Outcome::Failed("gate dropped"),
                 }
             }
             Plan::PendingUntil(gate) => {
                 let gate = gate.lock().take();
-                gate.map_or(Outcome::Done, |gate| Outcome::pending(async move { gate.await.map_err(|_| "gate dropped") }))
+                gate.map_or(Outcome::Done, |gate| Outcome::pending(async move { gate.await.map_err(|oneshot::Canceled| "gate dropped") }))
             }
         }
     }
@@ -81,7 +81,10 @@ impl Lifecycle for Probe {
 impl Kind for Probe {}
 
 fn pool() -> Executor {
-    Arc::new(ThreadPool::builder().pool_size(2).create().unwrap_or_else(|error| panic!("a test thread pool: {error}")))
+    match ThreadPool::builder().pool_size(2).create() {
+        Ok(pool) => Arc::new(pool),
+        Err(error) => panic!("a test thread pool: {error}"),
+    }
 }
 
 fn owner() -> Parts<&'static str, dyn Kind> {
@@ -134,7 +137,7 @@ fn a_dropped_observer_cancels_nothing_and_a_new_one_reattaches_by_operation() {
     let observer = parts.act(operation, Verb::Suspend);
     wait_for(&observer, "fast", &Answer::Done);
     drop(observer);
-    let reattached = parts.completion(operation).unwrap_or_else(|| panic!("the owner still holds the operation"));
+    let Some(reattached) = parts.completion(operation) else { panic!("the owner still holds the operation") };
     assert_eq!(answers(&reattached.snapshot()), vec![("slow", Answer::Running), ("fast", Answer::Done)]);
     assert!(open.send(()).is_ok());
     assert!(block_on(reattached.settled()).is_done());
@@ -169,7 +172,7 @@ fn a_replaced_part_is_held_until_its_pending_shutdown_is_done_and_its_replacemen
     let newest = parts.insert("whisper", Arc::clone(&replacement) as Arc<dyn Kind>);
     assert_eq!(parts.keys().iter().map(|(key, _)| *key).collect::<Vec<_>>(), vec!["whisper", "kokoro"]);
 
-    let [(_, retired, shutdown)] = <[_; 1]>::try_from(parts.retiring()).unwrap_or_else(|_| panic!("one part is retiring"));
+    let Ok([(_, retired, shutdown)]) = <[_; 1]>::try_from(parts.retiring()) else { panic!("one part is retiring") };
     assert!(retired < newest);
     wait_for(&shutdown, "whisper", &Answer::Pending);
     assert!(first_alive.upgrade().is_some(), "a pending shutdown released its part");
@@ -191,10 +194,10 @@ fn a_failed_shutdown_stays_retiring_and_its_retry_names_the_failure() {
     let parts = owner();
     parts.insert("piper", Probe::new("piper", Plan::Fails));
     parts.insert("piper", Probe::done("piper"));
-    let [(key, generation, failed)] = <[_; 1]>::try_from(parts.retiring()).unwrap_or_else(|_| panic!("one part is retiring"));
+    let Ok([(key, generation, failed)]) = <[_; 1]>::try_from(parts.retiring()) else { panic!("one part is retiring") };
     wait_for(&failed, "piper", &Answer::Failed("device lost"));
     assert_eq!(parts.retiring().len(), 1, "a failed shutdown let its part go");
-    let retry = parts.retry_retiring(&key, generation).unwrap_or_else(|| panic!("the retiring part is found"));
+    let Some(retry) = parts.retry_retiring(&key, generation) else { panic!("the retiring part is found") };
     assert_eq!(retry.follows(), Some(failed.operation()));
 }
 
