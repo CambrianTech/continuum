@@ -225,15 +225,6 @@ pub(super) fn finish_reason(end: GenerationEnd, called: bool) -> FinishReason {
     }
 }
 
-/// Why a decode of `tokens` with a cap of `max_tokens` stopped: the cap, or the model's own end.
-pub(super) fn generation_end(tokens: usize, max_tokens: usize) -> GenerationEnd {
-    if tokens >= max_tokens {
-        GenerationEnd::OutputLimit
-    } else {
-        GenerationEnd::Finished
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,14 +276,6 @@ mod tests {
             chat_request(&request),
             Err(ChatTurnError::SpecificToolChoice { choice: ToolChoice::Specific { name } }) if name == "code_read"
         ));
-    }
-
-    // what this catches: a call the output limit cut read as bad JSON (a retry that re-cuts the
-    // same call) instead of as cut.
-    #[test]
-    fn a_decode_that_reached_its_cap_ended_at_the_output_limit() {
-        assert_eq!(generation_end(64, 64), GenerationEnd::OutputLimit);
-        assert_eq!(generation_end(12, 64), GenerationEnd::Finished);
     }
 
     // what this catches (Codex on #6145): a turn the output limit cut reported as a finished call or

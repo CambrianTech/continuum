@@ -340,10 +340,11 @@ impl LlamaCppBackend {
         // mtmd_helper_eval_chunks with logits_last=true, the final
         // text-batch's last token has logits set and llama_get_logits_ith
         // honors -1 as that position.
-        loop {
+        let capacity = super::super::persona_scheduler::Capacity::new(ctx.n_ctx() as usize);
+        let end = loop {
             let token = sampler.sample(&ctx, -1)?;
             if self.model.is_eog_token(token) {
-                break;
+                break TurnEnd::Finished;
             }
             let piece = self.model.token_to_piece(token);
             output.push_str(&piece);
@@ -351,22 +352,22 @@ impl LlamaCppBackend {
             // Stop sequence early-exit — same end-of-output trim shape
             // as the scheduler path.
             if stop_sequences.iter().any(|s| output.ends_with(s)) {
-                break;
+                break TurnEnd::Stopped;
             }
             if tokens_generated >= max_tokens {
-                break;
+                break TurnEnd::AtCap;
             }
-            // Push the sampled token back so the next decode can advance.
+            if !capacity.holds(pos) {
+                break TurnEnd::CapacityReached;
+            }
+            // Push the sampled token back so the next decode can advance; a refused decode is the
+            // turn's failure, never a quietly shorter answer.
             let mut batch = llama::Batch::allocated(1, 1);
             batch.push(token, pos, &[0], true);
-            if let Err(e) = ctx.decode(&batch) {
-                log.warn(&format!("decode failed mid-generation: {e}"));
-                break;
-            }
-            // The decode above already refused any position its context cannot hold, so this never ends early.
-            let Ok(next) = pos.advanced(1) else { break };
+            ctx.decode(&batch)?;
+            let Ok(next) = pos.advanced(1) else { break TurnEnd::CapacityReached };
             pos = next;
-        }
+        };
 
         log.info(&format!(
             "generate_with_image done: {} tokens in {}ms ({:.1} tok/s)",
@@ -383,6 +384,7 @@ impl LlamaCppBackend {
             prefill,
             decode: elapsed.saturating_sub(prefill),
             elapsed,
+            end,
         };
         Ok(Answer { text: output, facts })
     }

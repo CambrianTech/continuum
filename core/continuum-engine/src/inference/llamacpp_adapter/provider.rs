@@ -553,7 +553,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // What she wrote, read by the render that produced her prompt: content, reasoning and her
         // native calls (assembled by the one owner the streamed path uses). A media turn's output
         // is its text.
-        let end = super::chat_turn::generation_end(tokens, max_tokens);
+        let end = facts.end.generation_end();
         let (text, reasoning, tool_calls) = match &chat_render {
             Some((render, _)) => match super::chat_turn::parse_turn(render, &written, end) {
                 Ok(turn) => {

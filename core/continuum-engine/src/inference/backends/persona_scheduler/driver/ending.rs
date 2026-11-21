@@ -26,7 +26,7 @@ pub(super) struct Suspension {
 /// How an admitted turn left the engine.
 pub(super) enum Ending {
     /// She answered: EOG, a stop sequence, or max_tokens.
-    Answered { tokens_generated: usize },
+    Answered { tokens_generated: usize, end: super::super::TurnEnd },
     /// A step was refused or failed, or her caller hung up.
     Refused(TurnError),
     /// The engine is stopping: what her blocks computed stays hers.
@@ -53,9 +53,9 @@ impl Driver<'_, '_> {
     /// mind released, and its caller told.
     pub(super) fn end(&mut self, turn: Turn, ending: Ending) {
         let event = match ending {
-            Ending::Answered { tokens_generated } => {
+            Ending::Answered { tokens_generated, end } => {
                 self.record.send(record::Fact::Turn(Self::row(&turn, tokens_generated)));
-                TokenEvent::Done(Self::facts(&turn, tokens_generated))
+                TokenEvent::Done(Self::facts(&turn, tokens_generated, end))
             }
             unanswered => {
                 let reason = unanswered.reason();

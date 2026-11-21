@@ -127,7 +127,7 @@ struct Driver<'c, 'm> {
     model: &'m Model,
     batch: NonZeroUsize,
     /// The most one mind's stream holds (the applied `n_ctx_seq`): a prompt it cannot fit is refused at the door.
-    capacity: admission::StreamCapacity,
+    capacity: admission::Capacity,
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
@@ -238,7 +238,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         return;
     };
     let geometry = EngineGeometry::applied(incarnation, &ctx, config);
-    let capacity = admission::StreamCapacity::new(geometry.n_ctx_seq as usize);
+    let capacity = admission::Capacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
     let mut tier = UnifiedTier::new(&mut ctx);
@@ -329,7 +329,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         let Some(index) = driver.pick(&turns) else { continue };
         match driver.step(&mut turns[index]) {
             Ok(Advanced::Continues) => {}
-            Ok(Advanced::Done { tokens_generated }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated }),
+            Ok(Advanced::Done { tokens_generated, end }) => driver.end(turns.remove(index), Ending::Answered { tokens_generated, end }),
             Err(refused) => {
                 log.warn(&format!("turn refused: {refused}"));
                 driver.end(turns.remove(index), Ending::Refused(refused));
@@ -404,7 +404,7 @@ struct Spent {
 enum Advanced {
     Continues,
     /// She answered: what her `TokenEvent::Done` will say.
-    Done { tokens_generated: usize },
+    Done { tokens_generated: usize, end: super::TurnEnd },
 }
 
 /// The Core's one context: `STREAMS` sequences, the occupant's, whole to whoever is in it.
@@ -557,8 +557,8 @@ impl Driver<'_, '_> {
         };
         // A turn this Core's stream cannot hold, prompt and asked-for reply, is refused at the door
         // with the numbers, before any prefill is spent on it; her caller refits to the stream.
-        if let Err(infeasible) = self.capacity.admit(req.prompt.len(), req.max_tokens) {
-            let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, reply_tokens: infeasible.reply_tokens, capacity: infeasible.capacity };
+        if let Err(infeasible) = self.capacity.admit(req.prompt.len()) {
+            let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity };
             self.record.send(record::Fact::Transition(transition::Transition { request: req.request.clone(), persona: id.0, one_off, at }));
             tell(&req.response_tx, TokenEvent::Exceeded(super::Exceeded { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity }));
             return;
@@ -774,16 +774,25 @@ impl Driver<'_, '_> {
 
     /// Emit her sampled token and, unless she stopped, decode it and sample the next.
     fn decode_token(&mut self, turn: &mut Turn, token: i32, pos: Pos, generated: usize) -> Result<Advanced, TurnError> {
+        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
+        if self.model.is_eog_token(token) {
+            return done(super::TurnEnd::Finished);
+        }
         // Emit raised her cancel flag: a stop sequence ended her answer, or her caller hung up. What
         // her blocks computed stays hers.
-        if self.model.is_eog_token(token) || turn.cancel.load(Ordering::Acquire) {
-            return Ok(Advanced::Done { tokens_generated: generated });
+        if turn.cancel.load(Ordering::Acquire) {
+            return done(super::TurnEnd::Stopped);
         }
         // The token goes to Emit (text, stop sequences, her caller) and the engine goes on.
         self.emit.send(emit::Out::Token { answer: turn.answer, token });
         let generated = generated + 1;
+        let done = |end| Ok(Advanced::Done { tokens_generated: generated, end });
         if generated >= turn.req.max_tokens {
-            return Ok(Advanced::Done { tokens_generated: generated });
+            return done(super::TurnEnd::AtCap);
+        }
+        // Her reply grows into the context; at its last position her turn ends, everything kept.
+        if !self.capacity.holds(pos) {
+            return done(super::TurnEnd::CapacityReached);
         }
         let forward = Instant::now();
         let reused_before = self.engine.tier().graphs_reused();
@@ -809,7 +818,7 @@ impl Driver<'_, '_> {
     /// from her counters here; written by Record.
     /// What her caller is told the Core measured of her answered turn: the same measurements her row
     /// records, so the response never estimates a count the Core already has.
-    fn facts(turn: &Turn, generated: usize) -> super::TurnFacts {
+    fn facts(turn: &Turn, generated: usize, end: super::TurnEnd) -> super::TurnFacts {
         super::TurnFacts {
             prompt_tokens: turn.prompt.len(),
             reused_tokens: turn.spent.reused,
@@ -817,6 +826,7 @@ impl Driver<'_, '_> {
             prefill: turn.spent.prefill,
             decode: turn.spent.decode,
             elapsed: turn.submitted.elapsed(),
+            end,
         }
     }
 

@@ -25,6 +25,7 @@ mod frame;
 mod reuse;
 mod geometry;
 mod admission;
+pub(crate) use admission::Capacity;
 mod transition;
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};
@@ -89,6 +90,33 @@ pub struct TurnFacts {
     pub decode: std::time::Duration,
     /// From submission to her last token.
     pub elapsed: std::time::Duration,
+    /// Why the Core ended it.
+    pub end: TurnEnd,
+}
+
+/// Why the Core ended a turn it answered: the Core saw it happen, so nothing downstream infers it
+/// from counts (2026-11-21: the provider compared `tokens >= max_tokens` to guess a cut).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEnd {
+    /// The model ended her generation.
+    Finished,
+    /// A stop sequence ended it, or her caller stopped reading.
+    Stopped,
+    /// She wrote the `max_tokens` she asked for.
+    AtCap,
+    /// The Core's context is full: everything she wrote is kept, and her next view collapses oldest
+    /// first to fit.
+    CapacityReached,
+}
+
+impl TurnEnd {
+    /// The end as a call's fate reads it: a limit cut her, or she finished.
+    pub fn generation_end(self) -> continuum_tool_protocol::GenerationEnd {
+        match self {
+            Self::Finished | Self::Stopped => continuum_tool_protocol::GenerationEnd::Finished,
+            Self::AtCap | Self::CapacityReached => continuum_tool_protocol::GenerationEnd::OutputLimit,
+        }
+    }
 }
 
 impl TurnFacts {
@@ -360,6 +388,18 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
+    // what this catches: a call the output limit or the full context cut read as finished (a
+    // truncated call run as if complete), or a finished one read as cut (a retry that re-cuts it).
+    // The Core says why it ended; the call's fate follows from that, never from counting tokens.
+    #[test]
+    fn a_turn_the_core_cut_is_cut_and_one_that_finished_is_finished() {
+        use continuum_tool_protocol::GenerationEnd;
+        assert_eq!(TurnEnd::AtCap.generation_end(), GenerationEnd::OutputLimit);
+        assert_eq!(TurnEnd::CapacityReached.generation_end(), GenerationEnd::OutputLimit);
+        assert_eq!(TurnEnd::Finished.generation_end(), GenerationEnd::Finished);
+        assert_eq!(TurnEnd::Stopped.generation_end(), GenerationEnd::Finished);
+    }
+
     // what this catches: the in-process response saying `input_tokens: 0` and no timing while the
     // Core had counted her prompt and its reuse exactly (2026-11-21), so cognition priced her prompt
     // from an estimate and saw no reuse. The response carries what the Core measured.
@@ -372,6 +412,7 @@ mod tests {
             prefill: Duration::from_secs(10),
             decode: Duration::from_secs(15),
             elapsed: Duration::from_secs(26),
+            end: TurnEnd::Finished,
         };
         let usage = facts.usage();
         assert_eq!((usage.input_tokens, usage.output_tokens, usage.total_tokens), (24_000, 300, 24_300));
