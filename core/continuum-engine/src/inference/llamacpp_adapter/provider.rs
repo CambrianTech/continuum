@@ -135,6 +135,8 @@ impl AIProviderAdapter for LlamaCppAdapter {
         request: TextGenerationRequest,
         dispatched: crate::ai::adapter::Dispatched,
     ) -> Result<TextGenerationResponse, String> {
+        // The monotonic origin of every later transition's `since_enter` (`inference.generate.enter`).
+        let entered = Instant::now();
         let allocation = self.allocation()?;
         // Her think term: a stated zero budget renders no thinking; any other budget is bounded by
         // the template's own thinking tags below; none stated is the model's default.
@@ -237,7 +239,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                 class = "inference.generate.enter",
                 model = request.model.as_deref().unwrap_or("?"), // unwrap_or: the probe names an unnamed model "?"
                 persona_id = request.persona_id.as_deref().unwrap_or(""), // unwrap_or: a request for no persona probes an empty id
-                request = ?request.request_id,
+                request = ?request.request_id.as_deref(),
                 msg_count = request.messages.len(),
                 max_tokens = ?request.max_tokens,
                 has_system_prompt = request.system_prompt.is_some(),
@@ -420,7 +422,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                     continuum_base::probe!(
                         class = "inference.generate.worker_started",
                         request = ?request_for_blocking,
-                        since_enter = ?gen_start.elapsed(),
+                        since_enter = ?entered.elapsed(),
                         "the blocking worker began this generation"
                     );
                     let stop_refs: Vec<&str> =
@@ -435,7 +437,7 @@ impl AIProviderAdapter for LlamaCppAdapter {
                         class = "inference.generate.genes_ready",
                         request = ?request_for_blocking,
                         genes = genes_for_closure.len(),
-                        since_enter = ?gen_start.elapsed(),
+                        since_enter = ?entered.elapsed(),
                         "her genes are loaded for this generation"
                     );
                     let active_loras: Vec<(String, f32)> = genes_for_closure

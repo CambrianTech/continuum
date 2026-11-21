@@ -163,7 +163,7 @@ impl Stage for Record {
             }
             // A window is one turn: from the last turn's end through this one's last step, so the
             // idle gap before her turn counts against the share as much as the work in it.
-            Fact::Transition(transition) => transition.write(),
+            Fact::Transition(transition) => transition.write(self.incarnation),
             Fact::Turn(row) => {
                 row.write();
                 self.close_window(self.last_end);

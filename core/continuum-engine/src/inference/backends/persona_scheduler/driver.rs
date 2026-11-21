@@ -369,8 +369,8 @@ enum Phase {
 /// Where a turn's time went, for its one probe row.
 #[derive(Default)]
 struct Spent {
-    /// Her first frame has been reported (`transition::At::FirstFrame`), so it is reported once.
-    framed: bool,
+    /// Her once-only transitions: first frame started, first native progress.
+    milestones: transition::Milestones,
     reused: usize,
     shared_prefix_tokens: usize,
     /// How her prefill started: append, rewind, or the restart's reason.
@@ -631,19 +631,10 @@ impl Driver<'_, '_> {
                 return Err(TurnError::NothingDecoded);
             }
             turn.phase = Phase::Prefilling { pos: from };
-            if !turn.spent.framed {
-                turn.spent.framed = true;
-                self.record.send(record::Fact::Transition(transition::Transition {
-                    request: turn.req.request.clone(),
-                    persona: turn.id.0,
-                    one_off: turn.one_off,
-                    at: transition::At::FirstFrame {
-                        waited_ms: record::whole_ms(turn.submitted.elapsed()),
-                        reused_tokens: from,
-                        prompt_tokens: turn.prompt.len(),
-                        switched: turn.spent.switches > 0,
-                    },
-                }));
+            if turn.spent.milestones.start() {
+                let since_admit_ms = record::whole_ms(turn.submitted.elapsed());
+                let started = transition::At::FrameStarted { since_admit_ms, reused_tokens: from, prompt_tokens: turn.prompt.len(), switched: turn.spent.switches > 0 };
+                self.transition(turn, started);
             }
         }
         let stepping = Instant::now();
@@ -661,6 +652,10 @@ impl Driver<'_, '_> {
             turn.spent.prefill += took;
         }
         self.record.send(record::Fact::Busy { started: stepping, ended: stepped });
+        if turn.spent.milestones.step(advanced.is_ok()) {
+            let progress = transition::At::FirstProgress { since_admit_ms: record::whole_ms(turn.submitted.elapsed()), step_ms: record::whole_ms(took), prefill: !decoding };
+            self.transition(turn, progress);
+        }
         if let Ok(Advanced::Done(TokenEvent::Done { tokens_generated, .. })) = &advanced {
             self.report_footprint(turn.id, turn.one_off);
             self.record.send(record::Fact::Turn(Self::row(turn, *tokens_generated)));
@@ -877,6 +872,11 @@ impl Driver<'_, '_> {
             Err(refused) => return Err(refused.into()),
         }
         self.retire_previous()
+    }
+
+    /// Report that `turn` reached `at`; its record stage writes it.
+    fn transition(&mut self, turn: &Turn, at: transition::At) {
+        self.record.send(record::Fact::Transition(transition::Transition { request: turn.req.request.clone(), persona: turn.id.0, one_off: turn.one_off, at }));
     }
 
     fn finish_one_off(&mut self, turn: &Turn) {
