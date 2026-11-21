@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::geometry::StopsOnExit;
 use continuum_flow::{Outbox, StageInput};
 
-use super::{emit, frame, preserve, record, reuse, sampling, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{emit, frame, preserve, record, reuse, sampling, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -369,6 +369,8 @@ enum Phase {
 /// Where a turn's time went, for its one probe row.
 #[derive(Default)]
 struct Spent {
+    /// Her first frame has been reported (`transition::At::FirstFrame`), so it is reported once.
+    framed: bool,
     reused: usize,
     shared_prefix_tokens: usize,
     /// How her prefill started: append, rewind, or the restart's reason.
@@ -556,7 +558,14 @@ impl Driver<'_, '_> {
                 self.emit.send(emit::Out::Open { answer, sink: req.response_tx.clone(), stops: req.stop_sequences.clone().into(), cancel: Arc::clone(&cancel) });
                 let submitted = Instant::now();
                 if one_off { self.live_one_offs.insert(id); }
+                let admitted = transition::Transition {
+                    request: req.request.clone(),
+                    persona: id.0,
+                    one_off,
+                    at: transition::At::Admitted { queue_depth: turns.len() + 1, prompt_tokens: prompt.len(), since_submit_ms: record::whole_ms(req.submitted.elapsed()) },
+                };
                 turns.push(Turn { req, id, one_off, prompt, basis, genes, sampler, phase: Phase::Waiting(Default::default()), submitted, ready_since: submitted, spent: Spent::default(), boundaries: Boundaries { view: boundary, learned: None }, answer, cancel });
+                self.record.send(record::Fact::Transition(admitted));
             }
             Err(refused) => {
                 tell(&req.response_tx, TokenEvent::Error(refused.to_string()));
@@ -622,6 +631,20 @@ impl Driver<'_, '_> {
                 return Err(TurnError::NothingDecoded);
             }
             turn.phase = Phase::Prefilling { pos: from };
+            if !turn.spent.framed {
+                turn.spent.framed = true;
+                self.record.send(record::Fact::Transition(transition::Transition {
+                    request: turn.req.request.clone(),
+                    persona: turn.id.0,
+                    one_off: turn.one_off,
+                    at: transition::At::FirstFrame {
+                        waited_ms: record::whole_ms(turn.submitted.elapsed()),
+                        reused_tokens: from,
+                        prompt_tokens: turn.prompt.len(),
+                        switched: turn.spent.switches > 0,
+                    },
+                }));
+            }
         }
         let stepping = Instant::now();
         let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
