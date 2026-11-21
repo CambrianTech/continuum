@@ -409,7 +409,7 @@ move a mind's saved state, which is what a CPU's memory system does for its proc
 - **Simulator first** (the dyno, CONTINUUM-ENGINE §7.0): one assertion per invariant, red against
   today's code. Invariant 1's: a lone acting mind on a context of N reaches position N - 1 with no
   other mind decoding.
-- **Live, on the M5, 15 minutes at four or more residents**, before and after: the acting mind's
+- **Live, on every node class we can reach (the M5, BigMama's 5090, the IntelMac), 15 minutes with the residents each one has**, before and after: the acting mind's
   largest position against capacity; decode and prefill tokens per second (a unified buffer must not
   cost either); turns ending `CapacityReached` while the context had room, 0; refusals, 0;
   `inference.turn.wrote_nothing` with a function marker, 0; act latency median and p90.

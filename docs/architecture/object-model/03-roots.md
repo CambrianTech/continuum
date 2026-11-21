@@ -240,15 +240,19 @@ pages are; only the Core moves them. The node's governor shares the device betwe
 Core, rendering, speech, embeddings, learning) by demand, never among minds; when the Core's share
 shrinks it gives back cached pages first and its occupant's context last.
 
-**One Core per model per compute unit: for Qwen on the M5, one.** Decode is bound by memory bandwidth:
-every token reads the model's active weights, so a second Core of the same model on the same device
-reads them twice through the same bandwidth and splits the rate, and batching minds inside one Core did
-no better (four sequences per decode gave each about 2 tokens per second against the full rate for one
-mind at a time, `persona_scheduler` deployed 6404cf3b15). With a sub-second swap, a second Core buys no
-latency either: a live reply swaps in at a token boundary. Speed for many minds comes from swapping
-fast, never from running them side by side. A second Core exists only for a different model doing a
-different job for the mind (a small fast model behind her quick speech layer, a mind subcomponent, all
-event-driven); that is designed when it is built, and it is not now.
+**How many Cores is measured, never written down.** The repo runs on hardware nobody here owns: a
+laptop, a discrete GPU, a phone, a grid node. No machine, model or count appears in this design as a
+rule. The object that decides is the `ComputeUnit` (a GPU, the Neural Engine, a CPU, as the node
+discovers them): it probes each model it is asked to serve, alone and two at once, and measures its
+own decode and prefill rates. It runs a second Core of a model only where its own measurement shows
+two together finishing more useful work than one swapping, and re-probes when the model, the backend
+or the hardware changes. What one machine measured is a receipt, never the rule: on the M5 with Qwen
+3.6, a second sequence decoding beside the first split the rate (four sequences gave each about 2
+tokens per second against the full rate for one, `persona_scheduler` deployed 6404cf3b15), so that
+unit runs one Core and swaps. Another unit, with more bandwidth or a different model, may measure
+otherwise and will act on its own number. A Core for a different model doing a different job for the
+mind (a fast model behind her quick speech layer, a mind subcomponent, event-driven) is the same
+measured decision, designed when it is built.
 
 **Custody through a swap** (Codex's review of 4a5807f2cc):
 - **The occupant keeps her cells until her release.** Her context is hers until her native boundary
