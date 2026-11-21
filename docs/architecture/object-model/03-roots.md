@@ -237,6 +237,19 @@ the only division: between Cores and kinds of work, by demand, never a fixed spl
 minds on one Core. When a Core's share shrinks it gives back cached pages first and its occupant's
 window last.
 
+**The Core negotiates for its minds, and a Core that cannot hold a turn goes away.**
+- **One demand per Core.** A Core presents its minds to the governor as one demand: the next turn's
+  need as its essential floor, the warm minds' pages as quality steps above it. Minds never negotiate
+  with the governor themselves, and Cores negotiate with each other only through the governor's
+  prices (GRID-MARKET-CLEARING §2's nesting).
+- **Fewer Cores, never starved ones.** When the governor cannot grant a Core its floor, the Core count
+  drops: its minds move, as cached pages awaiting their turn, to a Core serving the same model, and its
+  memory goes to the Cores that remain. A Core that cannot hold one mind's turn is scrap; fewer Cores
+  serving whole turns are a smaller engine that still runs.
+- **More Cores when they pay.** When a Core's queue costs its waiting minds more than a second Core's
+  memory would, the governor grants one and the minds split. Both moves are priced, with hysteresis,
+  so the count does not flap.
+
 What it replaces: the serving daemon's per-mind grants on the engine's pool and their "owed" state,
 and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
 while one mind held 98,304 tokens of a Core that decodes one mind at a time).
