@@ -375,3 +375,20 @@ unchanged, triggered by `Deliberate` carrying the percepts that crossed her dial
 
 Gates: turns started by a clock 0; every wake names the percepts that crossed her dial; sentinel acts 0;
 surprises from her own receipts counted; act latency unchanged or better.
+
+**Step 2 from the code as read (2026-11-21).** Her perception is already event-fed but not a worker:
+`PerceptionRegion` (`persona/perception_region.rs`) sits behind a `Mutex` in a static registry
+(`perception_feed.rs`), the core's one inbound seam calls `feed()` synchronously per event, wakes leave
+by `try_send` and are dropped when her channel is full (`mind.feed.wake_dropped`), and every room event
+also goes around her attention into her admission pipeline (`events_tx`) as a message turn. Readers and
+writers reach the region through `with_region` from seven places (the select's recheck and floor, the
+self-tick's continuation room, `focus/continue`, grounding, two dreaming receipts). In three deploys:
+- **2a, Senses owns her region.** One `Stream<ConversationEvent>` from `inbound_attach`; each resident's
+  Senses worker attaches to it and owns her `PerceptionRegion` outright (no `Mutex`, no registry). Her
+  verbs reach it as inputs (`Dial`, `Continuation`, `Perceived`, `Joined`); her awareness is a
+  `State<AwarenessSnapshot>`; her wakes are a `Stream<Wake>` that waits rather than drops. The loop's
+  mind-wake arm reads that stream. Behaviour otherwise unchanged; gate `mind.feed.wake_dropped` 0.
+- **2b, no clock decides for her.** Senses schedules her continuation's due time and nothing else; the
+  self-tick, `BeatClock`, `mind_check_floor` and the select's recheck go. Gate: turns started by a clock 0.
+- **2c, messages through attention.** `events_tx` goes; a message reaches her loop only as a `Wake` from
+  Senses with the percepts that crossed her dial; `triggers_a_turn`'s text rule goes.
