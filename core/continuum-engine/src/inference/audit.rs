@@ -30,7 +30,7 @@ where
 
     // Serialize to get the byte size (the same path the HTTP layer uses).
     let json_bytes_len = match serde_json::to_vec(body) {
-        Ok(bytes) => bytes.len(),
+        Ok(bytes) => bytes.len() as i64,
         Err(_) => -1, // serialization failed — report negative as sentinel
     };
 
