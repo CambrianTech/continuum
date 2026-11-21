@@ -176,7 +176,7 @@ answered with a number. Each has one owner and one rule:
 
 So "how many" is never configured: it follows from the Core's measured capacity, each mind's measured
 need, importance and switch cost. The lane-era counts this replaces are listed in chapter 11 (phase D,
-"The lane era").
+"The Core owns its budget").
 
 A level is a statement about her caches only. Promoting her is `Prepare` and `Resume` reaching the
 branches that level needs, and demoting her is `Suspend` reaching them, through the same tree.
