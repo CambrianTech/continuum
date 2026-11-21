@@ -77,10 +77,7 @@ pub(super) fn need_with_growth(claims: &[MindClaim], sequences: u32, trained_win
     let trained = u64::from(trained_window);
     let claimed: u64 = claims
         .iter()
-        .map(|claim| match *claim {
-            MindClaim::Held { need } => (need as f64 * SENT_HEADROOM) as u64,
-            MindClaim::Own { target } => target,
-        })
+        .map(|claim| (claim.size as f64 * SENT_HEADROOM) as u64)
         .map(|tokens| tokens.min(trained))
         .sum();
     let unclaimed = u64::from(sequences).saturating_sub(claims.len() as u64);
@@ -182,7 +179,7 @@ mod tests {
     // remembers nobody launched at the floor (the 2,048-token dark node of card 8569b03d).
     #[test]
     fn the_need_is_each_claim_with_the_grants_growth_and_a_least_window_per_free_sequence() {
-        let claims = [MindClaim::Held { need: 100_000 }, MindClaim::Own { target: 900_000 }];
+        let claims = [MindClaim::Required { size: 100_000 }, MindClaim::Required { size: 900_000 }];
         assert_eq!(need_with_growth(&claims, 4, 262_144), Some(125_000 + 262_144 + 2 * u64::from(MIN_SERVE_CTX)));
         assert_eq!(need_with_growth(&[], 5, 262_144), None, "nobody remembered: the plan's pool stands");
     }
