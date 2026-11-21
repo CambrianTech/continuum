@@ -876,10 +876,8 @@ impl ServingDaemonModule {
             .requirements
             .iter()
             .filter_map(|requirement| match requirement.measure {
-                // Only a need a held turn measured: a wish's target carries headroom and untrimmed
-                // overflow (Fable, 2026-11-07: Aiko's 902k on a 262k model), never a size to launch.
-                Measure::Held { need, .. } => Some(u64::from(need.value().get()).min(trained)),
-                Measure::Unmeasured | Measure::Wished { .. } | Measure::Declared { .. } => None,
+                Measure::Measured { governed } => Some(u64::from(governed.get()).min(trained)),
+                Measure::Unmeasured => None,
             })
             .collect()
     }
