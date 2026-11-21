@@ -101,3 +101,51 @@ async fn a_newer_timer_under_the_same_key_replaces_the_older() {
     drop(alarm);
     assert_eq!(rings.recv().await, None, "the first never rang");
 }
+
+/// Holds a cache it builds from its inputs, and gives it back when asked to rest.
+struct Cache {
+    held: Vec<u64>,
+    reported: tokio::sync::mpsc::UnboundedSender<usize>,
+}
+
+enum CacheIn {
+    Add(u64),
+    Report,
+}
+
+impl Component for Cache {
+    type Input = CacheIn;
+    const NAME: &'static str = "cache";
+    const QOS: Qos = Qos::Work;
+    fn wire(&self, _: &mut Wiring<'_, Self>) {}
+    async fn handle(&mut self, input: CacheIn, _: &mut Ctx<Self>) {
+        match input {
+            CacheIn::Add(n) => self.held.push(n),
+            CacheIn::Report => assert!(self.reported.send(self.held.len()).is_ok(), "the test reads every report"),
+        }
+    }
+    async fn rest(&mut self) {
+        self.held = Vec::new();
+    }
+}
+
+// what this catches: rest as something only minds have, or a resting component that cannot be seen
+// or woken. Every component inherits it: its presence is published by the engine (Ready, Acting,
+// Resting) for anything to observe; resting gives back what it holds; its next input wakes it.
+#[tokio::test]
+async fn every_component_rests_visibly_and_its_next_input_wakes_it() {
+    let bus = Bus::new();
+    let mut presence = bus.reader::<Presence>(PRESENCE, presence_key("cache"));
+    let (reported, mut reports) = tokio::sync::mpsc::unbounded_channel();
+    let cache = start(Cache { held: Vec::new(), reported }, &bus, OwnerId(Uuid::from_u128(3)), 1);
+    assert_eq!(presence.latest().map(|p| *p.value), Some(Presence::Ready), "published when it starts");
+    assert!(cache.tell(CacheIn::Add(1)).await && cache.tell(CacheIn::Add(2)).await);
+    assert!(cache.tell(CacheIn::Report).await);
+    assert_eq!(reports.recv().await, Some(2));
+    assert!(cache.rest().await);
+    while presence.changed().await.map(|p| *p.value).ok() != Some(Presence::Resting) {}
+    assert!(cache.tell(CacheIn::Report).await, "its next input wakes it");
+    assert_eq!(reports.recv().await, Some(0), "resting gave back what it held");
+    // Awake again once it has handled it: Acting while it ran, Ready after.
+    while presence.changed().await.map(|p| *p.value).ok() != Some(Presence::Ready) {}
+}

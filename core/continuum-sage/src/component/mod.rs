@@ -39,12 +39,50 @@ pub trait Component: Send + Sized + 'static {
     fn wire(&self, wiring: &mut Wiring<'_, Self>);
     /// Handle one input: arithmetic on its own state, publishing through what it said it says.
     fn handle(&mut self, input: Self::Input, ctx: &mut Ctx<Self>) -> impl Future<Output = ()> + Send;
+    /// Rest: give back what it holds (drop or page its caches) because its owner rests or its
+    /// memory is wanted elsewhere. Its next input wakes it. The default holds nothing and does
+    /// nothing.
+    fn rest(&mut self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
 }
 
-/// One input with the revision it came from (none for an act or a timer).
+/// Where a component is in its life, owned by the engine and published on its owner's bus under
+/// [`PRESENCE`], keyed by the component's name: any component can observe another's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Presence {
+    /// Handling an input.
+    Acting,
+    /// Idle on its intake: no CPU spent, its caches warm.
+    Ready,
+    /// It gave back what it holds; its next input wakes it.
+    Resting,
+}
+
+/// The topic every component's presence is published on.
+pub const PRESENCE: TopicName = TopicName("sage/presence");
+
+/// The key a component's presence is published under: its name.
+pub fn presence_key(name: &'static str) -> Key {
+    Key::of(StageId::named(name).as_uuid())
+}
+
+/// What reaches a component's worker: an input (with the frame it came from: none for an act or a
+/// timer), or the engine's request that it rest.
 pub struct Delivered<I> {
-    input: I,
+    what: What<I>,
     from: Option<InputRevision>,
+}
+
+enum What<I> {
+    Input(I),
+    Rest,
+}
+
+impl<I> Delivered<I> {
+    pub(super) fn act(input: I) -> Self {
+        Self { what: What::Input(input), from: None }
+    }
 }
 
 /// A component's intake: its inputs with the revision each came from.
@@ -100,20 +138,36 @@ impl<P: Component> Wiring<'_, P> {
 impl<T, I: From<Event<T>>> From<Event<T>> for Delivered<I> {
     fn from(event: Event<T>) -> Self {
         let from = Some(event.revision);
-        Self { input: I::from(event), from }
+        Self { what: What::Input(I::from(event)), from }
     }
 }
 
 impl<T, I: From<Snapshot<T>>> From<Snapshot<T>> for Delivered<I> {
     fn from(snapshot: Snapshot<T>) -> Self {
         let from = Some(snapshot.revision);
-        Self { input: I::from(snapshot), from }
+        Self { what: What::Input(I::from(snapshot)), from }
     }
 }
 
 struct Worker<P: Component> {
     component: P,
     ctx: Ctx<P>,
+    /// Its presence on its owner's bus; `None` when another component of the same name already
+    /// publishes there (a wiring defect, probed at start).
+    presence: Option<crate::dataflow::Publisher<Presence>>,
+    now: Presence,
+}
+
+impl<P: Component> Worker<P> {
+    fn enter(&mut self, presence: Presence) {
+        if presence == self.now {
+            return;
+        }
+        self.now = presence;
+        if let Some(publisher) = self.presence.as_mut() {
+            self.ctx.publish(publisher, presence);
+        }
+    }
 }
 
 impl<P: Component> Stage for Worker<P> {
@@ -121,8 +175,19 @@ impl<P: Component> Stage for Worker<P> {
     const QOS: Qos = P::QOS;
 
     async fn handle(&mut self, delivered: Delivered<P::Input>) {
-        self.ctx.begin(delivered.from);
-        self.component.handle(delivered.input, &mut self.ctx).await;
+        match delivered.what {
+            What::Input(input) => {
+                self.enter(Presence::Acting);
+                self.ctx.begin(delivered.from);
+                self.component.handle(input, &mut self.ctx).await;
+                self.enter(Presence::Ready);
+            }
+            What::Rest if self.now == Presence::Resting => {}
+            What::Rest => {
+                self.component.rest().await;
+                self.enter(Presence::Resting);
+            }
+        }
     }
 }
 
@@ -135,7 +200,13 @@ pub struct Running<P: Component> {
 impl<P: Component> Running<P> {
     /// Hand the part an act; false once it has stopped.
     pub async fn tell(&self, input: P::Input) -> bool {
-        self.input.send(Delivered { input, from: None }).await.is_ok()
+        self.input.send(Delivered::act(input)).await.is_ok()
+    }
+
+    /// Ask it to rest: it gives back what it holds, and its next input wakes it. False once it
+    /// has stopped.
+    pub async fn rest(&self) -> bool {
+        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
     }
 
     /// A handle to tell it acts from elsewhere, without owning its lifetime.
@@ -163,7 +234,12 @@ impl<P: Component> Clone for Teller<P> {
 
 impl<P: Component> Teller<P> {
     pub async fn tell(&self, input: P::Input) -> bool {
-        self.input.send(Delivered { input, from: None }).await.is_ok()
+        self.input.send(Delivered::act(input)).await.is_ok()
+    }
+
+    /// Ask it to rest (its owner rests, or its memory is wanted elsewhere).
+    pub async fn rest(&self) -> bool {
+        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
     }
 }
 
@@ -173,18 +249,34 @@ pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) 
     let mut wiring = Wiring { bus, attach: Vec::new() };
     component.wire(&mut wiring);
     let incarnation = StageIncarnation { stage: StageId::named(P::NAME), owner, epoch };
-    let (input, worker) = spawn_stage_with(component, RunId { incarnation, seq: 0 });
+    let presence = match bus.publisher::<Presence>(PRESENCE, presence_key(P::NAME)) {
+        Ok(publisher) => Some(publisher),
+        Err(taken) => {
+            continuum_base::probe!(class = "sage.component.presence_taken", component = P::NAME, topic = taken.0 .0, "another component of this name already publishes its presence on this bus");
+            None
+        }
+    };
+    let (input, worker) = spawn_worker(component, RunId { incarnation, seq: 0 }, presence);
     for attach in wiring.attach {
         attach(&input);
     }
     Running { input, worker }
 }
 
-fn spawn_stage_with<P: Component>(component: P, run: RunId) -> (Intake<P::Input>, StageWorker<Delivered<P::Input>>) {
-    // The context needs the part's own input for its timers, which exists only once the worker
-    // does: the worker is spawned with a context that receives it before any input is handled.
+fn spawn_worker<P: Component>(
+    component: P,
+    run: RunId,
+    mut presence: Option<crate::dataflow::Publisher<Presence>>,
+) -> (Intake<P::Input>, StageWorker<Delivered<P::Input>>) {
+    // The context needs the component's own input for its timers, which exists only once the
+    // worker does: the worker is spawned with a context that receives it before any input.
     let slot = ctx::InputSlot::default();
-    let (input, worker) = spawn_stage(Worker { component, ctx: Ctx::new(run, &slot) }, Capacity::granted(std::num::NonZeroUsize::MIN));
+    let ctx = Ctx::new(run, &slot);
+    if let Some(publisher) = presence.as_mut() {
+        ctx.publish(publisher, Presence::Ready);
+    }
+    let worker = Worker { component, ctx, presence, now: Presence::Ready };
+    let (input, worker) = spawn_stage(worker, Capacity::granted(std::num::NonZeroUsize::MIN));
     slot.fill(&input);
     (input, worker)
 }

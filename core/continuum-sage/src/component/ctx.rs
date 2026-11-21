@@ -72,7 +72,7 @@ impl<P: Component> Ctx<P> {
         let Some(myself) = self.myself.0.get().cloned() else { return };
         let alarm = crate::clock::at(tokio::time::Instant::now() + after, move || {
             tokio::spawn(async move {
-                if myself.send(Delivered { input, from: None }).await.is_err() {
+                if myself.send(Delivered::act(input)).await.is_err() {
                     continuum_base::probe!(class = "sage.component.timer_after_stop", component = P::NAME, "a component stopped before its timer fell due");
                 }
             });
