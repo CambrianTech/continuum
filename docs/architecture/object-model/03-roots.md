@@ -52,6 +52,21 @@ pub trait Part: Send + Sync {
 - **The lifecycle commands** (`part/lifecycle.rs`): `Prepare`, `Suspend`, `Resume`, `Shutdown`, four
   commands every part answers, broadcast through its parts.
 
+**Commands go down the tree; events go out.** A lifecycle change does two different things, and
+each takes the form that fits it:
+- **What must happen to what a part owns is a command to its owner,** answered with a completion
+  (release her pages, free a model, suspend her branches). Only a command keeps custody: the owner
+  holds the bytes until the answer is final, parts stop before what they serve, and nothing runs
+  twice. An event cannot do this: it has no acknowledgement, no order and no single owner, so two
+  subscribers might both act on it, or neither.
+- **That a transition happened is an event,** published by the owner as it happens ("Aiko is
+  suspending", "the node is shutting down"). Her attention notices it, a room shows her away,
+  telemetry records it, the governor reprices. Observers react within their own concerns; none acts
+  on another part's resources because of it.
+- **Scope decides who sees it.** A mind's swap on the Core concerns her and her node; a node's
+  shutdown concerns everyone on it. Each event carries the scope it belongs to (chapter 0, "Stimuli
+  are scoped").
+
 What it replaces: `ServiceModule`, `Daemon` and `BrainRegion` as separate roots; both `Stage`
 traits; persona engine's `Lifecycle` and `Preservation`; every family's own `initialize` and
 `shutdown`; every hand-written loop over children.
