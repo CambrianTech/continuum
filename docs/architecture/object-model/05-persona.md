@@ -694,3 +694,17 @@ distances, analyzing thoughts, background memory processes, research online. All
   lesson that is new (mint) from one near an existing gene (reuse or fork).
 - Analyzing thoughts, background memory processes and online research are components with their own
   stimuli and outputs; research is a long act, a handle emitting what it finds as it finds it.
+
+**She learns three ways, and one of them is never off (Joel, 2026-11-21: "Make sure she's never not
+learning ... Minds learn without being asleep after all"; "Dreaming is more like simulation based
+learning. Or academy level work").**
+- **Awake (lived):** every act's outcome (receipt, review, surprise, correction) folds in as she works,
+  training and inference in the same batch, never a step between decodes. Never off: a learning
+  component publishes "signals pending and unlearned, last learned at frame N"; its need goes Urgent as
+  signals pile up unlearned, and the health report shows it. (The M5, 2026-11-21: 16 reviews an hour
+  staged as credit and every one held, "generation must identify exactly one staged revision", 138 in
+  the day's logs; zero in-place learning steps. A silent stall like this is the defect the component
+  makes impossible to miss.)
+- **Dreaming (simulation):** at rest she replays and varies her experience, rehearses imagined variations
+  and practices against what happened: learning from simulated episodes. Consolidation is a side effect.
+- **Academy:** deliberate coursework she chooses: the only place grading belongs.
