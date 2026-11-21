@@ -657,3 +657,20 @@ mind's tool call, prefill the next mind's appended tail, so her turn starts at d
 critical path). Its need is the gap: the next mind's uncached tokens against how idle the Core is. Why it
 pays on the M5: prefill p50 4 s at 94% reuse but p90 38 s on misses, and every act waits behind other
 minds' whole prefills; preparing in the Core's idle tool-call time moves that cost out of the wait.
+
+**Lifecycle, as on iOS: prepared work is never wasted (Joel, 2026-11-21: "Even if it did work beforehand
+too soon, then the persona swapped out, it'd save that for when it swaps back in ... prepare for
+background, eg prepare for swap").** A tail prefilled ahead is part of her cached state; when she is
+swapped out the Core copies her state out (the persona move) and her next turn reuses it. Preparing too
+early costs nothing unless her prompt diverges before the prepared point, which the Prepare component
+sees from her prompt frames. The `Component` lifecycle is engine-owned, with default no-ops:
+
+| iOS | `Component` |
+|---|---|
+| willResignActive | prepare to rest / for swap: save what must survive (prepared state, unfinished work) |
+| didEnterBackground | rest: give back caches, page state out (`rest()`, built) |
+| willEnterForeground | prepare to wake: page state back in before the first input (predictive prep triggers it early) |
+| didBecomeActive | wake: the first input after rest (built) |
+
+For a mind, being swapped out of the Core is her willResignActive (her parts save, then rest); being next
+in line is her willEnterForeground, which the Prepare component issues.
