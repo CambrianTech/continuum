@@ -294,10 +294,24 @@ settles one model on one compute unit. Two cases remain, and this part of the de
   network delay counts against her deadline, and her pages are the expensive part: moving KV across
   the network costs far more than a local swap, so remote placement favours minds whose context is
   already there or cheap to rebuild there.
-- **Open questions:** how a compute unit's sequencing and a Core's scheduling compose without two
-  owners of one decision; what the pairwise co-running probe measures and when it reruns (a model
-  change, a node joining); whether a mind's remote turn returns her pages or leaves them warm where
-  they ran; how a remote Core's refusal reaches her as a typed outcome.
+- **How the two compose** (Codex's review of e60c0c60cf). The Core chooses who runs and the next
+  interruptible piece of work; the compute unit chooses only when that ready piece runs on its
+  hardware, and never reranks residents. Each Core exposes one versioned ready offer: the work handle,
+  its expected device time, the marginal cost of delaying it, its memory footprint and its next safe
+  boundary. The unit dispatches the offered handle, claimed once by generation; a stale offer triggers
+  a refresh. The native completion goes to the Core, releases the device claim and permits its next
+  offer. Uncontended, a Core holds a standing permit; arbitration wakes only on contention, a capacity
+  change or a completion, never as a market round trip per token.
+- **The co-running probe** compares solo, interleaved and concurrent runs of a pair on the same
+  representative contexts, and tracks aggregate useful tokens per second together with each stream's
+  p95 token gap, first response and peak bytes. It reruns on a material change of model, backend or
+  workload.
+- **Remote turns** keep her pages warm at the destination by default, weighed by measured reuse
+  against transfer cost. Each carries her residency generation, and comes back as `Waiting` with its
+  wake, `Infeasible`, or a lost session. A disconnect during a claimed step reconciles ownership before
+  the step is dispatched again.
+- **Replays:** a stale-offer race; two small models beside an audio deadline; a remote disconnect after
+  a claim.
 
 **Choosing the next mind on the Core** is the same rule at its finest grain. Among the ready demands,
 run the one whose expected gain in value per unit of Core time is highest, counting the switch it

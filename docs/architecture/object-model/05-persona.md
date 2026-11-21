@@ -163,6 +163,21 @@ moves her between them:
 - **present:** following her rooms at her dial's level of detail;
 - **at rest:** her durable self and a wake condition.
 
+**How many, when, and what size: never a constant.** These are the questions most hand-rolled code
+answered with a number. Each has one owner and one rule:
+
+| Question | Answer | Owner |
+|---|---|---|
+| How many residents? | Unlimited: a resident at rest is her durable state. Existence is never a node's decision. | identity (airc) |
+| How many acting? | One per Core at a time (chapter 3.8). | the Core |
+| How many attentive? | Whatever fits the Core's cache, by importance: no count. | the Core's cache |
+| When does one wake or rest? | When a stimulus clears her wake condition; she steps down when idle or when the cache needs the room. | her attention, and the Core's cache pressure |
+| What size? | Her measured need for this turn, up to the Core's sequence cap. | her `Demand`, granted by the Core |
+
+So "how many" is never configured: it follows from the Core's measured capacity, each mind's measured
+need, importance and switch cost. The lane-era counts this replaces are listed in chapter 11 (phase D,
+"The lane era").
+
 A level is a statement about her caches only. Promoting her is `Prepare` and `Resume` reaching the
 branches that level needs, and demoting her is `Suspend` reaching them, through the same tree.
 Her durable branches are the same at every level.
