@@ -492,3 +492,15 @@ waits: on 6cd73968f0 (2026-11-21 20:03-20:18Z) every resident was always ready a
 - Measured per turn: whether it produced a new frame or nothing. Turns that produce nothing are the
   waste; removing them shows up directly as less time waiting for the Core. (Health report the same
   hour: 16 acts, 0 writes.)
+
+**Rest is inherited by every component, not only by minds (Joel, 2026-11-21: "I mean the rest of each
+brain part or really more generically anything with this event based worker parent class").** SAGE's
+`Component` gives every component, once:
+- Presence, owned by the engine and published as state on its owner's bus: Acting (handling an
+  input), Ready (idle on its intake: no CPU, caches warm), Resting (state shed or paged, resources
+  returned). Any component can observe another's presence; the Core's next-mind choice is one observer.
+- `rest(&mut self)` / `wake`: called by the engine when its owner rests (her mind goes `AtRest`) or a
+  pressure frame asks for its memory, never by a timer. It drops or pages its caches; its next input
+  wakes it. The default does nothing, so a component holding nothing pays nothing.
+- Nothing new, nothing done: the engine never delivers a state frame whose number the component
+  already handled, so unchanged input cannot reach a handler and cannot be redone.
