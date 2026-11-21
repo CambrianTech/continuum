@@ -446,3 +446,11 @@ different: the channel digest region, today a ticked recompute, as a part that r
 moves. If both fit without forcing, the interface is right. (4) The other `BrainRegion`s move, and the
 tick and governor dispatch are deleted. Each later part (expectation, surprise, attention, grounding
 sources) is then only its declarations and its handler.
+
+**One level up: SAGE's `Component`, not a mind's part (Joel, 2026-11-21: "I'd go up a level for a class
+for this kind of thing ... It's very much not just minds or just persona").** The mechanism above is
+owner-agnostic: the Core's stages, serving, the grid, the node's feed and every part of a mind need the
+same worker, queue, subscriptions, timers, provenance and lifecycle. So it is SAGE's `Component`, in the
+engine crate (`continuum-flow` renamed `continuum-sage`), keyed by an owner id (`OwnerId`, not
+`MindId`). A mind adds only what is hers: her bus, her identity and epoch, and `mind.start(component)`.
+Senses is a `Component` started on her mind; the feed is a `Component` started on the node.
