@@ -97,7 +97,7 @@ enum Tenure {
 mod ending;
 mod history;
 
-use ending::{Ending, Stop};
+use ending::{Ending, Stop, Suspension};
 use history::{Boundary, History, Boundaries};
 
 /// A bound mind's blocks, as the tier that holds them in the context reports them.
@@ -471,7 +471,7 @@ impl Driver<'_, '_> {
                 self.admit(req, turns);
                 None
             }
-            Submission::Suspend(reply) => Some(Stop { reply, suspended: self.suspend(turns) }),
+            Submission::Suspend(reply) => Some(Stop { reply, suspension: self.suspend(turns) }),
         }
     }
 
@@ -480,7 +480,7 @@ impl Driver<'_, '_> {
     /// checkpoint (so a restart resumes exactly at her view), retired through the pipeline, then her
     /// blocks and token history written. The manifest naming every preserved mind is published last:
     /// it is the commit point. A mind not preserved is reported, never silently dropped.
-    fn suspend(&mut self, turns: &mut Vec<Turn>) -> Suspended {
+    fn suspend(&mut self, turns: &mut Vec<Turn>) -> Suspension {
         self.stopping = true;
         for turn in std::mem::take(turns) {
             self.end(turn, Ending::Stopping);
@@ -493,7 +493,7 @@ impl Driver<'_, '_> {
             } else {
                 minds.iter().map(|mind| (mind.0, why.clone())).collect()
             };
-            Suspended { preserved: 0, retained }
+            Suspension { preserved: 0, retained }
         };
         if let Some(id) = self.engine.retiring() {
             if let Err(why) = self.retire_previous() {
@@ -526,7 +526,7 @@ impl Driver<'_, '_> {
         // the M5's first suspend, 2026-11-19 03:57Z)
         runtime::logger("persona-scheduler").info(&format!("the stop preserved {preserved} minds; not preserved: {retained:?}"));
         self.store = Some(store);
-        Suspended { preserved, retained }
+        Suspension { preserved, retained }
     }
 
     /// One mind out to her file in `generation`: bound, rewound to her view, retired through the

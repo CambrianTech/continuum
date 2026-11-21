@@ -129,10 +129,23 @@ pub(super) enum Submission {
     Suspend(tokio::sync::oneshot::Sender<Suspended>),
 }
 
+/// Whether a stop's last turn records were confirmed written by the record stage.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Records {
+    /// Every record sent before the stop is written (or the engine ended none).
+    #[default]
+    Written,
+    /// The record stage ended before confirming them: they may be lost.
+    Unconfirmed,
+}
+
 /// What a suspend preserved (CONTINUUM-ENGINE 4.16): how many minds it published, and every mind it
 /// could not preserve, with why. A mind it could not preserve is held only by the live process.
 #[derive(Debug, Clone, Default)]
 pub struct Suspended {
+    /// Whether the records of the turns this stop ended were confirmed written: telemetry, so it
+    /// never changes custody, and a stop that preserved every mind says so even when it is not.
+    pub records: Records,
     pub preserved: usize,
     pub retained: Vec<(Uuid, String)>,
 }
@@ -147,6 +160,15 @@ pub struct Scheduler {
 
 /// The engine the stop suspends: the last one spawned in this process.
 static SUSPENDS: std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<Submission>>> = std::sync::Mutex::new(None);
+
+/// What a stop's report adds about its turns' records: nothing when written.
+fn records_note(records: Records) -> &'static str {
+    match records {
+        Records::Written => "",
+        Records::Unconfirmed => "; the records of the turns it ended were not confirmed written",
+    }
+}
+
 
 /// The engine's part in a stop (CONTINUUM-ENGINE 4.16, Codex on 2990b44831): its root suspend,
 /// through the kernel's `SettleBeforeStop`, before native contexts are released. Each mind leaves the
@@ -171,10 +193,12 @@ impl crate::runtime::extensions::SettleBeforeStop for EngineSettle {
                 return Vec::new(); // the engine already ended, and with it every mind it held
             }
             match tokio::time::timeout(cap, suspended).await {
+                // Records are telemetry: unconfirmed ones never change custody, and the report says so.
                 Ok(Ok(suspended)) if suspended.retained.is_empty() => {
-                    vec![crate::runtime::HeldCustody { endpoint: format!("persona_engine: {} minds preserved", suspended.preserved), process: None, state: crate::runtime::CustodyState::Saved }]
+                    let endpoint = format!("persona_engine: {} minds preserved{}", suspended.preserved, records_note(suspended.records));
+                    vec![crate::runtime::HeldCustody { endpoint, process: None, state: crate::runtime::CustodyState::Saved }]
                 }
-                Ok(Ok(suspended)) => held(&format!("{} minds not preserved: {:?}", suspended.retained.len(), suspended.retained)),
+                Ok(Ok(suspended)) => held(&format!("{} minds not preserved: {:?}{}", suspended.retained.len(), suspended.retained, records_note(suspended.records))),
                 Ok(Err(_)) => held("the engine ended before it reported its suspend"),
                 Err(_) => held("the suspend did not finish within the stop's cap"),
             }
