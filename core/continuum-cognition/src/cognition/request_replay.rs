@@ -57,9 +57,10 @@ pub enum ReplayIdentity {
     /// A fresh mind with nothing cached: a cold turn.
     #[default]
     Isolated,
-    /// The source persona's own mind: her parked blocks are reused as live. Interleaving with her
-    /// live loop is safe (one serial queue per mind, reuse checked against the prompt) but spoils a
-    /// measurement, so hold and despawn her first.
+    /// The source persona's own mind: her parked blocks are reused as live. It changes her native
+    /// KV cache (and the checkpoint a stop saves from it), never her memory, history or learning.
+    /// Interleaving with her live loop is safe (one serial queue per mind, reuse checked against the
+    /// prompt) but spoils a measurement, so hold and despawn her first.
     Resident,
 }
 
@@ -341,7 +342,7 @@ fn prepare(
 impl ActionCommand for CognitionReplayRequest {
     const NAME: &'static str = "cognition/replay-request";
     const ACCESS: AccessLevel = AccessLevel::Privileged;
-    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, hash-bound collapsed-receipt omission, or one named tool schema override, using an explicit provider, served as a fresh mind (identity isolated, cold) or as the source persona herself (identity resident, her parked blocks reused); the capture is always owned by a separate replay identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or changes live persona memory. Fresh inference, not deterministic full-mind replay.";
+    const DESCRIPTION: &'static str = "Rerun a captured model request with optional max_tokens override, hash-bound collapsed-receipt omission, or one named tool schema override, using an explicit provider, served as a fresh mind (identity isolated, cold) or as the source persona herself (identity resident, her parked blocks reused); the capture is always owned by a separate replay identity. Records original provenance and new lifecycle; returns outcome comparison. Never dispatches tool calls or writes her memory, history or learning; a resident replay does change her native KV cache and the checkpoint a stop saves from it, so a measuring run snapshots and restores her preserved blocks. Fresh inference, not deterministic full-mind replay.";
     type Params = ReplayRequestParams;
     type Output = ReplayRequestResult;
 
