@@ -340,16 +340,23 @@ confirmed custody and the same turn handle.
 
 ### Invariants (each a simulator assertion before it is code)
 
-1. **One context per awake model, never divided.** It holds one stream, the occupant's, and that
-   stream is the whole context. Not unified KV: the fork moves a mind by copying her own stream's rows,
-   so each stream must belong to one sequence, and llama.cpp sizes each stream at the context divided
-   by the stream count, so a second stream for the next mind would halve the occupant's. A swap moves
-   the occupant out to her host blocks first, then binds the next mind into the emptied stream; the
-   next mind's prefetch lives in host memory, where her blocks already are. Done at f1b4fa2185 with
-   fork b539d357a (live: `n_ctx 122368, n_ctx_seq 122368, n_seq_max 1`; switch p50 6.0 ms, decode
-   58.9 tok/s, 58.4 sustained with switches, `persona_switch` on the M5). Overlapping a swap with the
-   occupant's decode, should it ever pay, needs a landing area that does not divide her stream: a fork
-   change, measured first.
+1. **One context per awake model, never divided.**
+   - **Live (f1b4fa2185, fork b539d357a):** one stream, the occupant's, holding the whole context. The
+     fork's move today copies a mind's own stream as one contiguous block, so each stream must belong
+     to one sequence, and llama.cpp sizes each stream at the context over the stream count; a second
+     stream for the next mind halved the occupant's. A swap moves the occupant out to her host blocks
+     first, then binds the next mind into the emptied stream. Live `n_ctx 122368, n_ctx_seq 122368,
+     n_seq_max 1`; switch p50 6.0 ms, decode 58.9 tok/s, 58.4 sustained with switches
+     (`persona_switch` on the M5).
+   - **The target: the KV store as an object with a page table per mind.** A unified context already
+     records, per cell, which sequences own it (`llama_kv_cells`). A `KvStore` that owns the cells and
+     keeps each mind's page table can gather exactly her cells on save and scatter them into any free
+     cells on restore, as virtual memory does. That gives what one stream cannot: the next mind staged
+     into cells the occupant is not using while she decodes (a real overlap, nothing divided), and a
+     prefix every mind shares (system prompt, tools head) held once and referenced copy-on-write by
+     each (chapter 0, instancing), never copied per mind. Its cost is a gather and scatter in place of
+     one contiguous copy, measured against the 6 ms swap before it lands; it is a fork change, owned by
+     the Core (Fable).
 2. **Capacity is a measurement and follows the share live.** A context's size is the Core's share of
    the device (the node's governor, by demand) over the model's measured bytes per token, bounded by
    its trained context; it changes without a relaunch, under the three-quantity rule.
