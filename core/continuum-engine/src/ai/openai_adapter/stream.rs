@@ -376,7 +376,9 @@ impl OpenAICompatibleAdapter {
         // ONE snapshot decides both where this request goes and whether it may carry its tail;
         // a tail the destination cannot take is refused, never dropped (Codex on #5491).
         let route = self.route_now(model, &endpoints);
-        crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, terms.think, &mut body)?;
+        crate::inference::audit::audit_finish_body(&request_id, &mut body, |body| {
+            crate::inference::request_body::finish_body(&self.config, &request, model, route.tail_tools, terms.think, body)
+        })?;
 
         // Make request — the endpoint base for THIS request's model. Normally the
         // runtime/config base; for the local serving gateway, a request for the
