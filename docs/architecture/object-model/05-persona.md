@@ -409,3 +409,40 @@ which is immediate").**
   Each snapshot names the revisions it was derived from, so a stale one is visible as stale. The
   `join_all` of faculties and the sources run inside `compose_turn` go. Gate: compose time per act
   (measured from the turn probes before and after) falls to the cost of copying the snapshots.
+
+### The part is the engine's, not the feature's (Joel, 2026-11-21)
+
+"Every part of the persona can act independently with event flow ... They work on their own and use all
+of each other's events to decide what to do, research, get ready and signal with events what they have
+when they have it for all others to consume or ignore at the exact moment. The worker should be
+automatically given by the object inherited mind part, not manually created per." Senses as first
+written (step 2a) proved the opposite shape: it spawned its own worker, made its own publisher, handed
+itself its own input for its timer, and subscribed to the feed by hand. The next part would copy all of
+it. The existing parent, `BrainRegion` (`continuum-kernel/src/runtime/brain_region.rs`; hippocampus,
+channel digest, dream consolidation, credit acceptance), is a governor-dispatched `tick`: a clock, and
+it gives a region no worker, subscription or publication either.
+
+**SAGE's `Part` (in `continuum_flow`, the engine; replaces `BrainRegion::tick`).** A part of her declares
+only what it is:
+- what it hears: the topics it subscribes to, events (`Stream`) or states (`State`), each mapped into
+  its one input type;
+- what it says: the topics it publishes;
+- its handler: `handle(&mut self, input, &mut Ctx)`, plain arithmetic on its own state.
+
+The engine gives every part, once:
+- its worker (own task, bounded intake, backpressure, panic quarantine) and its control lane;
+- its subscriptions wired by topic on her **mind bus**, a per-mind table of topics by name and type, so a
+  part observes any other part's output by naming the topic, with no reference to that part and no
+  hand-wiring;
+- its publishers, with provenance stamped automatically (its run id, and the revisions of the inputs the
+  handler read);
+- its timers: `ctx.at(instant, input)` delivers an input at a time the part chose (her continuation's
+  deadline), so no part keeps a handle to itself and no part polls;
+- its lifecycle: started with her, stopped with her, its last publication readable after a stop.
+
+**Order.** (1) `Part`, `Ctx` and the mind bus in `continuum_flow`, with a validator. (2) Senses rebuilt on
+it, outlier A: an event-driven part with a timer and both kinds of topic. (3) Outlier B, the most
+different: the channel digest region, today a ticked recompute, as a part that recomputes when the room
+moves. If both fit without forcing, the interface is right. (4) The other `BrainRegion`s move, and the
+tick and governor dispatch are deleted. Each later part (expectation, surprise, attention, grounding
+sources) is then only its declarations and its handler.
