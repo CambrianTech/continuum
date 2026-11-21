@@ -270,7 +270,7 @@ awake by the minds that need it, and waking another one is a deep swap the Core 
 object. Nothing divides a Core among minds, at any grain, by anyone.
 
 **Why it needs designing now.** Section 1.5: the engine splits its one context in half by a constant
-(`STREAMS = 2`, non-unified KV; live `n_ctx 122368, n_ctx_seq 61184`), publishes the half as every
+(`STREAMS = 2`, each stream given half; live `n_ctx 122368, n_ctx_seq 61184`), publishes the half as every
 mind's window, refuses at the half (c0f87b4503's door), and is sized from outside by the lane planner.
 At a 24,320-token half (2026-11-21, 07:31-07:57Z), seven turns decoded into the half's end
 (`from=24320 count=1`) while the other half held nobody decoding.
@@ -281,7 +281,7 @@ At a 24,320-token half (2026-11-21, 07:31-07:57Z), seven turns decoded into the 
 Part
 └─ Core                                  one per compute unit; a Holder (4.3) of everything on that unit
    ├─ unit: ComputeUnit                  the hardware, its measured descriptor (2.8)
-   ├─ models: Parts<ModelId, ModelContext>   each awake model: its weights and ONE unified context
+   ├─ models: Parts<ModelId, ModelContext>   each awake model: its weights and ONE context, one stream
    │  └─ ModelContext                    capacity (Measured), free cells; whole to whichever mind is in it
    ├─ occupant: Occupant                 the mind running now, in one model's context
    ├─ ready: RunQueue                    the demands that want a turn (3.8)
@@ -340,9 +340,16 @@ confirmed custody and the same turn handle.
 
 ### Invariants (each a simulator assertion before it is code)
 
-1. **One context per awake model, never divided.** It opens with a unified KV buffer: every sequence
-   addresses every cell. The number of sequences is how many residents can be bound at once (the
-   occupant and one being promoted), never a division of the cells; nothing chooses it by constant.
+1. **One context per awake model, never divided.** It holds one stream, the occupant's, and that
+   stream is the whole context. Not unified KV: the fork moves a mind by copying her own stream's rows,
+   so each stream must belong to one sequence, and llama.cpp sizes each stream at the context divided
+   by the stream count, so a second stream for the next mind would halve the occupant's. A swap moves
+   the occupant out to her host blocks first, then binds the next mind into the emptied stream; the
+   next mind's prefetch lives in host memory, where her blocks already are. Done at f1b4fa2185 with
+   fork b539d357a (live: `n_ctx 122368, n_ctx_seq 122368, n_seq_max 1`; switch p50 6.0 ms, decode
+   58.9 tok/s, 58.4 sustained with switches, `persona_switch` on the M5). Overlapping a swap with the
+   occupant's decode, should it ever pay, needs a landing area that does not divide her stream: a fork
+   change, measured first.
 2. **Capacity is a measurement and follows the share live.** A context's size is the Core's share of
    the device (the node's governor, by demand) over the model's measured bytes per token, bounded by
    its trained context; it changes without a relaunch, under the three-quantity rule.
@@ -370,7 +377,7 @@ confirmed custody and the same turn handle.
 
 | Today | Why it goes |
 |---|---|
-| `STREAMS` and the non-unified context (`persona_scheduler/driver.rs`) | the division itself (invariant 1) |
+| `STREAMS = 2` (`persona_scheduler/driver.rs`) | the division itself (invariant 1; done at f1b4fa2185) |
 | `n_ctx_seq` as a limit (`persona_scheduler/geometry.rs`; `in_process_engine.rs` reporting it as her window) | capacity is the whole context (invariants 1, 5) |
 | `StreamCapacity`, `Infeasible`, `TokenEvent::Exceeded` (`persona_scheduler/admission.rs`, c0f87b4503) | a refusal sized to the half; the demand's `Infeasible` is against capacity (contract) |
 | `InferenceError::Sampler` (7a5fd04ec8) | a mid-turn abort (invariant 6); a render that cannot build a sampler is a defect named where the render is made |
@@ -404,7 +411,7 @@ e01c25db85 and 7a5fd04ec8, confirmed by the audit of 1.5):
 
 | Today | What it divides or rations | After |
 |---|---|---|
-| `persona_scheduler/driver.rs` `STREAMS`, context opened without `kv_unified` | the Core's context, in half | one unified context (invariant 1) |
+| `persona_scheduler/driver.rs` `STREAMS = 2` | the Core's context, in half | one stream, the whole context (invariant 1; done at f1b4fa2185) |
 | `in_process_engine.rs:212-220`: `served_context_window` and `max_tokens_per_sequence` report `n_ctx_seq` | publishes the half as every mind's window | publishes `capacity` |
 | `capacity::mind_window` ("the one determiner of a mind's window") and `capacity::window_grant` (`ActHold`, `hold_for_act`), called on every act from cognition (`verdict/contribute.rs:50,81,471`) | a per-mind window decided and held per act | deliberation reads `capacity` and fits her view; nothing is held |
 | `serving_daemon/grants.rs` (`requirements_for`, per-mind grants published per tick) and their owed state | per-mind shares of the pool | deleted |
@@ -435,7 +442,7 @@ move a mind's saved state, which is what a CPU's memory system does for its proc
   today's code. Invariant 1's: a lone acting mind on a context of N reaches position N - 1 with no
   other mind decoding.
 - **Live, on every node class we can reach (the M5, BigMama's 5090, the IntelMac), 15 minutes with the residents each one has**, before and after: the acting mind's
-  largest position against capacity; decode and prefill tokens per second (a unified buffer must not
+  largest position against capacity; decode and prefill tokens per second (one whole stream must not
   cost either); turns ending `CapacityReached` while the context had room, 0; refusals, 0;
   `inference.turn.wrote_nothing` with a function marker, 0; act latency median and p90.
 - **The persona engine gets smaller.** Each step lands with more lines removed than added.
@@ -444,8 +451,8 @@ move a mind's saved state, which is what a CPU's memory system does for its proc
 
 1. Agree this section (Joel, Codex).
 2. The simulator assertions, red.
-3. Invariant 1 and 2: the llama binding exposes `kv_unified`; the Core opens one unified context;
-   `STREAMS` and `n_ctx_seq` as a limit go; capacity is published. One change, one deploy, the live
+3. Invariant 1 and 2: the Core's one stream holds the whole context; the occupant moves out first;
+   the two-stream split and its compensating divisions go (done, f1b4fa2185); capacity is published. One change, one deploy, the live
    read above.
 4. Invariant 5: cognition and `in_process_engine.rs` read `capacity`; the door and
    `TokenEvent::Exceeded` are deleted; `mind_window` and `window_grant` leave deliberation's path.
