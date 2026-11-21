@@ -4,11 +4,13 @@
 //! [`TrackedDir`](super::disk_reporters::TrackedDir), so reporters see a live **estimate**
 //! (last_walk baseline + accumulated delta) rather than a frozen number.
 
+use notify::Watcher;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+
+use std::path::PathBuf;
 use std::sync::Arc;
 
-use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher};
+use notify::{Event as NotifyEvent, EventKind};
 use parking_lot::RwLock;
 
 use super::disk_reporters::TrackedDir;
@@ -90,7 +92,7 @@ fn process_event(
     let meta = std::fs::metadata(&path);
 
     match (meta, &event.kind) {
-        (Ok(m), EventKind::Remove(_)) => {
+        (Ok(_m), EventKind::Remove(_)) => {
             // File was deleted — record negative delta.
             let mut sizes = prev_sizes.write();
             if let Some(prev_size) = sizes.remove(&path) {
