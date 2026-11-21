@@ -213,7 +213,7 @@ change already warm runs to its next landed edit before the Core moves on. The c
 conversions are measured and learned (GRID-MARKET-CLEARING §1a, "What is measured and what is
 learned"), never fixed constants.
 
-**Demands compose through the tree.** An activity's demand is made of its residents' demands; a
+**Demands compose through the tree.** An activity's demand is made of its residents' demands, and a resident in several activities presents a demand in each; a
 resident's is made of her branches'; and inside her context, every source (her history, the
 grounding, her tools, her results, a room's view) is a demand on her context window. It is the same
 object at every grain, cleared by the same solver (`cambrian-flex`, the one flex allocation of

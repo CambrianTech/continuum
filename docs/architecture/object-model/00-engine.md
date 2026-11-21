@@ -560,7 +560,7 @@ what a result is worth; the activity does, and its recipe declares it:
 Joel: "We can obviously progress incrementally but rollback is bad." Work may be paused, and work may
 advance in pieces, but work already paid for is never thrown away:
 - **Preemption is a checkpoint.** A mind preempted mid-act keeps what she has done (her edits, her
-  context, her place in the task stack) and resumes from it.
+  context, her place in each activity's task stack) and resumes from it.
 - **Partial progress lands.** An edit that compiles is saved, a lesson's committed steps count, and a
   turn interrupted by a higher-salience event leaves the rest of its stack resumable.
 - **Restarting from scratch is the defect.** Re-running a turn from the beginning, re-prefilling a

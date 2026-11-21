@@ -34,9 +34,14 @@ Persona: Part                               a fixed set of branches (parts!)
 └─ presence: Presence: Part                 her membership in rooms (airc)                   durable
 ```
 
-Her workspace runs a turn as a stack of tasks: activity, card, step, tool call. Each level yields
-while it waits on a completion. An event of higher salience interrupts at the top of the stack and
-leaves the rest resumable (chapter 0, "Simulate behavior").
+**She lives in many activities at once, and none of them owns her.** She may be in a call, have a
+change half-landed in a repo, follow two rooms, and have a lesson waiting, all at the same time. No
+activity is a workflow she is locked into, and none is a mode she is switched into. Each activity
+she is in keeps its own stack of tasks (card, step, tool call), and each level yields while it waits
+on a completion. Her attention divides her among them moment to moment, by salience and by each
+activity's value curve. An event of higher salience interrupts at the top of one stack and leaves
+every stack resumable (chapter 0, "Simulate behavior"). Most of her mind is shared across her
+activities (her regions, her memory, her genome); only the Core's turns are divided among them.
 
 Every branch answers the lifecycle commands and the same queries through the tree. Suspending her
 is one broadcast: each branch saves its durable state, demotes its pages, and answers `Done` or
@@ -68,7 +73,7 @@ and workers like CBAR and RAGE."
 | Hippocampus | salient percepts, her focus | engrams written; recall pre-staged for her focus | embedding cache, search | exists, node-wide (`HippocampusModule`) |
 | Social model | messages, reviews, outcomes per peer | who each person and resident is to her: what they know, want, and how far she trusts them | arithmetic, embeddings | proposed |
 | Turn-taking | the conversation's state, her drives | whether to take the floor, backchannel, or wait | small model | proposed |
-| Intention | her focus, the board, her drives | her task stack: activity, card, step | arithmetic | partly (continuation, cards) |
+| Intention | her focus, every board she is on, her drives | one task stack per activity she is in: card, step, tool call | arithmetic | partly (continuation, cards) |
 | Self-check | her own outputs before they leave | loops, repetition, unsupported claims, garbage | arithmetic | exists (`continuum-text-analysis`: loop, garbage, repetition) |
 | Metacognition | self-check, surprise, outcomes | her confidence: whether to answer, ask, or dig deeper | arithmetic, small model | proposed |
 | Curiosity | drives, gaps, an idle Core | what she might explore or claim when nothing calls her | arithmetic | proposed |

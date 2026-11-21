@@ -104,7 +104,76 @@ World: Activity                      a tree of sectors: rooms, places, objects (
 | `Wernicke`, `Amygdala`, quick voice, typed revisions | `continuum-mind` | proposed |
 | `World`, sectors, affordances, embodied acting | `continuum-activity`, `continuum-render` | proposed |
 
-## 7.6 What must be done
+## 7.6 A worked call, priced
+
+One M5 with one Core. Joel, Aiko and Ben are in a call. Aiko also has a change half-landed in the
+continuum repo, with its context warm, and Ben follows the general room. Cleo is not in the call; she
+is refactoring. Nobody is switched into a call mode: the call is one more activity in each of their
+lives, and their other activities go on (chapter 5.1).
+
+**Where the floor is declared.** The call's recipe declares its essentials per role, in its activity
+value declaration (chapter 4.6):
+- a **speaking** participant needs hearing, a turn, and audible speech, as one bundle;
+- a **listening** participant needs hearing, so that she understands what is said.
+
+The bundle is priced and granted whole or declared `Infeasible`. A turn with no audible speech, or
+speech with no hearing, is scrap ("half a car is worthless"). Nothing is reserved to keep the floor:
+the bundle is a demand like any other, with the steepest curve in the room while she speaks.
+
+**Under contention.** Joel asks Aiko a question.
+- His microphone is transcribed once, on the media engine, and every mind in the call reads that one
+  transcript.
+- Aiko's turn-taking region publishes that the floor is hers. Her call demand now holds the steepest
+  curve on the node: a reply's value decays over a few seconds once the question is asked.
+- The Core grants her a turn. Her quick voice opens at once on the media engine and the Neural
+  Engine, and her deep turn merges into what she has not said yet (7.2).
+- Her repo activity is not cancelled. It waits at a red light with its progress kept, and her cheap
+  regions keep watching its CI run.
+- Between her turns, the idle Core runs Cleo's refactor to its next landed edit and Ben's next look at
+  the general room, in order of value per Core-second, counting each switch.
+
+**Above the floor.** Every step above the essentials is an increment priced against what it costs:
+- deeper thought before she answers;
+- a higher level of detail for her avatar;
+- a deep look at Joel's shared screen, on this node or on the 5090.
+
+An increment is taken when the gain in the call's value exceeds what it uses, priced per resource,
+plus the value it displaces. What it uses is GPU time, memory, paging (her warm pages against Cleo's)
+and LAN delay. The 5090's deep look is worth its round trip only if its answer arrives within the
+moment it is about. What it displaces is Cleo's edit waiting one more turn.
+
+**What reprices.** Only events, never timers:
+- the floor changes hands;
+- a participant joins or leaves;
+- the node's capacity changes (a game starts on the 5090, or a node leaves);
+- a demand reaches a natural boundary;
+- a deadline is missed, which steps the quality down before anything else.
+
+**Shared results are charged once.** The transcript, the scene estimate and the mix are computed once
+and charged to the call, not to each mind. What a result means to each resident (her attention, her
+expectation, her surprise) is computed in her own regions, at her own cost.
+
+**What keeps an expensive stage asleep.** A stage sleeps while the cheap estimate covering it is valid
+and nothing asks for more:
+- the deep look sleeps while the change region reports no change worth a look and no one refers to
+  the screen;
+- deep thought sleeps while the amygdala judges that her quick voice is enough.
+
+The evidence is the cheap region's publication with its validity (chapter 4.2). A surprise, a
+reference to the stream, or an expired validity wakes the stage. Every short answer that turns out
+wrong is counted against the amygdala.
+
+**How it is evaluated** (Codex's protocol). The same directed questions and interruptions are
+replayed at three budgets: below the floor, at the floor, and richer.
+- **Below the floor,** the call must declare `Infeasible`, never degrade into a mute or deaf
+  participant.
+- **The scores:** comprehension; relevant audible answers within three seconds; interruptions
+  handled (audible stop within the target, no stale generation resuming).
+- **The denominator** counts every missed turn.
+- **The costs:** Core-seconds, memory and energy, plus what the call cost everyone else: Cleo's landed
+  edits per hour and her missed deadlines during the call.
+
+## 7.7 What must be done
 
 The proof plan's stages are the order (TWO-PERSONA-EMBODIED-CALL-PROOF):
 1. **One speaker reaches one listener:** real audio at the listener's model input and real speech at
