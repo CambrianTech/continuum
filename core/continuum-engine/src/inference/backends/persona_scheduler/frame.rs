@@ -1,24 +1,27 @@
-//! Which turn the next frame advances (CONTINUUM-ENGINE 4.13/4.15). A frame is one step: one prefill
-//! chunk or one decoded token, never a whole turn, so a mind with a long cold prompt never holds the
-//! engine while a mind with a short tail waits behind her (the M5, 2026-11-18, build 88074d9300:
-//! turns served whole, back to back, waited 300-360 s behind one another's prefills).
+//! Which turn the Core advances next (CONTINUUM-ENGINE 4.13/4.15): one mind at a time, and a turn
+//! in progress runs to its end. Joel, 2026-11-21: "you don't cut it up, run single lane; context
+//! switching is faster."
 //!
-//! Eligible turns share a one-second service budget. The bound mind advances until another
-//! turn is due, then the oldest unserved turn gets the stream at the next landed frame.
-// derived-or-floor: the conversational service requirement allows one second between eligible frames.
-const SERVICE_BUDGET_MS: u64 = 1000;
+//! The policy this replaces gave every ready turn a slice of a one-second service budget, so a turn
+//! was cut into frames shared with every other ready mind. On the M5 (build 56913f640b, 2026-11-21
+//! 04:14-04:29 UTC) that meant 20 to 520 switches per turn at 12 to 25 ms each, up to 8.5 s of
+//! switching inside one turn, for no gain to the turn being cut. Its reason was cold prompts (the
+//! M5, 2026-11-18: whole turns back to back, short tails waiting 300-360 s behind cold prefills);
+//! the same 2026-11-21 read showed most turns reusing 71 to 98% of their prompt. Whether a cold
+//! prompt still needs its own handling is measured, not assumed.
+//!
+//! So: the bound mind's turn, once started, keeps the Core until it ends. When no turn is in
+//! progress, the next is the one with the least remaining work discounted by how long it has
+//! waited, so a long wait brings any prompt forward and no mind starves; a tie keeps the mind
+//! already bound, which saves a switch.
 
-pub(super) fn share_ms(ready: std::num::NonZeroUsize) -> u64 {
-    SERVICE_BUDGET_MS.div_ceil(ready.get() as u64)
-}
-
-/// A turn as the frame sees it.
+/// A turn as the pick sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct Candidate {
     /// Her mind is the one bound to the decoding stream now.
     pub active: bool,
-    /// Her prompt is prefilled and she is producing tokens.
-    pub decoding: bool,
+    /// Her turn has begun: prefilling or decoding.
+    pub started: bool,
     /// Prompt tokens still to prefill (0 once decoding).
     pub remaining: usize,
     /// Milliseconds since admission or her most recent completed frame.
@@ -33,49 +36,34 @@ impl Candidate {
     }
 }
 
-/// The index of the turn the next frame advances, or `None` for no turns.
-pub(super) fn pick(turns: &[Candidate], bound_ms: u64) -> Option<usize> {
-    let share_ms = share_ms(std::num::NonZeroUsize::new(turns.len())?);
-    if let Some((index, other)) = turns.iter().enumerate().filter(|(_, t)| !t.active).max_by_key(|(_, t)| t.waited_ms) {
-        if other.waited_ms >= SERVICE_BUDGET_MS || (other.waited_ms >= share_ms && bound_ms >= share_ms) {
-            return Some(index);
-        }
+/// The index of the turn the Core advances next, or `None` for no turns.
+pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
+    if let Some(running) = turns.iter().position(|turn| turn.active && turn.started) {
+        return Some(running);
     }
-    if let Some(decoding) = turns.iter().position(|turn| turn.active && (turn.decoding || (bound_ms < share_ms && turns.iter().any(|other| other.decoding)))) {
-        return Some(decoding);
-    }
-    turns
-        .iter()
-        .enumerate()
-        .min_by_key(|(_, turn)| (turn.cost(), !turn.active))
-        .map(|(index, _)| index)
+    turns.iter().enumerate().min_by_key(|(_, turn)| (turn.cost(), !turn.active)).map(|(index, _)| index)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn turn(active: bool, decoding: bool, remaining: usize, waited_ms: u64) -> Candidate {
-        Candidate { active, decoding, remaining, waited_ms }
+    fn turn(active: bool, started: bool, remaining: usize, waited_ms: u64) -> Candidate {
+        Candidate { active, started, remaining, waited_ms }
     }
 
-    // what this catches: a mind's cold prompt holding the engine while a short tail waits (the M5,
-    // 2026-11-18: whole turns back to back, 300-360 s waits). The short tail goes first; the active
-    // mind's answer in progress is never cut for a switch; a long prompt still reaches the front by
-    // waiting; equal costs keep the mind already bound.
+    // what this catches: a turn in progress cut up to serve other minds (the 2026-11-21 read: 20 to
+    // 520 switches per turn), a turn waiting forever behind fresh short ones, and a needless switch
+    // on a tie.
     #[test]
-    fn a_short_tail_never_waits_behind_a_long_prompt_and_an_overdue_turn_can_preempt_decode() {
-        assert_eq!(pick(&[], 0), None);
-        let long_active = turn(true, false, 60_000, 0);
-        let short = turn(false, false, 300, 0);
-        assert_eq!(pick(&[long_active, short], 0), Some(1), "the short tail switches in at the chunk boundary");
-
+    fn a_turn_in_progress_runs_to_its_end_and_a_long_wait_still_comes_forward() {
+        assert_eq!(pick(&[]), None);
+        let prefilling = turn(true, true, 60_000, 0);
+        assert_eq!(pick(&[turn(false, false, 300, 90_000), prefilling]), Some(1), "an overdue turn waits for the running one to end");
         let answering = turn(true, true, 0, 0);
-        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering], 500), Some(0), "an overdue turn interrupts an answer");
-
+        assert_eq!(pick(&[turn(false, false, 1, 90_000), answering]), Some(1), "an answer in progress is never cut");
         let aged = turn(false, false, 60_000, 600_000);
-        assert_eq!(pick(&[turn(false, false, 1_000, 0), aged], 0), Some(1), "ten minutes of waiting brings a long prompt forward");
-
-        assert_eq!(pick(&[turn(false, false, 500, 0), turn(true, false, 500, 0)], 0), Some(1), "a tie keeps the bound mind");
+        assert_eq!(pick(&[turn(false, false, 1_000, 0), aged]), Some(1), "ten minutes of waiting brings a long prompt forward");
+        assert_eq!(pick(&[turn(false, false, 500, 0), turn(true, false, 500, 0)]), Some(1), "a tie keeps the bound mind");
     }
 }

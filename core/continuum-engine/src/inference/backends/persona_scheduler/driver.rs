@@ -140,8 +140,6 @@ struct Driver<'c, 'm> {
     model_id: String,
     /// The stop has suspended every mind: no new turn is taken.
     stopping: bool,
-    bound_since: Instant,
-    prefill_sample: Option<(usize, std::time::Duration)>,
 }
 
 /// The root resume: every mind the last stop published, held Warm (in RAM, bound when scheduled),
@@ -257,11 +255,10 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         store: store.ok(),
         model_id: config.model.clone(),
         stopping: false,
-        bound_since: Instant::now(),
-        prefill_sample: None,
     };
     // The frame loop (CONTINUUM-ENGINE 4.15): submissions are drained without blocking, and each
-    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`. What
+    // frame advances ONE turn by ONE step (a prefill chunk or a token), chosen by `frame::pick`: a turn
+    // in progress keeps the Core until it ends, so new submissions wait for its end. What
     // it decodes goes to Emit (4.16) and the loop goes on. It blocks only when no turn is left, on
     // the queue itself: a wake, never a poll.
     let mut turns: Vec<Turn> = Vec::new();
@@ -312,8 +309,8 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         while let Ok(submission) = requests.try_recv() {
             driver.take(submission, &mut turns);
         }
-        let Some((index, ready)) = driver.pick(&turns) else { continue };
-        match driver.step(&mut turns[index], ready) {
+        let Some(index) = driver.pick(&turns) else { continue };
+        match driver.step(&mut turns[index]) {
             Ok(Advanced::Continues) => {}
             Ok(Advanced::Done(done)) => {
                 let turn = turns.remove(index);
@@ -577,11 +574,11 @@ impl Driver<'_, '_> {
     /// candidate; among candidates, `frame::pick` decides. A waiting turn's prefill is what she
     /// cannot reuse, never her whole prompt: a 1.2k tail on a 29k prompt she holds is a 1.2k turn
     /// (the M5, 2026-11-19, a6da599330: sized as 29k, her rewind waited 161 s behind cold prompts).
-    fn pick(&mut self, turns: &[Turn]) -> Option<(usize, std::num::NonZeroUsize)> {
+    fn pick(&mut self, turns: &[Turn]) -> Option<usize> {
         // A lone turn needs no ranking or cache estimate. Its bind still
         // validates reuse against the actual prompt before advancing.
         if turns.len() == 1 {
-            return Some((0, std::num::NonZeroUsize::MIN));
+            return Some(0);
         }
         let mut seen = std::collections::HashSet::new();
         let eligible: Vec<usize> = (0..turns.len()).filter(|&index| seen.insert(turns[index].id)).collect();
@@ -590,26 +587,25 @@ impl Driver<'_, '_> {
             .iter()
             .map(|&index| {
                 let turn = &turns[index];
-                let (decoding, remaining) = match &turn.phase {
+                let (started, remaining) = match &turn.phase {
                     Phase::Waiting(estimate) => (false, *estimate.get_or_init(|| {
                         let her = if active == Some(turn.id) { self.engine.active_mut().map(|her| &*her) } else { self.parked.get(&turn.id) };
                         let reused = if let Some(her) = her { reuse_for(her, &turn.prompt, &turn.basis).action.reused() } else { 0 }; // a mind never seen reuses nothing
                         turn.prompt.len().saturating_sub(reused)
                     })),
-                    Phase::Prefilling { pos } => (false, turn.prompt.len().saturating_sub(*pos)),
+                    Phase::Prefilling { pos } => (true, turn.prompt.len().saturating_sub(*pos)),
                     Phase::Decoding { .. } => (true, 0),
                 };
                 let waited_ms = record::whole_ms(turn.ready_since.elapsed());
-                frame::Candidate { active: active == Some(turn.id), decoding, remaining, waited_ms }
+                frame::Candidate { active: active == Some(turn.id), started, remaining, waited_ms }
             })
             .collect();
-        let ready = std::num::NonZeroUsize::new(eligible.len())?;
-        frame::pick(&candidates, record::whole_ms(self.bound_since.elapsed())).map(|chosen| (eligible[chosen], ready))
+        frame::pick(&candidates).map(|chosen| eligible[chosen])
     }
 
     /// One frame for `turn`: bind her if another mind is bound, then one step (a prefill chunk, or
     /// one token).
-    fn step(&mut self, turn: &mut Turn, ready: std::num::NonZeroUsize) -> Result<Advanced, TurnError> {
+    fn step(&mut self, turn: &mut Turn) -> Result<Advanced, TurnError> {
         if turn.req.response_tx.is_closed() {
             return Err(TurnError::CallerReleased);
         }
@@ -621,7 +617,6 @@ impl Driver<'_, '_> {
         if self.engine.active() != Some(turn.id) {
             let switching = Instant::now();
             self.switch_to(turn.id, turn.one_off)?;
-            self.bound_since = switching;
             turn.spent.switch += switching.elapsed();
             turn.spent.switches += 1;
         }
@@ -640,7 +635,7 @@ impl Driver<'_, '_> {
         let stepping = Instant::now();
         let (advanced, decoding) = match std::mem::replace(&mut turn.phase, Phase::Waiting(Default::default())) {
             Phase::Waiting(_) => (Err(TurnError::NothingDecoded), false),
-            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos, ready).map(|()| Advanced::Continues), false),
+            Phase::Prefilling { pos } => (self.prefill_chunk(turn, pos).map(|()| Advanced::Continues), false),
             Phase::Decoding { token, pos, generated } => (self.decode_token(turn, token, pos, generated), true),
         };
         let stepped = Instant::now();
@@ -736,17 +731,12 @@ impl Driver<'_, '_> {
 
     /// One chunk of her prompt from `pos`. The last chunk asks for logits and samples her first
     /// token; only it is sampled, since the sampler accepts what it samples (Codex on #6140).
-    fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize, ready: std::num::NonZeroUsize) -> Result<(), TurnError> {
+    fn prefill_chunk(&mut self, turn: &mut Turn, pos: usize) -> Result<(), TurnError> {
         // A chunk never runs past her view's end, so she can be checkpointed exactly there.
         let limit = turn.boundaries.next_end(pos, turn.prompt.len());
-        // A submission can arrive during this frame. Size the next native call from
-        // observed prefill time so a long prompt yields at the service boundary.
-        let started = Instant::now();
-        let allowance = u128::from(frame::share_ms(ready)) * 1_000_000;
-        let count = self.prefill_sample.and_then(|(tokens, elapsed)| {
-            (tokens as u128 * allowance).checked_div(elapsed.as_nanos())
-        }).map_or(1, |count| count.clamp(1, self.batch.get() as u128) as usize);
-        let end = pos.saturating_add(count).min(limit);
+        // Her turn keeps the Core until it ends (`frame`), so each chunk is as large as the engine's
+        // batch: nothing is sized to yield to another mind.
+        let end = pos.saturating_add(self.batch.get()).min(limit);
         let chunk = &turn.prompt[pos..end];
         let last = end == turn.prompt.len();
         let from = i32::try_from(pos).map_err(|_| TurnError::TooLong)?;
@@ -758,7 +748,6 @@ impl Driver<'_, '_> {
             if let Some(kind) = turn.boundaries.at(end) {
                 self.keep_checkpoint(turn, kind, end)?;
             }
-            self.prefill_sample = Some((len, started.elapsed()));
             turn.phase = Phase::Prefilling { pos: end };
             return Ok(());
         }
@@ -767,7 +756,6 @@ impl Driver<'_, '_> {
         self.record(|her| her.tokens.held.extend_from_slice(chunk))?;
         self.report_footprint(turn.id, turn.one_off);
         let pos = i32::try_from(end).map_err(|_| TurnError::TooLong)?;
-        self.prefill_sample = Some((len, started.elapsed()));
         turn.phase = Phase::Decoding { token, pos, generated: 0 };
         Ok(())
     }
