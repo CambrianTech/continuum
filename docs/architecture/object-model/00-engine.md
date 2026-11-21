@@ -45,11 +45,17 @@ around its models, not from the models alone.
 Such a mind can do what none of its models can do alone. The intelligence is in the flow: what wakes
 what, what is kept, what is learned, and what is asked of the deep model when.
 
-How we will know: the same base model inside this mind, against the same model run as an ordinary
-agent loop, on the same work over the same weeks. The comparison measures:
-- outcomes per unit of compute;
-- how outcomes change over time;
-- skill retained and inherited.
+How we will know: a matched comparison (Codex's protocol, review of 003377a6e5).
+- **Matched arms.** Identical task streams in isolated project snapshots, with identical starting
+  memories, model and tool access, and budgets. Every helper model, training step, retrieval and
+  grid job is counted against its arm's budget.
+- **Three arms, not two.** This mind; an ordinary agent loop; and an agent loop with the same
+  persistent memory. The third separates what event scheduling contributes from what persistence
+  contributes.
+- **Honest scoring.** Held-out tasks, scored blind, across independent seeds. Reported: task success
+  at a fixed budget, latency tails, and missed deadlines, and how each changes over the weeks.
+- **Inheritance.** A fresh recipient inherits the learned genes and works a held-out project it has
+  never seen.
 
 This is the README's research question ("Do persistent teams that remember, learn, specialize, and
 inherit eventually outperform otherwise matched systems that repeatedly start over?"), made specific

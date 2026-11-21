@@ -99,8 +99,14 @@ Part
   the one importance. Because the plumbing is inherited, a region is its update rule and its
   declarations, a short file (chapter 5.2). A long region means something belongs in the base.
 - **`Fusion<E>`** is a generic owner over the estimate type and its update rules
-  ([BRAIN-REGIONS-SUBSTRATE.md](../BRAIN-REGIONS-SUBSTRATE.md), "Fusion"), used by shared perception
-  and by her regions alike. Each leaf supplies its estimate type and how each source updates it.
+  ([BRAIN-REGIONS-SUBSTRATE.md](../BRAIN-REGIONS-SUBSTRATE.md), "Fusion"). There is one
+  implementation, used by `SceneFusion` and by every `FusionRegion`. Each leaf supplies its estimate
+  type and how each source updates it.
+- **A publication says what it is.** It is unavailable, observed or predicted, and it carries its
+  source's revision, its event time and its validity. A caller that needs fresher than what is
+  published (at a cold start, or past validity) asks for a fresh sample. Two observers with
+  different freshness needs share one expensive computation. The validator replays a scene cut with
+  a late CNN result and two such observers: stale evidence never relabels the new scene.
 - **`Faculty`** keeps its name and is a region: a faculty's contribution is its publication, which
   her workspace reads at the moment of a turn. `RagSourceFaculty` is deleted: sources feed her view
   through `Source` (3.6).

@@ -93,6 +93,27 @@ The function is its update rule: given what changed, what it now publishes. The 
   metacognition), that model is a gene of hers, and improves through the same learning loop as
   everything else she does (chapter 6).
 
+**What a declaration carries** (Codex's review). A region's subscriptions and publications are typed
+descriptors that state their ordering, deduplication, supersession, freshness and overload
+behaviour. Two kinds never mix:
+- **Observations** coalesce: a newer one supersedes an older one, and a slow reader sees only the
+  newest.
+- **Receipts of actions** are reliable: each is delivered once, and a replayed estimate never issues
+  a second action. Hands commands and playout effects stay under their command and completion owners.
+
+"Microseconds" is a budget, not a promise: each region's cost is measured, and its idle CPU is part
+of its validator.
+
+**The first regions to build fix a live failure.** Residents repeat the same tool call on a path
+they were denied: a resident asks for a file in another resident's workspace, is refused, and asks
+again, and its next input equals its last (0d5c1ffa on the M5, 2026-11-21). The first wiring is
+Senses → Expectation → Surprise, fed by real tool outcomes, then Self-check and Intention. The
+validator replays that trace:
+- the refusal receipt wakes her to read the path in her own workspace;
+- one correction follows, with no duplicate tool action.
+
+It measures time to a useful action, false interventions, and idle CPU.
+
 **Where parts come from.** Neuroscience is a catalog of parts evolution has already tested, and AI
 needs some parts no brain has. Her whole embodiment can be grown from both, one cheap part at a time.
 Candidates from neuroscience:

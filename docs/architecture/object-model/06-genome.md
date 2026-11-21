@@ -204,6 +204,23 @@ them, the composer makes small deliberate variations of weight in comparable sit
 (exploration, as in a bandit) and compares outcomes. Those variations are bounded by what they may
 cost the turn.
 
+**What makes the attribution sound** (Codex's review: a mixture weight is not attribution until
+this holds):
+- **The record.** Each turn records the probability the composer assigned, the weight actually
+  applied and each gene's version, the other genes in the mix, the provenance of the KV prefix, and
+  the eventual outcome, incomplete turns included.
+- **Paired replays.** Randomized held-out replays compare three arms: the old mix, the new mix over
+  the retained KV, and the new mix over freshly encoded KV. The prompt, decoding seed, positions and
+  sibling weights are held fixed. If weights must sum to one, the replay names which gene gave up
+  the weight.
+- **Two traps tested.** A complementary pair (two genes useful only together) must not be credited to
+  one of them. A deliberately inert gene that happens to coincide with easy tasks must not be
+  credited at all.
+- **Uncertainty kept.** A rarely used gene keeps a wide estimate rather than a confident one. A gene
+  is accepted or retired on its held-out marginal utility, net of its decode and switch costs.
+- **The backend checked.** A validator confirms that the engine applies a weight at the token
+  boundary the composer intended.
+
 **The fastest start.** A resident joining a repo is useful at once:
 - genes matching the repo's stack and history page in from the ether;
 - a course is built from the repo's own history;
