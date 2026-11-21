@@ -454,3 +454,18 @@ same worker, queue, subscriptions, timers, provenance and lifecycle. So it is SA
 engine crate (`continuum-flow` renamed `continuum-sage`), keyed by an owner id (`OwnerId`, not
 `MindId`). A mind adds only what is hers: her bus, her identity and epoch, and `mind.start(component)`.
 Senses is a `Component` started on her mind; the feed is a `Component` started on the node.
+
+**What this buys (Joel, 2026-11-21: "all you're ever doing in serial is a quick queue insert or quick
+operation ... like 10ms max per ... It's like a bunch of cellular automatons ... a long tool call like
+compilation (grid is just one of these too) is never holding anything back. It's a handle emitting
+events and anything can observe it").**
+- The only serial work anywhere is a queue insert or a read of a component's newest publication. All
+  expensive work runs on the worker that owns it and is published as it finishes; assembling a turn's
+  context is a pass of reads of finished states, never a computation waited on.
+- A long act (a compile, a web browse, a sentinel's research, a remote grid node) is a component like
+  any other: a handle that emits progress, partial results and completion. Her mind subscribes or
+  ignores it; nothing waits on it.
+- The grid and peer-to-peer need no special case: a topic on another node's bus is still a topic, and
+  a peer's component is observed exactly as a local one. Only the transport under the bus differs.
+- Validator (seconds, any machine): every serial step on a turn's path is a queue insert or a state
+  read, measured per step; the gate is the slowest one under 10 ms.
