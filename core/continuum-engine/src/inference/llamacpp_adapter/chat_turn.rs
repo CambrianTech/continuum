@@ -100,8 +100,10 @@ struct ParsedFunction {
     arguments: Option<String>,
 }
 
-/// The OpenAI-shaped request her template renders: her wire messages, and her tools when she has
-/// any, exactly as serving sends them.
+/// The OpenAI-shaped request her template renders: her wire messages, her tools when she has
+/// any, and the JSON schema her answer must follow when the caller asked for one: the template turns
+/// it into the turn's grammar (wrapped so it constrains her answer, never her thinking), exactly as
+/// llama-server did.
 pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, ChatTurnError> {
     let mut body = json!({
         "messages": wire_messages(&request.messages, request.system_prompt.as_deref(), false, false, LLAMACPP_PROVIDER_ID),
@@ -114,6 +116,9 @@ pub(super) fn chat_request(request: &TextGenerationRequest) -> Result<Value, Cha
             Some(choice @ ToolChoice::Specific { .. }) => return Err(ChatTurnError::SpecificToolChoice { choice: choice.clone() }),
             None => {}
         }
+    }
+    if let Some(crate::ai::types::ResponseFormat::JsonSchema { json_schema }) = &request.response_format {
+        body["json_schema"] = json_schema.schema.clone();
     }
     if let Some(tail) = request.tail_tools.as_deref().filter(|tools| !tools.is_empty()) {
         body["tail_tools"] = json!(openai_tools(tail));
@@ -261,6 +266,22 @@ mod tests {
 
         let bare = chat_request(&TextGenerationRequest::default());
         assert!(matches!(&bare, Ok(body) if body.get("tools").is_none() && body.get("tool_choice").is_none()), "{bare:?}");
+    }
+
+    // what this catches: a caller's JSON schema refused (the M5 and the 5090, 2026-11-21: every dream
+    // review pass refused FormatUnenforceable) or dropped, while the template already turns one into
+    // the turn's grammar. The schema reaches the render whole; a request without one carries none.
+    #[test]
+    fn a_json_schema_reaches_her_template_whole() {
+        let schema = json!({"type": "object", "properties": {"lesson": {"type": "string"}}, "required": ["lesson"]});
+        let request = TextGenerationRequest {
+            response_format: Some(crate::ai::types::ResponseFormat::JsonSchema {
+                json_schema: crate::ai::types::JsonSchemaFormat { name: "lesson".into(), schema: schema.clone() },
+            }),
+            ..TextGenerationRequest::default()
+        };
+        assert!(matches!(chat_request(&request), Ok(body) if body["json_schema"] == schema));
+        assert!(matches!(chat_request(&TextGenerationRequest::default()), Ok(body) if body.get("json_schema").is_none()));
     }
 
     // what this catches: a named tool choice silently widened to any tool (the model's own parser

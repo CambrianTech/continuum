@@ -431,6 +431,11 @@ impl AIProviderAdapter for LlamaCppAdapter {
         // (a call she starts can name only the parameters her tools declare), generation prompt and
         // thinking tags, with her think budget. A media turn's is plain. Built here, on her act's
         // thread; the engine only samples.
+        // A JSON schema is enforced through her render's grammar; a turn with no render (a media turn)
+        // has none to enforce it with, so it is refused, never answered unconstrained.
+        if chat_render.is_none() {
+            crate::ai::adapter::refuse_schema(&request)?;
+        }
         let sampler = backend.turn_sampler(chat_render.as_ref().map(|(render, _)| render), &sampling, think_budget.map(|budget| budget.0))?;
         let result: Result<crate::inference::backends::llamacpp::Answer, InferenceError> = if collected_media.is_empty() {
             // Pure-text path: scheduler-managed continuous batching.

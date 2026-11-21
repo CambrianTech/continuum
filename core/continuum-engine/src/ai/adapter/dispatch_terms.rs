@@ -140,7 +140,8 @@ impl DispatchTermsPolicy for crate::ai::anthropic_adapter::AnthropicAdapter {
     }
 }
 
-/// The in-process llama adapter: it carries a think budget itself (llama.cpp's reasoning-budget
+/// The in-process llama adapter: it enforces a JSON schema through its template's grammar, and
+/// carries a think budget itself (llama.cpp's reasoning-budget
 /// sampler, bounded by the template's own thinking tags, in `generate_text`), the budget
 /// llama-server enforced; an admission it cannot enforce is refused typed.
 #[async_trait::async_trait]
@@ -151,9 +152,8 @@ impl DispatchTermsPolicy for crate::inference::llamacpp_adapter::LlamaCppAdapter
         terms: DispatchTerms,
         sink: tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
     ) -> Result<TextGenerationResponse, InferenceError> {
-        // No schema-to-grammar path reaches our bindings: a schema is refused, never degraded to
-        // the plain JSON grammar.
-        refuse_schema(&request)?;
+        // A JSON schema is enforced, not refused: her render hands it to the template, which makes
+        // it the turn's grammar (`chat_turn::chat_request`).
         refuse_unenforceable_admission(&request, &terms)?;
         super::AIProviderAdapter::generate_stream_checked(self, request, sink, Dispatched::under(&terms)).await
     }
@@ -182,28 +182,4 @@ mod tests {
         assert_eq!(refuse_unenforceable_admission(&request(), &counted), Err(InferenceError::AdmissionUncounted { model: "m".into() }));
     }
 
-    #[tokio::test]
-    async fn the_in_process_adapter_refuses_a_schema_it_cannot_enforce() {
-        // Never loaded: the refusal comes before any model is touched.
-        let adapter = crate::inference::llamacpp_adapter::LlamaCppAdapter::for_launch(&crate::inference::llamacpp_adapter::LlamaCppLaunch {
-            model_id: "m".into(),
-            gguf_path: std::path::PathBuf::from("/nonexistent/never-loaded.gguf"),
-            context_length: 2048,
-            n_seq_max: 1,
-            n_ubatch: 512,
-            n_gpu_layers: 0,
-        });
-        let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
-        // what this catches: a JSON schema the in-process path cannot enforce degrading to the plain
-        // JSON grammar (or none), so a typed parse downstream gets an unconstrained answer. It is
-        // refused before any model is touched, under the model's own think.
-        let schema = TextGenerationRequest {
-            response_format: Some(crate::ai::types::ResponseFormat::JsonSchema {
-                json_schema: crate::ai::types::JsonSchemaFormat { name: "lesson".into(), schema: serde_json::json!({ "type": "object" }) },
-            }),
-            ..request()
-        };
-        let refused = adapter.generate_admitted(schema, DispatchTerms::thinking(Think::ModelDefault), sink).await;
-        assert_eq!(refused.err(), Some(InferenceError::FormatUnenforceable { model: "m".into() }));
-    }
 }
