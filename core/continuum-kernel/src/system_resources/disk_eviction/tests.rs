@@ -670,4 +670,42 @@
         }
     }
 
+
+    // what this catches: root-level stray files at the home directory are invisible to all
+    // TrackedDirs (which track subdirectories) and therefore accumulate without any observer.
+    // config.env.bak-* are leftover backups from config migrations; last*.jsonl are stale prompt-
+    // capture outputs. The test fails if either pattern is found, naming the files so they can be
+    // cleaned up or migrated into a tracked class.
+    #[test]
+    fn root_level_stray_files_cause_test_failure() {
+        let home = std::env::var_os("CONTINUUM_HOME")
+            .filter(|v| !v.is_empty())
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| {
+                    std::path::PathBuf::from(h).join(".continuum")
+                })
+            })
+            .expect("CONTINUUM_HOME or HOME must be set");
+        let mut found: Vec<String> = Vec::new();
+
+        for entry in std::fs::read_dir(&home).expect("home dir is readable") {
+            let entry = entry.expect("entry readable");
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.starts_with("config.env.bak-") {
+                found.push(name);
+            }
+            if name.starts_with("last") && name.ends_with(".jsonl") {
+                found.push(name);
+            }
+        }
+
+        assert!(
+            found.is_empty(),
+            "root-level stray files detected — these are invisible to all TrackedDirs and \
+             accumulate without any observer: {}", 
+            found.join(", ")
+        );
+    }
+
     mod serving_tier;

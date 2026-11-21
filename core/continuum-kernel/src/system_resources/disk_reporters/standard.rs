@@ -106,6 +106,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
         kept(continuum, "citizens"),
+        // Peer jtag logs: `<continuum>/citizens/jtags/<label>/airc/` — writes agent-to-agent
+        // communication logs that can reach 8 GB (measured on the M5). Evicted by a JtagPool
+        // keyed on peer-relationship liveness, not age.
+        TrackedDir::new("jtags", continuum.join("citizens/jtags")),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
