@@ -631,3 +631,15 @@ shape it:
 - **Part of a mind (Brain.Part)**: what a mind adds to any component: started on her bus with her
   identity, rests when she rests, its need folds into hers. A node's component (the feed) is a
   `Component` and not a part of a mind. Extracted when her parts (digest, amygdala) need the same fold.
+
+**Observation is inherited and switchable (Joel, 2026-11-21: "this analysis to track or probe can be built
+into these objects and turn on/off").** Every input passes through the engine, so the engine measures each
+component once for all of them (OBSERVABILITY-AS-SUBSTRATE, zero cost when off):
+- per component: inputs handled, handle time (last and max), intake depth, frames skipped (the revision
+  gap a coalescing reader jumped: a part not keeping up), and publish-to-handle time (its frame lag);
+- the switch is a topic, `sage/observe`, keyed by the component's name (`Off`, `Timing`, later
+  `Capture`); turning one part's analysis on is publishing to it, read with one cheap check per input;
+- the output is state (`sage/telemetry`, same key), so a dashboard, a validator or the Core's scheduler
+  watches it live, with probes beside it; the 10 ms serial-step gate is a check on that state;
+- `Capture` (next): the engine records a component's inputs with their frames, and replay feeds them back
+  deterministically, CBAR's record/replay inherited by every part.
