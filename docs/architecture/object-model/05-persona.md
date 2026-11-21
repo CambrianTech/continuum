@@ -562,3 +562,17 @@ variety of signals?").** Three levels, as in CBAR:
 Order: (1) novelty-derived need in `Component` helpers (compare last frame, set need in one call);
 (2) the amygdala as a component over her salience signals; (3) Awareness split out of Senses as the one
 world model, Senses becoming the room detector that feeds it; (4) the mind's orchestrator over her parts.
+
+**Novelty is measured against what a part knows, over any history (Joel, 2026-11-21: "In cbar I saw the
+terrain in front of me was unknown due to the compass rotation or slam etc, I knew its new frontier, so
+majorly important that some things needed to run (they all independently decided: eg color finder,
+semantic seg cnn, surface normals cnn) ... it can be a series like a long history ... It's any state
+really").** Each part keeps its own knowledge (a coverage map, a long history, an expectation, counts of
+what it has seen) and SAGE gives one small trait for it, `Known<I>`: `novelty(&input)` (how unknown this
+is to me) and `learn(&input)` (fold it in). A last-frame delta is one `Known`; a frontier map, a history
+of rooms, people and topics, or a model's expectation are others. Each part maps its own novelty to its
+own need (frontier: Urgent; familiar: Content, and it reuses or interpolates its last output), so every
+part decides independently and no coordinator tells the color finder the terrain is new. For a mind,
+novelty is familiarity over time: a person, room, topic or kind of event she has never met is frontier;
+one she has met a hundred times is familiar unless it breaks pattern; Surprise is the case where her
+expectation was specific and was contradicted.
