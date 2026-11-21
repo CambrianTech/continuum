@@ -313,6 +313,27 @@ settles one model on one compute unit. Two cases remain, and this part of the de
 - **Replays:** a stale-offer race; two small models beside an audio deadline; a remote disconnect after
   a claim.
 
+**Which models, how many, and when they are awake.** Models are a population like genes, at a coarser
+grain: each has a fitness and a residency priority, is loaded on demand and released when idle. No
+menu of kinds or sizes is configured.
+- **A node starts with one.** One base model and one Core: the largest model whose weights and one real
+  turn fit the Core's share, measured at startup. One base serves the resident as patient, doctor and
+  dream ([ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](../ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)).
+- **Kinds come from capability gaps.** Generation, embedding, speech in and out, vision, a small fast
+  model for quick responses: a kind is added only when demand needs a capability the base serves badly
+  or too slowly for its deadline, as a gap in her skills grows a gene (chapter 6.4).
+- **Size is the largest that fits.** Each model is the largest that fits its compute unit with one real
+  turn. A smaller variant of a kind exists only where a deadline needs it (a call's quick voice) and
+  measurement shows the larger one misses it.
+- **How many follows demand.** One model per capability per compute unit by default (the Core rule
+  above); more only where demand pays for them.
+- **Models have presence levels.** Loaded on a Core, warm in RAM or flash, cold on disk or a hub. A
+  demand event promotes a model, idleness or pressure demotes it, and its load time counts as its
+  switch cost, so models do not thrash.
+- **The grid shares them.** A node does not load a model the grid already serves cheaply; a peer's
+  model is a remote Core, priced by the market. A grid that starts as one node with one model grows
+  kinds where demand and fitness say so.
+
 **Choosing the next mind on the Core** is the same rule at its finest grain. Among the ready demands,
 run the one whose expected gain in value per unit of Core time is highest, counting the switch it
 would cost. Run it until its next natural boundary or until another demand's loss from waiting
