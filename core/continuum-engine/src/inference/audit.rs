@@ -56,7 +56,7 @@ mod tests {
             v["hello"] = serde_json::json!("world");
             Ok(())
         });
-        assert_eq!(result, Ok(()));
+        assert!(result.is_ok());
         assert_eq!(body["hello"], "world");
     }
 
