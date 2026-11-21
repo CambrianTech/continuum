@@ -369,6 +369,41 @@ token boundary: her written tokens kept, her next turn's view collapses oldest f
 | cognition's think-only, cut and thought-cut sentinels as pushed acts | her act's receipt is her perception (EVENT-MIND); a `TurnEnd` she can read replaces a teacher's message |
 | the serving grants, window allocator and lane planner listed in chapter 11 phase D | already on the plan; this is the object they hand their decisions to |
 
+### Governance has nothing to divide
+
+Today's governance was built for llama-server lanes: a fixed number of slots, each a slice of the
+pool, minds seated into them and granted windows on them. With a Core that swaps one mind in at a time
+and gives her all of it, every one of those concepts is wrong, not mistuned. Governance keeps exactly
+three decisions, and none of them divides a Core among minds:
+
+1. **The node's governor** shares the device between kinds of work (the Core, rendering, speech,
+   embeddings, learning) by demand. The Core's context capacity follows its share live.
+2. **The Core's next-mind policy** (section 3.8) picks who is swapped in next and for how long, by value
+   per unit of Core time, counting the switch, with aging so nobody starves.
+3. **Placement** moves a mind to another node's Core when her essential need exceeds this one's whole
+   context, or the market prices it better.
+
+Everything else in today's governance is the lane model and is deleted, not adapted (file:line at
+e01c25db85):
+
+| Today | What it divides or rations | After |
+|---|---|---|
+| `persona_scheduler/driver.rs` `STREAMS`, context opened without `kv_unified` | the Core's context, in half | one unified context (invariant 1) |
+| `in_process_engine.rs:212-220`: `served_context_window` and `max_tokens_per_sequence` report `n_ctx_seq` | publishes the half as every mind's window | publishes `capacity` |
+| `capacity::mind_window` ("the one determiner of a mind's window") and `capacity::window_grant` (`ActHold`, `hold_for_act`), called on every act from cognition (`verdict/contribute.rs:50,81,471`) | a per-mind window decided and held per act | deliberation reads `capacity` and fits her view; nothing is held |
+| `serving_daemon/grants.rs` (`requirements_for`, per-mind grants published per tick) and their owed state | per-mind shares of the pool | deleted |
+| `serving_plan/plan_serving.rs`, `serving_plan/max_lanes.rs` (`MAX_LANES`), `serving_daemon/planning.rs` | lanes: slices of the pool, counted | one Core; nothing to plan per mind |
+| `decode_knee.rs`, `prefill_knee.rs` (`MIN_KNEE_LANES`) as lane counts | how many minds decode at once | one decodes; the knee measurements remain as evidence that this is right, never as a count |
+| `resource_admission/` (`lanes.rs`, `serving_lane_permit.rs`, `lane_handoff.rs`, `lane_tally.rs`, `gate.rs`) | permits in front of the engine, per lane | the Core's queue and next-mind policy |
+| `served_window_store.rs`: the page store keyed `<model>--c<per-slot window>` | pages bound to a slice size | pages keyed by mind, model and KV format, never by a window |
+| `gossip.rs:110-117`, `profile_builder.rs:75,150`, `spawner_module.rs:80` carrying `served_context_window` | a per-seat window as a mind's identity and a node's offer | a Core's `capacity` in the offer; no per-seat window |
+| `citizen_health/resident_service.rs:65` (`ctx_per_lane`), `rest_seats.rs`, the health line's "lanes 5 @ 32k · lane-starved 5", `MINDS_PER_LANE_STARVED_ABOVE` | judges minds by lanes and seats | health reads the Core's snapshot: who waited how long for a swap |
+| the spawner and roster's seat bound (seats = lanes x minds per lane) | how many residents may exist | unlimited residents; existence is never a node's decision (chapter 5.3) |
+| `weight_residency.rs:124,163` `n_ctx_per_slot` | reads llama-server's slot geometry | reads the Core's context |
+
+The page lifecycle, custody and the device governor stay: they share hardware between kinds of work and
+move a mind's saved state, which is what a CPU's memory system does for its processes.
+
 ### How it is proven
 
 - **Simulator first** (the dyno, CONTINUUM-ENGINE §7.0): one assertion per invariant, red against
@@ -388,9 +423,11 @@ token boundary: her written tokens kept, her next turn's view collapses oldest f
    `STREAMS` and `n_ctx_seq` as a limit go; capacity is published. One change, one deploy, the live
    read above.
 4. Invariant 5: cognition and `in_process_engine.rs` read `capacity`; the door and
-   `TokenEvent::Exceeded` are deleted.
-5. Invariants 3 and 4: occupant-first paging inside the one context; `max_tokens` becomes the demand's
+   `TokenEvent::Exceeded` are deleted; `mind_window` and `window_grant` leave deliberation's path.
+5. Governance: each row of "Governance has nothing to divide" is deleted in its own change, its callers
+   moved to `capacity` or the Core's snapshot, Codex owning the serving, admission and health rows.
+6. Invariants 3 and 4: occupant-first paging inside the one context; `max_tokens` becomes the demand's
    expectation.
-6. Invariants 6 and 7: typed `TurnEnd`, the typed chat seam, the sentinels and text sniffers deleted.
+7. Invariants 6 and 7: typed `TurnEnd`, the typed chat seam, the sentinels and text sniffers deleted.
 
 Each step is one change, measured live before the next.

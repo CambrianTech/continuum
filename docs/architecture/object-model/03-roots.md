@@ -219,99 +219,58 @@ The governor answers a demand with a typed outcome:
 
 A cleared grant is a lease (today's `ThroughputLease` is one).
 
-**The Core owns its budget.** One mind decodes on a Core at a time, so nothing divides a Core's memory
-among minds. The `Core` owns, and nothing outside it decides:
-- **its budget:** its one context's capacity, as the engine measures it, whole to whichever mind is in it (4.11);
-- **its occupant:** the mind decoding now;
-- **its cache:** the pages of minds that were recently on it, kept warm while room remains and paged to
-  RAM at a boundary, with the release confirmed, when the next mind needs the room;
-- **its queue and its next-mind policy.**
+**The Core is a CPU core for minds.** Joel, 2026-11-21: "We swap ONE agent in per core, fast, often, at
+negligible sub second time to do so, all its memory like a cpu core, hence its name. If you have math
+dividing up context amongst persona it's all wrong." A Core is one model on one compute unit with one
+context. One mind is swapped into it at a time and has all of it; the others are saved, as a process's
+registers are, and swapped back in a fraction of a second (a switch measured at about 21 ms between
+residents, 0.6). The Core owns, and nothing outside it decides:
+- **its context:** one, its capacity measured by the engine, whole to whichever mind is in it (4.11);
+- **its occupant:** the mind swapped in now;
+- **its cache:** the saved pages of minds recently on it, kept warm while room remains;
+- **its next-mind policy** (below).
 
-A mind asks the Core for a turn with a `Demand` (her need, her value, her switch cost). The Core answers
-`Granted` when it is her turn (her window is her need, up to the whole context), `Waiting` with the event that
-will wake her, or `Infeasible` only when her essential need exceeds the whole context, with the numbers. A mind never holds
-a standing window. Each persona's `Residency` records where her pages are; only the Core moves them.
-The node's governor gives the Core its share of the device beside rendering, speech and embeddings,
-and beside any other Core on the same device (two models, or two engines on a large device). That is
-the only division: between Cores and kinds of work, by demand, never a fixed split, and never among the
-minds on one Core. When a Core's share shrinks it gives back cached pages first and its occupant's
-window last.
+**Nothing divides a Core among minds, at any grain, anywhere.** No grant, share, lane, seat, slot,
+per-mind window, minds-per-anything or count of minds enters a Core's memory or a mind's window. A mind
+holds no window between turns; at her turn her window is her need, up to the whole context. A mind asks
+for a turn with a `Demand`; the Core answers `Granted` when she is swapped in, `Waiting` with the event
+that swaps her in, or `Infeasible` before admission only when her essential need exceeds the whole
+context, with both numbers, so placement can move her to a larger Core. Her `Residency` records where her
+pages are; only the Core moves them. The node's governor shares the device between kinds of work (the
+Core, rendering, speech, embeddings, learning) by demand, never among minds; when the Core's share
+shrinks it gives back cached pages first and its occupant's context last.
 
-**The Core negotiates for its minds, and a Core that cannot hold a turn goes away.**
-- **One demand per Core.** A Core presents its minds to the governor as one demand: the next turn's
-  need as its essential floor, the warm minds' pages as quality steps above it. Minds never negotiate
-  with the governor themselves, and Cores negotiate with each other only through the governor's
-  prices (GRID-MARKET-CLEARING §2's nesting).
-- **Fewer Cores, never starved ones.** When the governor cannot grant a Core its floor (a second model, or a second compute unit losing its share), the Core count
-  drops: its minds move, as cached pages awaiting their turn, to a Core serving the same model, and its
-  memory goes to the Cores that remain. A Core that cannot hold one mind's turn is scrap; fewer Cores
-  serving whole turns are a smaller engine that still runs.
-- **One Core per model per compute unit; known ahead of time, not priced.** Decode is bound by memory
-  bandwidth: each token reads the model's active weights. Two Cores of one model on one device read
-  them twice through the same bandwidth and split the rate. Batching inside one Core did not help
-  either: four sequences per decode gave each about 2 tokens per second, against the full rate for one
-  mind at a time (`persona_scheduler`, deployed 6404cf3b15); a mixture of experts activating different
-  experts per sequence is the likely reason (an inference, not measured). With a swap near 21 ms, a
-  second Core does not buy latency either: a live reply preempts at a token boundary. A second Core
-  exists only where it is known to be better:
-  - **a different model** (a small quick voice beside the deep model);
-  - **a different compute unit with its own bandwidth** (a second GPU, the Neural Engine, a grid node).
+**One Core per model per compute unit: for Qwen on the M5, one.** Decode is bound by memory bandwidth:
+every token reads the model's active weights, so a second Core of the same model on the same device
+reads them twice through the same bandwidth and splits the rate, and batching minds inside one Core did
+no better (four sequences per decode gave each about 2 tokens per second against the full rate for one
+mind at a time, `persona_scheduler` deployed 6404cf3b15). With a sub-second swap, a second Core buys no
+latency either: a live reply swaps in at a token boundary. Speed for many minds comes from swapping
+fast, never from running them side by side. A second Core exists only for a different model doing a
+different job for the mind (a small fast model behind her quick speech layer, a mind subcomponent, all
+event-driven); that is designed when it is built, and it is not now.
 
-  A startup probe per compute unit and model confirms each Core delivers its expected rate; the live
-  system never splits a Core to find out.
+**Custody through a swap** (Codex's review of 4a5807f2cc):
+- **The occupant keeps her cells until her release.** Her context is hers until her native boundary
+  and release receipt; the next mind restores into cells she is not using.
+- **A page leaves the device only when its save is confirmed.** A waiting demand is woken by that
+  confirmation, never by a timer or an estimate.
+- **One publication.** The Core publishes one generation-tagged snapshot (capacity, occupant, the
+  cache's residency), and every reader reads that: deliberation fits her view to the capacity, health
+  reads the snapshot, nothing keeps a second idea of a mind's window.
+- **Replays that must pass:** a delayed and a duplicated release; an 84k demand arriving while a
+  smaller next turn waits.
 
-**Custody through every change** (Codex's review of 4a5807f2cc):
-- **The occupant's floor holds until her release.** A Core's floor covers the mind decoding now until
-  her native boundary and release receipt, even when the next turn is smaller, and it counts the real
-  overlap while the next mind's pages restore.
-- **A destination accepts before the source goes.** A Core is removed only after a compatible Core has
-  accepted custody of its minds. Compatible means the same KV format and adapter set, not only the same
-  model. The last compatible Core is never removed: it keeps its queued demand and its minds' backing
-  pages, and renegotiates when capacity changes.
-- **One publication.** The Core publishes one generation-tagged snapshot with its changes, and every
-  reader reads that: the mind gate and the inference device take the turn handle; the workspace's
-  capacity and deliberation read her fitted capacity; the re-home reconciler watches placement and
-  residency; health reads Core snapshots; the serving daemon's need floor reads the Core's demand. No
-  second allocation authority remains.
-- **Replays that must pass:** the last Core; a delayed and a duplicated release; a concurrent 84k demand
-  arriving with a smaller next turn.
+What it replaces: every per-mind division in serving and governance, listed in 4.11 ("Governance has
+nothing to divide") and chapter 11 phase D: the serving daemon's per-mind grants and their "owed" state,
+the window allocator's sizing of minds, lanes and the lane planner, the decode knee as a lane count,
+seats bounded by lanes, and the engine's own split of its context into streams (Aris, the M5,
+2026-11-21: owed a window for 25 minutes while one mind held 98,304 tokens of a Core that decodes one
+mind at a time).
 
-What it replaces: the serving daemon's per-mind grants on the engine's pool and their "owed" state,
-and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
-while one mind held 98,304 tokens of a Core that decodes one mind at a time).
-
-**Cores that contend, and Cores elsewhere (open: design in progress, Fable with Codex).** The rule above
-settles one model on one compute unit. Two cases remain, and this part of the design is not finished.
-- **Two models on one compute unit contend.** A small model (the quick voice, the amygdala's) on the
-  same GPU as the deep model decodes from the same memory bandwidth. Proposed: the compute unit owns
-  its decode as a Core owns its minds, sequencing the decode steps of every Core on it at token
-  boundaries, by demand (a call's quick voice before a coding turn's next token). Co-running is a
-  measured exception per pair of models: a probe runs each alone and both together, and the unit lets
-  that pair overlap only where the pair is measured faster. Placement comes first: a small model goes
-  to a compute unit of its own (the Neural Engine, the CPU) where one exists, and then nothing contends.
-- **Cores on other nodes.** A Core on another node is a Core; a mind reaches it through a `Session`
-  (chapter 4.1) and negotiates through the market (GRID-MARKET-CLEARING), not the local governor. The
-  network delay counts against her deadline, and her pages are the expensive part: moving KV across
-  the network costs far more than a local swap, so remote placement favours minds whose context is
-  already there or cheap to rebuild there.
-- **How the two compose** (Codex's review of e60c0c60cf). The Core chooses who runs and the next
-  interruptible piece of work; the compute unit chooses only when that ready piece runs on its
-  hardware, and never reranks residents. Each Core exposes one versioned ready offer: the work handle,
-  its expected device time, the marginal cost of delaying it, its memory footprint and its next safe
-  boundary. The unit dispatches the offered handle, claimed once by generation; a stale offer triggers
-  a refresh. The native completion goes to the Core, releases the device claim and permits its next
-  offer. Uncontended, a Core holds a standing permit; arbitration wakes only on contention, a capacity
-  change or a completion, never as a market round trip per token.
-- **The co-running probe** compares solo, interleaved and concurrent runs of a pair on the same
-  representative contexts, and tracks aggregate useful tokens per second together with each stream's
-  p95 token gap, first response and peak bytes. It reruns on a material change of model, backend or
-  workload.
-- **Remote turns** keep her pages warm at the destination by default, weighed by measured reuse
-  against transfer cost. Each carries her residency generation, and comes back as `Waiting` with its
-  wake, `Infeasible`, or a lost session. A disconnect during a claimed step reconciles ownership before
-  the step is dispatched again.
-- **Replays:** a stale-offer race; two small models beside an audio deadline; a remote disconnect after
-  a claim.
+**Cores elsewhere.** A Core on another node is a Core; a mind reaches it through a `Session` (chapter
+4.1) and the market (GRID-MARKET-CLEARING). Moving her pages across the network costs far more than a
+local swap, so remote placement favours minds whose context is already there or cheap to rebuild.
 
 **Which models, how many, and when they are awake.** Models are a population like genes, at a coarser
 grain: each has a fitness and a residency priority, is loaded on demand and released when idle. No
