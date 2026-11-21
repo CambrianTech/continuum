@@ -227,6 +227,12 @@ divided by a fixed split at any grain, and nothing is compressed in batches: ite
 down their own levels of detail (chapter 0, "Every object is a chain of stand-ins"), and the newest
 interaction is always whole, because it is essential.
 
+**Focus is a publication, and her context subscribes to it.** Her attention region publishes her
+focus whenever it changes (chapter 5.2). Every source in her context reads that publication and
+re-prices its items: recall pre-stages what her new focus will need, a room she is no longer
+watching steps down to its headline, the file she just opened comes up whole. Nothing recomputes her
+whole prompt per turn; only the sources her focus moved past change, and the rest stay cached.
+
 **Her context budget is her focus.** A resident can be given the whole pool when her work needs the
 breadth. Giving her less is not a shortage to apologise for; it is concentration, and often the
 better choice: what does not earn its place at her current focus steps down to a headline she can

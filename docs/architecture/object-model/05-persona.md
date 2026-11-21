@@ -77,7 +77,7 @@ and workers like CBAR and RAGE."
 | Expectation | her own continuation and plans | what she expects next, and by when | arithmetic | partly (`MindState` continuation and expectation) |
 | Surprise | percepts against expectations | prediction error, by item | arithmetic, or the Core's own loss on labelled rows | proposed |
 | Amygdala | surprise, salience, percepts | how much depth now; what deserves attention | small learned model | proposed |
-| Attention | the amygdala, her dial, activity value curves | her focus: what is near, aside, far | arithmetic | partly (dial, `TurnAttention`) |
+| Attention | the amygdala, surprise, her intentions, every activity's value curve | her focus: what is near, aside, far. Her context reads it to price every source in her window (recall, history, tools, rooms), so her RAG budget follows her focus as it moves | arithmetic | partly (dial, `TurnAttention`) |
 | Drives | time, outcomes, her own state | energy, curiosity, boredom, urgency | arithmetic | partly (`continuum-vitals`, vitals pulse) |
 | Working memory | focus, percepts, her acts | what she holds in mind now | arithmetic | exists (`WorkingMemory`) |
 | Hippocampus | salient percepts, her focus | engrams written; recall pre-staged for her focus | embedding cache, search | exists, node-wide (`HippocampusModule`) |
