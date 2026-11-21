@@ -246,9 +246,28 @@ window last.
   drops: its minds move, as cached pages awaiting their turn, to a Core serving the same model, and its
   memory goes to the Cores that remain. A Core that cannot hold one mind's turn is scrap; fewer Cores
   serving whole turns are a smaller engine that still runs.
-- **More Cores when they pay.** When a Core's queue costs its waiting minds more than a second Core's
-  memory would, the governor grants one and the minds split. Both moves are priced, with hysteresis,
-  so the count does not flap.
+- **More Cores only when measured faster.** Cores on one device share its compute and memory
+  bandwidth, so each runs slower: the scheduler that advanced four sequences per decode gave each about
+  2 tokens per second, against the full rate for one mind at a time (`persona_scheduler`, deployed
+  6404cf3b15). One Core per device is the default. A second is granted only when the measured result
+  is better: the waiting minds' saved time against the slowdown every Core on the device then suffers,
+  plus the second Core's memory. Both moves are priced, with hysteresis, so the count does not flap.
+
+**Custody through every change** (Codex's review of 4a5807f2cc):
+- **The occupant's floor holds until her release.** A Core's floor covers the mind decoding now until
+  her native boundary and release receipt, even when the next turn is smaller, and it counts the real
+  overlap while the next mind's pages restore.
+- **A destination accepts before the source goes.** A Core is removed only after a compatible Core has
+  accepted custody of its minds. Compatible means the same KV format and adapter set, not only the same
+  model. The last compatible Core is never removed: it keeps its queued demand and its minds' backing
+  pages, and renegotiates when capacity changes.
+- **One publication.** The Core publishes one generation-tagged snapshot with its changes, and every
+  reader reads that: the mind gate and the inference device take the turn handle; the workspace's
+  capacity and deliberation read her fitted capacity; the re-home reconciler watches placement and
+  residency; health reads Core snapshots; the serving daemon's need floor reads the Core's demand. No
+  second allocation authority remains.
+- **Replays that must pass:** the last Core; a delayed and a duplicated release; a concurrent 84k demand
+  arriving with a smaller next turn.
 
 What it replaces: the serving daemon's per-mind grants on the engine's pool and their "owed" state,
 and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
