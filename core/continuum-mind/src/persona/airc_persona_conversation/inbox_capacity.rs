@@ -1,5 +1,7 @@
 use super::*;
 
+const BACKOFF_CEILING_SECS: u64 = 30;
+
 /// The live stream is dead when a catch-up tick admits events from the store
 /// while no live frame arrived since the previous tick. The first tick after
 /// (re)open is exempt: it legitimately admits the backlog.
@@ -20,7 +22,7 @@ pub(super) async fn reopen_live_stream(
         // ended on a room join or a daemon restart is back in one hop.
         if *attempt > 0 {
             let delay = std::time::Duration::from_secs(1u64 << (*attempt).min(5))
-                .min(std::time::Duration::from_secs(30));
+                .min(std::time::Duration::from_secs(BACKOFF_CEILING_SECS));
             tokio::time::sleep(delay).await;
         }
         match runtime.subscribe_all_rooms().await {
@@ -261,11 +263,37 @@ impl AircPersonaConversation {
                                 self.runtime.peer_id(),
                             )
                             .await;
-                            if let Ok(message) = perceptual_from_event(event) {
-                                if message.peer_id != self.own_peer_id {
-                                    replayed += 1;
-                                    self.rejoin_backlog.push_back(message);
-                                }
+
+                            // Classify the replayed turn: try typed work schemas first
+                            // (verdicts, state changes), then fall back to chat decoding.
+                            // This mirrors AttentionEvent::classify so verdict events
+                            // reach rejoin_backlog instead of being silently dropped.
+                            let message = match crate::cognition::conversation::room_event::room_work_from_event(&event) {
+                                Ok(Some(work)) => IncomingMessage {
+                                    event_id: event.event_id.as_uuid(),
+                                    lamport: event.lamport,
+                                    peer_id: event.peer_id.as_uuid(),
+                                    room_id: event.room_id.as_uuid(),
+                                    text: String::new(),
+                                    media: Vec::new(),
+                                    work: Some(work),
+                                },
+                                Ok(None) => {
+                                    match perceptual_from_event(event) {
+                                        Ok(msg) => msg,
+                                        Err("non_chat_schema"
+                                        | "no_continuum_body_hint"
+                                        | "work_presence"
+                                        | "work_lease_renewal") => continue,
+                                        Err(_) => continue, // decode fault for both paths
+                                    }
+                                },
+                                Err(_) => continue, // work_event_decode_error
+                            };
+
+                            if message.peer_id != self.own_peer_id {
+                                replayed += 1;
+                                self.rejoin_backlog.push_back(message);
                             }
                             // Commit only after the async bridge and queue write;
                             // cancellation must not skip an unqueued receipt.
@@ -522,12 +550,8 @@ impl AircPersonaConversation {
         let body_preview = match event.body.as_ref() {
             None => "<none>".to_string(),
             Some(b) => match b.as_text() {
-                Some(t) => t.chars().take(160).collect(),
-                None => serde_json::to_string(b)
-                    .unwrap_or_else(|e| format!("<unserializable: {e}>"))
-                    .chars()
-                    .take(160)
-                    .collect(),
+                Some(t) => t.to_string(),
+                None => format!("{b:?}"),
             },
         };
         let message = match attention.perception {
@@ -579,3 +603,4 @@ impl AircPersonaConversation {
         Some(Arc::unwrap_or_clone(message))
     }
 }
+
