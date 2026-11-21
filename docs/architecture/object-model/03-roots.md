@@ -280,6 +280,25 @@ What it replaces: the serving daemon's per-mind grants on the engine's pool and 
 and the window allocator's sizing of minds (Aris, the M5, 2026-11-21: owed a window for 25 minutes
 while one mind held 98,304 tokens of a Core that decodes one mind at a time).
 
+**Cores that contend, and Cores elsewhere (open: design in progress, Fable with Codex).** The rule above
+settles one model on one compute unit. Two cases remain, and this part of the design is not finished.
+- **Two models on one compute unit contend.** A small model (the quick voice, the amygdala's) on the
+  same GPU as the deep model decodes from the same memory bandwidth. Proposed: the compute unit owns
+  its decode as a Core owns its minds, sequencing the decode steps of every Core on it at token
+  boundaries, by demand (a call's quick voice before a coding turn's next token). Co-running is a
+  measured exception per pair of models: a probe runs each alone and both together, and the unit lets
+  that pair overlap only where the pair is measured faster. Placement comes first: a small model goes
+  to a compute unit of its own (the Neural Engine, the CPU) where one exists, and then nothing contends.
+- **Cores on other nodes.** A Core on another node is a Core; a mind reaches it through a `Session`
+  (chapter 4.1) and negotiates through the market (GRID-MARKET-CLEARING), not the local governor. The
+  network delay counts against her deadline, and her pages are the expensive part: moving KV across
+  the network costs far more than a local swap, so remote placement favours minds whose context is
+  already there or cheap to rebuild there.
+- **Open questions:** how a compute unit's sequencing and a Core's scheduling compose without two
+  owners of one decision; what the pairwise co-running probe measures and when it reruns (a model
+  change, a node joining); whether a mind's remote turn returns her pages or leaves them warm where
+  they ran; how a remote Core's refusal reaches her as a typed outcome.
+
 **Choosing the next mind on the Core** is the same rule at its finest grain. Among the ready demands,
 run the one whose expected gain in value per unit of Core time is highest, counting the switch it
 would cost. Run it until its next natural boundary or until another demand's loss from waiting
