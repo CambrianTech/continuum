@@ -25,6 +25,7 @@ mod frame;
 mod reuse;
 mod geometry;
 mod sampling;
+mod admission;
 mod transition;
 
 pub use geometry::{EngineGeometry, EngineState, Incarnation, Requested};

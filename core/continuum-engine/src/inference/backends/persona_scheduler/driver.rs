@@ -18,7 +18,7 @@ use uuid::Uuid;
 use super::geometry::StopsOnExit;
 use continuum_flow::{Outbox, StageInput};
 
-use super::{emit, frame, preserve, record, reuse, sampling, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
+use super::{admission, emit, frame, preserve, record, reuse, sampling, transition, EngineGeometry, EngineState, GenerationRequest, Incarnation, SchedulerConfig, Submission, Suspended, TokenEvent};
 use crate::inference::footprint_registry::{self, FootprintKey, ResourceType};
 use crate::inference::kv_quant::Residency;
 use crate::runtime;
@@ -125,6 +125,8 @@ fn resident(her: &Mind) -> bool {
 struct Driver<'c, 'm> {
     model: &'m Model,
     batch: NonZeroUsize,
+    /// The most one mind's stream holds (the applied `n_ctx_seq`): a prompt it cannot fit is refused at the door.
+    capacity: admission::StreamCapacity,
     engine: PersonaEngine<Mind, UnifiedTier<'c, 'm>>,
     parked: HashMap<PersonaId, Mind>,
     /// Admitted anonymous turns that still own their native blocks, across all transfer states.
@@ -233,6 +235,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
         return;
     };
     let geometry = EngineGeometry::applied(incarnation, &ctx, config);
+    let capacity = admission::StreamCapacity::new(geometry.n_ctx_seq as usize);
     // The root resume (CONTINUUM-ENGINE 4.16): the minds the last stop preserved come back Warm, in
     // RAM, and bind when they are next scheduled. A mind that does not verify stays on disk, named.
     let mut tier = UnifiedTier::new(&mut ctx);
@@ -249,6 +252,7 @@ pub(super) fn run(model: &Model, config: &SchedulerConfig, start: Start) {
     let mut driver = Driver {
         model,
         batch,
+        capacity,
         engine: PersonaEngine::new(tier),
         parked,
         live_one_offs: HashSet::new(),
@@ -555,6 +559,14 @@ impl Driver<'_, '_> {
             Some(persona) => (PersonaId(persona), false),
             None => (PersonaId(Uuid::new_v4()), true),
         };
+        // A prompt this Core's stream cannot hold is refused at the door, with the numbers, before
+        // any prefill is spent on it.
+        if let Err(infeasible) = self.capacity.admit(req.prompt.len()) {
+            let at = transition::At::Infeasible { prompt_tokens: infeasible.prompt_tokens, capacity: infeasible.capacity };
+            self.record.send(record::Fact::Transition(transition::Transition { request: req.request.clone(), persona: id.0, one_off, at }));
+            tell(&req.response_tx, TokenEvent::Error(infeasible.to_string()));
+            return;
+        }
         // Her prompt arrives as token ids (`prepare`, on her own thread): nothing is tokenized here.
         match sampling::sampler(self.model, &req.sampling).map_err(TurnError::from) {
             Ok(sampler) => {
