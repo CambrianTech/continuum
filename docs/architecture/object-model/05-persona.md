@@ -322,3 +322,21 @@ On every node class, 15 minutes with its residents, before and after: turns star
 system pull, 0; wakes that name their reasons, all; sentinel acts and teacher texts, 0; surprises from
 her own acts' receipts, counted per hour (zero today); residents acting in activities other than coding
 (talk, play, a call), counted; act latency median and p90 unchanged or better.
+
+### Order (11.4 row 8), each slice one deploy and a live read
+
+1. **No clock decides for her.** The self-tick wake (`SELF_TICK_MS = 15_000` backing off to
+   `SELF_TICK_REST_CAP_MS = 240_000`, `service_loop/beat_outcome.rs`; `Wake::Tick` in
+   `wake_select.rs`) and its `BeatClock` go. The mind-check poll (`mind_check_floor`: 15, 5 or 2 minutes
+   by dial) becomes only the due time she scheduled (her continuation's expectation), delivered by
+   the one clock owner. Deferred input is retried when the capacity it waited for frees, never on a
+   beat. Gate: turns started by a clock 0; every `persona.turn.mind_wake` names its reason.
+2. **Her acts come back as percepts.** Tool receipts and the Core's `TurnEnd` enter her senses;
+   surprise compares each with what the act expected. The six sentinel acts and their teacher texts
+   go. Gate: sentinel acts 0; surprises from her own receipts counted.
+3. **Messages pass through her attention.** A room message is a percept; salience against her dial
+   decides whether she deliberates (`triggers_a_turn`'s text rule goes); `self/attention` becomes a
+   live tool. Gate: every turn's wake carries salience reasons.
+4. **No pushed work.** `ask_the_act_question`, the work burst and initiative texts, the
+   write-or-release checkpoint and the grading facts in the work path go; her board is a room she
+   perceives. Gate: no turn's stimulus text is written by the system.
