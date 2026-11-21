@@ -78,28 +78,62 @@ They're short." The reference is `cb-mobile-sdk/cpp/utility/Threads.h` `QueueThr
   dependencies by type (`getAnalyzerOfType<T>()`), and implements one handler. `CBP_ElevationAnalyzer`
   is 71 lines, most of them boilerplate.
 
-`continuum-flow` therefore ships a **`Stage`** alongside the capacity dispatcher:
+**Implement a worker.** The example below publishes the latest playback position so
+animation can sample it independently. The position is replaceable state. Each update is
+an absolute sample offset within one playback session. A new session gets a new worker.
+The example uses the current [stage API](../../core/continuum-flow/src/stage.rs).
 
 ```rust
-pub trait Stage: Send + 'static {
-    type Input: Send;              // what wakes it (a signal, a digest handle, a frame)
-    const QOS: Qos;                // its class
-    const OVERFLOW: Overflow;      // Reliable (default: a full slot hands the input back) or KeepNewest (signals)
-    async fn handle(&mut self, input: Self::Input);
+use continuum_flow::{spawn_stage, Capacity, Overflow, Qos, Stage};
+use tokio::sync::watch;
+
+struct PlaybackPosition(watch::Sender<u64>);
+
+impl Stage for PlaybackPosition {
+    type Input = u64;
+    const QOS: Qos = Qos::Interactive;
+    const OVERFLOW: Overflow = Overflow::KeepNewest;
+
+    async fn handle(&mut self, sample_offset: u64) {
+        self.0.send_replace(sample_offset);
+    }
 }
-// spawn_stage(stage) -> StageInput<Input>: a stage holds one input in hand and one pending (CBAR's
-// double buffer); push() fills the pending slot, or hands the input back / replaces it when full, and signals.
-// A stage that needs a shared capacity (the engine, a TTS model) submits to that capacity's Flow.
+
+#[tokio::main]
+async fn main() {
+    let (position, animation) = watch::channel(0);
+    let (updates, worker) = spawn_stage(PlaybackPosition(position), Capacity::latest());
+    assert!(updates.push(480).is_ok());
+    worker.stop();
+    assert!(worker.join().await.is_ok());
+    assert_eq!(*animation.borrow(), 480);
+}
 ```
 
-The module owns every concern that today is copied into each subsystem:
-- the queue and its bound;
-- keep-latest and coalescing;
-- wake-on-signal (no polling);
-- class and aging;
-- yield;
-- shutdown drain;
-- probes.
+`spawn_stage(stage, capacity)` returns a producer handle and a worker handle. The owner
+supplies the admitted capacity. The worker takes the ready batch under the queue lock,
+releases the lock and calls `handle_all`. Its default preserves input order within that
+stage. Override it for a native batch operation. Other stages run independently. An idle
+worker parks until signaled. Its owner can request stop, let accepted inputs drain, and join
+when it needs confirmation of shutdown.
+
+In this example `join` makes the final assertion deterministic. During a call the renderer
+samples `animation.borrow()` on its own clock. The trait requires each implementation to
+supply the input type, class and handler. It supplies reliable delivery by default and an
+ordered batch handler; specialize either where the consumer's contract calls for it.
+
+Choose delivery semantics per input. For a reliable result, a full queue returns ownership
+to the producer. A replaceable wake can use `KeepNewest` when its underlying data lives
+elsewhere. Even that policy can return `Full` while displaced items await disposal.
+At fan-out, one slow consumer must retain its own pending delivery while ready siblings
+continue. A producer awaiting each subscriber in sequence defeats that contract.
+
+Stages needing a shared device submit to its `Flow`, which owns admission order, aging
+and yield requests. A long operation that can finish independently publishes its completion
+to the interested stage. This keeps the receiver available for unrelated stimuli.
+The [perception surface](PERCEPTION-SURFACE.md#4-diff-is-the-highest-value-signal)
+describes what can be observed or requested. The [capacity governor](CAPACITY-FABRIC-AND-GOVERNOR.md)
+describes where work can run. Their live-call scenarios exercise this same contract.
 
 A stage is its handler and nothing else. **The rule for every migration in §5:** the migrated code
 holds no lock across an await, no timer, no backoff, no limiter and no queue of its own. The receipt
@@ -276,6 +310,23 @@ The owner of this contract is [FOCUS-CONTRACT.md](FOCUS-CONTRACT.md); this secti
    the compiler holds the line.
 
 ## 3. Live conversation, end to end
+
+### Diagnose the first missing result
+
+Follow one resident turn from stimulus through admission, prefix selection, decode, parsing
+and delivery. The endpoint for coding is a usable tool call or answer. For speech it is the
+first audible response. Aggregate GPU occupancy alone cannot locate a delay along this path.
+
+| Observed on the M5 | Boundary to inspect | Evidence that selects a fix |
+|---|---|---|
+| In a 900-second window the longest engine idle interval was 118 ms. One resident turn spent 49.9 s in prefill and reused 7,084 of 20,225 prompt tokens. | Scheduler and token history | Compare the actual shared prefix with the recoverable checkpoint on that turn. A changed prompt requires different work from a missed checkpoint. Measure ready-to-first-service separately from prefill. |
+| In a separate 900-second window, 52 of 53 empty parsed turns retained closing function and tool tags in their raw tails. | Request catalog, native render, then call assembly | A definitive parser replay requires the original generated bytes, template and exact head and tail tool schemas. Compare the emitted name, native parsed name and assembled result. A fixture with one undeclared name reproduced the symptom; the live cause is open. |
+
+The [request adapter](../../core/continuum-engine/src/inference/llamacpp_adapter/chat_turn.rs)
+supplies head and tail tools to the [native render](../../core/llama/chat_boundary.cpp).
+Use that render's catalog for the comparison. An unavailable verb belongs with the owner
+that advertised or selected it. A declared verb lost by the parser belongs at the render
+boundary. Keep execution behind the existing typed call assembler. The native adapter retains a 160-character tail. Request replay generates a fresh response. Parser-only replay must leave tools idle.
 
 The budget: first audio within about 1 s of the speaker stopping. The path and its timestamps (Codex's list, each a probe):
 

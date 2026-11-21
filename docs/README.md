@@ -26,6 +26,18 @@ How the whole thing composes. Read these first; on architecture questions they w
 
 The engine chapter tracks merged design. [Engine design review #6092](https://github.com/CambrianTech/continuum/pull/6092) covers proposed swap and transfer contracts. Disk cache retention belongs to the [disk resource reporters](../core/continuum-kernel/src/system_resources/disk_reporters.rs).
 
+### Runtime engineering contents
+
+| To build or diagnose | Read | Object or module to inspect |
+|---|---|---|
+| Add an independently waking worker | [Stage contract and worked example](architecture/FLOW-IMPLEMENTATION-PLAN.md#2a-stages-are-short-cbars-queuethread-in-rust) | [`Stage`, `StageInput`, `StageWorker`](../core/continuum-flow/src/stage.rs) |
+| Schedule work on a constrained resource | [Capacity fabric and governor](architecture/CAPACITY-FABRIC-AND-GOVERNOR.md) | [`Flow` and `Grant`](../core/continuum-flow/src/flow.rs) |
+| Page a resident in and continue decoding | [Engine manual](architecture/CONTINUUM-ENGINE.md) | [Persona scheduler](../core/continuum-engine/src/inference/backends/persona_scheduler/) |
+| Read shared observations and request detail | [Perception surface](architecture/PERCEPTION-SURFACE.md) | [`PerceptionBuffer`](../core/continuum-live/src/media/perception_buffer.rs) and [`MediaFrame`](../core/continuum-live/src/media/frame.rs) |
+| Design a live call around those owners | [Video, tracking and reuse](live/LIVE-VIDEO-CHAT-ARCHITECTURE.md) and [LiveKit integration plan](planning/LIVEKIT-PERCEPTION-PIPELINE.md) | Proposed consumers of the media and flow APIs above |
+| Trace a wait from stimulus to response | [Live conversation](architecture/FLOW-IMPLEMENTATION-PLAN.md#3-live-conversation-end-to-end) | [Dispatcher and scheduling regressions](../core/continuum-flow/src/tests.rs) |
+| Carry out a user request or a resident's own task | [Task ownership and project parity trials](architecture/HER-HANDS.md#own-a-task-from-intent-to-outcome) | [Tool results](architecture/HER-TOOLS.md) and [background tasks](architecture/HER-TASKS.md) |
+
 ## Where things live — EVERY directory, with counts
 
 595 markdown files. This table is the map; it is the thing to fix first when it goes

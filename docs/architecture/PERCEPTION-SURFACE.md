@@ -102,6 +102,40 @@ what I intended?"* — the single most useful feedback in any iteration loop. Ma
 first-class Percept. It is also the cleanest **training signal**: the before/after of
 every *accepted* tweak is a labeled example of a good move.
 
+**Read observations today.** With a `PerceptionBuffer`, the shared compute cache and a
+participant ID, a consumer can read resolved cells for recent frames immediately. A
+separate detail worker can request an image. These calls use the current
+[media API](../../core/continuum-live/src/media/perception_buffer.rs).
+
+```rust
+// In the attention worker: newest first. An unknown source yields an empty history.
+let observations = buffer.window_percepts(participant.as_str(), 3, compute);
+let latest_with_evidence = observations.iter().find(|percept| percept.has_any());
+
+// In the detail worker: resolve the source's current frame at its original size.
+let images = buffer.look(LookScope::Source(participant), LookFidelity::Full, compute).await;
+```
+
+`has_any` reports a resolved cell, which can contain an error. The consumer inspects the
+cell's result before using it. Today's `look` selects the current head; exact historical
+frame retrieval and tolerance-based selection are part of the following design.
+
+**Live calls (proposed).** Capture owns a bounded buffer of native frames. A visual
+observation carries its source, capture time and exact frame handle. Detection, segmentation
+and slide differencing subscribe independently. Each publishes as soon as it has a result.
+Audio features, transcript fragments and participant events carry their own source times,
+so a resident can associate a speaker's “this line” with the code visible when it was said.
+
+Each resident chooses what merits a closer look using her task and the available signals.
+She can request a crop or the full frame by handle while the conversation continues. A
+request pins that frame for the read. An expired handle reports expiry so a later slide
+cannot silently stand in for the one she asked about. A new aid implements the shared
+stage contract and subscribes to the inputs it needs. See the [flow implementation plan](FLOW-IMPLEMENTATION-PLAN.md).
+
+Replay a call with greetings, a slide change, a cursor moving over unchanged code and a
+question about one line. Record which frame each resident requested, missed cues,
+unnecessary full-frame transfers, and time from the question to a grounded answer.
+
 ---
 
 ## 5. Capture/replay → the aesthetic-taste corpus

@@ -30,11 +30,18 @@ Audio runs the parallel loop: `LiveKit audio → STT → cognition → TTS → L
   MacBook, native vision, our exact stack; it is BOTH the describer for non-vision
   personas AND the native-vision base. Bigger tiers (32B on the 5090) and cloud VLMs come
   later; 7B is the first-light proof.
-- **Intake shape: AMBIENT + DRILL-IN.** Ambient = the persona periodically "looks"; the
-  current frame's cells (scene/appearance/gesture) enter its context each cadence tick, so
-  awareness is continuous and lifelike. Drill-in = a tool (`perception/observe-frame` or
-  equivalent) to look CLOSER at a specific tile/gesture on demand. Ambient low-res always
-  on; the tool for detail.
+- **Ambient observations and requested detail (proposed).** Publish changes from each track
+  as shared observations. Each resident subscribes according to her activity and can request
+  the exact frame or crop behind a cue. A static slide can stay available throughout a
+  discussion without repeated inference. See the [perception surface](../architecture/PERCEPTION-SURFACE.md#4-diff-is-the-highest-value-signal).
+- **Variable capacity.** Keep playback and interruption handling at the call endpoint. Place
+  analysis through the [capacity governor](../architecture/CAPACITY-FABRIC-AND-GOVERNOR.md),
+  accounting for the frame's location, model readiness, transfer time and when the answer is
+  needed. On peer loss, release its outstanding assignments; retry requested observations
+  that are still relevant on a capable worker, and return an explicit unavailable result
+  when the request can no longer be served. On capacity return, pick up current demand.
+  For the two-resident proof, remove and rejoin a perception worker mid-call. Record audio
+  gaps, interruption latency, age of delivered observations, and duplicated frame transfers.
 
 ## Resolution & context budget — the ambient look is CHEAP by design
 

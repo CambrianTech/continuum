@@ -86,7 +86,31 @@ The right design comes straight from CBAR (`cb-mobile-sdk/cpp/cbar/`):
 - `CBP_FeatureTracker` tracks point identity across frames with optical flow, so we don't re-derive the world every tick.
 - The analyzer pipeline (`pipeline/analysis/`) routes events on semantic deltas, not on time.
 
-Same shape here. Cheap, continuous CV runs always (~1-30 ms/frame depending on detector). Heavy vision LLM only fires on triggered events. Cadence at the gate is **0.5-1 Hz** -- humans don't react to scene changes faster than that anyway.
+**Reuse across frames (proposed).** Give each consumer a standing subscription to the
+derivative it needs and a tolerance for age and tracking error. Select from the source's
+recent observations first. Compatible subscribers share the same feed and any in-flight
+computation. Continuum already has source histories in `PerceptionBuffer` and per-frame
+derivatives in `MediaFrame` backed by `SharedCompute`. Keep those owners.
+
+A one-off read and a standing feed use the same request contract. The caller identifies the
+source and derivative and supplies either an exact frame handle or a capture-time window
+with its permitted error. The response deadline is separate from the age of acceptable
+evidence. The buffer owner resolves an acceptable cached observation immediately. On a miss
+it can join compatible work already in flight or submit fresh work through the capacity
+governor. The caller receives a completion handle and continues. If the deadline passes,
+the owner resolves that request as unavailable; other subscribers retain their own deadlines.
+
+In Joel's CBAR design, quarter-size grayscale optical flow was the one synchronous
+tracking step. Experiment with that as the per-frame budget here: use motion history to
+project a previously measured location to the requested time. Retain the original
+measurement time, the prediction time and its uncertainty. A new detector result corrects
+the track at its capture time. A cut or lost track invalidates the projection. A slide
+transcription requires evidence from the slide itself; motion can carry its location
+forward but cannot supply newly visible text. Capture and audio continue independently.
+
+Compare this path with fresh detections on the same recording. Count inference calls,
+measure tracking error at capture time and age at consumption, and replay an occlusion
+and a hard scene cut. Use those results to set tolerances for each consumer.
 
 This applies to every continuous visual stream feeding a persona: webcam in a video call, screen share in a coding session, AR camera in a future mixed-reality activity. The principle doesn't change.
 

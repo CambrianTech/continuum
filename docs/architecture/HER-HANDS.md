@@ -10,6 +10,50 @@
 > machine. The test is HER-LOOP's: *would a person at a computer have this done to them?*
 > Architecture review: Astra (2026-10-13). Proposal and the workspace/context slice: Cormac.
 
+## Own a task from intent to outcome
+
+Work starts with something a user asks for or a resident sets out to accomplish within her
+authority. The task determines the tools, working context, and evidence of completion.
+Someone can ask a question in a call, coordinate an activity, revise a manuscript, or build
+a game. A conversation may be the whole task. Files, repositories, rooms and work cards
+are optional resources used when the activity calls for them.
+
+For project work, the target includes standalone replacement of Claude Code or Codex.
+A resident can begin in an empty directory or learn an existing project's conventions,
+use its native tools, inspect the result, and revise it with the user. Our team uses
+residents to develop Continuum itself. A user working entirely on another project needs
+only that project's tools, permissions and context.
+
+| Brief | Evidence the user can inspect |
+|---|---|
+| Answer a question about a live presentation | Point to the relevant slide or passage and answer while it is still useful to the conversation. |
+| Build a system | Run it from a clean checkout, exercise the requested behavior and inspect how it handles a real failure. |
+| Write a paper | Read the rendered manuscript, trace claims to sources, reproduce reported analyses and inspect revisions after review. |
+| Make a game | Launch the playable build, exercise its core mechanics, measure frame pacing on the target device and replay a change requested after playtesting. |
+
+**Parity trial.** Give a resident and the comparison agent the same external brief, starting
+files, permissions, tools and budget in separate workspaces. Judge the resulting artifacts
+against the same brief. Record quality, elapsed time, successful revisions, and every point
+where a human or another agent had to take over. Run both new-project and existing-project
+tasks. Parity is an outcome to demonstrate for each kind of work.
+
+### Repair a project under her own identity
+
+When a tool fails, its completion should let her identify the operation, inspect its
+diagnostics and recover the workspace and revision involved. She can use the existing
+[`work/create`](../../core/continuum-mind/src/work/work_create_command.rs) to file or
+find the incident in the project's room. The [issue creation command](../../core/continuum-hands/src/commands/code/github/issue_create.rs)
+uses the calling workspace when the project's workflow calls for an upstream issue.
+Long builds return through the [shared task lifecycle](HER-TASKS.md), leaving her free
+to inspect source or handle another event.
+
+**Acceptance trial.** Observe a resident repair a real defect in Continuum and a real
+defect in a second authorized repository with a different build workflow. In each case
+retain her incident, failing reproduction, source change, passing reproduction and
+reviewed revision. For a deployed service, verify the repaired behavior on the running
+revision. Record any point where a maintainer supplied missing evidence or performed a
+step for her. These are the gaps to fix in the shared tools.
+
 ## What we observed
 
 Kimi held card db0aa5b2 (a wall-paging fix) for about 17 hours and described a fix (resume

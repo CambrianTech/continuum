@@ -253,9 +253,17 @@ hangs**, mid-session, no restart:
    free budget rises; the governor offers; serving scales UP live — more lanes, a bigger
    model tier, higher-res avatar — and any grid-offloaded deep work re-homes local. No
    restart, and it must not linger at the throttled config it held while the game ran.
-6. **Two-tier under all of the above** → the fast local reflexive lane NEVER waits and
-   NEVER recalls; the deep/grid lane is opportunistic and merges *if* it arrives. Pulling
-   the grid degrades depth, never responsiveness.
+6. **Interrupt a speaking resident, then disconnect the peer doing deeper inference.**
+   The proposed fast path has two independent consumers. A small learned salience model
+   consumes time-aligned features from whichever audio, vision, action or event streams
+   are present and can signal the playback owner to yield. A small language model can
+   produce a grounded first phrase from the current turn. Neither requires a grid reply.
+   Deeper inference subscribes to the same turn and may contribute a continuation.
+   The output owner tracks the turn and the last committed phrase. It accepts a continuation
+   consistent with what the listener has heard and discards work for an interrupted turn.
+   Replay both a genuine interruption and a background sound during speech. Measure missed
+   and false interruptions, time to silence, time to first meaningful audio, and contradictory
+   continuations with the peer available and disconnected.
 
 The scenario matrix is a fixture set (`DeviceCapacity` + membership timelines) driving the
 governor + lease + serving, asserting the behavioral bar. It also times/benchmarks each so

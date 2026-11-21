@@ -164,6 +164,25 @@ async fn dropping_a_grant_or_a_waiting_submission_frees_the_unit() {
     assert!(matches!(next, Ok(Ok(_))), "neither the aborted wait nor the dropped grant kept the unit");
 }
 
+// A queued device request must leave independent capacity usable until its device is released.
+#[tokio::test(start_paused = true)]
+async fn independent_capacity_completes_while_device_work_is_pending() {
+    let scenario = async {
+        let device = Flow::spawn(1, aging());
+        let cpu = Flow::spawn(1, aging());
+        let mut holding = device.submit("decode", Qos::Background).await.expect("live device"); // expect: test owns dispatcher
+        let pending = tokio::spawn(async move { device.submit("reply", Qos::Interactive).await });
+        holding.yield_requested().await;
+
+        let available = cpu.submit("prepare", Qos::Work).await.expect("free capacity"); // expect: test owns dispatcher
+        drop(available);
+        assert!(!pending.is_finished());
+        drop(holding);
+        assert!(pending.await.expect("device request joined").is_ok()); // expect: test owns task
+    };
+    tokio::time::timeout(Duration::from_secs(1), scenario).await.expect("independent work and device release should both complete"); // expect: fail the test on a stalled dispatcher
+}
+
 // what this catches: a running low class never told to yield through the dispatcher.
 #[tokio::test(start_paused = true)]
 async fn a_running_dream_hears_the_yield_when_a_reply_arrives() {
