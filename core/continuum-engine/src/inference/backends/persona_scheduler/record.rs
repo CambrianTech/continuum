@@ -40,15 +40,20 @@ pub(super) fn whole_ms(span: Duration) -> u64 {
 pub(super) enum Fact {
     /// The engine worked from `started` to `ended`.
     Busy { started: Instant, ended: Instant },
-    /// A turn reached a transition (admitted, first frame).
+    /// A turn reached a transition (admitted, frame started, first progress, refused).
     Transition(super::transition::Transition),
-    /// A turn ended.
+    /// A turn ended with an answer.
     Turn(TurnRow),
+    /// Answered once every fact sent before it has been written: the stage is FIFO, so a stop
+    /// acknowledges only after its last turns' records are written.
+    Barrier(tokio::sync::oneshot::Sender<()>),
 }
 
 /// One finished turn: where her seconds went. Built by the engine from its own counters (no work),
 /// written here.
 pub(super) struct TurnRow {
+    /// The submitted request this turn served, so its completion joins its transitions by identity.
+    pub request: Option<super::RequestId>,
     pub persona: uuid::Uuid,
     pub one_off: bool,
     pub prompt_tokens: u64,
@@ -76,6 +81,7 @@ impl TurnRow {
     fn write(self) {
         continuum_base::probe!(
             class = "persona.engine.turn",
+            request = ?self.request.as_ref().map(super::RequestId::as_str),
             persona = %self.persona,
             one_off = self.one_off,
             prompt_tokens = self.prompt_tokens,
@@ -167,6 +173,11 @@ impl Stage for Record {
             Fact::Turn(row) => {
                 row.write();
                 self.close_window(self.last_end);
+            }
+            Fact::Barrier(written) => {
+                if written.send(()).is_err() {
+                    continuum_base::probe!(class = "persona.engine.barrier_unheard", "a stop stopped waiting for its records to be written");
+                }
             }
         }
     }

@@ -27,6 +27,17 @@ pub(super) enum At {
         /// Whether reaching her took a switch from another mind.
         switched: bool,
     },
+    /// Her turn was refused at the door: its prompt leaves no room in one stream. It was never
+    /// admitted, so it has no other transition.
+    Infeasible { prompt_tokens: usize, capacity: usize },
+    /// Her turn ended without an answer: refused, failed, or her caller hung up. Every admitted turn
+    /// ends in exactly one of this or `persona.engine.turn`.
+    Refused {
+        /// Since the driver admitted her turn.
+        since_admit_ms: u64,
+        /// Why, as the driver's typed error states it.
+        reason: String,
+    },
     /// Her first step that succeeded natively: a prefill chunk landed, or a token decoded.
     FirstProgress {
         /// Since the driver admitted her turn.
@@ -103,6 +114,26 @@ impl Transition {
                 prompt_tokens = prompt_tokens,
                 switched = switched,
                 "a turn's first frame began"
+            ),
+            At::Infeasible { prompt_tokens, capacity } => continuum_base::probe!(
+                class = "persona.engine.infeasible",
+                request = ?request,
+                incarnation = incarnation,
+                persona = %self.persona,
+                one_off = self.one_off,
+                prompt_tokens = prompt_tokens,
+                capacity = capacity,
+                "a turn refused at the door: its prompt leaves no room in one stream"
+            ),
+            At::Refused { since_admit_ms, reason } => continuum_base::probe!(
+                class = "persona.engine.refused",
+                request = ?request,
+                incarnation = incarnation,
+                persona = %self.persona,
+                one_off = self.one_off,
+                since_admit_ms = since_admit_ms,
+                reason = %reason,
+                "a turn ended without an answer"
             ),
             At::FirstProgress { since_admit_ms, step_ms, prefill } => continuum_base::probe!(
                 class = "persona.engine.first_progress",

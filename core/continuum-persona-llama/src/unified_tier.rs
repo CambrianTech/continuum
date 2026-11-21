@@ -289,11 +289,26 @@ impl Execute for UnifiedTier<'_, '_> {
         for (offset, (i, &token)) in (0..count).zip(step.tokens.iter().enumerate()) {
             batch.push(token, step.from + offset, &[stream.seq()], step.logits_at_end && i == last);
         }
-        self.ctx.decode(&batch).map_err(|message| TierRefusal {
-            tier: TIER,
-            mind,
-            reason: "the engine refused her decode",
-            native: Native::Reported(message),
+        self.ctx.decode(&batch).map_err(|message| {
+            // The refusal says what the engine held when it refused (the M5, 2026-11-21: a cold
+            // 26-36k replay prefill refused with no KV slot ~31 s in; the cause is not yet known).
+            let occupied: Vec<(usize, Option<MindId>, i32)> =
+                self.streams.iter().enumerate().map(|(at, held)| (at, *held, self.ctx.memory_seq_pos_max(stream_at(at).seq()))).collect();
+            continuum_base::probe!(
+                class = "persona.engine.decode_refused",
+                persona = ?mind,
+                from = step.from,
+                tokens = count,
+                n_ctx = self.ctx.n_ctx(),
+                n_ctx_seq = self.ctx.n_ctx_seq(),
+                n_seq_max = self.ctx.n_seq_max(),
+                n_batch = self.ctx.n_batch(),
+                n_ubatch = self.ctx.n_ubatch(),
+                streams = ?occupied,
+                native = %message,
+                "the engine refused a decode: what it held then"
+            );
+            TierRefusal { tier: TIER, mind, reason: "the engine refused her decode", native: Native::Reported(message) }
         })?;
         let landed = Rc::new(Cell::new(false));
         self.in_flight = Some(Rc::clone(&landed));
