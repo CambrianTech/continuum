@@ -590,9 +590,6 @@ pub struct ServingPlan {
     pub grid_overflow_lanes: u32,
     /// How many distinct models to keep resident (warm), including the base.
     pub resident_models: u32,
-    /// True when the chosen base fits at least one lane on the GPU/UMA budget.
-    /// False signals the caller to CPU-serve (Intel-Mac exception) or route to
-    /// a grid peer — this planner never silently CPU-falls.
     pub fits_on_gpu: bool,
     /// Honest, loggable explanation of the decision.
     pub rationale: String,

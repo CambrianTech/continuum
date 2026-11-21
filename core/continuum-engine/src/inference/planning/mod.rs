@@ -21,3 +21,4 @@ pub mod window_allocator;
 /// this host (→ `fits_on_gpu = false`, honest degrade — never a silent shrink).
 // context-budget-exempt: the hardware FLOOR the whole serving stack sizes UP from — the one substrate-owned minimum every other bound derives against, and never a cap on anything
 pub const MIN_SERVE_CTX: u32 = 2048;
+

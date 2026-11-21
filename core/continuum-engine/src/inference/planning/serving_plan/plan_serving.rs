@@ -235,6 +235,7 @@ fn plan_serving_into(
     ]
     .into_iter()
     .fold((0, FloorTerm::Bootstrap), |best, term| if term.0 > best.0 { term } else { best });
+
     // THE GOVERNED SIZE (card 2eec3977, Joel 2026-09-20: "context must go along with
     // required governed size"): when the roster's requirements are known, lanes × window
     // are the allocator's — every served mind at her requirement, minds shed before the
@@ -358,6 +359,7 @@ fn plan_serving_into(
         },
         None => choose_served_window(window_for(lanes as u64), demand.window_target(), demand.sticky_window),
     };
+
     // The honest per-lane compute reserve AT the chosen window (floor + window-scaled),
     // reused by the packing math below AND reported to the board via
     // `peak_resident_bytes` — ONE formula (`prefill_compute_reserve`), never two that
