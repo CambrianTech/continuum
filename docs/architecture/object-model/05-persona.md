@@ -392,3 +392,20 @@ self-tick's continuation room, `focus/continue`, grounding, two dreaming receipt
   self-tick, `BeatClock`, `mind_check_floor` and the select's recheck go. Gate: turns started by a clock 0.
 - **2c, messages through attention.** `events_tx` goes; a message reaches her loop only as a `Wake` from
   Senses with the percepts that crossed her dial; `triggers_a_turn`'s text rule goes.
+
+**Corrections and the speed it buys (Joel, 2026-11-21: "Rag and other aren't serial slow. They are out
+doing their thing in parallel like cbar frame pipeline stages and then you just ask for their latest
+which is immediate").**
+- `Deliberate` is a `State`, not a `Stream`: a wake is a signal about state Senses already holds, so
+  only the newest matters. A reliable stream would make Senses wait on a deliberation busy in a long
+  turn, and that backpressure would reach the one feed and stall every resident.
+- The one feed is a `Feed` worker: every room's attach task pushes into its intake (many producers),
+  and it fans out to each resident's Senses. No synchronous per-event lock over a registry.
+- **Grounding is pipeline stages, never a fan-out at turn time.** Each source (RAG/recall, her board,
+  the room digest, the awareness strip, faculties) is a worker subscribed to what it depends on (her
+  focus, the activity's view, her receipts). It recomputes in parallel when an input moves and
+  publishes a `State`. Composing a turn reads each source's latest snapshot by handle, one serial
+  pass with no waiting: CBAR's frame pipeline, where the consumer takes the newest finished frame.
+  Each snapshot names the revisions it was derived from, so a stale one is visible as stale. The
+  `join_all` of faculties and the sources run inside `compose_turn` go. Gate: compose time per act
+  (measured from the turn probes before and after) falls to the cost of copying the snapshots.
