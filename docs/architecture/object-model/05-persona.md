@@ -643,3 +643,17 @@ component once for all of them (OBSERVABILITY-AS-SUBSTRATE, zero cost when off):
   watches it live, with probes beside it; the 10 ms serial-step gate is a check on that state;
 - `Capture` (next): the engine records a component's inputs with their frames, and replay feeds them back
   deterministically, CBAR's record/replay inherited by every part.
+
+**Preparing ahead is a component (Joel, 2026-11-21: "Predictive prefill or even just preparing for
+transitions etc can be Component, or assisted by").** A Prepare component on the node's bus watches the
+Core's queue and each waiting mind's need (so the next mind is known, not guessed: the same ranking the
+Core picks by), the Core's presence (acting, or idle while the running mind is in a tool call), and each
+mind's prompt frames as her grounding parts finish them (her next prompt is her cached prefix plus the
+tail that grew since her last act). It asks the Core to prepare, as Content work that yields at once to
+any real turn: transition prep (page the next mind's cached state from disk to RAM before her turn, so
+the switch is a copy: 4.16's parked/Warm resume); predictive prefill (while the Core is idle in another
+mind's tool call, prefill the next mind's appended tail, so her turn starts at decode: plan line 13,
+"prefill during tool calls"); prefix prep (a mind whose stable prefix changed gets it prefilled off her
+critical path). Its need is the gap: the next mind's uncached tokens against how idle the Core is. Why it
+pays on the M5: prefill p50 4 s at 94% reuse but p90 38 s on misses, and every act waits behind other
+minds' whole prefills; preparing in the Core's idle tool-call time moves that cost out of the wait.
