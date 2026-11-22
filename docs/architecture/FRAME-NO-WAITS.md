@@ -69,6 +69,19 @@ The Core is the one engine. It runs frames.
   window for one whole `TextGenerationRequest` (Codex, 2026-11-22), and one request can be minutes; that
   unit goes. The scheduler's unit is the step.
 
+### The gate
+
+Joel, 2026-11-22: "it gives the appearance of simultaneous persona on one lane. The other sage components
+should continue to work in parallel. It should never wait more than a partial second." Measured on the
+live node over a 15-minute read at realistic load:
+
+- a ready mind waits at most one step plus one swap before its next token: p99 under one second;
+- no component blocks the engine or another component: a synchronous stretch longer than a few
+  milliseconds runs on its component's own worker, never on a shared async worker (the 5090,
+  2026-11-22: a 27 s gene signature on a shared worker left tasks unpolled, a stop that could not land,
+  and nine concurrent copies exhausted host memory);
+- every miss of either is a loud receipt naming the mind or component and the stretch that held it.
+
 ## 4. Learning is frame work
 
 A learning step is not a separate pass that seats a shadow, holds an engine lock and waits for memory.
