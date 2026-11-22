@@ -22,7 +22,7 @@ pub enum Urgency {
 }
 
 /// A component's need as published: its own urgency, and the engine's facts beside it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Need {
     pub urgency: Urgency,
     /// Inputs waiting in its intake when this was published: a fact it cannot set.

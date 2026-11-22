@@ -23,6 +23,7 @@ mod flow;
 mod outbox;
 mod qos;
 mod scheduler;
+mod slice;
 mod stage;
 pub mod clock;
 pub mod dataflow;
@@ -33,6 +34,8 @@ pub use flow::{Flow, Grant, Refused};
 pub use outbox::Outbox;
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
+pub use slice::governor::{Governor, GovernorIn, SliceEvent, Turn, SLICE, TURN};
+pub use slice::{Next, Policy, Slicer};
 pub use stage::{spawn_stage, Capacity, Overflow, PushError, Stage, StageInput, StageWorker, Stopped};
 
 #[cfg(test)]
