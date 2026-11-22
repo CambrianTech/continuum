@@ -122,3 +122,21 @@ become a gene; emits lessons and candidate genes; a refusal is input, never retr
 Lessons the reads taught: a change that only moves work can still move a cost (dreams resuming cost
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
 it may have coalesced past; iteration time is the goal: build and deploy as often as possible, by judgment.
+
+## Memory is one cache hierarchy, detected per machine
+
+Joel, 2026-11-22: "VRAM, ram, flash, cold disk and any number or size. It's a cache problem and essential
+to fast streaming. And every machine a little different."
+
+- **Tiers are detected, never listed.** Each machine reports its own stack at start: each GPU and its
+  VRAM, RAM, each drive with its kind (`DriveKind`: flash, spinning, unknown, from the OS) and, next,
+  its measured read rate. A 5090 box, an M5 with an external drive and an Intel Mac get different stacks
+  from the same code.
+- **One placement law at every rung** (the fractal pager law): predict what is used next, keep it on the
+  fastest tier with room under that tier's budget, evict the coldest one tier down. The KV pager (a
+  mind's pages, VRAM to RAM to disk), the expert pager (MoE weights) and the hot tier (whole models,
+  cold disk to flash; `model_registry::artifacts::hot_tier`, a component on the node's bus) are rungs
+  of it, each a component that publishes its placement as state.
+- **Streaming is this hierarchy kept ahead of use.** What a mind or a model needs next is already on the
+  fastest tier that holds it, prefetched by the transition prediction (the Prepare part); a fetch at the
+  moment of use is a cache miss, and every miss is loud.
