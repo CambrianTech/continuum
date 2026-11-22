@@ -21,6 +21,8 @@ const GAIN_SHRINK: f64 = 0.5;
 const GAIN_FLOOR: f64 = 0.02;
 const GAIN_CEILING: f64 = 0.5;
 
+use super::control::Control;
+
 #[derive(Debug, Default, Clone, Copy)]
 struct Window {
     steps: u64,
@@ -46,27 +48,27 @@ impl Default for Tuner {
     }
 }
 
-impl Tuner {
+impl Control for Tuner {
+    fn name(&self) -> &'static str {
+        "throughput-climb"
+    }
+
     /// The slice now, seconds, already inside the bounds the last window was closed with.
-    pub fn slice(&self) -> f64 {
+    fn slice(&self) -> f64 {
         self.slice
     }
 
-    /// The engine stepped once, measured.
-    pub fn stepped(&mut self, seconds: f64) {
+    fn stepped(&mut self, seconds: f64) {
         self.window.steps += 1;
         self.window.engine += seconds;
     }
 
-    /// The engine switched, measured.
-    pub fn switched(&mut self, seconds: f64) {
+    fn switched(&mut self, seconds: f64) {
         self.window.engine += seconds;
     }
 
-    /// Close the window: measure it, move the slice, and hold it in `[floor, wall]` (`floor` one
-    /// step, `wall` the longest slice that keeps every ready mind inside the wait bound).
-    /// `over_bound`: some mind waited past the bound this window.
-    pub fn close(&mut self, over_bound: bool, floor: f64, wall: f64) {
+    /// Measure the window, move the slice, and hold it in `[floor, wall]`.
+    fn close(&mut self, over_bound: bool, floor: f64, wall: f64) {
         let window = std::mem::take(&mut self.window);
         let wall = wall.max(floor);
         if over_bound {

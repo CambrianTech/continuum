@@ -31,8 +31,12 @@ use std::time::{Duration, Instant};
 use crate::component::{Need, Urgency};
 
 pub mod lane;
+pub mod control;
+pub mod sim;
+pub mod trace;
 pub mod tuner;
 
+use control::Control;
 use tuner::Tuner;
 
 /// What the slice is held to.
@@ -108,7 +112,7 @@ pub struct Slicer<K> {
     minds: HashMap<K, Mind>,
     running: Option<Running<K>>,
     switch: Measured,
-    tuner: Tuner,
+    control: Box<dyn Control>,
     /// Engine seconds measured so far (steps and switches): the clock waits are measured on.
     engine: f64,
     /// This window: switches made, and the longest any mind waited.
@@ -117,17 +121,43 @@ pub struct Slicer<K> {
 }
 
 impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
+    /// A slicer whose slice climbs throughput ([`Tuner`]).
     pub fn new(policy: Policy) -> Self {
+        Self::with(policy, Box::new(Tuner::default()))
+    }
+
+    /// A slicer under another control law: a baseline, a candidate, a learned one.
+    pub fn with(policy: Policy, control: Box<dyn Control>) -> Self {
         Self {
             policy,
             minds: HashMap::new(),
             running: None,
             switch: Measured::default(),
-            tuner: Tuner::default(),
+            control,
             engine: 0.0,
             window_switches: 0,
             window_worst: 0.0,
         }
+    }
+
+    /// The control law's name, for traces and reports.
+    pub fn control(&self) -> &'static str {
+        self.control.name()
+    }
+
+    /// One recorded input applied, the decision returned for a [`trace::Event::Decide`]: every
+    /// input reaches the slicer through here when replayed, so a trace is the whole truth of a run.
+    pub fn apply(&mut self, event: &trace::Event<K>, start: Instant) -> Option<Next<K>> {
+        use trace::Event;
+        match event {
+            Event::Need(mind, need) => self.need(mind.clone(), *need),
+            Event::Ready(mind) => self.ready(mind.clone()),
+            Event::Done(mind) => self.done(mind),
+            Event::Stepped(mind, took) => self.stepped(mind, *took),
+            Event::Switched(mind, took) => self.switched(mind, *took),
+            Event::Decide(at, _) => return Some(self.next(start + *at)),
+        }
+        None
     }
 
     /// The longest any mind waited in the window now open: what the wall is checked against.
@@ -196,7 +226,7 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             entry.pass += seconds / weight(entry.need);
         }
         self.engine += seconds;
-        self.tuner.stepped(seconds);
+        self.control.stepped(seconds);
     }
 
     /// Bringing her in took this long, measured; she pays for it. After a full rotation of the
@@ -208,13 +238,13 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             entry.pass += seconds / weight(entry.need);
         }
         self.engine += seconds;
-        self.tuner.switched(seconds);
+        self.control.switched(seconds);
         self.window_switches += 1;
         let ready = self.minds.values().filter(|m| m.ready).count();
         if self.window_switches >= ready.max(1) {
             let floor = self.minds.get(mind).and_then(|m| m.step.0).unwrap_or(0.0);
             let over = self.window_worst > self.policy.wait_bound.as_secs_f64();
-            self.tuner.close(over, floor, self.wall());
+            self.control.close(over, floor, self.wall());
             self.window_switches = 0;
             self.window_worst = 0.0;
         }
@@ -242,7 +272,7 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             return Some(running.since);
         }
         // The earliest a waiting mind's guard falls due, as a wall instant.
-        let guard = self.guard(&running.mind).map(|(_, due)| {
+        let guard = self.guard(Some(&running.mind)).map(|(_, due)| {
             running.since + Duration::try_from_secs_f64((due - running.engine_at).max(0.0)).unwrap_or_default()
         });
         let end = if self.finishes_under_a_switch(&running.mind) {
@@ -263,7 +293,9 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             return Next::Idle;
         };
         let Some(running) = &self.running else {
-            return self.bring_in(best, now);
+            // The lane is free (a turn ended): a mind out of slack still comes first.
+            let pick = self.pick(best);
+            return self.bring_in(pick, now);
         };
         let others = self.minds.iter().filter(|(k, m)| m.ready && **k != running.mind).count();
         if others == 0 {
@@ -271,7 +303,7 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
         }
         // The bound is a guarantee, not a hope: a waiting mind whose slack is gone runs now, whatever
         // the shares say (stride sets the shares; this guard keeps the bound, as an RTOS deadline).
-        if let Some((due, at)) = self.guard(&running.mind) {
+        if let Some((due, at)) = self.guard(Some(&running.mind)) {
             if at <= self.engine {
                 return self.bring_in(due, now);
             }
@@ -289,7 +321,8 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             self.running = Some(Running { mind: best, since: now, engine_at: self.engine, cut: false });
             return Next::Continue;
         }
-        self.bring_in(best, now)
+        let pick = self.pick(best);
+        self.bring_in(pick, now)
     }
 
     /// The mind holding the engine now.
@@ -309,29 +342,56 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
         Next::Switch(mind)
     }
 
+    /// Who comes in at a switch: the stride's choice, unless a waiting mind would miss her bound
+    /// during that choice's switch and first step (the next boundary the guard sees), in which case
+    /// she does.
+    fn pick(&self, best: K) -> K {
+        let switch = self.switch.0.unwrap_or(0.0);
+        let first_step = self.minds.get(&best).and_then(|m| m.step.0).unwrap_or(0.0);
+        match self.guard(None) {
+            Some((due, at)) if at <= self.engine + switch + first_step => due,
+            _ => best,
+        }
+    }
+
     /// The waiting mind whose bound falls due first, and the engine time it falls due: the last
     /// moment she can still be brought in and step inside the bound (her wait so far, then one more
     /// step of the running mind, a switch and her own step).
-    fn guard(&self, running: &K) -> Option<(K, f64)> {
+    fn guard(&self, running: Option<&K>) -> Option<(K, f64)> {
         let bound = self.policy.wait_bound.as_secs_f64();
         let switch = self.switch.0.unwrap_or(0.0);
-        let running_step = self.minds.get(running).and_then(|m| m.step.0).unwrap_or(0.0);
-        self.minds
+        let running_step = running.and_then(|r| self.minds.get(r)).and_then(|m| m.step.0).unwrap_or(0.0);
+        let mut due: Vec<(f64, f64, K)> = self
+            .minds
             .iter()
-            .filter(|(k, m)| m.ready && *k != running)
+            .filter(|(k, m)| m.ready && Some(*k) != running)
             .filter_map(|(k, m)| {
                 let since = m.waiting_since?;
-                let margin = running_step + switch + m.step.0.unwrap_or(0.0);
-                Some((k.clone(), since + bound - margin))
+                let service = switch + m.step.0.unwrap_or(0.0);
+                Some((since + bound - running_step - service, service, k.clone()))
             })
-            .min_by(|(ka, a), (kb, b)| a.total_cmp(b).then_with(|| ka.cmp(kb)))
+            .collect();
+        due.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+        // Served earliest-due first, each mind also waits for the service of every mind due before
+        // her: her guard falls that much earlier (EDF feasibility), so two due together both make it.
+        // The mind to bring in is the earliest due (EDF order); the instant is the tightest guard of
+        // all, which may belong to a mind behind her: bringing her in then is what lets that one
+        // make it too.
+        let first = due.first().map(|(_, _, mind)| mind.clone())?;
+        let mut ahead = 0.0;
+        let mut tightest = f64::INFINITY;
+        for (at, service, _) in &due {
+            tightest = tightest.min(at - ahead);
+            ahead += service;
+        }
+        Some((first, tightest))
     }
 
     /// Seconds the running mind keeps the engine: the loop's slice, never past the wall as the
     /// ready set stands now, never under one of her own steps.
     fn slice(&self, mind: &K) -> f64 {
         let step = self.minds.get(mind).and_then(|m| m.step.0).unwrap_or(0.0);
-        self.tuner.slice().min(self.wall()).max(step).max(0.0)
+        self.control.slice().min(self.wall()).max(step).max(0.0)
     }
 
     fn finishes_under_a_switch(&self, mind: &K) -> bool {
@@ -362,6 +422,7 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
 
 #[cfg(test)]
 mod tests {
+    use super::sim::{run, MindLoad, Workload};
     use super::*;
 
     const STEP: Duration = Duration::from_millis(20);
@@ -375,74 +436,30 @@ mod tests {
         Need { urgency, waiting: 0 }
     }
 
-    /// Runs the engine for `steps` step boundaries: each step takes STEP, each switch SWITCH.
-    /// Returns the engine seconds each mind stepped, the switches, and the longest any ready mind
-    /// went between its steps.
-    struct Run {
-        stepped: HashMap<char, f64>,
-        switches: usize,
-        longest_wait: HashMap<char, Duration>,
-    }
-
-    fn run(slicer: &mut Slicer<char>, start: Instant, steps: usize, mut event: impl FnMut(usize, &mut Slicer<char>)) -> Run {
-        let mut now = start;
-        let mut out = Run { stepped: HashMap::new(), switches: 0, longest_wait: HashMap::new() };
-        let mut last: HashMap<char, Instant> = HashMap::new();
-        for i in 0..steps {
-            event(i, slicer);
-            let had = slicer.running().is_some();
-            match slicer.next(now) {
-                Next::Idle => break,
-                Next::Switch(mind) => {
-                    if had {
-                        out.switches += 1;
-                    }
-                    now += SWITCH;
-                    slicer.switched(&mind, SWITCH);
-                }
-                Next::Continue => {}
-            }
-            let Some(&mind) = slicer.running() else { break };
-            if let Some(prev) = last.get(&mind) {
-                let gap = now.saturating_duration_since(*prev);
-                let worst = out.longest_wait.entry(mind).or_default();
-                *worst = (*worst).max(gap);
-            }
-            now += STEP;
-            slicer.stepped(&mind, STEP);
-            last.insert(mind, now);
-            *out.stepped.entry(mind).or_default() += STEP.as_secs_f64();
-        }
-        out
+    /// A mind decoding without end from `starts`.
+    fn decoding(mind: char, urgency: Urgency, starts: Duration) -> MindLoad<char> {
+        MindLoad { mind, need: need(urgency), changes: Vec::new(), step: STEP, turn: u64::MAX, rest: Duration::ZERO, starts }
     }
 
     // what this catches: one mind holding the engine for a whole turn while equals wait (the decode
-    // permit held per generation, 2026-11-22). Equal needs alternate at the measured slice: switches
-    // stay near the switch share, every mind's next step comes within the wait target, and the
-    // engine time splits evenly.
+    // permit held per generation, 2026-11-22). Equal needs alternate: the engine splits evenly, every
+    // mind's next step comes inside the bound, and switching stays near what the wall allows.
     #[test]
-    fn equal_minds_take_turns_at_the_measured_slice() {
-        let mut slicer = Slicer::new(policy());
+    fn equal_minds_take_turns_inside_the_bound() {
+        let load = Workload { minds: ['a', 'b', 'c'].map(|m| decoding(m, Urgency::Want, Duration::ZERO)).to_vec(), switch: SWITCH };
+        let (report, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(60));
         for mind in ['a', 'b', 'c'] {
-            slicer.need(mind, need(Urgency::Want));
-            slicer.ready(mind);
+            assert!((report.share[&mind] - 1.0 / 3.0).abs() < 0.02, "{mind} got {:.3} of the engine", report.share[&mind]);
         }
-        let run = run(&mut slicer, Instant::now(), 3_000, |_, _| {});
-        let total: f64 = run.stepped.values().sum();
-        for mind in ['a', 'b', 'c'] {
-            let share = run.stepped[&mind] / total;
-            assert!((share - 1.0 / 3.0).abs() < 0.02, "{mind} got {share:.3} of the engine");
-            assert!(run.longest_wait[&mind] <= Duration::from_secs(1) + STEP, "{mind} waited {:?}", run.longest_wait[&mind]);
-        }
-        let switching = run.switches as f64 * SWITCH.as_secs_f64();
-        // The best the wall allows: a slice of (1 s / 2 others) less one switch, so 474 ms per 26 ms switch.
-        assert!(switching / (switching + total) <= 0.10, "switching took {:.3} of the engine; the wall allows 0.052", switching / (switching + total));
-        assert!(run.switches > 50, "they alternated ({} switches), nobody held a turn", run.switches);
+        assert!(report.worst() <= Duration::from_secs(1), "a mind waited {:?}", report.worst());
+        // The best the wall allows: (1 s / 2 others) less one switch, so 474 ms per 26 ms switch, 48.7 steps/s.
+        assert!(report.throughput > 0.9 * 50.0, "throughput {:.1} steps/s", report.throughput);
+        assert!(report.switches > 50, "they alternated ({} switches), nobody held a turn", report.switches);
     }
 
     // what this catches: shares fixed at admission instead of following SAGE's events. A mind
-    // addressed mid-slice (urgency rises) takes the very next step; afterwards the higher need gets
-    // about twice the engine of the lower one, and the lower one still runs.
+    // addressed mid-slice (urgency rises) takes the very next step; an urgent mind gets about twice
+    // the engine of a wanting one, and the wanting one still runs.
     #[test]
     fn need_events_move_the_share_and_a_rise_takes_the_next_step() {
         let mut slicer = Slicer::new(policy());
@@ -457,9 +474,18 @@ mod tests {
         slicer.need('b', need(Urgency::Urgent));
         assert_eq!(slicer.next(start + STEP + SWITCH), Next::Switch('b'), "the rise takes the next step, mid-slice");
 
-        let run = run(&mut slicer, start + Duration::from_secs(1), 6_000, |_, _| {});
-        let ratio = run.stepped[&'b'] / run.stepped[&'a'];
-        assert!((ratio - 2.0).abs() < 0.2, "urgent got {ratio:.2}x of want's engine");
+        // Over a run, the shares follow the needs: content b gets half of want a; once b's need
+        // rises a minute in, urgent b gets twice a over the rest.
+        let mut b = decoding('b', Urgency::Content, Duration::ZERO);
+        b.changes = vec![(Duration::from_secs(60), need(Urgency::Urgent))];
+        let load = Workload { minds: vec![decoding('a', Urgency::Want, Duration::ZERO), b], switch: SWITCH };
+        let (before, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(60));
+        let ratio = before.share[&'a'] / before.share[&'b'];
+        assert!((ratio - 2.0).abs() < 0.25, "want got {ratio:.2}x of content");
+        let (whole, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(180));
+        // 60 s at 2:1 for a, then 120 s at 1:2: b's share over the whole run is (1/3 + 2 * 2/3) / 3.
+        assert!((whole.share[&'b'] - 5.0 / 9.0).abs() < 0.04, "b's share {:.3} follows the rise", whole.share[&'b']);
+        assert!(whole.worst() <= Duration::from_secs(1), "through the rise nobody waited past the bound: {:?}", whole.worst());
     }
 
     // what this catches: a switch spent on a mind about to finish. Her measured turn length says she
@@ -490,18 +516,15 @@ mod tests {
     }
 
     // what this catches: a mind that slept banking credit and locking the others out on waking.
-    // She starts at the ready floor, so the engine splits evenly from her return.
+    // b arrives a minute in; she starts at the ready floor, so a keeps running inside the bound.
     #[test]
     fn a_waking_mind_banks_no_credit() {
-        let mut slicer = Slicer::new(policy());
-        slicer.need('a', need(Urgency::Want));
-        slicer.ready('a');
-        slicer.need('b', need(Urgency::Want));
-        let start = Instant::now();
-        run(&mut slicer, start, 500, |_, _| {});
-        slicer.ready('b');
-        let run = run(&mut slicer, start + Duration::from_secs(60), 100, |_, _| {});
-        assert!(run.stepped.get(&'a').copied().unwrap_or(0.0) > 0.0, "a still runs after b wakes");
-        assert!(run.longest_wait[&'a'] <= Duration::from_secs(1) + STEP);
+        let load = Workload {
+            minds: vec![decoding('a', Urgency::Want, Duration::ZERO), decoding('b', Urgency::Want, Duration::from_secs(60))],
+            switch: SWITCH,
+        };
+        let (report, _) = run(&mut Slicer::new(policy()), &load, Duration::from_secs(70));
+        assert!(report.worst_wait.get(&'a').is_some_and(|w| *w <= Duration::from_secs(1)), "a waited {:?}", report.worst_wait.get(&'a'));
+        assert!(report.share[&'b'] > 0.0);
     }
 }
