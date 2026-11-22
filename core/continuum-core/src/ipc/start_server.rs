@@ -103,6 +103,9 @@ pub fn start_server(
     );
     inference_modules::register_inference_modules(&runtime);
 
+    // The trainer resolves every submission's base on the same live catalog `models/*` mutates, so a
+    // model pulled after boot is learnable at once (card 2948758f).
+    let trainer_models = Arc::clone(&model_catalog);
     let cognition_modules::CognitionHandles {
         channel_registries,
     } = cognition_modules::register_cognition_and_memory_modules(
@@ -231,6 +234,7 @@ pub fn start_server(
             &serving_daemon,
             &resource_daemon,
             &airc_interceptor_cell,
+            &trainer_models,
         );
     }
     let grid_state = closing_modules::register_closing_modules(&runtime, &gpu_manager, &code_state)?;

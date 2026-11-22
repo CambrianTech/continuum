@@ -63,7 +63,7 @@ mod durable;
 mod serving_wake;
 pub(crate) mod competence;
 mod in_place;
-pub(crate) use durable::{RetireReport, RetireSelection};
+pub(crate) use durable::{CheckpointedSides, Membership, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0
@@ -157,6 +157,15 @@ pub struct TrainingTriggerState {
     initial_adapter: std::sync::OnceLock<Arc<dyn crate::orm::StorageAdapter>>,
     ready: std::sync::atomic::AtomicBool,
     stopping: std::sync::atomic::AtomicBool,
+    /// This node has accepted examples and no engine to learn them on, and has said so once
+    /// ([`TrainingTriggerState::note_no_learning_engine`]); cleared when a learning engine appears.
+    no_learning_engine_noted: std::sync::atomic::AtomicBool,
+    /// Bucket membership: bumped by every write that moves rows between buckets (a re-key), under
+    /// both buckets' gates, so a pass that selected its rows before the move stops at its gate.
+    membership: std::sync::atomic::AtomicU64,
+    /// The LIVE model catalog every submit resolves its base against (`base_identity::canonical_base`):
+    /// the one the serving daemon and `models/*` mutate, so a model pulled after boot resolves at once.
+    models: Arc<crate::model_registry::live::ModelCatalog>,
     next_sequence: std::sync::atomic::AtomicU64,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
     in_place: in_place::InPlace,
@@ -181,14 +190,20 @@ impl TrainingTriggerState {
         (unlearned > 0).then_some(unlearned as usize)
     }
 
+    /// The live model catalog, as it reads now: what a submit resolves its base against.
+    pub(crate) fn models_now(&self) -> Arc<crate::model_registry::live::CatalogSnapshot> {
+        self.models.snapshot()
+    }
+
     /// Test-only: record submission `id`'s first `learned` examples as learned in place.
     #[cfg(test)]
     pub(crate) async fn mark_learned(&self, id: Uuid, learned: u32) -> Result<(), String> {
         self.durable.require()?.record_learned(id, learned).await
     }
 
-    pub(crate) fn new(authority: crate::genome::learner::seat::Authority) -> Self {
+    pub(crate) fn new(authority: crate::genome::learner::seat::Authority, models: &Arc<crate::model_registry::live::ModelCatalog>) -> Self {
         Self {
+            models: Arc::clone(models),
             submit_gates: PerKeyGate::new(),
             executor: LateBound::new("training-trigger::executor"),
             durable: LateBound::new("training-trigger::durable-store"),
@@ -198,6 +213,8 @@ impl TrainingTriggerState {
             initial_adapter: std::sync::OnceLock::new(),
             ready: std::sync::atomic::AtomicBool::new(false),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            no_learning_engine_noted: std::sync::atomic::AtomicBool::new(false),
+            membership: std::sync::atomic::AtomicU64::new(0),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
@@ -221,9 +238,37 @@ impl TrainingTriggerState {
     pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
         self.ensure_storage().await?; // an interrupted schema setup is retried here, serving or not
         let Some(lane) = crate::inference::lane_registry::live_lane() else {
+            if !self.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed) {
+                let pending = self.pending_views().await?;
+                self.note_no_learning_engine(&pending);
+            }
             return Ok(());
         };
+        self.no_learning_engine_noted.store(false, std::sync::atomic::Ordering::Relaxed);
         self.learn_in_place(lane.incarnation(), &lane.model).await
+    }
+
+    /// No llama-server lane: in-place learning has no engine on this node. A node that serves
+    /// in-process (the 5090, Codex 2026-11-22: 8 accepted examples, learned=0, no checkpoint) is
+    /// serving, so this is never a quiet "nothing to do". With examples waiting, say so once per
+    /// transition, naming what waits; in-process learning is IN-PROCESS-LEARNING.md L2 and L3.
+    fn note_no_learning_engine(&self, pending: &[crate::commands::training_trigger::status::PendingBucketView]) {
+        let examples: u64 = pending.iter().map(|bucket| u64::from(bucket.examples_pending)).sum();
+        if examples == 0 {
+            return;
+        }
+        self.no_learning_engine_noted.store(true, std::sync::atomic::Ordering::Relaxed);
+        let buckets: Vec<String> = pending
+            .iter()
+            .filter(|bucket| bucket.examples_pending > 0)
+            .map(|bucket| format!("{}/{}/{}: {}", bucket.persona_name, bucket.trait_kind, bucket.base_model, bucket.examples_pending))
+            .collect();
+        continuum_base::probe!(
+            class = "training.in_place.no_learning_engine",
+            examples_waiting = examples,
+            buckets = ?buckets,
+            "accepted examples wait and this node has no learning engine (no llama-server lane; in-process learning is IN-PROCESS-LEARNING.md L2/L3): nothing will be learned here until one exists"
+        );
     }
 
 }
@@ -240,9 +285,9 @@ pub struct TrainingTriggerModule {
 impl TrainingTriggerModule {
     /// The trigger, learning in place under `authority` (the core's resource authority, serving
     /// lifecycle gate and lease custody).
-    pub fn new(authority: crate::genome::learner::seat::Authority) -> Self {
+    pub fn new(authority: crate::genome::learner::seat::Authority, models: &Arc<crate::model_registry::live::ModelCatalog>) -> Self {
         Self {
-            state: Arc::new(TrainingTriggerState::new(authority)),
+            state: Arc::new(TrainingTriggerState::new(authority, models)),
             serving_wake: Default::default(),
         }
     }
@@ -314,8 +359,8 @@ impl ServiceModule for TrainingTriggerModule {
     /// Stop admitting passes and report the learning operations still running: a step in flight
     /// is counted, never reported as drained.
     async fn drain(&self) -> Result<u32, String> {
-        self.serving_wake.stop().await;
-        let in_flight = self.state.stop_admitting().await;
+        shutdown_step("drain.wake_stop", self.serving_wake.stop()).await;
+        let in_flight = shutdown_step("drain.stop_admitting", self.state.stop_admitting()).await;
         u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
     }
 
@@ -323,7 +368,7 @@ impl ServiceModule for TrainingTriggerModule {
     /// step (her progress since her newest generation is learned again from the journal if the
     /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
     async fn save_state(&self) -> Result<(), String> {
-        let quiesced = self.state.in_place.quiesce(&self.state, in_place::Busy::Skip).await;
+        let quiesced = shutdown_step("save.quiesce", self.state.in_place.quiesce(&self.state, in_place::Busy::Skip)).await;
         continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
         match quiesced.unpublished {
@@ -333,8 +378,21 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
-        self.serving_wake.stop().await;
+        shutdown_step("shutdown.wake_stop", self.serving_wake.stop()).await;
         self.state.drain_operations().await
     }
+}
+
+/// One step of the trainer's shutdown, between a `begin` and an `end` probe. The runtime bounds each
+/// phase and drops a phase that overruns, so a step's own end probe never fires when it is the one
+/// that hung: a `begin` with no `end` names it (the 5090, 2026-11-22: drain exceeded 2 s and the join
+/// timed out, with no step named).
+pub(crate) async fn shutdown_step<T>(step: &'static str, work: impl std::future::Future<Output = T>) -> T {
+    let began = std::time::Instant::now();
+    continuum_base::probe!(class = "training.shutdown.step", step, phase = "begin", "a trainer shutdown step begins");
+    let out = work.await;
+    continuum_base::probe!(class = "training.shutdown.step", step, phase = "end", ms = began.elapsed().as_millis() as u64,
+        "a trainer shutdown step ended");
+    out
 }
 
