@@ -109,9 +109,6 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     if p.persona_name.trim().is_empty() {
         return Err(CommandError::Invalid("persona_name must be non-empty".into()));
     }
-    if p.base_model.trim().is_empty() {
-        return Err(CommandError::Invalid("base_model must be non-empty".into()));
-    }
     if p.trait_kind.trim().is_empty() {
         return Err(CommandError::Invalid("trait_kind must be non-empty".into()));
     }
@@ -123,7 +120,7 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     let key = BucketKey {
         persona_id: p.persona_id,
         trait_kind: p.trait_kind.clone(),
-        base_model: bucket_base(&p.base_model),
+        base_model: bucket_base(&state.models_now(), &p.base_model)?,
     };
 
     let batch = PendingBatch {
@@ -163,32 +160,55 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
 }
 
 
-/// The base a bucket is keyed by: the catalog id when the registry knows the spelling (its id, its
-/// HF repo, or its local GGUF's file stem), so one base is one bucket and the learner on that row
-/// can match it; a spelling no row knows is kept as it came, as before. A spelling two rows share
-/// is never resolved by picking one: it is kept, and named.
-fn bucket_base(requested: &str) -> String {
-    match crate::model_registry::base_identity::canonical_base(requested) {
-        Ok(Some(catalog_id)) => {
-            if catalog_id != requested {
-                continuum_base::probe!(
-                    class = "training.submit.base_resolved",
-                    requested = %requested,
-                    catalog_id = %catalog_id,
-                    "a training submission named its base by another spelling: keyed by the catalog id"
-                );
-            }
-            catalog_id
+/// The base a bucket is keyed by: always the catalog id, resolved on the LIVE catalog (its id, its HF
+/// repo, or its local GGUF's file stem), so one base is one bucket the learner on that row can match,
+/// and a model pulled after boot resolves without a restart. Any other spelling is refused before
+/// anything is written: a kept spelling is a second bucket for one base.
+fn bucket_base(catalog: &crate::model_registry::live::CatalogSnapshot, requested: &str) -> Result<String, CommandError> {
+    let catalog_id = crate::model_registry::base_identity::canonical_base(catalog, requested).map_err(|refused| {
+        CommandError::Arguments(crate::runtime::arguments::ArgumentsRefusal::field(
+            "baseModel",
+            crate::runtime::arguments::FieldProblem::WrongValue { expected: refused.to_string(), sent: crate::runtime::arguments::JsonKind::String },
+        ))
+    })?;
+    if catalog_id != requested {
+        continuum_base::probe!(
+            class = "training.submit.base_resolved",
+            requested = %requested,
+            catalog_id = %catalog_id,
+            "a training submission named its base by another spelling: keyed by the catalog id"
+        );
+    }
+    Ok(catalog_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::{build_runtime_trigger_only, ex, submit_params, FIXTURE_HF, SHARED_HF};
+    use uuid::Uuid;
+
+    // what this catches (Codex on #6222): a base that names no catalog row, two rows, or nothing kept
+    // as given, so a second bucket for one base is written that no learner can match. Each is refused
+    // before anything is written; a spelling that names one row persists under its catalog id.
+    #[tokio::test]
+    async fn a_base_that_names_no_single_row_writes_nothing_and_one_that_does_keys_by_its_catalog_id() {
+        let (trigger, executor, _dir) = build_runtime_trigger_only().await;
+        let persona = Uuid::new_v4();
+        for refused in ["", "no-such-base", SHARED_HF] {
+            let mut params = submit_params(persona, "code", vec![ex("What is 2+2?", "4")]);
+            params["baseModel"] = serde_json::json!(refused);
+            let answer = executor.execute_json("genome/training-trigger/submit", params).await;
+            assert!(answer.as_ref().is_err_and(|why| why.contains("baseModel")), "'{refused}' is refused on its baseModel: {answer:?}");
+            assert_eq!(trigger.state.bucket_example_count(persona, "code", refused).await, None, "'{refused}' wrote nothing");
         }
-        Ok(None) => requested.to_owned(),
-        Err(ambiguous) => {
-            continuum_base::probe!(
-                class = "training.submit.base_ambiguous",
-                requested = %ambiguous.requested,
-                rows = ?ambiguous.rows,
-                "a training submission's base names more than one catalog row: kept as given, never resolved by picking one"
-            );
-            requested.to_owned()
+        for twin in ["fixture-twin-a", "fixture-twin-b"] {
+            assert_eq!(trigger.state.bucket_example_count(persona, "code", twin).await, None, "an ambiguous base picked no row: {twin}");
         }
+        let mut params = submit_params(persona, "code", vec![ex("What is 3+3?", "6")]);
+        params["baseModel"] = serde_json::json!(FIXTURE_HF);
+        let answer = executor.execute_json("genome/training-trigger/submit", params).await.expect("test: submit routes"); // test fixture
+        assert_eq!(answer["success"], true, "an HF spelling of one row is accepted: {answer}");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code", "fixture-base").await, Some(1), "persisted under the catalog id");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code", FIXTURE_HF).await, None, "never under the spelling it arrived as");
     }
 }

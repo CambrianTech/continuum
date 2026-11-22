@@ -91,6 +91,41 @@ pub(crate) mod test_support {
         })
     }
 
+    /// An HF spelling of `fixture-base`, so a submit can name it another way and land in its bucket.
+    pub(crate) const FIXTURE_HF: &str = "fixture/base-repo";
+    /// The HF repo two fixture rows share, so a submit naming it is refused as ambiguous.
+    pub(crate) const SHARED_HF: &str = "fixture/shared-base";
+
+    /// The bases this binary's tests submit, as a live model catalog every trigger fixture is built
+    /// on: submit resolves each base against it, so each fixture base needs a row. The live-engine
+    /// fixture's base (`CONTINUUM_LEARN_BASE`) is one when set. Rows carry no artifact hint or local
+    /// file, so resolution never reads this machine's models.
+    pub(crate) fn fixture_catalog() -> Arc<crate::model_registry::live::ModelCatalog> {
+        let template = crate::model_registry::catalog::models().into_iter().next().expect("test: the catalog has a row"); // test fixture
+        let row = |id: &str, hf: Option<&str>| {
+            let mut row = template.clone();
+            row.id = id.to_owned();
+            row.hf_source = hf.map(str::to_owned);
+            row.gguf_hint = None;
+            row.gguf_local_path = None;
+            row.mmproj_local_path = None;
+            row
+        };
+        let mut rows = vec![
+            row("synthetic", None),
+            row("qwen", None),
+            row("test", None),
+            row("fixture-base", Some(FIXTURE_HF)),
+            row("fixture-twin-a", Some(SHARED_HF)),
+            row("fixture-twin-b", Some(SHARED_HF)),
+        ];
+        if let Ok(live) = std::env::var("CONTINUUM_LEARN_BASE") {
+            rows.push(row(&live, None));
+        }
+        let registry = crate::model_registry::Registry::from_catalog(rows, crate::model_registry::catalog::providers()).expect("test: the fixture rows load"); // test fixture
+        Arc::new(crate::model_registry::live::ModelCatalog::from_registry(&registry))
+    }
+
     pub(crate) async fn build_runtime_trigger_only() -> (
         Arc<TrainingTriggerModule>,
         Arc<CommandExecutor>,
@@ -113,30 +148,31 @@ pub(crate) mod test_support {
         authority: crate::genome::learner::seat::Authority,
     ) -> (Arc<TrainingTriggerModule>, Arc<CommandExecutor>) {
         let registry = Arc::new(ModuleRegistry::new());
-        let trigger = Arc::new(TrainingTriggerModule::new(authority));
+        let trigger = Arc::new(TrainingTriggerModule::new(authority, &fixture_catalog()));
         trigger.state.initialize_storage(adapter).await.unwrap();
         registry.register(trigger.clone());
         let executor = Arc::new(CommandExecutor::new(registry.clone()));
         registry.install_executor_on_all(executor.clone());
         (trigger, executor)
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+    /// The family's own check, nested in the file's one test module (one `#[cfg(test)] mod` per file).
+    mod family {
+        use super::super::*;
+        use super::fixture_catalog;
 
-    // what this catches: the dep-holding family wires its trigger-backed verbs
-    // (submit/retire/status) over the one shared state. A regression that drops any of
-    // them — or fails to share the state — is caught.
-    #[tokio::test]
-    async fn family_exposes_the_trigger_verbs() {
-        let state = Arc::new(TrainingTriggerState::new(crate::genome::learner::seat::Authority::isolated(1 << 30)));
-        let objs = command_objects(state);
-        let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
-        assert_eq!(names.len(), 3);
-        assert!(names.contains(&"genome/training-trigger/submit"));
-        assert!(names.contains(&"genome/training-trigger/retire"));
-        assert!(names.contains(&"genome/training-trigger/status"));
+        // what this catches: the dep-holding family wires its trigger-backed verbs
+        // (submit/retire/status) over the one shared state. A regression that drops any of
+        // them — or fails to share the state — is caught.
+        #[tokio::test]
+        async fn family_exposes_the_trigger_verbs() {
+            let state = Arc::new(TrainingTriggerState::new(crate::genome::learner::seat::Authority::isolated(1 << 30), &fixture_catalog()));
+            let objs = command_objects(state);
+            let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
+            assert_eq!(names.len(), 3);
+            assert!(names.contains(&"genome/training-trigger/submit"));
+            assert!(names.contains(&"genome/training-trigger/retire"));
+            assert!(names.contains(&"genome/training-trigger/status"));
+        }
     }
 }

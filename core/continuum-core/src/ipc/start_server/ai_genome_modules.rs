@@ -8,6 +8,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
     serving_daemon: &Arc<crate::modules::serving_daemon::ServingDaemonModule>,
     resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
+    model_catalog: &Arc<crate::model_registry::live::ModelCatalog>,
 ) {
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
@@ -82,7 +83,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
         }
         let authority = authority();
         runtime.register(Arc::new(
-            crate::modules::training_trigger::TrainingTriggerModule::new(authority)
+            crate::modules::training_trigger::TrainingTriggerModule::new(authority, model_catalog)
                 .with_serving_changes(serving_daemon.subscribe_serving()),
         ));
         log_info!(

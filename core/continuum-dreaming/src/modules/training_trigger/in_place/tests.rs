@@ -118,7 +118,7 @@ async fn a_dead_engines_learning_state_is_retired_and_its_leases_released() {
 // moves on (here to the trigger's own refusal: this bare trigger never recovered durable state).
 #[tokio::test]
 async fn her_waiting_learner_never_holds_her_bucket_gate() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     let persona = Uuid::new_v4();
     let key = BucketKey { persona_id: persona, trait_kind: "code".into(), base_model: "qwen".into() };
     let example = crate::genome::fine_tuning::types::TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
@@ -138,7 +138,7 @@ async fn her_waiting_learner_never_holds_her_bucket_gate() {
 // stop another from running and finishing.
 #[tokio::test]
 async fn a_waiting_bucket_never_holds_another_buckets_pass() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     let (waiting, other) = (
         BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
         BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "qwen".into() },
@@ -413,7 +413,7 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 // join then timed out. A running operation is counted, and nothing new is admitted after it.
 #[tokio::test]
 async fn a_drain_counts_the_learning_still_running() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     state.spawn_owned(std::future::pending());
     assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
     assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
@@ -424,7 +424,7 @@ async fn a_drain_counts_the_learning_still_running() {
 // join quiesces it); the save returns at once.
 #[tokio::test]
 async fn a_save_leaves_a_busy_engine_to_its_step() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     let stepping = state.in_place.engine(engine(9)).try_acquire(Some(Uuid::new_v4()), engine_lock::Phase::Step).expect("test: the step holds the engine");
     let saved = tokio::time::timeout(std::time::Duration::from_secs(5), state.in_place.quiesce(&state, Busy::Skip))
         .await
@@ -441,7 +441,7 @@ async fn a_save_leaves_a_busy_engine_to_its_step() {
 #[tokio::test]
 async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     use crate::runtime::ServiceModule;
-    let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority());
+    let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog());
     trigger.state.spawn_owned(std::future::pending());
     assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
     let idle = engine(9);
@@ -683,7 +683,7 @@ mod live_engine {
 
 #[tokio::test]
 async fn shutdown_joins_a_fence_registered_by_a_running_step() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     let owner = state.clone();
     let (release, started) = tokio::sync::oneshot::channel();
     let (finished, fence) = tokio::sync::oneshot::channel();
@@ -706,7 +706,7 @@ async fn shutdown_joins_a_fence_registered_by_a_running_step() {
 
 #[tokio::test]
 async fn prepare_waiters_have_no_engine_work_to_drain() {
-    let state = Arc::new(TrainingTriggerState::new(authority()));
+    let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
     state.ready.store(true, std::sync::atomic::Ordering::Release);
     let engine = engine(9);
     let slot = state.in_place.engine(engine);
