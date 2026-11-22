@@ -4,7 +4,7 @@
 //! the exact request she was served, a `completed` row (same `request_id`) holds what came back.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// What her prompt showed of her own past steps.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,17 +40,36 @@ pub struct Act {
     pub completed: bool,
 }
 
+/// Why captures could not be read: the path and the I/O cause.
+#[derive(Debug)]
+pub enum LoadError {
+    /// The captures directory could not be listed.
+    List { dir: PathBuf, cause: std::io::Error },
+    /// A capture file could not be read.
+    Read { file: PathBuf, cause: std::io::Error },
+}
+
+impl std::fmt::Display for LoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LoadError::List { dir, cause } => write!(f, "cannot list captures at {}: {cause}", dir.display()),
+            LoadError::Read { file, cause } => write!(f, "cannot read {}: {cause}", file.display()),
+        }
+    }
+}
+
 /// Every mind's acts, oldest first, keyed by persona id.
-pub fn load(dir: &Path) -> Result<BTreeMap<String, Vec<Act>>, String> {
+pub fn load(dir: &Path) -> Result<BTreeMap<String, Vec<Act>>, LoadError> {
     let mut acts: BTreeMap<String, (String, Act)> = BTreeMap::new();
     let mut done: BTreeMap<String, (Vec<Call>, bool)> = BTreeMap::new();
-    let entries = std::fs::read_dir(dir).map_err(|e| format!("cannot read captures at {}: {e}", dir.display()))?;
+    let list = |cause| LoadError::List { dir: dir.to_path_buf(), cause };
+    let entries = std::fs::read_dir(dir).map_err(list)?;
     for entry in entries {
-        let path = entry.map_err(|e| format!("cannot list {}: {e}", dir.display()))?.path();
+        let path = entry.map_err(list)?.path();
         if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
             continue;
         }
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(&path).map_err(|cause| LoadError::Read { file: path.clone(), cause })?;
         for line in text.lines() {
             let submitted = line.contains("\"event\":\"submitted\"");
             if !submitted && !line.contains("\"event\":\"completed\"") {

@@ -196,9 +196,10 @@ mod tests {
         fn tier_name(&self) -> &str {
             self.name
         }
-        // A generous budget: by its own pressure this pool never needs relief (the M5's shape).
+        // A generous budget, ten times what it holds: by its own pressure this pool never needs
+        // relief (the M5's shape); only the volume's pressure asks it.
         fn capacity_bytes(&self) -> u64 {
-            u64::MAX
+            self.bytes.load(Ordering::Relaxed).saturating_mul(10)
         }
         fn usage_bytes(&self) -> u64 {
             self.bytes.load(Ordering::Relaxed)
