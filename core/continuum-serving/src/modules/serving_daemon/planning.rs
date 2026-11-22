@@ -332,7 +332,7 @@ impl ServingDaemonModule {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon",
                         class = "serving.plan.closeness_refused",
-                        floor = floor.map(|f| f.model_id.as_str()).unwrap_or("<unavailable>"),
+                        floor = floor.as_ref().map(|f| f.model_id.as_str()).unwrap_or("<unavailable>"),
                         wanted = plan.base_model.model_id.as_str(),
                         new_closeness,
                         prev_closeness,
