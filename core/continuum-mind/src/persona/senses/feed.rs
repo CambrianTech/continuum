@@ -4,8 +4,10 @@
 //! one attach per room; that feed is the one truth and her perception renders it. Every room's
 //! attach task hands its events to [`hear`]; the Feed part classifies each event once and says
 //! it on the node bus's feed topic, which every resident's senses hear (object model 5.7: many producers
-//! into a worker, fanned out by handle). An emit waits for each subscriber's room, and senses
-//! never wait on anything slow, so nothing is dropped and no lock is held per event.
+//! into a worker, fanned out by handle). An emit never waits: each resident's senses has its own
+//! window (as much as her room view keeps, `UNPERCEIVED_CAP`), so one resident's slow senses never
+//! holds the feed or anyone else's perception; one that falls a window behind sees the gap in the
+//! revisions, and the transcript stays the one truth to page from.
 
 use std::sync::OnceLock;
 
@@ -71,7 +73,7 @@ impl Component for Feed {
 
     async fn handle(&mut self, event: ConversationEvent, ctx: &mut Ctx<Self>) {
         let fed = classify(event.event());
-        ctx.emit(&mut self.says, Arrival { event, fed }).await;
+        ctx.emit(&mut self.says, Arrival { event, fed });
     }
 }
 

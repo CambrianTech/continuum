@@ -73,6 +73,55 @@ room), so no act can be followed end to end; no per-turn timeline exists.
    the others' wake latency stays flat.
 4. A source ratchet: new `hear::<`/`.tell(...).await` sites carry a `// depends:` line or fail CI.
 
+## Text and promises on the same path (sweep, 2026-11-22)
+
+Joel: binary streams and binary saves are the default, text only where absolutely necessary ("I bet
+we find FEW cases"); a straight copy lets the OS and hardware move it (DMA, mmap, sendfile) with the CPU
+only setting up. "Promises are stupid too. Use streams": an await on a promise is only for a small,
+one-off result, never anything continuous.
+
+The few text edges that stay: `continuum-gateway/src/wire/*` (OpenAI-compatible JSON for external
+drivers), the cloud provider adapters, the hands' GitHub REST calls, and text shown to the model. Every
+other site is ours.
+
+**Text encodings, most expensive first** (sizes and frequencies inferred unless stated):
+
+| # | Site | What | How often | Becomes |
+|---|---|---|---|---|
+| 1 | `inference/request_body.rs`, `ai/openai_adapter/stream.rs:67-406` | the whole prompt as a JSON tree, then bytes, to our own fork | per act, hundreds of KB | binary turn frames: token ids or the epoch's appended tail |
+| 2 | `inference/serving_guard.rs:76-89` (**verified**) | the same body POSTed again only to count tokens; the engine re-templates and re-tokenizes it | per act and retry | the count in the generate stream's first frame, or our own tokenizer |
+| 3 | `inference/lane_send.rs:520-527` (**verified**) | the whole body parsed back to JSON to change `max_tokens`, then encoded again | per act | set on the typed request before any encoding |
+| 4 | `continuum-capture/src/prompt_capture.rs:237` (**verified**) | the full record encoded only to measure its length | per captured act | deleted |
+| 5 | `prompt_capture_store.rs:263` | full request and response as JSONL on disk | per act | versioned binary segments |
+| 6 | `inference/sse_stream.rs:651-663`, `wire_tap.rs:96-98` | each SSE event turned into a String and parsed as JSON | **per token** | typed token frames from our engine |
+| 7 | `continuum-core/src/ipc/ws.rs:256-268` | each token delta sent to clients as JSON text | **per token x clients** | binary WebSocket frames |
+| 8 | `continuum-kernel/src/runtime/in_process_transport.rs:82-124`, `command_executor.rs:675` | every tool call's arguments and result as a JSON tree in-process | per tool call | typed values by `Arc` |
+| 9 | `tool_executor/spill.rs:463-495` | a result rendered as JSON for the model, then parsed back from that text | per tool call | keep the typed facts; text only for the model |
+| 10 | `continuum-positron/src/state.rs:131`, `ws.rs:234` | ViewState converted to JSON at store time, then text per client | per revision | typed at store, binary on the wire |
+| 11 | `routing/probe_file_sink.rs:290-330` | every probe field `format!`ed into a JSONL line, flushed per event | per step | a binary ring buffer |
+| 12 | `durable_history.rs:96-131`, `message_bus.rs:324,396` | chat rows and bus events as JSON in-process | per event | typed SAGE topics |
+| 13 | `turn_admission.rs:734-873`, `page_quote.rs:41` | page save/restore/size as JSON control bodies and receipts, plus a polled JSON `/slots` | per page op | in-process persona save/bind; the KV bytes a straight copy (mmap, DMA) |
+| 14 | `mind_state.rs:116` (pretty), `working_set.rs`, `saved_ledger.rs`, `recorder.rs`, `rag_capture.rs` | her state, ledgers and captures as JSON on disk | per act or page op | one versioned binary codec, written behind |
+| 15 | `airc_transport.rs:385`, `command_ingress.rs:146-689`, `prepare_unix_socket_path.rs:183-358` | grid command and event bodies, and the CLI socket, as JSON (`Body::Binary` already exists) | per call | binary |
+| 16 | `live/transport/call_server/handle_connection.rs:143-152` | a second audio path: base64 PCM inside JSON text, beside the binary frame protocol at `:186-196`; transcripts and call messages as JSON (`:95,129`) | per audio chunk | deleted; binary frames only (BigMama's area) |
+
+Also: errors carried as `String` on the admission and generation path (`admit_turn -> Result<_, String>`),
+branched on by text; they become typed errors.
+
+**Promises** (each becomes a topic its producer publishes and its consumers subscribe to):
+
+| # | Site | What flows | Becomes |
+|---|---|---|---|
+| 1 | `ServiceModule::handle_command` (`service_module.rs:275`), `command_executor.rs:318 execute()` | every module command and tool call as awaited request/response; the root of the rest | intents in, state out: hands hear `ToolCall`, publish `ToolResult{call_id}` |
+| 2 | `openai_adapter/provider.rs:276`, `llm_deliberation_faculty/request.rs` | the whole generation as one awaited future beside the token sink | a `TurnStream`: tokens, then `TurnEnd` |
+| 3 | `turn_admission.rs:287 admit_turn`, `mind_gate.rs:61` | an awaited admission per act | a per-mind `Seat` state |
+| 4 | `unresolved_page.rs:105`, `grant_handoff.rs:55,148` | page resolution and grant reclaim by oneshot | per-slot `PageState` and the window-grant state |
+| 5 | `senses/worker.rs:34`, `focus/continue_.rs:148` | "continuation saved" by oneshot | `MindStateSaved{rev}` on her bus |
+| 6 | `ipc/protocol.rs:15`, `ws.rs:294-316`, `provider_bridge.rs:57,95`, `airc_transport.rs:349-385` | client, provider and grid commands as request/response by correlation id | intents; results as ViewState revisions or room topics |
+| 7 | `persona_scheduler.rs:228,301`, `driver/ending.rs`, `academy_batch.rs`, boot and lifecycle oneshots | suspend, settle, batches, ready | state watches (the `EngineState` watch exists) |
+
+`continuum-sage/src/flow.rs` (`submit` -> oneshot) has no caller outside SAGE: delete it with the lane.
+
 ## Order
 
 1. The `Wait` instrument and the act id (so every fix below has a before and after).
