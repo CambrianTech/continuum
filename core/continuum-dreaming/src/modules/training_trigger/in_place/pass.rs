@@ -15,6 +15,7 @@ impl TrainingTriggerState {
                 "learning state held for engine incarnations that died was dropped; custody settles their leases on the dead-process proof");
         }
         self.in_place.authority.custody.settle_orphans().await;
+        let seen = self.membership(); // read before the rows are: a move after it ends the pass at its gate
         let buckets = eligible_buckets(&store, served_model).await?;
         // learning and candidates progress together: a bucket waiting (for her act, her memory, her
         // slot) never holds a ready candidate from its trial (Codex on #5905). Both are joined here,
@@ -23,7 +24,7 @@ impl TrainingTriggerState {
         let learning = self.learn_each(buckets, move |state, key, rows| {
             let served = served.clone();
             async move {
-                let pass = state.learn_bucket(key.clone(), rows, engine).await?;
+                let pass = state.learn_bucket(key.clone(), rows, engine, seen).await?;
                 if pass.checkpointed {
                     // a generation published in this pass is offered as a candidate now, not a pass later
                     state.sweep_bucket(&key, &served).await?;
@@ -92,17 +93,21 @@ impl TrainingTriggerState {
 
     /// Waiting for the bucket and engine changes no resident state. Once both are held,
     /// run_leased rechecks admission and owns preparation through caller disconnect.
-    pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation) -> Result<Prepared, String> {
+    pub(super) async fn prepare_bucket(self: &Arc<Self>, key: BucketKey, rows: Arc<Vec<Arrival>>, engine: EngineIncarnation, seen: Membership) -> Result<Prepared, String> {
         let lease = self.submit_gates.acquire(&key).await;
         let slot = self.in_place.engine(engine);
         let mut held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
         self.run_leased(lease, key, OwnedKind::Prepare, move |state, key| async move {
+            if state.membership_moved_since(seen) {
+                membership_moved(&key);
+                return Ok(Prepared::Nothing);
+            }
             let signature = if rows.is_empty() || held.minds.contains_key(&key) {
                 None
             } else {
                 drop(held);
                 state.require_ready()?;
-                // timed by stage under training.signature.stage (begin .. embedded, or abandoned)
+                // timed by stage under training.signature.stage (begin .. minted, or abandoned)
                 let signature = super::super::competence::mint_signature(
                     key.persona_id,
                     format!("inline:{}", key.trait_kind), &key.trait_kind,
@@ -156,7 +161,7 @@ impl TrainingTriggerState {
     /// contention everything is let go and waited for holding no serving resource; (5) the step
     /// revalidates its memory, marks custody and posts, inside the owned operations (Codex on B).
     /// The pass ends by settling: publish, then page her out (`settle`).
-    pub(crate) async fn learn_bucket(self: &Arc<Self>, key: BucketKey, rows: Vec<Arrival>, engine: EngineIncarnation) -> Result<BucketPass, String> {
+    pub(crate) async fn learn_bucket(self: &Arc<Self>, key: BucketKey, rows: Vec<Arrival>, engine: EngineIncarnation, seen: Membership) -> Result<BucketPass, String> {
         let mut pass = BucketPass::default();
         if rows.iter().all(|row| row.learned as usize >= row.examples.len()) {
             return Ok(pass); // nothing pending: no slot is taken for nothing
@@ -178,7 +183,7 @@ impl TrainingTriggerState {
                 }
             }
             // 2. seat and cover her next example, holding no serving resource
-            let prepared = match self.prepare_bucket(key.clone(), Arc::clone(&rows), engine).await {
+            let prepared = match self.prepare_bucket(key.clone(), Arc::clone(&rows), engine, seen).await {
                 Ok(prepared) => prepared,
                 Err(why) => {
                     failure = Some(why);
@@ -236,6 +241,10 @@ impl TrainingTriggerState {
             let (next, stepped, renewed_now) = match self
                 .run_leased(lease, key.clone(), OwnedKind::Step, move |state, key| async move {
                     let (mut stepped, mut renewed) = (BucketPass::default(), renewed);
+                    if state.membership_moved_since(seen) {
+                        membership_moved(&key);
+                        return (Ok(Next::Stop), stepped, renewed);
+                    }
                     let next = state.in_place.step(&state, held, &key, &step_rows, engine, slot, &mut renewed, &mut stepped).await;
                     (next, stepped, renewed)
                 })
@@ -308,4 +317,11 @@ impl TrainingTriggerState {
     pub(super) fn spawn_owned(&self, kind: OwnedKind, persona: Option<Uuid>, operation: impl std::future::Future<Output = ()> + Send + 'static) {
         self.operations.lock().spawn(self.running.named(kind, persona, operation));
     }
+}
+
+/// A pass whose rows moved to another bucket since it selected them ends here, under its gate,
+/// before it seats or steps on them; the next pass selects them where they are now.
+fn membership_moved(key: &BucketKey) {
+    continuum_base::probe!(class = "training.in_place.membership_moved", persona = %key.persona_id, trait_kind = %key.trait_kind,
+        base = %key.base_model, "rows moved between buckets since this pass selected them: it ends without seating or stepping");
 }

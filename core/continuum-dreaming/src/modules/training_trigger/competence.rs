@@ -24,7 +24,7 @@ pub(crate) async fn mint_signature<'a>(persona: uuid::Uuid, name: String, trait_
     let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
     trace.reached("embedder_resolved", texts.len(), joined.len());
     let minted = GeneSignature::mint(&texts, corpus, &embedder, continuum_base::time::EpochMs::now().millis()).await;
-    trace.reached("embedded", texts.len(), joined.len());
+    trace.reached("minted", texts.len(), joined.len());
     trace.done = true;
     match minted {
         Ok(sig) => Some(sig),
@@ -38,7 +38,8 @@ pub(crate) async fn mint_signature<'a>(persona: uuid::Uuid, name: String, trait_
 /// A signature's stages, timed apart (Codex on the 5090 standalone, 2026-11-22: 23 of 90 signatures
 /// took over 2 s, the longest 29.68 s, while embedding 26,407 texts took 177-200 ms): each stage
 /// names the ms since the previous one, so formatting and hashing, resolving the embedder, and
-/// embedding (with whatever scheduling each waited on) are told apart; a signature dropped before
+/// minting (embedding, centroid, subspaces and region, with whatever scheduling each waited on) are
+/// told apart; a signature dropped before
 /// its end says which stage it never left.
 struct SignatureTrace {
     persona: uuid::Uuid,

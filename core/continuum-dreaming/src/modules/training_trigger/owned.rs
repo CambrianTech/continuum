@@ -16,6 +16,8 @@ pub(crate) enum OwnedKind {
     Recover,
     Submit,
     Retire,
+    /// Moving a bucket's rows to its base's catalog id.
+    Rekey,
     /// Seating her learner and covering her next example.
     Prepare,
     /// One learning or restoring step.
