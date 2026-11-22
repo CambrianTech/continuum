@@ -36,7 +36,8 @@ fn a_step_is_scoped_to_its_root_and_every_result_is_perceived_labelled_with_its_
     results.record_receipt_typed(&[], "task-b-only", None, saved("scope-b-output"));
     for _ in 0..4 { results.record_fact("unrelated notice"); }
     let from_b = results.recent_results_messages().join("\n");
-    assert!(from_b.contains(r#"scope-a-output"}); workspace task-a"#), "one mind: task-a's result, labelled, from task-b: {from_b}");
+    assert!(from_b.contains("operation unrecorded; workspace task-a] task-a-only"), "one mind: task-a's result, labelled, from task-b: {from_b}");
+    assert!(!from_b.contains("scope-a-output"), "shown whole, it carries no reopen call: {from_b}");
     assert!(!from_b.contains("task-b-only"), "the in-flight action renders at the tail, not in the ring");
     results.set_scope(Some("task-a".into()));
     assert_eq!(results.recent_results_messages().join("\n"), from_b, "the ring is the same from either root");

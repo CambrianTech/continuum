@@ -17,6 +17,9 @@ pub fn attempted_tool_name(text: &str) -> Option<String> {
 pub fn nameless_args_fence(text: &str) -> Option<String> {
     syntax::nameless_args_fence(text, crate::ai::tool_dialect::resolve_wire_name)
 }
+pub fn without_calls(text: &str) -> String {
+    syntax::without_calls(text, crate::ai::tool_dialect::resolve_wire_name)
+}
 
 // The tool-exchange protocol enum is the ONE `model_registry::ToolProtocol`
 // (#69) — it's catalog data a provider declares. The rendering/parsing

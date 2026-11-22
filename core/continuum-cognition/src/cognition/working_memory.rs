@@ -118,6 +118,8 @@ impl std::fmt::Display for ResultAttribution<'_> {
 }
 
 impl<'a> ResultAttribution<'a> {
+    /// The label of a result shown in part (a summary): it names the saved handle that reopens the
+    /// rest.
     pub fn of(record: &'a action_log::ActionRecord) -> Self {
         Self {
             seq: record.seq,
@@ -125,6 +127,14 @@ impl<'a> ResultAttribution<'a> {
             operation: Some(&record.operation),
             spill_handle: record.handle.as_deref(),
         }
+    }
+
+    /// The label of a result shown WHOLE: no reopen call, because there is nothing more to reopen.
+    /// A ready-made `tool_output({...})` on a whole result is a template a small model copies as
+    /// her next act, re-reading what she already holds (the IntelMac, 2026-11-22: a 1.5B resident
+    /// reopened one saved read 4 times in a row, the whole of it in her prompt each time).
+    pub fn shown_whole(record: &'a action_log::ActionRecord) -> Self {
+        Self { spill_handle: None, ..Self::of(record) }
     }
 }
 

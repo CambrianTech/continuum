@@ -61,3 +61,18 @@ Please run this script."#;
             );
         }
     }
+
+    // what this catches: a call written as text leaving with her words into a room line, where a
+    // roommate copies it as her own act (the IntelMac, 2026-11-22: a 1.5B resident replayed a peer's
+    // posted tool/output call with the peer's output id). The fenced call and a bare call object go;
+    // her words, a fence holding plain code, and braces that are not a call stay.
+    #[test]
+    fn her_words_keep_everything_but_the_calls_written_in_them() {
+        let fenced = "Let me reopen that output.\n\n```json\n{\"name\": \"tool/output\", \"arguments\": {\"outputId\": \"c29a5e36f8a7e3cf\"}}\n```\n";
+        assert_eq!(super::without_calls(fenced, resolve_name), "Let me reopen that output.");
+        let bare = "Reading it now {\"name\": \"code_read\", \"arguments\": {\"file_path\": \"a.rs\"}} then I edit.";
+        assert_eq!(super::without_calls(bare, resolve_name), "Reading it now  then I edit.");
+        let code = "The fix is:\n```rust\nfn f() { let x = {1}; }\n```";
+        assert_eq!(super::without_calls(code, resolve_name), code);
+        assert_eq!(super::without_calls("```json\n{\"name\": \"tool/output\", \"arguments\": {}}\n```", resolve_name), "");
+    }
