@@ -760,3 +760,10 @@ situations that never happened; verifiers score what is checkable and the rest i
 lets go. Academy is where GitHub history and agentic conversation histories (Claude Code, Codex, the repo's
 own) become curriculum (REPO-GENOME-AND-COURSES.md §17). Web search is a long-act component any part may
 use, emitting results as it finds them.
+
+**Sentinels are components with a persona inside, only where a being is needed (Joel, 2026-11-21:
+"sentinels which also are sage based but have a persona as part. Whenever a persona being is necessary").**
+A sentinel is a SAGE component like any other: its stimuli, outputs, need and rest. When its job needs
+judgment, a voice or care (a teacher, a reviewer, a dream-other, a guide), it holds a persona as one of its
+parts and her turns go through the Core like anyone's; when it does not, it is plain algorithm and costs no
+inference. The dream synthesizer, academy teachers and benchmark adapters are sentinels of this shape.
