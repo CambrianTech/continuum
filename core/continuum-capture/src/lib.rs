@@ -10,4 +10,6 @@
 pub mod capture;
 /// The capture's binary frame: a typed header as a MessagePack array and the bulk as raw byte runs.
 pub mod frame;
+/// The capture's binary log: frames appended per generation through the owner's disk class, a binary index beside them.
+pub mod capture_log;
 pub mod prompt_capture;
