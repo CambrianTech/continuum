@@ -20,6 +20,7 @@ pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
 mod retired_indexes;
+mod legacy_task;
 
 mod catalog {
     use sea_orm::entity::prelude::*;
@@ -68,12 +69,14 @@ pub(super) async fn admit(
                 Entity::delete_by_id(&schema.collection).exec(db).await?;
                 record(db, schema).await?;
             }
+            legacy_task::migrate(db, schema).await?;
             Ok(false)
         }
         None if actual.is_empty() => Ok(true),
         None => {
             verify_current_declaration(db, schema, &actual).await?;
             record(db, schema).await?;
+            legacy_task::migrate(db, schema).await?;
             Ok(false)
         }
     }
@@ -151,6 +154,7 @@ pub(super) async fn restore<C: ConnectionTrait>(
         let schema = decode(&receipt)?;
         super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, GapFault::Compile(Box::new(error))))?;
         retired_indexes::reconcile(db, &receipt, &physical(db, &schema.collection).await?).await?;
+        legacy_task::migrate(db, &schema).await?;
         schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
     }
     Ok(schemas)
