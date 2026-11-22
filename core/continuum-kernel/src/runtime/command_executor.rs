@@ -39,7 +39,14 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 // (`execute_ts*`) is unavailable on Windows until a TCP endpoint is wired; the Rust dispatch
 // chain (the primary path) is unaffected.
 use tracing::Instrument;
-use uuid::Uuid;
+
+tokio::task_local! {
+    static CURRENT_ROOM_ID_STORAGE: Option<[u8; 16]>;
+}
+pub fn current_room_id() -> Option<uuid::Uuid> {
+    CURRENT_ROOM_ID_STORAGE.try_with(|bytes| bytes.map(uuid::Uuid::from_bytes)).unwrap_or(None)
+}
+
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
@@ -49,36 +56,6 @@ use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
-
-/// Socket path for TypeScript command routing
-
-
-/// Ambient run context available to commands dispatched during a pipeline step.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct RunContext {
-    /// The room this run belongs to.
-    pub room: Option<Uuid>,
-    /// The parent room (if any) — used for ambient parent discovery by
-    /// commands running inside this run's pipeline (e.g. work/list in a benchmark room).
-    pub parent_room: Option<Uuid>,
-}
-
-tokio::task_local! {
-    static RUN_CONTEXT: RunContext;
-}
-
-/// Set the ambient run context for the duration of the provided future.
-pub async fn with_run_context<F, T>(ctx: RunContext, f: F) -> T
-where
-    F: std::future::Future<Output = T>,
-{
-    RUN_CONTEXT.scope(ctx, f).await
-}
-
-/// Get the ambient run context if one is set; `None` otherwise.
-pub fn get_run_context() -> Option<RunContext> {
-    RUN_CONTEXT.try_with(|ctx| ctx.clone()).ok()
-}
 
 /// Whether a failed dispatch can have had an effect. A caller that retries,
 /// skips, or reports "nothing happened" must know which; the message alone
@@ -372,7 +349,7 @@ impl CommandExecutor {
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
     ) -> Result<CommandResult, String> {
-        self.execute_classified(command, params, caller)
+        self.execute_classified(command, params, caller, None)
             .await
             .map_err(|failure| failure.message)
     }
@@ -386,10 +363,11 @@ impl CommandExecutor {
         command: impl Into<CommandUri>,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
+        room_id: Option<uuid::Uuid>,
     ) -> Result<CommandResult, DispatchFailure> {
         let command: CommandUri = command.into();
         let start = std::time::Instant::now();
-        let outcome = self.dispatch(&command, params, caller.as_ref()).await;
+        let outcome = CURRENT_ROOM_ID_STORAGE.scope(room_id.map(|id| *id.as_bytes()), self.dispatch(&command, params, caller.as_ref())).await;
         self.emit_command_completed(
             command.path(),
             &outcome,
@@ -411,21 +389,24 @@ impl CommandExecutor {
         command: impl Into<CommandUri>,
         params: Value,
         caller: Option<crate::routing::CallerIdentity>,
+        room_id: Option<uuid::Uuid>,
     ) -> uuid::Uuid {
         let handle = uuid::Uuid::new_v4();
         let command: CommandUri = command.into();
         let this = std::sync::Arc::clone(self);
         tokio::spawn(async move {
-            let start = std::time::Instant::now();
-            // The caller's hands are bound and admitted inside dispatch, for this task's whole
-            // life: a release that began before its first poll refuses it by name.
-            let outcome = this.dispatch(&command, params, caller.as_ref()).await;
-            this.emit_command_completed(
-                command.path(),
-                &outcome,
-                start.elapsed().as_millis() as u64,
-                Some(handle),
-            );
+            CURRENT_ROOM_ID_STORAGE.scope(room_id.map(|id| *id.as_bytes()), async move {
+                let start = std::time::Instant::now();
+                // The caller's hands are bound and admitted inside dispatch, for this task's whole
+                // life: a release that began before its first poll refuses it by name.
+                let outcome = this.dispatch(&command, params, caller.as_ref()).await;
+                this.emit_command_completed(
+                    command.path(),
+                    &outcome,
+                    start.elapsed().as_millis() as u64,
+                    Some(handle),
+                );
+            }).await;
         });
         handle
     }
