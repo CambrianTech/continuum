@@ -140,18 +140,6 @@ pub(super) async fn handle_connection(stream: TcpStream, addr: SocketAddr, manag
                                 }
                                 break;
                             }
-                            Ok(CallMessage::Audio { data }) => {
-                                // Skip processing if muted at connection level
-                                if is_muted {
-                                    continue;
-                                }
-                                if let Some(handle) = &participant_handle {
-                                    if let Some(samples) = base64_decode_i16(&data) {
-                                        CallManager::note_human_audio_level("ws_json", &handle.short(), &samples);
-                                        manager.push_audio(handle, samples).await;
-                                    }
-                                }
-                            }
                             Ok(CallMessage::Mute { muted }) => {
                                 is_muted = muted; // Track locally for this connection
                                 if let Some(handle) = &participant_handle {

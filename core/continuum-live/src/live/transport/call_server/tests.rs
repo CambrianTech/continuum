@@ -2,7 +2,6 @@
     use super::*;
     use continuum_base::audio_constants::{AUDIO_FRAME_SIZE, AUDIO_SAMPLE_RATE};
     use crate::live::audio::mixer::test_utils::*;
-    use crate::live::audio::pcm::base64_encode_i16;
 
     /// A valid airc RoomId (uuid) to key test calls. Post-#193 the call room IS the airc
     /// room, so `join_call` accepts only an airc RoomId — a bare name is refused. Tests dial
@@ -34,14 +33,6 @@
             dashed, simple,
             "dashed + 32-char spellings of one RoomId ⇒ one canonical key"
         );
-    }
-
-    #[test]
-    fn test_base64_roundtrip() {
-        let samples = generate_sine_wave(440.0, AUDIO_SAMPLE_RATE, AUDIO_FRAME_SIZE);
-        let encoded = base64_encode_i16(&samples);
-        let decoded = base64_decode_i16(&encoded).unwrap();
-        assert_eq!(samples, decoded);
     }
 
     #[tokio::test]
