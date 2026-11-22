@@ -71,14 +71,21 @@ impl TrainingTriggerState {
         // Dropping the shutdown wait does not abort still-running operations.
         // A running step can register a fence before it finishes. Release the set
         // between polls so the fence can join the same shutdown.
-        let mut failure = None;
-        while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
-            if let Err(error) = joined {
-                failure = Some(error.to_string());
+        let in_flight = self.operations.lock().len();
+        continuum_base::probe!(class = "training.shutdown.operations", in_flight = in_flight as u64,
+            "the trainer's shutdown waits for these operations still in flight");
+        let failure = super::super::shutdown_step("shutdown.join_operations", async {
+            let mut failure = None;
+            while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
+                if let Err(error) = joined {
+                    failure = Some(error.to_string());
+                }
             }
-        }
+            failure
+        })
+        .await;
         // nothing learns now: leave no learner seated
-        let quiesced = self.in_place.quiesce(self, super::super::in_place::Busy::Wait).await;
+        let quiesced = super::super::shutdown_step("shutdown.quiesce", self.in_place.quiesce(self, super::super::in_place::Busy::Wait)).await;
         continuum_base::probe!(class = "training.in_place.quiesced", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, "the trigger stopped: every learner checkpointed and stopped, every workspace released");
         failure.map_or(Ok(()), Err)
