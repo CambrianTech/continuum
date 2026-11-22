@@ -1,26 +1,26 @@
 //! The engine's slice: which ready mind takes the next step, and when the running one hands over.
 //!
-//! Minds share one engine by switching at the next step, round robin, not by holding it for a turn
-//! (Joel, 2026-11-22: "it should be doing it at almost the next available chance like round robin
-//! except maybe within some determined threshold by continuous measurement ... like a control
-//! system"). A pure state machine like [`crate::Scheduler`]: no locks, no runtime, time passed in,
-//! so a validator replays a captured trace in microseconds.
+//! Minds share one engine by switching at the next step, round robin, never by holding it for a
+//! turn. The engine's step is the only serial work in a mind's life, and it is sliced so finely
+//! that every mind seems to have the engine to herself (Joel, 2026-11-22: "It's effectively ALL
+//! simultaneous ... They don't notice"). A pure state machine like [`crate::Scheduler`]: no locks,
+//! no runtime, time passed in, so a validator replays a captured trace in microseconds.
 //!
-//! This module is the algorithm, isolated; [`governor`] is the SAGE component that owns it.
+//! This module is the algorithm, isolated; [`lane`] is where minds meet it, by current state;
+//! [`tuner`] is the control loop that sets the slice.
 //!
-//! - **Priority is how often she is chosen** (Joel, 2026-11-22: "a doubly more priority persona
-//!   would be chosen more often or for longer"), as in an RTOS: twice the weight, twice the turns.
+//! - **Priority is how often she is chosen** (Joel: "a doubly more priority persona would be chosen
+//!   more often or for longer"), as in an RTOS: twice the weight, twice the turns.
 //! - **Who gets more is SAGE's need, live.** Each mind's weight is the need its parts publish on
-//!   `sage/need`, folded ([`Need::max`]); every event that changes it changes her share at once.
-//!   A rise in urgency (someone addressed her) takes the next step, cutting the running slice short.
+//!   `sage/need`, folded ([`Need::max`]); every change moves her share at once. A rise in urgency
+//!   (someone addressed her) takes the next step, cutting the running slice short.
 //! - **Fair by stride.** Each mind carries a pass, advanced by the engine time she used over her
-//!   weight; the lowest pass among the ready steps next. Nobody starves: a light mind's pass stays
-//!   behind and her turn comes. A mind that wakes starts at the ready floor, banking no credit.
-//! - **The slice is measured, never a constant.** With `s` the measured switch and `n` minds ready,
-//!   a slice is long enough that switching stays within `Policy::switch_share` of the engine
-//!   (`s / (q + s)`), and short enough that a waiting mind's next step comes within
-//!   `Policy::wait_target` (`(n - 1)(q + s)`); when the two disagree, the wait wins. Never under one
-//!   of her own steps.
+//!   weight; the lowest pass among the ready steps next. Nobody starves. A mind that wakes starts
+//!   at the ready floor, banking no credit.
+//! - **The slice is a control loop optimizing throughput** ([`tuner::Tuner`]), constantly
+//!   adjusted from what the engine measured, against one wall: no ready mind waits past
+//!   `Policy::wait_bound`. The wall follows the weights (the lightest mind waits for everyone
+//!   heavier) and the measured switch; a window in which any mind waited past it backs the loop off.
 //! - **Finish first under a switch.** A mind whose predicted remainder (her measured turn length
 //!   less the steps taken, at her measured step time) is under one switch keeps the engine.
 
@@ -30,15 +30,16 @@ use std::time::{Duration, Instant};
 
 use crate::component::{Need, Urgency};
 
-pub mod governor;
+pub mod lane;
+pub mod tuner;
 
-/// What the slice is held to: the policy the measurements are judged against.
+use tuner::Tuner;
+
+/// What the slice is held to.
 #[derive(Debug, Clone, Copy)]
 pub struct Policy {
-    /// The most of the engine's time switching may take, `s / (q + s)`, in (0, 1).
-    pub switch_share: f64,
-    /// The longest a ready mind should wait for her next step.
-    pub wait_target: Duration,
+    /// No ready mind waits longer than this for her next step: the wall the loop climbs against.
+    pub wait_bound: Duration,
     /// Weight of the newest sample in each measured mean, in (0, 1].
     pub smoothing: f64,
 }
@@ -79,6 +80,8 @@ struct Mind {
     turn_steps: Measured,
     /// Steps taken in the turn now running.
     steps: u64,
+    /// Engine seconds (the slicer's measured clock) when she began waiting for the lane.
+    waiting_since: Option<f64>,
 }
 
 /// Her share: each urgency level doubles it, and each input waiting adds her weight once more.
@@ -94,6 +97,8 @@ fn weight(need: Need) -> f64 {
 struct Running<K> {
     mind: K,
     since: Instant,
+    /// The engine clock when this slice began: maps a guard's engine time to a wall deadline.
+    engine_at: f64,
     /// A ready mind's urgency rose: she steps next, whatever is left of this slice.
     cut: bool,
 }
@@ -103,11 +108,31 @@ pub struct Slicer<K> {
     minds: HashMap<K, Mind>,
     running: Option<Running<K>>,
     switch: Measured,
+    tuner: Tuner,
+    /// Engine seconds measured so far (steps and switches): the clock waits are measured on.
+    engine: f64,
+    /// This window: switches made, and the longest any mind waited.
+    window_switches: usize,
+    window_worst: f64,
 }
 
 impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
     pub fn new(policy: Policy) -> Self {
-        Self { policy, minds: HashMap::new(), running: None, switch: Measured::default() }
+        Self {
+            policy,
+            minds: HashMap::new(),
+            running: None,
+            switch: Measured::default(),
+            tuner: Tuner::default(),
+            engine: 0.0,
+            window_switches: 0,
+            window_worst: 0.0,
+        }
+    }
+
+    /// The longest any mind waited in the window now open: what the wall is checked against.
+    pub fn worst_wait(&self) -> Duration {
+        Duration::from_secs_f64(self.window_worst.max(0.0))
     }
 
     /// Her folded need changed (a `sage/need` event): her share follows at once, and a rise in
@@ -131,10 +156,12 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
     /// She has a turn to run. She starts at the ready floor: a mind that slept banks no credit.
     pub fn ready(&mut self, mind: K) {
         let floor = self.floor(&mind);
+        let engine = self.engine;
         let entry = self.minds.entry(mind).or_default();
         if !entry.ready {
             entry.ready = true;
             entry.steps = 0;
+            entry.waiting_since = Some(engine);
             if let Some(floor) = floor {
                 entry.pass = entry.pass.max(floor);
             }
@@ -148,36 +175,63 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
             entry.ready = false;
             entry.turn_steps.add(entry.steps as f64, smoothing);
             entry.steps = 0;
+            entry.waiting_since = None;
         }
         if self.running.as_ref().is_some_and(|r| &r.mind == mind) {
             self.running = None;
         }
     }
 
-    /// The running mind took one step, measured.
     /// She took one step, measured. Named, so a step reported after a handover is charged to her.
+    /// Her first step after waiting ends her wait.
     pub fn stepped(&mut self, mind: &K, took: Duration) {
         let smoothing = self.policy.smoothing;
+        let seconds = took.as_secs_f64();
         if let Some(entry) = self.minds.get_mut(mind) {
-            let seconds = took.as_secs_f64();
+            if let Some(since) = entry.waiting_since.take() {
+                self.window_worst = self.window_worst.max(self.engine - since);
+            }
             entry.step.add(seconds, smoothing);
             entry.steps += 1;
             entry.pass += seconds / weight(entry.need);
         }
+        self.engine += seconds;
+        self.tuner.stepped(seconds);
     }
 
-    /// Bringing her in took this long, measured; she pays for it.
+    /// Bringing her in took this long, measured; she pays for it. After a full rotation of the
+    /// ready minds the loop closes its window and moves the slice.
     pub fn switched(&mut self, mind: &K, took: Duration) {
         let seconds = took.as_secs_f64();
         self.switch.add(seconds, self.policy.smoothing);
         if let Some(entry) = self.minds.get_mut(mind) {
             entry.pass += seconds / weight(entry.need);
         }
+        self.engine += seconds;
+        self.tuner.switched(seconds);
+        self.window_switches += 1;
+        let ready = self.minds.values().filter(|m| m.ready).count();
+        if self.window_switches >= ready.max(1) {
+            let floor = self.minds.get(mind).and_then(|m| m.step.0).unwrap_or(0.0);
+            let over = self.window_worst > self.policy.wait_bound.as_secs_f64();
+            self.tuner.close(over, floor, self.wall());
+            self.window_switches = 0;
+            self.window_worst = 0.0;
+        }
     }
 
-    /// When the running slice is spent and the governor must decide again; `None` while nothing
-    /// can take the engine from her (nobody else ready, she finishes under a switch, or no switch
-    /// has been measured yet to size a slice by).
+    /// The longest slice that keeps every ready mind inside the wait bound. The lightest mind
+    /// waits through everyone heavier: `(total weight / lightest - 1)` slices, each with a switch.
+    fn wall(&self) -> f64 {
+        let weights: Vec<f64> = self.minds.values().filter(|m| m.ready).map(|m| weight(m.need)).collect();
+        let lightest = weights.iter().copied().fold(f64::INFINITY, f64::min);
+        let total: f64 = weights.iter().sum();
+        let ahead = if lightest.is_finite() { (total / lightest - 1.0).max(1.0) } else { 1.0 };
+        self.policy.wait_bound.as_secs_f64() / ahead - self.switch.0.unwrap_or(0.0)
+    }
+
+    /// When the running slice is spent and the lane must decide again; `None` while nothing can
+    /// take the engine from her (nobody else ready, or she finishes under a switch).
     pub fn deadline(&self) -> Option<Instant> {
         let running = self.running.as_ref()?;
         let others = self.minds.iter().filter(|(k, m)| m.ready && **k != running.mind).count();
@@ -187,11 +241,19 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
         if running.cut {
             return Some(running.since);
         }
-        if self.finishes_under_a_switch(&running.mind) {
-            return None;
+        // The earliest a waiting mind's guard falls due, as a wall instant.
+        let guard = self.guard(&running.mind).map(|(_, due)| {
+            running.since + Duration::try_from_secs_f64((due - running.engine_at).max(0.0)).unwrap_or_default()
+        });
+        let end = if self.finishes_under_a_switch(&running.mind) {
+            None
+        } else {
+            Duration::try_from_secs_f64(self.slice(&running.mind)).ok().map(|slice| running.since + slice)
+        };
+        match (guard, end) {
+            (Some(g), Some(e)) => Some(g.min(e)),
+            (g, e) => g.or(e),
         }
-        let slice = Duration::try_from_secs_f64(self.slice(&running.mind, others + 1)?).ok()?;
-        Some(running.since + slice)
     }
 
     /// The decision at this step boundary.
@@ -207,18 +269,24 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
         if others == 0 {
             return Next::Continue;
         }
+        // The bound is a guarantee, not a hope: a waiting mind whose slack is gone runs now, whatever
+        // the shares say (stride sets the shares; this guard keeps the bound, as an RTOS deadline).
+        if let Some((due, at)) = self.guard(&running.mind) {
+            if at <= self.engine {
+                return self.bring_in(due, now);
+            }
+        }
         if !running.cut {
             if self.finishes_under_a_switch(&running.mind) {
                 return Next::Continue;
             }
-            let Some(slice) = self.slice(&running.mind, others + 1) else { return Next::Continue };
-            if now.saturating_duration_since(running.since).as_secs_f64() < slice {
+            if now.saturating_duration_since(running.since).as_secs_f64() < self.slice(&running.mind) {
                 return Next::Continue;
             }
         }
         if best == running.mind {
             // Her weight still makes her the lowest pass: a fresh slice, no switch.
-            self.running = Some(Running { mind: best, since: now, cut: false });
+            self.running = Some(Running { mind: best, since: now, engine_at: self.engine, cut: false });
             return Next::Continue;
         }
         self.bring_in(best, now)
@@ -230,19 +298,40 @@ impl<K: Clone + Eq + Hash + Ord> Slicer<K> {
     }
 
     fn bring_in(&mut self, mind: K, now: Instant) -> Next<K> {
-        self.running = Some(Running { mind: mind.clone(), since: now, cut: false });
+        // The mind handing over begins to wait, if she still has decoding to do.
+        if let Some(previous) = self.running.take() {
+            let engine = self.engine;
+            if let Some(entry) = self.minds.get_mut(&previous.mind).filter(|m| m.ready) {
+                entry.waiting_since = Some(engine);
+            }
+        }
+        self.running = Some(Running { mind: mind.clone(), since: now, engine_at: self.engine, cut: false });
         Next::Switch(mind)
     }
 
-    /// Seconds the running mind keeps the engine before the lowest pass is asked again.
-    /// `None` until a switch is measured: a slice is sized by what a switch costs, never guessed.
-    fn slice(&self, mind: &K, ready: usize) -> Option<f64> {
+    /// The waiting mind whose bound falls due first, and the engine time it falls due: the last
+    /// moment she can still be brought in and step inside the bound (her wait so far, then one more
+    /// step of the running mind, a switch and her own step).
+    fn guard(&self, running: &K) -> Option<(K, f64)> {
+        let bound = self.policy.wait_bound.as_secs_f64();
+        let switch = self.switch.0.unwrap_or(0.0);
+        let running_step = self.minds.get(running).and_then(|m| m.step.0).unwrap_or(0.0);
+        self.minds
+            .iter()
+            .filter(|(k, m)| m.ready && *k != running)
+            .filter_map(|(k, m)| {
+                let since = m.waiting_since?;
+                let margin = running_step + switch + m.step.0.unwrap_or(0.0);
+                Some((k.clone(), since + bound - margin))
+            })
+            .min_by(|(ka, a), (kb, b)| a.total_cmp(b).then_with(|| ka.cmp(kb)))
+    }
+
+    /// Seconds the running mind keeps the engine: the loop's slice, never past the wall as the
+    /// ready set stands now, never under one of her own steps.
+    fn slice(&self, mind: &K) -> f64 {
         let step = self.minds.get(mind).and_then(|m| m.step.0).unwrap_or(0.0);
-        let switch = self.switch.0?;
-        let share = self.policy.switch_share;
-        let for_throughput = switch * (1.0 - share) / share;
-        let for_wait = self.policy.wait_target.as_secs_f64() / ready.saturating_sub(1).max(1) as f64 - switch;
-        Some(for_throughput.min(for_wait).max(step).max(0.0))
+        self.tuner.slice().min(self.wall()).max(step).max(0.0)
     }
 
     fn finishes_under_a_switch(&self, mind: &K) -> bool {
@@ -279,7 +368,7 @@ mod tests {
     const SWITCH: Duration = Duration::from_millis(26);
 
     fn policy() -> Policy {
-        Policy { switch_share: 0.05, wait_target: Duration::from_secs(1), smoothing: 0.25 }
+        Policy { wait_bound: Duration::from_secs(1), smoothing: 0.25 }
     }
 
     fn need(urgency: Urgency) -> Need {
@@ -346,7 +435,8 @@ mod tests {
             assert!(run.longest_wait[&mind] <= Duration::from_secs(1) + STEP, "{mind} waited {:?}", run.longest_wait[&mind]);
         }
         let switching = run.switches as f64 * SWITCH.as_secs_f64();
-        assert!(switching / (switching + total) <= 0.06, "switching took {:.3} of the engine", switching / (switching + total));
+        // The best the wall allows: a slice of (1 s / 2 others) less one switch, so 474 ms per 26 ms switch.
+        assert!(switching / (switching + total) <= 0.10, "switching took {:.3} of the engine; the wall allows 0.052", switching / (switching + total));
         assert!(run.switches > 50, "they alternated ({} switches), nobody held a turn", run.switches);
     }
 
