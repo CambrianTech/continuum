@@ -145,7 +145,7 @@ pub(super) async fn boot(root: &str, dir: &std::path::Path) -> (Arc<crate::infer
 /// One act of `mind`: admitted (paging as the pool decides), then her slot holds `tokens`.
 pub(super) async fn act(lanes: &Arc<Semaphore>, pool: &Arc<KvSlotPool>, client: &reqwest::Client, root: &str, slots: &Slots, mind: u128, tokens: u64) -> PageIn {
     let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
-    let mut turn = admit_turn(lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), client, root, tokens, std::time::Duration::ZERO)
+    let mut turn = admit_turn(&TurnRequest::newlanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()), client, root, tokens, std::time::Duration::ZERO)
         .await
         .expect("test: admitted");
     let slot = turn.slot().expect("test: a mind's act holds a slot");
@@ -180,7 +180,7 @@ async fn every_mind_resumes_where_she_left_off_across_a_stop_and_a_boot() {
     let (_endpoint_b, pool_b) = boot(&root_b, dir.path()).await;
     for (mind, last) in [(1u128, 150u64), (2, 250), (3, 300)] {
         let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
-        let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, last, std::time::Duration::ZERO)
+        let mut turn = admit_turn(&TurnRequest::new&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, last, std::time::Duration::ZERO)
             .await
             .expect("test: admitted after the boot");
         assert_eq!(turn.page_in(), PageIn::Restored, "mind {mind} restores from her page, never cold");
@@ -211,7 +211,7 @@ async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
     }
     // Mind 1's next act is sent, the engine prefills part of it, and the stop cuts it.
     let cut = PageKey::mind(Uuid::from_u128(1)).expect("test: non-nil id");
-    let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(cut), Some(pool_a.clone()), &client, &root_a, 180, std::time::Duration::ZERO)
+    let mut turn = admit_turn(&TurnRequest::new&lanes, crate::inference::slots::SlotClass::Turn, Some(cut), Some(pool_a.clone()), &client, &root_a, 180, std::time::Duration::ZERO)
         .await
         .expect("test: her next act admitted");
     let slot = turn.slot().expect("test: her slot");
@@ -229,7 +229,7 @@ async fn a_mind_whose_act_the_stop_cut_is_saved_and_restores_after_the_boot() {
     let (_endpoint_b, pool_b) = boot(&root_b, dir.path()).await;
     for (mind, held_at_stop) in [(1u128, "1:180"), (2, "2:200")] {
         let key = PageKey::mind(Uuid::from_u128(mind)).expect("test: non-nil id");
-        let mut turn = admit_turn(&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, 300, std::time::Duration::ZERO)
+        let mut turn = admit_turn(&TurnRequest::new&lanes, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool_b.clone()), &client, &root_b, 300, std::time::Duration::ZERO)
             .await
             .expect("test: admitted after the boot");
         assert_eq!(turn.page_in(), PageIn::Restored, "mind {mind} restores, never cold");

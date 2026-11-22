@@ -342,13 +342,16 @@ where
         .unwrap();
     let sem = Arc::new(tokio::sync::Semaphore::new(4));
     let mut turn = crate::inference::turn_admission::admit_turn(
-        &sem, crate::inference::slots::SlotClass::Turn,
-        Some(key),
-        Some(pool),
-        &process.client,
-        &process.root,
-        10,
-        std::time::Duration::ZERO,
+        &crate::inference::turn_admission::TurnRequest::new(
+            &sem,
+            crate::inference::slots::SlotClass::Turn,
+            Some(key),
+            Some(pool),
+            &process.client,
+            &process.root,
+            10,
+            std::time::Duration::ZERO,
+        ),
     )
     .await
     .unwrap();

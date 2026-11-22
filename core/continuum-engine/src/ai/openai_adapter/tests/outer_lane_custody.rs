@@ -46,7 +46,7 @@ async fn adapter_parks_without_caller_lane_and_reacquires_before_http(
     let root = endpoints.root();
     let pool = directory().ensure_pool(root, 1);
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
-    let held = admit_turn(
+    let held = admit_turn(&TurnRequest::new(
         &sem,
         SlotClass::Turn,
         PageKey::mind(uuid::Uuid::new_v4()),

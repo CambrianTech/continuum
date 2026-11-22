@@ -48,6 +48,9 @@ EOF
   INSTALLED+=("$hook_name")
 }
 
+install_hook post-checkout git-postcheckout.sh "Stamp Rust source mtimes after branch switches to prevent stale cargo artifacts"
+
+install_hook pre-push git-prepush.sh "Rust compile + test + optional native-arch docker push"
 install_hook pre-push git-prepush.sh "Rust compile + test + optional native-arch docker push"
 
 # Earlier versions of this script also installed pre-commit → git-precommit.sh
