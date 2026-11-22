@@ -788,3 +788,25 @@ the step she took. The M5's captures (1,787 acts) hold 9 runs of three or more, 
 - **No fallbacks**: a call written as prose is not lifted and run behind her back; it is a typed miss shown
   to her as her step ("you wrote a call as text; nothing ran; call it with the tool"). Each model's template
   proves a native call round-trips before it serves a resident.
+
+**She feels time pass, and no one fault stops a mind (Joel, 2026-11-22: "something ticking forward so
+even if she did have some tool or anything in rag she'd know it was a bug and stuck ... How do you see this
+passage of time? We have this counter thing too ... It seems dangerous to me that one thing could cause a
+mind crash").**
+- **Two clocks in every input, both monotone.** Her own: the step counter (#n), her subjective time. The
+  world's: wall time and the world's frames (room moments, the Core's frame). Both always advance, so her
+  input never repeats even if every tool and source returned the same bytes.
+- **Progress is a third reading: time since anything new.** Steps tick; novelty across her steps (call and
+  outcome against what she knew) says whether they went anywhere. Steps advancing while progress stands
+  still is the sense of being stuck, given to her plainly ("4 steps, 3 minutes, nothing new since #n"), the
+  way a person knows they are spinning. Seeing it, she can tell a broken tool or a stale source from her
+  own mistake and say so.
+- **Supervision at three levels, as in an RTOS watchdog or an Erlang tree.** Her own sense first (she
+  notices and changes course). Her mind's supervisor next: a part whose need goes Urgent when steps tick
+  without progress past a bound; it moves her on (prepare-to-rest, rest, wake on a fresh view epoch with the
+  stuck episode kept as a memory and a learning signal, never erased) or asks for help. The node last: the
+  Core ranks a mind that consumes turns without progress lower, and aging plus bounded turns keep every
+  other mind served.
+- **Containment.** A component that fails (a panic, a stall) is quarantined and restarted from its last
+  published state by its parent; the mind goes on without it and perceives the gap. A stuck mind never
+  holds the Core; a failed part never takes the mind.
