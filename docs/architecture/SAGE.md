@@ -118,6 +118,9 @@ become a gene; emits lessons and candidate genes; a refusal is input, never retr
 | a4927bf139 | channel digest as a component | built only when her room moved; exposed the regression below |
 | 20c6586616, a4927bf139 | (regression) dreams ran as her on the Core | prefix reuse p50 0.94 -> 0.0, prefills 40-76 s, act p50 241 s: a dream overwrote her conversation's cached state |
 | d47f197b56 | a dream runs as a one-off on the Core | prefix reuse p50 0.0 -> 0.94 (25 of 33 turns resumed by rewind); prefill p50 4.6 s, p90 34 s; act p50 241 -> 104 s (75 s before dreams ran: dreams now take real Core time, the next lever is a Content turn yielding at a decode boundary); 0 refused, 0 schema refusals; 16 one-off turns |
+| ae790c5218 | a whole result carries no reopen call; a call written in her words never reaches the room | (the IntelMac loop fix; that node has not taken it yet). M5 clean read act p50 176 s, all from one runaway turn: Aris 19,540 tokens, 10.4 min, 13 queued |
+| c87600766e, b8ad5724dc | the hot tier, a component on the node bus; drives report their kind | M5: `models.hot.resident` (already on flash); act p50 88 s, reuse 0.91, longest turn 911 tokens |
+| 998f1b745d | need decides at every frame, the running turn included | act p50 88 -> 50 s; reuse 0.93; 21 turns, every one switches=1 (no turn cut: equal need keeps the running turn); 20 Urgent / 12 Content admitted; 0 refused |
 
 Lessons the reads taught: a change that only moves work can still move a cost (dreams resuming cost
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
