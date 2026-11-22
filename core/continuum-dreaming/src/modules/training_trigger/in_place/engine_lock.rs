@@ -19,6 +19,8 @@ pub(super) enum Phase {
     Fence,
     /// Shutdown: publishing and stopping every learner.
     Quiesce,
+    /// Re-keying a bucket's rows: every engine held so no learner of it is mid-step.
+    Rekey,
 }
 
 struct Holder {

@@ -23,7 +23,7 @@
     #[tokio::test]
     pub(super) async fn owner_tick_retries_interrupted_schema_setup() {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
-        let trigger = Arc::new(super::super::TrainingTriggerModule::new(crate::genome::learner::seat::Authority::isolated(1 << 30)));
+        let trigger = Arc::new(super::super::TrainingTriggerModule::new(crate::genome::learner::seat::Authority::isolated(1 << 30), &crate::commands::training_trigger::test_support::fixture_catalog()));
         let pause = pause_at(&trigger.state, OperationPoint::BeforeSchemaSetup);
         let state = trigger.state.clone();
         let setup = tokio::spawn(async move { state.initialize_storage(adapter).await });

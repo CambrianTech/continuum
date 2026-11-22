@@ -17,6 +17,7 @@
 
 pub mod arch_config;
 pub mod artifacts;
+pub mod base_identity;
 pub mod catalog;
 pub mod discovery;
 pub mod hydrate;

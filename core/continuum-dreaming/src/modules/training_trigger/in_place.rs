@@ -18,7 +18,7 @@
 //! own owned operation holding that engine's lock and the slot, never on the tick.
 
 use super::durable::{Arrival, LearnCheckpoint, Position};
-use super::{BucketKey, TrainingTriggerState};
+use super::{BucketKey, Membership, TrainingTriggerState};
 use crate::genome::learner::{
     example::learn_messages,
     memory::EngineWorkspace,
@@ -139,6 +139,16 @@ enum Released {
     NotHers,
 }
 
+/// Every engine's learning, held ([`InPlace::hold_every_engine`]).
+pub(crate) struct EnginesHeld(Vec<(EngineIncarnation, engine_lock::EngineGuard)>);
+
+impl EnginesHeld {
+    /// The engine a learner of `key` is seated on, if any.
+    pub(crate) fn seating(&self, key: &BucketKey) -> Option<EngineIncarnation> {
+        self.0.iter().find(|(_, held)| held.minds.contains_key(key)).map(|(incarnation, _)| *incarnation)
+    }
+}
+
 /// What one bucket's pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BucketPass {
@@ -155,6 +165,20 @@ impl InPlace {
 
     fn engine(&self, engine: EngineIncarnation) -> Arc<engine_lock::EngineSlot> {
         Arc::clone(self.engines.entry(engine).or_default().value())
+    }
+
+    /// Hold every engine's learning, in incarnation order, for a caller that already holds the
+    /// gates of the buckets it rewrites (gate before engine, as every pass takes them): no learner
+    /// is mid-step while it holds them. An engine registered after this enumeration is not held,
+    /// and needs not be: a learner seats only under her bucket's gate, which the caller holds.
+    pub(crate) async fn hold_every_engine(&self) -> EnginesHeld {
+        let mut engines: Vec<_> = self.engines.iter().map(|entry| (*entry.key(), Arc::clone(entry.value()))).collect();
+        engines.sort_by_key(|(incarnation, _)| *incarnation);
+        let mut held = Vec::with_capacity(engines.len());
+        for (incarnation, engine) in engines {
+            held.push((incarnation, engine.acquire(None, engine_lock::Phase::Rekey).await));
+        }
+        EnginesHeld(held)
     }
 
     /// Retire every engine incarnation other than `live` whose process is verifiably dead, and return
@@ -601,8 +625,18 @@ impl InPlace {
             self.engines.remove(&incarnation);
             let keys: Vec<BucketKey> = held.minds.keys().cloned().collect();
             for key in keys {
+                // Her bucket's gate, never waited for: quiesce holds the engine lock, and every pass takes
+                // a bucket's gate before an engine's, so waiting here could deadlock one that holds hers.
+                // Held by an operation still in flight (the runtime saves after drain() only counts them),
+                // her checkpoint would race its read-modify-write of the same rows and lose a retire or a
+                // candidate (card 3326eb71); it is skipped, and the journal keeps her progress.
+                let gate = state.submit_gates.try_acquire(&key);
                 if let Some(seated) = held.minds.get_mut(&key) {
-                    if let Err(why) = checkpoint(state, &key, seated).await {
+                    if gate.is_none() {
+                        quiesced.unpublished += 1;
+                        continuum_base::probe!(class = "training.in_place.shutdown_gate_held", persona = %key.persona_id,
+                            "an operation in flight holds this learner's bucket at shutdown: her checkpoint is not written over it; the journal still holds her progress");
+                    } else if let Err(why) = checkpoint(state, &key, seated).await {
                         quiesced.unpublished += 1;
                         continuum_base::probe!(class = "training.in_place.shutdown_unpublished", persona = %key.persona_id, reason = %why,
                             "a learner's progress since its newest generation was not published at shutdown; the journal still holds it");
@@ -618,6 +652,7 @@ impl InPlace {
                         }
                     }
                 }
+                drop(gate);
             }
             if let Some(workspace) = held.workspace.take() {
                 if let Err((_kept, why)) = workspace.release().await {
