@@ -8,6 +8,7 @@ impl TrainingTriggerState {
     pub(crate) async fn run_owned<T, F, Fut>(
         self: &Arc<Self>,
         key: BucketKey,
+        kind: super::super::OwnedKind,
         operation: F,
     ) -> Result<T, String>
     where
@@ -16,7 +17,7 @@ impl TrainingTriggerState {
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
         let lease = self.submit_gates.acquire(&key).await;
-        self.run_leased(lease, key, operation).await
+        self.run_leased(lease, key, kind, operation).await
     }
 
     /// [`Self::run_owned`] for a caller that already holds the bucket's lease (taken by
@@ -25,6 +26,7 @@ impl TrainingTriggerState {
         self: &Arc<Self>,
         lease: crate::runtime::Lease<BucketKey>,
         key: BucketKey,
+        kind: super::super::OwnedKind,
         operation: F,
     ) -> Result<T, String>
     where
@@ -42,11 +44,12 @@ impl TrainingTriggerState {
                 }
             }
             let state = self.clone();
-            operations.spawn(async move {
+            let persona = Some(key.persona_id);
+            operations.spawn(self.running.named(kind, persona, async move {
                 let _lease = lease;
                 let result = operation(state, key).await;
                 let _ = send.send(result); // a disconnected caller does not cancel ownership
-            });
+            }));
         }
         receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
     }
@@ -61,6 +64,8 @@ impl TrainingTriggerState {
                 tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
             }
         }
+        continuum_base::probe!(class = "training.shutdown.operations", at = "stop_admitting", in_flight = operations.len() as u64,
+            running = ?self.running.now(), "the trainer admits nothing new; these operations still run");
         operations.len()
     }
 
@@ -74,8 +79,8 @@ impl TrainingTriggerState {
         let failure = super::super::shutdown_step("shutdown.join_operations", async {
             // read inside the step: a stall acquiring the set's lock is then named too
             let in_flight = self.operations.lock().len();
-            continuum_base::probe!(class = "training.shutdown.operations", in_flight = in_flight as u64,
-                "the trainer's shutdown waits for these operations still in flight");
+            continuum_base::probe!(class = "training.shutdown.operations", at = "join", in_flight = in_flight as u64,
+                running = ?self.running.now(), "the trainer's shutdown waits for these operations still in flight");
             let mut failure = None;
             while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
                 if let Err(error) = joined {

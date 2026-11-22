@@ -10,7 +10,8 @@ use crate::genome::signature::GeneSignature;
 
 /// Mint the embedding-space signature of `examples`, named `name` (an inline dataset is named by
 /// its trait). `None` when the mint fails: the learning proceeds and the gene routes by fallback.
-pub(crate) async fn mint_signature<'a>(name: String, trait_kind: &str, examples: impl Iterator<Item = &'a TrainingExample> + Send) -> Option<GeneSignature> {
+pub(crate) async fn mint_signature<'a>(persona: uuid::Uuid, name: String, trait_kind: &str, examples: impl Iterator<Item = &'a TrainingExample> + Send) -> Option<GeneSignature> {
+    let mut trace = SignatureTrace::begin(persona);
     let texts: Vec<String> = examples.map(|ex| format!("{}\n{}", ex.prompt, ex.completion)).collect();
     let joined = texts.join("\n");
     let corpus = crate::genome::corpus_ref::CorpusRef {
@@ -19,12 +20,56 @@ pub(crate) async fn mint_signature<'a>(name: String, trait_kind: &str, examples:
         size_bytes: joined.len() as u64,
         source_url: None,
     };
+    trace.reached("framed", texts.len(), joined.len());
     let embedder = crate::ai::embedding::resolve_recall_embedder_local().await;
-    match GeneSignature::mint(&texts, corpus, &embedder, continuum_base::time::EpochMs::now().millis()).await {
+    trace.reached("embedder_resolved", texts.len(), joined.len());
+    let minted = GeneSignature::mint(&texts, corpus, &embedder, continuum_base::time::EpochMs::now().millis()).await;
+    trace.reached("embedded", texts.len(), joined.len());
+    trace.done = true;
+    match minted {
         Ok(sig) => Some(sig),
         Err(e) => {
             tracing::warn!(trait_kind = %trait_kind, error = %e, "gene signature mint failed — learning proceeds, gene will route by fallback");
             None
+        }
+    }
+}
+
+/// A signature's stages, timed apart (Codex on the 5090 standalone, 2026-11-22: 23 of 90 signatures
+/// took over 2 s, the longest 29.68 s, while embedding 26,407 texts took 177-200 ms): each stage
+/// names the ms since the previous one, so formatting and hashing, resolving the embedder, and
+/// embedding (with whatever scheduling each waited on) are told apart; a signature dropped before
+/// its end says which stage it never left.
+struct SignatureTrace {
+    persona: uuid::Uuid,
+    began: std::time::Instant,
+    last: std::time::Instant,
+    stage: &'static str,
+    done: bool,
+}
+
+impl SignatureTrace {
+    fn begin(persona: uuid::Uuid) -> Self {
+        let now = std::time::Instant::now();
+        continuum_base::probe!(class = "training.signature.stage", persona = %persona, stage = "begin", "a bucket's gene signature begins");
+        Self { persona, began: now, last: now, stage: "begin", done: false }
+    }
+
+    fn reached(&mut self, stage: &'static str, texts: usize, bytes: usize) {
+        let now = std::time::Instant::now();
+        continuum_base::probe!(class = "training.signature.stage", persona = %self.persona, stage, texts = texts as u64, bytes = bytes as u64,
+            stage_ms = now.duration_since(self.last).as_secs_f64() * 1000.0, total_ms = now.duration_since(self.began).as_secs_f64() * 1000.0,
+            "a gene signature stage ended");
+        self.last = now;
+        self.stage = stage;
+    }
+}
+
+impl Drop for SignatureTrace {
+    fn drop(&mut self) {
+        if !self.done {
+            continuum_base::probe!(class = "training.signature.stage", persona = %self.persona, stage = "abandoned", after = self.stage,
+                total_ms = self.began.elapsed().as_secs_f64() * 1000.0, "a gene signature was dropped before it ended");
         }
     }
 }

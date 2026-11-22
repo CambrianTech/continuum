@@ -58,6 +58,7 @@
                     trait_kind: "code".into(),
                     base_model: "synthetic".into(),
                 },
+                crate::modules::training_trigger::OwnedKind::Test,
                 |_, _| async { panic!("shutdown admitted a new operation") },
             )
             .await;

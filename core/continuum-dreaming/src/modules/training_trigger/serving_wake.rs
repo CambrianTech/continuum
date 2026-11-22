@@ -66,8 +66,10 @@ impl ServingWake {
             Alive::new(self.alive.clone()),
             move || {
                 let state = state.clone();
+                let running = state.running.clone();
+                let named = running.named(super::OwnedKind::Recover, None, async move { state.recover_pass().await });
                 async move {
-                    if let Err(error) = state.recover_pass().await {
+                    if let Err(error) = named.await {
                         continuum_base::probe!(class = "training.serving_wake.failed", error = %error,
                         "serving changed but training recovery failed; durable work remains owned");
                     }

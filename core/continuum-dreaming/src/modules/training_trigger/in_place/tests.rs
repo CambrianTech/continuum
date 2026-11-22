@@ -451,7 +451,7 @@ fn eviction_deletes_only_this_buckets_superseded_generations() {
 #[tokio::test]
 async fn a_drain_counts_the_learning_still_running() {
     let state = Arc::new(TrainingTriggerState::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog()));
-    state.spawn_owned(std::future::pending());
+    state.spawn_owned(OwnedKind::Test, None, std::future::pending());
     assert_eq!(state.stop_admitting().await, 1, "the running operation is in flight, not drained");
     assert!(state.require_ready().is_err(), "a stopping trigger admits nothing new");
 }
@@ -479,7 +479,7 @@ async fn a_save_leaves_a_busy_engine_to_its_step() {
 async fn the_runtime_hooks_drain_and_save_through_the_trigger() {
     use crate::runtime::ServiceModule;
     let trigger = crate::modules::training_trigger::TrainingTriggerModule::new(authority(), &crate::commands::training_trigger::test_support::fixture_catalog());
-    trigger.state.spawn_owned(std::future::pending());
+    trigger.state.spawn_owned(OwnedKind::Test, None, std::future::pending());
     assert_eq!(trigger.drain().await, Ok(1), "the runtime's drain counts the learning still running");
     let idle = engine(9);
     drop(trigger.state.in_place.engine(idle)); // an engine the trigger learned on, idle now
@@ -754,9 +754,9 @@ async fn shutdown_joins_a_fence_registered_by_a_running_step() {
     let owner = state.clone();
     let (release, started) = tokio::sync::oneshot::channel();
     let (finished, fence) = tokio::sync::oneshot::channel();
-    state.spawn_owned(async move {
+    state.spawn_owned(OwnedKind::Test, None, async move {
         started.await.expect("test: release the step");
-        owner.spawn_owned(async move { let _ = finished.send(()); });
+        owner.spawn_owned(OwnedKind::Test, None, async move { let _ = finished.send(()); });
     });
     let drain = state.drain_operations();
     tokio::pin!(drain);
