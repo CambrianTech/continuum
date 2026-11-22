@@ -696,10 +696,17 @@ async fn reopen_migrates_only_the_legacy_task_unit_tag() -> Result<(), Box<dyn s
         if !has_receipt {
             super::relational_declaration::Entity::delete_by_id(&schema.collection).exec(&initial.db).await?;
         }
+        // Recreate the catalog shape written before migration receipts existed.
+        let historical = sea_orm::sea_query::Table::alter().table(Alias::new("orm_declarations"))
+            .drop_column(Alias::new("task_unit_migrated")).to_owned();
+        initial.db.execute(DbBackend::Sqlite.build(&historical)).await?;
         initial.db.close().await?;
         for _ in 0..2 {
             let reopened = RelationalStore::open(&config).await?;
             reopened.ensure(&schema).await?;
+            let receipt = super::relational_declaration::Entity::find_by_id(&schema.collection)
+                .one(&reopened.db).await?.ok_or("receipt")?;
+            assert_eq!(receipt.task_unit_migrated, Some(true));
             for (id, expected) in &cases {
                 let stored = reopened.read_on(&reopened.db, &schema.collection, id).await?.ok_or("row")?;
                 assert_eq!(&stored.data["task"], expected);
