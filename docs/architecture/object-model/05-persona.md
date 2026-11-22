@@ -810,3 +810,11 @@ mind crash").**
 - **Containment.** A component that fails (a panic, a stall) is quarantined and restarted from its last
   published state by its parent; the mind goes on without it and perceives the gap. A stuck mind never
   holds the Core; a failed part never takes the mind.
+
+**Intelligence is what she does when she does not know (Joel, 2026-11-22, with LeCun: training on human
+knowledge accumulates what is already known, "that's memory"; and Piaget: "Intelligence is not what you know.
+It is what you do when you don't know").** The model is her memory. SAGE is what acts when memory runs out,
+and "not knowing" is a measured signal: novelty against what a part knows. Novelty raises need (the unknown
+draws attention and compute, the CBAR frontier); the stuck sense turns "my steps go nowhere" into something
+she perceives; verifiers and outcomes let her try and find out instead of recall; awake learning keeps what
+worked; dreams at high temperature let her invent situations no human wrote down.
