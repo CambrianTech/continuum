@@ -301,6 +301,74 @@ async fn a_failing_bucket_never_starves_the_next() {
     assert_eq!(*ran.lock().expect("test: lock"), vec![failing, healthy], "the healthy bucket after the failing one still ran");
 }
 
+/// The test binary's one probe router, installed once as the global subscriber: a thread-local
+/// default misses events when the suite runs in parallel (this test, 2026-11-22: it passed alone and
+/// with --test-threads=1, and received nothing in the full parallel suite).
+fn probe_router() -> &'static continuum_kernel::routing::ProbeRouterLayer {
+    static ROUTER: std::sync::OnceLock<continuum_kernel::routing::ProbeRouterLayer> = std::sync::OnceLock::new();
+    ROUTER.get_or_init(|| {
+        use tracing_subscriber::layer::SubscriberExt;
+        let layer = continuum_kernel::routing::ProbeRouterLayer::new();
+        let handle = layer.clone();
+        tracing::subscriber::set_global_default(tracing_subscriber::registry().with(layer)).expect("test: this suite's only global subscriber"); // test fixture
+        handle
+    })
+}
+
+/// What one `training.in_place.no_learning_engine` probe says waits, decoded once from its fields.
+#[derive(serde::Deserialize)]
+struct Waiting {
+    examples_waiting: String,
+    buckets: String,
+}
+
+/// Every no-learning-engine probe received so far that names `persona_name`'s bucket. Other tests in
+/// this binary emit the same class for their own buckets, so a test reads only its own.
+fn named_for(received: &mut tokio::sync::broadcast::Receiver<continuum_kernel::routing::ProbeEvent>, persona_name: &str) -> Vec<Waiting> {
+    let mut mine = Vec::new();
+    loop {
+        match received.try_recv() {
+            Ok(event) => {
+                let waiting: Waiting = serde_json::from_value(serde_json::to_value(&event.fields).expect("test: probe fields")).expect("test: the probe names what waits"); // test fixture
+                if waiting.buckets.contains(persona_name) {
+                    mine.push(waiting);
+                }
+            }
+            Err(tokio::sync::broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(_) => return mine,
+        }
+    }
+}
+
+// what this catches (Codex, the 5090 2026-11-22: 8 accepted examples, learned=0, no checkpoint,
+// and silence): a node with accepted examples and no learning engine read as nothing to do. The
+// emitted probe itself is asserted: none for her bucket while nothing waits, exactly one across two
+// passes once her example waits, naming her bucket and its count.
+#[tokio::test]
+async fn accepted_examples_with_no_learning_engine_are_named_once() {
+    let mut received = probe_router().subscribe("training.in_place.no_learning_engine");
+    let home = tempfile::tempdir().expect("test: home"); // test fixture
+    let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+    assert!(crate::inference::lane_registry::live_lane().is_none(), "test: no llama-server lane on this home");
+    let (trigger, executor, _dir) = crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
+    let state = trigger.state.clone();
+    let persona_name = format!("no-engine-fixture-{}", Uuid::new_v4());
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    assert!(named_for(&mut received, &persona_name).is_empty(), "nothing accepted: nothing said");
+    let params = serde_json::json!({
+        "personaId": Uuid::new_v4(), "personaName": persona_name, "baseModel": "qwen", "traitKind": "geography",
+        "examples": [crate::commands::training_trigger::test_support::ex("What is the capital of Kansas?", "Topeka.")], "source": "operator_curated",
+    });
+    let answer = executor.execute_json("genome/training-trigger/submit", params).await.expect("test: submit routes"); // test fixture
+    assert_eq!(answer["success"], true, "test: the arrival is accepted: {answer}");
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    let named = named_for(&mut received, &persona_name);
+    assert_eq!(named.len(), 1, "named once across two passes, never a quiet Ok and never every pass");
+    assert_eq!(named[0].examples_waiting.parse::<u64>().ok(), Some(1), "the total waiting");
+    assert!(named[0].buckets.contains(&format!("{persona_name}/geography/qwen: 1")), "her bucket and its count: {}", named[0].buckets);
+}
+
 // what this catches: an eviction that deletes a file it does not own (Codex on f13a6abea): the same
 // persona and trait learning on two bases in one train dir, a shadow, or a staged gene; and one that
 // keeps the bucket's superseded generations forever.
