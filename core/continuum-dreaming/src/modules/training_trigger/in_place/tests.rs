@@ -649,6 +649,35 @@ mod live_engine {
         crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
     }
 
+    // what this catches (card 3326eb71): the runtime saves after drain() only COUNTS the operations
+    // in flight, so the save's checkpoint raced a live operation's read-modify-write of her rows and
+    // could lose a retire. With an operation holding her bucket (its gate held), the save leaves her
+    // checkpoint to the journal, counted unpublished, and still pages her learner out.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_save_never_checkpoints_a_bucket_an_operation_holds() {
+        let home = tempfile::tempdir().expect("test: home");
+        let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+        let (engine, base) = named_engine();
+        let slots: u32 = std::env::var("CONTINUUM_LEARN_SLOTS").ok().and_then(|n| n.parse().ok()).expect("live-engine-tests: CONTINUUM_LEARN_SLOTS");
+        crate::inference::slots::register_engine_for_fixture(&engine.root_url(), slots, engine.pid, engine.started_s);
+        register_live_lane(engine, &base, slots);
+        let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
+        let persona = Uuid::new_v4();
+        let key = BucketKey { persona_id: persona, trait_kind: "geography".into(), base_model: base.clone() };
+        let (trigger, executor) = build_runtime_under(adapter, live_authority()).await;
+        submit(&executor, persona, &base, "What is the capital of Nevada?", "Carson City.").await;
+        let (pause, pass) = seated_pass(&trigger, &key, &base, engine).await;
+        let in_flight = trigger.state.submit_gates.acquire(&key).await; // an operation still running on her bucket
+        let saved = trigger.state.in_place.quiesce(&trigger.state, Busy::Skip).await;
+        assert_eq!(saved.busy, 0, "test: the engine itself is free, so the save reaches her");
+        assert_eq!(saved.unpublished, 1, "her checkpoint is left to the journal while the operation holds her bucket");
+        assert_eq!(saved.stopped, 1, "her learner still pages out");
+        drop(in_flight);
+        pause.resume.notify_one();
+        let _ended = tokio::time::timeout(std::time::Duration::from_secs(120), pass).await.expect("test: the pass ends"); // test fixture
+        crate::runtime::ServiceModule::shutdown(trigger.as_ref()).await.expect("test: shut down");
+    }
+
     // what this catches (Codex on #5932): a failure after she is seated returning early, so nothing
     // paged her out. Here the trigger stops admitting while she is seated: the pass fails, and the
     // runtime's save (quiesce) pages her out; nothing outlives the save.
