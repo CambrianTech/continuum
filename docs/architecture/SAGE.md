@@ -142,17 +142,24 @@ she is off the lane her perception, tools, memory, learning and preparation keep
   prompt, tool surface) are copied between sequences (`seq_cp`), never prefilled again. Learning runs
   as chunked tiles between decode steps (live `/learn` as the fork's reverse walk, Cormac).
 
-**What it can reach** (four minds, the M5, Qwen3.6-35B-A3B at about 64k context). Anchors measured:
-decode 30.5 tok/s alone and 101 tok/s across four streams in one batch (`continuum-sage/src/sim.rs`
-calibration, 2026-10-28); prefill about 304 tok/s at 64k depth; persona swap p50 about 6 ms
-(`persona_switch` validator) and 26 ms on the live Core (aa734cc01c, below). The rest is arithmetic:
+**What it can reach** (four minds, the M5, Qwen3.6-35B-A3B Q4_K_M). Anchors measured
+(CONTINUUM-ENGINE 4.1b, 2026-10-28, short prompts, `llama-batched-bench`): decode 59 tok/s for one
+stream, 45 per stream / 90 aggregate for two, 31 / 124 for four: about 2.1x at four, because on this MoE
+model each sequence routes to its own experts. The MTP draft wins alone (80 vs 57 tok/s) and loses
+under concurrency (91 vs 122 aggregate at four), so it drafts only while a turn decodes alone. Prefill
+about 304 tok/s at 64k depth; persona swap p50 about 6 ms (`persona_switch` validator) and 26 ms on the
+live Core (aa734cc01c, below). At depth every number is lower (decode 59/(1+d/64k) alone); the batched
+ratio at depth is to be measured. The rest is arithmetic on the short-prompt numbers:
 
 | How the lane runs | Each mind sees | All four |
 |---|---|---|
-| A turn at a time, HTTP swaps (before) | 30 tok/s, then minutes of waiting | about 30 tok/s, less swap stalls |
-| Sliced, fast swap, 0.5 s bound | about 7.5 tok/s, every wait under 0.5 s | about 30 tok/s |
-| Resident minds batched in one step | about 25 tok/s, no wait | about 100 tok/s |
-| Batched, with the MTP draft | estimate 35-50 tok/s | estimate 150-200 tok/s |
+| A turn at a time (before) | 59 tok/s, then minutes of waiting | about 59 tok/s, less swap stalls |
+| Sliced, fast swap, 0.5 s bound | about 15 tok/s, every wait under 0.5 s | about 50-56 tok/s (switch overhead) |
+| Resident minds batched in one step | about 31 tok/s, no wait | about 124 tok/s |
+| One mind alone, with the MTP draft | 80 tok/s | 80 tok/s |
+
+(Corrected 2026-11-22: an earlier version of this table claimed about 3.3x from batching and 150-200
+tok/s with MTP under batching; the measured gain is 2.1x and MTP loses under concurrency.)
 
 Switch overhead at a 0.5 s bound with four minds decoding at once: 16% at a 26 ms switch, 4% at 6 ms;
 with two minds, 5% and 1%. The fast swap is what makes a sub-second bound nearly free.
