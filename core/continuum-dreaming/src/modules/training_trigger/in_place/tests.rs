@@ -310,7 +310,7 @@ async fn accepted_examples_with_no_learning_engine_are_named_once() {
     use tracing_subscriber::layer::SubscriberExt;
     let router = continuum_kernel::routing::ProbeRouterLayer::new();
     let mut named = router.subscribe("training.in_place.no_learning_engine");
-    let _probes = tracing::subscriber::set_default(tracing_subscriber::registry().with(router.clone()));
+    let _probes = tracing::subscriber::set_default(tracing_subscriber::registry().with(router));
     let home = tempfile::tempdir().expect("test: home"); // test fixture
     let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     assert!(crate::inference::lane_registry::live_lane().is_none(), "test: no llama-server lane on this home");
@@ -327,8 +327,15 @@ async fn accepted_examples_with_no_learning_engine_are_named_once() {
     state.recover_pass().await.expect("test: the pass runs"); // test fixture
     state.recover_pass().await.expect("test: the pass runs"); // test fixture
     let event = named.try_recv().expect("accepted examples and no engine: named, never a quiet Ok"); // test fixture
-    assert_eq!(event.fields.get("examples_waiting").map(String::as_str), Some("1"), "the total waiting: {event:?}");
-    assert!(event.fields.get("buckets").is_some_and(|b| b.contains("no-engine-fixture/geography/qwen: 1")), "the bucket and its count: {event:?}");
+    /// The probe's fields, decoded once: what it says waits.
+    #[derive(serde::Deserialize)]
+    struct Waiting {
+        examples_waiting: String,
+        buckets: String,
+    }
+    let waiting: Waiting = serde_json::from_value(serde_json::to_value(&event.fields).expect("test: probe fields")).expect("test: the probe names what waits"); // test fixture
+    assert_eq!(waiting.examples_waiting.parse::<u64>().ok(), Some(1), "the total waiting: {event:?}");
+    assert!(waiting.buckets.contains("no-engine-fixture/geography/qwen: 1"), "the bucket and its count: {event:?}");
     assert!(named.try_recv().is_err(), "named once per transition, not every pass");
 }
 
