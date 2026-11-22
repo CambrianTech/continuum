@@ -79,6 +79,10 @@ pub enum Held {
     /// The generation is not staged yet, or names no single row: retried at the next review
     /// event and at registration replay.
     Unresolved(String),
+    /// The issuing generation was staged as evidence for another card (one turn worked several
+    /// cards; staging tied it to one of them). Final: no later staging changes which card that
+    /// row is, so the review settles as ineligible evidence instead of replaying held forever.
+    StagedElsewhere(Uuid),
 }
 
 /// Record the issuing generation before publication. A retry with the same selection is a
@@ -133,6 +137,7 @@ pub async fn resolve_pending<T: Transport>(
     let row = match generation_row(conn, persona_name, persona_id, submitted, generation).await {
         Ok(row) => row,
         Err(CreditBindingError::Storage(e)) => return Err(e.into()),
+        Err(CreditBindingError::StagedElsewhere { card, .. }) => return Ok(Some(Err(Held::StagedElsewhere(card)))),
         Err(other) => return Ok(Some(Err(Held::Unresolved(other.to_string())))),
     };
     if let Some(other) = issued_elsewhere(conn, persona_name, &row, id).await? {

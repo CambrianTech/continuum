@@ -630,5 +630,16 @@ use super::*;
             reviewed::resolve_pending(&data, name, persona, room, &on_board).await?.and_then(Result::err),
             Some(Held::PublicationMismatch)
         );
+
+        // regression for the M5's 138 held replays (2026-11-21): one turn worked several cards and
+        // was staged under one of them, while its submission went on another. That is final, not
+        // "not staged yet": it settles as evidence for the other card instead of holding forever.
+        let mut on_another_card = submission('9')?;
+        on_another_card.card_id = airc_work::WorkCardId::from_uuid(Uuid::new_v4());
+        reviewed::record_pending(&data, name, persona, pending(&on_another_card, "work-a")).await?;
+        assert_eq!(
+            reviewed::resolve_pending(&data, name, persona, room, &on_another_card).await?.and_then(Result::err),
+            Some(Held::StagedElsewhere(card))
+        );
         Ok(())
     }

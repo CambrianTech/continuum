@@ -518,6 +518,8 @@ pub enum CreditBindingError {
         "generation {0} must identify exactly one staged revision for this persona, card and claim"
     )]
     AmbiguousGeneration(String),
+    #[error("generation {generation} was staged as evidence for card {card}, not this submission's")]
+    StagedElsewhere { generation: String, card: Uuid },
     #[error("selected credit does not belong to this persona, card and accepted claim")]
     WrongSelection,
     #[error("submission {0} is already bound to another immutable selection")]
