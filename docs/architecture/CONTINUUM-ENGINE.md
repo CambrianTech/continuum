@@ -1094,6 +1094,46 @@ A page save or restore stalls every stream, because SLOT_SAVE and SLOT_RESTORE r
 
 **What follows:** plan rows SV-F1 to SV-F5 (section 8.2).
 
+### 4.1b' Batching at depth, and why it gives what it gives: measured 2026-11-22
+
+Apple M5 Pro, 64 GB; Qwen3.6-35B-A3B Q4_K_M; stock `llama-batched-bench` (cache build of 2026-11-18),
+`-b 2048 -ub 512 -fa on -ngl 99`, 128 decode tokens. Serving paused 23:03:46-23:15:57Z, the live core
+(3ef40434c7) relaunched from its slot and verified. Raw output in the session scratchpad.
+
+| Depth | KV | 1 stream t/s | 2 streams aggregate | 4 streams aggregate | Gain at 4 |
+|---|---|---|---|---|---|
+| 16k | unified (one pool) | 52.98 | 75.93 | 99.36 | 1.88x |
+| 16k | split (stream per sequence) | 53.20 | 76.35 | 100.58 | 1.89x |
+| 64k | unified, shared prompt | 38.53 | (not run) | 65.18 | 1.69x |
+
+Prefill: 686 t/s at 16k, 440 t/s at 64k.
+
+**One pool costs nothing here.** Split streams and the unified pool decode within 1.2%. On this hybrid
+model few layers are full attention, so the cross-sequence mask is cheap. So a mind's KV need not be a
+fixed share of the context: one pool, each mind's region contiguous and growing geometrically (as a
+`std::vector` grows), moved as one block copy (DMA-friendly), every resident mind decoded in one batch.
+
+**Why 1.9x and not 4x (a model that fits).** Each step costs a fixed part F, plus expert reads that grow
+with the distinct experts the batch touches. Assuming 128 experts with 8 active per token (to be
+confirmed from the GGUF) and uncorrelated routing, four tokens touch about 29 distinct experts (3.64x
+one token's 8). Solving the 16k numbers gives F = 10.8 ms and one token's expert reads = 8.1 ms. That
+predicts two streams at 75.5 t/s; measured 75.9. The gain is limited by each added sequence bringing
+mostly its own experts, not by a scheduling defect.
+
+**What that says to fix (the stall, engineered, not accepted):**
+1. **F is mostly not bandwidth.** It is about 57% of a lone token's 18.9 ms; the weights read once per
+   step are a small part of it. The rest is per-step overhead (graph build, kernel dispatch, syncs).
+   Cutting it speeds every mind, alone and batched. First profiling target, in the fork's Metal path.
+2. **Expert reads run at about 150 GB/s effective** (8.1 ms for one token's experts, about 1.2 GB,
+   inferred). The M5 Pro's peak is to be confirmed. The `mul_mat_id` kernel at small batch is the
+   second target.
+3. **Batching keeps paying as it grows**, because the expert union saturates: the fitted model gives
+   about 127 t/s at 8 sequences and 170 t/s at 16. More resident minds, and draft tokens, ride nearly
+   free once most experts are read each step. MTP lost under concurrency at four streams (4.1b); at
+   larger batches that is to be re-measured.
+4. **Routing overlap is a lever**: minds whose tokens route to the same experts batch better.
+   Measured, not assumed, before anything schedules by it.
+
 ### 4.1c The engine is fed by queues and signals, never held by permits (2026-10-28)
 
 Joel, 2026-10-28: "Its got to flow or have MANY queues"; "Semaphore really only exists for queue
