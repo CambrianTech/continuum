@@ -18,7 +18,7 @@
 //! own owned operation holding that engine's lock and the slot, never on the tick.
 
 use super::durable::{Arrival, LearnCheckpoint, Position};
-use super::{BucketKey, TrainingTriggerState};
+use super::{BucketKey, Membership, TrainingTriggerState};
 use crate::genome::learner::{
     example::learn_messages,
     memory::EngineWorkspace,

@@ -133,6 +133,11 @@ impl RekeyRefused {
     }
 }
 
+/// The trainer's bucket membership as a pass read it before selecting its rows
+/// ([`TrainingTriggerState::membership`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Membership(u64);
+
 /// The bucket columns of a row, read without its payload.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -218,6 +223,18 @@ impl DurableStore {
 }
 
 impl TrainingTriggerState {
+    /// Bucket membership now: a pass reads it BEFORE selecting its rows and checks it under its
+    /// bucket's gate before seating or stepping; a move committed in between ends that pass, and
+    /// the next pass selects the rows where they are now (Codex on #6226).
+    pub(crate) fn membership(&self) -> Membership {
+        Membership(self.membership.load(std::sync::atomic::Ordering::Acquire))
+    }
+
+    /// Whether rows moved between buckets since `seen`.
+    pub(crate) fn membership_moved_since(&self, seen: Membership) -> bool {
+        self.membership() != seen
+    }
+
     fn store_for_rekey(&self) -> Result<&DurableStore, RekeyRefused> {
         self.require_ready().map_err(RekeyRefused::Unavailable)?;
         self.durable.require().map(Arc::as_ref).map_err(RekeyRefused::Unavailable)
@@ -305,6 +322,8 @@ impl TrainingTriggerState {
         if !result.success {
             return Err(RekeyRefused::Store(result.error.unwrap_or_else(|| "the re-key batch was refused".into()))); // the adapter refused without detail; still a refusal
         }
+        // still under both gates: every pass that selected rows before this move stops at its gate
+        self.membership.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         let left = store.counts_of(&from).await?;
         let destination = store.counts_of(&to).await?;
         let expected = RekeyCounts {
@@ -446,6 +465,28 @@ mod tests {
         let checkpointed = trigger.state.rekey_apply(&stale).await;
         assert!(matches!(checkpointed, Err(RekeyRefused::SourceCheckpointed)), "{checkpointed:?}");
         assert_eq!(trigger.state.bucket_example_count(persona, "code", FIXTURE_HF).await, Some(1), "the source keeps its row");
+    }
+
+    // what this catches (Codex on #6226 @849c32d0e): a learning pass that selected its rows, then
+    // waited for her act holding nothing, while a re-key moved those rows; it would take the old
+    // bucket's gate and seat and learn the moved examples under the old key. The pass reads the
+    // membership before its rows and checks it under its gate: a move in between ends it with nothing
+    // seated or learned, and the rows stay where the re-key put them.
+    #[tokio::test]
+    async fn a_pass_that_selected_its_rows_before_a_move_seats_and_learns_nothing() {
+        let (trigger, _executor, _dir) = runtime().await;
+        let persona = Uuid::new_v4();
+        let stale = key(persona, FIXTURE_HF);
+        seed(&trigger.state, persona, FIXTURE_HF, batch(&["s-1"], None)).await;
+        let seen = trigger.state.membership(); // the pass reads it first, as learn_in_place does
+        let store = trigger.state.durable.require().expect("test: store");
+        let rows: Vec<Arrival> = store.arrivals(0, 16).await.expect("test: arrivals").into_iter().filter(|row| row.key == stale).collect();
+        assert_eq!(rows.len(), 1, "the pass selected her stale row");
+        trigger.state.rekey_apply(&stale).await.expect("test: the move commits while the pass waits");
+        let engine = crate::inference::engine_residency::EngineIncarnation::of(std::process::id(), 9).expect("test: this process's start time");
+        let pass = trigger.state.learn_bucket(stale, rows, engine, seen).await.expect("test: the pass ends cleanly");
+        assert_eq!(pass, super::super::super::in_place::BucketPass::default(), "nothing seated, learned, deferred or checkpointed");
+        assert_eq!(trigger.state.bucket_example_count(persona, "code", CANONICAL).await, Some(1), "her row is where the move put it, unlearned");
     }
 
     // what this catches: an apply that reads and rewrites a bucket while a trainer operation holds
