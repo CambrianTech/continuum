@@ -17,7 +17,16 @@ async fn main() -> Result<(), String> {
     let usage = "usage: signature_shapes <texts.jsonl> <contrast.jsonl>";
     let texts = read_texts(&std::env::args().nth(1).ok_or(usage)?)?;
     let contrast_texts = read_texts(&std::env::args().nth(2).ok_or(usage)?)?;
+    // the registry the core's boot loads first (ipc/start_server/model_registry_boot.rs): the local
+    // embed model is found through it, and without it the recall embedder falls back to lexical
+    continuum_genome::model_registry::init_global().map_err(|e| format!("the model registry did not load: {e}"))?;
     let embedder = continuum_genome::ai::embedding::resolve_recall_embedder_local().await;
+    if !embedder.is_semantic() {
+        return Err(format!(
+            "the recall embedder resolved to '{}', not a neural space: the comparison would not describe the signatures this node mints (Codex, 2026-11-22: no lexical run)",
+            embedder.id()
+        ));
+    }
     let started = std::time::Instant::now();
     let embedded = embedder.embed_many(&texts).await;
     let embed_ms = started.elapsed().as_secs_f64() * 1000.0;
