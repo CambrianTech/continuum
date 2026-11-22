@@ -319,15 +319,15 @@ impl ServingDaemonModule {
                 let new_closeness = plan.closeness(demand.window_tokens);
                 // Compare against the standing plan measured against the SAME demand target.
                 // This is fair: both plans judged on today's requirement, not yesterday's.
-                let prev_closeness = match self.plan_tx.borrow() {
-                    Ok(snap) => snap.plan.as_ref().map(|prev_plan| {
+                let prev_closeness = self.plan_tx.borrow()
+                    .plan.as_ref()
+                    .map(|prev_plan| {
                         let w = prev_plan.served_context_window.max(plan.served_context_window);
                         if demand.window_tokens == 0 { 1_000 } else {
                             ((w as f64 / demand.window_tokens as f64).min(1.0) * 1_000_f64) as u32
                         }
-                    }),
-                    Err(_) => None,
-                }.unwrap_or(0);
+                    })
+                    .unwrap_or(0);
                 if new_closeness < prev_closeness {
                     continuum_base::probe!(
                         target: "continuum_core::modules::serving_daemon",
