@@ -130,6 +130,10 @@ impl TrainingTriggerState {
                     continue;
                 }
                 let framed = learn_messages(&row.examples[learned as usize]);
+                // which example the engine's preflight (reply rows, required compute) is about: it names no submission
+                continuum_base::probe!(class = "training.in_place.covering", persona = %key.persona_id, submission = %row.id,
+                    sequence = row.sequence, example = learned, messages = framed.messages.len() as u64,
+                    "her next example is covered: the engine's preflight that follows is this example's");
                 return match seated.mind.cover(&state.in_place.authority, workspace, &framed.messages, framed.tools.as_ref()).await {
                     Ok(()) => Ok(Prepared::Ready),
                     Err(LearnFailure::Uncovered(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Prepared::MemoryShort(wait)),
