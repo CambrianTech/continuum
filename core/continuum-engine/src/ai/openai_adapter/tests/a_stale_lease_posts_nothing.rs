@@ -103,6 +103,7 @@ async fn a_stamped_admission_on_her_current_lease_dispatches() {
         by_mind: std::collections::BTreeMap::from([(persona, 148_838)]),
         engine: Some(engine),
         revisions: Default::default(),
+        owed: Default::default(),
     };
     crate::capacity::window_grant::stamp_revisions(None, &mut grants);
     let (_publisher, receiver) = tokio::sync::watch::channel(Some(grants));

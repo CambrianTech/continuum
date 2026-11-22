@@ -115,6 +115,109 @@
         assert_eq!(start.elapsed(), std::time::Duration::ZERO);
     }
 
+    /// Her place in the grants queue as each checkpoint reads it, from a script of what she sees.
+    fn scripted_place(script: Vec<crate::capacity::window_grant::WaitingPlace>) -> impl FnMut() -> Option<crate::capacity::window_grant::WaitingPlace> {
+        let mut reads = script.into_iter();
+        let mut last = None;
+        move || {
+            last = reads.next().or(last);
+            last
+        }
+    }
+
+    // what this catches (IntelMac 2026-11-22: 20 acts dropped at the 25-min floor inside
+    // deliberation.window_grant, never dispatched): a grant that comes after the old act deadline,
+    // while her place moves, still lets her act run, and the wait is not charged to her act: the
+    // 9 s of work after a 25 s wait fits a 10 s bound.
+    #[tokio::test(start_paused = true)]
+    async fn a_grant_after_the_old_deadline_runs_and_her_act_time_excludes_the_wait() {
+        use crate::capacity::window_grant::WaitingPlace::{Granted, Owed};
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let place = scripted_place(vec![Owed { ahead: 3 }, Owed { ahead: 2 }, Owed { ahead: 1 }, Granted]);
+        let (grant, granted) = tokio::sync::oneshot::channel::<()>();
+        let (finish, finished) = tokio::sync::oneshot::channel::<()>();
+        let step = async move {
+            admission_clock::window_grant_with(granted, place).await.expect("test: the grant is sent"); // test fixture
+            finished.await.expect("test: the work is finished"); // test fixture
+        };
+        let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, step));
+        run_for(std::time::Duration::ZERO).await; // her turn starts and registers its wait at 0 s
+        // her place moves at the 10 s and 20 s checkpoints; the grant arrives at 25 s, past the old deadline
+        for seconds in [10, 10, 5] {
+            run_for(std::time::Duration::from_secs(seconds)).await;
+        }
+        grant.send(()).expect("test: her act still waits for the grant, never ended by its old deadline"); // test fixture
+        // 9 s of work after the grant fits her 10 s act only if the 25 s wait was not charged to it
+        run_for(std::time::Duration::from_secs(9)).await;
+        finish.send(()).expect("test: her act is still running: the wait was not charged to it"); // test fixture
+        assert!(turn.await.expect("test: the turn task").is_ok(), "her place moved at every checkpoint, so the wait never ended her act"); // test fixture
+        assert_eq!(start.elapsed(), std::time::Duration::from_secs(34));
+    }
+
+    /// Move the paused clock by `by`, letting every woken task run: events, never a sleep, move the work.
+    async fn run_for(by: std::time::Duration) {
+        tokio::time::advance(by).await;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+        }
+    }
+
+    // what this catches: the grants churn (published every ~1.5 s on the IntelMac, #6070) read as
+    // her progress, which would hold a livelocked act forever. Other minds reordering, a newcomer
+    // ahead of her and going unqueued move nothing, so her act ends at its first checkpoint.
+    #[tokio::test(start_paused = true)]
+    async fn grants_churn_with_her_place_unmoved_ends_her_act_at_one_bound() {
+        use crate::capacity::window_grant::WaitingPlace::{Owed, Unqueued};
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let place = scripted_place(vec![Owed { ahead: 2 }, Owed { ahead: 3 }, Unqueued, Owed { ahead: 2 }]);
+        let waiting = admission_clock::window_grant_with(std::future::pending::<()>(), place);
+        assert!(tokio::time::timeout(bound * 10, super::until_act_stalls(start + bound, bound, None, waiting)).await.expect("a regression fails here, never hangs").is_err());
+        assert_eq!(start.elapsed(), bound, "churn is not her place moving");
+    }
+
+    // what this catches: granted at every checkpoint while her hold is refused (the 9,547
+    // 'her grant moved between her decision and her act' re-decisions) read as progress. Becoming
+    // granted is one move; staying granted is none.
+    #[tokio::test(start_paused = true)]
+    async fn staying_granted_while_her_hold_is_refused_moves_her_once() {
+        use crate::capacity::window_grant::WaitingPlace::{Granted, Owed};
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let place = scripted_place(vec![Owed { ahead: 1 }, Granted]);
+        let waiting = admission_clock::window_grant_with(std::future::pending::<()>(), place);
+        assert!(tokio::time::timeout(bound * 10, super::until_act_stalls(start + bound, bound, None, waiting)).await.expect("a regression fails here, never hangs").is_err());
+        assert_eq!(start.elapsed(), bound * 2, "the grant earned one checkpoint, never a standing exemption");
+    }
+
+    // what this catches: a cancelled caller leaving her grant wait alive (its acquisition and its
+    // place observer held past the act that owned them).
+    #[tokio::test(start_paused = true)]
+    async fn a_cancelled_caller_releases_her_grant_wait() {
+        use crate::capacity::window_grant::WaitingPlace::Owed;
+        let held = std::sync::Arc::new(());
+        let (acquired, observed) = (std::sync::Arc::clone(&held), std::sync::Arc::clone(&held));
+        let bound = std::time::Duration::from_secs(10);
+        let start = tokio::time::Instant::now();
+        let acquire = async move {
+            let _acquired = acquired;
+            std::future::pending::<()>().await
+        };
+        let mut ahead = 9;
+        let place = move || {
+            let _observed = &observed;
+            ahead -= 1;
+            Some(Owed { ahead })
+        };
+        let turn = tokio::spawn(super::until_act_stalls(start + bound, bound, None, admission_clock::window_grant_with(acquire, place)));
+        tokio::task::yield_now().await;
+        assert_eq!(std::sync::Arc::strong_count(&held), 3, "the wait holds its acquisition and its observer");
+        turn.abort();
+        assert!(turn.await.is_err_and(|e| e.is_cancelled()));
+        assert_eq!(std::sync::Arc::strong_count(&held), 1, "cancelling her act released both");
+    }
+
     async fn queued(gate: &LaneAdmission, count: usize) {
         for _ in 0..100 {
             if gate.work_waiting() == count { return; }
