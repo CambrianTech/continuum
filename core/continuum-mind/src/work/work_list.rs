@@ -89,6 +89,12 @@ pub struct WorkListParams {
     #[serde(default)]
     #[ts(optional)]
     pub group: Option<BoardGroup>,
+    /// Optional parent room whose board to query alongside this room's board.
+    /// When set, cards from both rooms are merged (deduplicated by id), counts
+    /// summed across rooms. Designed for citizens seated in per-run benchmark
+    /// rooms that need to discover work on their parent project room.
+    #[serde(default)]
+    pub parent: Option<String>,
     // No count: with no filter the board comes back as her view shows it (`board_nav`, collapsed
     // navigation: her cards whole, each group's most recent cards and a node for the rest), and a
     // filter is a node opened, whole. A per-tool `limit` was a second truncation beside the act's
