@@ -115,9 +115,19 @@ pub struct PoolGrants {
     pub engine: Option<crate::inference::engine_residency::EngineIncarnation>,
     /// Each mind's grant revision ([`stamp_revisions`]).
     pub revisions: BTreeMap<uuid::Uuid, GrantRevision>,
+    /// Each mind owed a seat, at the publication she became owed (the dispatch owner's queue, oldest
+    /// first by value). A waiting mind reads her place in it ([`Self::owed_rank`]), never the churn.
+    pub owed: BTreeMap<uuid::Uuid, u64>,
 }
 
 impl PoolGrants {
+    /// How many owed minds wait ahead of her (owed at an earlier publication, ties by id), when she
+    /// is owed. `None` when she is not owed: granted, or not waiting on this pool.
+    pub fn owed_rank(&self, persona: uuid::Uuid) -> Option<usize> {
+        let since = *self.owed.get(&persona)?;
+        Some(self.owed.iter().filter(|(mind, at)| (**at, **mind) < (since, persona)).count())
+    }
+
     /// Her grant, when she is one of the minds on this pool.
     pub fn grant_for(&self, persona: uuid::Uuid) -> Option<u32> {
         self.by_mind.get(&persona).copied()
@@ -157,6 +167,28 @@ pub fn current_grant(persona: uuid::Uuid) -> Option<u32> {
 /// Her current grant and its revision: what a request is priced against and reserved by.
 pub fn current_lease(persona: uuid::Uuid) -> Option<GrantLease> {
     GRANTS.get()?.borrow().as_ref()?.lease_for(persona)
+}
+
+/// Where a mind waiting for her window stands in the latest publication.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitingPlace {
+    /// She holds a grant: her wait is answered.
+    Granted,
+    /// She is owed a seat behind this many owed minds.
+    Owed { ahead: usize },
+    /// Neither granted nor owed: the dispatch owner has not queued her.
+    Unqueued,
+}
+
+/// Her place in the latest publication, or `None` when no grants are published in this process.
+pub fn waiting_place(persona: uuid::Uuid) -> Option<WaitingPlace> {
+    let grants = GRANTS.get()?.borrow();
+    let grants = grants.as_ref()?;
+    Some(match (grants.grant_for(persona), grants.owed_rank(persona)) {
+        (Some(_), _) => WaitingPlace::Granted,
+        (None, Some(ahead)) => WaitingPlace::Owed { ahead },
+        (None, None) => WaitingPlace::Unqueued,
+    })
 }
 
 /// How wide one seat on this node's engine is: the most ONE mind may be granted, as the grant owner
@@ -616,6 +648,20 @@ mod tests {
     /// A mind whose need is her target (a wish with no held turn yet).
     fn demand(mind: u32, need: u32, in_flight: bool, ceiling: u32) -> Demand<u32> {
         Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, settled: true, ceiling }
+    }
+
+    // what this catches (Codex on card 06254dcc): a waiting mind's place read wrong, which her grant
+    // wait counts as progress. Minds owed at the same publication are one cohort, ordered by id as the
+    // dispatch owner iterates them; a mind not owed has no rank, which is not rank zero.
+    #[test]
+    fn her_rank_counts_older_cohorts_then_ids_and_absent_is_not_rank_zero() {
+        let mind = uuid::Uuid::from_u128;
+        let grants = PoolGrants { owed: BTreeMap::from([(mind(1), 7), (mind(2), 9), (mind(3), 9), (mind(4), 12)]), ..PoolGrants::default() };
+        assert_eq!(grants.owed_rank(mind(1)), Some(0), "the oldest waits behind no one");
+        assert_eq!(grants.owed_rank(mind(2)), Some(1), "same publication as mind 3: the lower id goes first");
+        assert_eq!(grants.owed_rank(mind(3)), Some(2), "behind the older one and her cohort's lower id");
+        assert_eq!(grants.owed_rank(mind(4)), Some(3));
+        assert_eq!(grants.owed_rank(mind(5)), None, "not owed: no rank, never rank zero");
     }
 
     // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what

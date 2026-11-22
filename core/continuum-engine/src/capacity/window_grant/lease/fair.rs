@@ -271,7 +271,7 @@ impl Reservations {
                 dispatch.changed.insert(d.mind, served);
             }
         }
-        let mut next = PoolGrants { pool_tokens: pool, per_sequence_cap: ceiling, by_mind: grants, engine, revisions: BTreeMap::new() };
+        let mut next = PoolGrants { pool_tokens: pool, per_sequence_cap: ceiling, by_mind: grants, engine, revisions: BTreeMap::new(), owed: dispatch.owed.clone() };
         stamp_revisions(current.as_ref(), &mut next);
         // An owed mind is owed each seat she may take when its holder's act ends: every such holder
         // is armed, so her next reserve after a completed act is refused at the receipt boundary and

@@ -105,7 +105,7 @@ mod tests {
             ],
         );
         state.receipts.insert(holder, (None, 8));
-        let next = PoolGrants { pool_tokens: 100, per_sequence_cap: 100, by_mind: BTreeMap::from([(holder, 60)]), engine: None, revisions: BTreeMap::new() };
+        let next = PoolGrants { pool_tokens: 100, per_sequence_cap: 100, by_mind: BTreeMap::from([(holder, 60)]), engine: None, revisions: BTreeMap::new(), owed: BTreeMap::new() };
         let snapshot = DispatchDiagnosis::capture(&dispatch, &state, &next);
         assert_eq!(snapshot.owed, vec![(waiter, 3)]);
         let held = &snapshot.holders[&holder];
