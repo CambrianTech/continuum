@@ -737,3 +737,26 @@ regardless and maybe higher duty cycle while unconscious or during academy cours
   learning Prepare 29 times on zero governed VRAM); (2) plan goal 8's acceptance test (a reviewed
   correction applied on unseen tasks, kept after restart, against the base without the gene); (3) the
   learning component's state on the health report, so a stall is never silent.
+
+**Dream, academy, benchmark: who directs them and how wide they range (Joel, 2026-11-21: "a dream is more
+open ended or regressive, self exploration, random, even chaotic and adventurous. Academy is directed by a
+teacher and potentially other students with curriculum, quizzes, exams ... a benchmark has some aspects,
+whatever we think might help her improve even during the exam ... For dreams we might come up with
+something rather wild for this synthesis ... high temperature wild frontier ... Academy is what we'd want
+more likely for the GitHub and agentic conversion history distillation along with teachers having full
+exploration available. Web search might become the norm for all").**
+
+| | Dream | Academy | Benchmark |
+|---|---|---|---|
+| directed by | herself, or something stranger | a teacher, with other students | the task and its oracle |
+| shape | open-ended, regressive, random, adventurous | curriculum, quizzes, exams: a college experience | a fixed exam, with whatever helps her improve even during it (trek dynamics) |
+| temperature | high: a wild frontier | moderate, guided | as the exam requires |
+| learns from | synthesized episodes seeded by amygdala-flagged moments | distillation from teacher and peers; the teacher explores freely | the graded outcome |
+| responsible | no one needs to be | the teacher | the adapter that imports it |
+
+A dream's synthesizer may be herself at high temperature, a dream-other (an adversary, a tempter, a
+stranger asking what she has never been asked), or a remix of fragments of different memories into
+situations that never happened; verifiers score what is checkable and the rest is exploration she keeps or
+lets go. Academy is where GitHub history and agentic conversation histories (Claude Code, Codex, the repo's
+own) become curriculum (REPO-GENOME-AND-COURSES.md §17). Web search is a long-act component any part may
+use, emitting results as it finds them.
