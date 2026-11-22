@@ -17,6 +17,8 @@ pub(super) const OWNED: &[&str] = &[
         // Owner: CitizenWorkspacePool — dormant, non-resident WORKSPACES only, and
         // only after complete verified preservation. Memory is never evicted.
         "citizens",
+        // Owner: DevWorktreePool: clean, pushed, idle, unborrowed checkouts only (git's facts).
+        "worktrees",
         "genome-models",
         "logs",
         "probes",

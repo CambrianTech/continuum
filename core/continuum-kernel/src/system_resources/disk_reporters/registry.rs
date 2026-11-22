@@ -270,15 +270,21 @@ impl Registry {
                         .await
                         .map_err(|error| format!("Cargo root resolution worker failed: {error}"))?;
                         let (result, worked) = outcome;
-                        continuum_base::probe!(
-                            class = "disk.root.resolution",
-                            path = %probe_path.display(),
-                            kind = %kind,
-                            queue_ms = (queued.elapsed().saturating_sub(worked)).as_millis() as u64,
-                            work_ms = worked.as_millis() as u64,
-                            ok = result.is_ok(),
-                            "one filesystem resolution of a tracked root: how long it queued, how long it worked"
-                        );
+                        // Said when a root's outcome changes or a resolution was slow; an unchanged, quick
+                        // one is known (the M5, 2026-11-22: ~250 identical lines a minute for absent roots).
+                        let queue_ms = (queued.elapsed().saturating_sub(worked)).as_millis() as u64;
+                        let work_ms = worked.as_millis() as u64;
+                        if resolution_is_news(&probe_path, &kind.to_string(), result.is_ok(), queue_ms + work_ms) {
+                            continuum_base::probe!(
+                                class = "disk.root.resolution",
+                                path = %probe_path.display(),
+                                kind = %kind,
+                                queue_ms,
+                                work_ms,
+                                ok = result.is_ok(),
+                                "one filesystem resolution of a tracked root changed outcome or was slow"
+                            );
+                        }
                         result
                     }
                     .boxed()
@@ -687,6 +693,8 @@ pub fn bind_cargo_owners(
         }
         if CARGO_TARGET_CLASSES.contains(&dir.class()) {
             register_pool(broker, dir.clone());
+        } else if dir.class() == "worktrees" {
+            broker.register(Arc::new(super::super::dev_worktree_pool::DevWorktreePool::new(dir.clone())));
         }
     }
     state.consumers = Some(Consumers {
@@ -718,3 +726,19 @@ pub(crate) fn citizen_has_cargo_owner(peer: uuid::Uuid) -> Result<bool, String> 
 
 #[cfg(test)]
 mod tests;
+
+/// Whether one root's resolution is worth a probe: its outcome (kind, ok) differs from the last one
+/// said for that root, or it took long enough to be felt. The bound is the disk monitor's own poll
+/// cadence: a resolution that holds a poll back is news.
+fn resolution_is_news(path: &std::path::Path, kind: &str, ok: bool, elapsed_ms: u64) -> bool {
+    static SAID: std::sync::LazyLock<parking_lot::Mutex<std::collections::HashMap<std::path::PathBuf, (String, bool)>>> =
+        std::sync::LazyLock::new(Default::default);
+    let slow = elapsed_ms >= super::super::disk_pressure::POLL_INTERVAL.as_millis() as u64;
+    let outcome = (kind.to_owned(), ok);
+    let mut said = SAID.lock();
+    let changed = said.get(path) != Some(&outcome);
+    if changed {
+        said.insert(path.to_path_buf(), outcome);
+    }
+    changed || slow
+}

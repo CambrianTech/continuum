@@ -1,6 +1,10 @@
 use super::*;
 
 impl ResourcePool for CargoTargetPool {
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.tracked.path().to_path_buf())
+    }
+
     fn tier_name(&self) -> &str {
         &self.tier
     }

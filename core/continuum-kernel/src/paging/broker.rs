@@ -284,8 +284,9 @@ impl PressureBroker {
     /// reference (Arc) so pools that outlive the broker stay valid; the
     /// broker iterates the registered set each tick.
     pub fn register(&self, pool: Arc<dyn ResourcePool>) {
-        // A pool on a disk is relieved by its VOLUME's pressure (disk relief), never by its own budget;
-        // the broker still shows it, and leaves it out of `relieve`.
+        // A pool on a disk is also relieved by its VOLUME's pressure (disk relief): a pool under its own
+        // budget on a full volume was asked by no one (the M5 at 92%, 2026-11-22). Its own cap stays
+        // the broker's.
         if pool.root().is_some() {
             crate::system_resources::disk_relief::register(pool.clone());
         }
@@ -346,7 +347,6 @@ impl PressureBroker {
         // Build (pressure, ref) list, sorted descending by pressure.
         let mut pressured: Vec<(f64, Arc<dyn ResourcePool>)> = pools
             .iter()
-            .filter(|p| p.root().is_none()) // disk pools: disk relief's
             .map(|p| (p.pressure(), p.clone()))
             .filter(|(p, _)| *p >= self.config.act_above)
             .collect();

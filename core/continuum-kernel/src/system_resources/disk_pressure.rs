@@ -356,7 +356,7 @@ pub struct DiskPressureMonitor {
 /// Poll interval — every 30 s. Disk pressure changes slowly; faster
 /// polls burn CPU on a value that rarely changes. Per the
 /// CONCURRENCY-STYLE-GUIDE cadence ladder: lean slower in doubt.
-const POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Quarantine threshold — matches the broker / memory monitor.
 const QUARANTINE_AFTER: u32 = 3;

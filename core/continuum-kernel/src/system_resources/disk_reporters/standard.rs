@@ -106,6 +106,9 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
         kept(continuum, "citizens"),
+        // Development worktrees, one checkout per branch an agent works on: 40 GB untracked on the M5
+        // (2026-11-22). Owner: DevWorktreePool, which removes only what git says is safe.
+        kept(continuum, "worktrees"),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
