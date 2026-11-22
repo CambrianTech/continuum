@@ -9,7 +9,7 @@ use std::{
         Arc,
     },
 };
-use tokio::sync::{watch, Notify};
+use tokio::sync::{watch, Mutex, Notify};
 
 #[derive(Default)]
 pub(super) struct ServingWake {
@@ -17,7 +17,9 @@ pub(super) struct ServingWake {
     /// The follower, owned here until its join completes: a stop cancelled by its caller's deadline
     /// leaves it here, so the next stop aborts and joins the same task (5090 #6228, Codex: a stop
     /// that took the handle out detached the follower when the drain's 2 s deadline dropped it).
-    task: parking_lot::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// The async mutex is held through the join on purpose: it serializes stops and starts, so two
+    /// stops never poll one handle (one would lose its waker) and no start lands mid-stop.
+    task: Mutex<Option<tokio::task::JoinHandle<()>>>,
     recovery_requested: Arc<Notify>,
     alive: Arc<AtomicBool>,
 }
@@ -59,7 +61,7 @@ impl ServingWake {
         let Some(receiver) = self.receiver.clone() else {
             return;
         };
-        let mut task = self.task.lock();
+        let mut task = self.task.lock().await;
         if task.is_some() {
             return;
         }
@@ -81,25 +83,16 @@ impl ServingWake {
         )));
     }
 
-    /// Abort the follower and wait for it to end. The handle stays in the owner until the task has
-    /// ended, so a stop dropped by its caller's deadline loses nothing: the next stop aborts and joins
-    /// the same task. The owner's lock is held only for each poll, never across a wait.
+    /// Abort the follower and wait for it to end, holding the owner's async mutex through the join
+    /// (callers serialize). The handle is cleared only once the task has ended, so a stop dropped by
+    /// its caller's deadline loses nothing: the next stop aborts and joins the same task.
     pub(super) async fn stop(&self) {
-        if let Some(task) = self.task.lock().as_ref() {
+        let mut slot = self.task.lock().await;
+        if let Some(task) = slot.as_mut() {
             task.abort();
+            let _ = task.await; // ended: aborted, or it returned first; either way nothing is left to own
+            *slot = None;
         }
-        std::future::poll_fn(|cx| {
-            let mut slot = self.task.lock();
-            let Some(task) = slot.as_mut() else { return std::task::Poll::Ready(()) };
-            match std::pin::Pin::new(task).poll(cx) {
-                std::task::Poll::Ready(_) => {
-                    *slot = None; // ended (aborted or returned): nothing of it is left to own
-                    std::task::Poll::Ready(())
-                }
-                std::task::Poll::Pending => std::task::Poll::Pending,
-            }
-        })
-        .await;
     }
 }
 
@@ -182,24 +175,27 @@ mod tests {
     // what this catches (the 5090, #6228 @9ff02b931, Codex): a stop that took the follower's only
     // handle out of its owner, then was dropped by the drain's 2 s deadline, detached the follower; the
     // later shutdown stop found nothing to stop while its recovery stayed in flight (one Recover, age
-    // 224,723 ms at the join). A stop dropped mid-join leaves the follower owned; the next stop aborts
-    // and joins the same task, and it ends.
+    // 224,723 ms at the join). A stop dropped mid-join leaves the follower owned; a concurrent stop
+    // waits behind it rather than polling the same handle; it then joins the same task, and it ends.
     #[tokio::test]
-    async fn a_stop_dropped_by_its_deadline_leaves_the_follower_owned_for_the_next_stop() {
+    async fn a_stop_dropped_by_its_deadline_leaves_the_follower_owned_and_stops_serialize() {
         let (_sender, receiver) = watch::channel(ServingSnapshot::empty());
         let wake = ServingWake { receiver: Some(receiver.clone()), ..Default::default() };
         let (requested, alive) = (Arc::clone(&wake.recovery_requested), Arc::clone(&wake.alive));
         let follower = tokio::spawn(follow(receiver, requested, Alive::new(alive), std::future::pending::<()>));
-        *wake.task.lock() = Some(follower);
+        *wake.task.lock().await = Some(follower);
+        let second = wake.stop();
+        tokio::pin!(second);
         {
             let first = wake.stop();
             tokio::pin!(first);
             assert!(futures::poll!(&mut first).is_pending(), "aborted, not yet joined");
-        } // the drain's deadline drops this stop
-        assert!(wake.task.lock().is_some(), "the follower is still owned, not detached");
-        assert!(wake.alive.load(Ordering::Acquire), "and still running");
-        wake.stop().await;
-        assert!(wake.task.lock().is_none(), "the next stop joined it");
+            // Codex: two stops must never poll one handle; the second waits on the owner instead
+            assert!(futures::poll!(&mut second).is_pending(), "a concurrent stop waits behind the first");
+        } // the drain's deadline drops the first stop
+        assert!(wake.alive.load(Ordering::Acquire), "the follower still runs, owned, not detached");
+        second.await;
+        assert!(wake.task.lock().await.is_none(), "the next stop joined it");
         assert!(!wake.alive.load(Ordering::Acquire), "and it ended");
     }
 
