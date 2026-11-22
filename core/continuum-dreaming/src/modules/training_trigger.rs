@@ -160,6 +160,9 @@ pub struct TrainingTriggerState {
     /// This node has accepted examples and no engine to learn them on, and has said so once
     /// ([`TrainingTriggerState::note_no_learning_engine`]); cleared when a learning engine appears.
     no_learning_engine_noted: std::sync::atomic::AtomicBool,
+    /// The LIVE model catalog every submit resolves its base against (`base_identity::canonical_base`):
+    /// the one the serving daemon and `models/*` mutate, so a model pulled after boot resolves at once.
+    models: Arc<crate::model_registry::live::ModelCatalog>,
     next_sequence: std::sync::atomic::AtomicU64,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
     in_place: in_place::InPlace,
@@ -184,14 +187,20 @@ impl TrainingTriggerState {
         (unlearned > 0).then_some(unlearned as usize)
     }
 
+    /// The live model catalog, as it reads now: what a submit resolves its base against.
+    pub(crate) fn models_now(&self) -> Arc<crate::model_registry::live::CatalogSnapshot> {
+        self.models.snapshot()
+    }
+
     /// Test-only: record submission `id`'s first `learned` examples as learned in place.
     #[cfg(test)]
     pub(crate) async fn mark_learned(&self, id: Uuid, learned: u32) -> Result<(), String> {
         self.durable.require()?.record_learned(id, learned).await
     }
 
-    pub(crate) fn new(authority: crate::genome::learner::seat::Authority) -> Self {
+    pub(crate) fn new(authority: crate::genome::learner::seat::Authority, models: &Arc<crate::model_registry::live::ModelCatalog>) -> Self {
         Self {
+            models: Arc::clone(models),
             submit_gates: PerKeyGate::new(),
             executor: LateBound::new("training-trigger::executor"),
             durable: LateBound::new("training-trigger::durable-store"),
@@ -272,9 +281,9 @@ pub struct TrainingTriggerModule {
 impl TrainingTriggerModule {
     /// The trigger, learning in place under `authority` (the core's resource authority, serving
     /// lifecycle gate and lease custody).
-    pub fn new(authority: crate::genome::learner::seat::Authority) -> Self {
+    pub fn new(authority: crate::genome::learner::seat::Authority, models: &Arc<crate::model_registry::live::ModelCatalog>) -> Self {
         Self {
-            state: Arc::new(TrainingTriggerState::new(authority)),
+            state: Arc::new(TrainingTriggerState::new(authority, models)),
             serving_wake: Default::default(),
         }
     }
