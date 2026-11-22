@@ -157,6 +157,9 @@ pub struct TrainingTriggerState {
     initial_adapter: std::sync::OnceLock<Arc<dyn crate::orm::StorageAdapter>>,
     ready: std::sync::atomic::AtomicBool,
     stopping: std::sync::atomic::AtomicBool,
+    /// This node has accepted examples and no engine to learn them on, and has said so once
+    /// ([`TrainingTriggerState::note_no_learning_engine`]); cleared when a learning engine appears.
+    no_learning_engine_noted: std::sync::atomic::AtomicBool,
     next_sequence: std::sync::atomic::AtomicU64,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
     in_place: in_place::InPlace,
@@ -198,6 +201,7 @@ impl TrainingTriggerState {
             initial_adapter: std::sync::OnceLock::new(),
             ready: std::sync::atomic::AtomicBool::new(false),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            no_learning_engine_noted: std::sync::atomic::AtomicBool::new(false),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
@@ -221,9 +225,37 @@ impl TrainingTriggerState {
     pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
         self.ensure_storage().await?; // an interrupted schema setup is retried here, serving or not
         let Some(lane) = crate::inference::lane_registry::live_lane() else {
+            if !self.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed) {
+                let pending = self.pending_views().await?;
+                self.note_no_learning_engine(&pending);
+            }
             return Ok(());
         };
+        self.no_learning_engine_noted.store(false, std::sync::atomic::Ordering::Relaxed);
         self.learn_in_place(lane.incarnation(), &lane.model).await
+    }
+
+    /// No llama-server lane: in-place learning has no engine on this node. A node that serves
+    /// in-process (the 5090, Codex 2026-11-22: 8 accepted examples, learned=0, no checkpoint) is
+    /// serving, so this is never a quiet "nothing to do". With examples waiting, say so once per
+    /// transition, naming what waits; in-process learning is IN-PROCESS-LEARNING.md L2 and L3.
+    fn note_no_learning_engine(&self, pending: &[crate::commands::training_trigger::status::PendingBucketView]) {
+        let examples: u64 = pending.iter().map(|bucket| u64::from(bucket.examples_pending)).sum();
+        if examples == 0 {
+            return;
+        }
+        self.no_learning_engine_noted.store(true, std::sync::atomic::Ordering::Relaxed);
+        let buckets: Vec<String> = pending
+            .iter()
+            .filter(|bucket| bucket.examples_pending > 0)
+            .map(|bucket| format!("{}/{}/{}: {}", bucket.persona_name, bucket.trait_kind, bucket.base_model, bucket.examples_pending))
+            .collect();
+        continuum_base::probe!(
+            class = "training.in_place.no_learning_engine",
+            examples_waiting = examples,
+            buckets = ?buckets,
+            "accepted examples wait and this node has no learning engine (no llama-server lane; in-process learning is IN-PROCESS-LEARNING.md L2/L3): nothing will be learned here until one exists"
+        );
     }
 
 }

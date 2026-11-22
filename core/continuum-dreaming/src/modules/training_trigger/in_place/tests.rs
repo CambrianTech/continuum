@@ -301,6 +301,28 @@ async fn a_failing_bucket_never_starves_the_next() {
     assert_eq!(*ran.lock().expect("test: lock"), vec![failing, healthy], "the healthy bucket after the failing one still ran");
 }
 
+// what this catches (Codex, the 5090 2026-11-22: 8 accepted examples, learned=0, no checkpoint,
+// and silence): a node with accepted examples and no learning engine read as nothing to do. With
+// nothing accepted it says nothing; once examples wait with no lane, it names them.
+#[tokio::test]
+async fn accepted_examples_with_no_learning_engine_are_named() {
+    let home = tempfile::tempdir().expect("test: home"); // test fixture
+    let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
+    assert!(crate::inference::lane_registry::live_lane().is_none(), "test: no llama-server lane on this home");
+    let (trigger, executor, _dir) = crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
+    let state = trigger.state.clone();
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    assert!(!state.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed), "nothing accepted: nothing to say");
+    let params = serde_json::json!({
+        "personaId": Uuid::new_v4(), "personaName": "no-engine-fixture", "baseModel": "qwen", "traitKind": "geography",
+        "examples": [crate::commands::training_trigger::test_support::ex("What is the capital of Kansas?", "Topeka.")], "source": "operator_curated",
+    });
+    let answer = executor.execute_json("genome/training-trigger/submit", params).await.expect("test: submit routes"); // test fixture
+    assert_eq!(answer["success"], true, "test: the arrival is accepted: {answer}");
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    assert!(state.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed), "accepted examples and no engine: named, never a quiet Ok");
+}
+
 // what this catches: an eviction that deletes a file it does not own (Codex on f13a6abea): the same
 // persona and trait learning on two bases in one train dir, a shadow, or a staged gene; and one that
 // keeps the bucket's superseded generations forever.
