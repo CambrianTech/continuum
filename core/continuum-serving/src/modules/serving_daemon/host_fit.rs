@@ -78,7 +78,7 @@ pub(super) fn need_with_growth(claims: &[MindClaim], sequences: u32, trained_win
     let claimed: u64 = claims
         .iter()
         .map(|claim| match claim {
-            MindClaim::Required { size } => (size as f64 * SENT_HEADROOM) as u64,
+            MindClaim::Required { size } => (*size as f64 * SENT_HEADROOM) as u64,
         })
         .map(|tokens| tokens.min(trained))
         .sum();
