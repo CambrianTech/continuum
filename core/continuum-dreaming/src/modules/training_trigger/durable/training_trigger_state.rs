@@ -71,10 +71,11 @@ impl TrainingTriggerState {
         // Dropping the shutdown wait does not abort still-running operations.
         // A running step can register a fence before it finishes. Release the set
         // between polls so the fence can join the same shutdown.
-        let in_flight = self.operations.lock().len();
-        continuum_base::probe!(class = "training.shutdown.operations", in_flight = in_flight as u64,
-            "the trainer's shutdown waits for these operations still in flight");
         let failure = super::super::shutdown_step("shutdown.join_operations", async {
+            // read inside the step: a stall acquiring the set's lock is then named too
+            let in_flight = self.operations.lock().len();
+            continuum_base::probe!(class = "training.shutdown.operations", in_flight = in_flight as u64,
+                "the trainer's shutdown waits for these operations still in flight");
             let mut failure = None;
             while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
                 if let Err(error) = joined {

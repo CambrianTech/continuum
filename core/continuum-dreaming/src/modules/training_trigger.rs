@@ -355,7 +355,7 @@ impl ServiceModule for TrainingTriggerModule {
     /// step (her progress since her newest generation is learned again from the journal if the
     /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
     async fn save_state(&self) -> Result<(), String> {
-        let quiesced = self.state.in_place.quiesce(&self.state, in_place::Busy::Skip).await;
+        let quiesced = shutdown_step("save.quiesce", self.state.in_place.quiesce(&self.state, in_place::Busy::Skip)).await;
         continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
         match quiesced.unpublished {
