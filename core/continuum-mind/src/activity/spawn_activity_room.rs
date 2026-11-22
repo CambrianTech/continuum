@@ -175,6 +175,7 @@ pub async fn spawn_activity_room(
                         .with_origin(crate::recipe::run_record::RunOrigin {
                             recipe: Some((recipe_def.id.0, recipe_def.version)),
                             room: Some(room.channel.as_uuid()),
+                            parent_room: parent.map(|p| p.as_uuid()),
                         })
                         .with_state_sink(sink)
                         .run_with(&recipe_def.purpose, &recipe_def.pipeline, pipeline_args, seed)

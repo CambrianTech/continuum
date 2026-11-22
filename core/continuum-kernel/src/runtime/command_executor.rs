@@ -39,6 +39,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 // (`execute_ts*`) is unavailable on Windows until a TCP endpoint is wired; the Rust dispatch
 // chain (the primary path) is unaffected.
 use tracing::Instrument;
+use uuid::Uuid;
 
 use super::command_events::{CommandCompletedEvent, COMMAND_COMPLETED_TOPIC};
 use super::command_interceptor::{CommandInterceptor, InterceptorOutcome};
@@ -48,6 +49,36 @@ use crate::routing::{route, CommandUri, RouteDecision, Transport, Verdict};
 
 /// Socket path for TypeScript command routing
 const TS_COMMAND_SOCKET: &str = "/tmp/jtag-command-router.sock";
+
+/// Socket path for TypeScript command routing
+
+
+/// Ambient run context available to commands dispatched during a pipeline step.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RunContext {
+    /// The room this run belongs to.
+    pub room: Option<Uuid>,
+    /// The parent room (if any) — used for ambient parent discovery by
+    /// commands running inside this run's pipeline (e.g. work/list in a benchmark room).
+    pub parent_room: Option<Uuid>,
+}
+
+tokio::task_local! {
+    static RUN_CONTEXT: RunContext;
+}
+
+/// Set the ambient run context for the duration of the provided future.
+pub async fn with_run_context<F, T>(ctx: RunContext, f: F) -> T
+where
+    F: std::future::Future<Output = T>,
+{
+    RUN_CONTEXT.scope(ctx, f).await
+}
+
+/// Get the ambient run context if one is set; `None` otherwise.
+pub fn get_run_context() -> Option<RunContext> {
+    RUN_CONTEXT.try_with(|ctx| ctx.clone()).ok()
+}
 
 /// Whether a failed dispatch can have had an effect. A caller that retries,
 /// skips, or reports "nothing happened" must know which; the message alone

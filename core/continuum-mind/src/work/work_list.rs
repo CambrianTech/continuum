@@ -250,8 +250,15 @@ impl ActionCommand for WorkList {
 
         // Fetch main board and optional parent board, then merge cards by UUID (deduplicating).
         let main_board = board_to_read(&airc, p.room.as_deref()).await?;
-        let parent_board: Option<_> = if let Some(ref parent) = p.parent {
+        let parent_board = if let Some(ref parent) = p.parent {
             Some(board_to_read(&airc, Some(parent)).await?)
+        } else if let Some(ambient) = crate::runtime::command_executor::get_run_context() {
+            if let Some(pr) = ambient.parent_room {
+                let parent_id = pr.to_string();
+                Some(board_to_read(&airc, Some(&parent_id)).await?)
+            } else {
+                None
+            }
         } else {
             None
         };

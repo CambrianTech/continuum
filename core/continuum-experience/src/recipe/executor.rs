@@ -14,7 +14,7 @@ use super::run_record::{
     CallerRecord, Invocation, InvocationState, RecipeRunRecord, RunCursor, RunLedger, RunOrigin, RunPhase,
 };
 use super::types::{OnError, RecipeStep};
-use crate::runtime::command_executor::{CommandExecutor, DispatchFailure, DispatchOutcome};
+use crate::runtime::command_executor::{CommandExecutor, DispatchFailure, DispatchOutcome, RunContext, with_run_context};
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -435,15 +435,24 @@ impl PipelineExecutor {
             run.invocations[slot].state = InvocationState::Dispatching { attempt };
             // WRITE-AHEAD: after a crash, this row is the proof a dispatch may have happened.
             self.persist(run).await?;
-            let dispatch = self.executor.execute_classified(step.command.as_str(), params.clone(), self.caller.clone());
-            let outcome = match step.timeout_ms {
-                Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch).await {
-                    Ok(r) => r,
-                    // The handler may still have acted: a timeout is never a refusal.
-                    Err(_) => Err(DispatchFailure::uncertain(format!("timed out after {ms}ms"))),
+            let outcome = with_run_context(
+                RunContext {
+                    room: self.origin.room,
+                    parent_room: self.origin.parent_room,
                 },
-                None => dispatch.await,
-            };
+                async {
+                    let dispatch = self.executor.execute_classified(step.command.as_str(), params.clone(), self.caller.clone());
+                    match step.timeout_ms {
+                        Some(ms) => match tokio::time::timeout(std::time::Duration::from_millis(ms), dispatch).await {
+                            Ok(r) => r,
+                            // The handler may still have acted: a timeout is never a refusal.
+                            Err(_) => Err(DispatchFailure::uncertain(format!("timed out after {ms}ms"))),
+                        },
+                        None => dispatch.await,
+                    }
+                },
+            )
+            .await;
             let failure = match outcome {
                 Ok(result) => match result.to_json_value() {
                     Ok(value) => {

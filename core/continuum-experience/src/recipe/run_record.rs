@@ -200,9 +200,12 @@ pub struct RecipeRunRecord {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct RunOrigin {
     pub recipe: Option<(Uuid, u32)>,
+    /// The room this run belongs to.
     pub room: Option<Uuid>,
+    /// The parent room (if any) — used for ambient parent discovery by commands
+    /// running inside this run's pipeline (e.g. work/list in a benchmark room).
+    pub parent_room: Option<Uuid>,
 }
-
 impl RecipeRunRecord {
     /// A new run: `Running`, cursor at the first step, nothing written yet.
     pub fn begin(
