@@ -40,6 +40,10 @@ topic; no component holds another.
 | `component::Known`, `Novelty`, `LastSeen`, `Seen` | a part's own knowledge (any shape, any history); `novelty(&input)` and `learn(&input)` |
 | `component::Observe` on `sage/observe`, `Telemetry` on `sage/telemetry` | per-component switch (Off costs one state read); while `Timing`, handled count, last/max handle, waiting, frames skipped |
 | `flow` (`Flow`, `Scheduler`, `Qos`, `Aging`) | a capacity's dispatcher: classes, aging, yield requests |
+| `slice::Slicer` | which ready mind the engine steps next: stride shares by need, the wall and deadline guard that keep the wait bound, a pluggable control law; pure, time passed in ([the lane](#the-lane-the-one-serial-piece-sliced-so-fine-nobody-notices)) |
+| `slice::lane::Lane` | where minds meet the engine: reads each seated mind's newest `Need` and `Decoding` at the step boundary, never awaits |
+| `slice::control::Control`, `slice::tuner::Tuner` | the slice's control law, pluggable; `Tuner` climbs measured throughput against the wall |
+| `slice::trace`, `slice::sim` | a run as data (replays decision for decision); any law against any workload, or one fitted from a live trace |
 | `Stage`, `spawn_stage` | the raw worker `Component` stands on (engine internals: Emit, Record) |
 
 ## Principles the pieces encode
@@ -57,8 +61,9 @@ topic; no component holds another.
   what it knows (a frontier map, a long history, its last frame). Detectors emit change; one Awareness
   part holds what is; a cheap amygdala appraises which moments deserve an expensive deep look.
 - **Priority is a tree of cheap decisions** (RAGE's job scheduler, CAN arbitration): a mind folds her
-  parts' needs; the Core picks the next mind by need, then waiting age (nobody starves), then switch
-  cost; the grid places work by node need. Steering and brakes (stop/cancel, a human addressing her,
+  parts' needs; the lane shares the engine among minds by that need at every step ([the
+  lane](#the-lane-the-one-serial-piece-sliced-so-fine-nobody-notices)), never a turn at a time; the
+  grid places work by node need. Steering and brakes (stop/cancel, a human addressing her,
   her own runaway) win; dreams and digests run when those are quiet.
 - **Lifecycle as on iOS**, engine-owned with default no-ops: prepare to rest/swap (willResignActive),
   rest (didEnterBackground, built), prepare to wake (willEnterForeground), wake (didBecomeActive,
@@ -88,6 +93,84 @@ Extracted from `Component` at each pattern's second real instance:
 - **Prepare** (on the node bus: watches the Core's queue and need ranking, its presence, each mind's
   prompt frames; issues prepare-to-wake: transition prep, predictive prefill during tool calls, prefix
   prep; its need is the next mind's uncached gap against Core idleness).
+
+## The lane: the one serial piece, sliced so fine nobody notices
+
+Joel, 2026-11-22: "It's effectively ALL simultaneous. Only that GPU portion is serial and it's so fast
+they're all lined up ideally, effectively seeming to be parallel from the perspective of all
+individuals. They don't notice." "We artificially imposed serial waits for no justification." "It
+should never wait more than a partial second if we do it right."
+
+The design is settled; the throughput numbers below are estimates until the live reads land.
+
+**What was wrong.** A mind held the decode permit for her whole generation
+(`continuum-engine/src/inference/slots/endpoint_concurrency.rs`: one permit per slot); the flow
+scheduler asked a yield only for a higher class, so equal need kept the running turn (998f1b745d:
+every turn `switches=1`); swaps went through llama-server's HTTP page save and restore (live median
+3.05 s save, 1.38 s restore, on the main loop); and a mind passed nine serial waits before her first
+token (Cormac's count, `FRAME-NO-WAITS.md` on `cormac/frame-design-draft`). None of it is inherent to
+inference. All of it is deleted when the lane lands, with no fallback beside it: the turn-long permit,
+the HTTP page swap, the minds-per-lane seat cap, the yield-only-to-a-higher-class rule.
+
+**Everything has its own cadence.** Each mind's parts, each system and governor, run on their own
+workers at their own timing and meet on their next short cycle through current state and caches,
+never holding one another back. The engine's step is the only serial work in a mind's life. While
+she is off the lane her perception, tools, memory, learning and preparation keep working.
+
+**The rules of the lane** (`continuum-sage/src/slice/`):
+
+- **Minds meet the lane by state, never by event.** At each step boundary the lane reads every seated
+  mind's newest `Need` and `Decoding`; step and switch are measured inline. Nothing emits or awaits
+  (an emit waits for its subscriber's room, so an event channel could hold a mind back).
+- **Priority is how often she is chosen**, as in an RTOS: stride shares, weight from her folded need,
+  twice the weight twice the turns. A rise in urgency takes the next step. A waking mind banks no
+  credit. Nobody starves.
+- **The wait bound is a guarantee, sub-second.** Start at 0.5 s and tighten it as live traces show the
+  cost. The wall caps the slice so the lightest mind's next step comes inside the bound; a deadline
+  guard (EDF order, staggered deadlines, checked at every boundary and every switch) brings in any mind
+  whose slack is gone.
+- **Throughput is the objective, set by a control loop, never by hand.** The slice is the loop's state:
+  each rotation it moves in whichever direction raised measured tokens per second, finds the peak and
+  follows it as load, minds, models and machines change. Laws are pluggable (`Control`); a learned law
+  is one more implementation.
+- **The lane picks a batch, not a mind.** Decode is memory-bound: one step reads the weights once
+  whether it serves one sequence or four. Every mind whose KV is resident decodes in the same step, up
+  to what the memory budget measures; the slicer only rotates minds in and out of residency when there
+  are more minds than KV room. One mind per step is the special case of tight memory.
+- **Work behind the scenes compounds it.** Her new context tail (tool results, messages) is prefilled
+  while she is in a tool, so her first token on return is near immediate. Shared prefixes (system
+  prompt, tool surface) are copied between sequences (`seq_cp`), never prefilled again. Learning runs
+  as chunked tiles between decode steps (live `/learn` as the fork's reverse walk, Cormac).
+
+**What it can reach** (four minds, the M5, Qwen3.6-35B-A3B at about 64k context). Anchors measured:
+decode 30.5 tok/s alone and 101 tok/s across four streams in one batch (`continuum-sage/src/sim.rs`
+calibration, 2026-10-28); prefill about 304 tok/s at 64k depth; persona swap p50 about 6 ms
+(`persona_switch` validator) and 26 ms on the live Core (aa734cc01c, below). The rest is arithmetic:
+
+| How the lane runs | Each mind sees | All four |
+|---|---|---|
+| A turn at a time, HTTP swaps (before) | 30 tok/s, then minutes of waiting | about 30 tok/s, less swap stalls |
+| Sliced, fast swap, 0.5 s bound | about 7.5 tok/s, every wait under 0.5 s | about 30 tok/s |
+| Resident minds batched in one step | about 25 tok/s, no wait | about 100 tok/s |
+| Batched, with the MTP draft | estimate 35-50 tok/s | estimate 150-200 tok/s |
+
+Switch overhead at a 0.5 s bound with four minds decoding at once: 16% at a 26 ms switch, 4% at 6 ms;
+with two minds, 5% and 1%. The fast swap is what makes a sub-second bound nearly free.
+
+**It learns on every machine, live.** Each node's loop adapts to its own hardware; each node records a
+rolling lane trace stamped with its fingerprint (chip, VRAM or unified memory, RAM, flash speed, OS).
+A candidate law is fitted into that node's own workload and must beat the current law in the simulator
+before it runs live, then confirm on the live read (throughput, each mind's worst wait) or go back. A
+law learned across all traces predicts where a new machine's peak sits, so it starts near it. The
+sample: the M5 (unified, fast), the 5090 (VRAM, Windows), the IntelMac, a 2016-era 2x1080 Ti + 970
+box with 64 GB RAM, and later a MacBook Air M2.
+
+**Built** (`fable/slice-governor`, on SAGE): the slicer, lane, control loop, trace and simulator
+(6d03d03fab, 9ebb941056, d949797d70). In simulation (three residents, 20 ms steps, 26 ms switch, 1 s
+bound, 300 s) the loop made 46.3 steps/s with the worst wait 978 ms, against 24.5 steps/s switching
+every step. **Next:** the batch pick; the live decode loop drives the lane with the in-process swap
+and a rolling trace; the permit becomes per slice; the old paths are deleted. The receipt is each
+mind's worst token gap with N minds against one mind alone.
 
 ## What moves onto it next
 
