@@ -33,7 +33,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     pool.note_saved(key);
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
-    let mut admitting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
+    let mut admitting = Box::pin(admit_turn(&TurnRequest::new&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
         &client, &root, 100, AdmissionPatience::for_turn()));
     tokio::select! {
         result = &mut admitting => return Err(format!("admitted before restore: {:?}", result.err()).into()),
@@ -52,7 +52,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     drop(admitted);
     drop(admitting);
     let subsequent = tokio::time::timeout(Duration::from_secs(5),
-        admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
+        admit_turn(&TurnRequest::new&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
             100, AdmissionPatience::for_turn())).await??;
     assert!(subsequent.page_confirmed);
     drop(subsequent);

@@ -30,7 +30,9 @@ use serde_json::json;
 use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
 use crate::inference::slots::{DecodeBound, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
+mod request;
 mod page_liveness;
+
 mod page_quote;
 mod page_receipt;
 mod paging_lifetime;
@@ -38,6 +40,7 @@ mod unresolved_page;
 mod transient;
 mod learning;
 
+pub use request::TurnRequest;
 pub use transient::admit_transient;
 #[cfg(test)]
 use transient::admit_transient_through;
@@ -238,6 +241,12 @@ pub struct AdmissionPatience {
     deadline: Option<tokio::time::Instant>,
 }
 
+impl Clone for AdmissionPatience {
+    fn clone(&self) -> Self {
+        Self { readiness: self.readiness, deadline: self.deadline }
+    }
+}
+
 impl AdmissionPatience {
     /// A generation occupancy estimate is not an admission expiry. Healthy queue
     /// and paging work stays owned until admitted or the requester cancels.
@@ -284,20 +293,19 @@ pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yi
 /// expiry supplied with `AdmissionPatience::until`.
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
-pub async fn admit_turn(
-    concurrency: impl Into<DecodeBound>,
-    class: SlotClass,
-    key: Option<PageKey>,
-    pool: Option<Arc<KvSlotPool>>,
-    client: &reqwest::Client,
-    root: &str,
-    approx_tokens: u64,
-    patience: impl Into<AdmissionPatience>,
-) -> Result<TurnAdmission, String> {
-    let patience = patience.into();
-    let concurrency = concurrency.into();
-    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
-    match patience.deadline {
+pub async fn admit_turn(request: &TurnRequest<'_>) -> Result<TurnAdmission, String> {
+    let admission = admit(
+        &request.concurrency,
+        request.class,
+        request.key.clone(),
+        request.pool.clone(),
+        request.client,
+        request.root,
+        request.approx_tokens,
+        false,
+        request.patience.readiness,
+    );
+    match request.patience.deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
                 return Err("turn deadline elapsed before admission".into());
