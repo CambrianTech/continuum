@@ -4,7 +4,10 @@
 //! disagreement and the region edges, at the current floor and, when the space is calibrated, at
 //! floors read off its measured unrelated null.
 //!
-//!   cargo run -p continuum-genome --features test-fixtures --example signature_shapes -- <texts.jsonl> <contrast.jsonl>
+//!   cargo run -p continuum-genome --features test-fixtures,<the node's GPU backend: cuda, metal or vulkan> --example signature_shapes -- <texts.jsonl> <contrast.jsonl>
+//!
+//! Without the node's GPU feature the in-process embedder has no backend (NoGpuBackendOnNode) and the
+//! comparison refuses rather than fall back to lexical.
 //!
 //! Each line of a file is one JSON string (a training example's text); a bucket's examples are
 //! dumped as `prompt\ncompletion`, the text `mint_signature` embeds. Every fifth text is held out of
