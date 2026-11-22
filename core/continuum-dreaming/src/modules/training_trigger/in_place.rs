@@ -601,8 +601,18 @@ impl InPlace {
             self.engines.remove(&incarnation);
             let keys: Vec<BucketKey> = held.minds.keys().cloned().collect();
             for key in keys {
+                // Her bucket's gate, never waited for: quiesce holds the engine lock, and every pass takes
+                // a bucket's gate before an engine's, so waiting here could deadlock one that holds hers.
+                // Held by an operation still in flight (the runtime saves after drain() only counts them),
+                // her checkpoint would race its read-modify-write of the same rows and lose a retire or a
+                // candidate (card 3326eb71); it is skipped, and the journal keeps her progress.
+                let gate = state.submit_gates.try_acquire(&key);
                 if let Some(seated) = held.minds.get_mut(&key) {
-                    if let Err(why) = checkpoint(state, &key, seated).await {
+                    if gate.is_none() {
+                        quiesced.unpublished += 1;
+                        continuum_base::probe!(class = "training.in_place.shutdown_gate_held", persona = %key.persona_id,
+                            "an operation in flight holds this learner's bucket at shutdown: her checkpoint is not written over it; the journal still holds her progress");
+                    } else if let Err(why) = checkpoint(state, &key, seated).await {
                         quiesced.unpublished += 1;
                         continuum_base::probe!(class = "training.in_place.shutdown_unpublished", persona = %key.persona_id, reason = %why,
                             "a learner's progress since its newest generation was not published at shutdown; the journal still holds it");
@@ -618,6 +628,7 @@ impl InPlace {
                         }
                     }
                 }
+                drop(gate);
             }
             if let Some(workspace) = held.workspace.take() {
                 if let Err((_kept, why)) = workspace.release().await {
