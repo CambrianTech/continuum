@@ -14,12 +14,14 @@ pub struct Model {
     pub collection: String,
     pub declaration: Json,
     pub physical: Json,
+    pub task_unit_migrated: Option<bool>,
 }
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]
 pub enum Relation {}
 impl ActiveModelBehavior for ActiveModel {}
 
 mod retired_indexes;
+mod legacy_task;
 
 mod catalog {
     use sea_orm::entity::prelude::*;
@@ -63,6 +65,7 @@ pub(super) async fn admit(
         Some(receipt) => {
             retired_indexes::reconcile(db, &receipt, &actual).await?;
             let previous = decode(&receipt)?;
+            legacy_task::finish(db, &previous, receipt.task_unit_migrated).await?;
             if !super::entity::schemas_equivalent(&previous, schema) {
                 super::relational_evolution::evolve(db, &previous, schema).await?;
                 Entity::delete_by_id(&schema.collection).exec(db).await?;
@@ -73,6 +76,7 @@ pub(super) async fn admit(
         None if actual.is_empty() => Ok(true),
         None => {
             verify_current_declaration(db, schema, &actual).await?;
+            legacy_task::migrate(db, schema).await?;
             record(db, schema).await?;
             Ok(false)
         }
@@ -130,6 +134,7 @@ pub(super) async fn record<C: ConnectionTrait>(
     let physical = physical(db, &schema.collection).await?;
     ActiveModel {
         collection: Set(schema.collection.clone()),
+        task_unit_migrated: Set(legacy_task::applies(schema).then_some(true)),
         declaration: Set(serde_json::to_value(schema).map_err(SchemaError::from)?), // disk: the catalog row stores the declaration as its JSON column
         physical: Set(serde_json::to_value(physical).map_err(SchemaError::from)?), // disk: the catalog row stores the physical shape as its JSON column
     }
@@ -151,6 +156,7 @@ pub(super) async fn restore<C: ConnectionTrait>(
         let schema = decode(&receipt)?;
         super::relational_schema::compile(&schema).map_err(|error| SchemaError::gap(&schema.collection, GapFault::Compile(Box::new(error))))?;
         retired_indexes::reconcile(db, &receipt, &physical(db, &schema.collection).await?).await?;
+        legacy_task::finish(db, &schema, receipt.task_unit_migrated).await?;
         schemas.insert(schema.collection.clone(), std::sync::Arc::new(schema));
     }
     Ok(schemas)
@@ -195,7 +201,7 @@ mod tests {
             r#type: "index".into(), sql: None,
         }];
         let mut receipt = Model {
-            collection: "records".into(), declaration: Json::Null,
+            collection: "records".into(), declaration: Json::Null, task_unit_migrated: None,
             physical: serde_json::to_value(&actual)?,
         };
         verify_physical(&receipt, &actual)?;

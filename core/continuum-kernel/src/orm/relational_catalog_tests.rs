@@ -667,3 +667,52 @@ async fn empty_declaration_replacement_survives_restart() -> Result<(), Box<dyn 
     assert_eq!(rows[0].data["requiredFlag"], false);
     Ok(())
 }
+
+#[tokio::test]
+async fn reopen_migrates_only_the_legacy_task_unit_tag() -> Result<(), Box<dyn std::error::Error>> {
+    use sea_orm::sea_query::{Alias, Expr, Query};
+    use sea_orm::{ConnectionTrait, DbBackend, EntityTrait};
+    for has_receipt in [true, false] {
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("staged.db");
+        let config = AdapterConfig { connection_string: path.to_str().ok_or("path")?.into(),
+            max_connections: 1, ..Default::default() };
+        let initial = RelationalStore::open(&config).await?;
+        let mut schema = Parent::collection_schema();
+        schema.collection = "staged_credit".into();
+        let task = schema.fields.iter_mut().find(|f| f.name == "label").ok_or("label")?;
+        task.name = "task".into();
+        task.field_type = FieldType::Json;
+        initial.ensure(&schema).await?;
+        let cases = [("old", json!("notATask")), ("valid", json!("notATask")),
+            ("review", json!({"reviewOf": "123"}))];
+        for (id, value) in &cases {
+            initial.insert(&initial.db, &record(id, &schema.collection, json!({"task":value}))).await?;
+        }
+        let old = Query::update().table(Alias::new("staged_credit"))
+            .value(Alias::new("task"), "notATask")
+            .and_where(Expr::col(Alias::new("id")).eq("old")).to_owned();
+        initial.db.execute(DbBackend::Sqlite.build(&old)).await?;
+        if !has_receipt {
+            super::relational_declaration::Entity::delete_by_id(&schema.collection).exec(&initial.db).await?;
+        }
+        // Recreate the catalog shape written before migration receipts existed.
+        let historical = sea_orm::sea_query::Table::alter().table(Alias::new("orm_declarations"))
+            .drop_column(Alias::new("task_unit_migrated")).to_owned();
+        initial.db.execute(DbBackend::Sqlite.build(&historical)).await?;
+        initial.db.close().await?;
+        for _ in 0..2 {
+            let reopened = RelationalStore::open(&config).await?;
+            reopened.ensure(&schema).await?;
+            let receipt = super::relational_declaration::Entity::find_by_id(&schema.collection)
+                .one(&reopened.db).await?.ok_or("receipt")?;
+            assert_eq!(receipt.task_unit_migrated, Some(true));
+            for (id, expected) in &cases {
+                let stored = reopened.read_on(&reopened.db, &schema.collection, id).await?.ok_or("row")?;
+                assert_eq!(&stored.data["task"], expected);
+            }
+            reopened.db.close().await?;
+        }
+    }
+    Ok(())
+}
