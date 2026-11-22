@@ -369,6 +369,43 @@ async fn accepted_examples_with_no_learning_engine_are_named_once() {
     assert!(named[0].buckets.contains(&format!("{persona_name}/geography/qwen: 1")), "her bucket and its count: {}", named[0].buckets);
 }
 
+// what this catches (the 5090, 2026-11-22: the trainer's drain exceeded 2 s and its join timed out,
+// with no step named): a shutdown step that reports only after it ends says nothing when it is the one
+// that hung and the runtime drops it. Each step announces its begin first, then its end with its ms.
+/// One `training.shutdown.step` probe, decoded once from its fields.
+#[derive(serde::Deserialize)]
+struct ShutdownStep {
+    step: String,
+    phase: String,
+    ms: Option<String>,
+}
+
+/// The shutdown-step probes received so far for `step` alone (other tests shut triggers down too).
+fn steps_named(received: &mut tokio::sync::broadcast::Receiver<continuum_kernel::routing::ProbeEvent>, step: &str) -> Vec<ShutdownStep> {
+    std::iter::from_fn(|| received.try_recv().ok())
+        .map(|event| serde_json::from_value::<ShutdownStep>(serde_json::to_value(&event.fields).expect("test: probe fields")).expect("test: a shutdown step names itself")) // test fixture
+        .filter(|seen| seen.step == step)
+        .collect()
+}
+
+#[tokio::test]
+async fn a_shutdown_step_announces_its_begin_before_it_runs_and_its_end_after() {
+    let mut received = probe_router().subscribe("training.shutdown.step");
+    const STEP: &str = "test.a_shutdown_step_announces_its_begin";
+    let ran = crate::modules::training_trigger::shutdown_step(STEP, async {
+        let begun = steps_named(&mut received, STEP);
+        assert_eq!(begun.len(), 1, "its begin is out before the step's work runs");
+        assert_eq!(begun[0].phase, "begin");
+        7
+    })
+    .await;
+    assert_eq!(ran, 7, "the step's own result passes through");
+    let ended = steps_named(&mut received, STEP);
+    assert_eq!(ended.len(), 1, "one end after it finishes");
+    assert_eq!(ended[0].phase, "end");
+    assert!(ended[0].ms.is_some(), "the end carries how long the step took");
+}
+
 // what this catches: an eviction that deletes a file it does not own (Codex on f13a6abea): the same
 // persona and trait learning on two bases in one train dir, a shadow, or a staged gene; and one that
 // keeps the bucket's superseded generations forever.

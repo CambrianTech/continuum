@@ -355,8 +355,8 @@ impl ServiceModule for TrainingTriggerModule {
     /// Stop admitting passes and report the learning operations still running: a step in flight
     /// is counted, never reported as drained.
     async fn drain(&self) -> Result<u32, String> {
-        self.serving_wake.stop().await;
-        let in_flight = self.state.stop_admitting().await;
+        shutdown_step("drain.wake_stop", self.serving_wake.stop()).await;
+        let in_flight = shutdown_step("drain.stop_admitting", self.state.stop_admitting()).await;
         u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
     }
 
@@ -364,7 +364,7 @@ impl ServiceModule for TrainingTriggerModule {
     /// step (her progress since her newest generation is learned again from the journal if the
     /// join does not reach it). Fails, naming the count, when a learner's progress was not published.
     async fn save_state(&self) -> Result<(), String> {
-        let quiesced = self.state.in_place.quiesce(&self.state, in_place::Busy::Skip).await;
+        let quiesced = shutdown_step("save.quiesce", self.state.in_place.quiesce(&self.state, in_place::Busy::Skip)).await;
         continuum_base::probe!(class = "training.in_place.saved", stopped = quiesced.stopped, unpublished = quiesced.unpublished,
             unconfirmed = quiesced.unconfirmed, busy = quiesced.busy, "at save, every idle engine's learners published and paged out; a busy engine is left to its step");
         match quiesced.unpublished {
@@ -374,8 +374,21 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
-        self.serving_wake.stop().await;
+        shutdown_step("shutdown.wake_stop", self.serving_wake.stop()).await;
         self.state.drain_operations().await
     }
+}
+
+/// One step of the trainer's shutdown, between a `begin` and an `end` probe. The runtime bounds each
+/// phase and drops a phase that overruns, so a step's own end probe never fires when it is the one
+/// that hung: a `begin` with no `end` names it (the 5090, 2026-11-22: drain exceeded 2 s and the join
+/// timed out, with no step named).
+pub(crate) async fn shutdown_step<T>(step: &'static str, work: impl std::future::Future<Output = T>) -> T {
+    let began = std::time::Instant::now();
+    continuum_base::probe!(class = "training.shutdown.step", step, phase = "begin", "a trainer shutdown step begins");
+    let out = work.await;
+    continuum_base::probe!(class = "training.shutdown.step", step, phase = "end", ms = began.elapsed().as_millis() as u64,
+        "a trainer shutdown step ended");
+    out
 }
 
