@@ -22,6 +22,16 @@ Everything in [the install README](../README.md) applies. This page covers only 
 
 ## Differences in the update
 
-- The background update replaces the LaunchDaemon's target by switching `~/.continuum/current`, then
-  `launchctl kickstart -k system/com.continuum.core`. The plist itself changes only when its contents
-  change, which is the one case that needs the authorization again.
+- **The switch.** The background update switches `~/.continuum/current`, stops the core through its own
+  graceful stop, then runs a plain `launchctl kickstart system/com.continuum.core`. The owning user may
+  start a stopped system job, but `kickstart -k` is refused ("Operation not permitted", the M5,
+  2026-10-03; `core/continuum-cli-lifecycle/src/launchd.rs:624-631`). The plist changes only when its
+  contents change, which is the one case that needs the authorization again.
+- **Launch constraints.** Background Task Management pins the job to the code hash of the binary it last
+  ran. The first spawn of a new ad-hoc-signed build is killed with `OS_REASON_CODESIGNING`, and the next
+  spawn re-pins and runs. launchd will not make that second spawn itself (`KeepAlive{Crashed}`), so the
+  update triggers it (`launchd.rs:160-170`). Developer ID signing of release binaries removes this, and
+  is required.
+- **No refused builds left behind.** Today each refused build is kept as `<slot>.failed-<ms>` (about
+  179 MB each) and never deleted (`launchd.rs:240-251`). Generations replace that: a refused generation
+  is removed once the previous one is serving again.

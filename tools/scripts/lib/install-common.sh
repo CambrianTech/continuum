@@ -12,7 +12,7 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/payload-paths.sh"
 #   - Module primitives: module_skip / module_start / module_done / module_fail
 #   - The ONE legal sudo prompt source: ensure_sudo_warmed
 #
-# Contract (see docs/infrastructure/INSTALL-ARCHITECTURE.md):
+# Contract (see install/README.md):
 #   - A fresh install that needs sudo N times prompts for the password EXACTLY
 #     ONCE. Every subsequent sudo uses the warmed cache. Re-runs that do no
 #     work prompt for zero passwords. This holds for Carl, Dev, and anyone.
@@ -129,7 +129,7 @@ _sudo_cleanup() {
 }
 
 # ═════════════════════════════════════════════════════════════
-# Shared modules — see docs/infrastructure/INSTALL-ARCHITECTURE.md
+# Shared modules — see install/README.md
 #
 # Modules that BOTH Carl's root install.sh and Dev's canonical
 # tools/scripts/install.sh use. Every module:

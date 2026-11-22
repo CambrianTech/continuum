@@ -1,6 +1,6 @@
 # WSL2 + Docker Guide for continuum
 
-Companion to [`WINDOWS-WSL2-INSTALL-GUIDE.md`](./WINDOWS-WSL2-INSTALL-GUIDE.md). That doc covers the initial Windows→WSL2 onboarding. This one covers the **Docker**-specific questions that come up once you're in WSL2: Docker Desktop integration toggles, the Git-Bash vs WSL decision, and the network gotchas that eat the most time.
+This doc covers the **Docker**-specific questions that come up once you're in WSL2: Docker Desktop integration toggles, the Git-Bash vs WSL decision, and the network gotchas that eat the most time.
 
 ---
 

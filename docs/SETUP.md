@@ -185,7 +185,7 @@ While inference runs, you should see GPU utilization spike to 70%+ and memory gr
 - **"WSL integration unexpectedly stopped" loop:** `wsl --shutdown` from admin PowerShell. The Restart-the-WSL-integration button is not the same as `wsl --shutdown` — the latter is the actual VM hard-reset.
 - **`docker model status` says `latest-cpu`:** Docker Desktop hasn't finished applying the AI settings yet. Re-run the installer after Docker Desktop has a writable settings store, then wait 60 seconds.
 - **Personas reply but `nvidia-smi` shows no activity:** the host-side TCP setting did not apply. Re-run the installer after Docker Desktop has a writable settings store.
-- **Build fails with apt timeouts:** WSL networking issue, often resolved by `--network=host` or by `wsl --shutdown` to reset DNS. See [docs/infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md](infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md) for the full playbook.
+- **Build fails with apt timeouts:** WSL networking issue, often resolved by `--network=host` or by `wsl --shutdown` to reset DNS.
 
 ---
 

@@ -53,7 +53,7 @@ services:
   # on no-GPU per gpu/memory_manager.rs:757. Vulkan-with-llvmpipe satisfies the
   # rule (binary exercises the GPU API loader; llvmpipe answers the queries via
   # software rasterizer). Removed in #1038 (Task #98) — see
-  # docs/INSTALL-ARCHITECTURE.md.
+  # install/README.md.
   #
   # CUDA hosts overlay docker-compose.gpu.yml to swap in continuum-core-cuda for
   # NVIDIA-accelerated inference. Mac runs continuum-core natively (overlay

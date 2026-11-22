@@ -22,6 +22,10 @@ outside it installs a dependency. Each OS subdirectory holds only what differs o
   (`%LOCALAPPDATA%\Continuum` on Windows). Only a component that truly needs administrator rights asks:
   a system service, a firewall rule, or a GPU driver on Linux. All of those are granted in a single
   prompt that says why. A run with nothing to elevate prompts for nothing.
+- **Exactly one password prompt per run, and none on a run with nothing to do** (Joel's rule; a second
+  prompt is a bug). Without a terminal or a GUI to ask through, the install stops and says what to run.
+- **Fast to first use (targets, not yet measured):** the UI opens within about 60 s of a fresh install,
+  and the first persona answers within about 30 s more.
 - **Kept up to date, including new dependencies.** Each release carries its own manifest. Every update
   converges the machine to that manifest, so a dependency added later installs itself on the next
   update. Nothing has to be done by hand, ever.
@@ -186,14 +190,22 @@ the same change that moves its job here.
 | 7 airc installers | One component (`id = "airc"`), one channel |
 | bash `bin/continuum` (its own `update` runs `git reset --hard`) | Deleted. The Rust `continuum` is the one CLI, and `continuum update` runs the engine |
 
-Docs folded into this directory and then deleted:
+Docs. Everything still true was checked against the code and carried into these pages (2026-11-22).
+Deleted with this design:
 - `docs/INSTALL-ARCHITECTURE.md`
 - `docs/infrastructure/INSTALL-ARCHITECTURE.md`
 - `docs/INSTALL-WINDOWS.md`
 - `docs/infrastructure/INSTALL-AUDIT.md`
 - `docs/planning/INSTALL-UPDATE-AUDIT.md`
-- the install sections of `docs/SETUP.md`
-- `docs/architecture/PROVISIONING-SYSTEM.md` (its install part)
+- `docs/CARL-INSTALL-SMOKE-HANDOFF.md`
+- `docs/infrastructure/WINDOWS-INSTALL-BETA-2026-10-01.md`
+- `docs/infrastructure/WINDOWS-WSL2-INSTALL-GUIDE.md`
+
+These describe the Docker/WSL era or audits whose line numbers have rotted.
+
+Kept until the step that replaces what they describe, then folded in:
+- `docs/SETUP.md`, whose install sections are how a user installs today, outdated as they are;
+- `docs/architecture/PROVISIONING-SYSTEM.md`'s install part (the model-provisioning part stays).
 
 `docs/architecture/INSTALLER-COMPETITIVE-ANALYSIS.md` stays as the research record. Its approved
 synthesis ("one convergence engine, two invocations"; the GPU contract gate) is what this design builds.

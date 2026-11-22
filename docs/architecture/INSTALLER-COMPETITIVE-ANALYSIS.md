@@ -121,7 +121,7 @@ them do per-component GPU provisioning + verification.** That is Carl's differen
   This resolves the class split instead of picking a side: users get Chrome-class invisibility,
   operators get rustup-class explicitness, and "install again" is never a distinct (drifting)
   code path. One logical installer, one place — the two-`install.sh` drift called out in
-  `docs/CARL-INSTALL-SMOKE-HANDOFF.md` is the in-house violation of exactly this rule.
+  the two-`install.sh` drift (recorded in the former CARL-INSTALL-SMOKE-HANDOFF.md, folded into `install/README.md` 2026-11-22) is the in-house violation of exactly this rule.
 
 ## 5. The Hermes anti-pattern list (what Carl must beat)
 
@@ -151,4 +151,4 @@ Their install pain is our wow opportunity. Carl must structurally preclude each:
 - Class baselines (documented, stable behavior): rustup (`rustup update`/`self update`), Homebrew
   (`brew upgrade`), uv (`uv self update`), ollama (Linux curl-rerun = update; Mac app auto-update),
   VS Code / Chrome / Docker Desktop / Steam / Claude Code (background auto-update + restart prompt).
-- In-house: `docs/CARL-INSTALL-SMOKE-HANDOFF.md` (the two-install.sh drift; carl-install-smoke gate).
+- In-house: `install/README.md` (status and migration; the two-install.sh drift; carl-install-smoke gate).
