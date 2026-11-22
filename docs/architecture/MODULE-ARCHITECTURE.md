@@ -517,18 +517,10 @@ really share or substitute the verb, never one trait per verb, never dynamic dis
 | `Swap` | stage, bind and retire her state between tiers: milliseconds for a resident or prefetched handoff; a RAM or disk transfer is measured as its own latency | Residency, TokenHistory |
 | `Rest` | idle and let lower-priority work run | Persona, through the one scheduler (plan goal 9) |
 
-**Lifecycle composes through the tree (the one verb that is a shared trait).** Every part has a
-lifetime, and the parent, not the caller, knows its children, their order and their outstanding
-work:
-
-```rust
-trait Lifecycle {
-    async fn prepare(&mut self) -> Ready;      // stage for use: native staging only, never recompute
-    async fn suspend(&mut self) -> Preserved;  // keep state; finish or hand off outstanding work
-    async fn resume(&mut self) -> Bound;       // bind what was preserved
-    async fn shutdown(&mut self) -> Released;  // children first, then own resources, safely
-}
-```
+**Lifecycle composes through the tree.** Every part has a lifetime, and the parent, not the caller,
+knows its children, their order and their outstanding work. The trait, its typed outcomes and the
+composite walk are specified once in [the object model](object-model/03-roots.md); any other shared
+method or logic composes the same way.
 
 `persona.suspend()` is one call: she suspends her mind, genome, learning and residency in their
 order and combines what each reports. "Shut down this engine" is `shutdown` on its incarnation,
@@ -542,7 +534,7 @@ call is idempotent: a repeated `suspend` on a suspended part reports the same pr
 preservation rules are written once, inside the part that owns the state, and every caller gets
 them for free.
 
-**Capacity composes through the tree too (`Footprint`, the second shared capability).** Every part
+**Capacity composes through the tree too (`Footprint`, a second example).** Every part
 answers for its memory, so admission reads the objects instead of guessing from the whole machine.
 Two things are kept apart, as with ownership and location: **allocation** (a physical allocation,
 identified once by its existing lease or custody claim, held by the service that holds the bytes)
@@ -748,6 +740,8 @@ Before extraction, inspect the feature and reverse-dependency graph with `cargo 
 One concrete audit target is the genome extraction. The genome has its own crate, while the mind crate still re-exports it. Inventory consumers of the former path, move them to the owning crate where they depend on genome behavior, then remove the forwarding export. Record any remaining coupling by symbol and consumer. [Genome manifest](../../core/continuum-genome/Cargo.toml) · [Mind crate root](../../core/continuum-mind/src/lib.rs)
 
 ### Specialization in Rust
+
+How to find a type's parent, and the tree the core's parts form, are in [the object model](object-model/README.md).
 
 Use supertraits to express the lineage of capabilities and generic owners to share implementation. A required hook has no default body. Give a trait method a default when every implementer can safely inherit it. Put mandatory sequencing in the generic owner's public method and keep its state private, because Rust allows a trait default to be overridden. Introduce an intermediate specialization when several leaves share another invariant. Keep the hardware-specific algorithm at the leaf.
 

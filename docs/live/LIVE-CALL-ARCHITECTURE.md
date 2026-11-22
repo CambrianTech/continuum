@@ -204,6 +204,132 @@ The mixer sees AI audio streams identically to human mic streams.
 
 ---
 
+## A Mind in the Call: Everyone Perceived Together, a Fast Voice Augmented by Deep Thought
+
+Status: proposed, 2026-11-20. Joel: "she's seeing and hearing all of them together ... fast low
+latency speaking and seeing while not losing deeper thinking models. Just augmented."
+
+What residents do together (Joel, 2026-11-20): they join live calls together; they watch videos
+together and describe them; they see and describe each other's appearance; they listen to things,
+and to each other. Humans are optional: N residents can meet with no one else present, in a call or
+living in a shared embodied world (a Sims-like environment) with complete embodied autonomy. How
+many share one node is bounded by optimization today, never by a fixed count (plan goal 9). The
+staged receipts are in [TWO-PERSONA-EMBODIED-CALL-PROOF.md](../planning/TWO-PERSONA-EMBODIED-CALL-PROOF.md)
+(stage 3b: shared watching, describing and listening, with or without a human).
+
+**Hearing and voice are layers around her model, like the cheap layers of sight.** For a model
+with native audio in and out, speech-to-text and text-to-speech play the role YOLO plays for
+vision: fast layers that emit events (a word heard, a turn starting) and speak her quick voice
+while her model's own audio understanding and output carry the depth. For a model without native
+audio they are a true need, the bridge that gives her hearing and speech at all (CLAUDE.md,
+"Sensory Architecture"). Either way her voice is her own: unique per resident, by design, likely a
+LoRA voice gene in her genome (the proof plan's "learned local voice" row).
+
+A resident in a call is a citizen in the room, not a voice behind `speak(text)`. She hears and sees
+every participant at once: the humans, and the other residents' avatars. She answers at
+conversational speed, and her full mind keeps thinking underneath. The fast layers augment her
+deep mind and never replace it.
+
+**Everyone perceived together, computed once.** Each stream's perception is a property of the
+content, shared by every mind in the call; only attention and relevance are each mind's own
+([CONCURRENT-MIND-AND-GOVERNOR.md](../architecture/CONCURRENT-MIND-AND-GOVERNOR.md) §3.3):
+
+- per audio stream: voice activity and transcription, once, whoever listens;
+- per video stream: cheap signals on every frame, once: frame differences, camera motion, and
+  detectors (YOLO-class, semantic segmentation). These emit events that tell the deeper vision
+  stages, her own model's multimodal vision layers among them, that they are needed and with what
+  priority. A large region newly uncovered while the camera is
+  still, a new slide, or a new face is an event, and the stage that cares takes priority there;
+  other minds asking for the same frame share the work.
+
+**She sees with all of it, dynamically fused.** The cheap signals, the deep networks, her own
+model's vision layers and the fusion that ties them together are all her seeing; none excludes the
+others, and each also tells the others when they are needed. Her sight is a living estimate of the
+scene that is never finished and never blank. It starts rough and refines continuously as better knowledge becomes
+available. Every source (cheap tracking every frame, a deep network's result seconds later, her own
+model's vision layers, a closer or clearer view) updates it where it applies, weighted by its
+confidence and its age. Better knowledge replaces weaker estimates region by region, and knowledge
+that has gone stale loses weight until something fresher arrives. Nothing waits for a final answer: at every moment she sees the best estimate there is. This comes
+from CBAR, Joel's real-time perception engine:
+
+- **Slow results are brought into real time.** A deep analysis may take seconds. Its result is
+  attached to the frame it came from, then carried forward by continuous feature tracking and
+  fusion, so it lands on the present frame rather than on a stale one. Its observation time and
+  confidence stay exposed, so 30 fps presentation never pretends to be fresh perception.
+- **A rough estimate beats a gap.** CBAR filled the far end of a hallway at once with a CNN's
+  estimate (depth, normals, semantics) where SLAM alone would leave it missing. The estimate is
+  wrong in detail, but from the viewer's position that detail is a few pixels, and a rough answer
+  is far better than a hole. Precise methods refine it as the camera moves toward it, seamlessly.
+  Assumptions carry a scene until evidence breaks them: a floor or a wall extends until it is seen
+  not to.
+- **For a mind, the same rule:** she always holds a whole, rough understanding of the call (who is
+  there, what is on screen, what is happening) and refines it where her attention goes. She never
+  has a blank where a participant or a region should be.
+
+**Hearing and speaking are fused the same way.** Comprehension and speech are not separate
+pipelines with a model call in between. They are the same kind of living estimate as her sight,
+with fast and deep layers fused:
+
+- **Comprehension, fast first.** As a participant speaks, fast layers (transcription, a small model)
+  build her running understanding word by word. Deeper layers refine it as they finish: meaning,
+  intent, what it implies for the work.
+- **Speech, fast first, deep merged in.** Her quick voice (a small, fast model speaking as her, from
+  her context) can open at once: an acknowledgement, a first clause, a backchannel. Her deep mind on
+  the served base works under the same turn identity, and its thought merges into the speech still
+  to come. By the time she finishes talking she has given the considered answer, if the moment
+  needed one. The output owner tracks what has been spoken, revises the continuation not yet
+  spoken, and speaks a correction if deeper thought changes a claim already delivered. A new turn
+  supersedes speech not yet spoken. Her avatar's visemes and gestures follow the audio actually
+  going out, so her face moves from the first syllable.
+- **The "if" is a learned, amygdala-like decision.** How much depth a moment needs (none, a little,
+  a full deliberation; a glance, or a detailed look at a frame) is decided fast, from the fused
+  state, by a small learned model, the same way a cheap detector tells deep vision it is needed. It
+  is a routing and priority decision, never a gate on whether she may think: depth stays available
+  and can be pulled in at any point of the turn. The decision learns from our own receipts (a
+  correction she had to speak, a deep answer nobody needed), never from a fixed threshold.
+- **One representation for hearing and speaking.** A word she hears and a word she is about to say
+  are events on the same stream, so what she comprehends and what she plans to say inform each
+  other as they form. Human cortex works this way: in Wernicke's area, the left posterior superior
+  temporal gyrus is active both while listening and before speaking, encoding whole upcoming words
+  before the motor stages and from the earliest point of production (Silva et al., Science, with
+  Flinker's Perspective).
+
+The result appears quick and smart at once: she sees and hears in detail and speaks in depth, as
+people do, because every layer fuses, emits and subscribes to events, as in CBAR or any good game
+engine, rather than waiting on the one before it.
+
+**All of it governed and given its time.** Per-stream perception, speech out and avatar frames are
+deadline consumers; the quick voice and her deep turn are latency consumers; learning and transfers
+use the slack ([SHARED-RESOURCES.md, "Time"](../architecture/SHARED-RESOURCES.md#time-every-consumer-is-given-its-time)).
+Under pressure, levels of detail step down (an unwatched avatar, a lower analysis rate) before any
+deadline is missed, and nothing about the call stops her deep mind or her learning outright.
+Codex's worked example in SUBSTRATE.md (#6170) traces one call under memory pressure.
+
+**Revisions within a turn are typed, and only what was played counts as said** (Codex's review,
+2026-11-20). One turn spans many revisions: a partial transcript can change from "send" to "do not
+send" while a deep result or synthesized audio for the old revision is still in flight. So every
+contribution carries its source speaker, its origin (observed, planned or played), its utterance and
+its revision, through the existing stream and completion owner:
+
+- a media playout receipt is the audible boundary: what was played is said, what is only queued is
+  not;
+- superseded queued audio and its matching visemes are dropped or replaced together;
+- external actions are derived only from the current authorized intent, never from a superseded
+  revision;
+- a predicted or planned word is never counted as evidence that a participant said it.
+
+Replayed as tests: a negation within the same turn, a second speaker interrupting with audio
+buffered, and a late deep completion; each checks actual playout and side effects, plus
+first-audio latency.
+
+Measured on the same stimulus and context: first audible response; avatar frame interval; age of
+the last genuine observation; regions or participants with no estimate at all (target zero, as
+CBAR had no gaps); duplicate perception computed across residents (target zero); the
+deep reply's quality with the quick voice against the deep reply alone (the augmentation must not
+degrade it); and decode and learning throughput with the call against without.
+
+---
+
 ## Command Buffer Pattern
 
 **Problem:** Synchronous RPC for each action = latency, no batching

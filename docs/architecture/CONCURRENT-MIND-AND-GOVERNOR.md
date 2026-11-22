@@ -325,9 +325,12 @@ which is exactly §1's "don't gate the mind" at the channel granularity.
   Governor honors `CadenceHint`, fans region/persona ticks out **concurrently**
   (bounded by leases — parallel *but governed*), and places `ai/generate` on a
   tower via command→handle→event across the engine fleet.
-- **Slice 5 — Sleep-phase consolidation/learning (the dream).** `SleepPhase`
-  transitions trigger the background learning loop: captured turns → `dataset/from-turns`
-  → genome train → LoRA page-in. Always-learning, governed.
+- **Slice 5 — Learning as a duty cycle (the dream).** Learning is not a batch loop
+  triggered by sleep: it is a share of each Core's frames, set by the governor from
+  the minds' queued lessons, the Core's slack and the latency budget of whoever is
+  waiting, with labelled rows riding the serving batch and each mind's learning
+  context paged in only while she learns. Sleep is the low-duty audit (dedupe,
+  re-evaluate, promote). Design: [IN-PROCESS-LEARNING.md](IN-PROCESS-LEARNING.md) §3-4.
 
 ## 5. Code map
 
