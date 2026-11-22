@@ -16,6 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
+mod component;
+pub use component::{serve, ServedModel, PLACEMENT, SERVING};
+
 /// What promoting a stored model did; [`Promotion::serving_path`] is the file to load.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Promotion {
@@ -41,8 +44,9 @@ impl Promotion {
 /// Whether the fast drive can take `need` more bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Room {
-    /// The model is stored on the fast drive already.
-    SameDrive,
+    /// The model is stored on a drive at least as fast as the home's (the same drive, or flash
+    /// beside a home on spinning disk): it is read where it is.
+    NotFaster,
     Fits,
     Short { available: u64 },
 }
@@ -72,7 +76,7 @@ pub fn promote_into(stored: &Path, root: &Path, room: impl FnOnce(u64) -> Room) 
     let files = files_of(stored);
     let need: u64 = files.iter().map(|file| size(file)).sum();
     match room(need) {
-        Room::SameDrive => Promotion::AlreadyHot(stored.to_path_buf()),
+        Room::NotFaster => Promotion::AlreadyHot(stored.to_path_buf()),
         Room::Short { available } => Promotion::NoRoom { stored: stored.to_path_buf(), need, available },
         Room::Fits => {
             let began = Instant::now();
@@ -91,23 +95,31 @@ fn hot_root() -> Option<PathBuf> {
     crate::paths::continuum_home().ok().map(|home| home.join("models").join("hot"))
 }
 
-/// The room on the home's drive for `need` bytes, by the disk-pressure monitor's thresholds.
+/// The room on the home's drive for `need` bytes, read from the drives the OS reports now.
 fn room_on_home(stored: &Path, root: &Path, need: u64) -> Room {
-    use crate::system_resources::disk_pressure::DiskPressureLevel;
     use crate::system_resources::drives::{detect_drives, drive_holding};
     let drives = detect_drives();
     let home = root.ancestors().find(|dir| dir.exists()).unwrap_or(root); // unwrap_or: the root itself names the drive when nothing exists yet
-    let (Some(fast), Some(cold)) = (drive_holding(&drives, home), drive_holding(&drives, stored)) else {
-        return Room::Short { available: 0 };
-    };
-    if fast.mount == cold.mount {
-        return Room::SameDrive;
+    match (drive_holding(&drives, home), drive_holding(&drives, stored)) {
+        (Some(home), Some(stored)) => room(home, stored, need),
+        // A drive the OS does not list is one the core cannot vouch for: nothing is moved.
+        _ => Room::NotFaster,
     }
-    let used_after = fast.total_bytes.saturating_sub(fast.available_bytes).saturating_add(need);
-    let ratio = used_after as f64 / fast.total_bytes.max(1) as f64;
+}
+
+/// Whether to copy `need` bytes from `stored`'s drive up to `home`'s: only when the home's drive is
+/// faster by what the OS reports (flash over spinning; an unreported kind never wins), and only while
+/// the copy leaves it out of disk pressure (the monitor's own thresholds).
+fn room(home: &crate::system_resources::drives::DriveInfo, stored: &crate::system_resources::drives::DriveInfo, need: u64) -> Room {
+    use crate::system_resources::disk_pressure::DiskPressureLevel;
+    if home.mount == stored.mount || home.kind <= stored.kind {
+        return Room::NotFaster;
+    }
+    let used_after = home.total_bytes.saturating_sub(home.available_bytes).saturating_add(need);
+    let ratio = used_after as f64 / home.total_bytes.max(1) as f64;
     match DiskPressureLevel::from_pressure(ratio) {
         DiskPressureLevel::Normal => Room::Fits,
-        _ => Room::Short { available: fast.available_bytes },
+        _ => Room::Short { available: home.available_bytes },
     }
 }
 
@@ -218,6 +230,22 @@ mod tests {
 
         std::fs::write(dir.join("m-00002-of-00002.gguf"), "b").expect("truncate");
         assert_eq!(complete_copy(&stored, &root), None, "a copy that does not match by size is not complete");
-        assert_eq!(promote_into(&stored, &root, |_| Room::SameDrive), Promotion::AlreadyHot(stored.clone()));
+        assert_eq!(promote_into(&stored, &root, |_| Room::NotFaster), Promotion::AlreadyHot(stored.clone()));
+    }
+
+    // what this catches: a placement decided by location instead of by the drives (Cormac's review of
+    // 0c7f5cbd39). Flash over spinning copies up; a home on a slow disk never pulls a model off flash;
+    // an unreported kind never wins; a copy that would push the flash drive into pressure is refused.
+    #[test]
+    fn a_model_moves_up_only_onto_a_faster_drive_with_room() {
+        use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
+        let drive = |mount: &str, kind, total: u64, available: u64| DriveInfo { mount: mount.into(), total_bytes: total, available_bytes: available, role: DriveRole::System, kind };
+        let c = drive("C:\\", DriveKind::Flash, 1_000, 900);
+        let d = drive("D:\\", DriveKind::Spinning, 16_000, 8_000);
+        assert_eq!(room(&c, &d, 100), Room::Fits, "the 5090: a model on the HDD moves to the NVMe");
+        assert_eq!(room(&d, &c, 100), Room::NotFaster, "a home on the slow disk never pulls a model off flash");
+        assert_eq!(room(&c, &c, 100), Room::NotFaster, "already on the home's drive");
+        assert_eq!(room(&drive("/", DriveKind::Unknown, 1_000, 900), &d, 100), Room::NotFaster, "an unreported kind is not faster");
+        assert_eq!(room(&c, &d, 750), Room::Short { available: 900 }, "85% used after the copy is pressure");
     }
 }

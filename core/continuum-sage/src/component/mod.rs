@@ -22,7 +22,7 @@ mod known;
 mod observe;
 mod need;
 
-pub use bus::{Bus, Key, Taken};
+pub use bus::{node, Bus, Key, Taken};
 pub use ctx::Ctx;
 pub use known::{Known, LastSeen, Novelty, Seen};
 pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};

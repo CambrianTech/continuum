@@ -97,3 +97,11 @@ impl Bus {
         out
     }
 }
+
+/// The node's own bus: topics every part of this process shares whatever crate starts it (the one
+/// room feed, the model being served, its placement). A mind's topics live on her own bus; a node
+/// fact lives here, below every crate that hears or says it, so no layer reaches up for it.
+pub fn node() -> &'static Bus {
+    static NODE: std::sync::OnceLock<Bus> = std::sync::OnceLock::new();
+    NODE.get_or_init(Bus::new)
+}

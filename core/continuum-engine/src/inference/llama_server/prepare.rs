@@ -25,19 +25,12 @@ impl LlamaServerProcess {
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
-        let stored: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
+        // The resolver reads the model's copy on the fast drive when one is complete; the launch says
+        // what it serves, and the hot tier copies it up in the background if it sits on a slower
+        // drive, for the next launch to read. The launch never waits on a copy.
+        let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
             .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
-        // The engine reads its model from the fast drive: a model stored on the archive drive is
-        // copied up first (a whole model's bytes, so off the runtime). No room or a failed copy is
-        // said by the hot tier and served from where it is stored.
-        let promoting = stored.clone();
-        let gguf: PathBuf = match tokio::task::spawn_blocking(move || crate::model_registry::artifacts::hot_tier::promote(&promoting)).await {
-            Ok(promotion) => promotion.serving_path().to_path_buf(),
-            Err(join) => {
-                continuum_base::probe!(class = "models.hot.failed", stored = %stored.display(), why = %join, "the copy-up task did not finish; the stored model is read");
-                stored
-            }
-        };
+        crate::model_registry::artifacts::hot_tier::serve(gguf.clone());
 
         // Validate every gene file BEFORE killing the live server — a missing
         // `--lora` is a loud failure, and we must not tear down a healthy server

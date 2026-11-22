@@ -24,7 +24,7 @@
 //! excluded.
 
 use super::DeviceCapacity;
-use crate::system_resources::drives::{detect_drives, DriveInfo, DriveRole, MIN_COLD_TIER_BYTES};
+use crate::system_resources::drives::{detect_drives, DriveInfo, DriveKind, DriveRole, MIN_COLD_TIER_BYTES};
 use crate::governor::types::HardwareClass;
 use crate::inference::planning::serving_plan::{host_budget_from, HostBudgetInputs};
 
@@ -180,13 +180,13 @@ mod tests {
                     mount: "C:\\".into(),
                     total_bytes: 2000 * GB,
                     available_bytes: 40 * GB,
-                    role: DriveRole::System,
+                    role: DriveRole::System, kind: DriveKind::Unknown,
                 },
                 DriveInfo {
                     mount: "D:\\continuum-cold".into(),
                     total_bytes: 16_000 * GB,
                     available_bytes: 15_000 * GB,
-                    role: DriveRole::Cold,
+                    role: DriveRole::Cold, kind: DriveKind::Unknown,
                 },
             ],
         )
@@ -201,7 +201,7 @@ mod tests {
                 mount: "C:\\".into(),
                 total_bytes: 500 * GB,
                 available_bytes: 20 * GB, // below the 32 GiB cold floor
-                role: DriveRole::System,
+                role: DriveRole::System, kind: DriveKind::Unknown,
             }],
             8,
             crate::capacity::profile_fixtures::FIXTURE_HEADROOM,

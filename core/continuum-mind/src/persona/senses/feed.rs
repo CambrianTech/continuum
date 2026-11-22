@@ -75,32 +75,27 @@ impl Component for Feed {
     }
 }
 
-struct Node {
-    bus: Bus,
-    feed: Option<Running<Feed>>,
-}
+static FEED_WORKER: OnceLock<Option<Running<Feed>>> = OnceLock::new();
 
-static NODE: OnceLock<Node> = OnceLock::new();
-
-fn node() -> &'static Node {
-    NODE.get_or_init(|| {
-        let bus = Bus::new();
-        // The node's bus is new here, so its feed topic is unclaimed.
-        let feed = bus.emitter::<Arrival>(FEED).ok().map(|says| start(Feed { says }, &bus, OwnerId(uuid::Uuid::nil()), 0));
-        Node { bus, feed }
+/// The one feed's worker on the node's bus, started on first use (its topic is unclaimed until then).
+fn feed() -> &'static Option<Running<Feed>> {
+    FEED_WORKER.get_or_init(|| {
+        let bus = continuum_sage::component::node();
+        bus.emitter::<Arrival>(FEED).ok().map(|says| start(Feed { says }, bus, OwnerId(uuid::Uuid::nil()), 0))
     })
 }
 
 /// The node's bus: topics every resident shares (the one feed).
 pub(super) fn node_bus() -> &'static Bus {
-    &node().bus
+    feed();
+    continuum_sage::component::node()
 }
 
 /// One room event, from the core's one inbound seam. Only the header classifier
 /// (`continuum_airc_protocol::classify_inbound`) constructs a [`ConversationEvent`], so a peer
 /// command or protocol frame cannot reach a mind (2026-10-30). Waits for the feed's room.
 pub async fn hear(event: ConversationEvent) {
-    let heard = match &node().feed {
+    let heard = match feed() {
         Some(feed) => feed.tell(event).await,
         None => false,
     };

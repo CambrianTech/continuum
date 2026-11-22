@@ -194,7 +194,7 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 mod tests {
     use super::*;
     use crate::capacity::DeviceCapacity;
-    use crate::system_resources::drives::{DriveInfo, DriveRole};
+    use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
 
     const GB: u64 = 1024 * 1024 * 1024;
 
@@ -203,14 +203,14 @@ mod tests {
             mount: "C:\\".into(),
             total_bytes: 2000 * GB,
             available_bytes: 20 * GB,
-            role: DriveRole::System,
+            role: DriveRole::System, kind: DriveKind::Unknown,
         }];
         if with_cold {
             drives.push(DriveInfo {
                 mount: "D:\\continuum-cold".into(),
                 total_bytes: 16_000 * GB,
                 available_bytes: 15_000 * GB,
-                role: DriveRole::Cold,
+                role: DriveRole::Cold, kind: DriveKind::Unknown,
             });
         }
         crate::capacity::profile_fixtures::discrete_fixture(vram_gb, gpu_free_gb, drives)

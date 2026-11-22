@@ -602,6 +602,7 @@ impl DiskPressureMonitor {
                     total_bytes: d.total_space(),
                     available_bytes: d.available_space(),
                     role: crate::system_resources::drives::DriveRole::System,
+                    kind: crate::system_resources::drives::DriveKind::Unknown,
                 })
                 .collect();
             let reading = volume_reading(&drives, &home);

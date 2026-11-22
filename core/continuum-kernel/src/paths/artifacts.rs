@@ -176,7 +176,7 @@ fn check_volume(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::system_resources::drives::{DriveInfo, DriveRole};
+    use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
 
     // Published b475 repeatedly filled the home drive although configured storage
     // was available. Check placement and admission on the selected volume, including
@@ -198,13 +198,13 @@ mod tests {
                 mount: home.path().into(),
                 total_bytes: 1000,
                 available_bytes: 1,
-                role: DriveRole::System,
+                role: DriveRole::System, kind: DriveKind::Unknown,
             },
             DriveInfo {
                 mount: storage.path().into(),
                 total_bytes: 1000,
                 available_bytes: 300,
-                role: DriveRole::Cold,
+                role: DriveRole::Cold, kind: DriveKind::Unknown,
             },
         ];
         // Regression: three c7deff downloads were completed while the installed
