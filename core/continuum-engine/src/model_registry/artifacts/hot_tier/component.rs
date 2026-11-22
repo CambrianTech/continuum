@@ -4,7 +4,7 @@
 //! copy and nothing relaunches for one. Where the served model is read from is published as state
 //! (`serving/placement`) for anything to read: the health line, a peer, a human's screen.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 
 use continuum_sage::component::{node, start, Component, Ctx, Key, Known, LastSeen, Novelty, Running, Urgency, Wiring};
@@ -74,7 +74,7 @@ static LAUNCHER: OnceLock<parking_lot::Mutex<Option<Launcher>>> = OnceLock::new(
 
 /// The launcher says which model it serves; the hot tier (started with the first say) places it.
 /// Never waits: a copy, if one is due, runs on the hot tier's own worker.
-pub fn serve(stored: PathBuf) {
+pub fn serve(stored: &Path) {
     let launcher = LAUNCHER.get_or_init(|| {
         let bus = node();
         let launcher = bus.publisher::<ServedModel>(SERVING, Key::ONE).ok().map(|served| {
@@ -94,5 +94,5 @@ pub fn serve(stored: PathBuf) {
         by: RunId { incarnation: StageIncarnation { stage: StageId::named("serving-launch"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: 0 },
         from: Vec::new(),
     };
-    launcher.served.publish(ServedModel(stored), by);
+    launcher.served.publish(ServedModel(stored.to_path_buf()), by); // the topic keeps its own copy
 }

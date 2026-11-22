@@ -157,7 +157,11 @@ impl<K: Clone + Eq + Hash> Scheduler<K> {
             .collect();
         let asked = self.running.values().filter(|r| r.yield_asked).count();
         let lowest_running = self.running.values().filter(|r| !r.yield_asked).map(|r| r.started_as).min();
-        let outranking = lowest_running.map_or(0, |low| eligible.iter().filter(|&&q| q > low).count());
+        // With no running ticket left unasked there is nobody to ask: no yield is owed.
+        let Some(low) = lowest_running else {
+            return out;
+        };
+        let outranking = eligible.iter().filter(|&&q| q > low).count();
         if outranking > asked {
             let victim = self
                 .running

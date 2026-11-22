@@ -45,7 +45,8 @@ pub enum Kept {
     Dirty,
     Unpushed,
     BorrowedFrom(PathBuf),
-    RemoveFailed(String),
+    /// git worktree remove refused the removal
+    RemoveRefused,
 }
 
 /// The worktrees under `root`, least recently touched first, with their bytes.
@@ -160,7 +161,7 @@ impl ResourcePool for DevWorktreePool {
                         continuum_base::probe!(class = "disk.worktrees.removed", worktree = %worktree.display(), bytes, "a finished, clean, pushed worktree nobody borrows from was removed");
                         continue;
                     }
-                    None => Kept::RemoveFailed("git worktree remove refused".into()),
+                    None => Kept::RemoveRefused,
                 },
                 Err(kept) => kept,
             };

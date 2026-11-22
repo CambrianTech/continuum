@@ -177,9 +177,9 @@ pub fn resolve_mtp_draft_for_model(model: &Model) -> Option<PathBuf> {
 /// signal for embedded MTP the way it is for the sidecar.
 pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
     // The header's tensor names through candle's one GGUF reader (as hydrate and arch_config read it).
-    let scan = || -> Result<bool, String> {
-        let mut file = std::fs::File::open(gguf).map_err(|e| e.to_string())?;
-        let content = candle_core::quantized::gguf_file::Content::read(&mut file).map_err(|e| e.to_string())?;
+    let scan = || -> candle_core::Result<bool> {
+        let mut file = std::fs::File::open(gguf)?;
+        let content = candle_core::quantized::gguf_file::Content::read(&mut file)?;
         Ok(content.tensor_infos.keys().any(|name| name.contains(".nextn.")))
     };
     match scan() {

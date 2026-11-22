@@ -115,7 +115,7 @@ impl InProcessEngine {
             .clone()
             .ok_or_else(|| LlamaServerError::ModelNotFound(model()))?;
         // Said to the hot tier, which copies a model on a slower drive up for the next launch; never waits.
-        crate::model_registry::artifacts::hot_tier::serve(gguf_path.clone());
+        crate::model_registry::artifacts::hot_tier::serve(&gguf_path);
         let context = NonZeroU32::new(target.context_window).ok_or_else(|| InProcessRefusal::ZeroWindow { model: model() })?;
         // The micro-batch the launched server's `--ubatch-size` applies, lowered (never raised) by the
         // model's own catalog ceiling; a ceiling of zero allows no batch, and is refused.

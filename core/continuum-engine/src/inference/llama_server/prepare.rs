@@ -30,7 +30,7 @@ impl LlamaServerProcess {
         // drive, for the next launch to read. The launch never waits on a copy.
         let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
             .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
-        crate::model_registry::artifacts::hot_tier::serve(gguf.clone());
+        crate::model_registry::artifacts::hot_tier::serve(&gguf);
 
         // Validate every gene file BEFORE killing the live server — a missing
         // `--lora` is a loud failure, and we must not tear down a healthy server
