@@ -118,12 +118,12 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     if p.examples.is_empty() {
         return Err(CommandError::Invalid("examples must be non-empty".into()));
     }
-    let validation_split = p.validation_split.unwrap_or(DEFAULT_VALIDATION_SPLIT);
+    let validation_split = p.validation_split.unwrap_or(DEFAULT_VALIDATION_SPLIT); // unwrap_or: an absent split is the caller choosing the default hold-out
 
     let key = BucketKey {
         persona_id: p.persona_id,
         trait_kind: p.trait_kind.clone(),
-        base_model: p.base_model.clone(),
+        base_model: bucket_base(&p.base_model),
     };
 
     let batch = PendingBatch {
@@ -162,3 +162,33 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
     }).await.map_err(CommandError::Internal)
 }
 
+
+/// The base a bucket is keyed by: the catalog id when the registry knows the spelling (its id, its
+/// HF repo, or its local GGUF's file stem), so one base is one bucket and the learner on that row
+/// can match it; a spelling no row knows is kept as it came, as before. A spelling two rows share
+/// is never resolved by picking one: it is kept, and named.
+fn bucket_base(requested: &str) -> String {
+    match crate::model_registry::base_identity::canonical_base(requested) {
+        Ok(Some(catalog_id)) => {
+            if catalog_id != requested {
+                continuum_base::probe!(
+                    class = "training.submit.base_resolved",
+                    requested = %requested,
+                    catalog_id = %catalog_id,
+                    "a training submission named its base by another spelling: keyed by the catalog id"
+                );
+            }
+            catalog_id
+        }
+        Ok(None) => requested.to_owned(),
+        Err(ambiguous) => {
+            continuum_base::probe!(
+                class = "training.submit.base_ambiguous",
+                requested = %ambiguous.requested,
+                rows = ?ambiguous.rows,
+                "a training submission's base names more than one catalog row: kept as given, never resolved by picking one"
+            );
+            requested.to_owned()
+        }
+    }
+}
