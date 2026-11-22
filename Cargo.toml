@@ -59,6 +59,7 @@ members = [
     "core/source-hygiene",
     "core/tool-working-set",
     "core/serving-replay",
+    "core/step-replay",
     "core/continuum-orm-derive",
     "core/continuum-positron",
     "core/jtag-mcp",
