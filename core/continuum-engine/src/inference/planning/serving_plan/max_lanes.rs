@@ -604,6 +604,19 @@ pub struct ServingPlan {
     pub lanes_bound: LanesBound,
 }
 
+impl ServingPlan {
+    /// Fraction of `target_window` served as per-mille (0–1000). A plan whose window is
+    /// 35 005 against a target of 176 730 has closeness ~198. Used by the daemon to ratchet:
+    /// publish any plan that improves on the standing plan's closeness, never degrade.
+    pub fn closeness(&self, target_window: u32) -> u32 {
+        if target_window == 0 {
+            return 1_000; // No demand = fully served
+        }
+        let ratio = (self.served_context_window as f64 / target_window as f64).min(1.0);
+        (ratio * 1_000_f64) as u32 // per-mille
+    }
+}
+
 /// What decided a plan's lane count. Each variant is a term the planner evaluated, so a
 /// lane count can always be traced to the number that set it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, ts_rs::TS)]

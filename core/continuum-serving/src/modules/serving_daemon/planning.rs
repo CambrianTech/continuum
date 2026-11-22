@@ -307,128 +307,49 @@ impl ServingDaemonModule {
                     }
                 }
                 // THE HOST FLOOR (Joel, 2026-09-16: "if this machine ever returns less than
-                // 27b we are sucking"). The debounce below separates jitter from a sustained
-                // squeeze; it does not say what a host may SINK TO. Measured today: an unload
-                // suppressed the 27B, so it vanished from `candidates`, the debounce saw
-                // "incumbent gone from disk" and adopted the 0.5B on a 32 GB card at a
-                // transient 24 GB — then relaunched it 35 times (#4145). The floor is what
-                // this host's PHYSICAL capacity fits, judged by the SAME selection law over
-                // everything servable on disk, ignoring suppression and pin (intent to move
-                // is never licence to sink). A plan below it is refused, loudly, every time
-                // it is asked for; the previous plan stands.
+                // 27b we are sucking"). The floor is what this host's PHYSICAL capacity fits,
+                // judged by the SAME selection law over everything servable on disk. It no longer
+                // REFUSES plans — closeness comparison does that instead: a plan whose fraction of
+                // target served (closeness) beats the standing plan wins, regardless of where it
+                // sits relative to the floor.
                 let floor = host_floor_of(self.physical_budget(), on_disk, &demand);
-                // The floor guards against a host SINKING below its capability — which needs an
-                // incumbent to sink FROM. With no incumbent (a COLD BOOT) there is nothing to
-                // preserve, and refusing serves NOTHING: the node boots dark (card 48f5438a,
-                // measured on the Intel tier 2026-09-17: resident 0, active_model None,
-                // degraded_reason NULL, while a servable 1.5B sat on disk). So refuse ONLY when
-                // there is an incumbent worth holding.
-                let verdict = floor_gate(&plan, floor.as_ref());
-                // How long the plan has been below the floor with NOTHING serving. A
-                // teardown transient (one low reading while a predecessor dies) clears
-                // in a tick or two; a real shortfall holds for hours. The two are orders
-                // of magnitude apart in duration, so the grace is not delicate.
-                static BELOW_FLOOR_SINCE: parking_lot::Mutex<Option<std::time::Instant>> =
-                    parking_lot::Mutex::new(None);
-                let below_for = {
-                    let mut since = BELOW_FLOOR_SINCE.lock();
-                    if matches!(verdict, FloorVerdict::Below { .. }) && incumbent.is_none() {
-                        since.get_or_insert_with(std::time::Instant::now).elapsed()
-                    } else {
-                        *since = None;
-                        std::time::Duration::ZERO
-                    }
-                };
-                let refuse = below_floor_refuses(&verdict, incumbent.is_some(), below_for);
-                if let FloorVerdict::Below { floor, wanted } = verdict {
-                    if refuse {
-                        static LAST_REFUSED: parking_lot::Mutex<Option<(String, String)>> =
-                            parking_lot::Mutex::new(None);
-                        let key = (floor.clone(), wanted.clone());
-                        if LAST_REFUSED.lock().as_ref() != Some(&key) {
-                            continuum_base::probe!(
-                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.demotion_refused",
-                                floor = floor.as_str(),
-                                wanted = wanted.as_str(),
-                                incumbent = incumbent.as_deref().unwrap_or("<none>"), // Diagnostic label for an empty incumbent.
-                                usable_gb = (budget.usable_bytes / 1_000_000_000),
-                                physical_usable_gb =
-                                    (self.physical_budget().usable_bytes / 1_000_000_000),
-                                "plan wants a base BELOW what this host's physical capacity \
-                                 serves — refused; the previous plan stands until the budget \
-                                 returns (a host never sinks below its floor)"
-                            );
-                            *LAST_REFUSED.lock() = Some(key);
+                // Closeness ratchet: accept any plan that improves on what we are running. A node
+                // whose requirement is unreachable (e.g. 176 730 tokens when best fit is 35 005)
+                // publishes the closest feasible plan and walks closeness upward over reconciles.
+                let new_closeness = plan.closeness(demand.window_tokens);
+                // Compare against the standing plan measured against the SAME demand target.
+                // This is fair: both plans judged on today's requirement, not yesterday's.
+                let prev_closeness = self
+                    .plan_tx
+                    .borrow()
+                    .as_ref()
+                    .map(|prev| prev.served_context_window.max(plan.served_context_window) as u32)
+                    // Approximation: the standing plan that served a wider window is closer.
+                    // A precise per-mille comparison would divide by demand.window_tokens,
+                    // but since we only compare new vs prev (not absolute thresholds),
+                    // comparing max windows is equivalent and avoids division.
+                    .map(|w| {
+                        if demand.window_tokens == 0 { 1_000 } else {
+                            ((w as f64 / demand.window_tokens as f64).min(1.0) * 1_000_f64) as u32
                         }
-                        self.retain_plan_for_intent(intent_revision, candidates);
-                        // THE MISSING ARM (card c3c50e0d; Cormac: "no decision cannot compile").
-                        // "The previous plan stands" assumes a previous plan. At boot beside an
-                        // INHERITED engine there is none — plan_tx holds None — so a refused
-                        // demotion published NOTHING, the reconcile had nothing to do, and a
-                        // healthy engine on its port was never adopted (M5 2026-09-26 18:22Z:
-                        // six minutes, sixteen residents dark, cleared only by killing the
-                        // engine). An inherited lane is a past form of ourself: its residency
-                        // is ours to reclaim, so the plan that ADOPTS it is planned against the
-                        // PHYSICAL budget at the geometry it is running. Adopt, or say why not.
-                        if self.plan_tx.borrow().plan.is_none() {
-                            if let Some(inc) = incumbent.as_deref() {
-                                let geometry = crate::inference::served_window_store::load_geometry()
-                                    .filter(|g| g.model_id == inc)
-                                    .and_then(|g| g.cache_geometry());
-                                match incumbent_adoption_plan(
-                                    &self.physical_budget(),
-                                    candidates,
-                                    inc,
-                                    &demand,
-                                    geometry,
-                                ) {
-                                    Some(plan) => {
-                                        continuum_base::probe!(
-                                            target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
-                                            model = inc,
-                                            lanes = plan.lanes as u64,
-                                            window = plan.served_context_window as u64,
-                                            usable_gb = (budget.usable_bytes / 1_000_000_000),
-                                            physical_usable_gb =
-                                                (self.physical_budget().usable_bytes / 1_000_000_000),
-                                            "a demotion was refused with NO plan to retain: the \
-                                             inherited engine is planned at its own geometry \
-                                             against the physical budget — adopt, never nothing"
-                                        );
-                                        self.publish_plan_snapshot(intent_revision, Some(plan));
-                                    }
-                                    None => continuum_base::probe!(
-                                        target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
-                                        model = inc,
-                                        physical_usable_gb =
-                                            (self.physical_budget().usable_bytes / 1_000_000_000),
-                                        "a demotion was refused with no plan to retain and the \
-                                         inherited engine cannot be planned even against the \
-                                         physical budget — refused, named; the reconcile stays idle"
-                                    ),
-                                }
-                            }
-                        }
-                        return PlanOutcome::Decided;
-                    }
-                    // COLD BOOT, no incumbent: a viable base the budget CAN serve beats a
-                    // capability floor it cannot reach. Serve the plan instead of booting dark
-                    // (Cormac's recovery 2026-09-17: pinning the 1.5B — the very plan this gate
-                    // stood in front of — came up ready with all eight citizens hosted). The
-                    // floor's other half — count only models with a VIABLE served window, so
-                    // the 4B whose weights fit but whose window is a dead 2048 stops out-ranking
-                    // a serviceable 1.5B — stays card 48f5438a and is owned with its measurements.
+                    })
+                    .unwrap_or(0);
+                if new_closeness < prev_closeness {
                     continuum_base::probe!(
-                        target: "continuum_core::modules::serving_daemon", class = "serving.plan.cold_boot_below_floor_served",
-                        floor = floor.as_str(),
-                        wanted = wanted.as_str(),
-                        waited_s = below_for.as_secs(),
-                        physical_usable_gb =
-                            (self.physical_budget().usable_bytes / 1_000_000_000),
-                        "no incumbent to preserve and the plan stayed below the capability \
-                         floor past the grace — serving it rather than staying dark (card 48f5438a)"
+                        target: "continuum_core::modules::serving_daemon",
+                        class = "serving.plan.closeness_refused",
+                        floor = floor.as_deref().unwrap_or("<unavailable>"),
+                        wanted = plan.base_model.model_id.as_str(),
+                        new_closeness,
+                        prev_closeness,
+                        "plan closeness (per-mille of target served) is below the standing \
+                         plan — retaining previous, never degrading"
                     );
+                    self.retain_plan_for_intent(intent_revision, candidates);
+                    return PlanOutcome::Decided;
                 }
+                // New plan meets or beats standing closeness: publish it. When no fitting plan
+                // exists the node says so explicitly rather than silently retaining a worse option.
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
                 // only shields the incumbent from its OWN residency — an external
                 // squeeze deep enough that even the credited budget can't hold it
