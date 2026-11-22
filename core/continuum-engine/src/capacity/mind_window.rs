@@ -461,4 +461,54 @@ mod tests {
         let bound = decide_window(her, || MindWindow::Decided(Decided::Bound(8_192)), || {}, |_| Err::<Never, _>(GrantsUnavailable)).await;
         assert_eq!(bound, Ok(Decided::Bound(8_192)), "a bound window needs no evaluations");
     }
+
+    // what this catches (card 250d7603; observed live on engine pid 33236, build 4f96d32b): a publisher
+    // that keeps evaluating on its own cadence and keeps reporting her demand as Waiting::BehindActs
+    // grants her nothing. Each single wait is bounded by the publisher's cadence (PublisherSilent),
+    // but the loop across evaluations has no named bound of its own, so she parks to the act's
+    // TICK_DEADLINE floor (1500s observed; lanes physically free: 2 of 3) instead of deferring at her
+    // own named bound with her act budget intact. The orphan-acting defect that keeps BehindActs true
+    // forever is pinned separately as its own evidence in fair/tests.rs; this pin does not depend on it
+    // - ANY publisher behavior that keeps her ungranted across evaluations must end in a typed
+    // deferral within LANE_WAIT_CEILING, never at the tick floor. Un-ignore with the fix (card
+    // question 2: give the grants wait a bound derived like lane_wait_bound from the queue she is
+    // joining - pure over measurements, so it is reachable within her act without wall-clock
+    // dependence).
+    #[tokio::test(start_paused = true)]
+    #[ignore = "pins card 250d7603: an ungranted mind parks to the tick floor while every evaluation reports her BehindActs; un-ignore once decide_window defers at her named bound"]
+    async fn a_starved_mind_defers_at_her_named_bound_not_the_tick_floor() {
+        use super::super::window_grant::Waiting;
+        let her = uuid::Uuid::from_u128(4);
+        // The publisher's healthy beat, in story time: evaluations keep flowing (the live seat
+        // re-reported BehindAct hundreds of times an hour), so PublisherSilent never fires on her.
+        let beat = std::time::Duration::from_millis(500);
+        let behind_acts = move |at: std::time::Instant| {
+            let mut e = evaluation(at, grants(&[]), None).expect("evaluation");
+            e.waiting.insert(her, Waiting::BehindActs { acting: 2 });
+            e
+        };
+        // The state at park time: her demand reached the publisher and waits BehindAct.
+        let (sender, installed) = tokio::sync::watch::channel(Some(behind_acts(std::time::Instant::now())));
+        let publisher = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(beat).await;
+                if sender.send(behind_acts(std::time::Instant::now() + std::time::Duration::from_millis(1))).is_err() {
+                    return; // the waiter is gone: her bound fired, or this test gave up on her
+                }
+            }
+        });
+        let measured = Cell::new(0);
+        let started_at = tokio::time::Instant::now(); // story time: the controlled clock
+        let refused = tokio::time::timeout(
+            crate::inference::resource_admission::LANE_WAIT_CEILING + beat * 2,
+            decide_window(her, || MindWindow::Ungranted, || measured.set(measured.get() + 1), |at| Ok(next_evaluation(installed.clone(), at))),
+        )
+        .await
+        .expect("she defers within her named bound instead of parking to the tick floor (card 250d7603)");
+        publisher.abort();
+        assert!(matches!(refused, Err(WindowRefused::Ungranted(_)), "a typed deferral - her next tick measures and asks again; nothing was dispatched: {refused:?}"));
+        assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
+        let elapsed = started_at.elapsed();
+        assert!(elapsed <= crate::inference::resource_admission::LANE_WAIT_CEILING + beat, "budget intact: deferred at her named bound ({elapsed:?}), not the act's tick floor (25 min)");
+    }
 }
