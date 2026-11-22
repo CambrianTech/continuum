@@ -42,20 +42,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::ai::embedding::{cosine_similarity, EmbeddingProvider};
+use crate::ai::embedding::significance::{significance_floor, SIGNIFICANCE_SIGMA};
 use crate::genome::corpus_ref::CorpusRef;
 
 mod themes;
 #[cfg(any(test, feature = "test-fixtures"))]
 pub mod validate;
-
-/// Cluster admission floor for subspace detection. The recall space is
-/// anisotropic (unrelated pairs sit ~0.25–0.30, see `recall_faculty`'s war
-/// story), so this must clear the unrelated band by a wide margin — 0.55 keeps
-/// only genuinely themed neighborhoods.
-const SUBSPACE_MIN_SIMILARITY: f32 = 0.55;
-
-/// A subspace must be a THEME, not an outlier pair.
-const SUBSPACE_MIN_CLUSTER_SIZE: usize = 3;
 
 /// Routing needs coarse domains, not a topic model — and the signature rides
 /// wire/cards, so its size is bounded. Largest clusters win the seats.
@@ -144,8 +136,13 @@ impl GeneSignature {
         }
         // The shape is CPU work over every embedding: off the async workers, so a large corpus never
         // stalls the tasks that share them (the 5090, 2026-11-22: a 27 s mint starved its worker).
+        let calibration = embedder.unrelated_null();
+        if calibration.is_none() {
+            continuum_base::probe!(class = "genome.signature.uncalibrated", embedder = %embedder.id(),
+                "the embedding space never measured its unrelated null: no theme can be judged significant, so this signature is its centroid alone");
+        }
         let (centroid, subspaces, region) = tokio::task::spawn_blocking(move || {
-            let (centroid, subspaces) = shape(&embeddings, dim);
+            let (centroid, subspaces) = shape(&embeddings, dim, calibration);
             let region = region_of(&centroid, &subspaces, &embeddings);
             (centroid, subspaces, region)
         })
@@ -201,7 +198,7 @@ fn nearness(centroid: &[f32], subspaces: &[Vec<f32>], query: &[f32]) -> f32 {
 
 /// PURE: a corpus's centroid (the L2-normalized mean of its unit embeddings) and its subspaces
 /// (its largest themes, one pass, `themes`), linear in the corpus.
-fn shape(embeddings: &[Vec<f32>], dim: usize) -> (Vec<f32>, Vec<Vec<f32>>) {
+fn shape(embeddings: &[Vec<f32>], dim: usize, calibration: Option<(f32, f32)>) -> (Vec<f32>, Vec<Vec<f32>>) {
     let mut centroid = vec![0.0f32; dim];
     for e in embeddings {
         for (c, x) in centroid.iter_mut().zip(e) {
@@ -209,7 +206,12 @@ fn shape(embeddings: &[Vec<f32>], dim: usize) -> (Vec<f32>, Vec<Vec<f32>>) {
         }
     }
     normalize(&mut centroid);
-    let subspaces = themes::themes(embeddings, SUBSPACE_MIN_SIMILARITY, SUBSPACE_MIN_CLUSTER_SIZE, MAX_SUBSPACES);
+    // a theme is judged by the space's own significance bar (the one recall uses); a space that never
+    // measured its unrelated null cannot judge one, so its signature is the centroid alone
+    let subspaces = match calibration {
+        Some(null) => themes::themes(embeddings, significance_floor(null, SIGNIFICANCE_SIGMA), MAX_SUBSPACES),
+        None => Vec::new(),
+    };
     (centroid, subspaces)
 }
 

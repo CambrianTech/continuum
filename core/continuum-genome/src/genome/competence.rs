@@ -6,12 +6,16 @@
 //! a gene is minted for a competence, and only when recall alone leaves her surprised in
 //! it. Everything here is pure over embeddings and numbers, so each branch is a test; the
 //! embedding call and the recall call happen outside and hand their results in.
+//!
+//! The same clustering kernel recall and gene signatures use
+//! (`ai::embedding::vector_math::detect_clusters`), never a parallel space.
 
 use std::path::{Path, PathBuf};
 
 use uuid::Uuid;
 
 use crate::genome::signature::SignatureStore;
+use crate::ai::embedding::vector_math::detect_clusters;
 
 /// A gene's identity, as the two places a gene can live spell it: an adapter PATH on
 /// this node (what the manifest, the serving daemon and the signature store key by),
@@ -41,6 +45,9 @@ impl std::fmt::Display for GeneRef {
 /// Fewer settled examples than this is not a competence; it is memories. Measured
 /// against the first signatures in the repository, re-pinned as the ledger grows.
 pub const MIN_EXAMPLES: usize = 8;
+/// Members of one competence agree at least this much (cosine), the same floor a gene
+/// signature's subspaces are clustered with.
+pub const MIN_COHESION: f32 = 0.70;
 /// Her surprise in a competence must be at least this (contradicted / judged, the verdict
 /// surprise of `perception_region::SurpriseTally`) before any gene is considered for it:
 /// below it, memories suffice.
@@ -62,6 +69,31 @@ pub struct Competence {
     pub cohesion: f32,
     /// The member nearest the rest; the example that names the competence.
     pub representative: usize,
+}
+
+/// Competences over `embeddings` (one per settled example, all one embedder and dim).
+/// Below [`MIN_EXAMPLES`] members a cluster is dropped: not yet a competence.
+pub fn competences(embeddings: &[Vec<f32>]) -> Vec<Competence> {
+    let Some(dim) = embeddings.first().map(Vec::len) else {
+        return Vec::new();
+    };
+    detect_clusters(embeddings, MIN_COHESION, MIN_EXAMPLES)
+        .into_iter()
+        .map(|c| {
+            let mut centroid = vec![0.0f32; dim];
+            for &i in &c.indices {
+                for (m, x) in centroid.iter_mut().zip(&embeddings[i]) {
+                    *m += x;
+                }
+            }
+            let k = c.indices.len() as f32;
+            for m in centroid.iter_mut() {
+                *m /= k;
+            }
+            normalize(&mut centroid);
+            Competence { centroid, members: c.indices, cohesion: c.strength, representative: c.representative }
+        })
+        .collect()
 }
 
 /// The nearest existing gene to a competence: from her signature store today, the mesh
@@ -172,7 +204,8 @@ pub fn nearest_pending<'a>(
 /// The decision, in the order the design states. A job in flight and a trial open are
 /// checked before any branch that would train or reuse: a competence already being
 /// learned is joined, one already being judged is awaited, never minted twice. The
-/// competence handed in IS one: a full bucket is one by the room's own threshold; the decision
+/// competence handed in IS one: [`competences`] applies [`MIN_EXAMPLES`] when it clusters
+/// her curriculum, and a full bucket is one by the room's own threshold; the decision
 /// never second-guesses its size (a smaller bucket skipped Join and Await on the way to
 /// a mint, 2026-10-05).
 pub fn decide(surprise: Surprise, nearest: Option<&NearestGene>) -> Decision {
@@ -214,9 +247,49 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
+fn normalize(v: &mut [f32]) {
+    let n = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if n > 0.0 {
+        for x in v.iter_mut() {
+            *x /= n;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn unit(dir: usize, dim: usize, wobble: f32, seed: usize) -> Vec<f32> {
+        let mut v = vec![0.0f32; dim];
+        v[dir] = 1.0;
+        v[(dir + 1 + seed) % dim] = wobble;
+        normalize(&mut v);
+        v
+    }
+
+    // what this catches (Joel: never one gene per memory): seven examples of one skill are
+    // memories, eight are a competence; two distinct skills are two competences; and a
+    // competence's centroid sits with its members, not between skills.
+    #[test]
+    fn a_competence_needs_min_examples_and_skills_do_not_merge() {
+        let dim = 8;
+        let mut ex: Vec<Vec<f32>> = (0..7).map(|i| unit(0, dim, 0.1, i)).collect();
+        assert!(competences(&ex).is_empty(), "seven examples are memories");
+        ex.push(unit(0, dim, 0.1, 7));
+        let one = competences(&ex);
+        assert_eq!(one.len(), 1, "eight are a competence");
+        assert_eq!(one[0].members.len(), 8);
+        for i in 0..8 {
+            ex.push(unit(4, dim, 0.1, i));
+        }
+        let two = competences(&ex);
+        assert_eq!(two.len(), 2, "two skills, two competences");
+        for c in &two {
+            let own = ex[c.representative].clone();
+            assert!(cosine(&c.centroid, &own) > 0.95, "the centroid sits with its members");
+        }
+    }
 
     // what this catches: the order of the decision. Too few examples or low surprise →
     // nothing (unknown surprise never mints); a near gene she lacks → reuse; a near gene

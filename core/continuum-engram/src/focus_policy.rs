@@ -39,10 +39,9 @@ pub trait FocusPolicy: Send + Sync {
     fn recall_sigma(&self, focus: f32) -> f32;
 }
 
-/// The conventional recall significance bar — 3σ vs the measured null, the
-/// value `SignificanceRanker::new` shipped with before this junction existed.
-/// A statistical convention, not an embedder constant.
-pub const NEUTRAL_RECALL_SIGMA: f32 = 3.0;
+/// The conventional recall significance bar: the embedding space's one significance convention
+/// (`ai::embedding::significance`), which a gene signature's themes read too.
+pub const NEUTRAL_RECALL_SIGMA: f32 = continuum_engine::ai::embedding::significance::SIGNIFICANCE_SIGMA;
 
 /// Adapter A — the calibrated constants, regardless of focus. The honest
 /// "lazy first adapter": installing the junction with this default changes

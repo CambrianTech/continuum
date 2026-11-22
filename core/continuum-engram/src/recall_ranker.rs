@@ -116,7 +116,7 @@ impl SignificanceRanker {
     pub fn new(relevance_weight: f32, uncalibrated_floor: f32) -> Self {
         Self {
             relevance_weight,
-            sigma: 3.0,
+            sigma: continuum_engine::ai::embedding::significance::SIGNIFICANCE_SIGMA,
             uncalibrated_floor,
             std_epsilon: 1e-4,
         }

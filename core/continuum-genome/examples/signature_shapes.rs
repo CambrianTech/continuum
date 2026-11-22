@@ -13,7 +13,8 @@
 //! dumped as `prompt\ncompletion`, the text `mint_signature` embeds. Every fifth text is held out of
 //! the mint and routed against; the contrast file is unrelated work the gene should not reach.
 
-use continuum_genome::genome::signature::validate::{compare, CURRENT_FLOOR};
+use continuum_genome::ai::embedding::significance::{significance_floor, SIGNIFICANCE_SIGMA};
+use continuum_genome::genome::signature::validate::compare;
 
 #[tokio::main]
 async fn main() -> Result<(), String> {
@@ -40,9 +41,10 @@ async fn main() -> Result<(), String> {
     }
     let calibrated = embedder.unrelated_null();
     println!("{}", serde_json::json!({ "embedder": embedder.id(), "texts": texts.len(), "embed_ms": embed_ms, "unrelated_null": calibrated })); // the report's output format
-    let mut floors = vec![CURRENT_FLOOR];
-    if let Some((mean, spread)) = calibrated {
-        floors.extend([mean + 2.0 * spread, mean + 3.0 * spread, mean + 4.0 * spread]);
+    // the floor the pairwise path was minted with, and the space's own significance bar that replaces it
+    let mut floors = vec![0.55]; // the floor the pairwise path shipped with, compared as it was
+    if let Some(null) = calibrated {
+        floors.push(significance_floor(null, SIGNIFICANCE_SIGMA));
     }
     for floor in floors {
         let report = compare(&embeddings, &held_out, &contrast, floor);

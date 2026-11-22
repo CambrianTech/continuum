@@ -4,7 +4,7 @@
 //! replace and the themes themselves, and reports their times and their disagreement. Test-fixture
 //! code: the `signature_shapes` example runs it on a node's real corpus.
 
-use super::{region_of, themes, MAX_SUBSPACES, SUBSPACE_MIN_CLUSTER_SIZE, SUBSPACE_MIN_SIMILARITY};
+use super::{region_of, themes, MAX_SUBSPACES};
 use crate::ai::embedding::vector_math::{detect_clusters, unit_cosine};
 
 /// One shape's subspaces, its region edge, how long it took, and how it routes: the share of the
@@ -63,7 +63,7 @@ fn placed(themes: &[Vec<f32>], e: &[f32], floor: f32) -> Option<usize> {
 /// Both shapes of `embeddings` (each L2-normalized, one dim) at subspace floor `floor`, minted on
 /// `embeddings` and routed against `held_out` (more of the same corpus) and `contrast` (unrelated).
 pub fn compare(embeddings: &[Vec<f32>], held_out: &[Vec<f32>], contrast: &[Vec<f32>], floor: f32) -> ShapeComparison {
-    let dim = embeddings.first().map_or(0, Vec::len); // map_or: an empty corpus has no dimension and no themes
+    let dim = embeddings.first().map(Vec::len).expect("a comparison needs a corpus"); // test fixture: the validator compares a non-empty corpus
     let mut centroid = vec![0.0f32; dim];
     for e in embeddings {
         for (c, x) in centroid.iter_mut().zip(e) {
@@ -73,7 +73,7 @@ pub fn compare(embeddings: &[Vec<f32>], held_out: &[Vec<f32>], contrast: &[Vec<f
     super::normalize(&mut centroid);
 
     let started = std::time::Instant::now();
-    let mut clusters = detect_clusters(embeddings, floor, SUBSPACE_MIN_CLUSTER_SIZE);
+    let mut clusters = detect_clusters(embeddings, floor, 3); // the pairwise path as it was minted: three members made a theme
     clusters.sort_by_key(|c| std::cmp::Reverse(c.indices.len()));
     clusters.truncate(MAX_SUBSPACES);
     let pairwise: Vec<Vec<f32>> = clusters.iter().map(|c| mean(embeddings, &c.indices, dim)).collect();
@@ -81,7 +81,7 @@ pub fn compare(embeddings: &[Vec<f32>], held_out: &[Vec<f32>], contrast: &[Vec<f
     let pairwise_ms = started.elapsed().as_secs_f64() * 1000.0;
 
     let started = std::time::Instant::now();
-    let one_pass = themes::themes(embeddings, floor, SUBSPACE_MIN_CLUSTER_SIZE, MAX_SUBSPACES);
+    let one_pass = themes::themes(embeddings, floor, MAX_SUBSPACES);
     let one_pass_region = region_of(&centroid, &one_pass, embeddings);
     let one_pass_ms = started.elapsed().as_secs_f64() * 1000.0;
 
@@ -124,6 +124,3 @@ pub fn compare(embeddings: &[Vec<f32>], held_out: &[Vec<f32>], contrast: &[Vec<f
         assignment_disagreement: if either == 0 { 0.0 } else { differ as f32 / either as f32 },
     }
 }
-
-/// The floor the comparison runs at today: the constant the subspaces are clustered with.
-pub const CURRENT_FLOOR: f32 = SUBSPACE_MIN_SIMILARITY;
