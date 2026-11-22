@@ -124,7 +124,7 @@ async fn her_waiting_learner_never_holds_her_bucket_gate() {
     let example = crate::genome::fine_tuning::types::TrainingExample { prompt: "p".into(), completion: "c".into(), metadata: None, lived: None };
     let row = Arrival { id: Uuid::new_v4(), sequence: 1, key: key.clone(), persona_name: "her".into(), examples: vec![example], learned: 0, lora: None, schedule: None };
     let acting = crate::inference::slots::begin_act_for_test(persona).await;
-    let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9)));
+    let mut pass = Box::pin(state.learn_bucket(key.clone(), vec![row], engine(9), state.membership()));
     assert!(futures::poll!(&mut pass).is_pending(), "her act comes first: the learner waits");
     assert!(state.submit_gates.try_acquire(&key).is_some(), "her bucket's gate is free while her learner waits");
     assert!(state.in_place.engine(engine(9)).try_acquire(None, engine_lock::Phase::Step).is_some(), "and so is the engine");
@@ -643,11 +643,12 @@ mod live_engine {
         });
         *trigger.state.operation_pause.lock().expect("test: pause slot") = Some(Arc::clone(&pause));
         let store = trigger.state.durable.require().expect("test: storage");
+        let seen = trigger.state.membership();
         let rows = eligible_buckets(&store, base).await.expect("test: pending journal")
             .into_iter().find(|(k, _)| k == key).map(|(_, rows)| rows).expect("test: her bucket is pending");
         let state = Arc::clone(&trigger.state);
         let pass_key = key.clone();
-        let pass = tokio::spawn(async move { state.learn_bucket(pass_key, rows, engine).await });
+        let pass = tokio::spawn(async move { state.learn_bucket(pass_key, rows, engine, seen).await });
         tokio::time::timeout(std::time::Duration::from_secs(300), pause.entered.notified()).await.expect("test: she is seated within 300s");
         assert_eq!(trigger.state.in_place.seated_on(engine).await, 1, "paused with her learner seated");
         (pause, pass)
@@ -778,7 +779,7 @@ async fn prepare_waiters_have_no_engine_work_to_drain() {
     let slot = state.in_place.engine(engine);
     let held = slot.acquire(None, engine_lock::Phase::Step).await;
     let key = BucketKey { persona_id: Uuid::new_v4(), trait_kind: "code".into(), base_model: "test".into() };
-    let waiting = state.prepare_bucket(key, Arc::new(Vec::new()), engine);
+    let waiting = state.prepare_bucket(key, Arc::new(Vec::new()), engine, state.membership());
     tokio::pin!(waiting);
     tokio::select! {
         biased;

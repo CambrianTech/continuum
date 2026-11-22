@@ -18,7 +18,7 @@
 //! own owned operation holding that engine's lock and the slot, never on the tick.
 
 use super::durable::{Arrival, LearnCheckpoint, Position};
-use super::{BucketKey, TrainingTriggerState};
+use super::{BucketKey, Membership, TrainingTriggerState};
 use crate::genome::learner::{
     example::learn_messages,
     memory::EngineWorkspace,
@@ -139,6 +139,16 @@ enum Released {
     NotHers,
 }
 
+/// Every engine's learning, held ([`InPlace::hold_every_engine`]).
+pub(crate) struct EnginesHeld(Vec<(EngineIncarnation, engine_lock::EngineGuard)>);
+
+impl EnginesHeld {
+    /// The engine a learner of `key` is seated on, if any.
+    pub(crate) fn seating(&self, key: &BucketKey) -> Option<EngineIncarnation> {
+        self.0.iter().find(|(_, held)| held.minds.contains_key(key)).map(|(incarnation, _)| *incarnation)
+    }
+}
+
 /// What one bucket's pass did.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BucketPass {
@@ -155,6 +165,20 @@ impl InPlace {
 
     fn engine(&self, engine: EngineIncarnation) -> Arc<engine_lock::EngineSlot> {
         Arc::clone(self.engines.entry(engine).or_default().value())
+    }
+
+    /// Hold every engine's learning, in incarnation order, for a caller that already holds the
+    /// gates of the buckets it rewrites (gate before engine, as every pass takes them): no learner
+    /// is mid-step while it holds them. An engine registered after this enumeration is not held,
+    /// and needs not be: a learner seats only under her bucket's gate, which the caller holds.
+    pub(crate) async fn hold_every_engine(&self) -> EnginesHeld {
+        let mut engines: Vec<_> = self.engines.iter().map(|entry| (*entry.key(), Arc::clone(entry.value()))).collect();
+        engines.sort_by_key(|(incarnation, _)| *incarnation);
+        let mut held = Vec::with_capacity(engines.len());
+        for (incarnation, engine) in engines {
+            held.push((incarnation, engine.acquire(None, engine_lock::Phase::Rekey).await));
+        }
+        EnginesHeld(held)
     }
 
     /// Retire every engine incarnation other than `live` whose process is verifiably dead, and return

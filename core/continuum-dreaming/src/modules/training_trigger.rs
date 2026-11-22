@@ -63,7 +63,7 @@ mod durable;
 mod serving_wake;
 pub(crate) mod competence;
 mod in_place;
-pub(crate) use durable::{RetireReport, RetireSelection};
+pub(crate) use durable::{CheckpointedSides, Membership, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0
@@ -160,6 +160,9 @@ pub struct TrainingTriggerState {
     /// This node has accepted examples and no engine to learn them on, and has said so once
     /// ([`TrainingTriggerState::note_no_learning_engine`]); cleared when a learning engine appears.
     no_learning_engine_noted: std::sync::atomic::AtomicBool,
+    /// Bucket membership: bumped by every write that moves rows between buckets (a re-key), under
+    /// both buckets' gates, so a pass that selected its rows before the move stops at its gate.
+    membership: std::sync::atomic::AtomicU64,
     /// The LIVE model catalog every submit resolves its base against (`base_identity::canonical_base`):
     /// the one the serving daemon and `models/*` mutate, so a model pulled after boot resolves at once.
     models: Arc<crate::model_registry::live::ModelCatalog>,
@@ -211,6 +214,7 @@ impl TrainingTriggerState {
             ready: std::sync::atomic::AtomicBool::new(false),
             stopping: std::sync::atomic::AtomicBool::new(false),
             no_learning_engine_noted: std::sync::atomic::AtomicBool::new(false),
+            membership: std::sync::atomic::AtomicU64::new(0),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
