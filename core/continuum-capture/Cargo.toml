@@ -14,6 +14,8 @@ continuum-engine = { path = "../continuum-engine" }
 continuum-rooms = { path = "../continuum-rooms" }
 serde.workspace = true
 serde_json.workspace = true
+rmp-serde.workspace = true
+thiserror.workspace = true
 tracing.workspace = true
 ts-rs.workspace = true
 uuid.workspace = true

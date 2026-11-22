@@ -8,4 +8,6 @@
 /// Where captures land: the one fixture-directory policy shared by every live capture
 /// (persona turns, prompt and workspace captures) and their readers.
 pub mod capture;
+/// The capture's binary frame: a typed header as a MessagePack array and the bulk as raw byte runs.
+pub mod frame;
 pub mod prompt_capture;
