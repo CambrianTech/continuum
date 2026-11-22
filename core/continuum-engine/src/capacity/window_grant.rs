@@ -650,9 +650,6 @@ mod tests {
         Demand { mind, need: t(need), target: t(need), wish: t(need), in_flight, settled: true, ceiling }
     }
 
-    // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
-    // you dictate"). Minds that fit get exactly what they need, never an equal split, never past one
-    // sequence's ceiling; what is left stays in the pool, granted to no one.
     // what this catches (Codex on card 06254dcc): a waiting mind's place read wrong, which her grant
     // wait counts as progress. Minds owed at the same publication are one cohort, ordered by id as the
     // dispatch owner iterates them; a mind not owed has no rank, which is not rank zero.
@@ -667,6 +664,9 @@ mod tests {
         assert_eq!(grants.owed_rank(mind(5)), None, "not owed: no rank, never rank zero");
     }
 
+    // what this catches: a window divided by a count (Joel, 2026-11-03: "What a mind needs not what
+    // you dictate"). Minds that fit get exactly what they need, never an equal split, never past one
+    // sequence's ceiling; what is left stays in the pool, granted to no one.
     #[test]
     fn every_mind_gets_what_she_needs_and_the_rest_stays_in_the_pool() {
         let pool = 257_536;
