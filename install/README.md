@@ -126,8 +126,9 @@ No installer script, bootstrap or per-OS function is edited.
 
 | Gate | Fails when |
 |---|---|
-| **Fresh install** | On each OS runner (macOS arm64, macOS x86_64, Linux x86_64 and arm64, Windows x86_64), a clean machine does not reach "every accept check passes, a persona answers" |
-| **Upgrade** | The previous release, upgraded to this one, does not converge with nothing done by hand. This is what proves a newly added dependency reaches existing installs |
+| **Fresh install** | On each target runner (macOS arm64, macOS x86_64, Linux x86_64 and arm64, Windows x86_64), a clean machine does not reach the turn check below |
+| **Upgrade** | The previous release, upgraded to this one with nothing done by hand, does not reach the turn check below. This is what proves a newly added dependency reaches existing installs |
+| **The turn check** (inside both gates) | A resident's real turn, through the installed core, does not decode on the serving path and backend this release declares for the target. The turn's own receipt is the evidence (provider, backend, offload), not a process list. One embedding through the core must also succeed |
 | **Declared use** | Code loads a library, runs a binary, or reads a runtime path that no component's `provides` declares. The check scans `Command::new`, `dlopen` and `libloading` names, and the runtime-path lookups |
 | **Coverage** | A component lacks a source for a platform its `used_by` features ship on |
 
@@ -138,10 +139,29 @@ No installer script, bootstrap or per-OS function is edited.
   driver is the one thing the machine must provide. On Linux the engine can install it, as an `admin`
   component, through the distro's package manager. On macOS and Windows a missing driver is reported
   with the vendor link.
-- **CI builds the engine once per backend.** For each platform, CI builds `llama-server` for every
-  backend that platform can run: macOS arm64 Metal; macOS x86_64 CPU and Vulkan through MoltenVK; Linux
-  CPU, CUDA 12, CUDA 13, ROCm and Vulkan; Windows CPU, CUDA 12, CUDA 13 and Vulkan. Shaders are compiled
-  in CI, so no machine needs a shader compiler.
+- **CI builds what actually serves, once per backend.** Residents are served either by the native
+  engine linked into `continuum-core-server` (libllama in-process) or by an external `llama-server`.
+  Today a per-node `config.env` toggle decides which (`CONTINUUM_LOCAL_LLAMA=1`,
+  `core/continuum-core/src/modules/ai_provider/block.rs:356-361`):
+  - the 5090 serves in-process (Codex, 2026-11-22: the core process maps the 27B GGUF);
+  - the Macs serve through `llama-server`, which CI never builds for them (they compile it on the node);
+  - Linux has no CI leg.
+
+  Under this design the release, not a node's config, declares each target's serving artifact, and the
+  toggle is deleted. CI builds that artifact for every backend the target can run:
+  - macOS arm64: Metal;
+  - macOS x86_64: CPU, and Vulkan through MoltenVK;
+  - Linux: CPU, CUDA 12, CUDA 13, ROCm and Vulkan;
+  - Windows: CPU, CUDA 12, CUDA 13 and Vulkan.
+
+  That artifact is the core with its in-process engine where that serves, plus `llama-server` only where
+  it still serves residents or external drivers (the 3b plan moves residents in-process). The core's
+  backend features must match its engine's backend on every leg, and a mismatch fails the build.
+  Shaders are compiled in CI, so no machine needs a shader compiler.
+- **Every inference path ships and is tested.** Besides chat, the core runs embeddings in-process
+  (Qwen3-Embedding through libllama, on every target). Speech-to-text and text-to-speech run through
+  ONNX Runtime and Candle, and Kokoro calls an external `espeak-ng`. Each is a manifest component with
+  an accept check.
 - **The machine measures and chooses.** The device probe runs each installed backend out of process,
   with a timeout. A child that will not die marks that backend unavailable and is never retried; the
   Radeon Metal driver on Intel Macs wedges this way. The probe records each device's memory and a short
@@ -218,15 +238,15 @@ Each step lands with its CI gate and deletes what it replaces.
    five CI runners matches today's machines.
 2. **Linux first, as the outlier:** the bootstrap, generations, the elevation broker and the systemd
    component. **Gate:** fresh install and upgrade on Linux CI.
-3. **The engine release matrix:** per-backend `llama-server` with its runtimes bundled, and the device
+3. **The serving release matrix:** each target's declared serving artifact per backend, runtimes bundled, and the device
    probe. **Gate:** the IntelMac chooses between CPU, Radeon over Vulkan and UHD 630 by measurement.
 4. macOS, then Windows, onto the engine. Their old paths are deleted.
 5. The background update in the product. The declared-use and coverage gates.
 
-### Owners (proposed)
+### Owners
 
 - Engine and manifest: Cormac.
-- CI release matrix: Codex.
-- Windows: BigMama's machine as the proving node.
-- macOS arm64: Fable's M5.
+- Windows validation on the 5090, and exact-head CI for its own changes: Codex (accepted 2026-11-22).
+- Cross-platform release matrix: open.
+- macOS arm64 proving node: Fable's M5.
 - Docs and index: follow the docs organization in `docs/README.md`.
