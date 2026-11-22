@@ -473,7 +473,9 @@ mod tests {
     // deferral within LANE_WAIT_CEILING, never at the tick floor. Un-ignore with the fix (card
     // question 2: give the grants wait a bound derived like lane_wait_bound from the queue she is
     // joining - pure over measurements, so it is reachable within her act without wall-clock
-    // dependence).
+    // dependence). Canary 666a604d (#6218) registered this wait with the admission clock (her queue
+    // place is its progress; a livelock ends at settle.queue.stalled), but adds no window-side total
+    // bound: this pin still fails against that tip.
     #[tokio::test(start_paused = true)]
     #[ignore = "pins card 250d7603: an ungranted mind parks to the tick floor while every evaluation reports her BehindActs; un-ignore once decide_window defers at her named bound"]
     async fn a_starved_mind_defers_at_her_named_bound_not_the_tick_floor() {
@@ -484,6 +486,10 @@ mod tests {
         let beat = std::time::Duration::from_millis(500);
         let behind_acts = move |at: std::time::Instant| {
             let mut e = evaluation(at, grants(&[]), None).expect("evaluation");
+            // Generous cadence: a single wait's PublisherSilent bound (2x cadence) must never fire
+            // inside her outer bound - this pin isolates the missing TOTAL bound across evaluations,
+            // not publisher silence (covered by a_publisher_that_misses_its_cadence_is_named_not_waited_out).
+            e.cadence = std::time::Duration::from_secs(3600);
             e.waiting.insert(her, Waiting::BehindActs { acting: 2 });
             e
         };
@@ -492,7 +498,7 @@ mod tests {
         let publisher = tokio::spawn(async move {
             loop {
                 tokio::time::sleep(beat).await;
-                if sender.send(behind_acts(std::time::Instant::now() + std::time::Duration::from_millis(1))).is_err() {
+                if sender.send(Some(behind_acts(std::time::Instant::now() + std::time::Duration::from_millis(1)))).is_err() {
                     return; // the waiter is gone: her bound fired, or this test gave up on her
                 }
             }
@@ -506,7 +512,7 @@ mod tests {
         .await
         .expect("she defers within her named bound instead of parking to the tick floor (card 250d7603)");
         publisher.abort();
-        assert!(matches!(refused, Err(WindowRefused::Ungranted(_)), "a typed deferral - her next tick measures and asks again; nothing was dispatched: {refused:?}"));
+        assert!(matches!(refused, Err(WindowRefused::Ungranted(_))), "a typed deferral - her next tick measures and asks again; nothing was dispatched: {refused:?}");
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
         let elapsed = started_at.elapsed();
         assert!(elapsed <= crate::inference::resource_admission::LANE_WAIT_CEILING + beat, "budget intact: deferred at her named bound ({elapsed:?}), not the act's tick floor (25 min)");
