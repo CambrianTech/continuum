@@ -7,11 +7,12 @@
 //! from curriculum producers (the teacher persona's synthesis, the hippocampus's noteworthy
 //! drain, settled cards, operator submits) into the durable journal, per
 //! `(persona_id, trait_kind, base_model)` bucket, where the training trigger learns them in
-//! place; retiring submissions not yet learned; and reporting each bucket's journal.
+//! place; retiring submissions not yet learned; re-keying a bucket stored under a base spelling
+//! that is not the catalog id; and reporting each bucket's journal.
 //!
 //! ## Dep-holding family
 //!
-//! The three verbs ([`submit`], [`retire`], [`status`]) share the owning module's one
+//! The four verbs ([`submit`], [`retire`], [`rekey`], [`status`]) share the owning module's one
 //! [`TrainingTriggerState`](crate::modules::training_trigger::TrainingTriggerState), so a
 //! submit, a retirement and a learning pass on one bucket serialize on the same
 //! [`PerKeyGate`](crate::runtime::PerKeyGate). They are assembled by [`command_objects`] and
@@ -29,10 +30,12 @@ use std::sync::Arc;
 use crate::modules::training_trigger::TrainingTriggerState;
 use crate::sdk_codegen::DynCommand;
 
+pub mod rekey;
 pub mod retire;
 pub mod status;
 pub mod submit;
 
+use rekey::TrainingTriggerRekey;
 use retire::TrainingTriggerRetire;
 use status::TrainingTriggerStatus;
 use submit::TrainingTriggerSubmit;
@@ -47,6 +50,9 @@ pub fn command_objects(state: Arc<TrainingTriggerState>) -> Vec<Arc<dyn DynComma
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerRetire {
+            state: state.clone(),
+        }),
+        Arc::new(TrainingTriggerRekey {
             state: state.clone(),
         }),
         Arc::new(TrainingTriggerStatus { state }),
@@ -169,9 +175,10 @@ pub(crate) mod test_support {
             let state = Arc::new(TrainingTriggerState::new(crate::genome::learner::seat::Authority::isolated(1 << 30), &fixture_catalog()));
             let objs = command_objects(state);
             let names: Vec<&str> = objs.iter().map(|o| o.name()).collect();
-            assert_eq!(names.len(), 3);
+            assert_eq!(names.len(), 4);
             assert!(names.contains(&"genome/training-trigger/submit"));
             assert!(names.contains(&"genome/training-trigger/retire"));
+            assert!(names.contains(&"genome/training-trigger/rekey"));
             assert!(names.contains(&"genome/training-trigger/status"));
         }
     }

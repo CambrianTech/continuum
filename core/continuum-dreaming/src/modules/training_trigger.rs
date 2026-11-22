@@ -63,7 +63,7 @@ mod durable;
 mod serving_wake;
 pub(crate) mod competence;
 mod in_place;
-pub(crate) use durable::{RetireReport, RetireSelection};
+pub(crate) use durable::{CheckpointedSides, RekeyCandidate, RekeyCounts, RekeyFilter, RekeyRefused, Rekeyed, RetireReport, RetireSelection};
 
 
 /// Default `validation_split` when the submit doesn't pin one. 0.0
