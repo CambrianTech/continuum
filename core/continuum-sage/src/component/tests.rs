@@ -28,7 +28,7 @@ impl Component for Adder {
     const NAME: &'static str = "adder";
     const QOS: Qos = Qos::Work;
     fn wire(&self, wiring: &mut Wiring<'_, Self>) {
-        wiring.hear::<u64>(NUMBERS);
+        wiring.hear::<u64>(NUMBERS, std::num::NonZeroUsize::MIN.saturating_add(7));
     }
     async fn handle(&mut self, Number(n): Number, ctx: &mut Ctx<Self>) {
         self.total += n;
@@ -54,8 +54,8 @@ async fn a_part_hears_and_says_by_topic_with_provenance_from_the_engine() {
         Ok(numbers) => numbers,
         Err(taken) => return assert_eq!(Some(taken), None, "the numbers topic is unclaimed"),
     };
-    numbers.emit(2).await;
-    let last_sent = numbers.emit(3).await;
+    numbers.emit(2);
+    let last_sent = numbers.emit(3);
     let mut last: Option<Snapshot<u64>> = None;
     while last.as_ref().map(|s| *s.value) != Some(5) {
         last = total.changed().await.ok();

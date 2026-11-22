@@ -75,9 +75,9 @@ impl<P: Component> Ctx<P> {
         publisher.publish(value, self.provenance())
     }
 
-    /// Emit an event this component writes; waits for each subscriber's room.
-    pub async fn emit<T: Send + Sync + 'static>(&self, emitter: &mut Emitter<T>, value: T) -> InputRevision {
-        emitter.emit(value).await
+    /// Emit an event this component writes. Never waits: each subscriber has its own window.
+    pub fn emit<T: Send + Sync + 'static>(&self, emitter: &mut Emitter<T>, value: T) -> InputRevision {
+        emitter.emit(value)
     }
 
     /// Deliver `input` to this component `after` from now, replacing any timer under `key`: a

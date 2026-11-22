@@ -75,7 +75,12 @@ impl Component for Senses {
     const QOS: Qos = Qos::Interactive;
 
     fn wire(&self, wiring: &mut Wiring<'_, Self>) {
-        wiring.hear_on::<Arrival>(super::feed::node_bus(), super::feed::FEED);
+        // Her window on the feed: as much as her room view keeps unperceived.
+        const WINDOW: std::num::NonZeroUsize = match std::num::NonZeroUsize::new(crate::persona::perception_region::UNPERCEIVED_CAP) {
+            Some(window) => window,
+            None => std::num::NonZeroUsize::MIN,
+        };
+        wiring.hear_on::<Arrival>(super::feed::node_bus(), super::feed::FEED, WINDOW);
     }
 
     async fn handle(&mut self, input: Sensed, ctx: &mut Ctx<Self>) {

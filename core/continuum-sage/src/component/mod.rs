@@ -110,23 +110,24 @@ impl<P: Component> Wiring<'_, P> {
         self.bus
     }
 
-    /// Every event on its owner's `topic` reaches this component, in order, never dropped.
-    pub fn hear<T>(&mut self, topic: TopicName)
+    /// Every event on its owner's `topic` is offered to this component, in order, keeping at most
+    /// `window` it has not taken (what it keeps of the topic itself); its producer never waits on it.
+    pub fn hear<T>(&mut self, topic: TopicName, window: std::num::NonZeroUsize)
     where
         T: Send + Sync + 'static,
         P::Input: From<Event<T>>,
     {
-        self.hear_on::<T>(self.bus, topic);
+        self.hear_on::<T>(self.bus, topic, window);
     }
 
-    /// Every event on `topic` of another bus (the node's: the one feed) reaches this component.
-    pub fn hear_on<T>(&mut self, bus: &Bus, topic: TopicName)
+    /// Every event on `topic` of another bus (the node's: the one feed), as [`Self::hear`].
+    pub fn hear_on<T>(&mut self, bus: &Bus, topic: TopicName, window: std::num::NonZeroUsize)
     where
         T: Send + Sync + 'static,
         P::Input: From<Event<T>>,
     {
         let subscribe = bus.subscribe::<T>(topic);
-        self.attach.push(Box::new(move |input| subscribe.attach(input)));
+        self.attach.push(Box::new(move |input| subscribe.attach(input, window)));
     }
 
     /// This component is handed the newest value of its owner's `topic` under `key`, then each change;

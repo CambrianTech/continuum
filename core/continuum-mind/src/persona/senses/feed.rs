@@ -4,8 +4,10 @@
 //! one attach per room; that feed is the one truth and her perception renders it. Every room's
 //! attach task hands its events to [`hear`]; the Feed part classifies each event once and says
 //! it on the node bus's feed topic, which every resident's senses hear (object model 5.7: many producers
-//! into a worker, fanned out by handle). An emit waits for each subscriber's room, and senses
-//! never wait on anything slow, so nothing is dropped and no lock is held per event.
+//! into a worker, fanned out by handle). An emit never waits: each resident's senses has its own
+//! window (as much as her room view keeps, `UNPERCEIVED_CAP`), so one resident's slow senses never
+//! holds the feed or anyone else's perception; one that falls a window behind sees the gap in the
+//! revisions, and the transcript stays the one truth to page from.
 
 use std::sync::OnceLock;
 
@@ -60,11 +62,11 @@ pub(super) const FEED: TopicName = TopicName("node/feed");
 /// classifies an event and says it, so the hearing task does that itself. A worker of its own was a
 /// task on whichever runtime first heard an event, and when that runtime ended (a test's) every later
 /// event went nowhere: CI's core suite hung for an hour on a resident that never woke (2026-11-23).
-/// The lock is tokio's, held across the emit, which no runtime owns.
-static FEED_EMITTER: OnceLock<Option<tokio::sync::Mutex<Emitter<Arrival>>>> = OnceLock::new();
+/// An emit never waits (each subscriber has its own window), so the lock is held only for the append.
+static FEED_EMITTER: OnceLock<Option<parking_lot::Mutex<Emitter<Arrival>>>> = OnceLock::new();
 
-fn feed() -> &'static Option<tokio::sync::Mutex<Emitter<Arrival>>> {
-    FEED_EMITTER.get_or_init(|| continuum_sage::component::node().emitter::<Arrival>(FEED).ok().map(tokio::sync::Mutex::new))
+fn feed() -> &'static Option<parking_lot::Mutex<Emitter<Arrival>>> {
+    FEED_EMITTER.get_or_init(|| continuum_sage::component::node().emitter::<Arrival>(FEED).ok().map(parking_lot::Mutex::new))
 }
 
 /// The node's bus: topics every resident shares (the one feed).
@@ -75,12 +77,12 @@ pub(super) fn node_bus() -> &'static Bus {
 
 /// One room event, from the core's one inbound seam. Only the header classifier
 /// (`continuum_airc_protocol::classify_inbound`) constructs a [`ConversationEvent`], so a peer
-/// command or protocol frame cannot reach a mind (2026-10-30). Waits for the feed's room.
+/// command or protocol frame cannot reach a mind (2026-10-30). Never waits.
 pub async fn hear(event: ConversationEvent) {
     match feed() {
         Some(feed) => {
             let fed = classify(event.event());
-            feed.lock().await.emit(Arrival { event, fed }).await;
+            feed.lock().emit(Arrival { event, fed });
         }
         None => continuum_base::probe!(class = "mind.feed.stopped", "the one feed's topic is claimed elsewhere; no resident hears this event"),
     }
