@@ -302,17 +302,22 @@ async fn a_failing_bucket_never_starves_the_next() {
 }
 
 // what this catches (Codex, the 5090 2026-11-22: 8 accepted examples, learned=0, no checkpoint,
-// and silence): a node with accepted examples and no learning engine read as nothing to do. With
-// nothing accepted it says nothing; once examples wait with no lane, it names them.
+// and silence): a node with accepted examples and no learning engine read as nothing to do. The
+// emitted probe itself is asserted: none while nothing waits, exactly one across two passes once
+// examples wait, naming the bucket and its count.
 #[tokio::test]
-async fn accepted_examples_with_no_learning_engine_are_named() {
+async fn accepted_examples_with_no_learning_engine_are_named_once() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let router = continuum_kernel::routing::ProbeRouterLayer::new();
+    let mut named = router.subscribe("training.in_place.no_learning_engine");
+    let _probes = tracing::subscriber::set_default(tracing_subscriber::registry().with(router.clone()));
     let home = tempfile::tempdir().expect("test: home"); // test fixture
     let _home = crate::paths::test_home::HomeGuard::set(home.path()).await;
     assert!(crate::inference::lane_registry::live_lane().is_none(), "test: no llama-server lane on this home");
     let (trigger, executor, _dir) = crate::commands::training_trigger::test_support::build_runtime_trigger_only().await;
     let state = trigger.state.clone();
     state.recover_pass().await.expect("test: the pass runs"); // test fixture
-    assert!(!state.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed), "nothing accepted: nothing to say");
+    assert!(named.try_recv().is_err(), "nothing accepted: nothing said");
     let params = serde_json::json!({
         "personaId": Uuid::new_v4(), "personaName": "no-engine-fixture", "baseModel": "qwen", "traitKind": "geography",
         "examples": [crate::commands::training_trigger::test_support::ex("What is the capital of Kansas?", "Topeka.")], "source": "operator_curated",
@@ -320,7 +325,11 @@ async fn accepted_examples_with_no_learning_engine_are_named() {
     let answer = executor.execute_json("genome/training-trigger/submit", params).await.expect("test: submit routes"); // test fixture
     assert_eq!(answer["success"], true, "test: the arrival is accepted: {answer}");
     state.recover_pass().await.expect("test: the pass runs"); // test fixture
-    assert!(state.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed), "accepted examples and no engine: named, never a quiet Ok");
+    state.recover_pass().await.expect("test: the pass runs"); // test fixture
+    let event = named.try_recv().expect("accepted examples and no engine: named, never a quiet Ok"); // test fixture
+    assert_eq!(event.fields.get("examples_waiting").map(String::as_str), Some("1"), "the total waiting: {event:?}");
+    assert!(event.fields.get("buckets").is_some_and(|b| b.contains("no-engine-fixture/geography/qwen: 1")), "the bucket and its count: {event:?}");
+    assert!(named.try_recv().is_err(), "named once per transition, not every pass");
 }
 
 // what this catches: an eviction that deletes a file it does not own (Codex on f13a6abea): the same

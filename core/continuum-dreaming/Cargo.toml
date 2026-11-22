@@ -50,7 +50,7 @@ continuum-client = { path = "../../client/continuum-client", features = ["test-f
 airc-core.workspace = true
 tokio = { workspace = true, features = ["test-util"] }
 tempfile = { workspace = true }
-tracing-subscriber = { workspace = true }  # live-engine-tests: the fixture prints its probes
+tracing-subscriber = { workspace = true }  # tests: live-engine fixtures print probes; probe-asserting tests route them (ProbeRouterLayer)
 
 [features]
 default = []
