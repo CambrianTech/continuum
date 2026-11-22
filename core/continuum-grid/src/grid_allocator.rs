@@ -549,8 +549,7 @@ impl Inner {
                     .map(|(m, w)| {
                         use crate::inference::planning::window_allocator::{observed::Observed, Measure};
                         let gate = match requirements.iter().find(|r| r.persona == *m).map(|r| r.measure) {
-                            Some(Measure::Measured { governed: Observed::AtLeast { .. }, .. }) => "need_at_least",
-                            Some(Measure::Measured { governed: Observed::Exact(_), .. }) => "need_exact",
+                            Some(Measure::Measured { .. }) => "need_exact",
                             _ => "wish",
                         };
                         format!("{}:{gate}:{w}", airc_core::shown_id::shown_form(*m))

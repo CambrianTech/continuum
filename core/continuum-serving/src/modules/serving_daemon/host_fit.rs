@@ -77,7 +77,9 @@ pub(super) fn need_with_growth(claims: &[MindClaim], sequences: u32, trained_win
     let trained = u64::from(trained_window);
     let claimed: u64 = claims
         .iter()
-        .map(|claim| (claim.size as f64 * SENT_HEADROOM) as u64)
+        .map(|claim| match claim {
+            MindClaim::Required { size } => (size as f64 * SENT_HEADROOM) as u64,
+        })
         .map(|tokens| tokens.min(trained))
         .sum();
     let unclaimed = u64::from(sequences).saturating_sub(claims.len() as u64);
