@@ -34,6 +34,21 @@ is "worth it"; the only question is that each swap is fast and its spread is sma
 
 ## 3. The frame
 
+What a mind passes through today before it generates (canary c0fa92246, read 2026-11-22), every one a
+serial wait: (1) `turn_ingress::admit` (serve_persona_loop_inner.rs:134); (2) the window grant,
+`deliberation.window_grant` (admission_clock.rs:191; grants republished on a 5 s tick and on events,
+serving_daemon.rs:64, live_pool.rs:217); (3) the lane semaphore, `deliberation.lane` (lanes.rs:46-90);
+(4) one act per mind, a FIFO semaphore of 1 (mind_gate.rs:63-84); (5) the decode permit, ONE generation
+per endpoint (endpoint_concurrency.rs:42-50, #6114: four minds batched read 2.1-2.4 tok/s each against
+about 80 for one); (6) endpoint readiness (turn_admission.rs:431); (7) the slot pin, `released.notified()`
+when every slot is pinned (turn_admission.rs:476-526); (8) page save of the evicted mind then restore of
+hers over llama-server HTTP (turn_admission.rs:604-640; live median save 3.05 s, restore 1.38 s, on the
+server's main loop, stalling every stream, CONTINUUM-ENGINE 4.1b); (9) first bytes (lane_send.rs:309).
+The fast swap measured on SAGE (persona swap p50 about 6 ms) is the persona engine's
+`llama_persona_save/bind` (continuum-persona-llama), which the live path does not use yet.
+
+The frame replaces all nine:
+
 The Core is the one engine. It runs frames.
 
 - **Every frame advances every mind with pending work.** Minds with a pending turn are ranked by need,
