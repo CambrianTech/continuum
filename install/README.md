@@ -137,6 +137,24 @@ No installer script, bootstrap or per-OS function is edited.
   numbers are kept as the receipt. The probe re-runs when a release, the hardware or a driver changes.
   No `--n-gpu-layers` is a constant.
 
+## Storage
+
+- **The install never routes data with a fixed path.** Today a "cold storage" step wrote `HF_HOME` to
+  the 5090's 16 TB SATA disk in `config.env` (`continuum-kernel/src/paths/huggingface.rs`), so the
+  served 27B model loads from the same slow disk that holds the archive.
+- **Placement is measured.** The engine records each volume's free space and measured read throughput.
+  Served models (weights the engine loads) go on the fastest volume with room. Archives, captures and
+  cold models go where there is space.
+- **One owner moves files.** Placement itself is the core's model-placement owner (Fable, in progress).
+  The install only supplies the measured volumes and never writes a data path into config.
+
+## Who installs
+
+A user has no agent and no programming knowledge. Every message the install prints names what it is
+doing and why, in plain language. Every failure says what to do next, and that next step is never "edit
+a file", "install X yourself" or "ask a developer". A failure the user cannot act on is a defect in the
+install.
+
 ## Per-OS differences
 
 Each OS's README holds only what differs there: where things install, how it elevates, its supervisor,
