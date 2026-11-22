@@ -34,7 +34,7 @@ pub use flow::{Flow, Grant, Refused};
 pub use outbox::Outbox;
 pub use qos::Qos;
 pub use scheduler::{Aging, Decision, Dropped, Scheduler, Ticket};
-pub use slice::governor::{Governor, GovernorIn, SliceEvent, Turn, SLICE, TURN};
+pub use slice::lane::{Decoding, Lane, Turn};
 pub use slice::{Next, Policy, Slicer};
 pub use stage::{spawn_stage, Capacity, Overflow, PushError, Stage, StageInput, StageWorker, Stopped};
 
