@@ -14,12 +14,6 @@ const MAX_ENTRIES: u32 = 1024;
 // and two retained segments consume <= 256 MiB plus 4 MiB of fixed metadata.
 pub(super) const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The bytes a value's row takes in the data file: its JSON and the newline that ends it.
-/// The one size contract `append` enforces (through `LimitedWriter`), and the one a caller
-/// sizing a row before writing it must use.
-pub(super) fn row_bytes(json_len: u64) -> u64 {
-    json_len.saturating_add(1)
-}
 pub const PAGE_LIMIT: usize = 40;
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -233,6 +227,12 @@ impl Store {
         self.entries = 0;
         Ok(())
     }
+    /// Test-only: the largest row this store takes (its retained payload capacity).
+    #[cfg(test)]
+    pub(super) fn set_row_limit(&mut self, bytes: u64) {
+        self.max_bytes = bytes;
+    }
+
     pub fn append(
         &mut self,
         value: &impl Serialize,
@@ -313,9 +313,8 @@ struct LimitedWriter<'a> {
 impl Write for LimitedWriter<'_> {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() as u64 > self.remaining {
-            return Err(invalid(
-                "capture row exceeds retained payload capacity; record not stored",
-            ));
+            // its own kind: the caller can shrink the row (drop its raw stream) and append again
+            return Err(io::Error::new(io::ErrorKind::FileTooLarge, "capture row exceeds retained payload capacity; record not stored"));
         }
         let written = self.file.write(bytes)?;
         self.remaining -= written as u64;
@@ -650,7 +649,8 @@ mod tests {
 
     // what this catches (Astra on #4978): a row sized by its JSON alone. append writes the
     // JSON and a newline through the limited writer, so a row whose JSON is exactly the limit
-    // is refused; row_bytes is the contract that says so, and the real writer agrees.
+    // is refused, as its own kind (FileTooLarge, the caller's cue to shrink it), and JSON plus
+    // newline fits.
     #[test]
     fn a_row_fits_exactly_when_its_json_and_newline_fit() {
         let dir = tempfile::tempdir().expect("capture directory");
@@ -658,8 +658,9 @@ mod tests {
         let value = row(1);
         let json = serde_json::to_vec(&value).expect("json").len() as u64;
         store.max_bytes = json;
-        assert!(store.append(&value, header(1), false).is_err(), "JSON alone at the limit: the newline does not fit");
-        store.max_bytes = row_bytes(json);
+        let refused = store.append(&value, header(1), false).expect_err("JSON alone at the limit: the newline does not fit");
+        assert_eq!(refused.kind(), io::ErrorKind::FileTooLarge, "an oversized row says so by its kind");
+        store.max_bytes = json + 1; // its JSON and the newline that ends it
         assert!(store.append(&value, header(2), false).is_ok(), "JSON plus newline at the limit fits");
     }
 

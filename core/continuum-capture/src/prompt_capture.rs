@@ -225,24 +225,6 @@ struct TerminalRecord<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     wire_omitted: Option<String>,
 }
-/// The terminal record, kept within the capture's row limit by dropping its raw stream and
-/// saying so, measured with the store's own row contract (JSON plus newline). It removes the
-/// wire as a cause of an unrecordable entry; it cannot make an entry recordable whose response
-/// alone exceeds the limit, or survive a storage failure. An omitted wire is diagnostic
-/// incompleteness, never retention of the whole experience.
-fn within_row_limit(mut record: TerminalRecord<'_>, limit: u64) -> TerminalRecord<'_> {
-    if record.wire.is_none() {
-        return record;
-    }
-    let bytes = serde_json::to_vec(&record).map_or(u64::MAX, |v| v.len() as u64);
-    if store::row_bytes(bytes) > limit {
-        record.wire = None;
-        record.wire_omitted = Some(format!(
-            "the raw stream made this entry {bytes} bytes, over the capture's {limit}-byte row limit"
-        ));
-    }
-    record
-}
 #[derive(Serialize)]
 struct LegacyRecord<'a> {
     schema_version: u32,
@@ -293,38 +275,51 @@ impl JsonlPromptCaptureSink {
         self.session_id = session_id;
         self
     }
-    fn append(
-        &self,
-        value: &impl Serialize,
-        header: CallHeader,
-        terminal: bool,
-    ) -> Option<CallHeader> {
-        let result = self
-            .store
+    /// Write one row through the store; its failure is the caller's to handle.
+    fn write(&self, value: &impl Serialize, header: CallHeader, terminal: bool) -> std::io::Result<CallHeader> {
+        self.store
             .lock()
             .map_err(|_| std::io::Error::other("capture writer lock poisoned"))
-            .and_then(|mut store| {
-                match store.append(value, header.clone(), terminal) {
-                    Ok(reference) => Ok(reference),
-                    Err(error) => {
-                        // Capacity failure leaves an explicit small receipt in the
-                        // same owner. IO/index failures may also prevent this; the
-                        // reader then exposes the unindexed tail/generation error.
-                        let failure = serde_json::json!({ "schema_version": 4,
-                            "event": "capture_incomplete", "request_id": header.request_id, "session_id": header.session_id,
-                            "error": error.to_string() });
-                        let mut failed = header;
-                        failed.status = CallStatus::Incomplete;
-                        let _ = store.append(&failure, failed, terminal);
-                        Err(error)
-                    }
-                }
-            });
-        match result {
+            .and_then(|mut store| store.append(value, header, terminal))
+    }
+
+    /// A row that could not be written leaves an explicit small receipt in the same owner. IO/index
+    /// failures may also prevent this; the reader then exposes the unindexed tail/generation error.
+    fn incomplete(&self, header: CallHeader, terminal: bool, error: &std::io::Error) {
+        let failure = serde_json::json!({ "schema_version": 4, // the capture's on-disk row format: a small receipt
+            "event": "capture_incomplete", "request_id": header.request_id, "session_id": header.session_id,
+            "error": error.to_string() });
+        let mut failed = header;
+        failed.status = CallStatus::Incomplete;
+        let _ = self.write(&failure, failed, terminal);
+        tracing::warn!(target: "cognition::capture", persona = %self.persona_id, %error,
+            "prompt lifecycle capture incomplete");
+    }
+
+    fn append(&self, value: &impl Serialize, header: CallHeader, terminal: bool) -> Option<CallHeader> {
+        match self.write(value, header.clone(), terminal) {
             Ok(reference) => Some(reference),
             Err(error) => {
-                tracing::warn!(target: "cognition::capture", persona = %self.persona_id, %error,
-                    "prompt lifecycle capture incomplete");
+                self.incomplete(header, terminal, &error);
+                None
+            }
+        }
+    }
+
+    /// The terminal record, encoded once. A row the store refuses as too large is written again
+    /// without its raw stream, and says so: the wire is never the cause of an unrecordable entry. It
+    /// cannot make recordable an entry whose response alone exceeds the limit, or survive a storage
+    /// failure; an omitted wire is diagnostic incompleteness, never retention of the whole experience.
+    fn append_terminal(&self, mut record: TerminalRecord<'_>, header: CallHeader) -> Option<CallHeader> {
+        match self.write(&record, header.clone(), true) {
+            Ok(reference) => Some(reference),
+            Err(error) if error.kind() == std::io::ErrorKind::FileTooLarge && record.wire.is_some() => {
+                record.wire = None;
+                record.wire_omitted = Some("the raw stream made this entry exceed the capture's row limit".into());
+                self.append(&record, header, true)
+            }
+            Err(error) => {
+                self.incomplete(header, true, &error);
                 None
             }
         }
@@ -396,8 +391,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             wire: continuum_engine::inference::wire_tap::take(&header.request_id),
             wire_omitted: None,
         };
-        let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
-        self.append(&record, header.clone(), true)
+        self.append_terminal(record, header.clone())
             .map(|recorded| recorded.cursor)
             .filter(|cursor| !cursor.is_empty())
     }
@@ -778,32 +772,22 @@ mod tests {
         assert_eq!(terminal["wire"]["open_at_end"], false);
         assert_eq!(continuum_engine::inference::wire_tap::take(&request_id), None, "released when the call ended");
 
-        // A stream too large for a row is dropped from the entry and said, never allowed to
-        // make the response itself unrecordable.
-        let header_ref = PayloadRef { generation: Uuid::nil(), offset: 0, bytes: 0 };
-        let status = CallStatus::Completed;
-        let big = || TerminalRecord {
-            schema_version: 4,
-            event: &status,
-            captured_at_ms: 0,
-            session_id: Uuid::nil(),
-            request_id: "r",
-            request_ref: &header_ref,
-            elapsed_ms: 0,
-            response: None,
-            error: None,
-            wire: Some(continuum_engine::inference::wire_tap::Wire {
-                attempts: vec![vec!["data: ".to_string() + &"t".repeat(4096)]],
-                open_at_end: false,
-            }),
-            wire_omitted: None,
-        };
-        let json = serde_json::to_vec(&big()).expect("json").len() as u64;
-        let at_json = within_row_limit(big(), json);
-        assert!(at_json.wire.is_none(), "JSON exactly at the limit: its newline does not fit");
-        assert!(at_json.wire_omitted.as_deref().is_some_and(|why| why.contains("row limit")));
-        let with_newline = within_row_limit(big(), store::row_bytes(json));
-        assert!(with_newline.wire.is_some() && with_newline.wire_omitted.is_none(), "JSON plus newline fits");
+        // A stream too large for a row is dropped from the entry and said, never allowed to make
+        // the response itself unrecordable: the store refuses the row by its kind, and the record
+        // is written once more without the stream (encoded once otherwise, never to measure).
+        let small_dir = tempfile::tempdir().expect("capture directory");
+        let small = JsonlPromptCaptureSink::open(small_dir.path(), persona).expect("capture owner");
+        small.store.lock().expect("test: store").set_row_limit(4096);
+        let small: Arc<dyn PromptCaptureSink> = Arc::new(small);
+        let big_id = format!("wire-{}", Uuid::new_v4());
+        let mut lease = CaptureLease::start(Arc::clone(&small), &call(Uuid::new_v4(), &big_id), &request);
+        let mut stream = continuum_engine::inference::wire_tap::WireTap::open(Some(&big_id));
+        stream.push(&"t".repeat(8192));
+        drop(stream);
+        let cursor = lease.finish(None, Some("parse refused")).expect("the call's end is still recorded");
+        let terminal = detail(small_dir.path(), persona, &cursor).expect("read back").terminal.expect("terminal entry");
+        assert!(terminal.get("wire").is_none_or(serde_json::Value::is_null), "the stream that did not fit is left out");
+        assert!(terminal["wire_omitted"].as_str().is_some_and(|why| why.contains("row limit")), "and the entry says so");
 
         let private_id = format!("wire-{}", Uuid::new_v4());
         let mind = continuum_rooms::mind_room::mind_room_id(persona);
