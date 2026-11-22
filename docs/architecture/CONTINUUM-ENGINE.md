@@ -1121,9 +1121,23 @@ predicts two streams at 75.5 t/s; measured 75.9. The gain is limited by each add
 mostly its own experts, not by a scheduling defect.
 
 **What that says to fix (the stall, engineered, not accepted):**
-1. **F is mostly not bandwidth.** It is about 57% of a lone token's 18.9 ms; the weights read once per
-   step are a small part of it. The rest is per-step overhead (graph build, kernel dispatch, syncs).
-   Cutting it speeds every mind, alone and batched. First profiling target, in the fork's Metal path.
+1. **F is GPU time, not the CPU round trip** (measured; this corrects the first guess, which named graph
+   build, dispatch and syncs on the CPU). The fork's Metal timer (`GGML_METAL_TIMING=1`, fork 8da01ac4a)
+   on the canary pin at 4k context, serving paused 23:27:22-23:28:56Z:
+
+   | | GPU busy per step | GPU idle gap between steps | Host encode | Decode |
+   |---|---|---|---|---|
+   | 1 stream | 16.65 ms | 0.035 ms | 1.5 ms, overlapped | 58.3 t/s (17.15 ms/token) |
+   | 4 streams | 33.4-34.8 ms | 0.04 ms | 1.6 ms | 115.3 t/s aggregate |
+
+   The GPU is busy 97% of each token; the CPU between steps costs 35 microseconds. Each step is 3,726
+   graph nodes: 3,726 GPU dispatches averaging about 4.5 microseconds, each paying a launch and drain
+   whether it serves one stream or four (inferred: this is the fixed part). The busy time is about three
+   times what reading the active weights should take at the chip's bandwidth (bandwidth to be
+   confirmed). Targets, in order: **fusion** (fewer, larger kernels: norm+mul+add, the MoE route, gather
+   and matmul as one; upstream's `ggml-metal-fusion.cpp` is in the sync tree and not on the canary pin, so
+   the sync is measured first), **concurrent dispatch** of independent kernels, then the kernels
+   themselves.
 2. **Expert reads run at about 150 GB/s effective** (8.1 ms for one token's experts, about 1.2 GB,
    inferred). The M5 Pro's peak is to be confirmed. The `mul_mat_id` kernel at small batch is the
    second target.
