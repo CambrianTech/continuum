@@ -47,6 +47,23 @@ fn simd_dot_and_target_norm(query: &[f32], target: &[f32]) -> (f32, f32) {
     (d, st)
 }
 
+/// The cosine of two UNIT vectors: their dot product alone, no norm (the caller guarantees both are
+/// L2-normalized, so a norm per pair is wasted work). Caller guarantees `a.len() == b.len()`.
+#[inline]
+pub fn unit_cosine(a: &[f32], b: &[f32]) -> f32 {
+    let mut dot = f32x8::ZERO;
+    let (ca, ra) = a.as_chunks::<8>();
+    let (cb, rb) = b.as_chunks::<8>();
+    for (qa, qb) in ca.iter().zip(cb.iter()) {
+        dot = f32x8::new(*qa).mul_add(f32x8::new(*qb), dot);
+    }
+    let mut d = dot.reduce_add();
+    for (x, y) in ra.iter().zip(rb.iter()) {
+        d += x * y;
+    }
+    d
+}
+
 /// SIMD L2 norm of a single vector.
 #[inline]
 fn simd_l2_norm(v: &[f32]) -> f32 {
@@ -161,7 +178,7 @@ pub fn top_k_similar(
         .collect();
 
     // Sort by similarity descending and take top k
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
     sorted.truncate(k);
     sorted
 }
@@ -267,9 +284,9 @@ pub fn detect_clusters(
                         / (component.len() - 1).max(1) as f32;
                     (item, avg)
                 })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .max_by(|a, b| a.1.total_cmp(&b.1))
                 .map(|(item, _)| item)
-                .unwrap_or(component[0]);
+                .unwrap_or(component[0]); // unwrap_or: a component holds at least its BFS start, so max_by is never empty; component[0] is that start
 
             clusters.push(Cluster {
                 indices: component,
@@ -280,11 +297,7 @@ pub fn detect_clusters(
     }
 
     // Sort by strength descending
-    clusters.sort_by(|a, b| {
-        b.strength
-            .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    clusters.sort_by(|a, b| b.strength.total_cmp(&a.strength));
     clusters
 }
 
@@ -319,7 +332,8 @@ mod tests {
         // remainder) must agree with a naive scalar cosine for ANY dimension —
         // lengths < 8, exact multiples of 8, and non-multiples. Regression guard
         // for the SIMD rewrite of cosine_similarity. Epsilon (not exact) because
-        // SIMD reorders the float summation vs a left-to-right scalar loop.
+        // SIMD reorders the float summation vs a left-to-right scalar loop. unit_cosine (the dot of
+        // two unit vectors) is held to the same reference.
         fn scalar_cosine(a: &[f32], b: &[f32]) -> f32 {
             let mut dot = 0.0f32;
             let mut na = 0.0f32;
@@ -346,6 +360,10 @@ mod tests {
                 (simd - scalar).abs() < 1e-5,
                 "dim {dim}: simd {simd} vs scalar {scalar}"
             );
+            // unit_cosine on the normalized pair is the same cosine with no norm per pair
+            let unit = |v: &[f32]| { let n = v.iter().map(|x| x * x).sum::<f32>().sqrt(); v.iter().map(|x| x / n).collect::<Vec<f32>>() };
+            let fast = unit_cosine(&unit(&a), &unit(&b));
+            assert!((fast - scalar).abs() < 1e-5, "dim {dim}: unit_cosine {fast} vs scalar {scalar}");
         }
     }
 

@@ -4,8 +4,7 @@
 //! The routing question "which gene helps this task?" is nearest-neighbor in
 //! the SAME embedding space engram recall uses — gene recall and memory recall
 //! are one problem, so this module reuses the one embedding lane
-//! ([`crate::ai::embedding`]) and the one clustering kernel
-//! ([`crate::ai::embedding::vector_math::detect_clusters`]), never a parallel space.
+//! ([`crate::ai::embedding`]), never a parallel space.
 //!
 //! # Where signatures come from and where they live
 //!
@@ -24,7 +23,8 @@
 //!
 //! - `centroid` — L2-normalized mean of the corpus embeddings: the gene's
 //!   center of mass.
-//! - `subspaces` — cluster centroids over the same embeddings: a gene is near
+//! - `subspaces` — its largest themes over the same embeddings, found in one pass
+//!   (`themes`, linear in the corpus): a gene is near
 //!   SEVERAL domains (an FP gene is near Scheme AND near parsers), and
 //!   similarity takes the max over centroid+subspaces so tangential reach
 //!   survives averaging.
@@ -43,6 +43,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::ai::embedding::{cosine_similarity, EmbeddingProvider};
 use crate::genome::corpus_ref::CorpusRef;
+
+mod themes;
+#[cfg(any(test, feature = "test-fixtures"))]
+pub mod validate;
 
 /// Cluster admission floor for subspace detection. The recall space is
 /// anisotropic (unrelated pairs sit ~0.25–0.30, see `recall_faculty`'s war
@@ -116,9 +120,9 @@ impl GeneSignature {
         corpus: CorpusRef,
         embedder: &Arc<dyn EmbeddingProvider>,
         now_ms: u64,
-    ) -> Result<Self, String> {
+    ) -> Result<Self, MintRefused> {
         if corpus_texts.is_empty() {
-            return Err("gene signature mint refused: empty corpus (routing by noise)".into());
+            return Err(MintRefused::EmptyCorpus);
         }
         let started = std::time::Instant::now();
         // One batched pass over the corpus (card d157d382): text by text cost a call and a
@@ -133,60 +137,22 @@ impl GeneSignature {
             "a gene signature's corpus was embedded"
         );
         if embeddings.len() != corpus_texts.len() {
-            return Err(format!(
-                "embedder '{}' returned {} vectors for {} texts — refusing a corrupt signature",
-                embedder.id(),
-                embeddings.len(),
-                corpus_texts.len()
-            ));
+            return Err(MintRefused::VectorCount { embedder: embedder.id().to_string(), vectors: embeddings.len(), texts: corpus_texts.len() });
         }
         if let Some(e) = embeddings.iter().find(|e| e.len() != dim) {
-            return Err(format!(
-                "embedder '{}' returned {} dims (declared {dim}) — refusing a corrupt signature",
-                embedder.id(),
-                e.len()
-            ));
+            return Err(MintRefused::Dims { embedder: embedder.id().to_string(), returned: e.len(), declared: dim });
         }
-        // Centroid: mean of (already-normalized) embeddings, re-normalized.
-        let mut centroid = vec![0.0f32; dim];
-        for e in &embeddings {
-            for (c, x) in centroid.iter_mut().zip(e) {
-                *c += x;
-            }
-        }
-        let n = embeddings.len() as f32;
-        for c in centroid.iter_mut() {
-            *c /= n;
-        }
-        normalize(&mut centroid);
+        // The shape is CPU work over every embedding: off the async workers, so a large corpus never
+        // stalls the tasks that share them (the 5090, 2026-11-22: a 27 s mint starved its worker).
+        let (centroid, subspaces, region) = tokio::task::spawn_blocking(move || {
+            let (centroid, subspaces) = shape(&embeddings, dim);
+            let region = region_of(&centroid, &subspaces, &embeddings);
+            (centroid, subspaces, region)
+        })
+        .await
+        .map_err(MintRefused::ShapeAborted)?;
 
-        // Subspaces: the shared clustering kernel, largest themes first.
-        let mut clusters = crate::ai::embedding::vector_math::detect_clusters(
-            &embeddings,
-            SUBSPACE_MIN_SIMILARITY,
-            SUBSPACE_MIN_CLUSTER_SIZE,
-        );
-        clusters.sort_by_key(|c| std::cmp::Reverse(c.indices.len()));
-        let subspaces = clusters
-            .into_iter()
-            .take(MAX_SUBSPACES)
-            .map(|c| {
-                let mut mean = vec![0.0f32; dim];
-                for &i in &c.indices {
-                    for (m, x) in mean.iter_mut().zip(&embeddings[i]) {
-                        *m += x;
-                    }
-                }
-                let k = c.indices.len() as f32;
-                for m in mean.iter_mut() {
-                    *m /= k;
-                }
-                normalize(&mut mean);
-                mean
-            })
-            .collect();
-
-        let mut minted = Self {
+        Ok(Self {
             embedder: embedder.id().to_string(),
             dim,
             centroid,
@@ -194,18 +160,13 @@ impl GeneSignature {
             corpus,
             minted_at_ms: now_ms,
             parent: None,
-            region: None,
-        };
-        minted.region = region_of(&minted, &embeddings);
-        Ok(minted)
+            region,
+        })
     }
 
     /// Similarity of an embedding already known to be in this signature's space.
     fn nearness(&self, query: &[f32]) -> f32 {
-        self.subspaces
-            .iter()
-            .map(|s| cosine_similarity(query, s))
-            .fold(cosine_similarity(query, &self.centroid), f32::max)
+        nearness(&self.centroid, &self.subspaces, query)
     }
 
     /// Similarity of a query embedding to this gene, in the named space.
@@ -220,10 +181,42 @@ impl GeneSignature {
     }
 }
 
+/// Why a signature was not minted.
+#[derive(Debug, thiserror::Error)]
+pub enum MintRefused {
+    #[error("gene signature mint refused: empty corpus (routing by noise)")]
+    EmptyCorpus,
+    #[error("embedder '{embedder}' returned {vectors} vectors for {texts} texts — refusing a corrupt signature")]
+    VectorCount { embedder: String, vectors: usize, texts: usize },
+    #[error("embedder '{embedder}' returned {returned} dims (declared {declared}) — refusing a corrupt signature")]
+    Dims { embedder: String, returned: usize, declared: usize },
+    #[error("gene signature shape did not finish: {0}")]
+    ShapeAborted(#[from] tokio::task::JoinError),
+}
+
+/// PURE: a query's similarity to a signature's centroid or nearest subspace, whichever is nearer.
+fn nearness(centroid: &[f32], subspaces: &[Vec<f32>], query: &[f32]) -> f32 {
+    subspaces.iter().map(|s| cosine_similarity(query, s)).fold(cosine_similarity(query, centroid), f32::max)
+}
+
+/// PURE: a corpus's centroid (the L2-normalized mean of its unit embeddings) and its subspaces
+/// (its largest themes, one pass, `themes`), linear in the corpus.
+fn shape(embeddings: &[Vec<f32>], dim: usize) -> (Vec<f32>, Vec<Vec<f32>>) {
+    let mut centroid = vec![0.0f32; dim];
+    for e in embeddings {
+        for (c, x) in centroid.iter_mut().zip(e) {
+            *c += x;
+        }
+    }
+    normalize(&mut centroid);
+    let subspaces = themes::themes(embeddings, SUBSPACE_MIN_SIMILARITY, SUBSPACE_MIN_CLUSTER_SIZE, MAX_SUBSPACES);
+    (centroid, subspaces)
+}
+
 /// PURE: the region edge of `signature` over the embeddings of the corpus that minted it:
 /// the [`REGION_QUANTILE`] similarity (nearest rank). `None` for an empty corpus.
-fn region_of(signature: &GeneSignature, corpus: &[Vec<f32>]) -> Option<f32> {
-    let mut near: Vec<f32> = corpus.iter().map(|e| signature.nearness(e)).collect();
+fn region_of(centroid: &[f32], subspaces: &[Vec<f32>], corpus: &[Vec<f32>]) -> Option<f32> {
+    let mut near: Vec<f32> = corpus.iter().map(|e| nearness(centroid, subspaces, e)).collect();
     near.sort_by(f32::total_cmp);
     let rank = ((near.len().saturating_sub(1)) as f32 * REGION_QUANTILE).floor() as usize;
     near.get(rank).copied()
@@ -270,10 +263,8 @@ impl SignatureStore {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
         }
-        let tmp = path.with_extension("json.tmp");
-        let text = serde_json::to_string_pretty(&store).map_err(|e| format!("serialize: {e}"))?;
-        std::fs::write(&tmp, text).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-        std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+        let text = serde_json::to_string_pretty(&store).map_err(|e| format!("serialize: {e}"))?; // the sidecar's file format on disk, read back by load_at
+        continuum_host::durable::write_replace(path, text.as_bytes()).map_err(|e| format!("write {}: {e}", path.display()))
     }
 }
 
@@ -318,7 +309,7 @@ mod tests {
         let err = GeneSignature::mint(&[], corpus_ref(), &embedder, 1_000)
             .await
             .expect_err("empty corpus must refuse");
-        assert!(err.contains("empty corpus"), "{err}");
+        assert!(matches!(err, MintRefused::EmptyCorpus), "{err}");
     }
 
     // what this catches (card d157d382, the 5090 2026-10-10): a signature minted text by

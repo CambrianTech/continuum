@@ -57,5 +57,9 @@ vulkan = ["continuum-kernel/vulkan", "continuum-engine/vulkan"]
 test-fixtures = ["continuum-kernel/test-fixtures", "continuum-engine/test-fixtures", "dep:tempfile"]
 
 [[example]]
+name = "signature_shapes"
+required-features = ["test-fixtures"]
+
+[[example]]
 name = "learn_in_place"
 required-features = ["test-fixtures"]
