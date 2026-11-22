@@ -13,7 +13,6 @@ use std::time::{Duration, Instant};
 use anyhow::{anyhow, Result};
 use continuum_client::{AircIpcTransport, Connection};
 use serde_json::Value;
-use uuid::Uuid;
 
 /// A single exercise spec: dispatch a command and validate the response shape.
 #[derive(Debug)]
@@ -29,6 +28,7 @@ pub struct ExerciseSpec {
 }
 
 /// Outcome of a single exercise row.
+#[derive(Debug)]
 pub enum Outcome {
     Ok(String),
     Failed(String),
@@ -55,7 +55,7 @@ pub fn default_battery() -> Vec<ExerciseSpec> {
                     .and_then(|x| x.as_bool())
                     .filter(|b| *b)
                     .map(|_| "substrate responded".into())
-                    .ok_or_else(|| "ping returned non-boolean ok or missing field".into())
+                    .ok_or_else(|| anyhow!("ping returned non-boolean ok or missing field"))
             },
         },
         // runtime/metrics/all: all probe sinks are registered and returning data.
@@ -69,7 +69,7 @@ pub fn default_battery() -> Vec<ExerciseSpec> {
                     Some(m) if !m.is_empty() => {
                         Ok(format!("{} probe module(s) responding", m.len()))
                     }
-                    _ => Err("runtime/metrics/all: no modules or empty response".into()),
+                    _ => Err(anyhow!("runtime/metrics/all: no modules or empty response")),
                 }
             },
         },
@@ -89,7 +89,7 @@ pub fn default_battery() -> Vec<ExerciseSpec> {
             validate: |v| {
                 let text = v.get("text").and_then(|t| t.as_str()).unwrap_or("");
                 if text.is_empty() {
-                    Err("ai/generate returned empty text".into())
+                    Err(anyhow!("ai/generate returned empty text"))
                 } else {
                     Ok(format!("generated {} token(s)", text.split_whitespace().count()))
                 }
@@ -153,9 +153,8 @@ pub fn print_report(results: &[RunResult]) {
 
 /// Run the self-exercise battery and exit with success (0) if all rows pass, failure (1) otherwise.
 pub async fn run(conn: Connection<AircIpcTransport>) -> Result<()> {
-    // Use a slightly shorter deadline per-row for the exercise — it should be fast if the core is healthy.
-    let conn = conn.with_deadline(Duration::from_secs(90));
-    let results = run_battery(&conn, &specs).await;
+    let battery = default_battery();
+    let results = run_battery(&conn, &battery).await;
     print_report(&results);
 
     let failed = results.iter().filter(|r| matches!(r.outcome, Outcome::Failed(_))).count();
