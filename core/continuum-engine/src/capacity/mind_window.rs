@@ -462,6 +462,12 @@ mod tests {
         assert_eq!(bound, Ok(Decided::Bound(8_192)), "a bound window needs no evaluations");
     }
 
+    /// The card's budget check, exact at the ceiling - no slack for one beat of publisher cadence:
+    /// a starved mind defers with her act budget intact only if she deferred by LANE_WAIT_CEILING.
+    fn within_budget(elapsed: std::time::Duration) -> bool {
+        elapsed <= crate::inference::resource_admission::LANE_WAIT_CEILING
+    }
+
     // what this catches (card 250d7603; observed live on engine pid 33236, build 4f96d32b): a publisher
     // that keeps evaluating on its own cadence and keeps reporting her demand as Waiting::BehindActs
     // grants her nothing. Each single wait is bounded by the publisher's cadence (PublisherSilent),
@@ -515,6 +521,9 @@ mod tests {
         assert!(matches!(refused, Err(WindowRefused::Ungranted(_))), "a typed deferral - her next tick measures and asks again; nothing was dispatched: {refused:?}");
         assert_eq!(measured.get(), 1, "her demand stood while she waited: measured once");
         let elapsed = started_at.elapsed();
-        assert!(elapsed <= crate::inference::resource_admission::LANE_WAIT_CEILING + beat, "budget intact: deferred at her named bound ({elapsed:?}), not the act's tick floor (25 min)");
+        assert!(within_budget(elapsed), "budget intact: deferred at her named bound ({elapsed:?}), not the act's tick floor (25 min)");
+        // The corrected assertion is exact at the ceiling: a deferral one beat over budget must be
+        // rejected, so no late implementation can hide behind the outer diagnostic slack.
+        assert!(!within_budget(crate::inference::resource_admission::LANE_WAIT_CEILING + beat), "an over-bound deferral (one beat past the ceiling) is rejected by the assertion itself");
     }
 }
