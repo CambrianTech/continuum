@@ -144,7 +144,9 @@ pub enum DiskPressureLevel {
 }
 
 impl DiskPressureLevel {
-    fn from_pressure(p: f64) -> Self {
+    /// The level a used/total ratio reads at: the one place the thresholds live, so a writer that
+    /// asks "would this write push the volume into pressure" agrees with the monitor.
+    pub fn from_pressure(p: f64) -> Self {
         if p >= 0.95 {
             Self::Critical
         } else if p >= 0.90 {

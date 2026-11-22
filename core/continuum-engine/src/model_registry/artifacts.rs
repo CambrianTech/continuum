@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod expert_placement;
+pub mod hot_tier;
 
 pub fn resolve_model_artifacts(model: &mut Model) {
     model.gguf_local_path = resolve_gguf_for_model(model);
@@ -49,8 +50,15 @@ pub fn hydrate_artifact_sizes(model: &mut Model) {
 /// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
 /// sum every sibling that shares the prefix. A single-file GGUF is its own size.
 pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
-    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
-    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
+    shard_set(first).iter().map(|shard| fs::metadata(shard).map(|m| m.len()).unwrap_or(0)).sum() // unwrap_or: an unreadable shard adds 0, an undercount fails safe (smaller window)
+}
+
+/// Every file of the GGUF `first` names: its sibling shards (`…-00001-of-00028.gguf`), or `first`
+/// alone when it is not split. The one definition of "this model's weight files", for sizing and
+/// for moving them between drives.
+pub fn shard_set(first: &std::path::Path) -> Vec<PathBuf> {
+    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single file below
+    let single = || vec![first.to_path_buf()];
     // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
     let Some(idx) = name.rfind("-of-") else { return single() };
     if idx < 6 || !name.ends_with(".gguf") { return single(); }
@@ -60,15 +68,17 @@ pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
     let prefix = &head[..dash + 1];
     let Some(dir) = first.parent() else { return single() };
     let Ok(entries) = fs::read_dir(dir) else { return single() };
-    let mut total = 0u64;
-    for e in entries.flatten() {
-        let f = e.file_name();
-        let f = f.to_string_lossy();
-        if f.starts_with(prefix) && f.ends_with(".gguf") {
-            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
-        }
-    }
-    if total > 0 { total } else { single() }
+    let mut shards: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            let f = e.file_name();
+            let f = f.to_string_lossy();
+            f.starts_with(prefix) && f.ends_with(".gguf")
+        })
+        .map(|e| e.path())
+        .collect();
+    shards.sort();
+    if shards.is_empty() { single() } else { shards }
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
@@ -358,7 +368,14 @@ pub fn expand_user_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// The GGUF to read for `model_id`: wherever it is stored, its complete copy on the fast drive
+/// when one was made (`hot_tier`), so every reader (launch, sizing, sidecars) sees one path.
 fn resolve_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> Option<PathBuf> {
+    let stored = resolve_stored_gguf(model_id, hint, explicit)?;
+    Some(hot_tier::hot_copy(&stored).unwrap_or(stored)) // unwrap_or: no complete hot copy, the stored file is the one
+}
+
+fn resolve_stored_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         let expanded = expand_user_path(path);
         if expanded.exists() {
