@@ -96,19 +96,18 @@ impl TrainingTriggerState {
         let lease = self.submit_gates.acquire(&key).await;
         let slot = self.in_place.engine(engine);
         let mut held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
-        self.run_leased(lease, key, move |state, key| async move {
+        self.run_leased(lease, key, OwnedKind::Prepare, move |state, key| async move {
             let signature = if rows.is_empty() || held.minds.contains_key(&key) {
                 None
             } else {
                 drop(held);
                 state.require_ready()?;
-                let started = std::time::Instant::now();
+                // timed by stage under training.signature.stage (begin .. embedded, or abandoned)
                 let signature = super::super::competence::mint_signature(
+                    key.persona_id,
                     format!("inline:{}", key.trait_kind), &key.trait_kind,
                     rows.iter().flat_map(|row| row.examples.iter()),
                 ).await;
-                continuum_base::probe!(class = "training.in_place.signature_ready", persona = %key.persona_id,
-                    elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, "bucket signature preparation finished outside the engine lock");
                 held = slot.acquire(Some(key.persona_id), engine_lock::Phase::Prepare).await;
                 state.require_ready()?;
                 signature
@@ -231,7 +230,7 @@ impl TrainingTriggerState {
             };
             let step_rows = Arc::clone(&rows);
             let (next, stepped, renewed_now) = match self
-                .run_leased(lease, key.clone(), move |state, key| async move {
+                .run_leased(lease, key.clone(), OwnedKind::Step, move |state, key| async move {
                     let (mut stepped, mut renewed) = (BucketPass::default(), renewed);
                     let next = state.in_place.step(&state, held, &key, &step_rows, engine, slot, &mut renewed, &mut stepped).await;
                     (next, stepped, renewed)
@@ -266,7 +265,7 @@ impl TrainingTriggerState {
                 }
             }
         }
-        pass.checkpointed = self.run_owned(key, move |state, key| async move { state.in_place.settle(&state, &key, engine).await }).await??;
+        pass.checkpointed = self.run_owned(key, OwnedKind::Settle, move |state, key| async move { state.in_place.settle(&state, &key, engine).await }).await??;
         match failure {
             Some(why) => Err(why),
             None => Ok(pass),
@@ -283,7 +282,7 @@ impl TrainingTriggerState {
             let key = BucketKey { persona_id: generation.persona_id, trait_kind: generation.trait_kind.clone(), base_model: generation.base_model.clone() };
             let persona = key.persona_id;
             let swept = self
-                .run_owned(key, move |state, key| async move {
+                .run_owned(key, OwnedKind::Sweep, move |state, key| async move {
                     let store = state.durable.require()?;
                     if let Some(current) = store.checkpoint_of(&key).await? {
                         snapshot::maybe(&store, &current).await;
@@ -302,7 +301,7 @@ impl TrainingTriggerState {
 
     /// Run `operation` as one of the trigger's owned operations, outliving the caller; shutdown
     /// drains it like every other.
-    pub(super) fn spawn_owned(&self, operation: impl std::future::Future<Output = ()> + Send + 'static) {
-        self.operations.lock().spawn(operation);
+    pub(super) fn spawn_owned(&self, kind: OwnedKind, persona: Option<Uuid>, operation: impl std::future::Future<Output = ()> + Send + 'static) {
+        self.operations.lock().spawn(self.running.named(kind, persona, operation));
     }
 }

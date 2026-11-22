@@ -18,7 +18,7 @@
 //! own owned operation holding that engine's lock and the slot, never on the tick.
 
 use super::durable::{Arrival, LearnCheckpoint, Position};
-use super::{BucketKey, TrainingTriggerState};
+use super::{BucketKey, OwnedKind, TrainingTriggerState};
 use crate::genome::learner::{
     example::learn_messages,
     memory::EngineWorkspace,
@@ -189,7 +189,7 @@ impl InPlace {
             Stepped::Next(next) => Ok(next),
             Stepped::Lost { mind, slot } => {
                 held.now(engine_lock::Phase::Fence);
-                state.spawn_owned(async move {
+                state.spawn_owned(OwnedKind::Fence, Some(key.persona_id), async move {
                     fence(mind, engine).await;
                     drop(slot);
                     drop(held);

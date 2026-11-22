@@ -63,6 +63,8 @@ mod durable;
 mod serving_wake;
 pub(crate) mod competence;
 mod in_place;
+mod owned;
+pub(crate) use owned::OwnedKind;
 pub(crate) use durable::{RetireReport, RetireSelection};
 
 
@@ -169,6 +171,8 @@ pub struct TrainingTriggerState {
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
     /// this set; dropping a caller never aborts a writer or releases its lease.
     operations: parking_lot::Mutex<tokio::task::JoinSet<()>>,
+    /// What each operation in `operations` (and the serving wake's pass) is, while it runs.
+    running: owned::Running,
     #[cfg(test)]
     operation_pause: std::sync::Mutex<Option<Arc<durable::OperationPause>>>,
     /// Test-only: the trial file `ready_to_dispatch` reads, so a test can open a trial
@@ -214,6 +218,7 @@ impl TrainingTriggerState {
             next_sequence: std::sync::atomic::AtomicU64::new(1),
             in_place: in_place::InPlace::new(authority),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
+            running: owned::Running::default(),
             #[cfg(test)]
             operation_pause: std::sync::Mutex::new(None),
             #[cfg(test)]

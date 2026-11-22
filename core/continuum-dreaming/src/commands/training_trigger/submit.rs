@@ -136,7 +136,7 @@ pub(crate) async fn submit_batch(state: &Arc<TrainingTriggerState>, p: SubmitPar
         eval_set: p.eval_set,
     };
     let submission_id = p.submission_id;
-    state.run_owned(key, move |state, key| async move {
+    state.run_owned(key, crate::modules::training_trigger::OwnedKind::Submit, move |state, key| async move {
         let acceptance = match state.accept(&key, submission_id, batch).await {
             Ok(receipt) => receipt,
             Err((kind, error)) => return SubmitOutcome::refused(kind, error),
