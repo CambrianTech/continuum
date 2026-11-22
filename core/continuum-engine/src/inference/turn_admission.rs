@@ -34,6 +34,7 @@ mod page_liveness;
 mod page_quote;
 mod page_receipt;
 mod paging_lifetime;
+mod request;
 mod unresolved_page;
 mod transient;
 mod learning;
@@ -284,20 +285,11 @@ pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yi
 /// expiry supplied with `AdmissionPatience::until`.
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
-pub async fn admit_turn(
-    concurrency: impl Into<DecodeBound>,
-    class: SlotClass,
-    key: Option<PageKey>,
-    pool: Option<Arc<KvSlotPool>>,
-    client: &reqwest::Client,
-    root: &str,
-    approx_tokens: u64,
-    patience: impl Into<AdmissionPatience>,
-) -> Result<TurnAdmission, String> {
-    let patience = patience.into();
-    let concurrency = concurrency.into();
-    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, patience.readiness);
-    match patience.deadline {
+pub async fn admit_turn(request: request::TurnRequest<'_>) -> Result<TurnAdmission, String> {
+    let (concurrency, class, key, pool, client, root, approx_tokens) = request.into_args();
+    let readiness = request.readiness();
+    let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, readiness);
+    match request.deadline() {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
                 return Err("turn deadline elapsed before admission".into());

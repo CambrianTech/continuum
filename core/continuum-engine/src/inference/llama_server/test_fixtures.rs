@@ -341,7 +341,7 @@ where
     let key = crate::inference::slots::PageKey::mind(uuid::Uuid::new_v4())
         .unwrap();
     let sem = Arc::new(tokio::sync::Semaphore::new(4));
-    let mut turn = crate::inference::turn_admission::admit_turn(
+    let mut turn = crate::inference::turn_admission::TurnRequest::new(
         &sem, crate::inference::slots::SlotClass::Turn,
         Some(key),
         Some(pool),

@@ -44,7 +44,7 @@ async fn resident_ahead_of_her_page(dir: &std::path::Path) -> Rig {
 
 impl Rig {
     async fn admit(&self, mind: u128, tokens: u64) -> TurnAdmission {
-        admit_turn(&self.lanes, crate::inference::slots::SlotClass::Turn, Some(key(mind)), Some(self.pool.clone()), &self.client, &self.root, tokens, std::time::Duration::ZERO)
+        TurnRequest::new(&self.lanes, crate::inference::slots::SlotClass::Turn, Some(key(mind)), Some(self.pool.clone()), &self.client, &self.root, tokens, std::time::Duration::ZERO)
             .await
             .expect("test: admitted")
     }

@@ -81,7 +81,7 @@ pub async fn learn_slot(engine: EngineIncarnation, persona: uuid::Uuid) -> Resul
     };
     let bound = directory().endpoint(&root).concurrency().bound();
     let client = crate::inference::engine_client();
-    let admission = admit_turn(bound, SlotClass::Dream, Some(key), Some(pool), client, &root, 0, std::time::Duration::ZERO)
+    let admission = TurnRequest::new(bound, SlotClass::Dream, Some(key), Some(pool), client, &root, 0, std::time::Duration::ZERO)
         .await
         .map_err(|why| if why == HER_ACT_FIRST { LearnSlotRefusal::Busy } else { LearnSlotRefusal::Unadmitted(why) })?;
     if admission.engine_incarnation() != Some((engine.pid, engine.started_s)) {
