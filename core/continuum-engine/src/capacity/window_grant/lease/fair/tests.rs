@@ -295,20 +295,39 @@ fn waiter_publication_requires_terminal_then_physical_receipt() {
     assert!(bench.owner.reserve_against(a, lease, 50, || published.as_ref().and_then(|p| p.lease_for(a))).is_err());
 }
 
+// what this catches (fix for orphan-only holders, card 30caaf17):
+// an abandoned request does not itself trigger reclamation.
+// But when a holder has ONLY unresolved entries — no Live/Rendered custody at any engine —
+// their grant is reclaimable for waiters needing capacity. The old request will never complete,
+// so it should not pin the seat forever (Fix A: !holds_active_custody admits orphan-only).
 #[test]
 fn cancellation_does_not_authorize_retirement_or_waiter_admission() {
     let mut bench = Bench::new();
     let (a, b) = (mind(1), mind(2));
-    bench.tick(&[a, b]);
+    bench.tick(&[a, b]);  // a gets 60
     let lease = bench.lease(a);
-    let finished = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: first request"); // test: her grant
-    let unresolved = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an overlapping second request"); // test: her grant
+
+    // Create both reservations first (same order as original test)
+    let finished = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: first request");
+    let unresolved = bench.owner.reserve_against(a, lease, 50, || Some(lease)).expect("test: an overlapping second request");
+
+    // Settle the first (removes Live entry id=1), abandon the second (changes Live id=2 to Unresolved)
     settle(finished, Some(&TerminalReceipt { finish: "stop".into() }));
     drop(unresolved);
+
+    // With Fix A: orphan-only holder is reclaimable on next tick when waiter needs capacity
+    let tickets = bench.tick(&[a, b]);
+    assert_eq!(tickets.iter().map(GrantHandoff::persona).collect::<Vec<_>>(), vec![a], "orphan-only holder reclaimed for b on first tick");
+
+    // Consume the reclaim through the real receipt path (exercise record_reclaimed):
+    let ticket = tickets.into_iter().next().unwrap();
+    crate::capacity::window_grant::record_reclaimed_grant(
+        crate::inference::slots::grant_handoff::ReclaimedGrant::scripted(ticket)
+    ).expect("test: reclaim recorded");
+
+    // After consuming the reclaim, a's Unresolved entries are dropped and b is seated on next tick.
     assert!(bench.tick(&[a, b]).is_empty());
-    assert_eq!(bench.grants().get(&a), Some(&60));
-    assert_eq!(bench.grants().get(&b), None);
-    assert!(bench.owner.lock().retiring.is_empty());
+    assert_eq!(bench.grants(), BTreeMap::from([(b, 60)]), "b seated after orphan reclaim consumed via real receipt path");
 }
 
 #[test]

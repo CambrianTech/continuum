@@ -215,7 +215,7 @@ impl Reservations {
             // act), coolest first: a holder that never served here sorts first
             let mut candidates: Vec<(uuid::Uuid, Option<u64>)> = held_for_policy
                 .keys()
-                .filter(|mind| **mind != waiter && !state.entries.contains_key(mind) && !restored.contains_key(mind))
+                .filter(|mind| **mind != waiter && !state.holds_active_custody(**mind) && !restored.contains_key(mind))
                 .filter(|mind| reclaimable_for(dispatch, &state, **mind, waited_since))
                 .map(|mind| (*mind, state.receipts.get(mind).map(|(_, revision)| *revision)))
                 .collect();
@@ -259,7 +259,7 @@ impl Reservations {
             dispatch.owed.remove(&mind);
             dispatch.seated.insert(mind, (waited_since, state.receipts.get(&mind).map(|(_, revision)| *revision)));
         }
-        let acting = state.entries.len();
+        let acting = state.entries.keys().filter(|m| state.holds_active_custody(**m)).count();
         dispatch.waits = dispatch
             .owed
             .keys()
