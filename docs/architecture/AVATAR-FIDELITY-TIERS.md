@@ -74,6 +74,32 @@ This is the binary-stream rule applied to faces:
 - **The tier policy learns like the slice**: a control loop on measured frame times and decode tok/s per
   node, never a hand table, with the table above as its starting point.
 
+## The other road: one model for voice and face (Nuance Labs' Nuplex)
+
+Nuance Labs (founders from Apple's Vision Pro Personas) runs a single full-duplex autoregressive
+transformer that predicts audio and visual tokens together, decoded straight to frames, with no rig, mesh
+or game engine. Its output is photoreal at about 500 ms latency **(research claim; seen in a public clip,
+2026-11-22)**. The visual tokenizer and decoder are unpublished.
+
+What it teaches, and why the split pipeline stays our default:
+- **Voice and face from one source** is why its micro-expressions land: nothing is stitched after the
+  fact. We take the principle cheaply. The motion model is driven by the voice model's own internal
+  latents, not by the finished audio, so the face moves with the intent of the speech at a few KB/s.
+- **Autoregressive video drifts.** The public clip's own caption: "it gets worse as it goes". Each frame
+  is predicted from the frames before it, so error compounds over a long take. Minds here talk for hours
+  and live for months. The split pipeline renders every frame from one fixed identity (portrait or baked
+  3DGS head); only motion changes, so identity cannot drift.
+- **Cost on our hardware.** A second large transformer per mind, predicting visual tokens at video rate,
+  competes with reasoning for the same memory bandwidth. The 2026-11-22 profile found decode already 97%
+  GPU-busy (CONTINUUM-ENGINE 4.1b'). The token rate per second depends on the tokenizer and is unmeasured
+  here.
+- **500 ms reads as natural** in full duplex, as long as backchannels (a nod, "mm", a breath) arrive
+  faster. That holds for either road.
+
+**Possible top tier:** an end-to-end audiovisual model on the 5090 for one persona at a time, if open
+weights with real-time decode appear. It is measured against the split pipeline on drift over a long
+take, latency, and decode tok/s lost by the reasoning model beside it.
+
 ## Open, to measure first
 
 1. LivePortrait-class warp on the M5 Pro and the 5090 with the 35B decoding beside it: fps, VRAM, and the
