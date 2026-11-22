@@ -342,7 +342,7 @@ mod tests {
         let kv = NonZeroU64::new(M5_KV_PER_TOKEN).expect("test: a nonzero cost"); // expect: a positive literal
         let served = NonZeroU32::new(480_430).expect("test: the M5's pool after #5989"); // expect: a positive literal
         let (her, other) = (1, 2);
-        let granted = PoolGrants { pool_tokens: served.get(), per_sequence_cap: 262_144, by_mind: [(uuid::Uuid::from_u128(her), 140_000)].into(), engine: None, revisions: Default::default() };
+        let granted = PoolGrants { pool_tokens: served.get(), per_sequence_cap: 262_144, by_mind: [(uuid::Uuid::from_u128(her), 140_000)].into(), engine: None, revisions: Default::default(), owed: Default::default() };
         let demands = [demand(her, 100_000, true), demand(other, 60_000, false), demand(3, 40_000, false)];
         let floor = need_floor(&demands, Some(&granted));
         assert_eq!(floor, 140_000 + 60_000, "her act in flight keeps the grant it began on; the largest waiting need is held for the next seat, the smaller waiter holds no standing share");

@@ -32,21 +32,22 @@ impl TrainingTriggerState {
         F: FnOnce(Arc<Self>, BucketKey) -> Fut + Send + 'static,
         Fut: std::future::Future<Output = T> + Send + 'static,
     {
-        let mut operations = self.operations.lock().await;
-        self.require_ready()?;
-        while let Some(joined) = operations.try_join_next() {
-            if let Err(error) = joined {
-                tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
-            }
-        }
         let (send, receive) = tokio::sync::oneshot::channel();
-        let state = self.clone();
-        operations.spawn(async move {
-            let _lease = lease;
-            let result = operation(state, key).await;
-            let _ = send.send(result); // a disconnected caller does not cancel ownership
-        });
-        drop(operations);
+        {
+            let mut operations = self.operations.lock();
+            self.require_ready()?;
+            while let Some(joined) = operations.try_join_next() {
+                if let Err(error) = joined {
+                    tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
+                }
+            }
+            let state = self.clone();
+            operations.spawn(async move {
+                let _lease = lease;
+                let result = operation(state, key).await;
+                let _ = send.send(result); // a disconnected caller does not cancel ownership
+            });
+        }
         receive.await.map_err(|_| "training owner operation ended without a result; inspect durable status before retry".into())
     }
 
@@ -54,7 +55,7 @@ impl TrainingTriggerState {
     pub(crate) async fn stop_admitting(&self) -> usize {
         self.stopping.store(true, Ordering::Release);
         self.ready.store(false, Ordering::Release);
-        let mut operations = self.operations.lock().await;
+        let mut operations = self.operations.lock();
         while let Some(joined) = operations.try_join_next() {
             if let Err(error) = joined {
                 tracing::error!(%error, "training owner operation failed; durable recovery retains its work");
@@ -68,9 +69,10 @@ impl TrainingTriggerState {
         self.ready.store(false, Ordering::Release);
         // Keep the set in the owner if the runtime's shutdown deadline expires.
         // Dropping the shutdown wait does not abort still-running operations.
-        let mut operations = self.operations.lock().await;
+        // A running step can register a fence before it finishes. Release the set
+        // between polls so the fence can join the same shutdown.
         let mut failure = None;
-        while let Some(joined) = operations.join_next().await {
+        while let Some(joined) = std::future::poll_fn(|cx| self.operations.lock().poll_join_next(cx)).await {
             if let Err(error) = joined {
                 failure = Some(error.to_string());
             }

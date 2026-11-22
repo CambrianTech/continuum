@@ -193,7 +193,7 @@ impl World {
     pub(crate) fn start_published(&mut self, grants: &[(usize, u32)]) {
         let mut next = PoolGrants {
             pool_tokens: self.pool, per_sequence_cap: self.ceiling, engine: Some(self.engine),
-            by_mind: grants.iter().map(|(i, tokens)| (self.mind(*i), *tokens)).collect(), revisions: BTreeMap::new(),
+            by_mind: grants.iter().map(|(i, tokens)| (self.mind(*i), *tokens)).collect(), revisions: BTreeMap::new(), owed: BTreeMap::new(),
         };
         crate::capacity::window_grant::stamp_revisions(None, &mut next);
         for (i, tokens) in grants {

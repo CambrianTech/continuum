@@ -171,6 +171,62 @@ pub(crate) async fn waiting<T>(wait: LaneWait, acquire: impl Future<Output = T>)
     waiting_with_probe(acquire, || sample(&wait)).await
 }
 
+/// Her wait for a window grant ([`window_grant`]), registered like a lane wait: its time is the scheduler's, never her
+/// act's. It ends at a checkpoint only if HER place did not move, not if grants merely changed. The
+/// IntelMac, 2026-11-22: 20 acts waited the whole 25-minute floor in `deliberation.window_grant`
+/// (9,547 `delib.window.waiting` re-decisions) and were dropped by the act timer, never dispatched.
+/// The ONE way deliberation waits for her window: the named stage and its registration together, so
+/// the call site cannot take one without the other.
+pub(crate) async fn window_grant<T>(persona: uuid::Uuid, acquire: impl Future<Output = T>) -> T {
+    window_grant_with(acquire, move || crate::capacity::window_grant::waiting_place(persona)).await
+}
+
+/// [`window_grant`] with her place read from `place`: the production stage and registration, with
+/// only the place source a test scripts.
+pub(crate) async fn window_grant_with<T>(
+    acquire: impl Future<Output = T>,
+    mut place: impl FnMut() -> Option<crate::capacity::window_grant::WaitingPlace>,
+) -> T {
+    let mut moved = GrantPlace::default();
+    stage("deliberation.window_grant", waiting_with_probe(acquire, move || std::future::ready(moved.observe(place())))).await
+}
+
+/// What counts as her moving toward a grant, across checkpoints: being granted where she was not,
+/// or fewer owed minds ahead of her than she has ever had. Churn, minds reordering, a newcomer ahead
+/// of her, or staying granted while her hold is refused, move nothing.
+#[derive(Default)]
+struct GrantPlace {
+    granted: bool,
+    fewest_ahead: Option<usize>,
+    moves: u64,
+}
+
+impl GrantPlace {
+    fn observe(&mut self, place: Option<crate::capacity::window_grant::WaitingPlace>) -> QueueProgress {
+        use crate::capacity::window_grant::WaitingPlace;
+        match place {
+            Some(WaitingPlace::Granted) => {
+                if !self.granted {
+                    self.moves += 1;
+                }
+                self.granted = true;
+            }
+            Some(WaitingPlace::Owed { ahead }) => {
+                self.granted = false;
+                if self.fewest_ahead.is_none_or(|fewest| ahead < fewest) {
+                    // the first sighting sets her baseline; only a later, smaller count is a move
+                    if self.fewest_ahead.is_some() {
+                        self.moves += 1;
+                    }
+                    self.fewest_ahead = Some(ahead);
+                }
+            }
+            Some(WaitingPlace::Unqueued) | None => self.granted = false,
+        }
+        QueueProgress { grants: (self.moves, 0), holders: Vec::new() }
+    }
+}
+
 pub(crate) async fn waiting_with_probe<T, P, S>(acquire: impl Future<Output = T>, mut probe: P) -> T
 where
     P: FnMut() -> S,

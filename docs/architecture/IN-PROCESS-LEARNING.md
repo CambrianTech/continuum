@@ -4,6 +4,16 @@ Status: design, 2026-11-18. Owner: Fable (engine, llama crate); Codex (serving, 
 Read with [ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md](ONE-RESIDENT-MODEL-PATIENT-DOCTOR-DREAM.md)
 and CONTINUUM-ENGINE.md 4.14 (the persona engine: one mind decodes at a time).
 
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [Why this comes before deleting the lanes](#why-this-comes-before-deleting-the-lanes)
+- [What moves, and where](#what-moves-and-where)
+- [The driver's one queue](#the-drivers-one-queue)
+- [How the trainer reaches it](#how-the-trainer-reaches-it)
+- [Slices, each with its validator](#slices-each-with-its-validator)
+
 ## Why this comes before deleting the lanes
 
 Today a mind learns only inside llama-server. The trainer

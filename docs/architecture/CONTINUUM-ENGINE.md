@@ -5,10 +5,30 @@ mind's context, the engine-facing data path) and the plan that gets it built. It
 documents that overlapped: `CBAR-SUBSTRATE-ARCHITECTURE.md` (sections 2, 3, 7), `SERVING-ENGINE.md`
 (section 4) and `MIND-CONTEXT-AND-ENGINE-CONFIG.md` (section 5). Their text is carried here whole,
 once; their order-of-work and gap sections are merged into section 8. ORM and database schema design
-is not part of this document; it is `docs/infrastructure/RUST-ORM-ARCHITECTURE.md` (section 6 names the boundary).
+belongs to the [Rust ORM manual](../infrastructure/RUST-ORM-ARCHITECTURE.md). Section 6 describes the boundary.
 
 **Scope:** fast LLM serving and cache work: multi-persona streaming, KV paging and fast context
 switches, prefix reuse, the context codec, admission, and embeddings as GPU work.
+
+[Runtime architecture](../README.md#runtime-architecture)
+
+**Contents**
+
+- [1. Thesis](#1-thesis)
+- [2. Non-negotiable: every optimization, exhausted](#2-non-negotiable-every-optimization-exhausted)
+- [3. The substrate](#3-the-substrate)
+- [4. The serving engine](#4-the-serving-engine)
+  - [4.1a MindMemory, sequence tables and paging](#41a-mindmemory-the-seq_table-and-pager-owner-over-todays-llama-server-2026-10-27)
+  - [4.1c Queues and readiness signals](#41c-the-engine-is-fed-by-queues-and-signals-never-held-by-permits-2026-10-28)
+  - [4.7 Memory accounting across minds](#47-memory-is-conserved-across-minds-and-the-engine-says-what-it-holds-2026-11-03)
+  - [4.8 Admission ownership (proposed)](#48-a-mind-is-never-refused-one-admission-owner-2026-11-11-proposed)
+  - [4.9 Mind switching (design for review)](#49-minds-share-the-engine-by-switching-never-by-shares-2026-11-15-design-for-review)
+  - [4.10 Optimization order](#410-fast-minds-concurrently-every-optimization-its-state-and-the-order-2026-11-15)
+- [5. A mind's context and the engine it runs on](#5-a-minds-context-and-the-engine-it-runs-on)
+- [6. The data path (engine-facing)](#6-the-data-path-engine-facing)
+- [7. Measurement and validators](#7-measurement-and-validators)
+- [8. The plan](#8-the-plan)
+- [See also](#see-also)
 
 ## 1. Thesis
 
@@ -2353,6 +2373,35 @@ sequences. Independent CPU/I/O/tool/artifact preparation does not hold a whole-t
 lease. Phase-specific transient resources release at a backend-confirmed safe frontier;
 KV/state residency lasts until its own eviction/release boundary. These are different
 lifetimes, not two queues serializing the same turn.
+
+**Unserved learning demand (planned).** A learner that releases its serving slot can
+still need device memory. Today `try_training_memory` returns
+`TrainingWait::Capacity { consumer, kind, needed, available }`. The in-place pass
+records the shortage and ends. Its next attempt can encounter the same serving layout
+indefinitely because the sizing owner never received the outstanding demand.
+
+Carry that typed need from the pending learning bucket into the next serving plan.
+The bucket owns its lifetime. Release it when the work completes, is withdrawn, or
+requires a different engine incarnation. Combine buckets that share a single learning
+workspace according to which allocations coexist. Summing every persona's queued
+steps would reserve multiple copies of a workspace that the engine runs once.
+The resource ledger owns the calculation, including existing grants, physical
+residency and unmet reservations. Its capacity-change event wakes eligible work.
+Only a successful lease admits execution. A serving lifecycle refusal belongs to the
+lifecycle owner's wakeup and carries no claim about free bytes.
+
+The 5090 provides a replay case. The embedding lane held 633,205,120 bytes of weights
+and reserved another 352,370,816 bytes for its context. With 316,669,952 physical
+bytes free, a 12,058,624-byte learning request needed 47,759,488 additional bytes.
+For the same snapshot, the serving successor can occupy 28,928,168,960 bytes
+while preserving the embedding floor. Start with physical free plus serving's
+releasable residency, cap at device capacity, then deduct other consumers'
+outstanding reservations. Clamping the admission balance to zero before adding
+back serving's bytes conceals a 35,700,864-byte deficit.
+
+A candidate plan must identify where the additional learning bytes can be released, keep resident
+contexts restorable and remeasure before granting. Track each transition from
+request through grant, learned example, durable checkpoint and evaluated adoption.
 
 #### Evidence schema to agree before implementation
 
