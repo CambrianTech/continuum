@@ -767,3 +767,24 @@ A sentinel is a SAGE component like any other: its stimuli, outputs, need and re
 judgment, a voice or care (a teacher, a reviewer, a dream-other, a guide), it holds a persona as one of its
 parts and her turns go through the Core like anyone's; when it does not, it is plain algorithm and costs no
 inference. The dream synthesizer, academy teachers and benchmark adapters are sentinels of this shape.
+
+**A step in time she can always see: the causal contract (Joel, 2026-11-22: "the loop seems like the tool
+system and its feedback ... fallbacks are always cancer. Needs a causal contract. Is there a way to
+formalize this into a structure that can't ever loop? It's not her fault she sees no step in time. Seems
+like a base class solution").** Evidence: five residents on the MacBookPro (32k lanes) repeated
+`tool/output` on one id, each call failing; their calls were prose inside the thought, lifted into calls by
+two fallbacks (`openai_adapter/stream.rs`, `verdict/contribute.rs`), and the next prompt did not show her
+the step she took. The M5's captures (1,787 acts) hold 9 runs of three or more, none live.
+- **Recurrent component (an intermediate parent of `Component`).** A component whose input includes its
+  own last output (her act loop: act, outcome, next act) is ready only when the input frame's provenance
+  covers its last emitted frame. The engine checks it; a stale view never runs her, it waits for the frame
+  that carries her step. "She sees no step in time" becomes unrepresentable, the same gate as frame lag 0.
+- **Every step is a typed pair bound by id**: the call she made and its outcome (ok, refused with why, or
+  a miss), appended to her view as one item, never split, never collapsed while newest (goal 7).
+- **No fixed point**: her input always carries the step counter and, for a repeat, "the same call and
+  outcome as #n, k times": a repeat is new information, so her next input can never equal her last.
+  The stuck part (Known over call and outcome) raises need on a repeat: the moment is salient to her, a
+  strong negative learning signal, and past a bound her need asks for help (a sentinel or a human).
+- **No fallbacks**: a call written as prose is not lifted and run behind her back; it is a typed miss shown
+  to her as her step ("you wrote a call as text; nothing ran; call it with the tool"). Each model's template
+  proves a native call round-trips before it serves a resident.
