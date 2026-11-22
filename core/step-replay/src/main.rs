@@ -31,20 +31,21 @@ fn main() {
         }
     };
     let mut total = contract::Tally::default();
-    println!("mind acts seen call_missing outcome_missing dangling_above prose_calls repeat_runs longest_repeat");
+    println!("mind acts seen call_missing yields_unseen outcome_missing dangling_above prose_calls repeat_runs longest_repeat");
     for (mind, acts) in &minds {
         let t = contract::check(acts);
         println!(
-            "{mind} {} {} {} {} {} {} {} {}",
-            t.acts, t.steps_seen, t.call_missing, t.outcome_missing, t.dangling_above, t.prose_calls, t.repeat_runs, t.longest_repeat
+            "{mind} {} {} {} {} {} {} {} {} {}",
+            t.acts, t.steps_seen, t.call_missing, t.yields_unseen, t.outcome_missing, t.dangling_above, t.prose_calls, t.repeat_runs, t.longest_repeat
         );
         total.add(&t);
     }
     println!(
-        "total {} {} {} {} {} {} {} {}  (broken {})",
+        "total {} {} {} {} {} {} {} {} {}  (broken {})",
         total.acts,
         total.steps_seen,
         total.call_missing,
+        total.yields_unseen,
         total.outcome_missing,
         total.dangling_above,
         total.prose_calls,

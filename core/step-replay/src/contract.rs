@@ -10,6 +10,9 @@ pub struct Tally {
     pub steps_seen: u64,
     /// Calls her next prompt did not show as hers.
     pub call_missing: u64,
+    /// Yields her next prompt did not show: she ended her turn and her next one does not say she did,
+    /// or how long ago. Not a dropped outcome; the time she cannot see passing (object model 5.7).
+    pub yields_unseen: u64,
     /// Calls shown as hers whose outcome was missing.
     pub outcome_missing: u64,
     /// Acts where she wrote a call as text and made no native call.
@@ -31,6 +34,7 @@ impl Tally {
         self.acts += other.acts;
         self.steps_seen += other.steps_seen;
         self.call_missing += other.call_missing;
+        self.yields_unseen += other.yields_unseen;
         self.outcome_missing += other.outcome_missing;
         self.prose_calls += other.prose_calls;
         self.dangling_above += other.dangling_above;
@@ -52,6 +56,7 @@ pub fn check(acts: &[Act]) -> Tally {
         for call in &before.calls {
             match (next.shown.calls.contains(&call.id), next.shown.outcomes.contains(&call.id)) {
                 (true, true) => tally.steps_seen += 1,
+                (false, _) if call.asked.starts_with("yield_turn") => tally.yields_unseen += 1,
                 (false, _) => tally.call_missing += 1,
                 (true, false) => tally.outcome_missing += 1,
             }
@@ -112,11 +117,12 @@ mod tests {
             act(2, &[("c2", "read a")], &["c1"], &["c1"]),
             act(3, &[("c3", "read a")], &["c2"], &[]),
             act(4, &[("c4", "read a")], &[], &[]),
-            act(5, &[], &[], &[]),
+            act(5, &[("y5", "yield_turn{}")], &[], &[]),
+            act(6, &[], &[], &[]),
         ];
         acts[4].shown.says_above = vec![9];
         let t = check(&acts);
-        assert_eq!((t.steps_seen, t.outcome_missing, t.call_missing), (1, 1, 2));
+        assert_eq!((t.steps_seen, t.outcome_missing, t.call_missing, t.yields_unseen), (1, 1, 2, 1));
         assert_eq!(t.dangling_above, 1);
         assert_eq!((t.repeat_runs, t.longest_repeat), (1, 4));
         assert_eq!(t.broken(), 4);

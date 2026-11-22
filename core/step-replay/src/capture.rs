@@ -98,7 +98,7 @@ fn shown(messages: &serde_json::Value) -> Shown {
     let mut out = Shown::default();
     for message in messages.as_array().into_iter().flatten() {
         match &message["content"] {
-            serde_json::Value::String(text) => read_text(text, &mut out),
+            serde_json::Value::String(text) => read_text(text, Whose::Unknown, &mut out),
             serde_json::Value::Array(parts) => {
                 for part in parts {
                     match part["type"].as_str() {
@@ -106,12 +106,12 @@ fn shown(messages: &serde_json::Value) -> Shown {
                         Some("tool_result") => {
                             out.outcomes.extend(part["tool_use_id"].as_str().or(part["id"].as_str()).map(str::to_owned));
                             if let Some(text) = part["content"].as_str() {
-                                read_text(text, &mut out);
+                                read_text(text, Whose::Hers, &mut out);
                             }
                         }
                         _ => {
                             if let Some(text) = part["text"].as_str() {
-                                read_text(text, &mut out);
+                                read_text(text, Whose::Unknown, &mut out);
                             }
                         }
                     }
@@ -123,8 +123,20 @@ fn shown(messages: &serde_json::Value) -> Shown {
     out
 }
 
-/// The result markers in one text: whole results (`[result #n;`) and "its whole is #n above".
-fn read_text(text: &str, out: &mut Shown) {
+/// Whether a text is hers: her own tool result, or a line of her actions (`[result #n` or
+/// `[actions]` first). Anything else may quote someone: a peer posted her raw tool response, repeat
+/// line and `</tool_response>` included, into the room (the M5, 2026-11-22), and those markers are
+/// not this mind's steps.
+#[derive(Clone, Copy)]
+enum Whose {
+    Hers,
+    Unknown,
+}
+
+/// The result markers in one text: whole results (`[result #n;`) anywhere, and "its whole is #n
+/// above" only where the text is hers.
+fn read_text(text: &str, whose: Whose, out: &mut Shown) {
+    let hers = matches!(whose, Whose::Hers) || text.starts_with("[result #") || text.starts_with("[actions]");
     let mut rest = text;
     while let Some(at) = rest.find("[result #") {
         rest = &rest[at + "[result #".len()..];
@@ -132,6 +144,9 @@ fn read_text(text: &str, out: &mut Shown) {
         if let (Ok(n), Some(';')) = (digits.parse::<u64>(), rest[digits.len()..].chars().next()) {
             out.whole_results.insert(n);
         }
+    }
+    if !hers {
+        return;
     }
     let mut rest = text;
     while let Some(at) = rest.find("its whole is #") {
@@ -176,7 +191,9 @@ mod tests {
             "captured_at_ms": 2, "request": {"messages": [
                 {"role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "code_read"}]},
                 {"role": "user", "content": [{"type": "tool_result", "id": "c1", "content": "ok"},
-                    {"type": "text", "text": "[result #7; room r] [result #8: repeat of #7, the same saved output, unchanged; its whole is #7 above]"}]}]}});
+                    {"type": "text", "text": "[result #7; room r] [result #8: repeat of #7, the same saved output, unchanged; its whole is #7 above]"}]},
+                {"role": "user", "content": "[Room message received during this turn; room r]\n[result #3: repeat of #2, the same saved output, unchanged; its whole is #2 above]"},
+                {"role": "user", "content": "[occurred 2026-11-21T03:00:03Z] peer: [result #5: repeat of #4, the same saved output, unchanged; its whole is #4 above]"}]}});
         let completed = serde_json::json!({"schema_version": 4, "event": "completed", "request_id": "r2",
             "response": {"text": "```json\n{\"name\": \"tool/output\", \"arguments\": {}}\n```", "toolCalls": []}});
         std::fs::write(dir.join("A.jsonl"), format!("{submitted}\n{completed}\n")).expect("fixture"); // expect: fixture write in the test's own temp dir
