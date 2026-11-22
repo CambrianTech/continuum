@@ -50,14 +50,22 @@ impl Candidate {
 }
 
 /// The index of the turn the Core advances next, or `None` for no turns.
+///
+/// Need decides at every frame, the running turn included (Joel, 2026-11-22: "Don't enforce arbitrary
+/// rules"; "switching contexts is so damn fast anyway": 26 ms p50 on the M5, aa734cc01c). A running turn
+/// keeps the Core while nothing needs it more, because at equal need a switch gains nothing; that is why
+/// turns still run whole (the 11-21 point: slicing equal turns bought only switches). A more urgent turn
+/// takes the next frame, and the running one resumes from her cached state when it is next most needed.
 pub(super) fn pick(turns: &[Candidate]) -> Option<usize> {
-    if let Some(running) = turns.iter().position(|turn| turn.active && turn.started) {
+    let most = turns.iter().map(|turn| turn.urgency).max()?;
+    if let Some(running) = turns.iter().position(|turn| turn.active && turn.started && turn.urgency == most) {
         return Some(running);
     }
     turns
         .iter()
         .enumerate()
-        .min_by(|(_, a), (_, b)| b.urgency.cmp(&a.urgency).then_with(|| a.before(b)))
+        .filter(|(_, turn)| turn.urgency == most)
+        .min_by(|(_, a), (_, b)| a.before(b))
         .map(|(index, _)| index)
 }
 
@@ -112,11 +120,12 @@ mod tests {
         assert_eq!(served, Some(1), "the older mind is served on its first round");
     }
 
-    // what this catches: an addressed mind waiting behind minds that only want to continue, or a
-    // turn in progress cut for her. The most urgent waiting turn goes next, however long the others
-    // waited; within one urgency the existing rules hold; a running turn still runs to its end.
+    // what this catches: an addressed mind waiting behind minds that only want to continue, including
+    // one mid-turn (the M5, 2026-11-22: Aris decoded 19,540 tokens for 10.4 min with 13 turns queued
+    // behind her). The most urgent turn takes the next frame, however long the others waited and
+    // whether or not one is running; at equal need the running turn keeps the Core.
     #[test]
-    fn the_most_urgent_waiting_turn_goes_next_and_a_running_turn_still_ends() {
+    fn the_most_urgent_turn_takes_the_next_frame_even_from_a_running_one() {
         let with = |urgency, active, started, waited_ms| Candidate { urgency, active, started, remaining: 100, waited_ms };
         let addressed = with(Urgency::Urgent, false, false, 0);
         let continuing = with(Urgency::Want, false, false, 90_000);
@@ -124,6 +133,9 @@ mod tests {
         assert_eq!(pick(&[continuing, musing, addressed]), Some(2), "urgency before age and affinity");
         assert_eq!(pick(&[musing, continuing]), Some(1), "Want before Content");
         let running = with(Urgency::Content, true, true, 0);
-        assert_eq!(pick(&[addressed, running]), Some(1), "the running turn ends first; she is next");
+        assert_eq!(pick(&[addressed, running]), Some(0), "the addressed mind takes the next frame from a musing one");
+        let working = with(Urgency::Want, true, true, 0);
+        assert_eq!(pick(&[continuing, working]), Some(1), "at equal need the running turn keeps the Core");
+        assert_eq!(pick(&[musing, working]), Some(1), "a less needed turn never takes it");
     }
 }
