@@ -121,4 +121,4 @@ become a gene; emits lessons and candidate genes; a refusal is input, never retr
 
 Lessons the reads taught: a change that only moves work can still move a cost (dreams resuming cost
 every resident her cache); a state reader skips frames, so a test waits on frame numbers, never on a value
-it may have coalesced past; build only with serving down (two builds ran beside serving this day).
+it may have coalesced past; iteration time is the goal: build and deploy as often as possible, by judgment.
