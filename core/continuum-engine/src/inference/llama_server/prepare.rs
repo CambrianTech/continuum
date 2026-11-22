@@ -496,9 +496,9 @@ impl LlamaServerProcess {
         let ambiguous_adapter = lora_paths
             .iter()
             .any(|p| p.to_str().is_none_or(|p| p.contains(',')));
-        let local_inputs = if !cfg!(windows) || engine_install.is_none() {
+        let local_inputs = if !continuum_host::read_pin::FORBIDS_REPLACEMENT || engine_install.is_none() {
             Err(
-                "exact restoration requires original Windows application and local input pins"
+                "exact restoration requires an installed engine and input pins that forbid replacement"
                     .into(),
             )
         } else if target.expert_placement.is_some() || has_mutable_plan || unsupported_environment {

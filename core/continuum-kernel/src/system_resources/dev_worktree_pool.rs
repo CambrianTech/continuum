@@ -15,7 +15,6 @@
 //! consistent. A worktree that fails a fact is skipped and named, never forced.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
@@ -67,9 +66,14 @@ fn candidates(root: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
     out
 }
 
+// derived-or-floor: a local git status or rev-parse on one worktree; the bound keeps a wedged git from stalling relief
+const GIT_BOUND: Duration = Duration::from_secs(10);
+
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    let dir = dir.to_str()?; // a non-UTF-8 path is never judged safe to remove
+    let mut all = vec!["-C", dir];
+    all.extend_from_slice(args);
+    super::bounded_command::probe("git", &all, GIT_BOUND).stdout_if_ok().map(|out| out.trim().to_owned())
 }
 
 /// Every alternates file in the repository whose git dir is `common`: the main repo's submodule stores
@@ -177,7 +181,7 @@ mod tests {
     use super::*;
 
     fn run(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git").arg("-C").arg(dir).args(args).output().expect("git runs").status.success(); // expect: the test needs git
+        let ok = std::process::Command::new("git").arg("-C").arg(dir).args(args).output().expect("git runs").status.success(); // expect: the test needs git
         assert!(ok, "git {args:?}");
     }
 

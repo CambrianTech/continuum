@@ -16,13 +16,16 @@ fn main() {
             other => dir = Some(PathBuf::from(other)),
         }
     }
-    let dir = dir.unwrap_or_else(|| {
-        // The core's continuum_home rule; this crate does not link the core.
-        std::env::var_os("CONTINUUM_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".continuum")) // unwrap_or_*: the documented home resolution order
-            .join("fixtures/prompt-captures")
-    });
+    let dir = match dir {
+        Some(dir) => dir,
+        None => match continuum_base::home::continuum_home() {
+            Ok(home) => home.join("fixtures/prompt-captures"),
+            Err(error) => {
+                eprintln!("step-replay: {error}");
+                std::process::exit(2);
+            }
+        },
+    };
     let minds = match capture::load(&dir) {
         Ok(minds) => minds,
         Err(error) => {

@@ -614,10 +614,12 @@ pub fn verdict(h: &CitizenHealth) -> Verdict {
     if h.acts == 0 {
         return Verdict::Idle { resident: h.resident };
     }
-    // SUSTAINED, NOT PEAK (card `6d444769`). The variants carry the number that was
-    // JUDGED, so the line can never claim a starvation call was made against lanes the
-    // hour did not have.
-    if h.lanes_sustained > 0 && h.resident > h.lanes_sustained * MINDS_PER_LANE_STARVED_ABOVE {
+    // STARVED IS MEASURED, NEVER A RATIO (Joel, 2026-11-22: "Remember we're one slot"). Many
+    // minds share one slot by switching their KV in and out between frames, so minds per lane
+    // says nothing; a starved roster is one whose turns did not reach the model: more turns
+    // that never reached it than acts that did, the window's own counts (as DROPPING is).
+    // SUSTAINED, NOT PEAK (card `6d444769`): the variants carry the lanes the hour held.
+    if h.lane_starved > h.acts {
         return match h.knee {
             Some(knee) if h.lanes_sustained >= knee => {
                 Verdict::AtKnee { resident: h.resident, lanes: h.lanes_sustained, knee }
@@ -665,7 +667,10 @@ pub fn line(h: &CitizenHealth, v: &Verdict) -> String {
     let tail = match v {
         Verdict::Healthy => "healthy".to_string(),
         Verdict::Starved { resident, lanes } => {
-            format!("STARVED: {resident} minds on {lanes} lanes — the planner owes lanes")
+            format!(
+                "STARVED: {} turns never reached the model against {} acts, {resident} minds on {lanes} slots — switching owes them turns",
+                h.lane_starved, h.acts
+            )
         }
         Verdict::AtKnee { resident, lanes, knee } => format!(
             "AT THE KNEE: {resident} minds on {lanes} lanes, the measured decode knee is {knee} — the roster pages; owed: fewer seats here or more decode, never more lanes"

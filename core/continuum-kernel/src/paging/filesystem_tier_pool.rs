@@ -254,7 +254,7 @@ fn walk(dir: &Path, out: &mut Vec<(PathBuf, u64, SystemTime)>, total: &mut u64) 
             continue;
         }
         let size = metadata.len();
-        let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH); // unwrap_or: a platform without mtime ages the file as oldest, so eviction can still reclaim it
         *total = total.saturating_add(size);
         out.push((path, size, mtime));
     }

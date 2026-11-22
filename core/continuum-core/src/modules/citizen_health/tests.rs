@@ -35,10 +35,15 @@
     // with no acts is IDLE; and a roster on enough lanes that writes is HEALTHY.
     #[test]
     fn the_verdict_names_the_afternoons_shapes() {
-        assert_eq!(verdict(&h(16, 3, 39, 4)), Verdict::Starved { resident: 16, lanes: 3 });
-        // 16 on 6 was "enough lanes" at three per lane; at two per lane it is STARVED and
-        // 16 on 8 is the edge — the shapes below stand on 8 lanes.
-        assert_eq!(verdict(&h(16, 6, 39, 0)), Verdict::Starved { resident: 16, lanes: 6 });
+        assert_eq!(verdict(&CitizenHealth { lane_starved: 40, ..h(16, 3, 39, 4) }), Verdict::Starved { resident: 16, lanes: 3 });
+        // ONE SLOT IS NOT STARVATION (Joel, 2026-11-22: "Remember we're one slot"): the M5's hour at
+        // 07:17Z, 4 minds on 1 slot, 78 acts, 0 turns that never reached the model, 6 writes, read
+        // "STARVED" under the old minds-per-lane ratio. Measured, it is healthy.
+        assert_eq!(verdict(&h(4, 1, 78, 6)), Verdict::Healthy);
+        assert_eq!(verdict(&CitizenHealth { lane_starved: 78, ..h(4, 1, 78, 6) }), Verdict::Healthy, "as many never-reached turns as acts is not yet starved");
+        // 16 on 6 with more never-reached turns than acts is STARVED; the shapes below stand on 8
+        // lanes with no never-reached turns.
+        assert_eq!(verdict(&CitizenHealth { lane_starved: 40, ..h(16, 6, 39, 0) }), Verdict::Starved { resident: 16, lanes: 6 });
         assert_eq!(verdict(&h(16, 8, 39, 0)), Verdict::Reading { acts: 39 });
         assert_eq!(
             verdict(&h(16, 8, 0, 0)),
@@ -53,11 +58,11 @@
         // 2026-09-16 06:5xZ, the first hour under the decode knee: "STARVED: 16 minds on
         // 5 lanes — the planner owes lanes" while the planner was holding lanes AT the
         // knee on purpose. Lanes at the knee are not owed; seats or decode are.
-        let at_knee = CitizenHealth { knee: Some(5), ..h(16, 5, 70, 4) };
+        let at_knee = CitizenHealth { knee: Some(5), lane_starved: 71, ..h(16, 5, 70, 4) };
         assert_eq!(verdict(&at_knee), Verdict::AtKnee { resident: 16, lanes: 5, knee: 5 });
         assert!(line(&at_knee, &verdict(&at_knee)).contains("never more lanes"));
-        let below_knee = CitizenHealth { knee: Some(8), ..h(16, 5, 70, 4) };
-        assert_eq!(verdict(&below_knee), Verdict::Starved { resident: 16, lanes: 5 }, "below the knee the planner still owes lanes");
+        let below_knee = CitizenHealth { knee: Some(8), lane_starved: 71, ..h(16, 5, 70, 4) };
+        assert_eq!(verdict(&below_knee), Verdict::Starved { resident: 16, lanes: 5 }, "below the knee, starved turns are still owed");
         assert_eq!(verdict(&h(0, 0, 0, 0)), Verdict::Empty { lanes: 0, lanes_granted: 0 }, "an empty node is EMPTY, never 'healthy'");
     }
 
@@ -116,9 +121,9 @@
     // reader of the org room acts without a probe query.
     #[test]
     fn the_line_carries_the_numbers_and_ends_with_the_verdict() {
-        let x = h(16, 3, 39, 4);
+        let x = CitizenHealth { lane_starved: 40, ..h(16, 3, 39, 4) };
         let l = line(&x, &verdict(&x));
-        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "cut-think 0", "lane-starved 0", "STARVED"] {
+        for needle in ["resident 16", "lanes 3", "acts 39", "writes 4", "cut-think 0", "lane-starved 40", "STARVED"] {
             assert!(l.contains(needle), "{needle} missing from {l}");
         }
         assert!(!l.contains("directed wait"), "no directed call waited: the line does not invent a zero wait");
@@ -276,9 +281,9 @@
         assert_eq!(lanes_sustained_of(&thin), Some(1), "a majority of the window has a shape");
     }
 
-    // what this catches (card `6d444769`, the defect itself): a roster that is starved on
-    // the lanes the hour HELD is judged on them, not on the hour's peak — and the line
-    // carries the gap, because the gap is the diagnosis.
+    // what this catches (card `6d444769`): a starved roster's verdict and line carry the lanes
+    // the hour HELD, not its peak, and the line carries the gap, because the gap is the
+    // diagnosis. (Starvation itself is measured, never a minds-per-lane ratio: one slot.)
     #[test]
     fn a_peak_lane_count_can_no_longer_hide_a_starved_roster() {
         let measured = CitizenHealth {
@@ -286,6 +291,7 @@
             lanes: 8,             // the peak the receipt printed
             lanes_sustained: 3,   // the median of the 699 samples above
             lanes_now: 3,
+            lane_starved: 16,
             ..h(16, 8, 15, 0)
         };
         assert_eq!(
@@ -296,10 +302,6 @@
         // AND THE GAP IS IN THE LINE, because the gap is the diagnosis.
         assert!(line(&measured, &verdict(&measured)).contains("lanes 3 (peak 8 this hour)"));
 
-        // THE OLD ARITHMETIC, for contrast: divide by the peak and 16 > 8 x 2 is false, so
-        // the roster fell through to a verdict ABOUT THE CITIZENS and nothing rested.
-        let by_peak = CitizenHealth { lanes_sustained: 8, ..measured.clone() };
-        assert_eq!(verdict(&by_peak), Verdict::Reading { acts: 15 });
     }
 
     // what this catches (card a18452d6): a node whose only engine a mind's training held read

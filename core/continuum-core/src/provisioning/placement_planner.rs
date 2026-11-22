@@ -90,10 +90,9 @@ pub fn resolve_from_footprint(
     };
     // `plan_serving` returns `Some` even when nothing fits (its honest-degrade path,
     // `fits_on_gpu = false`); `None` only for an empty candidate slice, which a
-    // single-element slice never is — so `unwrap_or(false)` is the not-empty floor.
+    // single-element slice never is — so `is_some_and` reads the plan it always returns.
     let fits = plan_serving(&host, std::slice::from_ref(fp), &ServingDemand::new(1, None))
-        .map(|p| p.fits_on_gpu)
-        .unwrap_or(false);
+        .is_some_and(|p| p.fits_on_gpu);
 
     if fits {
         PlacementResolution::LocalRecommended {
@@ -175,8 +174,7 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 &host,
                 std::slice::from_ref(footprint),
                 &ServingDemand::new(1, None))
-            .map(|plan| plan.fits_on_gpu)
-            .unwrap_or(false)
+            .is_some_and(|plan| plan.fits_on_gpu)
         })
         .max_by_key(|p| p.capacity.gpu_free_bytes_live)
         .map(|p| p.peer)
