@@ -71,6 +71,14 @@ The same engine runs for every entry point:
 
 There is no second installer and no second update path.
 
+**The background update is a SAGE `Component`** (see `docs/architecture/SAGE.md`):
+- Its stimulus is the release channel's topic, meaning a published release.
+- Its outputs are `update.planned`, `update.applied` and `update.held`, each carrying the plan and its
+  receipts.
+- Its handler runs the engine.
+- It is never a poll, a timer or a script loop. Any other worker the install leaves running, such as a
+  device-probe rerun on a driver change, is a Component too.
+
 ## The manifest: every dependency, declared once
 
 `manifest.toml` is the only place a dependency exists. Each entry says:
