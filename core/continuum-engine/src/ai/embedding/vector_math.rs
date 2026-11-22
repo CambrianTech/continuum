@@ -1,5 +1,5 @@
 //! The vector math every embedding kind shares once it is a flat `&[f32]`: the SIMD
-//! kernels, the pairwise matrix, query batches, top-k and connected-component clusters.
+//! kernels, query batches, top-k and connected-component clusters (computed without a pairwise matrix).
 //! Pure CPU math with no service state, so it lives with the embedding owner; the
 //! embedding commands and the genome's signature/competence clustering all call it here.
 
@@ -61,41 +61,6 @@ fn simd_l2_norm(v: &[f32]) -> f32 {
         s += x * x;
     }
     s.sqrt()
-}
-
-/// Compute pairwise cosine similarity matrix in parallel.
-/// Returns flattened lower-triangular matrix (excluding diagonal) as Vec<f32>.
-/// For n vectors, returns n*(n-1)/2 similarities.
-///
-/// Layout: [(0,1), (0,2), ..., (0,n-1), (1,2), (1,3), ..., (n-2,n-1)]
-///
-/// This is O(n²) but parallelized with Rayon for significant speedup.
-pub fn pairwise_similarity_matrix(embeddings: &[Vec<f32>]) -> Vec<f32> {
-    let n = embeddings.len();
-    if n < 2 {
-        return vec![];
-    }
-
-    // Number of pairs: n choose 2 = n*(n-1)/2
-    let num_pairs = n * (n - 1) / 2;
-
-    // Pre-allocate result
-    let mut result = vec![0.0f32; num_pairs];
-
-    // Generate all (i,j) pairs where i < j
-    let pairs: Vec<(usize, usize)> = (0..n)
-        .flat_map(|i| (i + 1..n).map(move |j| (i, j)))
-        .collect();
-
-    // Compute similarities in parallel with Rayon
-    pairs
-        .par_iter()
-        .zip(result.par_iter_mut())
-        .for_each(|((i, j), sim)| {
-            *sim = cosine_similarity(&embeddings[*i], &embeddings[*j]);
-        });
-
-    result
 }
 
 /// Compute similarity of one query vector against multiple target vectors.
@@ -161,7 +126,7 @@ pub fn top_k_similar(
         .collect();
 
     // Sort by similarity descending and take top k
-    sorted.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    sorted.sort_by(|a, b| b.1.total_cmp(&a.1));
     sorted.truncate(k);
     sorted
 }
@@ -197,79 +162,74 @@ pub fn detect_clusters(
         return vec![];
     }
 
-    // Compute full similarity matrix (needed for cluster strength)
-    let similarities = pairwise_similarity_matrix(embeddings);
-
-    // Helper to get similarity from flat array
-    let get_sim = |i: usize, j: usize| -> f32 {
+    // Similarities are computed where they are needed and never stored: a full pairwise matrix (and its
+    // pair list) of a 26,415-example corpus is ~7 GB, and nine of them at once exhausted the 5090's host
+    // memory inside the trainer (2026-11-22, symbolized dump; card 8ad3f6f3). Same similarity, same
+    // components, same strength and representative; memory O(n).
+    let sim = |i: usize, j: usize| -> f32 {
         if i == j {
-            return 1.0;
+            1.0
+        } else {
+            cosine_similarity(&embeddings[i], &embeddings[j])
         }
-        let (a, b) = if i < j { (i, j) } else { (j, i) };
-        let idx = a * n - (a * (a + 1)) / 2 + (b - a - 1);
-        similarities[idx]
     };
 
-    // Connected components via BFS
-    let mut visited = vec![false; n];
+    // Connected components via BFS over a shrinking unvisited list: each similarity is computed once
+    // between a popped node and what is still unclaimed (about n^2/2 in all, as the matrix had).
+    let mut unvisited: Vec<usize> = (0..n).collect();
     let mut clusters = Vec::new();
 
-    for start in 0..n {
-        if visited[start] {
-            continue;
-        }
-
-        // BFS to find connected component
+    while let Some(start) = unvisited.pop() {
         let mut component = Vec::new();
         let mut queue = vec![start];
-
         while let Some(node) = queue.pop() {
-            if visited[node] {
-                continue;
-            }
-            visited[node] = true;
             component.push(node);
-
-            // Add neighbors above threshold
-            for (neighbor, &is_visited) in visited.iter().enumerate() {
-                if !is_visited && get_sim(node, neighbor) >= min_similarity {
-                    queue.push(neighbor);
-                }
+            // claim the neighbors above threshold among the unclaimed, scanned in parallel
+            let near: Vec<bool> = unvisited.par_iter().map(|&other| sim(node, other) >= min_similarity).collect();
+            let mut rest = Vec::with_capacity(unvisited.len());
+            for (other, is_near) in unvisited.drain(..).zip(near) {
+                if is_near { queue.push(other) } else { rest.push(other) }
             }
+            unvisited = rest;
         }
 
         // Only keep clusters meeting minimum size
         if component.len() >= min_cluster_size {
-            // Compute cluster strength (average intra-cluster similarity)
-            let mut total_sim = 0.0f32;
-            let mut count = 0;
-            for (i, &a) in component.iter().enumerate() {
-                for &b in component.iter().skip(i + 1) {
-                    total_sim += get_sim(a, b);
-                    count += 1;
-                }
-            }
-            let strength = if count > 0 {
-                total_sim / count as f32
-            } else {
-                1.0
-            };
-
-            // Find representative (highest avg similarity to others in cluster)
-            let representative = component
+            // One pass over the component's pairs: each similarity adds to both members' sums (the
+            // representative's average) and to the total (the strength), per-thread sums merged after.
+            let k = component.len();
+            let (total_sim, sums) = (0..k)
+                .into_par_iter()
+                .fold(
+                    || (0.0f32, vec![0.0f32; k]),
+                    |(mut total, mut sums), i| {
+                        for j in i + 1..k {
+                            let s = sim(component[i], component[j]);
+                            total += s;
+                            sums[i] += s;
+                            sums[j] += s;
+                        }
+                        (total, sums)
+                    },
+                )
+                .reduce(
+                    || (0.0f32, vec![0.0f32; k]),
+                    |(ta, mut sa), (tb, sb)| {
+                        for (x, y) in sa.iter_mut().zip(sb) {
+                            *x += y;
+                        }
+                        (ta + tb, sa)
+                    },
+                );
+            let pairs = k * (k - 1) / 2;
+            let strength = if pairs > 0 { total_sim / pairs as f32 } else { 1.0 };
+            // the highest average; a tie goes to the smallest index, whatever order the BFS met them in
+            let representative = sums
                 .iter()
-                .map(|&item| {
-                    let avg: f32 = component
-                        .iter()
-                        .filter(|&&other| other != item)
-                        .map(|&other| get_sim(item, other))
-                        .sum::<f32>()
-                        / (component.len() - 1).max(1) as f32;
-                    (item, avg)
-                })
-                .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(item, _)| item)
-                .unwrap_or(component[0]);
+                .zip(&component)
+                .max_by(|a, b| a.0.total_cmp(b.0).then(b.1.cmp(a.1)))
+                .map(|(_, &item)| item)
+                .unwrap_or(component[0]); // unwrap_or: a component holds at least its BFS start, so max_by is never empty; component[0] is that start
 
             clusters.push(Cluster {
                 indices: component,
@@ -280,11 +240,7 @@ pub fn detect_clusters(
     }
 
     // Sort by strength descending
-    clusters.sort_by(|a, b| {
-        b.strength
-            .partial_cmp(&a.strength)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    clusters.sort_by(|a, b| b.strength.total_cmp(&a.strength));
     clusters
 }
 
@@ -372,13 +328,6 @@ mod tests {
     }
 
     #[test]
-    fn pairwise_matrix_has_n_choose_2_entries() {
-        let embs = vec![vec![1.0, 0.0], vec![0.0, 1.0], vec![1.0, 1.0]];
-        let m = pairwise_similarity_matrix(&embs);
-        assert_eq!(m.len(), 3, "3 choose 2 = 3 pairs");
-    }
-
-    #[test]
     fn top_k_respects_threshold_and_order() {
         // what this catches: threshold filtering + descending sort + truncation.
         let query = vec![1.0, 0.0];
@@ -391,6 +340,69 @@ mod tests {
         assert_eq!(got.len(), 2, "only sims >= 0.5 survive the threshold");
         assert_eq!(got[0].0, 0, "highest similarity (index 0) ranks first");
         assert_eq!(got[1].0, 2);
+    }
+
+    // what this catches (card 8ad3f6f3, the 5090's host OOM): the matrix-free clusters differing from
+    // what the stored pairwise matrix produced. A chain (single-linkage joins through a middle member),
+    // a tight pair, a singleton and an under-size pair: every component, strength and representative
+    // equals the matrix oracle's, exactly (the same cosine, the same order of sums).
+    #[test]
+    fn matrix_free_clusters_equal_the_pairwise_matrix_oracle() {
+        let embs: Vec<Vec<f32>> = vec![
+            vec![1.0, 0.0, 0.0, 0.0],
+            vec![0.95, 0.31, 0.0, 0.0], // joins 0
+            vec![0.81, 0.59, 0.0, 0.0], // joins 1, not 0: a chain
+            vec![0.0, 0.0, 1.0, 0.0],
+            vec![0.0, 0.05, 0.99, 0.0], // a tight pair with 3
+            vec![0.0, 0.0, 0.0, 1.0],   // alone
+        ];
+        let n = embs.len();
+        let oracle_sim = |i: usize, j: usize| if i == j { 1.0 } else { cosine_similarity(&embs[i], &embs[j]) };
+        let (floor, min) = (0.94, 2);
+        let mut visited = vec![false; n];
+        let mut oracle = Vec::new();
+        for start in 0..n {
+            if visited[start] {
+                continue;
+            }
+            let (mut component, mut queue) = (Vec::new(), vec![start]);
+            while let Some(node) = queue.pop() {
+                if visited[node] {
+                    continue;
+                }
+                visited[node] = true;
+                component.push(node);
+                for (j, &seen) in visited.iter().enumerate() {
+                    if !seen && oracle_sim(node, j) >= floor {
+                        queue.push(j);
+                    }
+                }
+            }
+            if component.len() >= min {
+                oracle.push(component);
+            }
+        }
+        let found = detect_clusters(&embs, floor, min);
+        assert_eq!(found.len(), oracle.len(), "the same components");
+        for cluster in &found {
+            let expected = oracle.iter().find(|c| c.contains(&cluster.representative)).expect("test: its component exists");
+            let (mut a, mut b) = (cluster.indices.clone(), expected.clone());
+            a.sort_unstable();
+            b.sort_unstable();
+            assert_eq!(a, b, "the same members");
+            // the oracle's strength (mean pairwise similarity) and representative (nearest the rest)
+            let pairs: Vec<f32> = b.iter().enumerate().flat_map(|(i, &x)| b[i + 1..].iter().map(move |&y| (x, y))).map(|(x, y)| oracle_sim(x, y)).collect();
+            let strength = pairs.iter().sum::<f32>() / pairs.len() as f32;
+            assert!((cluster.strength - strength).abs() < 1e-6, "the same strength: {} vs {strength}", cluster.strength);
+            let nearest = b.iter().copied().max_by(|&x, &y| {
+                let avg = |m: usize| b.iter().filter(|&&o| o != m).map(|&o| oracle_sim(m, o)).sum::<f32>();
+                avg(x).total_cmp(&avg(y)).then(y.cmp(&x)) // a tie goes to the smallest index
+            });
+            assert_eq!(Some(cluster.representative), nearest, "the same representative");
+        }
+        let chain = found.iter().find(|c| c.indices.contains(&0)).expect("test: the chain");
+        assert_eq!(chain.indices.len(), 3, "single linkage joins 0 and 2 through 1");
+        assert_eq!(chain.representative, 1, "the middle member is nearest the rest");
     }
 
     #[test]
