@@ -503,7 +503,7 @@ mod tests {
         // The executor: the same refusal, typed, and NotCommitted (nothing ran).
         let executor = CommandExecutor::new(runtime.registry_arc());
         let failure = executor
-            .execute_classified("wedged/x", serde_json::json!({}), None)
+            .execute_classified("wedged/x", serde_json::json!({}), None, None)
             .await
             .expect_err("refused");
         assert_eq!(failure.outcome, DispatchOutcome::NotCommitted);
@@ -514,7 +514,7 @@ mod tests {
                 reason: DegradedReason::InitDeadline { deadline },
             })
         );
-        assert!(executor.execute_classified("healthy/x", serde_json::json!({}), None).await.is_ok());
+        assert!(executor.execute_classified("healthy/x", serde_json::json!({}), None, None).await.is_ok());
 
         // A module-less command (ping's shape) is admitted: the table never gates what no
         // module owns.

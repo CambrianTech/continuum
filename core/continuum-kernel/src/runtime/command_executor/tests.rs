@@ -282,7 +282,7 @@
         let executor = Arc::new(CommandExecutor::new(registry).with_message_bus(bus));
 
         // Fire in the background — returns a handle immediately, does not await the work.
-        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), None);
+        let handle = executor.dispatch_background("canned/ping", serde_json::json!({}), None, None);
 
         let event = next_command_completed(&mut rx).await;
         assert_eq!(event.command_name, "canned/ping");

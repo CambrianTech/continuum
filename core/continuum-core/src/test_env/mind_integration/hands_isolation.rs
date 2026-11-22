@@ -118,6 +118,7 @@ async fn command_work_stays_with_its_card_across_background_dispatch() {
         "code/list",
         serde_json::json!({"path": "."}),
         Some(CallerIdentity::local_persona(crate::identity::PeerId::from_uuid(persona)).in_hands(claim_a)),
+        None,
     );
     // Current-thread test: the spawned task has not been polled yet. Her focus moves on.
     let claim_b = crate::identity::hands_context::HandsContext::for_claim(persona, card_b, Uuid::new_v4());

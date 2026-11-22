@@ -109,7 +109,7 @@ impl Transport for InProcessTransport {
         }
         let result = self
             .executor
-            .execute_classified(command, params, self.caller.clone())
+            .execute_classified(command, params, self.caller.clone(), None)
             .await
             .map_err(|failure| ClientError::Refused {
                 command: command.to_string(),
