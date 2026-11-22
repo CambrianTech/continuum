@@ -21,6 +21,7 @@ pub mod cargo_discovery;
 pub mod concurrency;
 pub mod disk_eviction;
 pub mod disk_pressure;
+pub mod disk_relief;
 pub mod fd_gauge;
 pub mod power_assertion;
 pub mod fd_pressure;

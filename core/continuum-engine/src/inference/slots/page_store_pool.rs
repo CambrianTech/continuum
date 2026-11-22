@@ -139,6 +139,10 @@ fn budget_bytes(volume: Option<&DriveInfo>) -> u64 {
 }
 
 impl ResourcePool for KvPageStorePool {
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.tracked.path().to_path_buf())
+    }
+
     fn tier_name(&self) -> &str {
         &self.tier
     }

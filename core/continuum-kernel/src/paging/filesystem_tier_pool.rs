@@ -138,6 +138,10 @@ impl FilesystemTierPool {
 }
 
 impl ResourcePool for FilesystemTierPool {
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.dir.clone())
+    }
+
     fn tier_name(&self) -> &str {
         &self.tier_name
     }
