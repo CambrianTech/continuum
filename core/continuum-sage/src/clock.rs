@@ -2,11 +2,10 @@
 //!
 //! A deadline is an event like any other (her continuation falls due, waiting work ages a class),
 //! so nothing else in SAGE sleeps: a component asks the clock for an [`Alarm`] and is woken by it.
-//! One task holds every pending deadline in order and waits for the earliest; registering or
+//! One task per runtime thread holds its pending deadlines in order and waits for the earliest; registering or
 //! dropping an alarm wakes it to re-plan. Dropping an [`Alarm`] cancels it.
 
 use std::collections::BTreeMap;
-use std::sync::OnceLock;
 
 use tokio::sync::mpsc;
 use tokio::time::Instant;
@@ -33,30 +32,37 @@ impl Drop for Alarm {
     }
 }
 
-struct Clock {
-    commands: mpsc::UnboundedSender<Command>,
-    next_id: std::sync::atomic::AtomicU64,
+thread_local! {
+    /// This runtime thread's clock. A deadline is measured on the runtime that set it (its time
+    /// may be paused, as in a test), so the clock task lives on that runtime: one per runtime
+    /// thread, never one per process captured by whichever runtime asked first. That process-wide
+    /// clock rang nothing for one runtime while another's paused test held it (2026-11-22), and
+    /// nothing at all once its runtime ended.
+    static CLOCK: std::cell::RefCell<Option<mpsc::UnboundedSender<Command>>> = const { std::cell::RefCell::new(None) };
 }
-
-static CLOCK: OnceLock<Clock> = OnceLock::new();
-
-fn clock() -> &'static Clock {
-    CLOCK.get_or_init(|| {
-        let (commands, inbox) = mpsc::unbounded_channel();
-        tokio::spawn(run(inbox));
-        Clock { commands, next_id: std::sync::atomic::AtomicU64::new(0) }
-    })
-}
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Run `wake` at `at`, unless the returned [`Alarm`] is dropped first. `wake` runs on the clock's
 /// task: it hands an input to its component and returns.
 pub fn at(at: Instant, wake: impl FnOnce() + Send + 'static) -> Alarm {
-    let clock = clock();
-    let id = clock.next_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if clock.commands.send(Command::At { at, id, wake: Box::new(wake) }).is_err() {
-        continuum_base::probe!(class = "sage.clock.ended", "an alarm was set after the node's clock ended");
-    }
-    Alarm { id, commands: clock.commands.clone() }
+    let id = NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    CLOCK.with_borrow_mut(|clock| {
+        let mut command = Command::At { at, id, wake: Box::new(wake) };
+        if let Some(commands) = clock.as_ref() {
+            match commands.send(command) {
+                Ok(()) => return Alarm { id, commands: commands.clone() },
+                // This thread's last runtime ended, and its clock with it: start one on this one.
+                Err(mpsc::error::SendError(returned)) => command = returned,
+            }
+        }
+        let (commands, inbox) = mpsc::unbounded_channel();
+        tokio::spawn(run(inbox));
+        if commands.send(command).is_err() {
+            continuum_base::probe!(class = "sage.clock.ended", "a clock ended as it started");
+        }
+        *clock = Some(commands.clone());
+        Alarm { id, commands }
+    })
 }
 
 async fn run(mut inbox: mpsc::UnboundedReceiver<Command>) {
