@@ -111,6 +111,10 @@ pub enum InferenceError {
     /// or a provider without structured output). Refused before anything is sent, never answered
     /// unconstrained for a parser that expects the shape. PERMANENT for this adapter.
     FormatUnenforceable { model: String },
+
+    /// Her turn's sampler refused: the render's grammar or thinking tags could not become a sampler,
+    /// or a step its grammar could not accept. PERMANENT for the same render: resending meets it again.
+    Sampler(llama::ChatRefusal),
 }
 
 impl InferenceError {
@@ -128,6 +132,7 @@ impl InferenceError {
             Self::GrantChanged { .. } => false,
             Self::ThinkUnenforceable { .. } => false,
             Self::FormatUnenforceable { .. } => false,
+            Self::Sampler(_) => false,
             Self::Unavailable(_) | Self::Transient(_) => true,
         }
     }
@@ -221,11 +226,18 @@ impl fmt::Display for InferenceError {
                 f,
                 "the adapter serving {model} cannot enforce this request's JSON schema: refused rather than answered unconstrained"
             ),
+            Self::Sampler(refused) => write!(f, "her sampler refused: {refused}"),
         }
     }
 }
 
 impl std::error::Error for InferenceError {}
+
+impl From<llama::ChatRefusal> for InferenceError {
+    fn from(refused: llama::ChatRefusal) -> Self {
+        Self::Sampler(refused)
+    }
+}
 
 /// Adopting an untyped error is always possible and always honest: an
 /// unclassified failure IS `Transient` under the #386 policy. This keeps the

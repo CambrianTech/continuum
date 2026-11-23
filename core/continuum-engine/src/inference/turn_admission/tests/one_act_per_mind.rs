@@ -12,7 +12,7 @@ use super::*;
 async fn a_minds_concurrent_acts_run_one_after_another_in_order_and_none_is_dropped() {
     let root = "test://one-act-per-mind";
     let pool = Arc::new(KvSlotPool::new(root, 2));
-    let lanes = Arc::new(Semaphore::new(2));
+    let lanes = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let (her, other) = (Uuid::new_v4(), Uuid::new_v4());
     let page = |persona| PageKey::mind(persona).expect("test: non-nil id");

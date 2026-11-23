@@ -106,6 +106,9 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         kept(continuum, "models"),
         TrackedDir::new("genome-models", continuum.join("genome/models")),
         kept(continuum, "citizens"),
+        // Development worktrees, one checkout per branch an agent works on: 40 GB untracked on the M5
+        // (2026-11-22). Owner: DevWorktreePool, which removes only what git says is safe.
+        kept(continuum, "worktrees"),
         // Per-persona durable mind state: longterm.db + working-set.json, one dir per uuid.
         // UNTRACKED until 2026-08-20, which made it invisible to BOTH halves of the governed-
         // disk contract — no size report, and the eviction guard could not flag a missing
@@ -206,6 +209,10 @@ pub fn standard_tracked_dirs(home: &std::path::Path, continuum: &std::path::Path
         // KV is hundreds of MB, so the class is small in COUNT but real in
         // bytes — exactly what must never be an untracked writer.
         cached(continuum, "kv-pages"),
+        // A mind's preserved blocks (CONTINUUM-ENGINE 4.16, restore is the norm): the persona
+        // engine's stop writes each mind's raw rows and token history, one generation per mind,
+        // replaced at every stop. Bounded by residents x their window; a file is her only copy.
+        cached(continuum, "persona-blocks"),
         // Every lane's `--train-dir`: adapters the engine's /train writes, in flight or
         // left by a crashed run (a finished one moves into its job dir). Registered with
         // the flag itself (2026-09-26) so it is never an unweighed writer.

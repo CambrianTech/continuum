@@ -18,12 +18,12 @@
     // else a typed Unknown — never a zero that reads as room.
     #[test]
     fn a_monitor_that_cannot_see_says_unknown_never_normal() {
-        use crate::system_resources::drives::{DriveInfo, DriveRole};
+        use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
         let drive = |mount: &str, total: u64, avail: u64| DriveInfo {
             mount: std::path::PathBuf::from(mount),
             total_bytes: total,
             available_bytes: avail,
-            role: DriveRole::System,
+            role: DriveRole::System, kind: DriveKind::Unknown,
         };
         let drives = [drive("/", 1_000, 900), drive("/Volumes/hot", 1_000, 20)];
         let home_on_root = volume_reading(&drives, std::path::Path::new("/home/x/.continuum"));

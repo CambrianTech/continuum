@@ -25,6 +25,8 @@ use uuid::Uuid;
 use crate::{NativeToolSpec, ToolCall};
 
 mod resolve_name;
+mod without_calls;
+pub use without_calls::without_calls;
 pub use resolve_name::*;
 mod cli_flag_format;
 use cli_flag_format::*;

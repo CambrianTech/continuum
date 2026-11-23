@@ -167,7 +167,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     // #2 is the active result: it renders whole as the full-result message below, so
     // the ring shows only #1 rather than paying for #2 twice.
     let expected = vec![
-        format!("[result #1; room {room_a}; operation code/search, code/read; saved: tool_output({{\"outputId\":\"search-output\"}})] same result"),
+        format!("[result #1; room {room_a}; operation code/search, code/read] same result"),
     ];
     let messages = wm.recent_results_messages();
     assert_eq!(
@@ -222,7 +222,7 @@ fn result_provenance_survives_cross_activity_render_and_checkpoint() {
     );
     let assert_whole_or_handle = |memory: &WorkingMemory| {
         let view = memory.recent_results_messages().join("\n");
-        assert!(view.contains("read-274-output"), "the read remains addressable");
+        assert!(view.contains("read-274-output") || view.contains(read.trim()), "the read is whole in view or reachable by its handle");
         assert!(view.contains(&room_a.to_string()), "the view retains its room");
         assert!(
             // The ring stores the receipt trimmed of surrounding whitespace, which is not

@@ -14,13 +14,15 @@ pub use backend_init::*;
 mod expert_eval_cb;
 pub use expert_eval_cb::*;
 mod chat;
-pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat};
+pub use chat::{ChatRefusal, ChatRender, ChatTemplates, ReasoningFormat, SamplingKnobs, TurnSampler};
 mod learn;
 mod optimizer_slots;
 pub use optimizer_slots::{OptimizerLease, Role, Slot};
 pub use learn::{BufferType, Finished, Label, LearnRefusal, LearnRun, Learner, Optimizer, Progress, Recovered, Refused, Reply, ReplyAdmission, Shadow, Walk};
 mod persona;
-pub use persona::{BindRefusal, PersonaBlocks, PersonaOwner, PersonaRefusal};
+pub use persona::{BindRefusal, PersonaBlocks, PersonaCheckpoint, PersonaOwner, PersonaRefusal};
+mod position;
+pub use position::{Pos, PosOutOfRange};
 
 // ─── Tests ───────────────────────────────────────────────────────────────
 #[cfg(test)]

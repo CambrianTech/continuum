@@ -25,8 +25,12 @@ impl LlamaServerProcess {
         // Resolve the GGUF from the model struct already in hand — no re-fetch by
         // id. No file → fail loud; we never serve a substitute model
         // ([[fallbacks-are-illegal-fail-loud]]).
+        // The resolver reads the model's copy on the fast drive when one is complete; the launch says
+        // what it serves, and the hot tier copies it up in the background if it sits on a slower
+        // drive, for the next launch to read. The launch never waits on a copy.
         let gguf: PathBuf = crate::model_registry::artifacts::resolve_gguf_for_model(&target.model)
             .ok_or_else(|| LlamaServerError::ModelNotFound(target.model.id.clone()))?;
+        crate::model_registry::artifacts::hot_tier::serve(&gguf);
 
         // Validate every gene file BEFORE killing the live server — a missing
         // `--lora` is a loud failure, and we must not tear down a healthy server
@@ -492,9 +496,9 @@ impl LlamaServerProcess {
         let ambiguous_adapter = lora_paths
             .iter()
             .any(|p| p.to_str().is_none_or(|p| p.contains(',')));
-        let local_inputs = if !cfg!(windows) || engine_install.is_none() {
+        let local_inputs = if !continuum_host::read_pin::FORBIDS_REPLACEMENT || engine_install.is_none() {
             Err(
-                "exact restoration requires original Windows application and local input pins"
+                "exact restoration requires an installed engine and input pins that forbid replacement"
                     .into(),
             )
         } else if target.expert_placement.is_some() || has_mutable_plan || unsupported_environment {

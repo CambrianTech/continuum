@@ -3,18 +3,18 @@
     // constructor budget is only a fallback: a concurrently published monitor
     // sample must not turn a custody test into a test of the runner's free disk.
     fn critical_fixture_volume(path: &Path) -> Option<crate::system_resources::drives::DriveInfo> {
-        use crate::system_resources::drives::{DriveInfo, DriveRole};
-        Some(DriveInfo { mount: path.into(), total_bytes: 100_000, available_bytes: 0, role: DriveRole::System })
+        use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
+        Some(DriveInfo { mount: path.into(), total_bytes: 100_000, available_bytes: 0, role: DriveRole::System, kind: DriveKind::Unknown })
     }
 
     #[test]
     fn cache_pressure_follows_its_own_mount_instead_of_the_home_mount() {
-        use crate::system_resources::drives::{DriveInfo, DriveRole, drive_holding};
+        use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole, drive_holding};
         let home = tempfile::tempdir().unwrap();
         let other = tempfile::tempdir().unwrap();
         let drives = [
-            DriveInfo { mount: home.path().into(), total_bytes: 10_000, available_bytes: 100, role: DriveRole::System },
-            DriveInfo { mount: other.path().into(), total_bytes: 100_000, available_bytes: 90_000, role: DriveRole::System },
+            DriveInfo { mount: home.path().into(), total_bytes: 10_000, available_bytes: 100, role: DriveRole::System, kind: DriveKind::Unknown },
+            DriveInfo { mount: other.path().into(), total_bytes: 100_000, available_bytes: 90_000, role: DriveRole::System, kind: DriveKind::Unknown },
         ];
         let legacy = CargoTargetPool::new(TrackedDir::new("cargo-target", home.path().join("cache")), 1_000);
         let relocated = CargoTargetPool::new(TrackedDir::new("cargo-target", other.path().join("cache")), 1_000);

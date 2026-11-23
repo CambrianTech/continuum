@@ -53,6 +53,12 @@ fn status(code: i32) -> Result<(), PersonaRefusal> {
     Err(PersonaRefusal { status: code, name })
 }
 
+/// A file path as the fork takes it; a path with an interior NUL is refused by name.
+fn path_c(path: &std::path::Path) -> Result<std::ffi::CString, PersonaRefusal> {
+    std::ffi::CString::new(path.as_os_str().as_encoded_bytes())
+        .map_err(|_| PersonaRefusal { status: -1, name: format!("path {} holds a NUL byte", path.display()) })
+}
+
 /// One persona's blocks and token history, owned once (freed with her).
 pub struct PersonaBlocks {
     ptr: NonNull<sys::llama_persona>,
@@ -101,6 +107,25 @@ impl PersonaBlocks {
         status(unsafe { sys::llama_persona_bind(ctx.as_ptr(), seq, self.ptr.as_ptr()) }).map_err(BindRefusal::Native)
     }
 
+    /// Write the blocks her last completed save holds to `path` (through `<path>.tmp` and a rename,
+    /// so a crash never leaves a torn file that reads as hers): her raw rows and records, never
+    /// re-serialized. A restart demotes her to this file instead of dropping her (CONTINUUM-ENGINE
+    /// 4.16, restore is the norm).
+    pub fn write_file(&self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: `self.ptr` is live; the fork only reads her blocks and writes the file.
+        status(unsafe { sys::llama_persona_write_file(self.ptr.as_ptr(), path.as_ptr()) })
+    }
+
+    /// Fill these blocks (made by [`Self::new`] for the same owner on a context of the same layout)
+    /// from her file; bind her afterwards as after a save. A file of another owner, another epoch of
+    /// her, or another memory layout is refused and leaves these blocks as they were.
+    pub fn read_file(&mut self, path: &std::path::Path) -> Result<(), PersonaRefusal> {
+        let path = path_c(path)?;
+        // SAFETY: `self.ptr` is live; the fork checks the whole file before committing anything.
+        status(unsafe { sys::llama_persona_read_file(self.ptr.as_ptr(), path.as_ptr()) })
+    }
+
     /// The owner stamped by the last completed save; `None` before one.
     pub fn owner(&self) -> Option<PersonaOwner> {
         let (mut persona, mut epoch) = (0u64, 0u64);
@@ -126,6 +151,60 @@ impl Drop for PersonaBlocks {
     fn drop(&mut self) {
         // SAFETY: owned since `new`; freed exactly once here.
         unsafe { sys::llama_persona_free(self.ptr.as_ptr()) }
+    }
+}
+
+/// A bound mind's state at one of her positions, taken WITHOUT moving her (the fork's
+/// `llama_persona_checkpoint_*`, CONTINUUM-ENGINE 4.15): her recurrent rows are copied out; her
+/// attention KV stays in place. [`Self::rewind`] writes the rows back and cuts what she holds past
+/// [`Self::pos`], so her next decode continues from the boundary instead of re-prefilling from zero.
+/// Its buffers are reused take after take; one checkpoint rewinds any number of times.
+pub struct PersonaCheckpoint {
+    ptr: NonNull<sys::llama_persona_checkpoint>,
+}
+
+// Plain host memory owned by this handle; the engine owner moves it between threads only with the
+// context it belongs to.
+unsafe impl Send for PersonaCheckpoint {}
+
+impl PersonaCheckpoint {
+    /// An empty checkpoint (nothing taken). `None` when the allocation failed.
+    pub fn new() -> Option<Self> {
+        // SAFETY: the fork returns an owned checkpoint or NULL.
+        NonNull::new(unsafe { sys::llama_persona_checkpoint_init() }).map(|ptr| Self { ptr })
+    }
+
+    /// Take sequence `seq`'s state at her current position. A refusal leaves no checkpoint (a later
+    /// rewind refuses), never a stale one.
+    pub fn take(&mut self, ctx: &mut Context<'_>, seq: i32, owner: PersonaOwner) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the fork reserves before copying and refuses whole.
+        status(unsafe { sys::llama_persona_checkpoint_take(ctx.as_ptr(), seq, owner.persona, owner.epoch, self.ptr.as_ptr()) })
+    }
+
+    /// Put sequence `seq` back at [`Self::pos`]: what she holds past it is cut. A refusal (nothing
+    /// taken, or a checkpoint ahead of what she holds) leaves her exactly as she was.
+    pub fn rewind(&self, ctx: &mut Context<'_>, seq: i32, owner: PersonaOwner) -> Result<(), PersonaRefusal> {
+        // SAFETY: both pointers are live; the fork checks before writing and refuses whole.
+        status(unsafe { sys::llama_persona_checkpoint_rewind(ctx.as_ptr(), seq, owner.persona, owner.epoch, self.ptr.as_ptr()) })
+    }
+
+    /// Her last position the checkpoint holds through; `None` when nothing is taken.
+    pub fn pos(&self) -> Option<u32> {
+        // SAFETY: `self.ptr` is live for this handle.
+        u32::try_from(unsafe { sys::llama_persona_checkpoint_pos(self.ptr.as_ptr()) }).ok()
+    }
+
+    /// The bytes it holds (her recurrent rows): what the footprint registry is told.
+    pub fn bytes(&self) -> usize {
+        // SAFETY: `self.ptr` is live for this handle.
+        unsafe { sys::llama_persona_checkpoint_bytes(self.ptr.as_ptr()) }
+    }
+}
+
+impl Drop for PersonaCheckpoint {
+    fn drop(&mut self) {
+        // SAFETY: owned since `new`; freed exactly once here.
+        unsafe { sys::llama_persona_checkpoint_free(self.ptr.as_ptr()) }
     }
 }
 

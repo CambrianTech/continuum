@@ -90,10 +90,9 @@ pub fn resolve_from_footprint(
     };
     // `plan_serving` returns `Some` even when nothing fits (its honest-degrade path,
     // `fits_on_gpu = false`); `None` only for an empty candidate slice, which a
-    // single-element slice never is — so `unwrap_or(false)` is the not-empty floor.
+    // single-element slice never is — so `is_some_and` reads the plan it always returns.
     let fits = plan_serving(&host, std::slice::from_ref(fp), &ServingDemand::new(1, None))
-        .map(|p| p.fits_on_gpu)
-        .unwrap_or(false);
+        .is_some_and(|p| p.fits_on_gpu);
 
     if fits {
         PlacementResolution::LocalRecommended {
@@ -175,8 +174,7 @@ pub fn select_grid_peer(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> 
                 &host,
                 std::slice::from_ref(footprint),
                 &ServingDemand::new(1, None))
-            .map(|plan| plan.fits_on_gpu)
-            .unwrap_or(false)
+            .is_some_and(|plan| plan.fits_on_gpu)
         })
         .max_by_key(|p| p.capacity.gpu_free_bytes_live)
         .map(|p| p.peer)
@@ -194,7 +192,7 @@ pub fn grid_has_fit(snapshot: &GridSnapshot, footprint: &ModelFootprint) -> bool
 mod tests {
     use super::*;
     use crate::capacity::DeviceCapacity;
-    use crate::system_resources::drives::{DriveInfo, DriveRole};
+    use crate::system_resources::drives::{DriveInfo, DriveKind, DriveRole};
 
     const GB: u64 = 1024 * 1024 * 1024;
 
@@ -203,14 +201,14 @@ mod tests {
             mount: "C:\\".into(),
             total_bytes: 2000 * GB,
             available_bytes: 20 * GB,
-            role: DriveRole::System,
+            role: DriveRole::System, kind: DriveKind::Unknown,
         }];
         if with_cold {
             drives.push(DriveInfo {
                 mount: "D:\\continuum-cold".into(),
                 total_bytes: 16_000 * GB,
                 available_bytes: 15_000 * GB,
-                role: DriveRole::Cold,
+                role: DriveRole::Cold, kind: DriveKind::Unknown,
             });
         }
         crate::capacity::profile_fixtures::discrete_fixture(vram_gb, gpu_free_gb, drives)

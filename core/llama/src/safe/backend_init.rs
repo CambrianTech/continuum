@@ -501,14 +501,8 @@ impl Model {
         };
         ffi.fused_gdn_ar = params.fused_gdn_ar;
         ffi.fused_gdn_ch = params.fused_gdn_ch;
-        ffi.type_k = match params.type_k {
-            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
-            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
-        };
-        ffi.type_v = match params.type_v {
-            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
-            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
-        };
+        ffi.type_k = params.type_k.ggml_type();
+        ffi.type_v = params.type_v.ggml_type();
         ffi.embeddings = params.embeddings;
         ffi.embeddings_only = pooled_only;
         ffi.pooling_type = match params.pooling_type {
@@ -778,9 +772,21 @@ pub enum FlashAttn {
 pub enum KvCacheType {
     F16,
     Q8_0,
+    /// 32 quants and one f16 scale in an 18-byte block: the M5's operator plan
+    /// (`SERVING_KV_CACHE_TYPE=q4_0`), which the in-process engine must hold as planned.
+    Q4_0,
 }
 
 impl KvCacheType {
+    /// The ggml element type the context stores K or V as.
+    fn ggml_type(self) -> sys::ggml_type {
+        match self {
+            KvCacheType::F16 => sys::ggml_type_GGML_TYPE_F16,
+            KvCacheType::Q8_0 => sys::ggml_type_GGML_TYPE_Q8_0,
+            KvCacheType::Q4_0 => sys::ggml_type_GGML_TYPE_Q4_0,
+        }
+    }
+
     /// Bytes per cached element, scaled ×100 so block-quantized types keep
     /// their fractional cost in integer math. F16 = 2.00 bytes/elem.
     /// Q8_0 packs 32 quants + an f16 scale into a 34-byte block = 1.0625
@@ -791,6 +797,8 @@ impl KvCacheType {
         match self {
             KvCacheType::F16 => 200,
             KvCacheType::Q8_0 => 106,
+            // 18 bytes / 32 elems = 0.5625, rounded up so a budget never under-counts.
+            KvCacheType::Q4_0 => 57,
         }
     }
 }

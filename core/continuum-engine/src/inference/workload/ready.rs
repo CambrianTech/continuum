@@ -14,7 +14,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use continuum_base::capture::{At, CaptureId, CompleteInterval};
-use continuum_kernel::runtime::stage::MindId;
+use continuum_sage::dataflow::OwnerId;
 
 use super::{EngineIncarnation, SequenceChange, SequenceId, StepId, WorkloadEvent};
 
@@ -48,7 +48,7 @@ pub struct MindProgress {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Replayed {
     pub steps: Vec<StepView>,
-    pub minds: BTreeMap<MindId, MindProgress>,
+    pub minds: BTreeMap<OwnerId, MindProgress>,
 }
 
 /// Why intervals cannot be replayed as one workload.
@@ -93,7 +93,7 @@ enum Standing {
 
 #[derive(Debug)]
 struct Live {
-    mind: MindId,
+    mind: OwnerId,
     arrived: At,
     standing: Standing,
 }
@@ -185,7 +185,7 @@ impl Replay {
         Ok(())
     }
 
-    fn change(&mut self, key: SequenceKey, mind: MindId, change: SequenceChange, at: At) -> Result<(), ReplayError> {
+    fn change(&mut self, key: SequenceKey, mind: OwnerId, change: SequenceChange, at: At) -> Result<(), ReplayError> {
         if let SequenceChange::Arrived { .. } = change {
             if self.live.contains_key(&key) {
                 return Err(ReplayError::ArrivedTwice { sequence: key });
@@ -243,7 +243,7 @@ impl Replay {
 }
 
 /// `span` of runnable-and-not-running time to `mind`.
-fn charge(out: &mut Replayed, mind: MindId, span: Duration) {
+fn charge(out: &mut Replayed, mind: OwnerId, span: Duration) {
     let progress = out.minds.entry(mind).or_default();
     progress.left_waiting += span;
     progress.longest_wait = progress.longest_wait.max(span);

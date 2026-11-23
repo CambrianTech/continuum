@@ -29,9 +29,23 @@ impl<B, T, G, L, D> PersonaUnit<B, T, G, L, D> {
         &self.parts
     }
 
-    /// Give up the whole unit as its parts (a tier's copy-out takes all of them at once).
-    pub fn into_parts(self) -> PersonaParts<B, T, G, L, D> {
-        self.parts
+    /// Her parts, to change in place: her history grows, her checkpoint is replaced, her blocks move.
+    /// Her identity is not among them; a new epoch is a new unit.
+    pub fn parts_mut(&mut self) -> &mut PersonaParts<B, T, G, L, D> {
+        &mut self.parts
+    }
+}
+
+/// A unit that carries her own blocks: the tier moves the blocks it is handed and holds no copy of
+/// them (CONTINUUM-ENGINE §2). The persona owns this, and residency depends on it, never the reverse.
+pub trait Carries<B> {
+    fn blocks_mut(&mut self) -> &mut B;
+}
+
+/// A unit carries her own blocks: the tier is handed them to move.
+impl<B, T, G, L, D> Carries<B> for PersonaUnit<B, T, G, L, D> {
+    fn blocks_mut(&mut self) -> &mut B {
+        &mut self.parts.blocks
     }
 }
 

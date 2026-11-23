@@ -223,7 +223,7 @@ pub(super) async fn run_self_cycle(
     // Ordinary project cards are on subscribed boards, not in the benchmark
     // registry. Lease renewal is liveness, not a new focus selection.
     if let Some(room) = wake_room {
-        crate::persona::perception_feed::mark_perceived(
+        crate::persona::senses::mark_perceived(
             ctx.identity.peer_id.as_uuid(),
             room,
             0,
@@ -295,7 +295,7 @@ pub(super) async fn run_self_cycle(
     let initiative = if wake_room.is_none() {
         crate::persona::initiative_turn::Initiative::on_beat(
             pending.initiative_passed_at_ms(),
-            crate::persona::perception_feed::moved_at_ms(ctx.identity.peer_id.as_uuid()),
+            crate::persona::senses::of(ctx.identity.peer_id.as_uuid()).and_then(|senses| senses.moved_at_ms()),
         )
     } else {
         crate::persona::initiative_turn::Initiative::NotOffered
@@ -312,14 +312,12 @@ pub(super) async fn run_self_cycle(
     pending.settle_work(&work);
     pending.note_initiative(&work, now_ms);
     if work.drove {
-        // She WORKED this tick (her claim, or her own initiative) — that is engagement, so
-        // the caller must keep her at the fast beat, not rest her. The caller reads
-        // BeatOutcome from whether `last_burst_fp` changed; bump it so a work turn always
-        // counts as Engaged. Without this she works one tick, is judged "nothing new", and
-        // backs off toward the rest cap — the opposite of "virtually no time between
-        // contexts" while a card is in her hands. (LATENCY LAW / #the-build-order.)
-        // An initiative turn she PASSED is not engagement: the beat rests, as a fruitless
-        // musing did, so an idle mind is not offered a turn every engaged beat.
+        // She WORKED this cycle (her claim, or her own initiative): that is engagement, so she
+        // continues at once (her momentum). The caller reads it from whether `last_burst_fp`
+        // changed; bump it so a work turn always counts. Without this she works one cycle, is
+        // judged "nothing new", and rests until something calls her: the opposite of
+        // "virtually no time between contexts" while a card is in her hands. (LATENCY LAW.)
+        // An initiative turn she PASSED is not engagement: she rests, as a fruitless musing did.
         if work.engaged {
             *last_burst_fp = last_burst_fp.wrapping_add(1);
         }

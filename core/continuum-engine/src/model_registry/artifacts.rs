@@ -9,6 +9,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub mod expert_placement;
+pub mod hot_tier;
 
 pub fn resolve_model_artifacts(model: &mut Model) {
     model.gguf_local_path = resolve_gguf_for_model(model);
@@ -49,8 +50,15 @@ pub fn hydrate_artifact_sizes(model: &mut Model) {
 /// OOM'd for six silent hours. A split shard is named `-NNNNN-of-MMMMM.gguf`;
 /// sum every sibling that shares the prefix. A single-file GGUF is its own size.
 pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
-    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single-file path below
-    let single = || fs::metadata(first).map(|m| m.len()).unwrap_or(0); // unwrap_or: unstat-able file sizes as 0, caller filters zero out
+    shard_set(first).iter().map(|shard| fs::metadata(shard).map(|m| m.len()).unwrap_or(0)).sum() // unwrap_or: an unreadable shard adds 0, an undercount fails safe (smaller window)
+}
+
+/// Every file of the GGUF `first` names: its sibling shards (`…-00001-of-00028.gguf`), or `first`
+/// alone when it is not split. The one definition of "this model's weight files", for sizing and
+/// for moving them between drives.
+pub fn shard_set(first: &std::path::Path) -> Vec<PathBuf> {
+    let name = first.file_name().and_then(|n| n.to_str()).unwrap_or(""); // unwrap_or: non-utf8 name = not a split pattern, single file below
+    let single = || vec![first.to_path_buf()];
     // "-00001-of-00028.gguf" → prefix "…-", suffix "-of-00028.gguf"
     let Some(idx) = name.rfind("-of-") else { return single() };
     if idx < 6 || !name.ends_with(".gguf") { return single(); }
@@ -60,15 +68,17 @@ pub fn total_gguf_bytes(first: &std::path::Path) -> u64 {
     let prefix = &head[..dash + 1];
     let Some(dir) = first.parent() else { return single() };
     let Ok(entries) = fs::read_dir(dir) else { return single() };
-    let mut total = 0u64;
-    for e in entries.flatten() {
-        let f = e.file_name();
-        let f = f.to_string_lossy();
-        if f.starts_with(prefix) && f.ends_with(".gguf") {
-            total += e.metadata().map(|m| m.len()).unwrap_or(0); // unwrap_or: unreadable shard adds 0, undercount fails safe (smaller window)
-        }
-    }
-    if total > 0 { total } else { single() }
+    let mut shards: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| {
+            let f = e.file_name();
+            let f = f.to_string_lossy();
+            f.starts_with(prefix) && f.ends_with(".gguf")
+        })
+        .map(|e| e.path())
+        .collect();
+    shards.sort();
+    if shards.is_empty() { single() } else { shards }
 }
 
 pub fn resolve_gguf_for_model(model: &Model) -> Option<PathBuf> {
@@ -166,76 +176,20 @@ pub fn resolve_mtp_draft_for_model(model: &Model) -> Option<PathBuf> {
 /// decides whether the flag ships on; presence alone is NOT the capability
 /// signal for embedded MTP the way it is for the sidecar.
 pub fn gguf_has_embedded_mtp(gguf: &Path) -> bool {
-    fn scan(gguf: &Path) -> Option<bool> {
-        use std::io::Read;
-        let mut f = std::fs::File::open(gguf).ok()?;
-        let mut hdr = [0u8; 24];
-        f.read_exact(&mut hdr).ok()?;
-        if &hdr[0..4] != b"GGUF" {
-            return Some(false);
-        }
-        let n_tensors = u64::from_le_bytes(hdr[8..16].try_into().ok()?);
-        let n_kv = u64::from_le_bytes(hdr[16..24].try_into().ok()?);
-        let mut rdr = std::io::BufReader::new(f);
-        fn read_u32(r: &mut impl Read) -> Option<u32> {
-            let mut b = [0u8; 4];
-            r.read_exact(&mut b).ok()?;
-            Some(u32::from_le_bytes(b))
-        }
-        fn read_u64(r: &mut impl Read) -> Option<u64> {
-            let mut b = [0u8; 8];
-            r.read_exact(&mut b).ok()?;
-            Some(u64::from_le_bytes(b))
-        }
-        fn read_str(r: &mut impl Read) -> Option<String> {
-            let n = read_u64(r)? as usize;
-            if n > 1 << 20 {
-                return None; // a >1MB "string" means a corrupt header — bail
-            }
-            let mut b = vec![0u8; n];
-            r.read_exact(&mut b).ok()?;
-            Some(String::from_utf8_lossy(&b).into_owned())
-        }
-        fn skip_val(r: &mut impl Read, t: u32) -> Option<()> {
-            match t {
-                0 | 1 | 7 => std::io::copy(&mut r.take(1), &mut std::io::sink()).ok().map(|_| ()),
-                2 | 3 => std::io::copy(&mut r.take(2), &mut std::io::sink()).ok().map(|_| ()),
-                4 | 5 | 6 => std::io::copy(&mut r.take(4), &mut std::io::sink()).ok().map(|_| ()),
-                10 | 11 | 12 => std::io::copy(&mut r.take(8), &mut std::io::sink()).ok().map(|_| ()),
-                8 => read_str(r).map(|_| ()),
-                9 => {
-                    let et = read_u32(r)?;
-                    let n = read_u64(r)?;
-                    for _ in 0..n {
-                        skip_val(r, et)?;
-                    }
-                    Some(())
-                }
-                _ => None,
-            }
-        }
-        for _ in 0..n_kv {
-            read_str(&mut rdr)?;
-            let t = read_u32(&mut rdr)?;
-            skip_val(&mut rdr, t)?;
-        }
-        for _ in 0..n_tensors {
-            let name = read_str(&mut rdr)?;
-            if name.contains(".nextn.") {
-                return Some(true);
-            }
-            let nd = read_u32(&mut rdr)? as u64;
-            std::io::copy(&mut (&mut rdr).take(8 * nd + 12), &mut std::io::sink()).ok()?;
-        }
-        Some(false)
-    }
-    match scan(gguf) {
-        Some(found) => found,
-        None => {
+    // The header's tensor names through candle's one GGUF reader (as hydrate and arch_config read it).
+    let scan = || -> candle_core::Result<bool> {
+        let mut file = std::fs::File::open(gguf)?;
+        let content = candle_core::quantized::gguf_file::Content::read(&mut file)?;
+        Ok(content.tensor_infos.keys().any(|name| name.contains(".nextn.")))
+    };
+    match scan() {
+        Ok(found) => found,
+        Err(error) => {
             // An unreadable or malformed header is not "no embedded head": name it.
             continuum_base::probe!(
                 class = "serving.mtp.embedded_scan_failed",
                 path = %gguf.display(),
+                error = %error,
                 "the GGUF header could not be scanned for embedded MTP heads: serving without a draft"
             );
             false
@@ -358,7 +312,14 @@ pub fn expand_user_path(p: &Path) -> PathBuf {
     p.to_path_buf()
 }
 
+/// The GGUF to read for `model_id`: wherever it is stored, its complete copy on the fast drive
+/// when one was made (`hot_tier`), so every reader (launch, sizing, sidecars) sees one path.
 fn resolve_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> Option<PathBuf> {
+    let stored = resolve_stored_gguf(model_id, hint, explicit)?;
+    Some(hot_tier::hot_copy(&stored).unwrap_or(stored)) // unwrap_or: no complete hot copy, the stored file is the one
+}
+
+fn resolve_stored_gguf(model_id: &str, hint: Option<&str>, explicit: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = explicit {
         let expanded = expand_user_path(path);
         if expanded.exists() {
@@ -544,8 +505,7 @@ fn resolve_from_huggingface_model_id(model_id: &str) -> Option<PathBuf> {
 
 fn hf_repo_slug(hint: &str) -> Option<String> {
     let trimmed = hint
-        .strip_prefix("huggingface.co/")
-        .unwrap_or(hint)
+        .trim_start_matches("huggingface.co/")
         .split(':')
         .next()?
         .trim_matches('/');

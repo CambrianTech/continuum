@@ -237,11 +237,12 @@ impl LlmDeliberationFaculty {
                 // the chunks and reports `observed = false` rather than a false zero.
                 let mut witness = crate::cognition::generation_drop::InFlight::arm(
                     &self.persona_name,
+                    Some(&request_id),
                     turn_bound,
                     None,
                 );
                 let result = _admission
-                    .run(adapter.generate_admitted(request, terms, sink.clone()))
+                    .run(self.urgency_of(ws), adapter.generate_admitted(request, terms, sink.clone()))
                     .await;
                 witness.disarm();
                 result
@@ -252,11 +253,12 @@ impl LlmDeliberationFaculty {
                 // healthy path — the accumulate still comes from the returned response.
                 let mut witness = crate::cognition::generation_drop::InFlight::arm(
                     &self.persona_name,
+                    Some(&request_id),
                     turn_bound,
                     Some(receiver),
                 );
                 let result = _admission
-                    .run(adapter.generate_admitted(request, terms, sink))
+                    .run(self.urgency_of(ws), adapter.generate_admitted(request, terms, sink))
                     .await;
                 witness.disarm();
                 result

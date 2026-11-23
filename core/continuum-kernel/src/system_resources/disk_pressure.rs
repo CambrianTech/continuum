@@ -144,17 +144,24 @@ pub enum DiskPressureLevel {
 }
 
 impl DiskPressureLevel {
-    fn from_pressure(p: f64) -> Self {
-        if p >= 0.95 {
+    /// The level a used/total ratio reads at: the one place the thresholds live, so a writer that
+    /// asks "would this write push the volume into pressure" agrees with the monitor.
+    pub fn from_pressure(p: f64) -> Self {
+        if p >= Self::CRITICAL_AT {
             Self::Critical
-        } else if p >= 0.90 {
+        } else if p >= Self::HIGH_AT {
             Self::High
-        } else if p >= 0.80 {
+        } else if p >= Self::WARNING_AT {
             Self::Warning
         } else {
             Self::Normal
         }
     }
+
+    /// The used/total ratios the levels start at. Relief at High aims back below `WARNING_AT`.
+    pub const WARNING_AT: f64 = 0.80;
+    pub const HIGH_AT: f64 = 0.90;
+    pub const CRITICAL_AT: f64 = 0.95;
 
     fn to_u8(self) -> u8 {
         match self {
@@ -349,7 +356,7 @@ pub struct DiskPressureMonitor {
 /// Poll interval — every 30 s. Disk pressure changes slowly; faster
 /// polls burn CPU on a value that rarely changes. Per the
 /// CONCURRENCY-STYLE-GUIDE cadence ladder: lean slower in doubt.
-const POLL_INTERVAL: Duration = Duration::from_secs(30);
+pub(crate) const POLL_INTERVAL: Duration = Duration::from_secs(30);
 
 /// Quarantine threshold — matches the broker / memory monitor.
 const QUARANTINE_AFTER: u32 = 3;
@@ -600,6 +607,7 @@ impl DiskPressureMonitor {
                     total_bytes: d.total_space(),
                     available_bytes: d.available_space(),
                     role: crate::system_resources::drives::DriveRole::System,
+                    kind: crate::system_resources::drives::DriveKind::Unknown,
                 })
                 .collect();
             let reading = volume_reading(&drives, &home);
@@ -818,6 +826,8 @@ impl DiskPressureMonitor {
         // process-wide copy is what `system/resources` reads: until 2026-09-18 the
         // disk had NO field on any command surface, so a monitor reading (0, 0) for
         // months was invisible from every seat — the absence had nowhere to show.
+        // The poll, said on the node's bus: disk relief watches it (and starts with the first).
+        super::disk_relief::frame(drives.clone());
         *CURRENT_DISK_SNAPSHOT.write() = Some((snapshot.clone(), drives));
         self.channel.publish(snapshot);
 

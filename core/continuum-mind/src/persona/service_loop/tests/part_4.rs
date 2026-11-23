@@ -1,71 +1,6 @@
 #![cfg(test)]
 use super::*;
 
-    // what this catches: a fruitless cycle that never rests, or a rest that never ends: a
-    // musing that found nothing backs off to the cap and saturates there, and finding
-    // something new snaps her back to the engaged beat.
-    #[test]
-    pub(super) fn a_fruitless_cycle_rests_to_the_cap_and_news_wakes_her() {
-        use std::time::Duration;
-        let engaged = Duration::from_millis(SELF_TICK_MS);
-        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
-
-        // A cycle that found nothing DOES rest deeper, and saturates at the cap.
-        let mut beat = engaged;
-        let once = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
-        assert!(once > engaged, "an earned rest still backs off");
-        for _ in 0..50 {
-            beat = next_beat_after(BeatOutcome::NothingNew, beat, engaged, cap);
-        }
-        assert_eq!(beat, cap, "earned rest saturates at the cap, never beyond");
-
-        // Finding something new snaps her straight back to engaged from full rest.
-        assert_eq!(
-            next_beat_after(BeatOutcome::Engaged, cap, engaged, cap),
-            engaged,
-            "life in the room returns her to the engaged beat immediately"
-        );
-    }
-
-    // what this catches: the LATENCY LAW for held work. A citizen advancing her
-    // OWN claimed card on every self-tick must stay at the engaged beat — working
-    // IS engagement. `run_self_cycle` signals this by bumping `last_burst_fp` on a
-    // held-work turn so the loop reads BeatOutcome::Engaged (never NothingNew).
-    // Regression for the measured 766s/791s gaps (2026-09-02): before the bump, a
-    // held-work turn changed no fingerprint, was judged "nothing new", and backed
-    // off toward the 240s cap — a citizen worked one tick then slept ~13 min. This
-    // pins that a run of work turns holds the fast beat, while the same run of
-    // fruitless musings would have saturated at the cap.
-    #[test]
-    pub(super) fn a_citizen_working_her_claim_never_backs_off() {
-        use std::time::Duration;
-        let engaged = Duration::from_millis(SELF_TICK_MS);
-        let cap = Duration::from_millis(SELF_TICK_REST_CAP_MS);
-
-        // 50 consecutive held-work turns (each Engaged, as the last_burst_fp bump
-        // guarantees) keep her at the fast beat — no drift toward rest.
-        let mut beat = engaged;
-        for _ in 0..50 {
-            beat = next_beat_after(BeatOutcome::Engaged, beat, engaged, cap);
-        }
-        assert_eq!(
-            beat, engaged,
-            "a citizen who works her card every tick stays at the engaged beat — \
-             virtually no time between contexts while a card is in her hands"
-        );
-
-        // Contrast: had held work been (mis)reported as NothingNew, the SAME run
-        // would have rested to the cap — the exact bug the fp bump fixes.
-        let mut drifted = engaged;
-        for _ in 0..50 {
-            drifted = next_beat_after(BeatOutcome::NothingNew, drifted, engaged, cap);
-        }
-        assert_eq!(
-            drifted, cap,
-            "the pre-fix path (nothing-new) would have slept her at the cap between work turns"
-        );
-    }
-
     // what this catches: the END-TO-END held-work completion edge, no reboot, no
     // live model. A citizen holding a Claimed card, driven to settle on a canned
     // "PASS: done", concludes THAT card via advance_card_to(Closed). This pins the
@@ -96,7 +31,7 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            context_window: 65_536, // the fixture's window, as the initiative test below declares it; never the planner's floor
             defer_recall: false,
             defer_grounding: false,
             suppress_recall: false,
@@ -195,7 +130,7 @@ use super::*;
                 embedder: None,
                 tool_executor: None,
                 experience: None,
-                context_window: crate::inference::planning::MIN_SERVE_CTX,
+                context_window: 65_536, // the fixture's window, as the initiative test below declares it; never the planner's floor
                 defer_recall: false,
                 defer_grounding: false,
                 suppress_recall: false,
@@ -348,7 +283,6 @@ async fn capacity_park_keeps_new_input_and_stop_reachable() {
         &opts,
         &pending,
         &mut mind,
-        std::time::Duration::from_secs(1),
     )
     .await;
     assert!(matches!(wake, Wake::Msg(m) if m == newer));
@@ -359,7 +293,6 @@ async fn capacity_park_keeps_new_input_and_stop_reachable() {
         &opts,
         &pending,
         &mut mind,
-        std::time::Duration::from_secs(1),
     )
     .await;
     assert!(matches!(wake, Wake::Stop));
@@ -449,24 +382,20 @@ async fn capacity_ready_self_waits_without_spinning_during_quiescence() {
     let mut conversation = ScriptedConversation::new().with_idle_inbox();
     let mut outcome = ServeOutcome::default();
     let mut mind = MindWakeState::default();
-    let beat = std::time::Duration::from_secs(1);
-    let start = tokio::time::Instant::now();
     for _ in 0..3 {
-        let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
-            &pending, &mut mind, beat).await;
-        assert!(matches!(wake, Wake::Idle));
+        let parked = futures_util::FutureExt::now_or_never(await_wake(&ctx, &mut conversation, &mut outcome, &opts, &pending, &mut mind));
+        assert!(parked.is_none(), "quiesced: no clock wakes her, and nothing spins");
     }
-    assert!(tokio::time::Instant::now().duration_since(start) >= beat * 3);
     opts.quiesced.store(false, std::sync::atomic::Ordering::Relaxed);
     let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
-        &pending, &mut mind, beat).await;
+        &pending, &mut mind).await;
     assert!(matches!(wake, Wake::Mind { room: Some(r), .. } if r == room));
     assert!(pending.take_ready_self(Some(room)));
     assert!(!pending.take_ready_self(Some(room)), "readiness consumed once");
     opts.quiesced.store(true, std::sync::atomic::Ordering::Relaxed);
     conversation = conversation.with_events(vec![Ok(None)]);
     let (wake, _) = await_wake(&ctx, &mut conversation, &mut outcome, &opts,
-        &pending, &mut mind, beat).await;
+        &pending, &mut mind).await;
     assert!(matches!(wake, Wake::Stop));
 }
 

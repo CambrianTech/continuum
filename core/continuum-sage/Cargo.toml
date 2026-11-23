@@ -1,0 +1,17 @@
+[package]
+name = "continuum-sage"
+version = "0.1.0"
+edition = "2021"
+description = "Work flows through queues, never locks: quality-of-service classes, a serial queue per owner, and one event-driven dispatcher per capacity that owns its ready heap, ages waiting work so nothing starves, and asks lower classes to yield. CONTINUUM-ENGINE.md 4.1c."
+
+[dependencies]
+tokio = { workspace = true }
+continuum-base = { path = "../continuum-base" } # probes on the dataflow graph's seams
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+uuid = { workspace = true }
+tracing = { workspace = true } # continuum_base::probe! expands to it
+parking_lot = { workspace = true } # an artifact's settle slot: held only for a swap, never across an await
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }

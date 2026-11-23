@@ -515,8 +515,11 @@ pub async fn apply_act(
         // turn through working memory and the human through the act receipt above. A batch
         // she said nothing about leads with its acts.
         let mut lines: Vec<String> = Vec::with_capacity(acts.len() + 1);
-        if let Some(said) = body.working_memory.action_statement(room_id) {
-            lines.push(crate::cognition::presence_glyph::said_line(said.trim()));
+        // Her words without any call she wrote in them: the call is its own act line below, and in
+        // her words it would reach every roommate as a call to copy (the IntelMac, 2026-11-22).
+        let said = body.working_memory.action_statement(room_id).map(|said| crate::ai::json_in_prompt_tools::without_calls(&said));
+        if let Some(said) = said.filter(|said| !said.is_empty()) {
+            lines.push(crate::cognition::presence_glyph::said_line(&said));
         }
         lines.extend(acts.iter().map(|obs| {
                 let object = act_object(obs);

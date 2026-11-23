@@ -15,6 +15,9 @@ const OWNERS: &[&str] = &[
     // The process table's one reader: which processes run, by identity and image (card
     // b958bed4). Its `sysinfo` reads name processes, never a resource's size.
     "core/continuum-kernel/src/system_resources/process_tree.rs",
+    // The drive inventory's one reader: which volumes exist, their capacity and kind (flash,
+    // spinning), read by disk_pressure and the hot tier. Disk capacity has this one probe.
+    "core/continuum-kernel/src/system_resources/drives.rs",
 ];
 
 /// Calls and paths that read memory, VRAM or disk capacity or usage.

@@ -13,6 +13,7 @@ build = "../continuum-core/build.rs"
 continuum-process = { path = "../continuum-process" }
 continuum-academy = { path = "../continuum-academy" }
 continuum-kernel = { path = "../continuum-kernel" }
+continuum-sage = { path = "../continuum-sage" } # her senses are a worker on the dataflow substrate
 continuum-engine = { path = "../continuum-engine" }
 continuum-hands = { path = "../continuum-hands" }
 continuum-embedding = { path = "../continuum-embedding" }  # work/similar and work/duplicates rank card text with its vector math

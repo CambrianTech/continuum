@@ -2880,6 +2880,7 @@ dependencies = [
  "continuum-positron",
  "continuum-prompt",
  "continuum-rooms",
+ "continuum-sage",
  "continuum-service",
  "continuum-text-analysis",
  "continuum-vitals",
@@ -3110,7 +3111,10 @@ dependencies = [
  "continuum-cli-lifecycle",
  "continuum-host",
  "continuum-kernel",
+ "continuum-persona-engine",
+ "continuum-persona-llama",
  "continuum-process",
+ "continuum-sage",
  "continuum-saved-state",
  "continuum-service",
  "continuum-tool-protocol",
@@ -3185,13 +3189,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "continuum-flow"
-version = "0.1.0"
-dependencies = [
- "tokio",
-]
-
-[[package]]
 name = "continuum-gateway"
 version = "0.1.0"
 dependencies = [
@@ -3221,6 +3218,7 @@ dependencies = [
  "continuum-host",
  "continuum-kernel",
  "continuum-process",
+ "continuum-sage",
  "continuum-saved-state",
  "dashmap",
  "futures",
@@ -3362,6 +3360,7 @@ dependencies = [
  "continuum-client",
  "continuum-host",
  "continuum-orm-derive",
+ "continuum-sage",
  "continuum-saved-state",
  "continuum-tool-protocol",
  "dashmap",
@@ -3506,6 +3505,7 @@ dependencies = [
  "continuum-positron",
  "continuum-process",
  "continuum-rooms",
+ "continuum-sage",
  "continuum-store",
  "continuum-text-analysis",
  "dashmap",
@@ -3600,9 +3600,11 @@ dependencies = [
 name = "continuum-persona-llama"
 version = "0.1.0"
 dependencies = [
+ "continuum-base",
  "continuum-persona-engine",
  "llama",
  "thiserror 2.0.18",
+ "tracing",
  "uuid",
 ]
 
@@ -3678,6 +3680,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "continuum-sage"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "continuum-base",
+ "futures-util",
+ "parking_lot",
+ "tokio",
  "tracing",
  "uuid",
 ]
@@ -11054,6 +11069,14 @@ name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
+
+[[package]]
+name = "step-replay"
+version = "0.1.0"
+dependencies = [
+ "continuum-base",
+ "serde_json",
+]
 
 [[package]]
 name = "strength_reduce"

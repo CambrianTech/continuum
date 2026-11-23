@@ -1,0 +1,15 @@
+[package]
+name = "step-replay"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+The causal contract's validator (object model 5.7, "a step in time she can always see"): from real
+prompt captures, every act a mind took must reach her next prompt as her step, the call she made and
+its outcome bound by id. Also counts calls written as prose, repeat lines that point at a result no
+longer in her prompt, and runs of identical acts. std + serde only; reads any node's captures in seconds.
+"""
+
+[dependencies]
+continuum-base = { path = "../continuum-base" }
+serde_json = { workspace = true }

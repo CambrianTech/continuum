@@ -6,6 +6,9 @@ use super::*;
 pub enum LlamaServerError {
     #[error("serving lifecycle request was superseded before admission")]
     Superseded,
+    /// The node's in-process engine refused, by its typed cause.
+    #[error(transparent)]
+    InProcess(#[from] crate::inference::in_process_engine::InProcessRefusal),
     /// The server isn't answering — not yet spawned, or down. The reconcile
     /// loop treats this as "no active model" and (re)spawns, rather than failing.
     #[error("llama-server unreachable: {0}")]
@@ -212,6 +215,8 @@ pub enum EngineRetirementError {
 /// fake to exercise the pure reconcile decision without a live process.
 #[async_trait]
 pub trait LlamaServerControl: Send + Sync {
+    fn stream_layout(&self) -> StreamLayout;
+
     /// Scoped physical paging uncertainty requires the normal owned-engine
     /// replacement path even when model identity and HTTP health are unchanged.
     fn paging_recovery_required(&self) -> bool {

@@ -192,6 +192,13 @@ pub trait ResourcePool: Send + Sync {
     fn evict_at_least(&self, want_bytes: u64) -> u64;
     fn snapshot(&self) -> Vec<ResourcePoolEntry>;
 
+    /// The folder this pool's bytes live in, when they live on a disk. Disk relief asks a pool when
+    /// the VOLUME holding this folder is under pressure (`system_resources::disk_relief`), never by
+    /// the pool's own budget; `None` for memory and device pools.
+    fn root(&self) -> Option<std::path::PathBuf> {
+        None
+    }
+
     /// Current pressure ratio in `0.0..1.0+` (over-budget ⇒ >1.0).
     /// Default = `usage_bytes / capacity_bytes`. Returns 0 when capacity
     /// is 0 (tier "not under management" — broker neither alerts nor

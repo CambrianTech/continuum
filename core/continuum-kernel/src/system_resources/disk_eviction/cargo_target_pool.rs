@@ -1,6 +1,10 @@
 use super::*;
 
 impl ResourcePool for CargoTargetPool {
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.tracked.path().to_path_buf())
+    }
+
     fn tier_name(&self) -> &str {
         &self.tier
     }
@@ -430,7 +434,7 @@ impl NvmeServingTierPool {
                 } else {
                     meta.len()
                 };
-                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH); // unwrap_or: a platform without mtime ages the entry as oldest, so eviction can still reclaim it
                 Some((path, size, mtime))
             })
             .collect();

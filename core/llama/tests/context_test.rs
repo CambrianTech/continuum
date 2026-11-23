@@ -1,7 +1,7 @@
 //! Isolated tests for Context — each test exercises one thing.
 //! Run: cargo test --release -p llama --features metal --test context_test
 
-use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
+use llama::{Batch, ContextParams, Model, ModelParams, Pos, Sampler};
 use std::path::PathBuf;
 
 /// Find a test model. Mirrors model_test.rs — keep in sync.
@@ -49,21 +49,21 @@ fn batch_for_tokens_empty_is_zero() {
 fn batch_allocated_push_increments() {
     let mut b = Batch::allocated(16, 1);
     assert_eq!(b.n_tokens(), 0);
-    b.push(42, 0, &[0], false);
+    b.push(42, Pos::at(0), &[0], false);
     assert_eq!(b.n_tokens(), 1);
-    b.push(43, 1, &[0], true);
+    b.push(43, Pos::at(1), &[0], true);
     assert_eq!(b.n_tokens(), 2);
 }
 
 #[test]
 fn batch_allocated_clear_resets() {
     let mut b = Batch::allocated(16, 1);
-    b.push(42, 0, &[0], true);
-    b.push(43, 1, &[0], true);
+    b.push(42, Pos::at(0), &[0], true);
+    b.push(43, Pos::at(1), &[0], true);
     b.clear();
     assert_eq!(b.n_tokens(), 0);
     // Post-clear push still works
-    b.push(100, 0, &[0], true);
+    b.push(100, Pos::at(0), &[0], true);
     assert_eq!(b.n_tokens(), 1);
 }
 
@@ -71,7 +71,7 @@ fn batch_allocated_clear_resets() {
 #[should_panic(expected = "push() on single-sequence batch")]
 fn batch_for_tokens_push_panics() {
     let mut b = Batch::for_tokens(vec![1, 2]);
-    b.push(3, 2, &[0], false);
+    b.push(3, Pos::at(2), &[0], false);
 }
 
 // ─── Decode ─────────────────────────────────────────────────────────────

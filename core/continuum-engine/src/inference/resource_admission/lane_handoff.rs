@@ -31,9 +31,16 @@ pub(crate) struct LaneReacquisition {
 mod tests;
 
 impl LaneReacquisition {
+    /// Her lane again after she let it go to wait (for a decode permit, a slot): timed, so a long
+    /// reacquisition is told apart from the waits around it on the same act (Codex, BigMama R21).
     pub(crate) async fn acquire(&self) -> ServingLanePermit {
-        self.gate
+        let started = std::time::Instant::now();
+        let lane = self
+            .gate
             .acquire_serving_lane(self.persona, self.priority, self.expected_occupancy)
-            .await
+            .await;
+        continuum_base::probe!(class = "inference.lane.reacquired", persona = ?self.persona, ms = started.elapsed().as_millis() as u64,
+            "a caller took its serving lane again after letting it go to wait");
+        lane
     }
 }

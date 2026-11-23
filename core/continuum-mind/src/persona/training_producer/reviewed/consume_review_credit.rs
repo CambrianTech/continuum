@@ -53,6 +53,16 @@ async fn decide_review_credit<T: Transport>(
         // submission as the board holds it (card fe8554d2).
         None => match resolve_pending(conn, persona_name, persona_id, room_id, submitted).await? {
             Some(Ok(binding)) => binding,
+            Some(Err(Held::StagedElsewhere(card))) => {
+                continuum_base::probe!(
+                    class = "training.credit.staged_elsewhere",
+                    persona = %persona_name,
+                    submission = %id,
+                    staged_card = %card,
+                    "a review's issuing generation was staged as evidence for another card: settled as ineligible evidence"
+                );
+                return Ok(ReviewedCredit::pending(ReviewedCreditState::IneligibleEvidence));
+            }
             Some(Err(held)) => {
                 continuum_base::probe!(
                     class = "training.credit.provenance_held",
@@ -626,6 +636,9 @@ pub(super) async fn generation_row<T: Transport>(
         return Err(ClientError::Transport("incomplete generation credit lookup".into()).into());
     }
     let mut selected = None;
+    // A row that carries this generation but belongs to another card or claim: the turn was
+    // staged as evidence for other work, so no wait makes it this submission's evidence.
+    let mut elsewhere = None;
     for value in result.items {
         let record: crate::orm::types::DataRecord =
             serde_json::from_value(value).map_err(ClientError::from)?; // Decode the storage protocol's DataRecord envelope.
@@ -655,9 +668,15 @@ pub(super) async fn generation_row<T: Transport>(
                 return Err(CreditBindingError::AmbiguousGeneration(generation.into()));
             }
             selected = Some(row);
+        } else if row.owner == Some(persona_id) {
+            elsewhere = Some(row.card_id);
         }
     }
-    selected.ok_or_else(|| CreditBindingError::AmbiguousGeneration(generation.into()))
+    match (selected, elsewhere) {
+        (Some(row), _) => Ok(row),
+        (None, Some(card)) => Err(CreditBindingError::StagedElsewhere { generation: generation.into(), card }),
+        (None, None) => Err(CreditBindingError::AmbiguousGeneration(generation.into())),
+    }
 }
 
 pub(super) async fn bind_snapshot<T: Transport>(

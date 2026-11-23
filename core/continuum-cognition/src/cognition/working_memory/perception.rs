@@ -135,11 +135,12 @@ impl WorkingMemory {
     pub(crate) fn full_result_message(&self, seq: u64, full: &str) -> String {
         let actions = self.actions.lock();
         let recorded = actions.get(seq);
+        // Shown whole: no reopen call (`ResultAttribution::shown_whole`).
         let attribution = ResultAttribution {
             seq,
             room: recorded.and_then(|record| record.room),
             operation: recorded.map(|record| record.operation.as_str()),
-            spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+            spill_handle: None,
         };
         format!("Full result of your most recent action ({attribution}):\n{full}")
     }
@@ -191,7 +192,8 @@ impl WorkingMemory {
             seq,
             room: recorded.and_then(|record| record.room),
             operation: recorded.map(|record| record.operation.as_str()),
-            spill_handle: recorded.and_then(|record| record.handle.as_deref()),
+            // Her newest result arrives whole; a page of it names its own handle where it is cut.
+            spill_handle: None,
         };
         format!("[result {attribution}]")
     }
@@ -298,7 +300,7 @@ impl WorkingMemory {
     pub(crate) fn action_whole_label(&self, seq: u64) -> Option<String> {
         let actions = self.actions.lock();
         let record = actions.get(seq)?;
-        Some(format!("[result {}{}] ", ResultAttribution::of(record), workspace_label(record.scope.as_deref())))
+        Some(format!("[result {}{}] ", ResultAttribution::shown_whole(record), workspace_label(record.scope.as_deref())))
     }
 
     pub fn recent_results_messages(&self) -> Vec<String> {
@@ -336,7 +338,7 @@ impl WorkingMemory {
         // after it; a shed happens only when RAM is short, so between sheds the ring appends.
         out.extend(actions.retained().filter(eligible).filter_map(|record| {
             let result = record.result.as_deref()?;
-            let attribution = ResultAttribution::of(record);
+            let attribution = ResultAttribution::shown_whole(record);
             let workspace = workspace_label(record.scope.as_deref());
             let pointer = CollapsedReceipt::of(record).map(|receipt| receipt.to_string());
             Some((format!("[result {attribution}{workspace}] {result}"), pointer))
@@ -519,7 +521,9 @@ impl WorkingMemory {
 /// One act as her view renders it: whole, summary, pointer, stored whole, outcome hash and identity.
 /// Every act's the same way, the one in flight included.
 fn act_rendering(record: &action_log::ActionRecord) -> ActRendering {
-    let attribution = ResultAttribution::of(record);
+    // Whole, it needs no reopen call; summarized, it names the handle that reopens the rest.
+    let attribution = ResultAttribution::shown_whole(record);
+    let partial = ResultAttribution::of(record);
     let workspace = workspace_label(record.scope.as_deref());
     let whole = record.result.as_deref().map(|result| format!("[result {attribution}{workspace}] {result}"));
     let pointer = match (CollapsedReceipt::of(record), &whole, &record.head) {
@@ -540,7 +544,7 @@ fn act_rendering(record: &action_log::ActionRecord) -> ActRendering {
         _ => None,
     };
     let full = whole.unwrap_or_else(|| pointer.clone()); // JUSTIFIED: a body out of RAM renders its pointer; its whole is the stored one, loaded when granted
-    let summary = record.summary.as_deref().map(|summary| format!("[result {attribution}{workspace} — summary] {summary}"));
+    let summary = record.summary.as_deref().map(|summary| format!("[result {partial}{workspace} — summary] {summary}"));
     // Resident, its body's hash; evicted, the hash it kept as it left RAM: an evicted
     // read is still the occurrence a re-read matches (`ActionRecord::stored_content`).
     let content = match (record.result.as_deref(), record.stored_content) {

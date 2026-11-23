@@ -236,8 +236,8 @@
                 StructuredOutputProtocol::JsonSchema,
             ),
             (
-                NativeProtocols::GrammarConstrained,
-                ToolProtocol::JsonInPrompt,
+                NativeProtocols::ModelTemplate,
+                ToolProtocol::NativeFunctionCalling,
                 StructuredOutputProtocol::GrammarConstrained,
             ),
         ] {

@@ -63,6 +63,7 @@ pub struct RotationLogPool {
 
 /// How often "asked to evict, nothing of mine to evict" is named while the
 /// condition persists. The broker ticks every 5 s; once a minute is loud enough.
+// derived-or-floor: a human-readable rate limit on a repeating log note, not a substrate measurement
 const BLOCKED_PROBE_INTERVAL_MS: u64 = 60_000;
 
 impl RotationLogPool {
@@ -164,6 +165,10 @@ impl RotationLogPool {
 }
 
 impl ResourcePool for RotationLogPool {
+    fn root(&self) -> Option<std::path::PathBuf> {
+        Some(self.tracked.path().to_path_buf())
+    }
+
     fn tier_name(&self) -> &str {
         &self.tier
     }
@@ -233,7 +238,7 @@ impl ResourcePool for RotationLogPool {
                 key: path
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default(),
+                    .unwrap_or_default(), // unwrap_or_default: a read_dir entry always has a file name
                 size_bytes: size,
                 pinned_count: 0,
                 // Generation number IS the age ordering the appender

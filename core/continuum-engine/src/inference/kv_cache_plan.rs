@@ -219,6 +219,18 @@ impl KvCachePlan {
         }
     }
 
+    /// The element type the in-process engine's context holds for this plan, or `None` when the plan
+    /// names a type it cannot hold (an operator override such as `q4_0`): the caller refuses then,
+    /// never substitutes another type the budget did not plan for.
+    pub fn engine_cache_type(&self) -> Option<llama::KvCacheType> {
+        match self.cache_type.trim().to_ascii_lowercase().as_str() {
+            F16 => Some(llama::KvCacheType::F16),
+            "q8_0" => Some(llama::KvCacheType::Q8_0),
+            "q4_0" => Some(llama::KvCacheType::Q4_0),
+            _ => None,
+        }
+    }
+
     /// What one token of KV costs this lane, given the artifact's declared f16 rate.
     pub fn bytes_per_token(&self, f16_rate: u64) -> u64 {
         (f16_rate / self.bytes_per_token_divisor.max(1)).max(1)

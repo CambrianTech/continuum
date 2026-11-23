@@ -5,6 +5,9 @@ edition = "2021"
 publish = false
 
 [dependencies]
+continuum-persona-engine = { path = "../continuum-persona-engine" }
+continuum-persona-llama = { path = "../continuum-persona-llama" }
+continuum-sage = { path = "../continuum-sage" }
 continuum-process = { path = "../continuum-process" }
 tempfile = { workspace = true, optional = true }
 continuum-kernel = { path = "../continuum-kernel" }
@@ -83,7 +86,6 @@ coreml = []
 cuda = ["candle-core/cuda", "candle-nn/cuda", "candle-transformers/cuda", "llama/cuda", "ort/cuda", "continuum-kernel/cuda"]
 directml = ["ort/directml"]
 metal = ["candle-core/metal", "candle-nn/metal", "candle-transformers/metal", "llama/metal", "ort/coreml"]
-mlx = []
 openvino = ["ort/openvino"]
 rocm = ["ort/rocm"]
 test-fixtures = ["continuum-kernel/test-fixtures", "dep:tempfile"]

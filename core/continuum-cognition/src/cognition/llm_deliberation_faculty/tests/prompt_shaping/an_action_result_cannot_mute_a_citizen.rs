@@ -461,3 +461,17 @@ mod the_newest_result_over_her_window {
         request
     }
 }
+
+// what this catches: a stored native exchange without paired ids stopping her mind. On the M5
+// (2026-11-19 06:21-06:41Z) calls parsed with empty ids were stored with her act, and every act
+// after refused the same receipt on every build (Aiko 32 times, Benchy 12). The one rule says such
+// an exchange cannot continue natively, so it is carried as her receipt instead.
+#[test]
+fn an_exchange_without_paired_ids_is_not_continued_natively() {
+    use crate::cognition::llm_deliberation_faculty::prompt::native_ids_correlate;
+    assert!(native_ids_correlate(&["call_a", "call_b"], &["call_a", "call_b"]), "paired, in order");
+    assert!(!native_ids_correlate(&[""], &[""]), "an empty id answers nothing");
+    assert!(!native_ids_correlate(&["call_a", "call_a"], &["call_a", "call_a"]), "a repeated id is ambiguous");
+    assert!(!native_ids_correlate(&["call_a", "call_b"], &["call_b", "call_a"]), "results out of order");
+    assert!(!native_ids_correlate(&["call_a"], &[]), "a call with no result");
+}

@@ -59,7 +59,7 @@ use turn_cycle::*;
 mod turn_settle;
 use turn_settle::*;
 mod beat_outcome;
-pub use beat_outcome::*;
+pub(crate) use beat_outcome::*;
 mod burst_fingerprint;
 use burst_fingerprint::*;
 

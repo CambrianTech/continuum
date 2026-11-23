@@ -284,6 +284,12 @@ impl PressureBroker {
     /// reference (Arc) so pools that outlive the broker stay valid; the
     /// broker iterates the registered set each tick.
     pub fn register(&self, pool: Arc<dyn ResourcePool>) {
+        // A pool on a disk is also relieved by its VOLUME's pressure (disk relief): a pool under its own
+        // budget on a full volume was asked by no one (the M5 at 92%, 2026-11-22). Its own cap stays
+        // the broker's.
+        if pool.root().is_some() {
+            crate::system_resources::disk_relief::register(Arc::clone(&pool));
+        }
         let mut pools = self.pools.write();
         let name = pool.tier_name().to_string();
         // Dedup by name — registering twice replaces (avoids duplicate eviction calls).

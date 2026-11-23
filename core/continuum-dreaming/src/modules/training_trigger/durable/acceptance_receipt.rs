@@ -291,7 +291,7 @@ impl PendingBatch {
 /// come back unsurprised is never dispatched.
 pub(super) fn unsurprised(persona: Uuid) -> Option<f32> {
     let now_ms = continuum_base::time::EpochMs::now().millis(); // pre-epoch clock: every tally reads outside its window = not measured
-    crate::persona::perception_feed::awareness_of(persona, now_ms)
+    crate::persona::senses::of(persona).and_then(|senses| senses.awareness(now_ms))
         .and_then(|a| a.verdict_surprise())
         .map(|v| v.s)
         .filter(|s| *s < crate::genome::competence::SURPRISE_FLOOR)

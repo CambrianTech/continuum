@@ -3,13 +3,7 @@
 //! `JSON_GRAMMAR`) the adapters share.
 
 pub mod llamacpp;
-pub mod llamacpp_scheduler;
-
-// MLX adapter: macOS + `mlx` feature only. Gated here so non-Mac / feature-off
-// builds don't see the module at all. Phase A scaffold — see continuum#897
-// and docs/inference/MLX-BACKEND.md.
-#[cfg(all(feature = "mlx", target_os = "macos"))]
-pub mod mlx_adapter;
+pub mod persona_scheduler;
 
 use std::path::Path;
 
@@ -17,8 +11,9 @@ use candle_core::quantized::gguf_file;
 
 // ─── Unified Text Generation ─────────────────────────────────────────────────
 
-/// Sampling configuration for text generation.
-/// All fields are required — no silent defaults.
+/// The knobs a request states for its sampling. The turn's sampler (`llama::TurnSampler`) takes
+/// them; everything else, including any tool grammar and think budget, comes from the render that
+/// produced her prompt.
 #[derive(Debug, Clone)]
 pub struct SamplingConfig {
     /// Temperature for softmax sampling. 0.0 = greedy (argmax).
@@ -29,32 +24,29 @@ pub struct SamplingConfig {
     pub top_k: usize,
     /// Top-p (nucleus) sampling: keep smallest set of tokens with cumulative prob >= p. 1.0 = disabled.
     pub top_p: f64,
-    /// GBNF grammar (e.g. JSON shape). When Some, scheduler attaches it
-    /// to the sampler chain BEFORE temp/dist so output is constrained to
-    /// match the grammar. None = unconstrained. Set by adapters when the
-    /// caller's request_format demands a structured shape (JsonObject).
+    /// GBNF grammar a turn with no chat render must match (the caller's `response_format`
+    /// JsonObject). A rendered turn's grammar is the render's.
     pub grammar: Option<String>,
 }
 
 impl SamplingConfig {
     /// Config for code generation: greedy, moderate repeat penalty.
     pub fn code() -> Self {
-        Self {
-            temperature: 0.0,
-            repeat_penalty: 1.1,
-            top_k: 0,
-            top_p: 1.0,
-            grammar: None,
-        }
+        Self { temperature: 0.0, repeat_penalty: 1.1, top_k: 0, top_p: 1.0, grammar: None }
     }
     /// Config for chat: slight creativity, standard repeat penalty.
     pub fn chat() -> Self {
-        Self {
-            temperature: 0.6,
-            repeat_penalty: 1.1,
-            top_k: 40,
-            top_p: 0.95,
-            grammar: None,
+        Self { temperature: 0.6, repeat_penalty: 1.1, top_k: 40, top_p: 0.95, grammar: None }
+    }
+
+    /// The knobs as the turn's sampler takes them.
+    pub fn knobs(&self) -> llama::SamplingKnobs {
+        llama::SamplingKnobs {
+            temperature: self.temperature as f32,
+            // A top_k at or past the vocabulary keeps all of it, so one past i32 means the same.
+            top_k: self.top_k.min(i32::MAX as usize) as i32,
+            top_p: self.top_p as f32,
+            repeat_penalty: self.repeat_penalty,
         }
     }
 }

@@ -50,6 +50,8 @@ use std::sync::Arc;
 
 mod persona_adapter_factory;
 pub use persona_adapter_factory::*;
+mod shared_engine_factory;
+pub use shared_engine_factory::{node_engine_adapter, SharedEnginePersonaAdapterFactory};
 mod materialize_adapters;
 pub use materialize_adapters::*;
 mod build_persona_system_prompt;

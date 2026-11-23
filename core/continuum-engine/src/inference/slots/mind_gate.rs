@@ -69,6 +69,7 @@ impl MindTurn {
         W: std::future::Future<Output = Result<(), crate::capacity::mind_window::GrantsUnavailable>>,
         B: Fn() -> bool,
     {
+        let started = std::time::Instant::now();
         loop {
             // Subscribe before inspecting state, so publication between check and wait is seen.
             let next = subscribe();
@@ -76,6 +77,10 @@ impl MindTurn {
                 let read = custody(key.persona()).read_owned().await;
                 let permit = gate(key).acquire_owned().await.map_err(|_| format!("the act gate of {key} was closed"))?;
                 if !blocked() {
+                    // timed: her act gate (one act per mind, page custody) told apart from the
+                    // admission waits after it on the same act (Codex, BigMama R21)
+                    continuum_base::probe!(class = "inference.mind_gate.waited", page = %key, ms = started.elapsed().as_millis() as u64,
+                        "her act took her mind gate");
                     return Ok(MindTurn { _permit: permit, _custody: read });
                 }
                 drop(permit);

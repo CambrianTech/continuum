@@ -28,7 +28,7 @@ use std::sync::Arc;
 use serde_json::json;
 
 use crate::inference::resource_admission::{LanePriority, ServingLanePermit};
-use crate::inference::slots::{DecodeBound, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
+use crate::inference::slots::{DecodeBound, DecodeClaim, DecodePermit, KvSlotPool, MindTurn, PageKey, SlotClass, SlotPermit, SlotPin};
 
 mod page_liveness;
 mod page_quote;
@@ -398,6 +398,8 @@ async fn admit(
     let dream_lane = |pool: Option<&Arc<KvSlotPool>>| class == SlotClass::Dream && (keyed_dream || pool.is_some_and(|pool| pool.scratch_slot().is_none()));
     let mut needs_lane = dream_lane(pool.as_ref());
     let mut lane: Option<ServingLanePermit> = None;
+    // her rank for the permit is her request's class, held across every retry below
+    let mut claim = DecodeClaim::new(class);
     'admit: loop {
         if caller_lane.is_none() {
             if let Some(authority) = &reacquire {
@@ -411,7 +413,7 @@ async fn admit(
         //    TRIES: when the adapter is full it lets the lane go, waits for a permit to RETURN
         //    holding nothing (never handed one it could only drop), and takes both again (#5786).
         let _permit = if lane.is_some() || caller_lane.is_some() {
-            match concurrency.try_or_return() {
+            match concurrency.try_claim(&mut claim) {
                 Ok(permit) => permit,
                 Err(returned) => {
                     lane = None;
@@ -421,7 +423,7 @@ async fn admit(
                 }
             }
         } else {
-            concurrency.acquire().await
+            concurrency.claim(&mut claim).await
         };
 
         // 2. THE ENDPOINT — a turn holds through a closed one (an engine still loading,

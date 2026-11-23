@@ -8,7 +8,7 @@
 use std::path::PathBuf;
 use std::time::Instant;
 
-use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
+use llama::{Batch, ContextParams, Model, ModelParams, Pos, Sampler};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -50,7 +50,7 @@ fn main() {
     let mut batch = Batch::allocated(512, 1);
     let last_idx = (prompt_tokens.len() - 1) as i32;
     for (i, tok) in prompt_tokens.iter().enumerate() {
-        batch.push(*tok, i as i32, &[0], i as i32 == last_idx);
+        batch.push(*tok, Pos::try_from(i).expect("a prompt a sequence can address"), &[0], i as i32 == last_idx);
     }
     ctx.decode(&batch).expect("prefill decode");
     let prefill_elapsed = prefill_start.elapsed();
@@ -65,7 +65,7 @@ fn main() {
     // Generate N tokens
     let mut sampler = Sampler::greedy();
     let mut n_decoded = 0;
-    let mut n_cur = batch.n_tokens();
+    let mut n_cur = Pos::try_from(prompt_len).expect("a prompt a sequence can address");
     let gen_start = Instant::now();
     let mut output = String::new();
 
@@ -80,7 +80,7 @@ fn main() {
         batch.push(token, n_cur, &[0], true);
         ctx.decode(&batch).expect("gen decode");
 
-        n_cur += 1;
+        n_cur = n_cur.advanced(1).expect("a generation a sequence can address");
         n_decoded += 1;
     }
 

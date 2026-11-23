@@ -116,7 +116,7 @@ async fn an_unresolved_switch_holds_its_slot_until_the_engine_answers() {
     let held = PageKey::mind(Uuid::new_v4()).expect("test: held activity");
     let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
     pool.note_saved(held);
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
     let patience = AdmissionPatience::for_turn;
 
@@ -171,7 +171,7 @@ async fn a_reply_cut_mid_body_quarantines_before_the_slot_is_let_go() {
     let held = PageKey::mind(Uuid::new_v4()).expect("test: held activity");
     let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
     pool.note_saved(held);
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let client = reqwest::Client::new();
 
     let turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(held), Some(pool.clone()), &client, &engine.root, 100, AdmissionPatience::for_turn()).await;
@@ -212,7 +212,7 @@ async fn a_checkpoint_left_unresolved_quarantines_the_endpoint() {
     watch_for_test(&engine.root, always_busy);
     let (endpoint, pool) = super::lifecycle::boot(&engine.root, dir.path()).await;
     let client = reqwest::Client::new();
-    let sem = Arc::new(Semaphore::new(2));
+    let sem = crate::inference::slots::DecodeBound::with_permits(2);
     let resident = PageKey::mind(Uuid::new_v4()).expect("test: resident activity");
     let mut turn = admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(resident), Some(pool), &client, &engine.root, 100, Duration::ZERO)
         .await
@@ -240,7 +240,7 @@ async fn an_unresolved_page_releases_decode_capacity_but_keeps_physical_custody(
     let held = PageKey::mind(Uuid::new_v4()).ok_or("test: non-nil mind")?;
     let ready = PageKey::mind(Uuid::new_v4()).ok_or("test: non-nil mind")?;
     pool.note_saved(held);
-    let sem = Arc::new(Semaphore::new(1));
+    let sem = crate::inference::slots::DecodeBound::with_permits(1);
     let gate = Box::leak(Box::new(LaneAdmission::new()));
     gate.set_served_lane_count(1);
     let lane = gate.acquire_serving_lane(None, LanePriority::Directed, None).await;

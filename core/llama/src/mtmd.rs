@@ -16,7 +16,7 @@
 //! let model = Model::load("qwen2-vl-7b.gguf", ModelParams::default())?;
 //! let mut lctx = model.new_context(ContextParams::default())?;
 //! let mtmd = MtmdContext::from_file("mmproj-qwen2-vl.gguf", &model)?;
-//! let eval = MtmdEvalParams { n_past: 0, n_batch: 512, seq_id: 0, logits_last: true };
+//! let eval = MtmdEvalParams { n_past: llama::Pos::ZERO, n_batch: 512, seq_id: 0, logits_last: true };
 //! let n_past = mtmd.eval_image(&mut lctx, "<__media__>What's in this picture?", &png_bytes, &eval)?;
 //! // ... continue with normal sampler.sample(&lctx, ...) loop, starting from n_past
 //! ```
@@ -55,7 +55,7 @@ struct Media<'a> {
 #[derive(Debug, Clone, Copy)]
 pub struct MtmdEvalParams {
     /// Starting position in the context; evaluation returns the advanced position.
-    pub n_past: sys::llama_pos,
+    pub n_past: crate::Pos,
     /// Maximum number of tokens per evaluation batch.
     pub n_batch: i32,
     /// Sequence in the shared context that receives the tokens.
@@ -140,7 +140,7 @@ impl MtmdContext {
         text: &str,
         image_bytes: &[u8],
         params: &MtmdEvalParams,
-    ) -> Result<i32, String> {
+    ) -> Result<crate::Pos, String> {
         self.eval_media(lctx, Media { text, bytes: image_bytes, kind: MediaKind::Image }, params)
     }
 
@@ -162,7 +162,7 @@ impl MtmdContext {
         text: &str,
         audio_bytes: &[u8],
         params: &MtmdEvalParams,
-    ) -> Result<i32, String> {
+    ) -> Result<crate::Pos, String> {
         self.eval_media(lctx, Media { text, bytes: audio_bytes, kind: MediaKind::Audio }, params)
     }
 
@@ -170,7 +170,7 @@ impl MtmdContext {
     /// the bytes turn out to be). The `kind` argument shapes only the
     /// error messages so failures point at the actual modality the
     /// caller asked for; the underlying mtmd code path is identical.
-    fn eval_media(&self, lctx: &mut Context, media: Media<'_>, params: &MtmdEvalParams) -> Result<i32, String> {
+    fn eval_media(&self, lctx: &mut Context, media: Media<'_>, params: &MtmdEvalParams) -> Result<crate::Pos, String> {
         let Media { text, bytes: media_bytes, kind } = media;
         // Step 1: load bitmap from raw bytes — the helper auto-detects
         // image vs audio from magic bytes (per mtmd-helper.h: stb_image
@@ -269,13 +269,13 @@ impl MtmdContext {
         }
 
         // Step 4: evaluate the chunks through llama_context, advancing n_past.
-        let mut new_n_past = params.n_past;
+        let mut new_n_past = params.n_past.native();
         let eval_rc = unsafe {
             sys::mtmd_helper_eval_chunks(
                 self.ptr.as_ptr(),
                 lctx.as_ptr(),
                 chunks.as_ptr(),
-                params.n_past,
+                params.n_past.native(),
                 params.seq_id,
                 params.n_batch,
                 params.logits_last,
@@ -288,7 +288,7 @@ impl MtmdContext {
             ));
         }
 
-        Ok(new_n_past)
+        crate::Pos::from_native(new_n_past).ok_or_else(|| format!("mtmd_helper_eval_chunks succeeded but reported position {new_n_past}"))
     }
 }
 

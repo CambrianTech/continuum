@@ -33,6 +33,27 @@ pub enum DriveRole {
     Cold,
 }
 
+/// What the OS reports a drive is made of. Flash serves; a spinning disk is the cold archive (C: is
+/// typically flash and D: a big slow disk; on a Mac the internal SSD against an external drive).
+/// Ordered slowest first, so the faster of two drives is the greater; an unreported kind ranks with
+/// the slowest, so the core never moves a model onto a drive it cannot vouch for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DriveKind {
+    Unknown,
+    Spinning,
+    Flash,
+}
+
+impl From<sysinfo::DiskKind> for DriveKind {
+    fn from(kind: sysinfo::DiskKind) -> Self {
+        match kind {
+            sysinfo::DiskKind::SSD => DriveKind::Flash,
+            sysinfo::DiskKind::HDD => DriveKind::Spinning,
+            sysinfo::DiskKind::Unknown(_) => DriveKind::Unknown,
+        }
+    }
+}
+
 /// A drive the system can place artifacts on — DETECTED, not configured. This is the
 /// "recognize the storage" primitive: the system sees its OWN drives, so a user never
 /// hand-places a model file (the manual `curl`-to-`D:` that this exists to retire).
@@ -43,6 +64,8 @@ pub struct DriveInfo {
     pub total_bytes: u64,
     pub available_bytes: u64,
     pub role: DriveRole,
+    /// Flash or spinning, as the OS reports it.
+    pub kind: DriveKind,
 }
 
 /// Enumerate mounted drives (sysinfo) and flag the COLD tier: the largest-available
@@ -59,13 +82,11 @@ pub fn detect_drives() -> Vec<DriveInfo> {
             total_bytes: d.total_space(),
             available_bytes: d.available_space(),
             role: DriveRole::System,
+            kind: d.kind().into(),
         })
         .collect();
 
-    #[cfg(windows)]
-    let system_path = std::env::var_os("SystemRoot").map(PathBuf::from);
-    #[cfg(not(windows))]
-    let system_path = Some(PathBuf::from("/"));
+    let system_path = continuum_host::system_volume::system_root();
     assign_cold_role(&mut infos, system_path.as_deref(), |index| {
         // APFS volumes can share one capacity container despite distinct mounts
         // (including the root snapshot and writable Data volume). sysinfo exposes
@@ -93,7 +114,7 @@ fn assign_cold_role(
     let Some(system_mount) = system_path
         .filter(|path| path.is_absolute())
         .and_then(|path| drive_holding(drives, path))
-        .map(|drive| mount_comparison_path(&drive.mount))
+        .map(|drive| continuum_host::system_volume::mount_comparison_path(&drive.mount))
     else {
         return;
     };
@@ -102,7 +123,7 @@ fn assign_cold_role(
         .enumerate()
         .filter(|(index, drive)| {
             eligible(*index)
-                && mount_comparison_path(&drive.mount) != system_mount
+                && continuum_host::system_volume::mount_comparison_path(&drive.mount) != system_mount
                 && drive.available_bytes >= MIN_COLD_TIER_BYTES
         })
         .max_by_key(|(_, drive)| drive.available_bytes)
@@ -124,38 +145,13 @@ fn assign_cold_role(
 /// budget already resolved its drive by longest prefix (`ipc/mod.rs`); this is that
 /// rule, hoisted, so the two can never disagree again.
 pub fn drive_holding<'a>(drives: &'a [DriveInfo], path: &Path) -> Option<&'a DriveInfo> {
-    let path = mount_comparison_path(path);
+    let path = continuum_host::system_volume::mount_comparison_path(path);
     drives
         .iter()
-        .filter(|d| path.starts_with(mount_comparison_path(&d.mount)))
+        .filter(|d| path.starts_with(continuum_host::system_volume::mount_comparison_path(&d.mount)))
         .max_by_key(|d| d.mount.as_os_str().len())
 }
 
-// canonicalize returns verbatim prefixes on Windows, while sysinfo mount points
-// use ordinary prefixes. This is comparison only; filesystem operations retain
-// their native spelling and long-path support.
-fn mount_comparison_path(path: &Path) -> PathBuf {
-    #[cfg(windows)]
-    {
-        use std::path::{Component, Prefix};
-        let mut components = path.components();
-        if let Some(Component::Prefix(prefix)) = components.next() {
-            let mut normalized = match prefix.kind() {
-                Prefix::Disk(letter) | Prefix::VerbatimDisk(letter) => PathBuf::from(format!("{}:", char::from(letter.to_ascii_uppercase()))),
-                Prefix::UNC(server, share) | Prefix::VerbatimUNC(server, share) => {
-                    let mut root = PathBuf::from(r"\\");
-                    root.push(server);
-                    root.push(share);
-                    root
-                },
-                _ => return path.to_path_buf(),
-            };
-            normalized.extend(components);
-            return normalized;
-        }
-    }
-    path.to_path_buf()
-}
 
 #[cfg(test)]
 mod tests {
@@ -173,7 +169,7 @@ mod tests {
             mount: PathBuf::from(mount),
             total_bytes: 10 * MIN_COLD_TIER_BYTES,
             available_bytes,
-            role: DriveRole::System,
+            role: DriveRole::System, kind: DriveKind::Unknown,
         };
         let mut drives = [
             drive(system, 8 * MIN_COLD_TIER_BYTES),
@@ -222,7 +218,7 @@ mod tests {
             mount: PathBuf::from(mount),
             total_bytes: total,
             available_bytes: total / 2,
-            role: DriveRole::System,
+            role: DriveRole::System, kind: DriveKind::Unknown,
         };
         // Each platform in ITS OWN spelling — `Path` components are platform-defined,
         // so `C:\Users\x` is ONE component on Unix and this case can only mean
@@ -238,10 +234,10 @@ mod tests {
             // monitor's mount sample uses ordinary Windows spelling.
             let page_dir = tempfile::tempdir().unwrap();
             let physical = page_dir.path().canonicalize().unwrap();
-            let ordinary = mount_comparison_path(&physical);
+            let ordinary = continuum_host::system_volume::mount_comparison_path(&physical);
             let mount: PathBuf = ordinary.components().take(2).collect();
             let observed = [DriveInfo { mount, total_bytes: 8_000,
-                available_bytes: 4_000, role: DriveRole::System }];
+                available_bytes: 4_000, role: DriveRole::System, kind: DriveKind::Unknown }];
             assert_eq!(drive_holding(&observed, &physical).map(|d| d.total_bytes), Some(8_000),
                 "actual canonical page directory resolves through the monitor's volume selector");
             let unc = [drive(r"\\server\share\", 9_000)];

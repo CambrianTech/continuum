@@ -11,6 +11,9 @@
 
 #[cfg(test)]
 mod tests;
+mod turn_sampler;
+
+pub use turn_sampler::{SamplingKnobs, TurnSampler};
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr::NonNull;
@@ -45,11 +48,16 @@ impl Reply {
     /// The handle or string the call returned, or the refusal it reported.
     fn taken(self, step: &'static str, status: c_int) -> Result<NonNull<c_void>, ChatRefusal> {
         if status != 0 {
-            // The native guard writes with snprintf into a nonempty, zero-initialized buffer.
-            let message = unsafe { CStr::from_ptr(self.error.as_ptr()) }.to_string_lossy().into_owned();
-            return Err(ChatRefusal { step, message });
+            return Err(self.refusal(step));
         }
         NonNull::new(self.out).ok_or_else(|| ChatRefusal { step, message: "the native side returned nothing".into() })
+    }
+
+    /// The refusal a failed call reported.
+    fn refusal(&self, step: &'static str) -> ChatRefusal {
+        // The native guard writes with snprintf into a nonempty, zero-initialized buffer.
+        let message = unsafe { CStr::from_ptr(self.error.as_ptr()) }.to_string_lossy().into_owned();
+        ChatRefusal { step, message }
     }
 }
 
@@ -139,8 +147,8 @@ pub struct ChatRender {
 unsafe impl Send for ChatRender {}
 
 impl ChatRender {
-    /// The prompt, the grammar and its lazy triggers, the preserved tokens, the extra stops and the
-    /// thinking tags, as JSON. Read once per request; the parser state stays native.
+    /// The prompt, its generation prompt and the extra stops, as JSON. Read once per request; the
+    /// parser and everything her sampler is built from stay native.
     pub fn describe(&self) -> Result<String, ChatRefusal> {
         returned("describe", |reply| unsafe { continuum_chat_render_describe(self.ptr.as_ptr(), reply) })
     }

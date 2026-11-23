@@ -350,7 +350,12 @@ impl SemanticDistiller {
             user_id: None,
             room_id: None,
             purpose: Some(lens.purpose.to_string()),
-            persona_id: persona_id.map(|id| id.to_string()),
+            // A dream is not her conversation: on the Core it is a one-off with its own context,
+            // released when it ends. Run as her, a ~500-token dream overwrote her conversation's
+            // cached state, and her next act prefilled from scratch (the M5, 20c6586616 and
+            // a4927bf139, 2026-11-21: prefix reuse p50 0.0 against 0.94 before dreams ran,
+            // 40-76 s prefills). Her id still sizes the dream (`lens_terms` above).
+            persona_id: None,
             turn_bound: None,
         };
 

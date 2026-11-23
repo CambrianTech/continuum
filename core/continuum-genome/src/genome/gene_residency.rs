@@ -20,10 +20,10 @@
 //! Probes: `genome.page` (gene, direction, bytes, ms) and `genome.page.failed`.
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 pub mod catalog;
+mod reconcile;
 
 use parking_lot::Mutex;
 use uuid::Uuid;
@@ -119,8 +119,7 @@ impl State {
 #[derive(Default)]
 pub struct GeneResidency {
     state: Mutex<State>,
-    reconciling: AtomicBool,
-    again: AtomicBool,
+    reconcile_worker: reconcile::Worker,
 }
 
 impl GeneResidency {
@@ -145,28 +144,6 @@ impl GeneResidency {
         } else {
             state.phenotypes.insert(persona, phenotype.genes.clone());
         }
-    }
-
-    /// Bring the engine's catalog in and page back in what her minds run, off the request path.
-    /// Coalesced: a reconcile asked for while one runs runs once more after it.
-    pub fn schedule_reconcile(self: &Arc<Self>) {
-        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
-            return; // no runtime (a sync test): nothing to page, and the engine pages in on demand
-        };
-        if self.reconciling.swap(true, Ordering::AcqRel) {
-            self.again.store(true, Ordering::Release);
-            return;
-        }
-        let me = Arc::clone(self);
-        runtime.spawn(async move {
-            loop {
-                me.reconcile().await;
-                if !me.again.swap(false, Ordering::AcqRel) {
-                    break;
-                }
-            }
-            me.reconciling.store(false, Ordering::Release);
-        });
     }
 
     async fn reconcile(&self) {

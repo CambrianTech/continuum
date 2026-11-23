@@ -696,24 +696,41 @@ impl SlotDirectory {
         }
     }
 
+    /// `root`'s entry if something registered it. Every read below goes through this and never
+    /// inserts: a lookup alone made an `Unprobed` entry the stop then claimed custody of (Codex,
+    /// the M5's phantom :58057). Only discovery, launch and latching register an endpoint.
+    fn existing(&self, root: &str) -> Option<Arc<EndpointSlots>> {
+        self.endpoints.get(root.trim_end_matches('/')).map(|entry| Arc::clone(entry.value()))
+    }
+
     /// The pool at `root` as far as it was probed: `NotAsked` (the caller discovers it, probing
-    /// /props), `Absent` (latched unsupported), or `Known`.
+    /// /props, or nothing registered `root`), `Absent` (latched unsupported), or `Known`.
     pub fn get(&self, root: &str) -> PoolProbe {
-        self.endpoint(root).state.lock().pool().cloned()
+        let Some(endpoint) = self.existing(root) else { return Probed::NotAsked };
+        let state = endpoint.state.lock();
+        state.pool().cloned()
     }
 
     pub(crate) fn page_admission_known(&self, root: &str) -> bool {
         // A refused discovery never authorizes a write. It remains retryable:
         // the existing retained path worker may finish after a bounded wait.
-        matches!(self.endpoint(root).state.lock().page_admission, Some(Ok(_)))
+        let Some(endpoint) = self.existing(root) else { return false };
+        let state = endpoint.state.lock();
+        matches!(state.page_admission, Some(Ok(_)))
     }
 
     pub fn page_discovery_generation(&self, root: &str) -> Option<Uuid> {
-        self.endpoint(root).state.lock().generation().map(|generation| generation.id)
+        let endpoint = self.existing(root)?;
+        let state = endpoint.state.lock();
+        state.generation().map(|generation| generation.id)
     }
 
     pub(crate) fn page_admission_path(&self, root: &str) -> Result<Option<std::path::PathBuf>, String> {
-        match self.endpoint(root).state.lock().page_admission.clone() {
+        let Some(endpoint) = self.existing(root) else {
+            return Err("page-write capability has not been negotiated".into());
+        };
+        let admission = endpoint.state.lock().page_admission.clone();
+        match admission {
             Some(negotiated) => negotiated,
             None => Err("page-write capability has not been negotiated".into()),
         }

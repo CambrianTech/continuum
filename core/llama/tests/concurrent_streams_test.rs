@@ -29,7 +29,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
-use llama::{Batch, ContextParams, Model, ModelParams, Sampler};
+use llama::{Batch, ContextParams, Model, ModelParams, Pos, Sampler};
 
 fn test_model() -> Option<PathBuf> {
     if let Ok(home) = std::env::var("HOME") {
@@ -61,7 +61,7 @@ fn generate_once(model: &Model, prompt: &str, max_tokens: usize) -> (usize, u128
         let chunk_end = (chunk_start + n_batch).min(total);
         batch.clear();
         for i in chunk_start..chunk_end {
-            batch.push(prompt_tokens[i], i as i32, &[0], i == last_idx);
+            batch.push(prompt_tokens[i], Pos::try_from(i).expect("a prompt a sequence can address"), &[0], i == last_idx);
         }
         ctx.decode(&batch).expect("prefill");
         chunk_start = chunk_end;
@@ -69,7 +69,7 @@ fn generate_once(model: &Model, prompt: &str, max_tokens: usize) -> (usize, u128
 
     let mut sampler = Sampler::greedy();
     let mut n_decoded = 0usize;
-    let mut n_cur = total as i32;
+    let mut n_cur = Pos::try_from(total).expect("a prompt a sequence can address");
     let start = Instant::now();
     for _ in 0..max_tokens {
         let token = sampler.sample(&ctx, -1);
@@ -79,7 +79,7 @@ fn generate_once(model: &Model, prompt: &str, max_tokens: usize) -> (usize, u128
         batch.clear();
         batch.push(token, n_cur, &[0], true);
         ctx.decode(&batch).expect("gen");
-        n_cur += 1;
+        n_cur = n_cur.advanced(1).expect("a generation a sequence can address");
         n_decoded += 1;
     }
     (n_decoded, start.elapsed().as_millis())
