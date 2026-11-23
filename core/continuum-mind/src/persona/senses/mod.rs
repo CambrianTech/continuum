@@ -57,6 +57,8 @@ pub struct Handle {
     senses: Teller<Senses>,
     awareness: Reader<AwarenessSnapshot>,
     calling: Reader<Calling>,
+    /// Where her time goes: her parts' measured numbers, read without holding them.
+    profiler: continuum_sage::component::Profiler,
 }
 
 impl Handle {
@@ -165,10 +167,15 @@ pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> R
             built: continuum_sage::component::LastSeen::default(),
         });
     }
-    let handle = Handle { senses, awareness, calling };
+    let handle = Handle { senses, awareness, calling, profiler: parts.profiler() };
     RESIDENTS.write().insert(persona, handle.clone());
     continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her senses are on the one feed");
     Ok(Resident { persona, handle, parts })
+}
+
+/// Every resident's parts' numbers, the longest-waiting part first in each.
+pub fn profiles() -> Vec<(Uuid, Vec<(&'static str, continuum_sage::component::Telemetry)>)> {
+    RESIDENTS.read().iter().map(|(persona, handle)| (*persona, handle.profiler.read())).collect()
 }
 
 /// Her senses on this core; `None` when she is not resident here.

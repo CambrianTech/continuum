@@ -13,7 +13,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use super::{need_key, node, presence_key, start, Bus, Component, Need, Telemetry, Teller, NEED, TELEMETRY};
+use super::{need_key, node, presence_key, start, Bus, Component, Need, Profiler, Telemetry, Teller, NEED, TELEMETRY};
 use crate::dataflow::{OwnerId, Reader};
 
 /// Where an owner's parts hear and say: the node's bus, or one the owner holds (a mind's own).
@@ -28,8 +28,6 @@ type Resting = Pin<Box<dyn Future<Output = bool> + Send>>;
 struct Part {
     _running: Box<dyn Any + Send + Sync>,
     need: Reader<Need>,
-    name: &'static str,
-    telemetry: Reader<Telemetry>,
     rest: Box<dyn Fn() -> Resting + Send + Sync>,
 }
 
@@ -39,17 +37,21 @@ pub struct Owner {
     id: OwnerId,
     epoch: u64,
     parts: Vec<Part>,
+    /// Its parts' numbers, readable from anywhere without holding them.
+    profiler: Profiler,
 }
 
 impl Owner {
     /// The node's owner, on the node's bus, as `id` in its `epoch` (a restart is a new epoch).
     pub fn of_node(id: OwnerId, epoch: u64) -> Self {
-        Self { bus: Holds::Node(node()), id, epoch, parts: Vec::new() }
+        let profiler = Profiler::default();
+        super::profile::register_node(&profiler);
+        Self { bus: Holds::Node(node()), id, epoch, parts: Vec::new(), profiler }
     }
 
     /// An owner with a bus of its own (a mind's): her parts hear and say there, and nowhere else.
     pub fn with_bus(bus: Arc<Bus>, id: OwnerId, epoch: u64) -> Self {
-        Self { bus: Holds::Own(bus), id, epoch, parts: Vec::new() }
+        Self { bus: Holds::Own(bus), id, epoch, parts: Vec::new(), profiler: Profiler::default() }
     }
 
     /// Start `component` as one of this owner's parts; it runs until the owner drops. Returns a
@@ -58,11 +60,10 @@ impl Owner {
         let running = start(component, self.bus(), self.id, self.epoch);
         let teller = running.teller();
         let resting = teller.clone();
+        self.profiler.add(P::NAME, self.bus().reader::<Telemetry>(TELEMETRY, presence_key(P::NAME)));
         self.parts.push(Part {
             _running: Box::new(running),
             need: self.bus().reader::<Need>(NEED, need_key(P::NAME)),
-            name: P::NAME,
-            telemetry: self.bus().reader::<Telemetry>(TELEMETRY, presence_key(P::NAME)),
             rest: Box::new(move || {
                 let teller = resting.clone();
                 Box::pin(async move { teller.rest().await })
@@ -99,13 +100,13 @@ impl Owner {
     /// Every part's measured numbers, the longest-waiting first: where this owner's time goes, read
     /// now without waiting on any part. A part that has handled nothing yet reads as zero.
     pub fn profile(&self) -> Vec<(&'static str, Telemetry)> {
-        let mut profile: Vec<_> = self
-            .parts
-            .iter()
-            .map(|part| (part.name, part.telemetry.latest().map(|snapshot| *snapshot.value).unwrap_or_default())) // JUSTIFIED: nothing handled yet is zero time, not a missing fact
-            .collect();
-        profile.sort_by(|a, b| b.1.max_wait.cmp(&a.1.max_wait).then(b.1.max_handle.cmp(&a.1.max_handle)));
-        profile
+        self.profiler.read()
+    }
+
+    /// Its parts' numbers as a read-only handle that holds no lifetime: what a command, a view or
+    /// the lane keeps to read where this owner's time goes.
+    pub fn profiler(&self) -> Profiler {
+        self.profiler.clone()
     }
 
     /// Rest every part (the owner rests, or its memory is wanted elsewhere): each gives back what
@@ -126,6 +127,7 @@ impl Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
+        self.profiler.clear();
         // Newest first: a part started later may hear what an earlier one says.
         while let Some(part) = self.parts.pop() {
             drop(part);
