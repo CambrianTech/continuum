@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::{Delivered, Key, Component};
-use crate::dataflow::{Emitter, InputRevision, Provenance, Publisher, RunId};
+use crate::dataflow::{Emitter, InputRevision, Provenance, Publisher, RunId, TopicName};
 use crate::StageInput;
 
 /// The component's own input, filled once its worker exists (before any input is handled).
@@ -40,11 +40,21 @@ pub struct Ctx<P: Component> {
     timers: HashMap<Key, crate::clock::Alarm>,
     /// How much it wants to act, in its own judgment; published by the engine after each input.
     urgency: super::Urgency,
+    /// Its subscription windows by topic, to resize live.
+    windows: super::Windows,
 }
 
 impl<P: Component> Ctx<P> {
-    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>) -> Self {
-        Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content }
+    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>, windows: super::Windows) -> Self {
+        Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content, windows }
+    }
+
+    /// Resize its window on `topic` (one it hears): from a measurement it just took, never a constant.
+    /// Shrinking drops the oldest it holds now. False when it hears no such topic.
+    pub fn resize(&self, topic: TopicName, holds: std::num::NonZeroUsize) -> bool {
+        let Some(window) = self.windows.lock().get(&topic).cloned() else { return false };
+        window.resize(holds);
+        true
     }
 
     pub(super) fn begin(&mut self, from: Option<InputRevision>) {

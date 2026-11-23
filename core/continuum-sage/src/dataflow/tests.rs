@@ -601,4 +601,32 @@ mod topics {
         assert!(got.windows(2).all(|w| w[0] < w[1]), "in order: {got:?}");
         assert!(got.len() < 20, "a part a whole window behind lost its oldest, visible as a gap: {got:?}");
     }
+
+    // what this catches: a window fixed at wiring, so a consumer whose budget changed (a capture
+    // writer granted less disk) must re-wire or hold too much. Resized live, a smaller window keeps
+    // only the newest of what it held and of what comes after; a larger one holds more again.
+    #[tokio::test]
+    async fn a_window_resized_live_keeps_the_newest() {
+        let (mut emitter, subscribe) = stream::<u64>(TopicName("her/percepts"));
+        let (slow_in, _slow, mut slow, slow_gate) = part(false);
+        let resize = subscribe.attach(&slow_in, std::num::NonZeroUsize::MIN.saturating_add(9)); // holds 10
+        for value in 1..=8 {
+            emitter.emit(value);
+        }
+        resize.resize(std::num::NonZeroUsize::MIN.saturating_add(1)); // holds 2: drops the oldest now
+        for value in 9..=12 {
+            emitter.emit(value);
+        }
+        slow_gate.add_permits(Semaphore::MAX_PERMITS);
+        let mut got = Vec::new();
+        while got.last() != Some(&12) {
+            match slow.recv().await {
+                Some(value) => got.push(value),
+                None => break,
+            }
+        }
+        assert_eq!(got.last(), Some(&12), "it ends on the newest");
+        assert!(got.iter().filter(|v| **v >= 9).count() <= 4, "after the shrink it keeps only the newest: {got:?}");
+        assert!(got.len() < 12, "the shrink and the smaller window let the oldest go: {got:?}");
+    }
 }
