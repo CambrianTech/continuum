@@ -41,11 +41,11 @@ pub struct Ctx<P: Component> {
     /// How much it wants to act, in its own judgment; published by the engine after each input.
     urgency: super::Urgency,
     /// Its subscription windows by topic, to resize live.
-    windows: super::Windows,
+    windows: super::wiring::Windows,
 }
 
 impl<P: Component> Ctx<P> {
-    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>, windows: super::Windows) -> Self {
+    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>, windows: super::wiring::Windows) -> Self {
         Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content, windows }
     }
 

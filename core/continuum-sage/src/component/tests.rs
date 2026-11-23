@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::dataflow::{Event, Publisher, Snapshot, TopicName};
+use crate::dataflow::{Event, OwnerId, Publisher, RunId, Snapshot, StageIncarnation, TopicName};
 use uuid::Uuid;
 
 const NUMBERS: TopicName = TopicName("test/numbers");
