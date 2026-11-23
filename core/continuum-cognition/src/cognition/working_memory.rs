@@ -545,7 +545,7 @@ fn receipt_key(seq: u64, handle: Option<&str>) -> String {
 /// EVERY handle a mind can still reach from what it holds: each retained receipt's own, each
 /// collapsed pointer's, and the per-call results each of those receipts points at. The one
 /// owner of that set: working memory publishes it live, and eviction reads the same set from
-/// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
+/// the list each checkpoint keeps beside it (`tool_executor::spill::checkpoint_handles`).
 pub(crate) fn reachable_handles(
     receipts: HashSet<String>,
     receipt_children: &BTreeMap<String, Vec<String>>,

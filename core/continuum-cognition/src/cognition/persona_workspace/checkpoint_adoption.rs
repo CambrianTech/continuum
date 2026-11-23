@@ -464,6 +464,9 @@ pub fn adopt(
     if optional_selection(&destination)? != plan.prior_destination {
         return Err(AdoptionError::DestinationChanged);
     }
+    // The adopted checkpoint names handles the list beside the old one does not know: clear the
+    // list first, so until her next save writes one the checkpoint protects everything of hers.
+    crate::cognition::tool_executor::spill::checkpoint_handles::clear(&destination)?;
     fs::rename(&staged, &destination)?;
     sync_parent(&destination)?;
     let published = optional_selection(&destination)?;
