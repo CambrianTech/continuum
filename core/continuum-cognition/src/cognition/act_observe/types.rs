@@ -164,6 +164,10 @@ pub enum SettleStep {
     /// tick, the eval grades it an infra failure — never a serene no-op that hides a
     /// broken lane. `error` names the cause verbatim from the adapter.
     InferenceFailed { error: String },
+    /// The persona's sensing layer detected a blocker — repeated no-deliverable
+    /// patterns or other structural obstruction. This is the substrate's way of
+    /// saying "I've been watching and nothing useful is happening; stop and reassess."
+    Blocker,
 }
 
 impl SettleStep {
@@ -230,6 +234,7 @@ impl SettleStep {
                 SettleStep::Spoke(text)
             }
             Decision::Act { calls, intent, .. } => SettleStep::Acted { calls, intent },
+            Decision::Blocker { .. } => SettleStep::Blocker,
             Decision::Pass { reason } => SettleStep::Passed { reason },
         };
         (step, metrics, generation_receipts)

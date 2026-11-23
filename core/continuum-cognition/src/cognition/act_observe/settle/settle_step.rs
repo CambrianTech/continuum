@@ -359,6 +359,7 @@ pub async fn settle_step(
                 SettleStep::Spoke(text)
             }
         }
+        Some(Decision::Blocker { .. }) => SettleStep::Blocker,
         Some(Decision::Pass { reason }) => SettleStep::Passed { reason },
         None => SettleStep::Passed { reason: None },
     };

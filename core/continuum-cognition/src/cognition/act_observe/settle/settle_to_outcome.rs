@@ -1,5 +1,9 @@
 use super::*;
 
+
+/// Threshold for consecutive no-deliverable speeches before the substrate
+/// intervenes with a first-class Blocker outcome.
+const NO_DELIVERABLE_BLOCKER_THRESHOLD: usize = 5;
 /// The settle loop itself. Both public drivers reach it through the same lived-
 /// experience wrapper, so taking input cannot bypass the recording seam.
 pub(super) async fn settle_to_outcome<'c>(
@@ -589,6 +593,28 @@ pub(super) async fn settle_to_outcome<'c>(
                                 acts = acts,
                                 "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived (re-fires only after she acts again)"
                             );
+                            if narrations_since_act >= NO_DELIVERABLE_BLOCKER_THRESHOLD {
+                                return SettleOutcome {
+                                    room: room_id,
+                                    decision: Decision::Blocker {
+                                        reason: format!(
+                                            "I've spoken {} consecutive plans without mutating any workspace file; the substrate has told me I'm producing nothing for {} steps and I need a different approach",
+                                            narrations_since_act, narrations_since_act
+                                        ),
+                                    },
+                                    acts,
+                                    world_state: burst.rendered.clone(),
+                                    room_updates: Arc::clone(&burst.room_updates),
+                                    metrics,
+                                    generation_receipts: generation_receipts.clone(),
+                                    inference_error: None,
+                                    deferred_before_dispatch: false,
+                                    capacity_refusal: None,
+                                    touched_paths: touched,
+                                    turn_acts: turn_acts.clone(),
+                                    spoken: None,
+                                };
+                            }
                             continue;
                         }
                     }
@@ -713,6 +739,25 @@ pub(super) async fn settle_to_outcome<'c>(
                     capacity_refusal: None,
                     touched_paths: touched,
                     turn_acts: turn_acts.clone(),
+                };
+            }
+            SettleStep::Blocker => {
+                return SettleOutcome {
+                    room: room_id,
+                    decision: Decision::Blocker {
+                        reason: "I hit a blocker — the substrate detected repeated no-deliverable patterns and I need to reassess my approach".into(),
+                    },
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
+                    metrics,
+                    generation_receipts: generation_receipts.clone(),
+                    inference_error: None,
+                    deferred_before_dispatch: false,
+                    capacity_refusal: None,
+                    touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
+                    spoken: None,
                 };
             }
             SettleStep::Passed { reason } => {
