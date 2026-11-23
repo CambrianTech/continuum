@@ -102,45 +102,33 @@
         assert!(!leaked, "her mind room: no frame on the rail");
     }
 
-    // What this catches (e731576c): publication, not a later work-turn return,
-    // owns the speech ring; failures and other rooms cannot become its history.
+    // What this catches (e731576c): publication owns her speech, in the room it
+    // was said in; a refused publication is never said. (Her speech part's window,
+    // which a successful publication is told to, is `senses::tests`.)
     #[tokio::test]
-    pub(super) async fn successful_publication_records_speech_once_in_the_actual_room() {
-        use crate::cognition::deliberation_budget::recent_own_speech;
+    pub(super) async fn publication_says_each_line_in_its_own_room_and_a_refusal_says_nothing() {
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
 
-        let peer = crate::identity::PeerId::from_uuid(Uuid::new_v4());
         let room = Uuid::new_v4();
         let other_room = Uuid::new_v4();
         let conversation = ScriptedConversation::new();
-        publish_own_speech(&conversation, peer, room, "The tests passed.")
+        publish_own_speech(&conversation, room, "The tests passed.")
             .await
             .expect("scripted publication succeeds");
-        assert_eq!(recent_own_speech(peer, room), ["The tests passed."]);
-        assert!(recent_own_speech(peer, other_room).is_empty());
 
         let refused = ScriptedConversation::new().with_say_failure("room unavailable");
         assert_eq!(
-            publish_own_speech(&refused, peer, room, "This was never delivered.").await,
+            publish_own_speech(&refused, room, "This was never delivered.").await,
             Err("room unavailable".to_string())
         );
         assert!(refused.said_in().is_empty());
-        assert_eq!(recent_own_speech(peer, room), ["The tests passed."]);
 
-        publish_own_speech(&conversation, peer, other_room, "Other activity report.")
+        publish_own_speech(&conversation, other_room, "Other activity report.")
             .await
             .expect("scripted publication succeeds");
-        publish_own_speech(&conversation, peer, room, "The tests failed.")
+        publish_own_speech(&conversation, room, "The tests failed.")
             .await
             .expect("scripted correction succeeds");
-        assert_eq!(
-            recent_own_speech(peer, room),
-            ["The tests passed.", "The tests failed."]
-        );
-        assert_eq!(
-            recent_own_speech(peer, other_room),
-            ["Other activity report."]
-        );
         assert_eq!(
             conversation.said_in(),
             vec![
@@ -304,6 +292,9 @@
             turns[0].content
         );
         assert!(turns[0].content.contains("list_commands"));
+        // Her held work reaches her typed on the workspace; the briefing does not know it, so it
+        // must never tell a mid-work wake that she has none.
+        assert!(!turns[0].content.contains(crate::cognition::framing_echo::WAKE_NO_WORK), "got: {}", turns[0].content);
 
         let delivery = crate::cognition::rag_budget::RagDelivery {
             source_id: "airc".to_string(),
@@ -322,56 +313,6 @@
         assert!(
             !turns.iter().any(|t| t.content.starts_with("[wake]")),
             "populated wake must not carry the briefing"
-        );
-    }
-
-    // what this catches: #125 slice 1 (Joel 2026-08-03: "should never be a mind
-    // from scratch — the whole point is the opposite"). An empty wake with LIVE
-    // claims must lead with the THREAD (her held cards) BEFORE the room
-    // description, and a lost-claim fact must ride the briefing as the thread's
-    // honest tail — never a room-first orientation that reduces her life to
-    // verb-filler.
-    #[test]
-    pub(super) fn empty_wake_leads_with_her_work_thread_before_the_room() {
-        let work = crate::cognition::rag_budget::RagDelivery {
-            source_id: "active-work".to_string(),
-            items: vec![
-                crate::cognition::rag_budget::RagItem {
-                    key: String::new(),
-                    summary: None,
-                    pointer: None,
-                    content: "card 20fe404a \"macOS install acceptance checks\" (P1, owner YOU)"
-                        .to_string(),
-                    tokens: 0,
-                    metadata: serde_json::json!({}),
-                },
-                crate::cognition::rag_budget::RagItem {
-                    key: String::new(),
-                    summary: None,
-                    pointer: None,
-                    content: "[work] Your claim on card 33a0e899 \"conway\" is no longer held by you (lease expired or released)."
-                        .to_string(),
-                    tokens: 0,
-                    metadata: serde_json::json!({ "fact": "claim_lost" }),
-                },
-            ],
-            tokens_used: 0,
-            truncated: false,
-        };
-        let turns = build_workspace_turns(&[work], "peer-1", "Asha", None);
-        assert_eq!(turns.len(), 1);
-        let c = &turns[0].content;
-        let thread = c.find("mid-work").expect("thread present");
-        let lost = c.find("no longer held").expect("lost-claim tail present");
-        let room = c.find("Nothing has been said").expect("room line present");
-        assert!(thread < room, "thread must LEAD the room description: {c}");
-        assert!(
-            lost < room,
-            "lost-claim tail rides before the room line: {c}"
-        );
-        assert!(
-            !c.contains("No work of yours is on record"),
-            "the no-thread line must not appear when a thread exists: {c}"
         );
     }
 

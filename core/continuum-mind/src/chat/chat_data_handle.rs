@@ -121,7 +121,7 @@ impl ChatModule {
     /// shares the anchor's millisecond (see `keyset_page.rs`).
     /// Rows come back chronological whichever way the query ran.
     pub async fn poll(&self, params: ChatPollParams) -> Result<ChatPollResult, String> {
-        let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT);
+        let limit = params.limit.unwrap_or(DEFAULT_POLL_LIMIT); // JUSTIFIED: an omitted limit is the poll's documented default page
 
         // The two anchors are opposite scroll directions — both at once
         // has no coherent ordering. Fail loud, never guess.
@@ -318,100 +318,12 @@ impl ChatModule {
             }),
         }
     }
-
-    /// #265: seed the repetition-perception speech rings from the durable
-    /// transcript at boot. The rings (`record_room_speech` /
-    /// `record_own_speech`) are in-process statics, so a reboot wipes them at
-    /// the exact moment they're most needed — the post-boot wake round, where
-    /// every persona re-emits its greeting 2+ times with the repetition and
-    /// [settled] facts blind (observed live 2026-07-30, twice). The durable
-    /// store (#140) already holds the history; this replays the latest
-    /// lines of one `chat/poll` page (chronological, all rooms — each ring keeps
-    /// only its own bounded tail) so the facts have priors from the first tick.
-    ///
-    /// Awaits the executor's install: this runs from the task spawned in `initialize`, which can
-    /// race `install_executor_on_all` (the #201 ordering); a missing executor here is a not-yet,
-    /// so it waits on the slot's install event, never a poll.
-    pub async fn hydrate_speech_rings(&self) -> Result<(), String> {
-        self.executor_slot.ready().await?;
-
-        let result = self
-            .poll(ChatPollParams {
-                room_id: None,
-                after_message_id: None,
-                before_message_id: None,
-                // One page, the poll's own (each ring keeps only its own bounded tail).
-                limit: None,
-            })
-            .await?;
-
-        let mut seeded = 0usize;
-        for msg in &result.messages {
-            // Stored ChatMessageEntity shape (see `line_store::commit_line`): roomId,
-            // senderId, content.text. Malformed rows are skipped, not fatal —
-            // hydration is best-effort priors, never a boot gate.
-            let room = msg
-                .get("roomId")
-                .and_then(Value::as_str)
-                .and_then(|s| Uuid::parse_str(s).ok());
-            let text = msg
-                .get("content")
-                .and_then(|c| c.get("text"))
-                .and_then(Value::as_str);
-            let (Some(room), Some(text)) = (room, text) else {
-                continue;
-            };
-            let speech_sender = msg
-                .get("senderId")
-                .and_then(Value::as_str)
-                .and_then(|s| uuid::Uuid::parse_str(s).ok());
-            crate::cognition::deliberation_budget::record_room_speech(room, speech_sender, text);
-            if let Some(sender) = msg
-                .get("senderId")
-                .and_then(Value::as_str)
-                .and_then(|s| Uuid::parse_str(s).ok())
-            {
-                crate::cognition::deliberation_budget::record_own_speech(
-                    crate::identity::PeerId::from_uuid(sender),
-                    room,
-                    text,
-                );
-            }
-            seeded += 1;
-        }
-        continuum_base::probe!(
-            class = "speech.rings.hydrated",
-            seeded = seeded,
-            scanned = result.count,
-            "repetition-fact rings seeded from durable transcript (#265)"
-        );
-        Ok(())
-    }
 }
 
 impl Default for ChatModule {
     fn default() -> Self {
         Self::new()
     }
-}
-
-/// Install the chat module as the inbound seam's line importer and seed the repetition-fact
-/// speech rings from the durable transcript (#265). The importer is the durable-transcript writer
-/// now: the inbound seam AWAITS each line's import (`line_store::import`), where it used to ride
-/// a lossy broadcast receiver whose lag silently dropped lines from the store.
-///
-/// Spawned from `ChatModule::initialize` on the ModuleContext's runtime HANDLE (registration runs
-/// on a non-tokio thread; a bare `tokio::spawn` there panics the boot, 2026-07-16).
-pub fn install_line_importer(handle: &tokio::runtime::Handle, module: Arc<ChatModule>) {
-    super::line_store::install_importer(Arc::clone(&module));
-    handle.spawn(async move {
-        if let Err(error) = module.hydrate_speech_rings().await {
-            tracing::warn!(
-                error,
-                "speech-ring hydration failed — repetition facts start cold this boot (#265)"
-            );
-        }
-    });
 }
 
 // ── time helpers ─────────────────────────────────────────────────────
@@ -431,5 +343,5 @@ pub(super) fn now_iso(unix_ms: u64) -> String {
     let nsec_part = ((unix_ms % 1000) * 1_000_000) as u32;
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs, nsec_part)
         .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
-        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string())
+        .unwrap_or_else(|| "1970-01-01T00:00:00.000Z".to_string()) // JUSTIFIED: chrono spans to year 262143; a u64 ms from our clock never leaves that range
 }

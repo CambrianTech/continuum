@@ -209,14 +209,10 @@ impl LlmDeliberationFaculty {
         // newest-first budget fit, still adjacent to the reply, still out of the cacheable
         // system prefix) while leaving the ask last, where she answers it. Proven by
         // bisect: ask-last → clean code; facts-last → parrot loop.
-        let spoken = super::super::super::deliberation_budget::recent_own_speech(
-            crate::identity::PeerId::from_uuid(self.persona_id),
-            ws.room_id,
-        );
-        let room_speech = super::super::super::deliberation_budget::recent_room_speech(ws.room_id);
+        let (own_speech, room_speech) = (ws.said.own(), ws.said.room());
         let fact_cx = super::super::super::perception_facts::FactContext {
             turns: &ws.turns,
-            own_speech: &spoken,
+            own_speech: &own_speech,
             room_speech: &room_speech,
             working_memory: self.working_memory.as_ref(),
             room_id: Some(ws.activity_room_id),

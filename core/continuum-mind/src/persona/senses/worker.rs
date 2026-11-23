@@ -10,7 +10,7 @@ use continuum_sage::Qos;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-use super::feed::{Arrival, Fed};
+use crate::cognition::room::feed::{Arrival, Fed};
 use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::persona_identity::PersonaIdentity;
 use crate::cognition::conversation::salience::{BoardChange, SpeechLine};
@@ -80,7 +80,7 @@ impl Component for Senses {
             Some(window) => window,
             None => std::num::NonZeroUsize::MIN,
         };
-        wiring.hear_on::<Arrival>(super::feed::node_bus(), super::feed::FEED, WINDOW);
+        wiring.hear_on::<Arrival>(crate::cognition::room::feed::node_bus(), crate::cognition::room::feed::FEED, WINDOW);
     }
 
     async fn handle(&mut self, input: Sensed, ctx: &mut Ctx<Self>) {
@@ -91,7 +91,7 @@ impl Component for Senses {
                 for (room, name) in rooms {
                     self.region.join(room, name);
                 }
-                super::feed::attach_rooms(&self.region.activities());
+                crate::cognition::room::feed::attach_rooms(&self.region.activities());
             }
             Sensed::Admit(admission) => self.admission = Some(admission),
             Sensed::Perceived { room, cursor } => self.region.perceived(room, &cursor, now),

@@ -49,6 +49,7 @@ mod cognition_eval;
 mod format_exam_lesson;
 pub use format_exam_lesson::*;
 mod fork_eval_cycle_waiting;
+mod help_arm;
 pub use fork_eval_cycle_waiting::*;
 mod infra_verdict;
 use infra_verdict::*;

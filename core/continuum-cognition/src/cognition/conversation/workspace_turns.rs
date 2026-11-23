@@ -87,6 +87,11 @@ pub fn roster_identities(
 /// live, replay, and eval contexts.
 pub const PATTERN_FIRES_BEFORE_ANCHOR: usize = 2;
 
+/// The fewest substantive words a line carries for its containment to be echo evidence: below
+/// it, a short courtesy reads as a copy of anything. ONE floor for the self, mirror and room
+/// run detectors (it was three copies of the same 8), beside the one tokenization they share.
+const SUBSTANTIVE_WORDS: usize = 8;
+
 /// Word-token set for echo containment — ONE tokenization for the in-window
 /// detectors and the ring-based run counter below, so "nearly identical"
 /// cannot drift between them.
@@ -105,23 +110,25 @@ pub fn echo_words(s: &str) -> std::collections::HashSet<String> {
 /// reproduced byte-for-byte by Benchy then Asha, identity claim included)
 /// the older echo evidence has always scrolled out and the run reads 1,
 /// one below [`PATTERN_FIRES_BEFORE_ANCHOR`] — the `[anchor]` that provably
-/// breaks these loops never fires. Same starvation the room-speech ring
-/// already cures for the `inbound_restates` fact.
+/// breaks these loops never fires. Same starvation her room window already
+/// cures for the `inbound_restates` fact.
 ///
-/// This counts the run over RING snapshots instead: the trailing run of her
-/// own recent messages (newest-first, ≥8 substantive words) each ≥0.8-contained
-/// in the room ring's vocabulary — excluding entries identical to the message
-/// being judged, so her own recorded copy can't vouch for itself. Pure over
-/// its inputs: LIVE callers pass the process rings; eval/replay callers pass
-/// nothing and stay window-derived (the #59 isolation the shared
-/// `build_workspace_turns` signature preserves by not knowing rings exist).
-pub fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
-    const MIN_WORDS: usize = 8;
+/// This counts the run over what her speech part heard instead ([`Said`]):
+/// the trailing run of her own recent messages (newest-first, ≥8 substantive
+/// words) each ≥0.8-contained in the room window's vocabulary — excluding
+/// entries identical to the message being judged, so her own recorded copy
+/// can't vouch for itself. Pure over its inputs: LIVE callers pass her
+/// speech part's snapshot; eval/replay have none and stay window-derived (the
+/// #59 isolation the shared `build_workspace_turns` signature preserves by not
+/// knowing that window exists).
+///
+/// [`Said`]: crate::cognition::room::said::Said
+pub fn ring_echo_run(own_recent: &[&str], room_recent: &[&str]) -> usize {
     const CONTAINMENT: f32 = 0.8;
     let mut run = 0usize;
     for own in own_recent.iter().rev() {
         let cur = echo_words(own);
-        if cur.len() < MIN_WORDS {
+        if cur.len() < SUBSTANTIVE_WORDS {
             break;
         }
         // Exclude at most ONE identical room entry — her own recorded copy
@@ -131,7 +138,7 @@ pub fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
         let mut skipped_own_copy = false;
         let mut window: std::collections::HashSet<String> = std::collections::HashSet::new();
         for r in room_recent {
-            if !skipped_own_copy && r.as_str() == own.as_str() {
+            if !skipped_own_copy && r == own {
                 skipped_own_copy = true;
                 continue;
             }
@@ -150,28 +157,22 @@ pub fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
     run
 }
 
-/// LIVE-path companion to [`ring_echo_run`]: read the process rings for this
-/// persona + room, and when the ring-counted echo run reaches the escalation
-/// threshold while the window-derived detectors pushed no `[anchor]` (their
-/// evidence scrolled out — the #301 starvation), append the SAME work-board
-/// anchor they would have. One anchor per burst, whichever counter earns it.
+/// LIVE-path companion to [`ring_echo_run`]: count the echo run over what her speech part
+/// heard in this room, and when it reaches the escalation threshold while the window-derived
+/// detectors pushed no `[anchor]` (their evidence scrolled out — the #301 starvation), append
+/// the SAME work-board anchor they would have. One anchor per burst, whichever counter earns it.
 pub fn append_ring_anchor_if_starved(
     turns: &mut Vec<crate::cognition::workspace::BurstTurn>,
     deliveries: &[crate::cognition::rag_budget::RagDelivery],
-    peer: crate::identity::PeerId,
-    room: uuid::Uuid,
+    said: &crate::cognition::room::said::Said,
 ) {
     if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
         return;
     }
-    let own = crate::cognition::deliberation_budget::recent_own_speech(peer, room);
-    let room_recent = crate::cognition::deliberation_budget::recent_room_speech(room);
-    let run = ring_echo_run(&own, &room_recent);
+    let run = ring_echo_run(&said.own(), &said.room());
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
         continuum_base::probe!(
             class = "persona.pattern.ring_anchor",
-            peer = %peer,
-            room = %room,
             ring_run = run,
             "echo run counted from the durable rings (window evidence scrolled out) — \
              anchor escalation fired via the #301 starvation fix"
@@ -241,7 +242,7 @@ pub fn build_workspace_turns(
                 .metadata
                 .get("peer_id")
                 .and_then(|v| v.as_str())
-                .unwrap_or("peer");
+                .unwrap_or("peer"); // JUSTIFIED: an item with no peer id is an anonymous voice, labeled as one, never a named author
             // is_self — the ONE structural fact role attribution turns on (own posts
             // → assistant, peers → user). Carried here where the peer_id is intact,
             // never re-derived from a `Name:` prefix downstream.
@@ -249,7 +250,7 @@ pub fn build_workspace_turns(
             let author = if is_self {
                 agent_name
             } else {
-                names.get(who_raw).copied().unwrap_or(who_raw)
+                names.get(who_raw).copied().unwrap_or(who_raw) // JUSTIFIED: a peer the roster cannot name is shown by her own id, never an invented name
             };
             let occurred_at_ms = item.metadata.get("occurred_at_ms").and_then(|v| v.as_u64());
             let turn = BurstTurn::attributed(is_self, author, item.content.clone(), occurred_at_ms);
@@ -277,7 +278,7 @@ pub fn build_workspace_turns(
             let author = names
                 .get(trigger.peer_id)
                 .copied()
-                .unwrap_or(trigger.peer_id);
+                .unwrap_or(trigger.peer_id); // JUSTIFIED: a waking peer the roster cannot name is shown by her own id
             let turn = BurstTurn::attributed(false, author, trigger.content.to_string(), Some(trigger.occurred_at_ms));
             turns.push(match trigger.source {
                 Some(source) => turn.from_event(source),
@@ -318,7 +319,6 @@ pub fn build_workspace_turns(
         // is exactly the original fire condition; run ≥ 2 means she posted again
         // AFTER the description was in her window (the escalation evidence). A
         // novel last message yields run == 0 — fire and escalation both reset.
-        const SELF_MIN_WORDS: usize = 8;
         const SELF_CONTAINMENT: f32 = 0.8;
         let mut observed = false;
         let own: Vec<&str> = turns
@@ -329,7 +329,7 @@ pub fn build_workspace_turns(
         let mut self_run = 0usize;
         for i in (2..own.len()).rev() {
             let cur = words(own[i]);
-            if cur.len() < SELF_MIN_WORDS {
+            if cur.len() < SUBSTANTIVE_WORDS {
                 break;
             }
             let window: std::collections::HashSet<String> =
@@ -374,7 +374,8 @@ pub fn build_workspace_turns(
         if !observed && turns.len() >= 6 {
             const TAIL_CYCLIC: usize = 4; // consecutive low-novelty turns to conclude cycling
             const CONVO_CONTAINMENT: f32 = 0.9; // stricter than self — the floor is lower
-            const CONVO_MIN_WORDS: usize = 4; // farewells are short; consecutiveness carries safety
+            // Farewells are short; consecutiveness carries the safety a longer line gives.
+            const FAREWELL_WORDS: usize = 4;
                                               // The full run is counted (not capped at TAIL_CYCLIC): every cyclic
                                               // turn PAST first-fire depth is a turn the room traded after the
                                               // observation was first derivable — the escalation evidence.
@@ -382,7 +383,7 @@ pub fn build_workspace_turns(
             let mut authors: std::collections::HashSet<&str> = std::collections::HashSet::new();
             for i in (1..turns.len()).rev() {
                 let cur = words(&turns[i].content);
-                if cur.len() < CONVO_MIN_WORDS {
+                if cur.len() < FAREWELL_WORDS {
                     continue; // too short to judge (emoji, "nice") — neither breaks nor counts
                 }
                 let window: std::collections::HashSet<String> =
@@ -428,7 +429,6 @@ pub fn build_workspace_turns(
         if !observed {
             // Same 8-word floor as the self detector: short courtesies ("thanks,
             // will do!") legitimately reuse a peer's words and must not alarm.
-            const MIRROR_MIN_WORDS: usize = 8;
             // Between self (0.8) and conversation (0.9): an on-topic ANSWER
             // legitimately quotes more of a peer's vocabulary than of one's own
             // history (you restate the question you're answering), so the mirror
@@ -441,7 +441,7 @@ pub fn build_workspace_turns(
                     continue; // peers between her posts don't break HER run
                 }
                 let cur = words(&turns[i].content);
-                if cur.len() < MIRROR_MIN_WORDS {
+                if cur.len() < SUBSTANTIVE_WORDS {
                     break;
                 }
                 let others: std::collections::HashSet<String> = turns[..i]
@@ -489,57 +489,21 @@ pub fn build_workspace_turns(
         let peers: Vec<&str> = roster_identities(deliveries)
             .map(|(_, name)| name)
             .filter(|n| *n != agent_name)
-            .take(8)
             .collect();
-        // Split her work into THREAD vs transition tail: live claims are the
-        // purpose she wakes back into; a lost-claim fact (#156) is the thread's
-        // honest ending.
-        let mut live_cards: Vec<&str> = Vec::new();
-        let mut lost_threads: Vec<&str> = Vec::new();
-        for d in deliveries.iter().filter(|d| d.source_id == "active-work") {
-            for i in &d.items {
-                let Some(first) = i.content.trim().lines().next().filter(|l| !l.is_empty()) else {
-                    continue;
-                };
-                if i.metadata.get("fact").and_then(|v| v.as_str()) == Some("claim_lost") {
-                    lost_threads.push(first);
-                } else {
-                    live_cards.push(first);
-                }
-            }
-        }
-        live_cards.truncate(5);
-        lost_threads.truncate(3);
-
-        use crate::cognition::framing_echo::{WAKE_MID_WORK, WAKE_NO_WORK, WAKE_OPENING, WAKE_PRESENT, WAKE_QUIET, WAKE_TAG};
+        use crate::cognition::framing_echo::{WAKE_OPENING, WAKE_PRESENT, WAKE_QUIET, WAKE_TAG};
         // The fixed sentences live in cognition::framing_echo — the gate that
         // silences a reflected wake prompt matches on the SAME constants.
+        // Her work is not stated here: her held cards reach her typed on the
+        // workspace (`persona::held_work`), the thread she wakes back into
+        // (#125). This briefing once read them from an `active-work` source no
+        // live turn composes any more, so it told every mid-work wake "no work
+        // of yours is on record"; it says only what it knows: the room.
         let mut b = format!("{WAKE_TAG} You are {agent_name}, {WAKE_OPENING}.");
-        // THE THREAD LEADS (#125 slice 1 — Joel 2026-08-03: "should never be a
-        // mind from scratch; the whole point is the opposite"). A continuous mind
-        // wakes into what it was DOING, not into a room description — glass-boxed
-        // the same night: Asha's wake carried her real claimed task in the
-        // transcript yet self-summarized as verb-filler ("looking at the room,
-        // reading a file") because orientation was room-first. Purpose-shaped
-        // facts first; the room follows. Facts she weighs, never instructions
-        // ([[no-hardcoded-heuristics-to-steer-cognition]]).
-        if !live_cards.is_empty() {
-            b.push_str(&format!(
-                " {WAKE_MID_WORK} {}. That thread is yours; it is              where you left off.",
-                live_cards.join(" | ")
-            ));
-        }
-        for lt in &lost_threads {
-            b.push_str(&format!(" {lt}"));
-        }
         b.push_str(&format!(
             " {WAKE_QUIET} — this quiet              is real, not a missing message."
         ));
         if !peers.is_empty() {
             b.push_str(&format!(" {WAKE_PRESENT} {}.", peers.join(", ")));
-        }
-        if live_cards.is_empty() && lost_threads.is_empty() {
-            b.push_str(&format!(" {WAKE_NO_WORK}."));
         }
         b.push_str(
             " Your tools are real and yours to use; `list_commands` shows everything              you can run and `help` explains any of them. The moment is yours —              work, wonder, create, or rest.",
@@ -614,7 +578,7 @@ pub fn work_board_anchor(deliveries: &[crate::cognition::rag_budget::RagDelivery
     fn state(i: &crate::cognition::rag_budget::RagItem) -> Option<airc_work::CardState> {
         i.metadata
             .get("state")
-            .and_then(|s| serde_json::from_value(s.clone()).ok())
+            .and_then(|s| serde_json::from_value(s.clone()).ok()) // boundary: the board source's JSON item metadata, typed back here once
     }
     /// Is this card's hold still good? Read as the structural fact the board source
     /// carries, never re-derived here — `claim_is_live` is the ONE definition and
@@ -646,12 +610,12 @@ pub fn work_board_anchor(deliveries: &[crate::cognition::rag_budget::RagDelivery
             unowned_open || lapsed
         })
         .map(|i| i.content.trim())
-        .take(2)
         .collect();
     // Exhaustive over the enum, so ADDING a variant to `CardState` forces a decision here
     // instead of silently falling through as "not in flight". That is the whole point of
     // matching the type rather than a string.
-    let in_flight: Vec<&str> = cards
+    // The card in flight (the board's first): one fact of what is already moving.
+    let in_flight: Option<&str> = cards
         .iter()
         // Genuinely in flight = claimed AND the hold is still live. Without the liveness
         // term a lapsed card counts as both available and in-flight, and the anchor would
@@ -665,9 +629,8 @@ pub fn work_board_anchor(deliveries: &[crate::cognition::rag_budget::RagDelivery
             None => false,
         })
         .map(|i| i.content.trim())
-        .take(1)
-        .collect();
-    if unclaimed.is_empty() && in_flight.is_empty() {
+        .next();
+    if unclaimed.is_empty() && in_flight.is_none() {
         // Honest empty: no cards visible (empty board, unreadable board, or a
         // context whose board source abstained). Never invent work.
         "[anchor] No open cards are visible on this room's board right now — \
@@ -675,7 +638,14 @@ pub fn work_board_anchor(deliveries: &[crate::cognition::rag_budget::RagDelivery
          messages adds nothing."
             .to_string()
     } else {
-        let facts: Vec<&str> = unclaimed.into_iter().chain(in_flight).collect();
+        // Every unheld card counts; the first is named, so the anchor stays one line however
+        // full the board is and never claims less work exists than does.
+        let unheld = match unclaimed.as_slice() {
+            [] => None,
+            [only] => Some((*only).to_string()),
+            [first, rest @ ..] => Some(format!("{first} (and {} more unheld)", rest.len())),
+        };
+        let facts: Vec<String> = unheld.into_iter().chain(in_flight.map(str::to_string)).collect();
         format!(
             "[anchor] Open work exists on this room's board right now: {}. \
              Restating prior messages adds nothing; acting on a card would.",

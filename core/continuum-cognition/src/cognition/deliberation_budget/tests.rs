@@ -1,57 +1,9 @@
 #![cfg(test)]
     use super::*;
 
-    // what this catches: a citizen entering a room she has never spoken in must read
-    // as SILENT there, no matter how much she has said elsewhere. Regression for the
-    // 2026-08-14 live specimen — dispatched into a fresh benchmark room, her first
-    // turn carried "[repetition] 4 of your recent messages were nearly identical …
-    // silence (PASS) is the honest response" about utterances spoken in #academy.
-    // The ring was keyed by peer alone, so a multi-room citizen carried one room's
-    // withdrawal pressure into every other room. Keyed by (peer, room), a fresh room
-    // is a fresh start — and her OTHER room's history stays intact, so this can never
-    // be "fixed" by simply clearing the ring on room change.
-    #[test]
-    fn own_speech_is_scoped_to_the_room_it_was_spoken_in() {
-        let peer = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
-        let academy = uuid::Uuid::new_v4();
-        let bench = uuid::Uuid::new_v4();
-
-        for _ in 0..4 {
-            record_own_speech(peer, academy, "I'll remain silent while monitoring.");
-        }
-
-        // Where she spoke, she sees it.
-        assert_eq!(
-            recent_own_speech(peer, academy).len(),
-            4,
-            "her own history in the room she spoke in must survive"
-        );
-
-        // The fresh room she was just dispatched into: nothing to be repetitive about.
-        assert!(
-            recent_own_speech(peer, bench).is_empty(),
-            "a room she has not spoken in must read as silent — this is the bug"
-        );
-
-        // And a peer who never spoke anywhere is unaffected by hers.
-        let other = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
-        assert!(recent_own_speech(other, academy).is_empty());
-
-        // The persistence seam sees every room, so a restart restores each ring to
-        // the room it belongs to rather than collapsing them into one.
-        record_own_speech(peer, bench, "Let me claim that card.");
-        let mut by_room = own_speech_by_room(peer);
-        by_room.sort_by_key(|(room, _)| *room);
-        let mut expected = vec![(academy, 4usize), (bench, 1usize)];
-        expected.sort_by_key(|(room, _)| *room);
-        assert_eq!(
-            by_room
-                .iter()
-                .map(|(room, u)| (*room, u.len()))
-                .collect::<Vec<_>>(),
-            expected,
-            "persistence must carry the room key, not a flattened ring"
-        );
+    /// The detectors read a speech window as `&str` views; fixtures build owned lines.
+    fn strs(lines: &[String]) -> Vec<&str> {
+        lines.iter().map(String::as_str).collect()
     }
 
     // Specimen personas for tests pinning live incidents. Constants, not
@@ -147,7 +99,7 @@
                 "Accessibility Considerations",
             ),
         ];
-        let fact = template_loop_fact(&[], &looping)
+        let fact = template_loop_fact(&[], &strs(&looping))
             .expect("three topic-swapped copies of one scaffold are a structural fact");
         assert!(fact.contains("[template-loop]"), "labeled fact: {fact}");
 
@@ -158,7 +110,7 @@
             looping[1].clone(),
             "sounds good, I'll start on the benchmark now".to_string(),
         ];
-        assert_eq!(template_loop_fact(&[], &pair), None, "two is not a loop");
+        assert_eq!(template_loop_fact(&[], &strs(&pair)), None, "two is not a loop");
 
         // Unstructured prose — even repetitive-ish — is invisible to this
         // detector by construction (< 4 structural lines ⇒ no skeleton).
@@ -168,7 +120,7 @@
             "Still waiting for results before proceeding to our next step.".to_string(),
         ];
         assert_eq!(
-            template_loop_fact(&[], &prose),
+            template_loop_fact(&[], &strs(&prose)),
             None,
             "plain prose is own_repetition's turf"
         );
@@ -181,7 +133,7 @@
             looping[2].clone(),
         ];
         assert_eq!(
-            template_loop_fact(&[], &varied),
+            template_loop_fact(&[], &strs(&varied)),
             None,
             "distinct structured messages are not a template loop"
         );
@@ -293,7 +245,7 @@
         // Peer restates what SHE already said (own-speech ring) → fires too.
         let own = vec![settled.to_string()];
         let turns_vs_own = vec![BurstTurn::attributed(false, SPEAKER_LEAD, settled, None)];
-        assert!(inbound_restates_fact(&turns_vs_own, &own, &[]).is_some());
+        assert!(inbound_restates_fact(&turns_vs_own, &strs(&own), &[]).is_some());
 
         // The load-bearing live case (glass-boxed 2026-07-30, 0 fires all
         // morning): the older copy has scrolled OUT of the workspace window
@@ -302,11 +254,11 @@
         // exact copy must be excluded, or nothing ever fires without a match.
         let ring_only = vec![BurstTurn::attributed(false, SPEAKER_LEAD, settled, None)];
         let ring = vec![settled.to_string(), settled.to_string()]; // older copy + own record
-        assert!(inbound_restates_fact(&ring_only, &[], &ring).is_some());
+        assert!(inbound_restates_fact(&ring_only, &[], &strs(&ring)).is_some());
         // Ring holding ONLY the newest's own record → inert (a message must
         // never match itself).
         let just_self = vec![settled.to_string()];
-        assert_eq!(inbound_restates_fact(&ring_only, &[], &just_self), None);
+        assert_eq!(inbound_restates_fact(&ring_only, &[], &strs(&just_self)), None);
 
         // Novel inbound → inert.
         let novel = vec![
@@ -394,7 +346,7 @@
     fn ring_alone_fires_with_empty_burst_and_healthy_ring_stays_silent() {
         let msg = "I'm ready to get started on the wordstats task! I'll create a new project structure right now.".to_string();
         let ring = vec![msg.clone(), msg.clone(), msg.clone()];
-        let fact = own_repetition_fact(&[], &ring)
+        let fact = own_repetition_fact(&[], &strs(&ring))
             .expect("3 verbatim ring entries are a loop even with no burst turns");
         assert!(fact.starts_with("[repetition]"), "got: {fact}");
 
@@ -403,7 +355,7 @@
             "The definitive board landed overnight.".to_string(),
             "Let me review the error handling changes.".to_string(),
         ];
-        assert_eq!(own_repetition_fact(&[], &healthy), None);
+        assert_eq!(own_repetition_fact(&[], &strs(&healthy)), None);
     }
 
     // what this catches: the self-repetition detector that tells a looping citizen it is

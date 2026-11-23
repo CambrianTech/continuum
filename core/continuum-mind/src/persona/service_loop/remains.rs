@@ -15,19 +15,15 @@ pub trait CitizenConversation: PersonaConversation {
     }
 }
 
-/// Publish an utterance and record it before subsequent work can begin.
-/// All resident speech paths share this boundary; refused publications never
-/// enter the own-speech repetition-observation ring. Assistant history still
-/// comes from the attributed room timeline. The conversation owns transport.
+/// Publish an utterance. All resident speech paths share this boundary; a refused
+/// publication is never her utterance. What she said is the room's: her next turn reads
+/// it from the airc room, like everything else said there. The conversation owns transport.
 pub(crate) async fn publish_own_speech(
     conversation: &dyn PersonaConversation,
-    peer: crate::identity::PeerId,
     room: Uuid,
     text: &str,
 ) -> Result<(), String> {
-    conversation.say_in(room, text).await?;
-    crate::cognition::deliberation_budget::record_own_speech(peer, room, text);
-    Ok(())
+    conversation.say_in(room, text).await
 }
 
 /// Behavioral knobs for the service loop. Keep small — substrate-

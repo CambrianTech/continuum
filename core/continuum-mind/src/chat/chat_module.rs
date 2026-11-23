@@ -21,13 +21,10 @@ impl ServiceModule for ChatModule {
         }
     }
 
-    async fn initialize(&self, ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
+    async fn initialize(&self, _ctx: &crate::runtime::ModuleContext) -> Result<(), String> {
         // #140: the durable-transcript writer is the inbound seam's awaited import through this
         // module (`line_store::import`); `from_slot` shares this module's late-bound executor.
-        install_line_importer(
-            &ctx.runtime,
-            Arc::new(ChatModule::from_slot(self.executor_slot.clone())),
-        );
+        super::line_store::install_importer(Arc::new(ChatModule::from_slot(self.executor_slot.clone())));
         Ok(())
     }
 

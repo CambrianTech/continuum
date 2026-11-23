@@ -90,8 +90,8 @@
             headers.insert(airc_work::HEADER_FORGE_WORK_EVENT_KIND.into(), "card_state_changed".into());
             renewed.headers = headers;
             renewed.body = Some(body);
-            assert!(matches!(crate::persona::senses::classify(&renewed),
-                crate::persona::senses::Fed::NotPerception("work_lease_renewal")));
+            assert!(matches!(crate::cognition::room::feed::classify(&renewed),
+                crate::cognition::room::feed::Fed::NotPerception("work_lease_renewal")));
             assert!(AttentionEvent::classify(Arc::new(renewed.clone())).is_none());
             frames.push(Ok(Arc::new(renewed)));
         }
@@ -104,8 +104,8 @@
         let (headers, body) = airc_work::encode_work_event(&release).unwrap();
         released.headers = headers;
         released.body = Some(body);
-        assert!(matches!(crate::persona::senses::classify(&released),
-            crate::persona::senses::Fed::OtherWork(_)));
+        assert!(matches!(crate::cognition::room::feed::classify(&released),
+            crate::cognition::room::feed::Fed::OtherWork(_)));
         assert!(AttentionEvent::classify(Arc::new(released)).is_some());
         let mut work = event("");
         work.kind = airc_core::TranscriptKind::System;

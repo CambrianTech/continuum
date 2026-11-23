@@ -153,17 +153,24 @@ pub(super) async fn compose_turn(
     composed
 }
 
+/// What a turn read of her world before it was built, read together: its composed context and
+/// what was said in her airc room.
+pub(super) struct TurnReads {
+    pub(super) composed: crate::persona::unified::ComposedTurn,
+    pub(super) said: std::sync::Arc<crate::cognition::room::said::Said>,
+}
+
 /// The consolidated burst the WorkspaceCycle reasons over, built where the item metadata
 /// is still intact and carrying the wake message's engram as its cause.
 pub(super) fn build_turn_burst(
     ctx: &HostedPersona,
-    composed: &crate::persona::unified::ComposedTurn,
+    reads: &TurnReads,
     trigger: TurnTrigger<'_>,
     now_ms: u64,
     wake_engram: Option<Uuid>,
 ) -> crate::cognition::workspace::Burst {
+    let TurnReads { composed, said } = reads;
     let TurnTrigger { msg, room, .. } = trigger;
-    let turn_room = room.as_uuid();
     // The consolidated burst the WorkspaceCycle reasons over — a stream of
     // inbox items WITH their metadata (WHO + WHEN + WHAT), not bare text. A
     // mind needs who-said-what-and-when to follow the thread and avoid
@@ -201,15 +208,10 @@ pub(super) fn build_turn_burst(
     );
     // #301 anchor-starvation fix: the in-window escalation counter loses its
     // older evidence to the context squeeze, so ALSO count the echo run over
-    // the durable rings (live path only — eval/replay stay window-derived).
-    // Ring run at threshold + no anchor already present → the same
-    // work-board anchor the in-window escalation would have pushed.
-    append_ring_anchor_if_starved(
-        &mut ws_turns,
-        &composed.deliveries,
-        ctx.identity.peer_id,
-        turn_room,
-    );
+    // what was said in her airc room (live path only — eval/replay read no
+    // room and stay window-derived). The same snapshot rides the burst, so her
+    // facts and her world_state read what the anchor read.
+    append_ring_anchor_if_starved(&mut ws_turns, &composed.deliveries, said);
     // Carry the wake message's engram as this burst's cause, so the turn's acts
     // chain back to what triggered them (CAUSAL-MEMORY-GRAPH.md §3a). `None` when
     // the message was deduped/quarantined — an honest gap, never a made-up link.
@@ -226,5 +228,30 @@ pub(super) fn build_turn_burst(
             None => crate::cognition::workspace::Cause::Ambient,
         },
     )
+    .hearing(std::sync::Arc::clone(said))
     .for_turn(composed.turn_id)
+}
+
+/// What was said in `room`, read from the airc room through her own airc runtime (the room is
+/// the one record; nothing here keeps a copy). Empty, and named, where she has no runtime on this
+/// core or the page did not read: a window she cannot see is an empty one, never an invented one.
+pub(super) async fn heard_in(peer: crate::identity::PeerId, room: Uuid) -> std::sync::Arc<crate::cognition::room::said::Said> {
+    use crate::cognition::room::said::Said;
+    use crate::cognition::conversation::transcript_reader::AircTranscriptReader as _;
+    let Some(runtime) = crate::persona::PersonaAircRuntimeRegistry::try_global().and_then(|registry| registry.get(peer.as_uuid())) else {
+        return std::sync::Arc::default();
+    };
+    match runtime.page_recent_in(Some(airc_core::RoomId::from_uuid(room)), Said::PAGE).await {
+        Ok(page) => std::sync::Arc::new(Said::of_room(&page, peer.as_uuid())),
+        Err(error) => {
+            continuum_base::probe!(
+                class = "persona.said.unread",
+                peer = %peer,
+                room = %room,
+                error = %error,
+                "her room's airc page did not read: her repetition window is empty this turn"
+            );
+            std::sync::Arc::default()
+        }
+    }
 }

@@ -136,7 +136,7 @@ pub(crate) async fn ask_the_act_question(
         if let Some(citizen) = conversation.stream_citizen() {
             let claims_result = citizen.active_claims().await;
             let claims_err = claims_result.as_ref().err().map(|e| e.to_string());
-            let claims = claims_result.unwrap_or_default();
+            let claims = claims_result.unwrap_or_default(); // JUSTIFIED: an unreadable board holds nothing this beat; claims_err keeps her initiative off and rides the probe
             // ONE card per work turn — her freshest live claim (the FOCUS rule,
             // `bench_round::room_for_card`): with two held cards the staging
             // resolution was ambiguous, her hands stayed at home, and every act
@@ -163,7 +163,7 @@ pub(crate) async fn ask_the_act_question(
                 hands = hands,
                 active_claims = claims.len(),
                 held = held.len(),
-                claims_error = claims_err.as_deref().unwrap_or(""),
+                claims_error = claims_err.as_deref().unwrap_or(""), // JUSTIFIED: no error is an empty field in the probe row
                 states = claims
                     .iter()
                     .map(|c| format!("{:?}", c.state))
@@ -409,7 +409,6 @@ pub(crate) async fn ask_the_act_question(
                             // room whose work it reports on.
                             if let Err(e) = crate::persona::service_loop::publish_own_speech(
                                 conversation,
-                                ctx.identity.peer_id,
                                 turn_room,
                                 &text,
                             )

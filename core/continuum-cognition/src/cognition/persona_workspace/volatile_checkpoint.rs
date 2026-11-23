@@ -1,33 +1,6 @@
 use super::*;
 use crate::cognition::result_store::checkpoint_handles as handles;
 
-/// Her own-speech rings on disk. Room-keyed since 2026-08-14 — a ring restored
-/// without its room would re-create the cross-room repetition fact the keying
-/// fix exists to kill.
-///
-/// `Legacy` is the pre-room-scoping shape (a flat `Vec<String>`) and exists so
-/// an older `volatile.json` still PARSES: a torn mind-file that fails to
-/// deserialize is a silent blank wake, which is strictly worse than a dropped
-/// scratchpad. Legacy utterances carry no room, so they cannot be attributed
-/// and are discarded on load — covered by `hydrate_speech_rings`, which
-/// re-seeds from the durable transcript where every message HAS a room (#265).
-#[derive(serde::Serialize, serde::Deserialize)]
-#[serde(untagged)]
-pub(super) enum OwnSpeechPersisted {
-    ByRoom(Vec<(Uuid, Vec<String>)>),
-    Legacy(Vec<String>),
-}
-
-impl OwnSpeechPersisted {
-    /// Total utterances across every room — what the restore probe reports.
-    pub(super) fn len(&self) -> usize {
-        match self {
-            Self::ByRoom(by_room) => by_room.iter().map(|(_, u)| u.len()).sum(),
-            Self::Legacy(flat) => flat.len(),
-        }
-    }
-}
-
 /// Her checkpoint's path, under the one continuum home (`paths::continuum_home`: `$CONTINUUM_HOME`,
 /// a test build's home, else `~/.continuum`), never a home built by hand.
 pub(super) fn volatile_path(persona_id: Uuid) -> std::io::Result<std::path::PathBuf> {
@@ -43,7 +16,7 @@ pub(super) enum Checkpointed {
 }
 
 /// Everything a checkpoint writes, as the last write found it: her memory's generation and what
-/// the writer stamps from outside it (`acting_card`, her own speech, the handoff without its clock).
+/// the writer stamps from outside it (`acting_card`, the handoff without its clock).
 /// Compared, never serialized: an unmoved mark is a skipped write.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Mark {
@@ -51,7 +24,6 @@ struct Mark {
     instance: u64,
     generation: u64,
     acting_card: Option<Uuid>,
-    own_speech: Vec<(Uuid, Vec<String>)>,
     handoff: Option<crate::cognition::handoff::Handoff>,
 }
 
@@ -106,12 +78,10 @@ pub(super) fn save_volatile(
     let acting_card = wm
         .peek_restored_acting_card()
         .or_else(|| acting_card_of(persona_id));
-    let own_speech = super::super::deliberation_budget::own_speech_by_room(crate::identity::PeerId::from_uuid(persona_id));
     let mark = Mark {
         instance: wm.instance_id(),
         generation,
         acting_card,
-        own_speech: own_speech.clone(),
         handoff: handoff.clone().map(|mut handoff| {
             handoff.written_ms = 0;
             handoff
@@ -123,7 +93,7 @@ pub(super) fn save_volatile(
     let mut snapshot = wm.snapshot();
     snapshot.handoff = handoff;
     snapshot.acting_card = acting_card;
-    let persisted = PersistedVolatile { wm: snapshot, own_speech: OwnSpeechPersisted::ByRoom(own_speech) };
+    let persisted = PersistedVolatile { wm: snapshot };
     let (Some(dir), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{} names no checkpoint file", path.display())));
     };

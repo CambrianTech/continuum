@@ -107,7 +107,7 @@ use super::*;
     // e731: the actual held-card path must use the same successful-publication
     // boundary as replies/self-ticks. A refused send is not an observed utterance.
     #[tokio::test(flavor = "current_thread")]
-    pub(super) async fn held_work_reports_record_own_speech_only_after_publication() {
+    pub(super) async fn held_work_reports_are_said_once_in_their_activity_room() {
         let native = tempfile::tempdir().expect("test: isolated cognition storage");
         let _native_home = crate::paths::NativeHomeOverride::install(native.path());
         for refuse_publication in [false, true] {
@@ -157,34 +157,15 @@ use super::*;
                 .await
             .drove
             );
-            let speech = crate::cognition::deliberation_budget::recent_own_speech(
-                crate::identity::PeerId::from_uuid(peer),
-                room,
-            );
             if refuse_publication {
-                assert!(conversation.said_in().is_empty());
-                assert!(
-                    speech.is_empty(),
-                    "failed publication must not enter the ring"
-                );
+                assert!(conversation.said_in().is_empty(), "a refused publication says nothing");
             } else {
+                // Said once, in the activity's room: never the hosted default room.
                 assert_eq!(
                     conversation.said_in(),
                     vec![(room, "The tests failed after the latest change.".into())]
                 );
-                assert_eq!(
-                    speech,
-                    vec!["The tests failed after the latest change.".to_string()]
-                );
             }
-            assert!(
-                crate::cognition::deliberation_budget::recent_own_speech(
-                    crate::identity::PeerId::from_uuid(peer),
-                    hosted.identity.default_room,
-                )
-                .is_empty(),
-                "the hosted default room must not receive another activity's report"
-            );
         }
     }
 

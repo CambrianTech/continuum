@@ -10,7 +10,7 @@ use continuum_sage::dataflow::{Event, InputRevision, Reader, TopicName};
 use tokio::sync::oneshot;
 use uuid::Uuid;
 
-use super::feed::{classify, Arrival, Fed};
+use crate::cognition::room::feed::{classify, Arrival, Fed};
 use super::worker::Sensed;
 use crate::cognition::attention::{AttentionDial, Continuation};
 use crate::cognition::conversation::salience::{BoardChange, Expectation, ObservedVerdict, SalienceLevel, SalienceReason};

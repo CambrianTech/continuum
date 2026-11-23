@@ -2,6 +2,7 @@
 //! deliberation, tool execution, recall) and the faculties around them.
 
 pub mod conversation;
+pub mod room;
 pub mod extensions;
 pub mod admission;
 pub mod admission_persistence;
@@ -39,9 +40,6 @@ pub mod channel_element;
 pub mod channel_substrate;
 pub use continuum_prompt::context_budget;
 pub mod deferred_faculty;
-// Lock follow-up #5856: its speech-ring unwraps are fixed once its sized constants have
-// owners (the self_sized rule forbids touching the file before then).
-#[allow(clippy::unwrap_used)]
 pub mod deliberation_budget;
 pub mod deliberation_parse;
 pub mod deliberation_prompt;
