@@ -599,26 +599,46 @@ impl Daemon for DiskUsageScanner {
 
                 let began_tick = Instant::now();
                 let budget = WalkBudget::default();
-                let mut cursor = WalkCursor::new();
+                // BUG 1 FIX: Read cursor from dir.cursor to persist across ticks
+                let mut cursor = (*dir.cursor.read()).clone();
                 let (entries, completed) = budgeted_walk(&path, &mut cursor, &budget);
 
-                // Do a full walk to get byte/entry data for cold-start dirs.
-                let tree_walk = walk_tree(&path);
+                // Capture cumulative count before moving cursor back to dir.cursor
+                let cumulative_entries = cursor.entries_processed();
 
+                // BUG 1 FIX: Write back the updated cursor so next tick resumes here
+                *dir.cursor.write() = cursor;
+
+                // BUG 2+3 FIX: Only call walk_tree when fully complete.
+                // During partial coverage, construct TreeWalk from budgeted_walk data only.
                 let new_coverage = if completed {
-                    Coverage::Complete { entries: tree_walk.entries }
+                    Coverage::Complete { entries }
                 } else {
+                    // BUG 3 FIX: Use cursor's cumulative count as total_estimated
                     Coverage::Partial {
                         swept_entries: entries,
-                        total_estimated: 0, // unknown until complete
+                        total_estimated: cumulative_entries,
                     }
                 };
 
-                let walk = tree_walk;
-                *dir.coverage.write() = new_coverage.clone();
-                let completed = matches!(new_coverage, Coverage::Complete { .. });
+                let walk = if completed {
+                    walk_tree(&path)
+                } else {
+                    // During partial, estimate bytes from average seen so far.
+                    let cur_bytes = dir.bytes.load(Ordering::Relaxed);
+                    let cur_entries = dir.entries.load(Ordering::Relaxed);
+                    let estimated_bytes = if cur_entries > 0 && entries > 0 {
+                        (cur_bytes / cur_entries).saturating_mul(entries)
+                    } else {
+                        0
+                    };
+                    TreeWalk { bytes: estimated_bytes, entries }
+                };
 
-                if completed {
+                *dir.coverage.write() = new_coverage.clone();
+                let coverage_complete = matches!(new_coverage, Coverage::Complete { .. });
+
+                if coverage_complete {
                     // Cold start complete — record full walk and transition to normal mode.
                     dir.record_walk(walk, began_tick.elapsed(), self.started.elapsed().as_millis() as u64);
                 } else {
