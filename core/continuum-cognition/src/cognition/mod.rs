@@ -25,6 +25,9 @@ pub use continuum_rooms::room_substrates;
 pub use continuum_prompt::framing_echo;
 pub use continuum_prompt::not_speech;
 pub mod act_observe;
+/// When an act runs and how long it waits for its turn: the timing every layer stamps (moved out of
+/// the deliberation faculty, which act_observe and workspace reached into for it).
+pub(crate) mod admission_clock;
 pub use continuum_vitals::directed_pending;
 pub use continuum_vitals::grid_allocation;
 pub mod channel_digest;
