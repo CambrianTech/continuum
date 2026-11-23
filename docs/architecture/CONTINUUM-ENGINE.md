@@ -1161,6 +1161,27 @@ mostly its own experts, not by a scheduling defect.
    larger batches that is to be re-measured.
 4. **Routing overlap is a lever**: minds whose tokens route to the same experts batch better.
    Measured, not assumed, before anything schedules by it.
+5. **More work per step is the theme** (the lesson of looped-layer models such as Inkling 2 Mini: more
+   compute per byte of weights read). For a model that does not loop: batch minds (measured above),
+   speculative drafts while the batch is small (several tokens verified per weight read; MTP lost at four
+   streams in 4.1b, but the fixed per-step cost says it should pay at one or two, to be measured), and
+   fusion (fewer steps' worth of fixed cost).
+6. **Kernel parameters are tuned live, per node, never searched once** (Joel, 2026-11-22: "I like the
+   dynamic adjustment better than searching at startup"). Thread counts, chunk sizes and prefetch
+   distances (the parameters Magnitude searches for a minute at download) become a control loop on the
+   node's own step timings, like the lane's slice (SAGE.md, "The lane"), keeping only settings whose
+   output is identical. A one-time search goes stale as load, heat and context depth move.
+7. **A team is the system-level loop.** Minds checking one another refine a result with the same weights,
+   as a looped layer does. This engine makes each pass cheap: reviewers decode in the same batched step,
+   shared prefixes are copied rather than prefilled, and each mind keeps what a review taught her. The test
+   is a benchmark run correctly, as an academy activity (`BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md`): the same
+   tasks and hardware, one model against a team of minds on this engine, scored on wall clock to a correct,
+   reviewed result and on cost. An expectation until it runs.
+
+Also checked: our fork already runs NVFP4 on Metal (c4c93981e: mul_mv, mul_mm, the MoE variants,
+get_rows), which upstream refuses (so stock llama.cpp sends those layers to the CPU, the reported cause
+of Inkling 2 Mini's slow GGUF decode on Macs), and the synced fork carries Inkling 2 Mini
+(`src/models/inkling2.cpp`, `inkling2-loop.cpp`). Unmeasured here.
 
 ### 4.1c The engine is fed by queues and signals, never held by permits (2026-10-28)
 
