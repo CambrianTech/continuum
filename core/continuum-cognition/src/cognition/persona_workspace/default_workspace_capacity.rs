@@ -425,33 +425,12 @@ pub(super) fn assemble_workspace_cycle(
         }
         working_memory.restore(persisted.wm);
         drop(restore_pin);
-        let peer = crate::identity::PeerId::from_uuid(cfg.persona_id);
-        match &persisted.own_speech {
-            OwnSpeechPersisted::ByRoom(by_room) => {
-                for (room, utterances) in by_room {
-                    for utterance in utterances {
-                        super::super::deliberation_budget::record_own_speech(peer, *room, utterance);
-                    }
-                }
-            }
-            // Pre-room-scoping file: unattributable, so dropped rather than
-            // mis-filed into a room she may never have spoken in. See
-            // OwnSpeechPersisted — hydrate_speech_rings re-seeds with rooms.
-            OwnSpeechPersisted::Legacy(flat) => {
-                continuum_base::probe!(
-                    class = "persona.volatile.own_speech_legacy_dropped",
-                    persona = %cfg.persona_name,
-                    dropped = flat.len(),
-                    "pre-room-scoping own-speech ring carried no room — dropped, \
-                     durable-transcript hydration re-seeds it"
-                );
-            }
-        }
+        // What she said is not restored from here: her speech part pages each room's transcript,
+        // the one record of what was said, the first time it sees the room.
         continuum_base::probe!(
             class = "persona.volatile.restored",
             persona = %cfg.persona_name,
             entries = n,
-            ring = persisted.own_speech.len(),
             "volatile tier restored — waking mid-work, not blank"
         );
     }

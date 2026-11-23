@@ -165,7 +165,6 @@ use super::*;
     pub(super) fn a_persisted_checkpoint_names_its_result_handles_before_restore() {
         let checkpoint_of = |memory: &WorkingMemory| PersistedVolatile {
             wm: memory.snapshot(),
-            own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
         };
         let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
         // A result that collapsed out of the ring is referenced by its POINTER.
@@ -224,7 +223,6 @@ use super::*;
         memory.record_receipt(text);
         let snapshot = PersistedVolatile {
             wm: memory.snapshot(),
-            own_speech: OwnSpeechPersisted::ByRoom(vec![(Uuid::new_v4(), vec![text.into()])]),
         };
         let bytes = serde_json::to_vec(&snapshot).expect("test: actual snapshot serializes");
         let path = root.join(persona.to_string()).join("volatile.json");

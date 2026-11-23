@@ -761,6 +761,11 @@ pub struct Burst {
     /// to `assistant`/`user` roles. Excludes the room header (standing context
     /// that belongs in the system prompt, not the conversation).
     pub turns: Vec<BurstTurn>,
+    /// What was said in the room beyond the rendered window (her speech part's snapshot); empty
+    /// where she has no room history (an eval fork, a fixture). See [`Said`].
+    ///
+    /// [`Said`]: crate::cognition::room::said::Said
+    pub said: Arc<crate::cognition::room::said::Said>,
     /// The text projection of `turns` (+ room header) — what `world_state` IS.
     /// Materialized once at construction so the hot path never re-renders.
     pub rendered: String,

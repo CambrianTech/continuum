@@ -101,175 +101,7 @@ pub(super) const NEAR_DUP_JACCARD: f64 = 0.6;
 /// the longest observed live loops were 36 and 80 messages; under healthy flow
 /// three mutually ≥0.6 messages is vanishingly rare. Evidence-scaled: below this,
 /// say nothing.
-const NEAR_DUP_MIN_CLUSTER: usize = 3;
-
-/// How many of her own recent utterances the spoken ring retains — the
-/// repetition detector's self-history window. Sized past NEAR_DUP_MIN_CLUSTER
-/// with slack for interleaved non-loop turns; utterances are short-lived
-/// evidence, not memory (the hippocampus owns memory).
-const OWN_SPEECH_RING: usize = 8;
-
-/// Process-global ring of recent OWN utterances, keyed by (canonical PeerId,
-/// ROOM) — persona_id == peer_id post-collapse. Written at the say seam
-/// (service_loop, after a successful publish — only REAL utterances), read by
-/// the deliberation faculty when rendering the repetition fact. Same
-/// process-global registry pattern as `channel_substrate` — the seam between
-/// the speaking path and the perceiving path.
-///
-/// The ROOM half of the key is load-bearing, and its absence was a live defect
-/// (glass-boxed 2026-08-14): personas are MULTI-room citizens, so a ring keyed
-/// by peer alone mixes what she said in room A into the repetition fact
-/// rendered for room B. Measured specimen — a citizen dispatched into a
-/// brand-new benchmark room, where she had said NOTHING, was told on her first
-/// turn there: "[repetition] 4 of your recent messages were nearly identical —
-/// you're circling … silence (PASS) is the honest response." Those four
-/// utterances were spoken in #academy. A fresh room must be a fresh start; the
-/// brick's own wording is room-scoped ("restating what you've ALREADY SAID adds
-/// nothing" — to THIS conversation), and its room-side sibling
-/// `room_speech_rings` has always keyed this way. The say path was already
-/// room-correct (`say_in(turn_room, …)`, "never her ambient default, or she
-/// answers one room's question to a different audience"); only the ring was
-/// blind.
-fn own_speech_rings() -> &'static std::sync::Mutex<
-    std::collections::HashMap<
-        (crate::identity::PeerId, uuid::Uuid),
-        std::collections::VecDeque<String>,
-    >,
-> {
-    static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<
-            std::collections::HashMap<
-                (crate::identity::PeerId, uuid::Uuid),
-                std::collections::VecDeque<String>,
-            >,
-        >,
-    > = std::sync::OnceLock::new();
-    RINGS.get_or_init(Default::default)
-}
-
-/// Record one real spoken utterance into the ring for the room it was spoken
-/// INTO (call ONLY after the publish succeeded — an utterance that never
-/// reached the room is not self-history).
-pub fn record_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid, text: &str) {
-    if text.trim().is_empty() {
-        return;
-    }
-    let mut rings = own_speech_rings().lock().unwrap();
-    let ring = rings.entry((peer, room)).or_default();
-    ring.push_back(text.to_string());
-    while ring.len() > OWN_SPEECH_RING {
-        ring.pop_front();
-    }
-}
-
-/// Her recent own utterances IN THIS ROOM, oldest-first (empty if she has not
-/// spoken here — which is the correct reading for a room she just entered).
-pub fn recent_own_speech(peer: crate::identity::PeerId, room: uuid::Uuid) -> Vec<String> {
-    own_speech_rings()
-        .lock()
-        .unwrap()
-        .get(&(peer, room))
-        .map(|r| r.iter().cloned().collect())
-        .unwrap_or_default()
-}
-
-/// Every (room, utterances) pair she currently holds — the persistence seam
-/// only. Cognition never reads across rooms; `save_volatile` does, because the
-/// volatile tier must restore each room's ring to the room it belongs to.
-pub fn own_speech_by_room(
-    peer: crate::identity::PeerId,
-) -> Vec<(uuid::Uuid, Vec<String>)> {
-    own_speech_rings()
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|((p, _), _)| *p == peer)
-        .map(|((_, room), ring)| (*room, ring.iter().cloned().collect()))
-        .collect()
-}
-
-/// How many recent ROOM messages the per-room ring retains. Sized to hold a
-/// full chorus cascade (the 2026-07-30 specimen cycled ~3 personas × ~4
-/// restatements): restatement evidence must outlive the workspace's rendered
-/// window, which live runs squeeze to 2–6 turns (#259).
-const ROOM_SPEECH_RING: usize = 16;
-
-/// Process-global per-ROOM ring of recent message content — the room-side
-/// sibling of [`own_speech_rings`], and the same starvation fix as #148:
-/// knowledge of what the ROOM already said must never depend on the
-/// workspace's context budget (live 2026-07-30: with a 3-turn window, the
-/// older copy of every restatement had already scrolled out, so the
-/// predictive `inbound_restates` fact was structurally blind — 0 fires
-/// across an entire live chorus). Written ONCE per message at the airc
-/// inbound-attach seam (the single point every room message crosses), read
-/// by the deliberation faculty per tick.
-fn room_speech_rings() -> &'static std::sync::Mutex<
-    std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>,
-> {
-    static RINGS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, std::collections::VecDeque<String>>>,
-    > = std::sync::OnceLock::new();
-    RINGS.get_or_init(Default::default)
-}
-
-/// One live room utterance, as the fan-out channel carries it (help-arm /
-/// team-exam perception — the rung-one wire of room collaboration).
-#[derive(Debug, Clone)]
-pub struct RoomSpeech {
-    pub room: uuid::Uuid,
-    /// Who spoke — `None` for legacy call sites that predate sender plumbing.
-    pub sender: Option<uuid::Uuid>,
-    pub content: String,
-}
-
-/// Live fan-out beside the ring (2026-08-24, the help arm): every room message
-/// already crosses THIS one seam, so a subscriber here perceives room speech
-/// without a module registration — the exam fork's help-channel listener is the
-/// first consumer; team exams and cross-activity coordination ride the same
-/// wire. Bounded lossy broadcast: a slow subscriber drops oldest (Lagged), the
-/// seam never blocks.
-static ROOM_SPEECH_TX: std::sync::OnceLock<tokio::sync::broadcast::Sender<RoomSpeech>> =
-    std::sync::OnceLock::new();
-
-fn room_speech_tx() -> &'static tokio::sync::broadcast::Sender<RoomSpeech> {
-    ROOM_SPEECH_TX.get_or_init(|| tokio::sync::broadcast::channel(256).0)
-}
-
-/// Subscribe to live room speech (all rooms; filter by `room` at the receiver).
-pub fn subscribe_room_speech() -> tokio::sync::broadcast::Receiver<RoomSpeech> {
-    room_speech_tx().subscribe()
-}
-
-/// Record one room message (call at the inbound-attach projection seam —
-/// once per message, never per receiving persona). `sender` rides into the
-/// live fan-out so a listener knows WHO spoke (a voice without a speaker
-/// cannot become a relationship); the restatement ring stays content-only.
-pub fn record_room_speech(room: uuid::Uuid, sender: Option<uuid::Uuid>, content: &str) {
-    if content.trim().is_empty() {
-        return;
-    }
-    let _ = room_speech_tx().send(RoomSpeech {
-        room,
-        sender,
-        content: content.to_string(),
-    }); // no receivers = no listeners right now; the ring below is the durable half
-    let mut rings = room_speech_rings().lock().unwrap();
-    let ring = rings.entry(room).or_default();
-    ring.push_back(content.to_string());
-    while ring.len() > ROOM_SPEECH_RING {
-        ring.pop_front();
-    }
-}
-
-/// The room's recent messages, oldest-first (empty for an unseen room).
-pub fn recent_room_speech(room: uuid::Uuid) -> Vec<String> {
-    room_speech_rings()
-        .lock()
-        .unwrap()
-        .get(&room)
-        .map(|r| r.iter().cloned().collect())
-        .unwrap_or_default()
-}
+const LOOP_CLUSTER: usize = 3;
 
 /// Lowercased word-token set for Jaccard similarity.
 fn token_set(s: &str) -> std::collections::HashSet<String> {
@@ -295,7 +127,7 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 
 /// The persona's OWN-SPEECH repetition fact for this tick, if her trailing run
 /// of own turns is a loop: `Some("[repetition] your last N messages were nearly
-/// identical")` when [`NEAR_DUP_MIN_CLUSTER`]+ of her own visible turns are
+/// identical")` when [`LOOP_CLUSTER`]+ of her own visible turns are
 /// mutually ≥ [`NEAR_DUP_JACCARD`] similar — a CLUSTER at any period, not a
 /// trailing run (see the detection comment below, and the live deploy that proved
 /// the run form blind). Pure fact, no imperative — perception
@@ -358,7 +190,7 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     // The fact now states what happened, full stop. What to do about it is
     // hers; the hard channel guards (dup-drop, tool-repeat, parrot silencer)
     // still protect the substrate regardless of what she decides.
-    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
+    (best >= LOOP_CLUSTER).then(|| {
         format!("[repetition] {best} of your recent messages were nearly identical.")
     })
 }
@@ -371,6 +203,10 @@ enum LineShape {
     Bullet,
     Prose,
 }
+
+/// How many words open a templated message: its frame (the scaffold a topic-swapped template
+/// keeps), compared as a token set. A feature of the message, never text she reads.
+const OPENER_WORDS: usize = 25;
 
 /// A message's template skeleton: its sequence of line shapes plus the token
 /// set of its opening frame (first ~25 tokens). `None` when the message isn't
@@ -404,7 +240,7 @@ fn message_skeleton(text: &str) -> Option<(Vec<LineShape>, std::collections::Has
     }
     let opener: String = text
         .split_whitespace()
-        .take(25)
+        .take(OPENER_WORDS)
         .collect::<Vec<_>>()
         .join(" ");
     Some((shapes, token_set(&opener)))
@@ -462,7 +298,7 @@ pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Opti
         best = best.max(dups + 1);
     }
     // Sense, not steer — same contract as own_repetition_fact above.
-    (best >= NEAR_DUP_MIN_CLUSTER).then(|| {
+    (best >= LOOP_CLUSTER).then(|| {
         format!(
             "[template-loop] {best} of your recent messages reuse the same template with \
              the topic swapped."

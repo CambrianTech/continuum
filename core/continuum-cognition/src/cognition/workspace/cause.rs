@@ -112,6 +112,7 @@ impl Burst {
             cause,
             turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
+            said: Arc::default(),
             hands: None,
             effects: None,
         }
@@ -130,6 +131,13 @@ impl Burst {
         context: Option<crate::identity::hands_context::HandsContext>,
     ) -> Self {
         self.hands = context;
+        self
+    }
+
+    /// What was said in this turn's room, as her speech part last published it: the snapshot
+    /// her repetition facts, her anchor and her `world_state` all read.
+    pub fn hearing(mut self, said: Arc<crate::cognition::room::said::Said>) -> Self {
+        self.said = said;
         self
     }
 
@@ -152,6 +160,7 @@ impl Burst {
             cause: Cause::Synthetic,
             turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
+            said: Arc::default(),
             hands: None,
             effects: None,
         }
@@ -175,6 +184,7 @@ impl From<String> for Burst {
             cause: Cause::Synthetic,
             turn: uuid::Uuid::new_v4(),
             room_updates: Arc::default(),
+            said: Arc::default(),
             hands: None,
             effects: None,
         }
@@ -349,6 +359,9 @@ pub struct Workspace {
     /// projection; this is the source of truth for WHO said what. A raw-string
     /// burst collapses to a single opaque turn (rendered identically to today).
     pub turns: Vec<BurstTurn>,
+    /// What was said in the room, carried from [`Burst::said`]: the repetition evidence that
+    /// outlives the rendered window.
+    pub said: Arc<crate::cognition::room::said::Said>,
     /// The wake/speech CONTEXT — the room/conversation the turn is
     /// for (the third ID tier, contextId; see
     /// docs/architecture/IDENTITY-SCOPE-PEER-LIVENESS-MODEL.md Part A). Faculties
@@ -474,6 +487,7 @@ impl Workspace {
             world_state: burst.rendered,
             turns: burst.turns,
             room_updates: burst.room_updates,
+            said: burst.said,
             room_id: burst.room.as_uuid(),
             activity_room_id: burst.room.as_uuid(),
             cause: burst.cause,

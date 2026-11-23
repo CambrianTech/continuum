@@ -293,7 +293,7 @@ use super::*;
         assert!(load_volatile(persona).unwrap().is_none());
         let current = registry.register_from_cfg(cfg_for(persona)).unwrap();
         let path = volatile_path(persona).unwrap();
-        std::fs::write(&path, br#"{"wm":{},"own_speech":[]}"#).unwrap();
+        std::fs::write(&path, br#"{"wm":{}}"#).unwrap();
         let mut replacement = cfg_for(persona);
         replacement.persona_name = "must not replace the resident".into();
         let error = match registry.register_from_cfg(replacement) {
@@ -309,7 +309,7 @@ use super::*;
         ));
         assert_eq!(
             std::fs::read(&path).unwrap(),
-            br#"{"wm":{},"own_speech":[]}"#
+            br#"{"wm":{}}"#
         );
     }
 

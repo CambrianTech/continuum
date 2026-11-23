@@ -372,12 +372,8 @@ pub(super) async fn run_self_cycle(
     // focus room while the anchor/burst/drive/say all used default — she reasoned
     // about her claim's room and then acted in a different one.
     let tick_room = work_room.as_uuid(); // the cycle's one room, resolved and refused-if-nil above
-    append_ring_anchor_if_starved(
-        &mut selftick_turns,
-        &deliveries,
-        ctx.identity.peer_id,
-        tick_room,
-    );
+    let said = super::turn_context::heard_in(ctx.identity.peer_id, tick_room).await;
+    append_ring_anchor_if_starved(&mut selftick_turns, &deliveries, &said);
     let burst = crate::cognition::workspace::Burst::from_turns_at(
         work_room,
         selftick_turns,
@@ -391,6 +387,7 @@ pub(super) async fn run_self_cycle(
         // (docs/architecture/CONTENT-TRAVELS-BY-HANDLE.md).
         crate::cognition::workspace::Cause::Ambient,
     )
+    .hearing(said)
     .for_turn(composed.turn_id);
     // A continuation naming her mind room lands here as `tick_room`: it runs on her MIND
     // cycle, with its own working memory (PRIVACY-OF-THOUGHT.md §4).
@@ -606,7 +603,7 @@ pub(super) async fn run_self_cycle(
             // ran IN (her claim's focus room when working, else her default) —
             // the same room the cycle framed its context against.
             if let Err(e) =
-                publish_own_speech(conversation, ctx.identity.peer_id, tick_room, &text).await
+                publish_own_speech(conversation, tick_room, &text).await
             {
                 tracing::warn!(persona = %ctx.identity.agent_name, error = %e, "self-cycle say failed");
                 return;

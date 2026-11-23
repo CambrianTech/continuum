@@ -46,7 +46,7 @@ impl AttachRegistry {
     /// Idempotent; the first install wins.
     pub fn install(socket: PathBuf, bus: Arc<MessageBus>, rt: tokio::runtime::Handle) -> Arc<Self> {
         // A mind's perception feed attaches the rooms her region holds through this registry.
-        crate::persona::senses::install_room_attacher(|room| {
+        crate::cognition::room::feed::install_room_attacher(|room| {
             if let Some(registry) = AttachRegistry::try_global() {
                 registry.ensure_attached(room);
             }
@@ -413,7 +413,7 @@ pub async fn publish_transcript_event(
         }
     }
     // Every resident's senses hear it through the one feed; each takes what is hers.
-    crate::persona::senses::hear(conversation).await;
+    crate::cognition::room::feed::hear(conversation).await;
     // The room's verdict settles staged credit in `reviewed::bridge_review`, AFTER the
     // review is verified (signed by its author, accepted in the room's projection,
     // admitted by the room's self-review policy). It used to settle here, on any
@@ -444,14 +444,6 @@ pub async fn publish_transcript_event(
                     room_id = %event.room_id.as_uuid(),
                     event_id = %event.event_id.as_uuid(),
                     "plain airc message projected to chat:posted for positron"
-                );
-                // #264: room-speech ring — recorded ONCE here (the single
-                // seam every room message crosses), so restatement knowledge
-                // never depends on any persona's workspace budget.
-                crate::cognition::deliberation_budget::record_room_speech(
-                    event.room_id.as_uuid(),
-                    Some(event.peer_id.as_uuid()),
-                    &line.text,
                 );
                 bus.publish_async_only(CHAT_POSTED, chat_posted_payload(&line));
             } else if let Some((name, payload)) = wall_changed_from_event(event) {
@@ -512,12 +504,6 @@ pub async fn publish_transcript_event(
             room_id = %event.room_id.as_uuid(),
             event_id = %event.event_id.as_uuid(),
             "chat_transcript envelope projected to chat:posted for positron"
-        );
-        // #264: room-speech ring — same single-seam record as the plain arm.
-        crate::cognition::deliberation_budget::record_room_speech(
-            event.room_id.as_uuid(),
-            Some(event.peer_id.as_uuid()),
-            &line.text,
         );
         bus.publish_async_only(CHAT_POSTED, chat_posted_payload(&line));
     }

@@ -56,7 +56,7 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
 }
 
 /// Where every resident's senses hear room events: a topic on the node's bus.
-pub(super) const FEED: TopicName = TopicName("node/feed");
+pub const FEED: TopicName = TopicName("node/feed");
 
 /// The one feed's emitter on the node's bus, claimed on first use. No worker: the feed only
 /// classifies an event and says it, so the hearing task does that itself. A worker of its own was a
@@ -70,7 +70,7 @@ fn feed() -> &'static Option<parking_lot::Mutex<Emitter<Arrival>>> {
 }
 
 /// The node's bus: topics every resident shares (the one feed).
-pub(super) fn node_bus() -> &'static Bus {
+pub fn node_bus() -> &'static Bus {
     feed();
     continuum_sage::component::node()
 }
@@ -101,7 +101,7 @@ pub fn install_room_attacher(attacher: RoomAttacher) {
 
 /// Under one feed she perceives only rooms the core has attached, so every room she is in is
 /// attached (Cormac, #4731: a room she joined herself never goes silent for her).
-pub(super) fn attach_rooms(rooms: &[uuid::Uuid]) {
+pub fn attach_rooms(rooms: &[uuid::Uuid]) {
     let Some(attach) = *ROOM_ATTACHER.read() else { return }; // no transport attached in this process
     for room in rooms {
         attach(airc_core::RoomId::from_uuid(*room));

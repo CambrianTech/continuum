@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
-use super::{volatile_path, OwnSpeechPersisted, PersistedVolatile};
+use super::{volatile_path, PersistedVolatile};
 
 // context-budget-exempt: bounds offline untrusted file decoding, not inference.
 const MAX_CHECKPOINT_BYTES: u64 = 64 * 1024 * 1024;
@@ -26,10 +26,6 @@ pub struct CheckpointSummary {
     pub next_action_seq: u64,
     pub entries: usize,
     pub result_receipts: usize,
-    pub own_utterances: usize,
-    /// Old roomless speech remains in the preserved bytes; ordinary restore
-    /// cannot attribute it and intentionally does not inject it into a room.
-    pub unscoped_own_utterances: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -188,29 +184,12 @@ fn summary(bytes: &[u8]) -> Result<CheckpointSummary, AdoptionError> {
         }
         previous = Some(*seq);
     }
-    let utterances = match &persisted.own_speech {
-        OwnSpeechPersisted::ByRoom(rooms) => {
-            let mut seen = std::collections::HashSet::new();
-            for (room, _) in rooms {
-                if !seen.insert(*room) {
-                    return Err(invalid("duplicate own-speech room"));
-                }
-            }
-            rooms.iter().map(|(_, speech)| speech.len()).sum()
-        }
-        OwnSpeechPersisted::Legacy(speech) => speech.len(),
-    };
     Ok(CheckpointSummary {
         build_sha: wm.build_sha.clone(),
         saved_at_ms: wm.saved_at_ms,
         next_action_seq: wm.next_action_seq,
         entries: wm.entries.len(),
         result_receipts: wm.recent_results.len(),
-        own_utterances: utterances,
-        unscoped_own_utterances: match &persisted.own_speech {
-            OwnSpeechPersisted::ByRoom(_) => 0,
-            OwnSpeechPersisted::Legacy(speech) => speech.len(),
-        },
     })
 }
 

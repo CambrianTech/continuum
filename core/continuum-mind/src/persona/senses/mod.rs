@@ -1,7 +1,7 @@
 //! Her senses: the worker that owns her perception region (object model 5.7, step 2a).
 //!
 //! CBAR, not a locked struct: each resident's [`PerceptionRegion`] is owned by one worker, her
-//! Senses, which wakes only on an input: a room event from the one [`feed`], or one of her own
+//! Senses, which wakes only on an input: a room event from the one [`feed`](crate::cognition::room::feed), or one of her own
 //! acts (`Sensed`). Nothing locks the region and nothing polls it. What she perceives is
 //! published as state: her awareness strip, and what calls her now ([`Calling`]), which her
 //! deliberation reads when it is free. A wake is never queued or dropped; the newest is the
@@ -12,11 +12,9 @@
 //!
 //! [`PerceptionRegion`]: super::perception_region::PerceptionRegion
 
-mod feed;
 mod digest;
 mod worker;
 
-pub use feed::{classify, hear, install_room_attacher, Fed};
 pub use worker::Sensed;
 
 use std::collections::HashMap;

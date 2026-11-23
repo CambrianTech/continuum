@@ -675,14 +675,12 @@ pub fn global() -> Arc<PersonaWorkspaceRegistry> {
 // falls apart" (Joel 2026-07-12; nine reboots that day = nine blank wakes).
 // The persisted file is the SAME serialization grid-sync will ship — one
 // format, one seam ([[persona-mind-persists-across-shutdowns]]).
-/// On-disk shape: the working-memory snapshot plus the own-speech ring (the
-/// ring is process-global in `deliberation_budget`, so it dies with the
-/// process unless carried here — the repetition detectors were re-blinded by
-/// every reboot until this).
+/// On-disk shape: the working-memory snapshot. What she said is not here: the transcript holds
+/// it, and her speech part pages it. A checkpoint from an older core still parses; the
+/// `own_speech` it carried is ignored.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct PersistedVolatile {
     pub(super) wm: super::super::working_memory::VolatileSnapshot,
-    pub(super) own_speech: OwnSpeechPersisted,
 }
 
 /// Give a resident her archive, so her resident log is bounded by her view's fold edge. A failure

@@ -563,20 +563,6 @@ pub fn subscribe_eval_progress() -> tokio::sync::watch::Receiver<Option<EvalPass
     eval_progress_tx().subscribe()
 }
 
-/// RAII abort for a spawned helper task — dropped with the pass, so the help
-/// listener can never outlive the exam it serves.
-pub(super) struct AbortOnDrop(pub(super) tokio::task::JoinHandle<()>);
-
-impl Drop for AbortOnDrop {
-    fn drop(&mut self) {
-        self.0.abort();
-    }
-}
-
-pub(super) fn scopeguard_abort(h: tokio::task::JoinHandle<()>) -> AbortOnDrop {
-    AbortOnDrop(h)
-}
-
 /// The idle-backstop verdict: an infra outcome whose probe is a SUBSTRATE BUG
 /// REPORT (a hang that survived every event-based guard — a lost await between
 /// inference calls), never routine control flow. Fires only after the idle

@@ -1,59 +1,6 @@
 #![cfg(test)]
     use super::*;
 
-    // what this catches: a citizen entering a room she has never spoken in must read
-    // as SILENT there, no matter how much she has said elsewhere. Regression for the
-    // 2026-08-14 live specimen — dispatched into a fresh benchmark room, her first
-    // turn carried "[repetition] 4 of your recent messages were nearly identical …
-    // silence (PASS) is the honest response" about utterances spoken in #academy.
-    // The ring was keyed by peer alone, so a multi-room citizen carried one room's
-    // withdrawal pressure into every other room. Keyed by (peer, room), a fresh room
-    // is a fresh start — and her OTHER room's history stays intact, so this can never
-    // be "fixed" by simply clearing the ring on room change.
-    #[test]
-    fn own_speech_is_scoped_to_the_room_it_was_spoken_in() {
-        let peer = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
-        let academy = uuid::Uuid::new_v4();
-        let bench = uuid::Uuid::new_v4();
-
-        for _ in 0..4 {
-            record_own_speech(peer, academy, "I'll remain silent while monitoring.");
-        }
-
-        // Where she spoke, she sees it.
-        assert_eq!(
-            recent_own_speech(peer, academy).len(),
-            4,
-            "her own history in the room she spoke in must survive"
-        );
-
-        // The fresh room she was just dispatched into: nothing to be repetitive about.
-        assert!(
-            recent_own_speech(peer, bench).is_empty(),
-            "a room she has not spoken in must read as silent — this is the bug"
-        );
-
-        // And a peer who never spoke anywhere is unaffected by hers.
-        let other = crate::identity::PeerId::from_uuid(uuid::Uuid::new_v4());
-        assert!(recent_own_speech(other, academy).is_empty());
-
-        // The persistence seam sees every room, so a restart restores each ring to
-        // the room it belongs to rather than collapsing them into one.
-        record_own_speech(peer, bench, "Let me claim that card.");
-        let mut by_room = own_speech_by_room(peer);
-        by_room.sort_by_key(|(room, _)| *room);
-        let mut expected = vec![(academy, 4usize), (bench, 1usize)];
-        expected.sort_by_key(|(room, _)| *room);
-        assert_eq!(
-            by_room
-                .iter()
-                .map(|(room, u)| (*room, u.len()))
-                .collect::<Vec<_>>(),
-            expected,
-            "persistence must carry the room key, not a flattened ring"
-        );
-    }
-
     // Specimen personas for tests pinning live incidents. Constants, not
     // scattered literals: the detectors are name-agnostic (participants resolve
     // at runtime from turns + persona_name — personas are procedurally

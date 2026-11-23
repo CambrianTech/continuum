@@ -132,7 +132,6 @@ pub(crate) async fn drive_initiative_turn(
             if crate::ai::json_in_prompt_tools::parse_tool_call(&text).is_none() {
                 if let Err(e) = crate::persona::service_loop::publish_own_speech(
                     conversation,
-                    ctx.identity.peer_id,
                     turn_room,
                     &text,
                 )

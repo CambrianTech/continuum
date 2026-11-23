@@ -66,7 +66,6 @@ pub(super) async fn finish_spoken_turn(
     // default, or she answers one room's question to a different audience.
     let say_result = publish_own_speech(
         conversation,
-        ctx.identity.peer_id,
         turn_room,
         &response_text,
     )
