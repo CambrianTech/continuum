@@ -51,7 +51,7 @@ use crate::runtime::{spawn_daemon, Daemon, DaemonChannel};
 use super::disk_pressure::{DiskPathReport, DiskReporter};
 
 // Budgeted-walk types (Req 2: budgeted cold start; Req 3: coverage tracking)
-pub use super::disk_walk::{Coverage, WalkBudget, WalkCursor};
+pub use super::disk_walk::{budgeted_walk, Coverage, WalkBudget, WalkCursor};
 
 /// One tracked cache-class directory: identity + cached recursive size.
 /// The reporter half reads `bytes` lock-free; the scanner half refreshes it.
@@ -212,8 +212,8 @@ impl TrackedDir {
         self.event_count.store(0, Ordering::Relaxed);
         // Transition coverage to Complete — consumers can now read fraction = 1.0.
         let mut cov = self.coverage.write();
-        if let Coverage::Partial { .. } | Coverage::Unknown = *cov {
-            *cov = Coverage::Complete { total_entries: walk.entries };
+        if matches!(*cov, Coverage::Partial { .. } | Coverage::Unknown) {
+            *cov = Coverage::Complete { entries: walk.entries };
         }
     }
 
@@ -343,21 +343,17 @@ impl DiskReporter for TrackedDir {
                 let cov = self.coverage.read();
                 match *cov {
                     Coverage::Unknown => "first scan pending".to_string(),
-                    Coverage::Partial { walked_entries, total_entries } if total_entries > 0 => {
+                    Coverage::Partial { swept_entries, total_estimated } if total_estimated > 0 => {
                         format!(
                             "cold start in progress: partial sweep ({}% of {} entries)",
-                            (walked_entries as f64 / total_entries as f64 * 100.0).round(),
-                            total_entries
+                            ((swept_entries as f64 / total_estimated as f64) * 100.0).round(),
+                            total_estimated
                         )
                     }
-                    Coverage::Partial { walked_entries, .. } => {
-                        format!("cold start in progress: {} entries walked so far", walked_entries)
+                    Coverage::Partial { swept_entries, .. } => {
+                        format!("cold start in progress: {} entries walked so far", swept_entries)
                     }
-                    Coverage::Complete { .. } => {
-                        // This shouldn't happen when scanned=false (record_walk sets both),
-                        // but if it does, treat as complete.
-                        "cached recursive size (walk completed)".to_string()
-                    }
+                    Coverage::Complete { .. } => "cached recursive size (walk completed)".to_string()
                 }
             }
             (true, None) if has_events => format!(
@@ -583,7 +579,7 @@ impl Daemon for DiskUsageScanner {
         }
         let dirs = TRACKED_DIRS.get().map(|registry| registry.snapshot())
             .unwrap_or_else(|| self.dirs.clone());
-        for dir in &dirs {
+        for dir in dirs.clone() {
             // A tree whose last walk was expensive is not due yet: its own cost set
             // the wait ([`next_scan_delay`]). The cached size stands meanwhile.
             if !dir.due(self.started.elapsed().as_millis() as u64) {
@@ -597,75 +593,55 @@ impl Daemon for DiskUsageScanner {
 
             if is_cold_start {
                 // Cold-start path: budgeted partial walk with resume cursor (Req 2).
-                // Each tick processes up to 1_000 entries, saving progress to disk so
-                // restarts resume where they left off. Coverage advances Unknown → Partial → Complete.
-                let path = dir.path().clone();
-                let class_name = dir.class().to_string();
+                // Each tick processes up to 1_000 entries. No spawn_blocking needed
+                // since the budget caps work and we have an owned Arc.
+                let path = dir.path();
 
                 let began_tick = Instant::now();
-                let result = tokio::task::spawn_blocking(move || {
-                    let mut cursor = WalkCursor::load(&class_name).unwrap_or(WalkCursor::new());
-                    let (new_cursor, tree_walk) = partial_walk_tree(
-                        &path,
-                        cursor,
-                        1_000u64,
-                    );
-                    new_cursor.save(&class_name);
+                let budget = WalkBudget::default();
+                let mut cursor = WalkCursor::new();
+                let (entries, completed) = budgeted_walk(&path, &mut cursor, &budget);
 
-                    if new_cursor.is_complete() {
-                        (Coverage::Complete { total_entries: new_cursor.entries_counted }, tree_walk)
-                    } else {
-                        let walked = new_cursor.entries_counted;
-                        (
-                            Coverage::Partial {
-                                walked_entries: walked,
-                                total_entries: 0, // unknown until complete
-                            },
-                            tree_walk,
-                        )
+                // Do a full walk to get byte/entry data for cold-start dirs.
+                let tree_walk = walk_tree(&path);
+
+                let new_coverage = if completed {
+                    Coverage::Complete { entries: tree_walk.entries }
+                } else {
+                    Coverage::Partial {
+                        swept_entries: entries,
+                        total_estimated: 0, // unknown until complete
                     }
-                }).await;
+                };
 
-                match result {
-                    Ok((new_coverage, walk)) => {
-                        let completed = matches!(new_coverage, Coverage::Complete { .. });
-                        *dir.coverage.write() = new_coverage;
+                let walk = tree_walk;
+                *dir.coverage.write() = new_coverage.clone();
+                let completed = matches!(new_coverage, Coverage::Complete { .. });
 
-                        if completed {
-                            // Cold start complete — record full walk and transition to normal mode.
-                            dir.record_walk(walk, began_tick.elapsed(), self.started.elapsed().as_millis() as u64);
-                        } else {
-                            // Partial progress: accumulate bytes/entries into the cache.
-                            let cur_bytes = dir.bytes.load(Ordering::Relaxed);
-                            dir.bytes.store(cur_bytes.saturating_add(walk.bytes), Ordering::Relaxed);
-                            let cur_entries = dir.entries.load(Ordering::Relaxed);
-                            dir.entries.store(cur_entries.saturating_add(walk.entries), Ordering::Relaxed);
-                        }
-
-                        let cov_str = format!("{:?}", *dir.coverage.read());
-                        continuum_base::probe!(
-                            class = "disk.scan.walk",
-                            class_name = dir.name,
-                            bytes = walk.bytes,
-                            entries = walk.entries,
-                            cold_start_walk_ms = began_tick.elapsed().as_millis() as u64,
-                            coverage = cov_str,
-                            "cold start partial walk — {}% of tree swept",
-                            if let Coverage::Partial { walked_entries, total_entries } = *dir.coverage.read() {
-                                if total_entries > 0 { (walked_entries as f64 / total_entries as f64 * 100.0).round() } else { 0.0 }
-                            } else { 100.0 }
-                        );
-                    }
-                    Err(e) => {
-                        tracing::warn!(%e, class=dir.name, "cold start walk panicked");
-                        continuum_base::probe!(
-                            class = "disk.scan.walk_failed",
-                            class_name = dir.name,
-                            error = %e,
-                            "the cold-start walk did not complete — cached size kept, retried next tick"
-                        );
-                    }
+                if completed {
+                    // Cold start complete — record full walk and transition to normal mode.
+                    dir.record_walk(walk, began_tick.elapsed(), self.started.elapsed().as_millis() as u64);
+                } else {
+                    // Partial progress: accumulate bytes/entries into the cache.
+                    let cur_bytes = dir.bytes.load(Ordering::Relaxed);
+                    dir.bytes.store(cur_bytes.saturating_add(walk.bytes), Ordering::Relaxed);
+                    let cur_entries = dir.entries.load(Ordering::Relaxed);
+                    dir.entries.store(cur_entries.saturating_add(walk.entries), Ordering::Relaxed);
                 }
+
+                let cov_str = format!("{:?}", *dir.coverage.read());
+                continuum_base::probe!(
+                    class = "disk.scan.walk",
+                    class_name = dir.name,
+                    bytes = walk.bytes,
+                    entries = walk.entries,
+                    cold_start_walk_ms = began_tick.elapsed().as_millis() as u64,
+                    coverage = cov_str,
+                    "cold start partial walk — {}% of tree swept",
+                    if let Coverage::Partial { swept_entries, total_estimated } = *dir.coverage.read() {
+                        if total_estimated > 0 { (swept_entries as f64 / total_estimated as f64 * 100.0).round() } else { 0.0 }
+                    } else { 100.0 }
+                );
 
                 // Skip normal full walk for this dir on cold start ticks.
             } else {
