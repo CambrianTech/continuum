@@ -77,14 +77,26 @@ fn len32(n: usize) -> Result<u32, FrameError> {
 
 /// Append one frame of `kind` to `out`: `header` as an array, then `runs` as they are.
 pub fn encode(out: &mut Vec<u8>, kind: FrameKind, header: &impl Serialize, runs: &[&[u8]]) -> Result<(), FrameError> {
-    let header = rmp_serde::to_vec(header)?;
+    encode_parts(out, Parts { kind, header: &rmp_serde::to_vec(header)?, runs })
+}
+
+/// One frame's parts with its header already encoded (`rmp_serde::to_vec`), kept as given.
+#[derive(Debug, Clone, Copy)]
+pub struct Parts<'a> {
+    pub kind: FrameKind,
+    pub header: &'a [u8],
+    pub runs: &'a [&'a [u8]],
+}
+
+/// [`encode`] for parts whose header its producer already encoded.
+pub fn encode_parts(out: &mut Vec<u8>, Parts { kind, header, runs }: Parts<'_>) -> Result<(), FrameError> {
     let count = u16::try_from(runs.len()).map_err(|_| FrameError::TooManyRuns(runs.len()))?;
     let body = 1 + 4 + header.len() + 2 + runs.iter().map(|r| 4 + r.len()).sum::<usize>();
     out.reserve(4 + body);
     out.extend_from_slice(&len32(body)?.to_le_bytes());
     out.push(kind as u8);
     out.extend_from_slice(&len32(header.len())?.to_le_bytes());
-    out.extend_from_slice(&header);
+    out.extend_from_slice(header);
     out.extend_from_slice(&count.to_le_bytes());
     for run in runs {
         out.extend_from_slice(&len32(run.len())?.to_le_bytes());

@@ -14,4 +14,6 @@ pub mod frame;
 pub mod capture_log;
 /// The captures' retention under disk pressure: closed generations, oldest first, never a live one.
 pub mod capture_pool;
+/// The capture's write-behind: a SAGE component that hears capture records and appends them to their owner's log.
+pub mod capture_writer;
 pub mod prompt_capture;

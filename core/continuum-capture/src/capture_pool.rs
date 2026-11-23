@@ -32,8 +32,8 @@ fn size(path: &Path) -> Option<u64> {
 }
 
 impl CapturesPool {
-    pub fn new(class: ClassWriter) -> Self {
-        Self { class }
+    pub fn new(class: &ClassWriter) -> Self {
+        Self { class: class.clone() }
     }
 
     /// Every generation of every owner, live ones included, as (index, frames) paths.
@@ -139,7 +139,7 @@ mod tests {
         let mut live = CaptureLog::open(class.owned_by(owner)).expect("test: live");
         live.append(FrameKind::Submitted, &("r",), &[&[7u8; 1024]], 2).expect("test: append");
 
-        let pool = CapturesPool::new(TrackedDir::new("captures-pool-test", dir.path().to_path_buf()).writer());
+        let pool = CapturesPool::new(&TrackedDir::new("captures-pool-test", dir.path().to_path_buf()).writer());
         let before = pool.usage_bytes();
         let freed = pool.evict_at_least(1);
         assert!(freed > 0, "asked for bytes, it frees a closed generation");

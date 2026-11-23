@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! <owner>/<generation>.frames   frame, frame, ...                    (frame::encode)
-//! <owner>/<generation>.index    [u64 offset][u32 length][u8 kind][3 pad][u64 captured_at_ms] ...
+//! <owner>/<generation>.index    [u64 offset][u32 length][u8 kind][3 pad][u64 captured_at_ms][u32 write_us] ...
 //! ```
 //!
 //! Files are placed through the owner's disk class (`ClassWriter`), never at a path the log picks. The
@@ -22,7 +22,7 @@ use serde::Serialize;
 use crate::frame::{self, FrameError, FrameKind};
 
 /// The bytes one index entry takes.
-const ENTRY: usize = 8 + 4 + 1 + 3 + 8;
+const ENTRY: usize = 8 + 4 + 1 + 3 + 8 + 4;
 
 /// Where one frame is: its generation and its place in that generation's index.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -38,6 +38,8 @@ pub struct Entry {
     pub length: u32,
     pub kind: u8,
     pub captured_at_ms: u64,
+    /// How long writing this frame took, in microseconds: what sizes the writer's intake window.
+    pub write_us: u32,
 }
 
 impl Entry {
@@ -47,6 +49,7 @@ impl Entry {
         out[8..12].copy_from_slice(&self.length.to_le_bytes());
         out[12] = self.kind;
         out[16..24].copy_from_slice(&self.captured_at_ms.to_le_bytes());
+        out[24..28].copy_from_slice(&self.write_us.to_le_bytes());
         out
     }
 
@@ -61,6 +64,7 @@ impl Entry {
             length: u32::from_le_bytes([raw[8], raw[9], raw[10], raw[11]]),
             kind: raw[12],
             captured_at_ms: u64::from_le_bytes(field(16..24)),
+            write_us: u32::from_le_bytes([raw[24], raw[25], raw[26], raw[27]]),
         }
     }
 }
@@ -151,12 +155,21 @@ impl CaptureLog {
 
     /// Append one frame and its index entry; the frame first, so a crash leaves only an unindexed tail.
     pub fn append(&mut self, kind: FrameKind, header: &impl Serialize, runs: &[&[u8]], captured_at_ms: u64) -> Result<Cursor, LogError> {
+        let header = rmp_serde::to_vec(header).map_err(FrameError::from)?;
+        self.append_parts(frame::Parts { kind, header: &header, runs }, captured_at_ms)
+    }
+
+    /// [`Self::append`] for parts whose header their producer already encoded.
+    pub fn append_parts(&mut self, parts: frame::Parts<'_>, captured_at_ms: u64) -> Result<Cursor, LogError> {
+        let kind = parts.kind;
         self.scratch.clear();
-        frame::encode(&mut self.scratch, kind, header, runs)?;
+        frame::encode_parts(&mut self.scratch, parts)?;
         let length = u32::try_from(self.scratch.len()).map_err(|_| LogError::TooLong(self.scratch.len()))?;
+        let started = std::time::Instant::now();
         self.frames.write_all(&self.scratch)?;
         self.frames.flush()?;
-        let entry = Entry { offset: self.offset, length, kind: kind as u8, captured_at_ms };
+        let write_us = started.elapsed().as_micros().min(u128::from(u32::MAX)) as u32; // a write over ~71 minutes saturates the field
+        let entry = Entry { offset: self.offset, length, kind: kind as u8, captured_at_ms, write_us };
         self.index.write_all(&entry.bytes())?;
         self.index.flush()?;
         self.offset += u64::from(length);
