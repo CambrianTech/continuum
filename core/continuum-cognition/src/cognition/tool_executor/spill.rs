@@ -235,7 +235,7 @@ fn checkpoint_protects(path: &Path, handle: &str) -> bool {
     else {
         return false;
     };
-    match crate::cognition::persona_workspace::persisted_result_handles(persona_id) {
+    match checkpoint_handles::protected(persona_id) {
         Ok(handles) => handles.contains(handle),
         Err(error) => {
             continuum_base::probe!(
@@ -993,5 +993,6 @@ pub(crate) fn prepare_store_fixture() {
     });
 }
 
+pub(crate) mod checkpoint_handles;
 #[cfg(test)]
 mod tests;
