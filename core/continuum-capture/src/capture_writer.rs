@@ -115,6 +115,77 @@ impl CaptureWriter {
 
 }
 
+/// Append `record` to its owner's open log, opening the owner's next generation on its first.
+fn write(logs: &parking_lot::Mutex<HashMap<Uuid, CaptureLog>>, class: &ClassWriter, record: &CaptureRecord) -> std::io::Result<()> {
+    let mut logs = logs.lock();
+    let log = match logs.entry(record.owner) {
+        std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
+        std::collections::hash_map::Entry::Vacant(slot) => slot.insert(CaptureLog::open(class.owned_by(record.owner))?),
+    };
+    let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
+    log.append_parts(crate::frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).map(|_| ()).map_err(std::io::Error::other)
+}
+
+/// Where a capture's records go.
+#[derive(Clone)]
+pub enum Delivery {
+    /// Emitted on the node bus for the node's writer: the turn never waits on the disk.
+    Node,
+    /// Appended in the caller, for a process with no node writer (a test, an offline tool): the
+    /// same append the writer makes, readable the moment it returns.
+    Inline(Arc<Inline>),
+}
+
+/// An inline delivery's own open logs.
+pub struct Inline {
+    class: ClassWriter,
+    logs: parking_lot::Mutex<HashMap<Uuid, CaptureLog>>,
+}
+
+impl Delivery {
+    /// Inline delivery under `class`. Every inline delivery to one class root shares its open logs,
+    /// so two sinks of one owner never each open a generation and append over each other.
+    pub fn inline(class: ClassWriter) -> Self {
+        static SHARED: std::sync::LazyLock<parking_lot::Mutex<HashMap<std::path::PathBuf, std::sync::Weak<Inline>>>> = std::sync::LazyLock::new(Default::default);
+        let root = class.dir();
+        let mut shared = SHARED.lock();
+        if let Some(open) = shared.get(&root).and_then(std::sync::Weak::upgrade) {
+            return Self::Inline(open);
+        }
+        let inline = Arc::new(Inline { class, logs: Default::default() });
+        shared.retain(|_, held| held.strong_count() > 0);
+        shared.insert(root, Arc::downgrade(&inline));
+        Self::Inline(inline)
+    }
+
+    /// Deliver `record`; a record that cannot go is said, loudly, and lost.
+    pub fn deliver(&self, record: CaptureRecord) {
+        match self {
+            Self::Node => emit(record),
+            Self::Inline(inline) => {
+                if let Err(error) = write(&inline.logs, &inline.class, &record) {
+                    continuum_base::probe!(class = "capture.write_failed", owner = %record.owner, error = %error,
+                        "a capture record was not written: this record is lost, loudly");
+                }
+            }
+        }
+    }
+}
+
+/// The node bus's one emitter on [`CAPTURE`], claimed on first use; every sink emits through it.
+static EMITTER: std::sync::OnceLock<Option<parking_lot::Mutex<continuum_sage::dataflow::Emitter<CaptureRecord>>>> = std::sync::OnceLock::new();
+
+/// Say `record` on the node bus; never waits on the disk (the lock covers a queue insert only).
+fn emit(record: CaptureRecord) {
+    match EMITTER.get_or_init(|| continuum_sage::component::node().emitter::<CaptureRecord>(CAPTURE).ok().map(parking_lot::Mutex::new)) {
+        Some(emitter) => {
+            emitter.lock().emit(record);
+        }
+        None => continuum_base::probe!(class = "capture.topic_taken", owner = %record.owner,
+            "the capture topic's emitter is held elsewhere: this record reaches no writer"),
+    }
+}
+
 /// The node's one capture writer, held for the process.
 static NODE: std::sync::OnceLock<continuum_sage::component::Running<CaptureWriter>> = std::sync::OnceLock::new();
 
@@ -165,16 +236,7 @@ impl Component for CaptureWriter {
         }
         self.last = through;
         let (class, logs, record) = (self.class.clone(), Arc::clone(&self.logs), Arc::clone(&event.value));
-        let written = tokio::task::spawn_blocking(move || {
-            let mut logs = logs.lock();
-            let log = match logs.entry(record.owner) {
-                std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
-                std::collections::hash_map::Entry::Vacant(slot) => slot.insert(CaptureLog::open(class.owned_by(record.owner))?),
-            };
-            let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
-            log.append_parts(crate::frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).map(|_| ()).map_err(std::io::Error::other)
-        })
-        .await;
+        let written = tokio::task::spawn_blocking(move || write(&logs, &class, &record)).await;
         let failure = match written {
             Ok(Ok(())) => None,
             Ok(Err(error)) => Some(error.to_string()),

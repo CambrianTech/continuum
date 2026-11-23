@@ -9,14 +9,15 @@ use std::collections::{BTreeMap, HashMap};
 use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 
 use crate::call_frames::{CallKey, IncompleteHead, SubmittedHead, TerminalHead};
-use crate::capture_log::{self, Cursor, LogError};
+use crate::capture_log::{self, Cursor, Entry, LogError};
 use crate::frame::{FrameError, FrameKind};
+use crate::prompt_capture::CallStatus;
 
-/// One frame's place and when it was captured.
+/// One frame's place: its cursor and its index entry (offset, length, when it was captured).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Placed {
     pub cursor: Cursor,
-    pub captured_at_ms: u64,
+    pub entry: Entry,
 }
 
 /// Where one call's frames are.
@@ -25,12 +26,14 @@ pub struct CallPlaces {
     pub submitted: Option<Placed>,
     pub terminal: Option<Placed>,
     pub incomplete: Option<Placed>,
+    /// How the call ended, from its terminal frame's header.
+    pub ended: Option<CallStatus>,
 }
 
 impl CallPlaces {
     /// When the call was first captured: what orders calls oldest to newest.
     pub fn first_at(&self) -> Option<u64> {
-        [self.submitted, self.terminal, self.incomplete].iter().flatten().map(|p| p.captured_at_ms).min()
+        [self.submitted, self.terminal, self.incomplete].iter().flatten().map(|p| p.entry.captured_at_ms).min()
     }
 
     fn without(&mut self, generation: u64) {
@@ -38,6 +41,9 @@ impl CallPlaces {
             if place.is_some_and(|p| p.cursor.generation == generation) {
                 *place = None;
             }
+        }
+        if self.terminal.is_none() {
+            self.ended = None;
         }
     }
 
@@ -75,15 +81,25 @@ impl CallIndex {
             let entries = capture_log::entries_from(&self.writer, generation, from)?;
             for (i, entry) in entries.iter().enumerate() {
                 let cursor = Cursor { generation, entry: from + i as u32 };
-                let placed = Placed { cursor, captured_at_ms: entry.captured_at_ms };
+                let placed = Placed { cursor, entry: *entry };
                 let (kind, header) = capture_log::frame_head(&self.writer, generation, entry)?;
                 let decode = |e: rmp_serde::decode::Error| LogError::Frame(FrameError::Decode(e));
-                let (key, slot): (CallKey, fn(&mut CallPlaces) -> &mut Option<Placed>) = match kind {
-                    FrameKind::Submitted => (rmp_serde::from_slice::<SubmittedHead>(&header).map_err(decode)?.key, |p| &mut p.submitted),
-                    FrameKind::Terminal => (rmp_serde::from_slice::<TerminalHead>(&header).map_err(decode)?.key, |p| &mut p.terminal),
-                    FrameKind::Incomplete => (rmp_serde::from_slice::<IncompleteHead>(&header).map_err(decode)?.key, |p| &mut p.incomplete),
-                };
-                *slot(self.calls.entry(key).or_default()) = Some(placed);
+                match kind {
+                    FrameKind::Submitted => {
+                        let key = rmp_serde::from_slice::<SubmittedHead>(&header).map_err(decode)?.key;
+                        self.calls.entry(key).or_default().submitted = Some(placed);
+                    }
+                    FrameKind::Terminal => {
+                        let head = rmp_serde::from_slice::<TerminalHead>(&header).map_err(decode)?;
+                        let places = self.calls.entry(head.key).or_default();
+                        places.terminal = Some(placed);
+                        places.ended = Some(head.status);
+                    }
+                    FrameKind::Incomplete => {
+                        let key = rmp_serde::from_slice::<IncompleteHead>(&header).map_err(decode)?.key;
+                        self.calls.entry(key).or_default().incomplete = Some(placed);
+                    }
+                }
             }
             self.read.insert(generation, from + entries.len() as u32);
         }
@@ -107,7 +123,6 @@ mod tests {
     use super::*;
     use crate::call_frames::{Ending, Submission};
     use crate::capture_log::CaptureLog;
-    use crate::prompt_capture::CallStatus;
     use continuum_engine::ai::types::{ChatMessage, TextGenerationRequest};
     use continuum_kernel::system_resources::disk_reporters::TrackedDir;
     use uuid::Uuid;
@@ -158,6 +173,7 @@ mod tests {
         index.refresh().expect("test: refresh");
         index.refresh().expect("test: a second refresh reads nothing new");
         assert_eq!(index.get(&a).and_then(|p| p.terminal).map(|p| p.cursor), Some(Cursor { generation: 0, entry: 2 }), "appended since the last refresh");
+        assert_eq!(index.get(&a).and_then(|p| p.ended), Some(CallStatus::Completed), "how it ended, from its end's header");
         assert_eq!(index.get(&b).and_then(|p| p.terminal).map(|p| p.cursor), Some(Cursor { generation: 1, entry: 0 }), "ended in the next generation, joined by key");
         let order: Vec<&str> = index.oldest_first().iter().map(|(k, _)| k.request_id.as_str()).collect();
         assert_eq!(order, ["z", "b"], "first captured first, whatever the keys' order");

@@ -20,4 +20,6 @@ pub mod capture_writer;
 pub mod call_frames;
 /// Where each captured call is in its owner's log, by key: read from frame headers, extended from each index tail.
 pub mod call_index;
+/// A persona's captured calls read back: pages, one call whole, and the completed calls.
+pub mod call_playback;
 pub mod prompt_capture;

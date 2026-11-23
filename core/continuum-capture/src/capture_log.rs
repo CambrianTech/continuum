@@ -76,8 +76,6 @@ pub enum LogError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Frame(#[from] FrameError),
-    #[error("generation {generation} has no index entry {entry}")]
-    NoEntry { generation: u64, entry: u32 },
     #[error("a frame of {0} bytes does not fit the index's 32-bit length")]
     TooLong(usize),
 }
@@ -215,13 +213,9 @@ pub fn frame_head(writer: &ClassWriter, generation: u64, entry: &Entry) -> Resul
     Ok((kind, header))
 }
 
-/// The frame bytes at `cursor`, read through its index entry.
-pub fn frame_bytes(writer: &ClassWriter, cursor: Cursor) -> Result<Vec<u8>, LogError> {
-    let entry = entries(writer, cursor.generation)?
-        .get(cursor.entry as usize)
-        .copied()
-        .ok_or(LogError::NoEntry { generation: cursor.generation, entry: cursor.entry })?;
-    let mut file = File::open(writer.path(&frames_of(cursor.generation))?)?;
+/// The bytes of the frame `entry` locates in `generation`.
+pub fn frame_at(writer: &ClassWriter, generation: u64, entry: &Entry) -> io::Result<Vec<u8>> {
+    let mut file = File::open(writer.path(&frames_of(generation))?)?;
     file.seek(SeekFrom::Start(entry.offset))?;
     let mut bytes = vec![0u8; entry.length as usize];
     file.read_exact(&mut bytes)?;
@@ -274,7 +268,8 @@ mod tests {
         assert_eq!(next.generation(), 1, "a reopened log starts the next generation, never appends over the last");
         let c = next.append(FrameKind::Submitted, &Head { request_id: "c".into() }, &[], 12).expect("test: c");
 
-        let bytes = frame_bytes(&writer(dir.path()), b).expect("test: b's bytes");
+        let b_entry = entries(&writer(dir.path()), b.generation).expect("test: entries")[b.entry as usize];
+        let bytes = frame_at(&writer(dir.path()), b.generation, &b_entry).expect("test: b's bytes");
         let (frame, _) = frame::decode(&bytes).expect("test: b decodes");
         assert_eq!((frame.kind, frame.runs.clone()), (FrameKind::Terminal, vec![&b"the answer"[..], &b"the stream"[..]]));
 

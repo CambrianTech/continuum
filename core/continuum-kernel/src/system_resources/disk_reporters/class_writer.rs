@@ -59,6 +59,16 @@ impl ClassWriter {
         ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(owner.to_string()) }
     }
 
+    /// The same class, scoped to one named directory inside this scope (`<scope>/<name>/`): one kind
+    /// of file among the others a class keeps. `name` is a single plain name, refused otherwise.
+    pub fn within(&self, name: &str) -> io::Result<Self> {
+        let name = confine::plain(Path::new(name))?;
+        if name.components().count() != 1 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, format!("{} is not one directory name", name.display())));
+        }
+        Ok(ClassWriter { dir: Arc::clone(&self.dir), scope: self.scope.join(name) })
+    }
+
     /// This scope's directory, held open (created on first use).
     fn held(&self) -> io::Result<confine::Dir> {
         confine::subdir(&confine::open_root(self.dir.path())?, &self.scope)
@@ -102,6 +112,12 @@ impl ClassWriter {
         }
         files.sort();
         Ok(files)
+    }
+
+    /// This scope's own directory, by name, for display, for a pool naming its volume and for a
+    /// reader keyed by where it reads. Writes never go through it.
+    pub fn dir(&self) -> PathBuf {
+        self.dir.path().join(&self.scope)
     }
 
     /// Where `relative` lives in this class, by name, for display and for readers outside this
@@ -162,6 +178,13 @@ mod tests {
             assert!(writer.path(Path::new(escape)).is_err(), "{escape:?} must be refused");
         }
         assert!(writer.path(Path::new("peers/a/emission.json")).is_ok());
+        // a named scope is one plain name: never a way out, never two levels at once
+        for escape in ["", "..", "/etc", "a/b", "./a"] {
+            assert!(writer.within(escape).is_err(), "{escape:?} must be refused as a scope");
+        }
+        let scoped = writer.within("prompt-captures").expect("one plain name");
+        assert_eq!(scoped.dir(), writer.dir().join("prompt-captures"), "a scope\'s own directory");
+        assert_eq!(scoped.owned_by(uuid::Uuid::nil()).path(Path::new("f")).expect("path"), writer.path(Path::new("prompt-captures/00000000-0000-0000-0000-000000000000/f")).expect("path"));
     }
 
     // what this catches: a replace that leaves its staging file or half a file, and a publish that

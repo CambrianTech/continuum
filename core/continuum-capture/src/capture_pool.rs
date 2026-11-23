@@ -73,7 +73,7 @@ impl CapturesPool {
 
 impl ResourcePool for CapturesPool {
     fn root(&self) -> Option<PathBuf> {
-        self.class.path(Path::new(".")).ok()
+        Some(self.class.dir())
     }
 
     fn tier_name(&self) -> &str {

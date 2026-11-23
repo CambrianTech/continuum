@@ -37,7 +37,7 @@ pub(super) fn register_pressure_broker(
     // Capture generations have a writer on the node bus and an owner under disk pressure: closed ones go oldest first, never the one
     // a live capture log appends to (card 699578cb). A class that cannot be resolved is said, never
     // silently left without retention.
-    match continuum_kernel::system_resources::disk_reporters::ClassWriter::of("fixtures") {
+    match continuum_capture::capture::prompt_class() {
         Ok(class) => {
             pressure_broker.broker().register(Arc::new(continuum_capture::capture_pool::CapturesPool::new(&class)));
             continuum_capture::capture_writer::start_node(class);
