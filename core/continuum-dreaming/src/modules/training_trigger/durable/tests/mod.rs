@@ -18,8 +18,9 @@
 
 
     // What this catches (278afa6c): an init timeout must not permanently disable
-    // learning. Cancel the real owner's setup wait; its existing tick retries
-    // against the retained actual SQLite adapter, without a global HOME/config edit.
+    // learning. Cancel the real owner's setup wait; the trainer's next pass (what any
+    // wake runs) retries against the retained actual SQLite adapter, without a global
+    // HOME/config edit.
     #[tokio::test]
     pub(super) async fn owner_tick_retries_interrupted_schema_setup() {
         let (adapter, _dir) = crate::orm::store::fresh_adapter().await;
@@ -33,7 +34,7 @@
         setup.abort();
         assert!(setup.await.unwrap_err().is_cancelled());
         assert!(trigger.state.require_ready().is_err());
-        trigger.tick().await.unwrap();
+        trigger.state.recover_pass().await.unwrap();
         trigger.state.require_ready().unwrap();
         assert!(trigger
             .state
@@ -49,7 +50,7 @@
         // A late initialization publication cannot override authoritative stop.
         trigger.state.ready.store(true, Ordering::Release);
         assert!(trigger.state.require_ready().is_err());
-        assert!(trigger.tick().await.is_err());
+        assert!(trigger.state.recover_pass().await.is_err());
         let admission: Result<(), String> = trigger
             .state
             .run_owned(
@@ -130,7 +131,7 @@
         assert_eq!(next["currentCount"], 2);
         trigger.shutdown().await.unwrap();
         let (restarted, _) = build_runtime(adapter).await;
-        restarted.tick().await.unwrap();
+        restarted.state.recover_pass().await.unwrap();
         let arrived = restarted.state.durable.require().unwrap().arrivals(0, 8).await.unwrap();
         assert_eq!(
             arrived.iter().flat_map(|row| row.examples.iter().map(|example| example.prompt.as_str())).collect::<Vec<_>>(),

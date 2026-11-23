@@ -262,6 +262,7 @@ impl TrainingTriggerState {
         if let Err(error) = store.submissions.save(id, &row).await {
             return Err(("PersistenceFailed", error.to_string()));
         }
+        self.note_arrival(sequence);
         #[cfg(test)]
         self.pause_operation(OperationPoint::AcceptanceCommitted)
             .await;
@@ -269,6 +270,26 @@ impl TrainingTriggerState {
             submission_id: id,
             replayed: false,
         })
+    }
+
+    /// Take the trainer's arrivals output and say the current sequence at once: the trainer's first
+    /// wake recovers whatever was already waiting.
+    pub(crate) fn install_out(&self, mut out: super::super::trainer::TrainerOut) {
+        out.arrived(self.next_sequence.load(Ordering::Relaxed));
+        *self.out.lock() = Some(out);
+    }
+
+    /// Say something on the trainer's bus; nothing is said before a trainer is installed.
+    pub(crate) fn say(&self, what: impl FnOnce(&mut super::super::trainer::TrainerOut)) {
+        if let Some(out) = self.out.lock().as_mut() {
+            what(out);
+        }
+    }
+
+    /// Say that example `sequence` was accepted, waking the trainer; nothing is said before a
+    /// trainer is installed.
+    pub(crate) fn note_arrival(&self, sequence: u64) {
+        self.say(|out| out.arrived(sequence));
     }
 
     /// How many examples bucket `key` holds pending and not yet learned.
