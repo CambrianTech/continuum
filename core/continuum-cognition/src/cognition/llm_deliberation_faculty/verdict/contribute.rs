@@ -47,7 +47,7 @@ impl LlmDeliberationFaculty {
         // first grants evaluation after it: granted, she decides again; not, her turn defers with its reason.
         // Her window, decided and (a grant) HELD for this act (`decide_and_hold`): a seat being reclaimed
         // or moved before the hold is waited for within her turn, never a failed turn (card d50e8e66).
-        let (decided, mut act_hold) = match super::admission_clock::window_grant(self.persona_id, crate::capacity::mind_window::decide_and_hold(
+        let (decided, mut act_hold) = match crate::cognition::admission_clock::window_grant(self.persona_id, crate::capacity::mind_window::decide_and_hold(
             self.persona_id,
             || crate::capacity::mind_window::mind_window(self.persona_id, loaded.adapter.as_ref(), loaded.context_window),
             || {

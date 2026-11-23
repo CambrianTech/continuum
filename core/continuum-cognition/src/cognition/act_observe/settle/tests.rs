@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::cognition::llm_deliberation_faculty::admission_clock;
+    use crate::cognition::admission_clock;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
 
     /// An act for `persona`: the first act of a turn in a fixed room.
@@ -438,7 +438,7 @@
     // stage that finished, or was cancelled, gives its name back to the stage around it.
     #[tokio::test(start_paused = true)]
     async fn a_deadline_names_the_await_that_held_and_a_finished_or_cancelled_stage_gives_way() {
-        use crate::cognition::llm_deliberation_faculty::admission_clock::stage;
+        use crate::cognition::admission_clock::stage;
         let bound = std::time::Duration::from_secs(1500);
         let start = tokio::time::Instant::now();
         let inner = super::until_act_stalls(start + bound, bound, None, stage("outer", async {
