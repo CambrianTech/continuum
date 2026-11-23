@@ -60,7 +60,9 @@ use crate::runtime::{CommandExecutor, CommandResult, LateBound, ModuleConfig, Mo
 use crate::sdk_codegen::DynCommand;
 
 mod durable;
-mod serving_wake;
+pub mod trainer;
+/// The engine-train cleaner: a component that releases shadows nothing holds, on its own worker.
+pub mod cleaner;
 pub(crate) mod competence;
 mod in_place;
 mod owned;
@@ -169,6 +171,9 @@ pub struct TrainingTriggerState {
     /// the one the serving daemon and `models/*` mutate, so a model pulled after boot resolves at once.
     models: Arc<crate::model_registry::live::ModelCatalog>,
     next_sequence: std::sync::atomic::AtomicU64,
+    /// What the trigger says on the trainer's bus (arrivals, seated shadows, page-outs); installed
+    /// when the trainer component is built on its owner's bus.
+    out: parking_lot::Mutex<Option<trainer::TrainerOut>>,
     /// The learners seated in place and the engines' workspaces (card 4114a2c6).
     in_place: in_place::InPlace,
     /// Finite admitted operations outlive a cancelled caller. Shutdown drains
@@ -220,6 +225,7 @@ impl TrainingTriggerState {
             no_learning_engine_noted: std::sync::atomic::AtomicBool::new(false),
             membership: std::sync::atomic::AtomicU64::new(0),
             next_sequence: std::sync::atomic::AtomicU64::new(1),
+            out: parking_lot::Mutex::new(None),
             in_place: in_place::InPlace::new(authority),
             operations: parking_lot::Mutex::new(tokio::task::JoinSet::new()),
             running: owned::Running::default(),
@@ -284,7 +290,6 @@ impl TrainingTriggerState {
 // card 32d2abbb); the trigger reads through them like every other caller.
 pub struct TrainingTriggerModule {
     pub(crate) state: Arc<TrainingTriggerState>,
-    serving_wake: serving_wake::ServingWake,
 }
 
 impl TrainingTriggerModule {
@@ -293,8 +298,12 @@ impl TrainingTriggerModule {
     pub fn new(authority: crate::genome::learner::seat::Authority, models: &Arc<crate::model_registry::live::ModelCatalog>) -> Self {
         Self {
             state: Arc::new(TrainingTriggerState::new(authority, models)),
-            serving_wake: Default::default(),
         }
+    }
+
+    /// The trainer component for this trigger, on `bus`: the caller starts it on its owner.
+    pub fn trainer(&self, bus: &continuum_sage::component::Bus) -> Result<trainer::Trainer, continuum_sage::component::Taken> {
+        trainer::Trainer::on(Arc::clone(&self.state), bus)
     }
 }
 
@@ -308,25 +317,14 @@ impl ServiceModule for TrainingTriggerModule {
             event_subscriptions: &[],
             needs_dedicated_thread: false,
             max_concurrency: 0,
-            tick_interval: Some(std::time::Duration::from_secs(30)),
+            tick_interval: None, // the trainer component wakes on serving changes and arrivals, never on a clock
         }
     }
 
     async fn initialize(&self, ctx: &ModuleContext) -> Result<(), String> {
         self.state.data.install(ctx.storage("training-trigger")?);
         self.state.ensure_storage().await?;
-        self.serving_wake.start(self.state.clone()).await;
         Ok(())
-    }
-
-    async fn tick(&self) -> Result<(), String> {
-        // The tick and serving changes have one recovery owner: concurrent
-        // passes must not drain each other's ended-job list before requeue.
-        if self.serving_wake.request_recovery() {
-            Ok(())
-        } else {
-            self.state.recover_pass().await
-        }
     }
 
     /// Expose the three dep-holding training-trigger verbs over this
@@ -364,7 +362,6 @@ impl ServiceModule for TrainingTriggerModule {
     /// Stop admitting passes and report the learning operations still running: a step in flight
     /// is counted, never reported as drained.
     async fn drain(&self) -> Result<u32, String> {
-        shutdown_step("drain.wake_stop", self.serving_wake.stop()).await;
         let in_flight = shutdown_step("drain.stop_admitting", self.state.stop_admitting()).await;
         u32::try_from(in_flight).map_err(|_| format!("{in_flight} learning operations in flight do not fit the drain count"))
     }
@@ -383,7 +380,6 @@ impl ServiceModule for TrainingTriggerModule {
     }
 
     async fn shutdown(&self) -> Result<(), String> {
-        shutdown_step("shutdown.wake_stop", self.serving_wake.stop()).await;
         self.state.drain_operations().await
     }
 }

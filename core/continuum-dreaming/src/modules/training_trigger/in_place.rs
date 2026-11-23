@@ -241,8 +241,13 @@ impl InPlace {
             return Ok(published);
         }
         let cost = seated.cost;
+        let shadow = std::path::PathBuf::from(seated.mind.shadow_path());
         let began = std::time::Instant::now();
         let stopped = stop(&mut held, key).await;
+        // the engine let her shadow go: the cleaner decides what becomes of the file, on its own worker
+        if stopped == Released::Confirmed {
+            state.say(|out| out.settled(shadow, cost.learned, published));
+        }
         // the workspace is the engine's: it goes with the last learner, and only then
         let workspace = match (held.minds.is_empty(), held.workspace.take()) {
             (true, Some(workspace)) => match workspace.release().await {
@@ -550,6 +555,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
     let consumer = format!("learning:{}:{}", key.persona_id, key.trait_kind);
     match MindLearner::start(authority, learning, &consumer, shadow, expiry).await {
         Ok(mind) => {
+            let shadow_file = std::path::PathBuf::from(mind.shadow_path());
             let binding = format!("{}:{}:{}", key.persona_id, key.trait_kind, key.base_model);
             let checkpointed = generation.iter().flat_map(|g| g.positions.iter()).map(|p| (p.submission, p.learned)).collect();
             held.minds.insert(
@@ -568,6 +574,7 @@ async fn seat(authority: &Authority, state: &TrainingTriggerState, held: &mut En
                     cost: SeatCost { seat: began.elapsed(), ..SeatCost::default() },
                 },
             );
+            state.say(|out| out.seated(shadow_file));
             Ok(Seating::Seated)
         }
         Err(StartFailure::NotSeated(crate::genome::learner::seat::SeatRefusal::AwaitingMemory(wait))) => Ok(Seating::AwaitMemory(wait)),

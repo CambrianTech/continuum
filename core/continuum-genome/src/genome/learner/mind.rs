@@ -192,6 +192,11 @@ impl MindLearner {
         self.seat.shadow.id
     }
 
+    /// The file the engine wrote her shadow to, as it reported it when she was seated.
+    pub fn shadow_path(&self) -> &str {
+        &self.seat.shadow.path
+    }
+
     /// Stop, in the reverse of start: revoke the grant, unload the shadow (the engine frees her
     /// optimizer and, for the last mind, its workspace), release her optimizer residency, then the
     /// weight residency; each part's leases drop only as the engine confirms its release. A step that

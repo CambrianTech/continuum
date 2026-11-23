@@ -544,12 +544,13 @@ mod live_engine {
         assert_eq!(crate::inference::lane_registry::live_lane().map(|lane| lane.incarnation()), Some(engine), "test: the engine reads as the live lane");
     }
 
-    /// One pass the way the module runs it: its tick wakes the serving-wake worker, which runs the
-    /// recovery pass over the live lane. Waits until `key`'s generation holds `learned` examples.
+    /// One pass the way the node runs it: the trainer component, on its owner's bus, wakes on the
+    /// arrival its install says and runs the recovery pass over the live lane. Waits until `key`'s
+    /// generation holds `learned` examples; the owner (and the trainer with it) lives until then.
     async fn pass_by_tick(trigger: &crate::modules::training_trigger::TrainingTriggerModule, key: &BucketKey, learned: u32) -> LearnCheckpoint {
-        use crate::runtime::ServiceModule;
-        trigger.serving_wake.start(trigger.state.clone()).await;
-        trigger.tick().await.expect("test: the tick runs");
+        let bus = std::sync::Arc::new(continuum_sage::component::Bus::new());
+        let mut owner = continuum_sage::component::Owner::with_bus(std::sync::Arc::clone(&bus), continuum_sage::dataflow::OwnerId(Uuid::new_v4()), 0);
+        owner.start(trigger.trainer(&bus).expect("test: one trainer on this bus"));
         let store = trigger.state.durable.require().expect("test: storage");
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
         loop {

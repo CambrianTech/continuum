@@ -9,6 +9,7 @@ pub(super) fn register_ai_provider_and_genome_modules(
     resource_daemon: &Arc<crate::resources::ResourceDaemon>,
     airc_interceptor_cell: &Arc<tokio::sync::OnceCell<Arc<airc_lib::Airc>>>,
     model_catalog: &Arc<crate::model_registry::live::ModelCatalog>,
+    trainer_tx: tokio::sync::oneshot::Sender<crate::modules::training_trigger::trainer::Trainer>,
 ) {
     // AIProviderModule: Unified AI provider for cloud and local inference
     // Provides ai/generate, ai/providers/list, ai/providers/health
@@ -82,10 +83,19 @@ pub(super) fn register_ai_provider_and_genome_modules(
             log_info!("ipc", "server", "GeneCatalog: an owner was already installed in this process; it stays");
         }
         let authority = authority();
-        runtime.register(Arc::new(
-            crate::modules::training_trigger::TrainingTriggerModule::new(authority, model_catalog)
-                .with_serving_changes(serving_daemon.subscribe_serving()),
-        ));
+        let trigger = Arc::new(crate::modules::training_trigger::TrainingTriggerModule::new(authority, model_catalog));
+        // The trainer is built here, where its inputs exist, and started by main on the node's owner,
+        // which owns its life; the module keeps only what it says on (arrivals).
+        match trigger.trainer(continuum_sage::component::node()) {
+            Ok(trainer) => {
+                if trainer_tx.send(trainer).is_err() {
+                    continuum_base::probe!(class = "boot.trainer_unstarted", "main stopped waiting for the trainer: nothing learns in place this boot");
+                }
+            }
+            Err(taken) => continuum_base::probe!(class = "boot.trainer_unstarted", topic = taken.0 .0,
+                "the trainer's topics are claimed elsewhere on the node bus: nothing learns in place this boot"),
+        }
+        runtime.register(trigger);
         log_info!(
             "ipc",
             "server",
