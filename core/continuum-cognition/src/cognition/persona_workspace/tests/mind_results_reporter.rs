@@ -7,7 +7,7 @@ use crate::ai::types::ResultCustody;
 use crate::cognition::persona_workspace::mind_results_reporter::{
     budget_of, prove, resident_bytes, shed_to, LastCopy, Minds, ProvenCopies,
 };
-use crate::cognition::tool_executor::spill::{self, LivePin};
+use crate::cognition::result_store::{self, LivePin};
 use crate::cognition::working_memory::WorkingMemory;
 use parking_lot::Mutex;
 
@@ -65,7 +65,7 @@ fn resident(memory: &WorkingMemory) -> Vec<String> {
 #[test]
 fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
     // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let (pa, pb) = (Uuid::new_v4(), Uuid::new_v4());
     let pin = LivePin::new();
     let (a, b) = (
@@ -108,7 +108,7 @@ fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
         "a moved body keeps its measured length"
     );
     assert_eq!(
-        spill::saved_whole(pb, &b2).expect("test: b2 loads"),
+        result_store::saved_whole(pb, &b2).expect("test: b2 loads"),
         body("b2"),
         "and loads back to what she read"
     );
@@ -129,7 +129,7 @@ fn the_shed_moves_the_oldest_across_minds_down_to_the_allocation() {
 #[test]
 fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
     // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -138,7 +138,7 @@ fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
     let gone = kept(&memory, persona, &pin, "c3");
     kept(&memory, persona, &pin, "c4");
     kept(&memory, persona, &pin, "c5");
-    let path = |handle: &str| spill::resolve(persona, handle).expect("test: path");
+    let path = |handle: &str| result_store::resolve(persona, handle).expect("test: path");
     std::fs::write(path(&wrong), "not what she read").expect("test: overwrite");
     std::fs::write(path(&truncated), &body("c2")[..BODY / 2]).expect("test: truncated write");
     std::fs::remove_file(path(&gone)).expect("test: remove");
@@ -183,7 +183,7 @@ fn a_copy_that_cannot_reproduce_the_body_keeps_it_resident() {
 #[test]
 fn budget_answers_from_the_proof_cache_without_the_filesystem() {
     // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -206,7 +206,7 @@ fn budget_answers_from_the_proof_cache_without_the_filesystem() {
         "the oldest moved once proven"
     );
     let handle = memory.resident_results().candidates[0].handle.clone();
-    let dir = spill::resolve(persona, &handle)
+    let dir = result_store::resolve(persona, &handle)
         .expect("test: path")
         .parent()
         .expect("test: dir")
@@ -257,7 +257,7 @@ fn report_sums_resident_bytes_across_minds() {
 // the file is deleted, never kept forever.
 #[test]
 fn a_rendered_body_over_a_raw_source_sheds_and_its_file_drains_once_unreferenced() {
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let persona = Uuid::new_v4();
     let pin = LivePin::new();
     let memory = Arc::new(WorkingMemory::new(8));
@@ -273,7 +273,7 @@ fn a_rendered_body_over_a_raw_source_sheds_and_its_file_drains_once_unreferenced
     assert_eq!(resident(&memory), ["r2"], "the rendered body moved to its own saved copy; the newest stays");
     let own = memory.snapshot().actions[0].body.clone().expect("test: its body's own copy is named");
     assert_ne!(own, source_handle, "its own address, not the source's");
-    assert_eq!(spill::saved_whole(persona, &own).expect("test: loads"), rendered, "and it loads back to what she read");
+    assert_eq!(result_store::saved_whole(persona, &own).expect("test: loads"), rendered, "and it loads back to what she read");
     // Her view folds act #1: it leaves RAM for her archive. A reopen of it 1 act later sets her
     // horizon; three acts later its segment is past it and compacts, freeing the file.
     memory.release_through(1);
@@ -284,6 +284,6 @@ fn a_rendered_body_over_a_raw_source_sheds_and_its_file_drains_once_unreferenced
     }
     let tick = memory.tick_archive().expect("test: a compaction step");
     assert_eq!(tick.compacted, 1, "its segment is past her reopen horizon");
-    assert!(spill::saved_whole(persona, &own).is_err(), "nothing references her rendered body's file: deleted");
+    assert!(result_store::saved_whole(persona, &own).is_err(), "nothing references her rendered body's file: deleted");
 }
 

@@ -415,7 +415,7 @@ pub(super) fn assemble_workspace_cycle(
         // output, so her view can show it whole again (FOCUS-CONTRACT rule 7).
         let persona = cfg.persona_id;
         persisted.wm.price_evicted_wholes(|handle| {
-            let path = crate::cognition::tool_executor::spill::resolve(persona, handle).ok()?;
+            let path = crate::cognition::result_store::resolve(persona, handle).ok()?;
             std::fs::read_to_string(path).ok().map(|body| body.trim().chars().count())
         });
         // The previous life's handoff re-seeds this one: her ledger and card are known at

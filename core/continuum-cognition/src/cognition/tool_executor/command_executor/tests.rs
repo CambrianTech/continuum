@@ -227,7 +227,7 @@
     #[tokio::test]
     async fn failed_call_becomes_error_result_not_batch_failure() {
         // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-        crate::cognition::tool_executor::spill::prepare_store_fixture();
+        crate::cognition::result_store::prepare_store_fixture();
         let exec = executor_with_echo();
         let calls = vec![NativeToolCall {
             id: "t1".to_string(),

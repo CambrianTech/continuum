@@ -138,7 +138,7 @@ impl Source<ContextMessage> for Thoughts<'_> {
     /// read resident. `None` (its resident level renders) when the file is gone or unreadable.
     fn load(&self, item: &Item<ContextMessage>) -> Option<ContextMessage> {
         let stored = item.stored()?;
-        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        let body = crate::cognition::result_store::saved_whole(self.persona, &stored.handle).ok()?;
         Some(ContextMessage::user(format!("- {body}")))
     }
 }

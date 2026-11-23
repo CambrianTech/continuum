@@ -190,7 +190,7 @@ impl OpenViews {
             return false;
         }
         let result = &act.output.result;
-        let header = crate::cognition::tool_executor::spill::result_scalars(&result.content);
+        let header = crate::cognition::result_store::result_scalars(&result.content);
         let field_u32 = |key: &str| -> Option<u32> {
             header.as_ref()?.get(key)?.as_u64().and_then(|n| u32::try_from(n).ok())
         };
@@ -293,7 +293,7 @@ impl OpenViews {
     /// touches that file's view: its line numbers are the saved result's, which open with a
     /// header line, not the file's.
     fn note_output_page(&mut self, act: &Observation, seq: u64) -> bool {
-        let header = crate::cognition::tool_executor::spill::result_scalars(&act.output.result.content);
+        let header = crate::cognition::result_store::result_scalars(&act.output.result.content);
         // The output she named, or, for a call by act number, the one the result echoes.
         let named = act.call.input.get("outputId").and_then(|v| v.as_str());
         let echoed = header.as_ref().and_then(|h| h.get("outputId")?.as_str());

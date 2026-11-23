@@ -1,10 +1,10 @@
 #![cfg(test)]
 use super::*;
-use crate::cognition::tool_executor::spill;
+use crate::cognition::result_store;
 
 /// A mind with an archive, in the store fixture's own home (never `~/.continuum`).
 fn archived_mind(persona: Uuid) -> WorkingMemory {
-    spill::prepare_store_fixture();
+    result_store::prepare_store_fixture();
     let wm = WorkingMemory::new(8);
     wm.bind_archive(persona).expect("test: her archive opens in the fixture's store");
     wm
@@ -33,7 +33,7 @@ fn start(wm: &WorkingMemory, unfolded: u64) {
 
 /// The archive directory's files, by suffix.
 fn archive_files(persona: Uuid, suffix: &str) -> usize {
-    let dir = spill::store().expect("test: the store").owned_by(persona).path(std::path::Path::new("archive")).expect("test: path");
+    let dir = result_store::store().expect("test: the store").owned_by(persona).path(std::path::Path::new("archive")).expect("test: path");
     std::fs::read_dir(dir).map_or(0, |entries| entries.filter_map(Result::ok).filter(|e| e.file_name().to_string_lossy().ends_with(suffix)).count())
 }
 
@@ -79,7 +79,7 @@ fn five_thousand_acts_keep_a_bounded_log_a_flat_checkpoint_and_a_draining_archiv
     // Retention deletes her oldest span under disk pressure (the tool-output pool); the archive
     // notices at its oldest end and forgets it.
     let segments = wm.archive_segments();
-    let oldest = spill::store().expect("test: store").owned_by(persona).path(std::path::Path::new(&format!("archive/{:020}-{:020}.span.json", 1, 50))).expect("test: path");
+    let oldest = result_store::store().expect("test: store").owned_by(persona).path(std::path::Path::new(&format!("archive/{:020}-{:020}.span.json", 1, 50))).expect("test: path");
     std::fs::remove_file(&oldest).expect("test: the oldest span is where its range names it");
     wm.tick_archive().expect("test: a retention tick");
     assert_eq!(wm.archive_segments(), segments - 1, "a retired span leaves the index");

@@ -28,7 +28,8 @@ use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use uuid::Uuid;
 
 use crate::ai::types::ResultCustody;
-pub use super::output_id::OutputId;
+pub mod output_id;
+pub use output_id::OutputId;
 
 /// The handles live minds still point at, one set per holder (a working memory's instance).
 /// Disk-pressure eviction of the spill directory never deletes one of these

@@ -16,7 +16,7 @@
 
 use super::observation::Observation;
 use crate::ai::types::ResultCustody;
-use crate::cognition::tool_executor::spill::LivePin;
+use crate::cognition::result_store::LivePin;
 use crate::cognition::tool_executor::tool_output::Reopen;
 
 /// What one call of an act left behind.

@@ -40,7 +40,7 @@ use futures::future::join_all;
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::spill;
+use crate::cognition::result_store;
 use super::types::{
     CallVerdict, NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolOutcome,
 };
@@ -570,14 +570,14 @@ impl ToolExecutor for CommandToolExecutor {
         ctx: &ToolExecutionContext,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // No memory records this batch's handles, so its saves are pinned only while it runs.
-        self.execute_native_batch_pinned(batch, ctx, &spill::LivePin::new()).await
+        self.execute_native_batch_pinned(batch, ctx, &result_store::LivePin::new()).await
     }
 
     async fn execute_native_batch_pinned(
         &self,
         batch: &CallBatch,
         ctx: &ToolExecutionContext,
-        pin: &spill::LivePin,
+        pin: &result_store::LivePin,
     ) -> Result<NativeBatchOutcome, ToolError> {
         // Scope the persona's connection to THIS turn's room (the third ID tier);
         // identity is already the persona's, baked into the connection. The
@@ -762,7 +762,7 @@ impl ToolExecutor for CommandToolExecutor {
                         &call.name,
                         &call.input,
                         cause.as_deref(),
-                        &crate::cognition::tool_executor::spill::result_text(&value),
+                        &crate::cognition::result_store::result_text(&value),
                         task.as_deref(),
                     );
                     {
