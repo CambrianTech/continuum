@@ -184,6 +184,38 @@ pub struct TrainingTriggerState {
     pub(crate) test_trials: std::sync::Arc<crate::genome::gene_trial::GeneTrials>,
 }
 
+/// PURE: the lane a learning step can run on, or why there is none. A lane whose endpoint keeps no
+/// slots admits no step: a pass there would seat, sign and page her out for nothing, every tick (the
+/// IntelMac, 2026-11-23: an orphaned llama-server read as the live lane, 608 such passes in 40 min).
+pub(crate) fn learning_engine(
+    lane: Option<crate::inference::lane_registry::LaneRecord>,
+    keeps_slots: impl Fn(crate::inference::engine_residency::EngineIncarnation) -> bool,
+) -> Result<crate::inference::lane_registry::LaneRecord, NoLearningEngine> {
+    match lane {
+        None => Err(NoLearningEngine::NoLane),
+        Some(lane) if !keeps_slots(lane.incarnation()) => Err(NoLearningEngine::NoSlots { endpoint: lane.incarnation().root_url() }),
+        Some(lane) => Ok(lane),
+    }
+}
+
+/// Why this node has no engine a learning step can run on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NoLearningEngine {
+    /// No llama-server lane is live.
+    NoLane,
+    /// A lane is live, but its endpoint keeps no slot pool (an engine this core never seated).
+    NoSlots { endpoint: String },
+}
+
+impl std::fmt::Display for NoLearningEngine {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoLane => write!(f, "no llama-server lane"),
+            Self::NoSlots { endpoint } => write!(f, "the live lane at {endpoint} keeps no slot pool, so it admits no learning step"),
+        }
+    }
+}
+
 impl TrainingTriggerState {
     /// Test-only: how many examples the bucket holds not yet learned, from the journal; `None`
     /// when it holds none.
@@ -242,12 +274,16 @@ impl TrainingTriggerState {
     /// (`in_place`). A node serving nothing learns nothing until it serves.
     pub(crate) async fn recover_pass(self: &Arc<Self>) -> Result<(), String> {
         self.ensure_storage().await?; // an interrupted schema setup is retried here, serving or not
-        let Some(lane) = crate::inference::lane_registry::live_lane() else {
-            if !self.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed) {
-                let pending = self.pending_views().await?;
-                self.note_no_learning_engine(&pending);
+        let lane = learning_engine(crate::inference::lane_registry::live_lane(), crate::inference::slots::keeps_learning_slots);
+        let lane = match lane {
+            Ok(lane) => lane,
+            Err(unable) => {
+                if !self.no_learning_engine_noted.load(std::sync::atomic::Ordering::Relaxed) {
+                    let pending = self.pending_views().await?;
+                    self.note_no_learning_engine(&pending, &unable);
+                }
+                return Ok(());
             }
-            return Ok(());
         };
         self.no_learning_engine_noted.store(false, std::sync::atomic::Ordering::Relaxed);
         self.learn_in_place(lane.incarnation(), &lane.model).await
@@ -257,7 +293,7 @@ impl TrainingTriggerState {
     /// in-process (the 5090, Codex 2026-11-22: 8 accepted examples, learned=0, no checkpoint) is
     /// serving, so this is never a quiet "nothing to do". With examples waiting, say so once per
     /// transition, naming what waits; in-process learning is IN-PROCESS-LEARNING.md L2 and L3.
-    fn note_no_learning_engine(&self, pending: &[crate::commands::training_trigger::status::PendingBucketView]) {
+    fn note_no_learning_engine(&self, pending: &[crate::commands::training_trigger::status::PendingBucketView], unable: &NoLearningEngine) {
         let examples: u64 = pending.iter().map(|bucket| u64::from(bucket.examples_pending)).sum();
         if examples == 0 {
             return;
@@ -272,7 +308,8 @@ impl TrainingTriggerState {
             class = "training.in_place.no_learning_engine",
             examples_waiting = examples,
             buckets = ?buckets,
-            "accepted examples wait and this node has no learning engine (no llama-server lane; in-process learning is IN-PROCESS-LEARNING.md L2/L3): nothing will be learned here until one exists"
+            why = %unable,
+            "accepted examples wait and this node has no learning engine (in-process learning is IN-PROCESS-LEARNING.md L2/L3): nothing will be learned here until one exists"
         );
     }
 

@@ -55,7 +55,7 @@ pub use mind_gate::{begin_act_for_test, ActForTest};
 pub(crate) mod grant_handoff;
 pub use grant_handoff::reclaim_grant;
 mod learn_slot;
-pub use learn_slot::{learn_slot, LearnSlot, LearnSlotRefusal};
+pub use learn_slot::{keeps_learning_slots, learn_slot, LearnSlot, LearnSlotRefusal};
 mod kv_slot_pool;
 mod endpoint_concurrency;
 pub use endpoint_concurrency::{DecodeBound, DecodePermit, EndpointConcurrency};

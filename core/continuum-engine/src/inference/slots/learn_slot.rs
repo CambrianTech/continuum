@@ -69,6 +69,12 @@ impl std::fmt::Display for LearnSlotRefusal {
     }
 }
 
+/// Whether `engine`'s endpoint keeps the slot pool a learning step is admitted on. An engine this
+/// core never seated (one left running by an earlier core) installed none, so no step can run there.
+pub fn keeps_learning_slots(engine: EngineIncarnation) -> bool {
+    matches!(directory().get(&engine.root_url()), Probed::Known(_))
+}
+
 /// Take custody of the slot `persona`'s next learning step runs on, in `engine`. Waits, holding
 /// nothing, for the lane, the permit and her slot, exactly as her turn would.
 pub async fn learn_slot(engine: EngineIncarnation, persona: uuid::Uuid) -> Result<LearnSlot, LearnSlotRefusal> {

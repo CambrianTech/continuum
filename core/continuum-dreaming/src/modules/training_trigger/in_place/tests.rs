@@ -320,6 +320,7 @@ fn probe_router() -> &'static continuum_kernel::routing::ProbeRouterLayer {
 struct Waiting {
     examples_waiting: String,
     buckets: String,
+    why: String,
 }
 
 /// Every no-learning-engine probe received so far that names `persona_name`'s bucket. Other tests in
@@ -367,6 +368,35 @@ async fn accepted_examples_with_no_learning_engine_are_named_once() {
     assert_eq!(named.len(), 1, "named once across two passes, never a quiet Ok and never every pass");
     assert_eq!(named[0].examples_waiting.parse::<u64>().ok(), Some(1), "the total waiting");
     assert!(named[0].buckets.contains(&format!("{persona_name}/geography/qwen: 1")), "her bucket and its count: {}", named[0].buckets);
+    assert_eq!(named[0].why, "no llama-server lane", "why there is no engine is said");
+}
+
+// what this catches (the IntelMac 2026-11-23: an orphaned llama-server still read as the live lane,
+// its endpoint with no slot pool, and every 30 s each persona's pass seated, signed and paged out,
+// 608 passes in 40 min, each ending "step_deferred: the endpoint has no installed pool"): a live lane
+// that keeps no slots is no learning engine, said with its endpoint; one that keeps slots is the engine.
+#[test]
+fn a_live_lane_that_keeps_no_slots_is_no_learning_engine() {
+    use crate::modules::training_trigger::{learning_engine, NoLearningEngine};
+    let lane = |port| crate::inference::lane_registry::LaneRecord {
+        pid: std::process::id(),
+        port,
+        role: crate::inference::lane_registry::LaneRole::Live,
+        model: "qwen".into(),
+        context_window: 0,
+        lanes: 1,
+        page_dir: None,
+        engine_bin: None,
+        started_s: engine(port).started_s,
+        placement: None,
+        weights: None,
+    };
+    assert_eq!(learning_engine(None, |_| true).err(), Some(NoLearningEngine::NoLane));
+    let unslotted = learning_engine(Some(lane(58057)), |_| false).err();
+    assert_eq!(unslotted, Some(NoLearningEngine::NoSlots { endpoint: "http://127.0.0.1:58057".into() }), "its endpoint, named");
+    assert!(unslotted.is_some_and(|why| why.to_string().contains("keeps no slot pool")));
+    let slotted = learning_engine(Some(lane(58058)), |engine| engine.port == 58058);
+    assert_eq!(slotted.map(|lane| lane.port).ok(), Some(58058), "a lane that keeps slots is the engine");
 }
 
 // what this catches (the 5090, 2026-11-22: the trainer's drain exceeded 2 s and its join timed out,
