@@ -70,6 +70,17 @@ topic; no component holds another.
   built). Work prepared too early is never wasted: a swapped-out mind's state is copied out and reused.
 - **Long acts and grid peers are handles emitting events**: a compile, a web browse, a remote node is a
   component whose progress anything may observe; a topic on another node's bus is still a topic.
+- **Each concern is a self-sufficient loop** (Joel, 2026-11-23: "Self sufficient loops and work so each
+  concern knows what it needs and what it should deliver. It can easily plug into any other concern via
+  just a simple subscription"). It declares its stimuli and its outputs, runs at its own cadence, and never
+  knows who consumes what it says or who made what it hears; joining another concern is one subscription.
+- **A component's lifetime is owned by its node**: started when the node boots, stopped with the node, never
+  a process-wide global started lazily by its first caller. Twice on 2026-11-22/23 a lazily started global
+  (the clock, then the room feed's worker) lived on whichever runtime first touched it and died with it, so
+  later deadlines never rang and later events went nowhere, silently. Tests start their own node.
+- **A component does a concern's work; a pure step at a seam is not one**: something that only classifies
+  and forwards (the room feed) is a function the producer calls, not a worker; a worker there is only a
+  queue hop.
 
 ## How to add a part
 
