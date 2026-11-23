@@ -14,7 +14,7 @@ async fn a_dream_queued_on_the_scratch_slot_holds_no_adapter_permit_and_no_lane(
     let held = pool.acquire_slot(scratch).await.expect("test: another call holds scratch");
     let sem = Arc::new(Semaphore::new(3));
     let client = reqwest::Client::new();
-    let queued = admit_turn(&sem, SlotClass::Dream, None, Some(pool.clone()), &client, "test://queued-dream", 0, std::time::Duration::ZERO);
+    let queued = TurnRequest::new(&sem, SlotClass::Dream, None, Some(pool.clone()), &client, "test://queued-dream", 0, std::time::Duration::ZERO);
     tokio::pin!(queued);
     assert!(futures::poll!(&mut queued).is_pending(), "the dream waits for the scratch slot");
     assert_eq!(sem.available_permits(), 3, "a queued dream holds no adapter permit");
@@ -41,7 +41,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let before = lanes_free();
 
     let busy = pool.acquire_slot(pool.transient_slot()).await.expect("test: a decode holds the citizen slot");
-    let queued = admit_turn(&sem, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let queued = TurnRequest::new(&sem, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(queued);
     assert!(futures::poll!(&mut queued).is_pending(), "the dream waits for the busy citizen slot");
     assert_eq!(sem.available_permits(), 2, "a queued dream holds no adapter permit");
@@ -57,7 +57,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // a slot. A dream waiting for the adapter must then hold no slot, or each waits on the other.
     let one = Arc::new(Semaphore::new(1));
     let resident = DecodeBound::from(&one).try_acquire().expect("test: a resident holds the only adapter permit");
-    let waiting = admit_turn(&one, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let waiting = TurnRequest::new(&one, SlotClass::Dream, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(waiting);
     assert!(futures::poll!(&mut waiting).is_pending(), "the dream waits for the adapter permit");
     assert!(pool.try_acquire_slot(pool.transient_slot()).is_some(), "while it waits for the adapter it holds no slot");
@@ -72,14 +72,14 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let root = format!("test://dream-generation-{}", Uuid::new_v4());
     let _admitted_pool = crate::inference::slots::directory().ensure_pool(&root, 2);
     let stale_discovery = Arc::new(KvSlotPool::new(&root, 3));
-    let after_transition = admit_turn(&sem, SlotClass::Dream, None, Some(stale_discovery), &client, &root, 0, std::time::Duration::ZERO)
+    let after_transition = TurnRequest::new(&sem, SlotClass::Dream, None, Some(stale_discovery), &client, &root, 0, std::time::Duration::ZERO)
         .await
         .expect("test: the dream borrows a citizen slot of the admitted generation");
     assert!(after_transition._lane.is_some(), "a dream on a no-scratch generation holds its lane");
     drop(after_transition);
     assert_eq!(lanes_free(), before, "and gives it back");
 
-    let summary = admit_turn(&sem, SlotClass::Background, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO)
+    let summary = TurnRequest::new(&sem, SlotClass::Background, None, Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO)
         .await
         .expect("test: background traffic borrows a free citizen slot");
     assert!(summary._lane.is_none(), "other background traffic takes no lane");
@@ -91,7 +91,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     let her = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
     let act = crate::inference::slots::MindTurn::begin(her).await.expect("test: her act takes her gate");
     // Bounded: a keyed dream that queues for her gate (the regression) would wait here forever.
-    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), TurnRequest::new(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
         .await
         .expect("a keyed dream is refused at once while her act holds her gate, never queued behind it");
     assert_eq!(refused.err().as_deref(), Some(HER_ACT_FIRST), "her act comes first");
@@ -105,7 +105,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     tokio::pin!(queued_act);
     assert!(futures::poll!(&mut queued_act).is_pending(), "her next act queues for the gate");
     drop(holder);
-    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
+    let refused = tokio::time::timeout(std::time::Duration::from_secs(5), TurnRequest::new(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO))
         .await
         .expect("a keyed dream behind a queued act is refused at once, never queued behind it");
     assert_eq!(refused.err().as_deref(), Some(HER_ACT_FIRST), "the queued act, not the dream, takes the released gate");
@@ -115,7 +115,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // (2) Waiting for her slot, it holds no gate, so her act is never queued behind it.
     let busy_a = pool.acquire_slot(0).await.expect("test: a decode holds slot 0");
     let busy_b = pool.acquire_slot(1).await.expect("test: a decode holds slot 1");
-    let queued = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let queued = TurnRequest::new(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(queued);
     assert!(futures::poll!(&mut queued).is_pending(), "the keyed dream waits for her slot");
     assert!(crate::inference::slots::MindTurn::try_begin(her).is_some(), "a waiting keyed dream holds no gate: her act would take it now");
@@ -130,12 +130,12 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // lane and no gate, then runs once a turn releases (Codex on #5898: the lane was held here).
     let a = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
     let b = PageKey::mind(Uuid::new_v4()).expect("test: a mind key");
-    let turn_a = admit_turn(&sem, SlotClass::Turn, Some(a), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: a's turn pins a slot");
-    let turn_b = admit_turn(&sem, SlotClass::Turn, Some(b), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: b's turn pins the other");
+    let turn_a = TurnRequest::new(&sem, SlotClass::Turn, Some(a), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: a's turn pins a slot");
+    let turn_b = TurnRequest::new(&sem, SlotClass::Turn, Some(b), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO).await.expect("test: b's turn pins the other");
     // Its own adapter semaphore: the two turns hold the shared one's permits, and this scenario is
     // about pins, not the adapter.
     let own_permits = Arc::new(Semaphore::new(2));
-    let behind_pins = admit_turn(&own_permits, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let behind_pins = TurnRequest::new(&own_permits, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(behind_pins);
     assert!(futures::poll!(&mut behind_pins).is_pending(), "every slot is pinned: the keyed dream waits");
     assert_eq!(lanes_free(), before, "holding no serving lane");
@@ -149,7 +149,7 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // residents through the ambient lane (a keyless dream on scratch takes none, test above).
     let roomy = Arc::new(KvSlotPool::new("test://keyed-dream-scratch", 3));
     assert!(roomy.scratch_slot().is_some(), "three lanes reserve a scratch slot");
-    let on_scratch_node = admit_turn(&Arc::new(Semaphore::new(3)), SlotClass::Dream, Some(her), Some(roomy), &client, "test://keyed-dream-scratch", 0, std::time::Duration::ZERO)
+    let on_scratch_node = TurnRequest::new(&Arc::new(Semaphore::new(3)), SlotClass::Dream, Some(her), Some(roomy), &client, "test://keyed-dream-scratch", 0, std::time::Duration::ZERO)
         .await
         .expect("test: admitted on her page");
     assert!(on_scratch_node._lane.is_some(), "a keyed dream holds the ambient lane even where a scratch slot exists");
@@ -161,8 +161,8 @@ async fn without_a_scratch_slot_a_dream_queues_holding_nothing_runs_holding_one_
     // neither ran. Now each waits for a release holding nothing, one runs, then the other.
     let busy = (pool.acquire_slot(0).await.expect("test: a decode holds slot 0"), pool.acquire_slot(1).await.expect("test: a decode holds slot 1"));
     let grants = crate::inference::resource_admission::serving_lane_grants();
-    let learning = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
-    let consolidating = admit_turn(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let learning = TurnRequest::new(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
+    let consolidating = TurnRequest::new(&sem, SlotClass::Dream, Some(her), Some(pool.clone()), &client, "test://dream-borrow", 0, std::time::Duration::ZERO);
     tokio::pin!(learning, consolidating);
     assert!(futures::poll!(&mut learning).is_pending(), "her slot is busy: the learning step waits");
     assert!(futures::poll!(&mut consolidating).is_pending(), "and so does the consolidation");

@@ -33,7 +33,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     pool.note_saved(key);
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
-    let mut admitting = Box::pin(admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
+    let mut admitting = Box::pin(TurnRequest::new(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool.clone()),
         &client, &root, 100, AdmissionPatience::for_turn()));
     tokio::select! {
         result = &mut admitting => return Err(format!("admitted before restore: {:?}", result.err()).into()),
@@ -52,7 +52,7 @@ async fn healthy_restore_outlives_generation_prediction() -> Result<(), Box<dyn 
     drop(admitted);
     drop(admitting);
     let subsequent = tokio::time::timeout(Duration::from_secs(5),
-        admit_turn(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
+        TurnRequest::new(&sem, crate::inference::slots::SlotClass::Turn, Some(key), Some(pool), &client, &root,
             100, AdmissionPatience::for_turn())).await??;
     assert!(subsequent.page_confirmed);
     drop(subsequent);
@@ -117,7 +117,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     let next = PageKey::mind(Uuid::new_v4()).expect("test: next activity");
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
-    let mut resident = admit_turn(
+    let mut resident = TurnRequest::new(
         &sem, crate::inference::slots::SlotClass::Turn,
         Some(old),
         Some(pool.clone()),
@@ -131,7 +131,7 @@ async fn abandoned_context_switch_finishes_save_without_starting_restore() {
     resident.generation_completed();
     drop(resident);
     pool.note_saved(next);
-    let mut admitting = Box::pin(admit_turn(
+    let mut admitting = Box::pin(TurnRequest::new(
         &sem, crate::inference::slots::SlotClass::Turn,
         Some(next),
         Some(pool.clone()),
@@ -211,7 +211,7 @@ async fn abandoned_restore_retains_slot_lane_and_generation_until_terminal_recei
             pool.note_saved(key);
             let sem = Arc::new(Semaphore::new(1));
             let client = reqwest::Client::new();
-            let mut admitting = Box::pin(admit_turn(
+            let mut admitting = Box::pin(TurnRequest::new(
                 &sem, crate::inference::slots::SlotClass::Turn,
                 Some(key),
                 Some(pool.clone()),
@@ -375,7 +375,7 @@ async fn paging_owner_panic_releases_guards_and_quarantines_uncertain_io() {
     let key = PageKey::mind(Uuid::new_v4()).expect("test: activity");
     let sem = Arc::new(Semaphore::new(1));
     let client = reqwest::Client::new();
-    let admission = admit_turn(
+    let admission = TurnRequest::new(
         &sem, crate::inference::slots::SlotClass::Turn,
         Some(key),
         Some(pool.clone()),

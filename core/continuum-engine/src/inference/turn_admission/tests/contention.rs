@@ -19,7 +19,7 @@ async fn scratch_release_does_not_wake_residents_with_every_citizen_slot_pinned(
     for _ in 0..2 {
         let key = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
         holders.push(
-            admit_turn(
+            TurnRequest::new(
                 &sem,
                 crate::inference::slots::SlotClass::Turn,
                 Some(key),
@@ -33,7 +33,7 @@ async fn scratch_release_does_not_wake_residents_with_every_citizen_slot_pinned(
         );
     }
     let key = PageKey::mind(Uuid::new_v4()).ok_or("waiting key")?;
-    let mut waiting = Box::pin(admit_turn(
+    let mut waiting = Box::pin(TurnRequest::new(
         &sem,
         crate::inference::slots::SlotClass::Turn,
         Some(key),
@@ -92,7 +92,7 @@ async fn same_mind_wait_releases_the_callers_serving_lane() -> Result<(), Box<dy
     let pool = Arc::new(KvSlotPool::new(&root, 1));
     let sem = Arc::new(Semaphore::new(2));
     let client = reqwest::Client::new();
-    let held = admit_turn(
+    let held = TurnRequest::new(
         &sem,
         crate::inference::slots::SlotClass::Turn,
         Some(key),
@@ -110,7 +110,7 @@ async fn same_mind_wait_releases_the_callers_serving_lane() -> Result<(), Box<dy
         .await;
     let mut waiting = Box::pin(with_serving_lane(
         lane,
-        admit_turn(
+        TurnRequest::new(
             &sem,
             crate::inference::slots::SlotClass::Turn,
             Some(key),
@@ -144,7 +144,7 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
     let sem = Arc::new(Semaphore::new(2));
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
-    let held = admit_turn(
+    let held = TurnRequest::new(
         &sem,
         crate::inference::slots::SlotClass::Turn,
         Some(owner),
@@ -164,7 +164,7 @@ async fn all_pinned_wait_releases_the_outer_serving_lane() -> Result<(), Box<dyn
     let mut waiting = Box::pin(crate::inference::resource_admission::with_serving_lane(
         outer,
         async {
-            admit_turn(
+            TurnRequest::new(
                 &sem,
                 crate::inference::slots::SlotClass::Turn,
                 Some(key),
@@ -215,7 +215,7 @@ async fn all_pinned_waiters_park_without_self_waking() -> Result<(), Box<dyn std
     let sem = Arc::new(Semaphore::new(10));
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
-    let held = admit_turn(
+    let held = TurnRequest::new(
         &sem,
         crate::inference::slots::SlotClass::Turn,
         Some(owner),
@@ -232,7 +232,7 @@ async fn all_pinned_waiters_park_without_self_waking() -> Result<(), Box<dyn std
     let mut waiting = Vec::new();
     for _ in 0..9 {
         let key = PageKey::mind(Uuid::new_v4()).ok_or("waiter key")?;
-        let mut turn = Box::pin(admit_turn(
+        let mut turn = Box::pin(TurnRequest::new(
             &sem,
             crate::inference::slots::SlotClass::Turn,
             Some(key),
@@ -283,7 +283,7 @@ async fn pinned_waiters_do_not_retain_the_endpoint_during_transition(
     let sem = Arc::new(Semaphore::new(10));
     let client = reqwest::Client::new();
     let owner = PageKey::mind(Uuid::new_v4()).ok_or("owner key")?;
-    let held = admit_turn(
+    let held = TurnRequest::new(
         &sem,
         crate::inference::slots::SlotClass::Turn,
         Some(owner),
@@ -297,7 +297,7 @@ async fn pinned_waiters_do_not_retain_the_endpoint_during_transition(
     let mut waiting = Vec::new();
     for _ in 0..9 {
         let key = PageKey::mind(Uuid::new_v4()).ok_or("waiter key")?;
-        let mut turn = Box::pin(admit_turn(
+        let mut turn = Box::pin(TurnRequest::new(
             &sem,
             crate::inference::slots::SlotClass::Turn,
             Some(key),

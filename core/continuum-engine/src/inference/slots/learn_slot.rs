@@ -18,7 +18,7 @@
 use super::{directory, PageKey, Probed, SlotClass};
 use crate::inference::engine_residency::EngineIncarnation;
 use crate::inference::llama_server::LearnOutcome;
-use crate::inference::turn_admission::{admit_turn, TurnAdmission, HER_ACT_FIRST};
+use crate::inference::turn_admission::{admit_turn, TurnAdmission, TurnRequest, HER_ACT_FIRST};
 
 /// Custody of the slot a learning step runs on, for as long as this value lives.
 pub struct LearnSlot {
@@ -81,9 +81,9 @@ pub async fn learn_slot(engine: EngineIncarnation, persona: uuid::Uuid) -> Resul
     };
     let bound = directory().endpoint(&root).concurrency().bound();
     let client = crate::inference::engine_client();
-    let admission = admit_turn(bound, SlotClass::Dream, Some(key), Some(pool), client, &root, 0, std::time::Duration::ZERO)
-        .await
-        .map_err(|why| if why == HER_ACT_FIRST { LearnSlotRefusal::Busy } else { LearnSlotRefusal::Unadmitted(why) })?;
+    let admission = admit_turn(
+        TurnRequest::new(bound, SlotClass::Dream, Some(key), Some(pool), client, &root, 0, std::time::Duration::ZERO)
+    ).await.map_err(|why| if why == HER_ACT_FIRST { LearnSlotRefusal::Busy } else { LearnSlotRefusal::Unadmitted(why) })?;
     if admission.engine_incarnation() != Some((engine.pid, engine.started_s)) {
         return Err(LearnSlotRefusal::Replaced);
     }

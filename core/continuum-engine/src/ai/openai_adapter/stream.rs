@@ -212,14 +212,16 @@ impl OpenAICompatibleAdapter {
             // The endpoint's own permits, shared by every adapter and the learner (card 23069702).
             let endpoint_permits = crate::inference::slots::directory().endpoint(root).concurrency().bound();
             let adm = crate::inference::turn_admission::admit_turn(
-                endpoint_permits,
-                class,
-                turn_key,
-                Some(pool),
-                &self.client,
-                root,
-                approx_tokens,
-                crate::inference::turn_admission::AdmissionPatience::for_turn(),
+                crate::inference::turn_admission::TurnRequest::new(
+                    endpoint_permits,
+                    class,
+                    turn_key,
+                    Some(pool),
+                    &self.client,
+                    root,
+                    approx_tokens,
+                    crate::inference::turn_admission::AdmissionPatience::for_turn(),
+                ),
             )
             .await
             .map_err(crate::ai::inference_error::InferenceError::Unavailable)?;
@@ -450,14 +452,16 @@ impl OpenAICompatibleAdapter {
             let root = endpoints.root();
             _admission = Some(
                 crate::inference::turn_admission::admit_turn(
-                    &self.concurrency,
-                    crate::inference::slots::class_for(request.purpose.as_deref()),
-                    None,
-                    None,
-                    &self.client,
-                    root,
-                    0,
-                    crate::inference::turn_admission::AdmissionPatience::for_turn(),
+                    crate::inference::turn_admission::TurnRequest::new(
+                        &self.concurrency,
+                        crate::inference::slots::class_for(request.purpose.as_deref()),
+                        None,
+                        None,
+                        &self.client,
+                        root,
+                        0,
+                        crate::inference::turn_admission::AdmissionPatience::for_turn(),
+                    ),
                 )
                 .await
                 .map_err(crate::ai::inference_error::InferenceError::Unavailable)?,
