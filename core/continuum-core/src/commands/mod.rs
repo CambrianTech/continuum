@@ -55,6 +55,7 @@ pub mod presence_directory;
 pub mod recipe_run;
 pub mod plasticity;
 pub mod ports;
+pub mod sage_profile;
 pub mod rag;
 pub mod resources;
 pub mod runtime;

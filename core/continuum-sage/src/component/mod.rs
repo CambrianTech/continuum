@@ -19,7 +19,7 @@
 //! One concern per file: [`Component`] and [`Presence`] here (the contract); `delivered` (what
 //! reaches a worker); `wiring` (what it hears); `worker` (the engine and [`start`]); `running`
 //! (its handles); `ctx` (what its handler is given); `observe` (its measured numbers); `need`,
-//! `known`, `bus`; and [`Owner`] (the parts one node or mind runs).
+//! `known`, `bus`; [`Owner`] (the parts one node or mind runs) and `profile` (where its time goes).
 
 mod bus;
 mod ctx;
@@ -28,6 +28,7 @@ mod known;
 mod need;
 mod observe;
 mod owner;
+mod profile;
 mod running;
 mod wiring;
 mod worker;
@@ -39,6 +40,7 @@ pub use known::{Known, LastSeen, Novelty, Seen};
 pub use need::{need_key, Need, Urgency, NEED};
 pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
 pub use owner::Owner;
+pub use profile::{node_profile, Profiler};
 pub use running::{Running, Teller};
 pub use wiring::Wiring;
 pub use worker::start;
