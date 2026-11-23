@@ -192,6 +192,29 @@ pub fn entries(writer: &ClassWriter, generation: u64) -> io::Result<Vec<Entry>> 
     Ok(whole.iter().map(Entry::of).collect())
 }
 
+/// A generation's index entries from `from` on: what a reader that already holds the first `from`
+/// reads next (an index only appends).
+pub fn entries_from(writer: &ClassWriter, generation: u64, from: u32) -> io::Result<Vec<Entry>> {
+    let mut file = File::open(writer.path(&index_of(generation))?)?;
+    file.seek(SeekFrom::Start(u64::from(from) * ENTRY as u64))?;
+    let mut raw = Vec::new();
+    file.read_to_end(&mut raw)?;
+    let (whole, _partial) = raw.as_chunks::<ENTRY>();
+    Ok(whole.iter().map(Entry::of).collect())
+}
+
+/// The kind and header bytes of the frame `entry` locates, read without its runs.
+pub fn frame_head(writer: &ClassWriter, generation: u64, entry: &Entry) -> Result<(FrameKind, Vec<u8>), LogError> {
+    let mut file = File::open(writer.path(&frames_of(generation))?)?;
+    file.seek(SeekFrom::Start(entry.offset))?;
+    let mut fixed = [0u8; frame::HEAD_PREFIX];
+    file.read_exact(&mut fixed)?;
+    let (kind, header_len) = frame::head_prefix(&fixed)?;
+    let mut header = vec![0u8; header_len];
+    file.read_exact(&mut header)?;
+    Ok((kind, header))
+}
+
 /// The frame bytes at `cursor`, read through its index entry.
 pub fn frame_bytes(writer: &ClassWriter, cursor: Cursor) -> Result<Vec<u8>, LogError> {
     let entry = entries(writer, cursor.generation)?

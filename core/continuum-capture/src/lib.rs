@@ -18,4 +18,6 @@ pub mod capture_pool;
 pub mod capture_writer;
 /// A prompt call as frames: its submission, its end and an unwritable record, and their one decode.
 pub mod call_frames;
+/// Where each captured call is in its owner's log, by key: read from frame headers, extended from each index tail.
+pub mod call_index;
 pub mod prompt_capture;

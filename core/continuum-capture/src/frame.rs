@@ -138,6 +138,17 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// The bytes before a frame's header: its length, its kind and its header's length.
+pub const HEAD_PREFIX: usize = 4 + 1 + 4;
+
+/// A frame's kind and header length from its first [`HEAD_PREFIX`] bytes: what a reader that wants
+/// only the header reads before it, never the runs after it.
+pub fn head_prefix(prefix: &[u8; HEAD_PREFIX]) -> Result<(FrameKind, usize), FrameError> {
+    let mut at = Cursor { bytes: prefix, at: 4 };
+    let [kind] = at.field()?;
+    Ok((FrameKind::of(kind)?, at.u32()?))
+}
+
 /// The frame at the start of `bytes`, and how many bytes it took. A tail shorter than its stated
 /// length is `Short` (a write cut off mid-frame); parts that disagree with it are `Inconsistent`.
 pub fn decode(bytes: &[u8]) -> Result<(FrameRef<'_>, usize), FrameError> {
