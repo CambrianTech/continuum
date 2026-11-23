@@ -43,7 +43,7 @@ pub(super) fn extends(
 pub(super) async fn until_act_stalls<F: std::future::Future>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
-    act: Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>,
+    act: Option<crate::cognition::admission_clock::ActAt>,
     step: F,
 ) -> Result<F::Output, Abandoned> {
     until_act_stalls_or(deadline, bound, act, step, crate::inference::llama_server::until_condemned()).await
@@ -53,11 +53,11 @@ pub(super) async fn until_act_stalls<F: std::future::Future>(
 pub(super) async fn until_act_stalls_or<F: std::future::Future, C: std::future::Future<Output = ()>>(
     deadline: tokio::time::Instant,
     bound: std::time::Duration,
-    act: Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>,
+    act: Option<crate::cognition::admission_clock::ActAt>,
     step: F,
     condemned: C,
 ) -> Result<F::Output, Abandoned> {
-    use crate::cognition::llm_deliberation_faculty::admission_clock;
+    use crate::cognition::admission_clock;
     let persona = act.map(|a| a.persona);
     let (queue_tx, mut queue_rx) = tokio::sync::watch::channel(admission_clock::QueueTime::new(deadline, bound, act));
     let step = admission_clock::scope(queue_tx.clone(), step);
@@ -137,7 +137,7 @@ pub(super) struct Abandoned {
 }
 
 impl Abandoned {
-    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::llm_deliberation_faculty::admission_clock::QueueTime>) -> Self {
+    fn at(clock: &tokio::sync::watch::Receiver<crate::cognition::admission_clock::QueueTime>) -> Self {
         let state = clock.borrow();
         Self { dispatched: state.dispatched, stage: state.stage.map(|(name, entered)| (name, entered.elapsed())) }
     }

@@ -397,7 +397,7 @@ pub(super) async fn settle_to_outcome<'c>(
         let (step, step_metrics, step_receipts) = match until_act_stalls(
             tick_deadline,
             act_bound,
-            acting_persona.map(|persona| crate::cognition::llm_deliberation_faculty::admission_clock::ActAt {
+            acting_persona.map(|persona| crate::cognition::admission_clock::ActAt {
                 persona,
                 turn: burst.turn,
                 // Every generation takes its own step: acts, spoken plans and retried faults.

@@ -56,7 +56,7 @@ impl LlmDeliberationFaculty {
         );
         {
             let class = deliberation_slot_class(request.purpose.as_deref(), ws.attention);
-            super::admission_clock::stage(
+            crate::cognition::admission_clock::stage(
                 "deliberation.measured_hold",
                 crate::inference::measured_hold::defer_while_held(class, Some(self.persona_id), request.purpose.as_deref()),
             )
@@ -131,7 +131,7 @@ impl LlmDeliberationFaculty {
             priority,
             expected,
         );
-        let admission = super::admission_clock::stage("deliberation.lane", super::admission_clock::waiting(
+        let admission = crate::cognition::admission_clock::stage("deliberation.lane", crate::cognition::admission_clock::waiting(
             wait,
             observe_wait(acquire, tokio::time::sleep(lane_bound), || {
                 continuum_base::probe!(
