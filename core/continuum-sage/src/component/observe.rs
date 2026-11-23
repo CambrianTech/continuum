@@ -73,4 +73,9 @@ impl Meter {
         };
         self.measured
     }
+
+    /// Its numbers so far.
+    pub(super) fn measured(&self) -> Telemetry {
+        self.measured
+    }
 }

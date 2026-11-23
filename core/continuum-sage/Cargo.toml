@@ -13,5 +13,9 @@ uuid = { workspace = true }
 tracing = { workspace = true } # continuum_base::probe! expands to it
 parking_lot = { workspace = true } # an artifact's settle slot: held only for a swap, never across an await
 
+[features]
+# Timing and multi-thread stress runs, gated at compile time (CLAUDE.md: stress tests behind a feature).
+stress-tests = []
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util", "macros", "rt-multi-thread"] }
