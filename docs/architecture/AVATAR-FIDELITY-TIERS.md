@@ -100,6 +100,43 @@ What it teaches, and why the split pipeline stays our default:
 weights with real-time decode appear. It is measured against the split pipeline on drift over a long
 take, latency, and decode tok/s lost by the reasoning model beside it.
 
+## The first stack (research, 2026-11-22; every claim from the projects' own pages, unmeasured here)
+
+**Slice one: LivePortrait renderer driven by Ditto's audio-to-motion model.**
+- **One motion space.** Ditto (Ant Group, code Apache-2.0) is a diffusion transformer over LivePortrait's
+  own motion: 265 dimensions per frame (63-D expression = 21 keypoints x xyz, plus rotation and
+  translation). That vector is also the wire format for weak clients: about 13 KB/s at fp16, 25 fps.
+- **Identity is free.** Her portrait goes through LivePortrait's appearance and motion extractors once,
+  offline; no training step, no actor.
+- **Already half ours.** Ditto ships ONNX weights for the motion model (`lmdm_v0.4_hubert.onnx`) and a
+  streaming HuBERT with a KV cache (`hubert_streaming_fix_kv.onnx`): in-process from Rust. Its first frame
+  after 385 ms and real-time factor 0.895 were measured on one A100.
+- **The renderer is small.** LivePortrait (KwaiVGI, MIT) is about 130M parameters, about 15 ms a frame on
+  a 4090: warp 45.5M / 5.2 ms, SPADE generator 55M / 7.6 ms. On a Mac through PyTorch MPS it is
+  "maybe 20x slower", so it runs on our own Metal kernels; its 3D grid-sample warp is the hotspot (the same
+  fusion and kernel work as decode, CONTINUUM-ENGINE 4.1b').
+
+**Slice two: a 3DGS head for phones and weak clients.** Alibaba's LAM builds an animatable Gaussian head
+from one image in about 1.4 s, no per-identity training, Apache-2.0, 110+ fps on a phone, driven by
+LAM_Audio2Expression ARKit blendshapes. It waits on an open question about its FLAME and training-data
+provenance. The open audio-driven 3DGS heads (TalkingGaussian, GaussianTalker, GaussianAvatars) need actor
+video and per-identity training under research or non-commercial licences: excluded.
+
+**Licences to clear before any commercial use:**
+1. InsightFace detectors bundled with LivePortrait and Ditto are non-commercial. Detection runs once per
+   generated portrait, so the bundled BlazeFace/face-mesh replace them.
+2. Ditto's weight licence is not stated apart from its Apache-2.0 code: ask Ant Group.
+3. FLAME: only FLAME 2023 Open is CC-BY-4.0.
+
+**Voice latents.** Every open motion model takes HuBERT or Wav2Vec features (about 50 Hz). Driving the face
+from a speech model's own latents (Moshi's Mimi at 12.5 Hz; NVIDIA PersonaPlex, a 7B model on Moshi,
+commercial under the NVIDIA Open Model License) means retraining Ditto's motion head on them. That is ours
+to do, since we train genes anyway, and it is how voice and face come from one source.
+
+**Excluded as offline or partial:** Hallo2 (SD1.5 plus AnimateDiff), MuseTalk (mouth inpainting only),
+JoyVASA (real time is future work), FLOAT (non-commercial), NVIDIA Audio2Face-3D (CUDA and mesh-vertex
+output only: a 5090 option for a mesh rig).
+
 ## Open, to measure first
 
 1. LivePortrait-class warp on the M5 Pro and the 5090 with the 35B decoding beside it: fps, VRAM, and the
