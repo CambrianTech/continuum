@@ -4,7 +4,7 @@ use super::*;
 /// deliberation (no acts) until it answers, at most 15 tries 4 s apart; `false` if it never
 /// does. Resets the volatile scratch the probe touched, so the first task starts clean.
 /// Shared by `cognition/eval` and the gene examiner's sitting.
-pub(super) async fn warm_gate(cycle: &crate::cognition::workspace::WorkspaceCycle) -> bool {
+pub(super) async fn warm_gate(cycle: &crate::cognition::workspace_cycle::WorkspaceCycle) -> bool {
     let warm_room = crate::identity::ActivityRoom::mint();
     let probe_delivery = crate::cognition::rag_budget::RagDelivery {
         source_id: "airc".to_string(),

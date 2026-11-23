@@ -782,5 +782,5 @@ pub struct Burst {
     pub hands: Option<crate::identity::hands_context::HandsContext>,
     /// This turn's pre-effect mark (stop-drain S2): `Some` when the turn has a confirmed
     /// obligation the next start could re-admit, so every effect must be recorded first.
-    pub effects: Option<crate::cognition::act_observe::EffectGate>,
+    pub effects: Option<crate::cognition::workspace::EffectGate>,
 }

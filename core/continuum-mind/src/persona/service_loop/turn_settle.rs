@@ -12,7 +12,7 @@ pub(super) async fn finish_spoken_turn(
     mut phase_timings: PhaseTimings,
     turn_started: std::time::Instant,
     pending: &mut crate::persona::wake_backlog::PendingInput,
-    effects: &crate::cognition::act_observe::EffectGate,
+    effects: &crate::cognition::workspace::EffectGate,
 ) -> SpeechMark {
     let TurnTrigger { msg, room, .. } = trigger;
     let turn_room = room.as_uuid();
@@ -42,9 +42,9 @@ pub(super) async fn finish_spoken_turn(
     // Stop-drain S2: her reply is recorded on the turn's obligation BEFORE it is posted, so a
     // stop after this point is known to have spoken and the turn is never re-run blindly. An
     // unconfirmed mark withholds the post (fail closed): nothing reaches the room unrecorded.
-    if let Err(refusal) = crate::cognition::act_observe::EffectGate::before(
+    if let Err(refusal) = crate::cognition::workspace::EffectGate::before(
         Some(effects),
-        &crate::cognition::act_observe::Effect::Speech,
+        &crate::cognition::workspace::Effect::Speech,
     )
     .await
     {
@@ -182,7 +182,7 @@ pub(super) async fn finish_spoken_turn(
         lamport = msg.lamport,
         turn_duration_ms = turn_duration_ms,
         turns_replied = outcome.turns_replied,
-        mean_ms = outcome.turn_latency.mean_ms().unwrap_or(0.0),
+        mean_ms = ?outcome.turn_latency.mean_ms(),
         min_ms = outcome.turn_latency.min_ms.unwrap_or(0), // unwrap_or: clock before the epoch = 0
         max_ms = outcome.turn_latency.max_ms.unwrap_or(0), // unwrap_or: clock before the epoch = 0
         recall_ms = phase_timings.recall_ms,

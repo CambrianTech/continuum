@@ -99,6 +99,7 @@ pub mod vision_describe;
 pub mod working_memory;
 pub mod working_set;
 pub mod workspace;
+pub mod workspace_cycle;
 pub mod workspace_capture;
 // Leaf modules peeled down from persona (they name no persona module): the capture
 // fixture policy, the faculty ids persona's sources deliver under, the one budget

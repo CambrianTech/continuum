@@ -92,7 +92,7 @@ impl PersonaWorkspaceRegistry {
 
     /// Bind EVERY local resident to the served model and her own window (`window_of`) — atomically
     /// swapping the shared {adapter, model, context_window} binding on each cycle (see
-    /// [`crate::cognition::workspace::WorkspaceCycle::rebind_model`]). A resident already
+    /// [`crate::cognition::workspace_cycle::WorkspaceCycle::rebind_model`]). A resident already
     /// bound to it is untouched. A model change rebinds through the ONE shared `adapter`
     /// (no per-persona HTTP init; INFERENCE-LANES-REALISTIC: one base model, N persona
     /// lanes); a window-only change keeps her own adapter and moves the window. Genome,

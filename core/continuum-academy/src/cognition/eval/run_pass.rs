@@ -1,8 +1,8 @@
 use super::*;
 
 pub(super) async fn run_pass(
-    cycle: &crate::cognition::workspace::WorkspaceCycle,
-    isolation: &crate::cognition::workspace::EvalIsolation,
+    cycle: &crate::cognition::workspace_cycle::WorkspaceCycle,
+    isolation: &crate::cognition::workspace_cycle::EvalIsolation,
     tasks: &[EvalTask],
     room: crate::identity::ActivityRoom,
     max_acts: crate::cognition::act_observe::TurnBudget,
@@ -561,7 +561,7 @@ Fix the workspace and finish —                              the grade reads th
             }
             }
         }
-        let answer = settled.spoken.clone().unwrap_or_default();
+        let answer = settled.spoken.clone().unwrap_or_default(); // JUSTIFIED: a turn that spoke nothing is graded on an empty answer, and that miss is the grade
         // DoD-INFRA GATE (2026-08-25): the grader itself could not run (missing
         // workspace, refused/not-found command). This is NOT a model miss — record it
         // as an infra fault (which flips the whole run to InfraUnavailable, so no
@@ -604,15 +604,15 @@ Fix the workspace and finish —                              the grade reads th
             // her own eyes (the eye-node path) and score the element tree — the money signal for
             // "can a persona build a UI that works", judged on the structure a non-visual model
             // reads too. Default target `index.html`; default threshold 1.0 ("it works").
-            let target = t.target.as_deref().unwrap_or("index.html");
-            let threshold = t.ui_pass_threshold.unwrap_or(1.0);
+            let target = t.target.as_deref().unwrap_or("index.html"); // JUSTIFIED: the task schema's documented default target (comment above)
+            let threshold = t.ui_pass_threshold.unwrap_or(1.0); // JUSTIFIED: the task schema's documented default threshold, 1.0 = it works (comment above)
             perception_grade(cycle, target, &t.ui_checks, threshold, task_root, &answer).await
         } else if let (Some(file), Some(test)) = (&t.solution_file, &t.test) {
             // ARTIFACT-graded: she was told to WRITE her solution to `file` and verify it with her
             // own tools. Grade her HANDS (the file she wrote + compiled), not her MOUTH (spoken
             // text) — the only way the act→verify loop shows up in the score. Same harness as
             // test_grade (strip her main, append test, compile, run).
-            let lang = t.lang.as_deref().unwrap_or("rust");
+            let lang = t.lang.as_deref().unwrap_or("rust"); // JUSTIFIED: a task naming no language is a Rust task, the task schema's default
             crate::genome::gym_grader::test_grade_file(
                 task_root.map(std::path::Path::new),
                 file,
@@ -675,10 +675,14 @@ Fix the workspace and finish —                              the grade reads th
         if let (Some(sol), Some(root)) = (t.solution_file.as_deref(), workspace_root) {
             let src = std::path::Path::new(root).join(sol);
             if src.is_file() {
-                if let Some(home) = dirs::home_dir() {
+                let home = crate::paths::continuum_home();
+                if let Err(e) = &home {
+                    tracing::warn!(task = %t.id, error = %e, "graded solution not preserved: no continuum home");
+                }
+                if let Ok(home) = home {
                     let run_tag = live_eval_run_id().unwrap_or_else(|| "unkeyed".into()); // no live run registered = a test/dev drive; still preserved, under one bucket
                     let dst_dir = home
-                        .join(".continuum/bench-receipts")
+                        .join("bench-receipts")
                         .join(run_tag)
                         .join("solutions");
                     let dst = dst_dir.join(sol.replace('/', "__"));
@@ -746,9 +750,7 @@ fn task_budget(
     t: &EvalTask,
     inherit: crate::cognition::act_observe::TurnBudget,
 ) -> crate::cognition::act_observe::TurnBudget {
-    t.max_acts
-        .map(|steps| crate::cognition::act_observe::TurnBudget::Steps(steps as usize))
-        .unwrap_or(inherit)
+    t.max_acts.map_or(inherit, |steps| crate::cognition::act_observe::TurnBudget::Steps(steps as usize))
 }
 
 /// An exam's declared resource policy: part of what it measures, so declared by the exam or

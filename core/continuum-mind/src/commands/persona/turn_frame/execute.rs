@@ -36,7 +36,7 @@
 //! error.
 //!
 //! [`settle_step`]: crate::cognition::act_observe::settle_step
-//! [`WorkspaceCycle`]: crate::cognition::workspace::WorkspaceCycle
+//! [`WorkspaceCycle`]: crate::cognition::workspace_cycle::WorkspaceCycle
 //!
 //! `access: Internal` — substrate cognition IPC the host persona loop drives, not a
 //! remote-callable persona toolbelt verb.
@@ -173,7 +173,7 @@ crate::action_command! {
         // not run invisibly.
         let room = crate::identity::ActivityRoom::from_uuid(inbox_frame.room_id)
             .map_err(|_| CommandError::Invalid(
-                "persona/turn-execute: the drained frame carries no real room — an \
+                "the drained frame carries no real room — an \
                  activity without a room is unrepresentable (#425)".into(),
             ))?;
 
@@ -216,7 +216,7 @@ crate::action_command! {
             .into_iter()
             .find(|(id, _)| *id == params.persona_id)
             .and_then(|(_, name)| name)
-            .unwrap_or_default();
+            .unwrap_or_default(); // JUSTIFIED: absent from the roster means no name, never a fabricated one (comment above)
         let burst = crate::cognition::workspace::Burst::from_turns(
             room,
             crate::cognition::conversation::workspace_turns::build_workspace_turns(
@@ -237,7 +237,7 @@ crate::action_command! {
         let cycle = crate::cognition::persona_workspace::global()
             .get(&params.persona_id)
             .ok_or_else(|| CommandError::Invalid(format!(
-                "persona/turn-execute: no live WorkspaceCycle for {} — the persona is not \
+                "no live WorkspaceCycle for {} — the persona is not \
                  hosted. Spawn it before driving a turn; refusing to answer from a shadow \
                  cognition with no adapter.",
                 params.persona_id

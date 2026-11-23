@@ -140,7 +140,7 @@ use super::*;
             embedder: None,
             tool_executor: None,
             experience: None,
-            context_window: crate::inference::planning::MIN_SERVE_CTX,
+            context_window: 2_048, // a small served window; this test asserts the checkpoint drain, never the window
             // Synchronous recall in the harness: these tests assert recall bids in
             // phase 1 on the same tick, which a deferred (cold-start) worker can't
             // satisfy. Deferral is a live-path concern, tested in deferred_faculty.rs.
@@ -374,7 +374,8 @@ use super::*;
 
         use crate::cognition::llm_deliberation_faculty::LlmDeliberationFaculty;
         use crate::cognition::recall_faculty::RecallFaculty;
-        use crate::cognition::workspace::{Faculty, SalienceArbiter, Workspace, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
+        use crate::cognition::workspace::{Faculty, SalienceArbiter, Workspace, WorkspaceCaptureSink, WorkspaceTrace};
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
 
         let persona = Uuid::new_v4();
         let admission = seed_admission(1_718_600_000_000);

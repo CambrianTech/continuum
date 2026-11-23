@@ -15,7 +15,7 @@ use ts_rs::TS;
 
 use crate::cognition::result_store::output_id::OutputId;
 use crate::cognition::result_store;
-use crate::cognition::result_store::reopen::{OutputFilter, Reopen, ToolOutputParams};
+use crate::cognition::result_store::reopen::ToolOutputParams;
 use crate::cognition::working_memory::{ActOutputRefusal, ActRef};
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
@@ -162,7 +162,7 @@ continuum_kernel::register_outcome!(ToolOutput);
 
 /// The verb every handle she is shown names: it renders as her tool list offers it
 /// (`tool_output`, its path), and it only builds while `tool/output` is native and in every
-/// surface. Text that reopens something renders a [`Reopen`], which carries it.
+/// surface. Text that reopens something renders a [`Reopen`](result_store::reopen::Reopen), which carries it.
 pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 
 
@@ -304,6 +304,7 @@ fn read_saved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::result_store::reopen::{OutputFilter, Reopen};
 
     /// An output id from a literal the test spells as one.
     fn id(given: &str) -> OutputId {

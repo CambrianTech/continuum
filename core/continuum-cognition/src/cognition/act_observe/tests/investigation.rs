@@ -4,7 +4,7 @@ use super::*;
 use crate::cognition::workspace::Decision;
 use crate::cognition::workspace::Situation;
 use crate::cognition::workspace::TurnFraming;
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 use crate::cognition::workspace::Contribution;
 use crate::cognition::workspace::Faculty;
 use crate::cognition::workspace::FacultyId;

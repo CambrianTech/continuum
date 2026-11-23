@@ -413,7 +413,8 @@ async fn native_structured_calls_win_over_a_text_fence() {
 #[tokio::test]
 async fn directed_turn_withholds_the_silence_escape() {
     use crate::ai::types::MessageContent;
-    use crate::cognition::workspace::{SalienceArbiter, Situation, TurnFraming, WorkspaceCycle};
+    use crate::cognition::workspace::{SalienceArbiter, Situation, TurnFraming};
+    use crate::cognition::workspace_cycle::WorkspaceCycle;
     use crate::inference::slots::SlotClass;
     use crate::cognition::conversation::persona_identity::PersonaIdentity;
     let adapter = Arc::new(ScriptedAdapter::new(vec![]));

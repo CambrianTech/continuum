@@ -79,7 +79,7 @@ pub(crate) const INITIATIVE_MOMENT: &str = "[initiative] Nothing is assigned to 
 /// so her beat rests after a pass.
 pub(crate) async fn drive_initiative_turn(
     ctx: &HostedPersona,
-    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    cycle: &crate::cognition::workspace_cycle::WorkspaceCycle,
     conversation: &mut dyn CitizenConversation,
     lamport: u64,
     turn_room: uuid::Uuid,

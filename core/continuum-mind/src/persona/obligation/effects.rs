@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use uuid::Uuid;
 
 use super::{mark_effect, RecordedEffect};
-use crate::cognition::act_observe::{Effect, EffectMark};
+use crate::cognition::workspace::{Effect, EffectMark};
 use continuum_client::Connection;
 
 /// Consecutive obligation-store failures for one persona, and until when the store is not

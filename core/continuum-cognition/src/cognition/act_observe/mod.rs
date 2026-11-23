@@ -42,8 +42,6 @@ pub use types::{SettleOutcome, SettleStep};
 
 mod apply;
 /// Marks committed before an effect reaches the world (stop-drain S2, card 68811445).
-pub mod effect_mark;
-pub use effect_mark::{Effect, EffectGate, EffectMark};
 pub(crate) mod disk_change;
 pub use apply::{apply_act, ActChain};
 
@@ -69,7 +67,8 @@ pub mod test_support {
         NativeBatchOutcome, ParsedToolBatch, ToolError, ToolExecutionContext, ToolExecutor, ToolOutcome,
     };
     use crate::cognition::working_memory::WorkingMemory;
-    use crate::cognition::workspace::{ActingBody, Contribution, Decision, Faculty, FacultyId, Workspace};
+    use crate::cognition::workspace::{Contribution, Decision, Faculty, FacultyId, Workspace};
+    use crate::cognition::workspace_cycle::ActingBody;
     use crate::cognition::admission_state::AdmissionState;
     use crate::cognition::recall_metadata::RecallMetadataRegistry;
 

@@ -11,7 +11,7 @@ use crate::cognition::workspace::SalienceArbiter;
 use crate::cognition::workspace::Situation;
 use crate::cognition::workspace::TurnFraming;
 use crate::cognition::workspace::Workspace;
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 use async_trait::async_trait;
 use std::sync::Arc;
 use std::sync::Mutex;

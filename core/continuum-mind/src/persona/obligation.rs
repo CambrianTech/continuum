@@ -66,11 +66,11 @@ pub enum RecordedEffect {
     Speech,
 }
 
-impl From<&crate::cognition::act_observe::Effect> for RecordedEffect {
-    fn from(effect: &crate::cognition::act_observe::Effect) -> Self {
+impl From<&crate::cognition::workspace::Effect> for RecordedEffect {
+    fn from(effect: &crate::cognition::workspace::Effect) -> Self {
         match effect {
-            crate::cognition::act_observe::Effect::ToolBatch { calls } => Self::ToolBatch { calls: calls.clone() },
-            crate::cognition::act_observe::Effect::Speech => Self::Speech,
+            crate::cognition::workspace::Effect::ToolBatch { calls } => Self::ToolBatch { calls: calls.clone() },
+            crate::cognition::workspace::Effect::Speech => Self::Speech,
         }
     }
 }
@@ -330,8 +330,8 @@ impl Obligations {
 
     /// The turn's pre-effect mark (stop-drain S2), built from its confirmed obligation and
     /// carried in its burst, so it is dropped with the turn and cannot mark another's effects.
-    pub fn gate_for(&self, turn: Uuid) -> crate::cognition::act_observe::EffectGate {
-        crate::cognition::act_observe::EffectGate(Arc::new(ObligationMark::new(
+    pub fn gate_for(&self, turn: Uuid) -> crate::cognition::workspace::EffectGate {
+        crate::cognition::workspace::EffectGate(Arc::new(ObligationMark::new(
             self.conn.clone(),
             &self.persona_name,
             turn,

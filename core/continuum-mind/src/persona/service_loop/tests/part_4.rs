@@ -221,7 +221,7 @@ use super::*;
         let me = Uuid::from_u128(1_073);
         let current = held_card(me);
         note_held(me, None, &current, 1_850);
-        let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+        let cycle = crate::cognition::workspace_cycle::WorkspaceCycle::new(
             vec![],
             Arc::new(crate::cognition::workspace::SalienceArbiter),
         );
