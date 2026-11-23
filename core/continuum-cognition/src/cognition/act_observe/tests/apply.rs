@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 use crate::cognition::workspace::SalienceArbiter;
 use crate::cognition::tool_executor::CallVerdict;
 use crate::cognition::tool_executor::NativeBatchOutcome;
@@ -23,11 +23,11 @@ use std::sync::Mutex;
 async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
     struct Refused;
     #[async_trait]
-    impl crate::cognition::act_observe::EffectMark for Refused {
+    impl crate::cognition::workspace::EffectMark for Refused {
         fn turn(&self) -> Uuid {
             Uuid::nil()
         }
-        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+        async fn before(&self, _effect: &crate::cognition::workspace::Effect) -> Result<(), String> {
             Err("obligation store unreachable".into())
         }
     }
@@ -38,7 +38,7 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
     let adm = admission();
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), adm.clone()));
-    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::workspace::EffectGate(Arc::new(Refused))));
     let outcome = apply_act(&cycle, &[tool_call()], crate::ai::types::CallOrigin::Generated(crate::ai::types::GenerationEnd::Finished), "check the math", Uuid::new_v4(), &chain, None, None).await;
     assert!(!outcome.produced_an_act(), "a refused mark is an unfulfilled act: {outcome:?}");
     assert!(exec.seen_context.lock().unwrap().is_none(), "the executor was never called"); // unwrap: test lock
@@ -57,11 +57,11 @@ async fn a_batch_whose_effect_mark_is_refused_never_reaches_the_executor() {
 async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
     struct Refused;
     #[async_trait]
-    impl crate::cognition::act_observe::EffectMark for Refused {
+    impl crate::cognition::workspace::EffectMark for Refused {
         fn turn(&self) -> Uuid {
             Uuid::nil()
         }
-        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+        async fn before(&self, _effect: &crate::cognition::workspace::Effect) -> Result<(), String> {
             Err("a sentinel must never be marked".into())
         }
     }
@@ -71,7 +71,7 @@ async fn a_sentinel_only_batch_is_no_effect_and_takes_no_mark() {
     });
     let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter))
         .with_acting(body(exec.clone(), admission()));
-    let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+    let chain = ActChain::new().with_effects(Some(crate::cognition::workspace::EffectGate(Arc::new(Refused))));
     let cut = ToolCall {
         id: "tool-attempt-cut-at-limit".into(),
         name: crate::cognition::tool_executor::command_executor::CUT_AT_LIMIT_SENTINEL.into(),
@@ -93,11 +93,11 @@ async fn valid_json_from_an_uncommitted_generation_takes_no_effect_at_the_act_se
     use crate::ai::types::{CallBatch, CallOrigin, GenerationEnd};
     struct Refused;
     #[async_trait]
-    impl crate::cognition::act_observe::EffectMark for Refused {
+    impl crate::cognition::workspace::EffectMark for Refused {
         fn turn(&self) -> Uuid {
             Uuid::nil()
         }
-        async fn before(&self, _effect: &crate::cognition::act_observe::Effect) -> Result<(), String> {
+        async fn before(&self, _effect: &crate::cognition::workspace::Effect) -> Result<(), String> {
             Err("a held call must never be marked as an effect".into())
         }
     }
@@ -127,7 +127,7 @@ async fn valid_json_from_an_uncommitted_generation_takes_no_effect_at_the_act_se
     for end in [GenerationEnd::OutputLimit, GenerationEnd::Failed, GenerationEnd::Unreported] {
         let exec = Disposition::default();
         let cycle = WorkspaceCycle::new(Vec::new(), Arc::new(SalienceArbiter)).with_acting(body(Arc::new(exec.clone()), admission()));
-        let chain = ActChain::new().with_effects(Some(crate::cognition::act_observe::EffectGate(Arc::new(Refused))));
+        let chain = ActChain::new().with_effects(Some(crate::cognition::workspace::EffectGate(Arc::new(Refused))));
         apply_act(&cycle, std::slice::from_ref(&write), CallOrigin::Generated(end), "write the file", Uuid::new_v4(), &chain, None, None).await;
         let told = cycle.acting().expect("the test cycle has hands").working_memory.recent_entries(); // expect: built with_acting above
         assert!(!told.iter().any(|entry| entry.text.contains("[not run]")), "{end:?}: a held call took an effect mark");

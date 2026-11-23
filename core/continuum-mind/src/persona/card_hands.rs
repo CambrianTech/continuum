@@ -12,7 +12,7 @@ use crate::cognition::persona_workspace::{
     acting_card_in, acting_root_in, claim_gone_verdict, close_acting_context, claim_has_ended, claimed_places_of, drive_create_workspace, focus_of,
     note_acting_card_in, note_acting_root_in, set_focus, ActingHands,
 };
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 use crate::identity::hands_context::HandsContext;
 use crate::persona::service_loop::CitizenConversation;
 

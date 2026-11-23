@@ -50,15 +50,20 @@ impl PendingInput {
         Self { persona: Some(persona), ..Self::default() }
     }
     pub(crate) fn stop(&mut self) {
+        let mut stopped = false;
         for input in &mut self.inputs {
             if let Some(refusal) = input.capacity.take() {
-                refusal.note_transition(self.persona, input.message.room_id, "stopped", "stop");
+                stopped |= refusal.note_transition(self.persona, input.message.room_id, "stopped", "stop");
             }
         }
         for (room, refusal) in &mut self.self_refusals {
             if let Some(refusal) = refusal.take() {
-                refusal.note_transition(self.persona, *room, "stopped", "stop");
+                stopped |= refusal.note_transition(self.persona, *room, "stopped", "stop");
             }
+        }
+        // A loop that stops with a refusal parked asks nothing more: never a stall.
+        if let (true, Some(persona)) = (stopped, self.persona) {
+            crate::cognition::resident_service::unpark(persona);
         }
     }
     pub(crate) fn resume_input(&mut self, message: &IncomingMessage) {
@@ -623,7 +628,8 @@ mod tests {
         use crate::cognition::act_observe::test_support::{admission, body_with_wm, ActThenSpeak, RecordingExecutor};
         use crate::cognition::act_observe::{drive_to_settle_with_input, SettleStep};
         use crate::cognition::working_memory::WorkingMemory;
-        use crate::cognition::workspace::{Burst, SalienceArbiter, TurnAttention, TurnFraming, WorkspaceCycle};
+        use crate::cognition::workspace::{Burst, SalienceArbiter, TurnAttention, TurnFraming};
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
         use std::sync::{Arc, Mutex};
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::{IncomingMessage, PersonaConversation};

@@ -397,8 +397,9 @@
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::PersonaConversation;
         use crate::cognition::workspace::{
-            Burst, Contribution, Faculty, FacultyId, SalienceArbiter, TurnAttention, TurnFraming, Workspace, WorkspaceCycle,
+            Burst, Contribution, Faculty, FacultyId, SalienceArbiter, TurnAttention, TurnFraming, Workspace,
         };
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
         struct Hangs;
         #[async_trait::async_trait]
         impl Faculty for Hangs {

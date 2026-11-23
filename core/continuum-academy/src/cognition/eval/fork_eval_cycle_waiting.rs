@@ -10,8 +10,8 @@ use super::*;
 /// [`WORKSPACE_TEMPLATE_WAIT_TRIES`] times, 1s apart, then `None` (caller fails loud).
 pub(super) async fn fork_eval_cycle_waiting(
     persona_uuid: &Uuid,
-    mut fork: impl FnMut() -> Option<crate::cognition::workspace::WorkspaceCycle>,
-) -> Option<crate::cognition::workspace::WorkspaceCycle> {
+    mut fork: impl FnMut() -> Option<crate::cognition::workspace_cycle::WorkspaceCycle>,
+) -> Option<crate::cognition::workspace_cycle::WorkspaceCycle> {
     for attempt in 0..WORKSPACE_TEMPLATE_WAIT_TRIES {
         if let Some(cycle) = fork() {
             return Some(cycle);
@@ -236,7 +236,7 @@ pub(super) fn html_artifact_from_answer(answer: &str) -> Option<String> {
     let mut rest = answer;
     while let Some(open) = rest.find("```") {
         let after = &rest[open + 3..];
-        let nl = after.find('\n').unwrap_or(after.len());
+        let nl = after.find('\n').unwrap_or(after.len()); // JUSTIFIED: a fence line with no newline is info string to the end of the answer
         let lang = after[..nl].trim().to_ascii_lowercase();
         let body_area = if nl < after.len() {
             &after[nl + 1..]
@@ -268,7 +268,7 @@ pub(super) fn html_artifact_from_answer(answer: &str) -> Option<String> {
 }
 
 pub(super) async fn perception_grade(
-    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    cycle: &crate::cognition::workspace_cycle::WorkspaceCycle,
     target: &str,
     checks: &[crate::perception::scoring::UiCheck],
     threshold: f32,
@@ -348,7 +348,7 @@ pub(super) async fn perception_grade(
         // [[execute-dont-narrate]]
         let wrote_with_hands = std::fs::read_to_string(p)
             .map(|s| !s.trim().is_empty())
-            .unwrap_or(false);
+            .unwrap_or(false); // JUSTIFIED: an absent or unreadable file is exactly what did not get written with her hands
         if !wrote_with_hands {
             let spoke_one = html_artifact_from_answer(answer).is_some();
             return (
@@ -658,7 +658,7 @@ pub(super) fn report_task_graded(
     }
     let _ = eval_progress_tx().send_replace(Some(snap.clone()));
     if let Some(bus) = crate::runtime::MessageBus::global() {
-        if let Ok(v) = serde_json::to_value(&snap) {
+        if let Ok(v) = serde_json::to_value(&snap) { // the bus hands eval:progress to its IPC subscribers (web client) as JSON
             bus.publish_async_only("eval:progress", v);
         }
     }
@@ -682,7 +682,7 @@ pub(super) fn report_task_graded(
         pass = pass,
         running_rate = format!("{:.3}", pass as f64 / done.max(1) as f64).as_str(),
         latency_ms = latency_ms,
-        vram_free_gb = vram_free_gb.unwrap_or(0),
+        vram_free_gb = ?vram_free_gb,
         "task graded",
     );
 }

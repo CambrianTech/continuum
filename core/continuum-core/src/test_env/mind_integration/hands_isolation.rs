@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use crate::cognition::persona_workspace::*;
 use crate::persona::card_hands::bind_card;
-use crate::cognition::workspace::{ActingBody, WorkspaceCycle};
+use crate::cognition::workspace_cycle::{ActingBody, WorkspaceCycle};
 use crate::cognition::admission_state::AdmissionState;
 use crate::modules::card_staging;
 use crate::modules::code::{CodeModule, CodeState};
@@ -437,7 +437,7 @@ async fn a_cancelled_eval_keeps_its_world_until_its_forks_are_confirmed_ended() 
 // a handle — the fail-loud in `root_acting_workspace` depends on this being None.
 #[test]
 fn a_handless_cycle_yields_no_hands() {
-    let cycle = crate::cognition::workspace::WorkspaceCycle::new(
+    let cycle = crate::cognition::workspace_cycle::WorkspaceCycle::new(
         vec![],
         Arc::new(crate::cognition::workspace::SalienceArbiter),
     );

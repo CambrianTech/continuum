@@ -7,7 +7,7 @@
 //! repeat the final inference seam (`ai/generate`). This repeats the seam that
 //! actually matters: a *faculty* (`contribute(&Workspace) -> Contribution`).
 //!
-//! It stands on [`WorkspaceCycle::replay`](super::workspace::WorkspaceCycle::replay):
+//! It stands on [`WorkspaceCycle::replay`](super::workspace_cycle::WorkspaceCycle::replay):
 //! it reconstructs the `Workspace` a faculty saw (either a real captured burst
 //! from `~/.continuum/fixtures/workspace-traces/<persona>.jsonl`, or a burst you
 //! supply to probe "what does recall surface for THIS text?"), forks the
@@ -331,7 +331,7 @@ fn resolve_burst(
             path.display()
         )));
     }
-    let turn = p.turn.unwrap_or(-1);
+    let turn = p.turn.unwrap_or(-1); // JUSTIFIED: an omitted turn is the most recent one, the command's documented -1
     let idx = if turn < 0 {
         lines.len() as i64 + turn
     } else {
@@ -344,7 +344,7 @@ fn resolve_burst(
         )));
     }
     let line = &lines[idx as usize];
-    let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone());
+    let room = p.room_id.clone().unwrap_or_else(|| line.room_id.clone()); // JUSTIFIED: no room given replays the turn in the room it was recorded in
     Ok(ResolvedBurst::from_trace(
         line,
         room,

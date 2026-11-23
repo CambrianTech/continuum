@@ -11,8 +11,9 @@ use crate::cognition::act_observe::test_support::{admission, ActThenSpeak, Recor
 use crate::cognition::act_observe::{settle_step, ActChain};
 use crate::cognition::working_memory::WorkingMemory;
 use crate::cognition::workspace::{
-    ActingBody, SalienceArbiter, Situation, TurnFraming, WorkspaceCycle,
+    SalienceArbiter, Situation, TurnFraming,
 };
+use crate::cognition::workspace_cycle::{ActingBody, WorkspaceCycle};
 
 // Regression17d3e6ff: real card lookup must resolve admitted hands before
 // board grounding, ledger rendering and execution, without moving the wake.

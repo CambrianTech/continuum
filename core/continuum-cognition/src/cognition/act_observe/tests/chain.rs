@@ -1,7 +1,7 @@
 #![cfg(test)]
 
 use super::*;
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 use crate::cognition::workspace::SalienceArbiter;
 use crate::ai::types::ToolCall;
 use uuid::Uuid;

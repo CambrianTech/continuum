@@ -161,7 +161,7 @@ async fn a_committed_admission_whose_reply_was_lost_is_reconciled_to_confirmed()
 // is refused without advancing the in-memory record.
 #[tokio::test]
 async fn effects_are_recorded_in_order_and_a_mark_without_a_row_is_refused() {
-    use crate::cognition::act_observe::Effect;
+    use crate::cognition::workspace::Effect;
     let home = tempfile::tempdir().unwrap(); // unwrap: test fixture
     let _home = HomeGuard::set(home.path()).await;
     crate::persona::register_substrate_orm_entities(crate::orm::OrmEntityRegistry::global()).unwrap(); // unwrap: test fixture

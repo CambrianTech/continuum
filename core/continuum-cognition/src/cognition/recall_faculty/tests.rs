@@ -6,7 +6,8 @@
     use crate::cognition::recall_metadata::{RecallMetadata, RecallMetadataRegistry};
 
     // ---- The mind in action: real hippocampus → workspace → informed decision ----
-    use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
+    use super::super::workspace::{Decision, NoopWorkspaceCaptureSink, WorkspaceCaptureSink, WorkspaceTrace};
+    use super::super::workspace_cycle::WorkspaceCycle;
 
 mod near_identical_own_turns_collapse_but_distinct_memories_survive;
 use near_identical_own_turns_collapse_but_distinct_memories_survive::*;

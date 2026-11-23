@@ -12,7 +12,7 @@ mod investigation;
 use super::*;
 use super::test_support::*;
 use crate::cognition::workspace::Decision;
-use crate::cognition::workspace::ActingBody;
+use crate::cognition::workspace_cycle::ActingBody;
 use crate::cognition::workspace::Contribution;
 use crate::cognition::workspace::Faculty;
 use crate::cognition::workspace::FacultyId;
