@@ -13,9 +13,8 @@ use std::sync::OnceLock;
 
 use airc_core::TranscriptEvent;
 use continuum_airc_protocol::ConversationEvent;
-use continuum_sage::dataflow::{Emitter, OwnerId, TopicName};
-use continuum_sage::component::{start, Bus, Ctx, Component, Running, Wiring};
-use continuum_sage::Qos;
+use continuum_sage::dataflow::{Emitter, TopicName};
+use continuum_sage::component::Bus;
 
 use crate::cognition::conversation::room_event::{room_work_from_event, RoomWork};
 use crate::cognition::conversation::salience::BoardChange;
@@ -59,32 +58,15 @@ pub fn classify(event: &TranscriptEvent) -> Fed {
 /// Where every resident's senses hear room events: a topic on the node's bus.
 pub(super) const FEED: TopicName = TopicName("node/feed");
 
-/// The one feed, a component of the node: it classifies each event once and says it on [`FEED`].
-struct Feed {
-    says: Emitter<Arrival>,
-}
+/// The one feed's emitter on the node's bus, claimed on first use. No worker: the feed only
+/// classifies an event and says it, so the hearing task does that itself. A worker of its own was a
+/// task on whichever runtime first heard an event, and when that runtime ended (a test's) every later
+/// event went nowhere: CI's core suite hung for an hour on a resident that never woke (2026-11-23).
+/// An emit never waits (each subscriber has its own window), so the lock is held only for the append.
+static FEED_EMITTER: OnceLock<Option<parking_lot::Mutex<Emitter<Arrival>>>> = OnceLock::new();
 
-impl Component for Feed {
-    type Input = ConversationEvent;
-    const NAME: &'static str = "feed";
-    const QOS: Qos = Qos::Interactive;
-
-    fn wire(&self, _: &mut Wiring<'_, Self>) {}
-
-    async fn handle(&mut self, event: ConversationEvent, ctx: &mut Ctx<Self>) {
-        let fed = classify(event.event());
-        ctx.emit(&mut self.says, Arrival { event, fed });
-    }
-}
-
-static FEED_WORKER: OnceLock<Option<Running<Feed>>> = OnceLock::new();
-
-/// The one feed's worker on the node's bus, started on first use (its topic is unclaimed until then).
-fn feed() -> &'static Option<Running<Feed>> {
-    FEED_WORKER.get_or_init(|| {
-        let bus = continuum_sage::component::node();
-        bus.emitter::<Arrival>(FEED).ok().map(|says| start(Feed { says }, bus, OwnerId(uuid::Uuid::nil()), 0))
-    })
+fn feed() -> &'static Option<parking_lot::Mutex<Emitter<Arrival>>> {
+    FEED_EMITTER.get_or_init(|| continuum_sage::component::node().emitter::<Arrival>(FEED).ok().map(parking_lot::Mutex::new))
 }
 
 /// The node's bus: topics every resident shares (the one feed).
@@ -95,14 +77,14 @@ pub(super) fn node_bus() -> &'static Bus {
 
 /// One room event, from the core's one inbound seam. Only the header classifier
 /// (`continuum_airc_protocol::classify_inbound`) constructs a [`ConversationEvent`], so a peer
-/// command or protocol frame cannot reach a mind (2026-10-30). Waits for the feed's room.
+/// command or protocol frame cannot reach a mind (2026-10-30). Never waits.
 pub async fn hear(event: ConversationEvent) {
-    let heard = match feed() {
-        Some(feed) => feed.tell(event).await,
-        None => false,
-    };
-    if !heard {
-        continuum_base::probe!(class = "mind.feed.stopped", "the one feed is not running; no resident hears this event");
+    match feed() {
+        Some(feed) => {
+            let fed = classify(event.event());
+            feed.lock().emit(Arrival { event, fed });
+        }
+        None => continuum_base::probe!(class = "mind.feed.stopped", "the one feed's topic is claimed elsewhere; no resident hears this event"),
     }
 }
 

@@ -24,7 +24,7 @@
 //! excluded.
 
 use super::DeviceCapacity;
-use crate::system_resources::drives::{detect_drives, DriveInfo, DriveKind, DriveRole, MIN_COLD_TIER_BYTES};
+use crate::system_resources::drives::{detect_drives, DriveInfo, DriveRole, MIN_COLD_TIER_BYTES};
 use crate::governor::types::HardwareClass;
 use crate::inference::planning::serving_plan::{host_budget_from, HostBudgetInputs};
 
@@ -142,6 +142,7 @@ impl SystemProfile {
 mod tests {
     use super::*;
     use crate::governor::types::{PowerSource, TargetSilicon, ThermalClass};
+    use crate::system_resources::drives::DriveKind;
 
     fn hw(silicon: TargetSilicon, vram_mb: u64, ram_mb: u64) -> HardwareClass {
         HardwareClass {

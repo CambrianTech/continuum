@@ -382,9 +382,12 @@ async fn a_peer_command_in_a_room_never_reaches_a_mind_and_room_speech_still_doe
     publish_transcript_event(&Arc::new(speech), &bus, &continuum_mind::chat::line_store::RecordingImporter::default())
         .await
         .expect("room speech is fed");
-    let called = match calling.changed().await {
-        Ok(snapshot) => Ok(snapshot.value.wake.clone()),
-        Err(ended) => Err(ended),
+    // Bounded: a wake that never comes fails here in seconds, never as a CI job that runs out its
+    // hour (2026-11-23: the feed's worker had died with an earlier test's runtime).
+    let called = match tokio::time::timeout(std::time::Duration::from_secs(30), calling.changed()).await {
+        Ok(Ok(snapshot)) => Ok(snapshot.value.wake.clone()),
+        Ok(Err(ended)) => Err(format!("{ended:?}")),
+        Err(_) => Err("no wake within 30 s".to_owned()),
     };
     assert!(
         matches!(called, Ok(Some(crate::cognition::conversation::Wake::Perceive { activity, .. })) if activity == ROOM),
