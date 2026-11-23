@@ -49,9 +49,11 @@ pub enum Kept {
     RemoveRefused,
 }
 
-/// The worktrees under `root`, least recently touched first, with their bytes.
-fn candidates(root: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
-    let mut out: Vec<(PathBuf, SystemTime, u64)> = std::fs::read_dir(root)
+/// The worktrees under `root`, least recently touched first. Their bytes are measured only for one
+/// actually removed: walking every checkout's tree to size it was most of a 20 s relief pass that
+/// removed nothing (the M5, 2026-11-23).
+fn candidates(root: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let mut out: Vec<(PathBuf, SystemTime)> = std::fs::read_dir(root)
         .into_iter()
         .flatten()
         .flatten()
@@ -59,11 +61,10 @@ fn candidates(root: &Path) -> Vec<(PathBuf, SystemTime, u64)> {
         .map(|entry| {
             let path = entry.path();
             let touched = entry.metadata().and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH); // unwrap_or: an unreadable time sorts first, and the idle check below still guards it
-            let bytes = super::disk_reporters::dir_size_bytes(&path);
-            (path, touched, bytes)
+            (path, touched)
         })
         .collect();
-    out.sort_by_key(|(_, touched, _)| *touched);
+    out.sort_by_key(|(_, touched)| *touched);
     out
 }
 
@@ -101,8 +102,12 @@ fn alternates_files(common: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// Each repository's alternates files, by its common git dir: read once per pass, not once per
+/// candidate (the same 12-deep walk of `modules/` and `worktrees/` gave the same answer every time).
+type Lenders = std::collections::HashMap<PathBuf, Vec<PathBuf>>;
+
 /// Whether removing `worktree` is safe now, by git's facts; `Ok(admin dir)` when it is.
-fn removable(worktree: &Path, now: SystemTime, touched: SystemTime) -> Result<PathBuf, Kept> {
+fn removable(worktree: &Path, now: SystemTime, touched: SystemTime, lenders: &mut Lenders) -> Result<PathBuf, Kept> {
     if now.duration_since(touched).unwrap_or_default() < IDLE { // unwrap_or_default: a time in the future is recent
         return Err(Kept::Recent);
     }
@@ -117,13 +122,13 @@ fn removable(worktree: &Path, now: SystemTime, touched: SystemTime) -> Result<Pa
     if !git(worktree, &["for-each-ref", "--contains", "HEAD", "refs/remotes"]).is_some_and(|s| !s.is_empty()) {
         return Err(Kept::Unpushed);
     }
-    for file in alternates_files(&common) {
+    for file in lenders.entry(common.clone()).or_insert_with(|| alternates_files(&common)).iter() {
         if file.starts_with(&admin) {
             continue; // its own stores borrowing elsewhere is no hazard
         }
-        let lends = std::fs::read_to_string(&file).unwrap_or_default().lines().any(|line| Path::new(line.trim()).starts_with(&admin)); // unwrap_or_default: an unreadable file names no lender
+        let lends = std::fs::read_to_string(file).unwrap_or_default().lines().any(|line| Path::new(line.trim()).starts_with(&admin)); // unwrap_or_default: an unreadable file names no lender
         if lends {
-            return Err(Kept::BorrowedFrom(file));
+            return Err(Kept::BorrowedFrom(file.clone()));
         }
     }
     Ok(admin)
@@ -150,18 +155,19 @@ impl ResourcePool for DevWorktreePool {
     fn evict_at_least(&self, want_bytes: u64) -> u64 {
         let now = SystemTime::now();
         let mut freed = 0u64;
-        for (worktree, touched, bytes) in candidates(self.tracked.path()) {
+        let mut lenders = Lenders::new();
+        for (worktree, touched) in candidates(self.tracked.path()) {
             if freed >= want_bytes {
                 break;
             }
-            let kept = match removable(&worktree, now, touched) {
-                Ok(_) => match git(&worktree, &["worktree", "remove", &worktree.to_string_lossy()]) {
-                    Some(_) => {
+            let kept = match removable(&worktree, now, touched, &mut lenders) {
+                Ok(_) => match (super::disk_reporters::dir_size_bytes(&worktree), git(&worktree, &["worktree", "remove", &worktree.to_string_lossy()])) {
+                    (bytes, Some(_)) => {
                         freed = freed.saturating_add(bytes);
                         continuum_base::probe!(class = "disk.worktrees.removed", worktree = %worktree.display(), bytes, "a finished, clean, pushed worktree nobody borrows from was removed");
                         continue;
                     }
-                    None => Kept::RemoveRefused,
+                    (_, None) => Kept::RemoveRefused,
                 },
                 Err(kept) => kept,
             };
@@ -206,22 +212,22 @@ mod tests {
         let old = SystemTime::now() - IDLE - Duration::from_secs(60);
         let (done, dirty, unpushed, lender) = (wt("done"), wt("dirty"), wt("unpushed"), wt("lender"));
 
-        let admin = removable(&done, SystemTime::now(), old).expect("a finished worktree is removable");
+        let admin = removable(&done, SystemTime::now(), old, &mut Lenders::new()).expect("a finished worktree is removable");
         assert!(admin.ends_with("worktrees/done"));
-        assert_eq!(removable(&done, SystemTime::now(), SystemTime::now()), Err(Kept::Recent));
+        assert_eq!(removable(&done, SystemTime::now(), SystemTime::now(), &mut Lenders::new()), Err(Kept::Recent));
 
         std::fs::write(dirty.join("tracked.txt"), "a").expect("write");
         run(&dirty, &["add", "tracked.txt"]);
-        assert_eq!(removable(&dirty, SystemTime::now(), old), Err(Kept::Dirty));
+        assert_eq!(removable(&dirty, SystemTime::now(), old, &mut Lenders::new()), Err(Kept::Dirty));
 
         run(&unpushed, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "local"]);
-        assert_eq!(removable(&unpushed, SystemTime::now(), old), Err(Kept::Unpushed));
+        assert_eq!(removable(&unpushed, SystemTime::now(), old, &mut Lenders::new()), Err(Kept::Unpushed));
 
         // Another store borrows from the lender's (a submodule store chained into it).
         let lender_admin = PathBuf::from(git(&lender, &["rev-parse", "--absolute-git-dir"]).expect("admin dir"));
         let borrower = main.join(".git/modules/sub/objects/info");
         std::fs::create_dir_all(&borrower).expect("dirs");
         std::fs::write(borrower.join("alternates"), format!("{}\n", lender_admin.join("modules/sub/objects").display())).expect("write");
-        assert!(matches!(removable(&lender, SystemTime::now(), old), Err(Kept::BorrowedFrom(_))));
+        assert!(matches!(removable(&lender, SystemTime::now(), old, &mut Lenders::new()), Err(Kept::BorrowedFrom(_))));
     }
 }
