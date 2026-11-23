@@ -38,7 +38,7 @@ mod request;
 pub use request::TurnRequest;
 mod unresolved_page;
 mod learning;
-
+mod transient;
 pub use transient::admit_transient;
 #[cfg(test)]
 use transient::admit_transient_through;
