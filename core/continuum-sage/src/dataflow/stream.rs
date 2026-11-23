@@ -16,7 +16,7 @@
 
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
 use parking_lot::Mutex;
@@ -45,20 +45,39 @@ struct Window<T> {
     holds: AtomicUsize,
     /// Raised on every append; a permit is stored when the delivery is busy, so no wake is lost.
     appended: Notify,
+    /// Where the subscription is in its life ([`Life`]).
+    life: AtomicU8,
+}
+
+/// Where a subscription is in its life. Each side reads only the state the other sets, and once
+/// either has moved the other is finished with it, so one cell holds both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Life {
+    Open = 0,
     /// Its worker stopped: the emitter lets it go.
-    gone: AtomicBool,
+    Gone = 1,
     /// The emitter is gone: the delivery hands what is left and ends, letting its worker go.
-    ended: AtomicBool,
+    Ended = 2,
 }
 
 impl<T> Window<T> {
+    fn enter(&self, life: Life) {
+        self.life.store(life as u8, Ordering::Release);
+    }
+
+    fn is(&self, life: Life) -> bool {
+        self.life.load(Ordering::Acquire) == life as u8
+    }
+
     /// Append, displacing the oldest when full. Never waits.
-    fn append(&self, event: Event<T>) {
+    fn append(&self, event: &Event<T>) {
         let mut events = self.events.lock();
         while events.len() >= self.holds.load(Ordering::Relaxed) {
             events.pop_front();
         }
-        events.push_back(event);
+        // Each subscriber holds its own handle to the one value.
+        events.push_back(Event { value: Arc::clone(&event.value), revision: event.revision });
         drop(events);
         self.appended.notify_one();
     }
@@ -118,8 +137,7 @@ impl<T: Send + Sync + 'static> Subscribe<T> {
             events: Mutex::new(VecDeque::new()),
             holds: AtomicUsize::new(window.get()),
             appended: Notify::new(),
-            gone: AtomicBool::new(false),
-            ended: AtomicBool::new(false),
+            life: AtomicU8::new(Life::Open as u8),
         });
         self.subscribers.lock().push(Arc::clone(&window));
         let resize: Arc<dyn Resize> = Arc::clone(&window) as Arc<dyn Resize>;
@@ -131,11 +149,11 @@ impl<T: Send + Sync + 'static> Subscribe<T> {
                 match next {
                     Some(event) => {
                         if input.send(I::from(event)).await.is_err() {
-                            window.gone.store(true, Ordering::Release);
+                            window.enter(Life::Gone);
                             return;
                         }
                     }
-                    None if window.ended.load(Ordering::Acquire) => return,
+                    None if window.is(Life::Ended) => return,
                     None => window.appended.notified().await,
                 }
             }
@@ -150,9 +168,9 @@ impl<T: Send + Sync + 'static> Emitter<T> {
         self.emitted += 1;
         let event = Event { value: Arc::new(value), revision: InputRevision { topic: self.topic, through: self.emitted } };
         let mut subscribers = self.subscribers.lock();
-        subscribers.retain(|window| !window.gone.load(Ordering::Acquire));
+        subscribers.retain(|window| !window.is(Life::Gone));
         for window in subscribers.iter() {
-            window.append(event.clone());
+            window.append(&event);
         }
         event.revision
     }
@@ -161,7 +179,7 @@ impl<T: Send + Sync + 'static> Emitter<T> {
 impl<T> Drop for Emitter<T> {
     fn drop(&mut self) {
         for window in self.subscribers.lock().iter() {
-            window.ended.store(true, Ordering::Release);
+            window.enter(Life::Ended);
             window.appended.notify_one();
         }
     }

@@ -44,13 +44,13 @@ pub struct Diverged<K> {
 }
 
 /// Feed `trace` to `slicer` and check every decision against the recorded one.
-pub fn replay<K: Clone + Eq + Hash + Ord>(trace: &Trace<K>, slicer: &mut Slicer<K>) -> Result<usize, Diverged<K>> {
+pub fn replay<K: Copy + Eq + Hash + Ord>(trace: &Trace<K>, slicer: &mut Slicer<K>) -> Result<usize, Diverged<K>> {
     let start = Instant::now();
     let mut decisions = 0;
     for (at, event) in trace.events.iter().enumerate() {
         if let (Some(replayed), Event::Decide(_, recorded)) = (slicer.apply(event, start), event) {
             if &replayed != recorded {
-                return Err(Diverged { at, recorded: recorded.clone(), replayed });
+                return Err(Diverged { at, recorded: *recorded, replayed });
             }
             decisions += 1;
         }

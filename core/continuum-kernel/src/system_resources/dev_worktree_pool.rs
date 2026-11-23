@@ -122,13 +122,27 @@ fn removable(worktree: &Path, now: SystemTime, touched: SystemTime, lenders: &mu
     if !git(worktree, &["for-each-ref", "--contains", "HEAD", "refs/remotes"]).is_some_and(|s| !s.is_empty()) {
         return Err(Kept::Unpushed);
     }
-    for file in lenders.entry(common.clone()).or_insert_with(|| alternates_files(&common)).iter() {
+    let files = match lenders.entry(common) {
+        std::collections::hash_map::Entry::Occupied(known) => known.into_mut(),
+        std::collections::hash_map::Entry::Vacant(first) => {
+            let found = alternates_files(first.key());
+            first.insert(found)
+        }
+    };
+    for file in files.iter() {
         if file.starts_with(&admin) {
             continue; // its own stores borrowing elsewhere is no hazard
         }
-        let lends = std::fs::read_to_string(file).unwrap_or_default().lines().any(|line| Path::new(line.trim()).starts_with(&admin)); // unwrap_or_default: an unreadable file names no lender
+        let lends = match std::fs::read_to_string(file) {
+            Ok(text) => text.lines().any(|line| Path::new(line.trim()).starts_with(&admin)),
+            // Unreadable, it may name this worktree's store: keep it rather than break a borrower.
+            Err(error) => {
+                continuum_base::probe!(class = "disk.worktrees.alternates_unreadable", file = %file.display(), error = %error, "an alternates file could not be read; the worktree it may borrow from is kept");
+                true
+            }
+        };
         if lends {
-            return Err(Kept::BorrowedFrom(file.clone()));
+            return Err(Kept::BorrowedFrom(file.to_path_buf()));
         }
     }
     Ok(admin)

@@ -261,13 +261,13 @@ async fn every_input_is_measured_and_the_switch_adds_only_a_probe_line() {
     assert!(alarm.tell(AlarmIn::Ring("unwatched")).await);
     assert_eq!(rings.recv().await, Some("unwatched"));
     while handled(&telemetry) != Some(1) {
-        let _ = telemetry.changed().await;
+        assert!(telemetry.changed().await.is_ok(), "its telemetry stays published while it runs");
     }
     switch.publish(Observe::Timing, by());
     assert!(alarm.tell(AlarmIn::Ring("watched")).await);
     assert_eq!(rings.recv().await, Some("watched"));
     while handled(&telemetry) != Some(2) {
-        let _ = telemetry.changed().await;
+        assert!(telemetry.changed().await.is_ok(), "its telemetry stays published while it runs");
     }
     let measured = telemetry.latest().map(|t| *t.value);
     assert!(measured.is_some_and(|t| t.max_wait >= t.last_wait && t.max_handle >= t.last_handle), "wait and handle times are kept: {measured:?}");
@@ -281,7 +281,7 @@ async fn work_handed_off_comes_back_as_an_input_while_the_part_keeps_hearing() {
     enum Job {
         Start(std::sync::mpsc::Receiver<()>),
         Ping,
-        Done(u32),
+        Done(bool),
     }
     struct Offloader {
         said: tokio::sync::mpsc::UnboundedSender<&'static str>,
@@ -293,9 +293,9 @@ async fn work_handed_off_comes_back_as_an_input_while_the_part_keeps_hearing() {
         fn wire(&self, _: &mut Wiring<'_, Self>) {}
         async fn handle(&mut self, input: Job, ctx: &mut Ctx<Self>) {
             match input {
-                Job::Start(gate) => ctx.off(move || gate.recv().map_or(0, |()| 7), Job::Done),
+                Job::Start(gate) => ctx.off(move || gate.recv().is_ok(), Job::Done),
                 Job::Ping => assert!(self.said.send("ping").is_ok(), "the test reads every value"),
-                Job::Done(value) => assert!(self.said.send(if value == 7 { "done" } else { "wrong" }).is_ok(), "the test reads every value"),
+                Job::Done(opened) => assert!(self.said.send(if opened { "done" } else { "wrong" }).is_ok(), "the test reads every value"),
             }
         }
     }
@@ -318,7 +318,11 @@ mod stress {
     const INPUTS: u64 = 200_000;
 
     const BURST: TopicName = TopicName("stress/burst");
-    const WINDOW: usize = 256;
+
+    /// The window the hearer keeps of the burst: 256 events, this measurement's choice.
+    fn window() -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::MIN.saturating_add(255)
+    }
 
     struct Hearer {
         handled: u64,
@@ -330,13 +334,13 @@ mod stress {
         const NAME: &'static str = "hearer";
         const QOS: Qos = Qos::Work;
         fn wire(&self, wiring: &mut Wiring<'_, Self>) {
-            wiring.hear::<u64>(BURST, std::num::NonZeroUsize::new(WINDOW).unwrap_or(std::num::NonZeroUsize::MIN));
+            wiring.hear::<u64>(BURST, window());
         }
         async fn handle(&mut self, input: Event<u64>, _: &mut Ctx<Self>) {
             self.handled += 1;
             if *input.value == INPUTS {
                 if let Some(done) = self.done.take() {
-                    let _ = done.send(self.handled);
+                    assert!(done.send(self.handled).is_ok(), "the test waits for the count");
                 }
             }
         }
@@ -354,7 +358,7 @@ mod stress {
             self.sum += input;
             if input == INPUTS {
                 if let Some(done) = self.done.take() {
-                    let _ = done.send(self.sum);
+                    assert!(done.send(self.sum).is_ok(), "the test waits for the sum");
                 }
             }
         }
@@ -374,7 +378,7 @@ mod stress {
             self.sum += input;
             if input == INPUTS {
                 if let Some(done) = self.done.take() {
-                    let _ = done.send(self.sum);
+                    assert!(done.send(self.sum).is_ok(), "the test waits for the sum");
                 }
             }
         }
@@ -416,8 +420,11 @@ mod stress {
         for value in 1..=INPUTS {
             emitter.emit(value);
         }
-        let handled = heard.await.unwrap_or(0);
+        let handled = match heard.await {
+            Ok(handled) => handled,
+            Err(gone) => return assert_eq!(Some(gone), None, "the hearer reports what it handled"),
+        };
         let burst = started.elapsed().as_nanos() as f64 / INPUTS as f64;
-        println!("burst heard: {burst:.0} ns per event emitted, {handled} of {INPUTS} handled (window {WINDOW}; the rest dropped oldest-first)");
+        println!("burst heard: {burst:.0} ns per event emitted, {handled} of {INPUTS} handled (window {}; the rest dropped oldest-first)", window());
     }
 }

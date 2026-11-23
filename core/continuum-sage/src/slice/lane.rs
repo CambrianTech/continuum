@@ -39,7 +39,8 @@ pub struct Lane<K> {
     seats: Vec<Seat<K>>,
     turn: Publisher<Turn<K>>,
     said: Option<K>,
-    by: Provenance,
+    /// The run its turns are published as.
+    by: crate::dataflow::RunId,
 }
 
 /// The newest value, if it moved since `seen`.
@@ -52,9 +53,9 @@ fn moved<T: Send + Sync + 'static>(reader: &Reader<T>, seen: &mut Option<u64>) -
     Some(latest)
 }
 
-impl<K: Clone + Eq + Hash + Ord + Send + Sync + 'static> Lane<K> {
+impl<K: Copy + Eq + Hash + Ord + Send + Sync + 'static> Lane<K> {
     pub fn new(slicer: Slicer<K>, turn: Publisher<Turn<K>>, by: Provenance) -> Self {
-        Self { slicer, seats: Vec::new(), turn, said: None, by }
+        Self { slicer, seats: Vec::new(), turn, said: None, by: by.by }
     }
 
     /// Seat a mind: from now on the lane reads her state at its step boundaries.
@@ -73,24 +74,24 @@ impl<K: Clone + Eq + Hash + Ord + Send + Sync + 'static> Lane<K> {
     pub fn next(&mut self, now: Instant) -> Next<K> {
         for seat in &mut self.seats {
             if let Some(need) = moved(&seat.need, &mut seat.need_seen) {
-                self.slicer.need(seat.mind.clone(), *need.value);
+                self.slicer.need(seat.mind, *need.value);
             }
             if let Some(decoding) = moved(&seat.decoding, &mut seat.decoding_seen) {
                 match *decoding.value {
-                    Decoding(true) => self.slicer.ready(seat.mind.clone()),
+                    Decoding(true) => self.slicer.ready(seat.mind),
                     Decoding(false) => self.slicer.done(&seat.mind),
                 }
             }
         }
         let next = self.slicer.next(now);
         let holder = match &next {
-            Next::Switch(mind) => Some(mind.clone()),
+            Next::Switch(mind) => Some(*mind),
             Next::Idle => None,
-            Next::Continue => self.said.clone(),
+            Next::Continue => self.said,
         };
         if holder != self.said {
-            self.said = holder.clone();
-            self.turn.publish(Turn(holder), self.by.clone());
+            self.said = holder;
+            self.turn.publish(Turn(holder), Provenance { by: self.by, from: Vec::new() });
         }
         next
     }
@@ -111,6 +112,7 @@ mod tests {
     use std::collections::HashMap;
 
     use super::*;
+    use crate::slice::tests::fixture::ENGINE;
     use crate::component::Urgency;
     use crate::dataflow::{state, OwnerId, RunId, StageId, StageIncarnation, TopicName};
     use crate::Policy;
@@ -134,8 +136,6 @@ mod tests {
         Mind { need, decoding }
     }
 
-    const STEP: Duration = Duration::from_millis(20);
-    const SWITCH: Duration = Duration::from_millis(26);
 
     // what this catches: minds coupled to the lane, or the lane to them. Each mind only publishes
     // her own state on her own cadence (no await anywhere: none can be held back); the lane reads
@@ -169,8 +169,8 @@ mod tests {
             let held = match lane.next(now) {
                 Next::Idle => break,
                 Next::Switch(mind) => {
-                    now += SWITCH;
-                    lane.switched(&mind, SWITCH);
+                    now += ENGINE.switch;
+                    lane.switched(&mind, ENGINE.switch);
                     mind
                 }
                 Next::Continue => match turns.latest().and_then(|turn| turn.value.0) {
@@ -182,14 +182,18 @@ mod tests {
                 let gap = now.saturating_duration_since(*prev);
                 longest_wait = longest_wait.max(gap);
             }
-            now += STEP;
-            lane.stepped(&held, STEP);
+            now += ENGINE.step;
+            lane.stepped(&held, ENGINE.step);
             last_step.insert(held, now);
             let window = if step < 3_000 { 0 } else if step < 6_000 { 1 } else { 2 };
-            *used.entry(held).or_default() += STEP;
+            *used.entry(held).or_default() += ENGINE.step;
             if step == 2_999 || step == 5_999 || step == 8_999 {
                 let total: Duration = used.values().sum();
-                let share = |m: char| used.get(&m).map_or(0.0, |d| d.as_secs_f64() / total.as_secs_f64());
+                // A mind that never stepped holds no share of the lane.
+                let share = |m: char| match used.get(&m) {
+                    Some(held) => held.as_secs_f64() / total.as_secs_f64(),
+                    None => 0.0,
+                };
                 match window {
                     0 => assert!((share('a') - share('b')).abs() < 0.03, "equal wants share the lane"),
                     1 => assert!((share('b') / share('a') - 2.0).abs() < 0.25, "urgent b got {:.2}x of a", share('b') / share('a')),
@@ -201,6 +205,6 @@ mod tests {
                 used.clear();
             }
         }
-        assert!(longest_wait <= Duration::from_secs(1) + STEP, "a mind waited {longest_wait:?} for her next step");
+        assert!(longest_wait <= Duration::from_secs(1) + ENGINE.step, "a mind waited {longest_wait:?} for her next step");
     }
 }

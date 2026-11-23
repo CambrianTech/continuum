@@ -14,14 +14,50 @@
 
 /// The loop's own gains: how far one window moves the slice, as a fraction of it. A move that kept
 /// raising throughput grows the next; a move that lowered it reverses and shrinks it, so the loop
-/// settles on the peak yet never stops probing (it never shrinks below `GAIN_FLOOR`).
+/// settles on the peak yet never stops probing. Its bounds are measured, not set: a move is never
+/// less than one step (the engine switches only at a step, so a smaller move changes nothing) and
+/// never more than half the slice (a multiplicative move past one would drive it through zero).
 const GAIN_START: f64 = 0.25;
 const GAIN_GROW: f64 = 1.25;
 const GAIN_SHRINK: f64 = 0.5;
-const GAIN_FLOOR: f64 = 0.02;
-const GAIN_CEILING: f64 = 0.5;
 
 use super::control::Control;
+
+/// How far one window may move the slice, as fractions of it, from what this window measured.
+#[derive(Debug, Clone, Copy)]
+struct Moves {
+    /// One step: the engine switches only at a step, so a smaller move changes nothing measurable.
+    least: f64,
+    /// Half the slice: a move is multiplicative (a move down leaves `slice * (1 - gain)`), so a gain
+    /// at or past one drives the slice through zero, and a half is bisection: a move down at most
+    /// halves it. Structural, not tuned.
+    most: f64,
+}
+
+impl Moves {
+    fn of(slice: f64, floor: f64) -> Option<Self> {
+        // Before a slice or a step is measured there is nothing to take a fraction of.
+        if slice <= 0.0 || floor <= 0.0 {
+            return None;
+        }
+        let least = floor / slice;
+        Some(Self { least, most: 0.5_f64.max(least) })
+    }
+}
+
+trait Hold {
+    /// A gain held to what this window allows; unchanged when nothing is measured yet.
+    fn hold(&self, gain: f64) -> f64;
+}
+
+impl Hold for Option<Moves> {
+    fn hold(&self, gain: f64) -> f64 {
+        match self {
+            Some(moves) => gain.clamp(moves.least, moves.most),
+            None => gain,
+        }
+    }
+}
 
 #[derive(Debug, Default, Clone, Copy)]
 struct Window {
@@ -71,6 +107,7 @@ impl Control for Tuner {
     fn close(&mut self, over_bound: bool, floor: f64, wall: f64) {
         let window = std::mem::take(&mut self.window);
         let wall = wall.max(floor);
+        let moves = Moves::of(self.slice, floor);
         if over_bound {
             // The wall was crossed: back off now and measure afresh from there.
             self.direction = -1.0;
@@ -81,9 +118,9 @@ impl Control for Tuner {
             match self.last {
                 Some(last) if throughput < last => {
                     self.direction = -self.direction;
-                    self.gain = (self.gain * GAIN_SHRINK).max(GAIN_FLOOR);
+                    self.gain = moves.hold(self.gain * GAIN_SHRINK);
                 }
-                Some(_) => self.gain = (self.gain * GAIN_GROW).min(GAIN_CEILING),
+                Some(_) => self.gain = moves.hold(self.gain * GAIN_GROW),
                 None => {}
             }
             self.last = Some(throughput);
@@ -102,8 +139,16 @@ impl Control for Tuner {
 mod tests {
     use super::*;
 
+    /// How long a run is and the floor and wall it holds the slice between.
+    struct Run {
+        windows: usize,
+        floor: f64,
+        wall: f64,
+    }
+
     /// Runs the loop on a throughput curve: each window, the slice it chose earns `rate(slice)`.
-    fn settle(tuner: &mut Tuner, windows: usize, floor: f64, wall: f64, rate: impl Fn(f64) -> f64) -> Vec<f64> {
+    fn settle(tuner: &mut Tuner, run: Run, rate: impl Fn(f64) -> f64) -> Vec<f64> {
+        let Run { windows, floor, wall } = run;
         let mut slices = Vec::new();
         for _ in 0..windows {
             let slice = tuner.slice().max(floor);
@@ -126,7 +171,7 @@ mod tests {
         let peak = (1..10_000).map(|i| i as f64 * 0.001).max_by(|a, b| rate(*a).total_cmp(&rate(*b))).unwrap_or(0.0);
         for start in [0.02, 5.0] {
             let mut tuner = Tuner { slice: start, ..Tuner::default() };
-            let slices = settle(&mut tuner, 200, 0.02, 10.0, rate);
+            let slices = settle(&mut tuner, Run { windows: 200, floor: 0.02, wall: 10.0 }, rate);
             let tail = &slices[150..];
             let mean = tail.iter().sum::<f64>() / tail.len() as f64;
             assert!((mean / peak - 1.0).abs() < 0.15, "from {start}: settled at {mean:.3}, peak {peak:.3}");
@@ -142,7 +187,7 @@ mod tests {
     fn the_wall_holds_and_a_crossing_backs_off() {
         let rate = |slice: f64| slice / (slice + 0.026) * 50.0;
         let mut tuner = Tuner::default();
-        let slices = settle(&mut tuner, 100, 0.02, 0.4, rate);
+        let slices = settle(&mut tuner, Run { windows: 100, floor: 0.02, wall: 0.4 }, rate);
         assert!(slices.iter().all(|s| *s <= 0.4), "never past the wall");
         assert!(slices[99] > 0.3, "it climbed toward the wall: {:.3}", slices[99]);
         let before = tuner.slice();

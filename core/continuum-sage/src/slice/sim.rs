@@ -55,9 +55,9 @@ pub struct Report<K> {
 }
 
 impl<K> Report<K> {
-    /// The longest any mind waited.
-    pub fn worst(&self) -> Duration {
-        self.worst_wait.values().copied().max().unwrap_or_default()
+    /// The longest any mind waited; `None` when nobody waited.
+    pub fn worst(&self) -> Option<Duration> {
+        self.worst_wait.values().copied().max()
     }
 }
 
@@ -70,10 +70,10 @@ struct State {
     waiting_since: Option<Duration>,
 }
 
-fn feed<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, trace: &mut Trace<K>, start: Instant, event: Event<K>) -> Option<Next<K>> {
+fn feed<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, trace: &mut Trace<K>, start: Instant, event: Event<K>) -> Option<Next<K>> {
     let decided = slicer.apply(&event, start);
     let event = match (event, &decided) {
-        (Event::Decide(at, _), Some(next)) => Event::Decide(at, next.clone()),
+        (Event::Decide(at, _), Some(next)) => Event::Decide(at, *next),
         (event, _) => event,
     };
     trace.events.push(event);
@@ -81,7 +81,7 @@ fn feed<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, trace: &mut Trace<K>
 }
 
 /// Drive `slicer` through `load` for `length` of simulated time.
-pub fn run<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>, length: Duration) -> (Report<K>, Trace<K>) {
+pub fn run<K: Copy + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K>, length: Duration) -> (Report<K>, Trace<K>) {
     let start = Instant::now();
     let mut trace = Trace { control: slicer.control(), events: Vec::new() };
     let mut states: Vec<State> =
@@ -95,20 +95,20 @@ pub fn run<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K
         share: HashMap::new(),
     };
     for m in &load.minds {
-        feed(slicer, &mut trace, start, Event::Need(m.mind.clone(), m.need));
+        feed(slicer, &mut trace, start, Event::Need(m.mind, m.need));
     }
     let (mut now, mut busy) = (Duration::ZERO, Duration::ZERO);
     let mut stepped: HashMap<K, Duration> = HashMap::new();
     while now < length {
         for (m, s) in load.minds.iter().zip(states.iter_mut()) {
             while let Some((_, need)) = m.changes.get(s.next_change).copied().filter(|(at, _)| *at <= now) {
-                feed(slicer, &mut trace, start, Event::Need(m.mind.clone(), need));
+                feed(slicer, &mut trace, start, Event::Need(m.mind, need));
                 s.next_change += 1;
             }
             if s.left == 0 && s.resume <= now {
                 s.left = m.turn;
                 s.waiting_since = Some(now);
-                feed(slicer, &mut trace, start, Event::Ready(m.mind.clone()));
+                feed(slicer, &mut trace, start, Event::Ready(m.mind));
             }
         }
         let had = slicer.running().is_some();
@@ -119,11 +119,11 @@ pub fn run<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K
                 }
                 now += load.switch;
                 busy += load.switch;
-                feed(slicer, &mut trace, start, Event::Switched(mind.clone(), load.switch));
+                feed(slicer, &mut trace, start, Event::Switched(mind, load.switch));
                 mind
             }
             Some(Next::Continue) => match slicer.running() {
-                Some(mind) => mind.clone(),
+                Some(mind) => *mind,
                 None => break,
             },
             _ => {
@@ -140,14 +140,14 @@ pub fn run<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K
         let Some(i) = load.minds.iter().position(|m| m.mind == held) else { break };
         let (m, s) = (&load.minds[i], &mut states[i]);
         if let Some(since) = s.waiting_since {
-            let worst = report.worst_wait.entry(held.clone()).or_default();
+            let worst = report.worst_wait.entry(held).or_default();
             *worst = (*worst).max(now.saturating_sub(since));
         }
         now += m.step;
         busy += m.step;
         report.steps += 1;
-        *stepped.entry(held.clone()).or_default() += m.step;
-        feed(slicer, &mut trace, start, Event::Stepped(held.clone(), m.step));
+        *stepped.entry(held).or_default() += m.step;
+        feed(slicer, &mut trace, start, Event::Stepped(held, m.step));
         s.left = s.left.saturating_sub(1);
         if s.left == 0 {
             s.waiting_since = None;
@@ -163,7 +163,7 @@ pub fn run<K: Clone + Eq + Hash + Ord>(slicer: &mut Slicer<K>, load: &Workload<K
     (report, trace)
 }
 
-impl<K: Clone + Eq + Hash + Ord> Workload<K> {
+impl<K: Copy + Eq + Hash + Ord> Workload<K> {
     /// The load a trace carried, as means per mind: her step, her turn length, her time off the
     /// lane, her first need and its changes; the lane's switch. Drives the simulator on what a
     /// live node actually saw.
@@ -180,11 +180,11 @@ impl<K: Clone + Eq + Hash + Ord> Workload<K> {
             first_ready: Option<Duration>,
         }
         /// Her record, in first-seen order.
-        fn of<'a, K: Clone + Eq + Hash>(seen: &'a mut HashMap<K, Seen>, order: &mut Vec<K>, k: &K) -> &'a mut Seen {
+        fn of<'a, K: Copy + Eq + Hash>(seen: &'a mut HashMap<K, Seen>, order: &mut Vec<K>, k: &K) -> &'a mut Seen {
             if !seen.contains_key(k) {
-                order.push(k.clone());
+                order.push(*k);
             }
-            seen.entry(k.clone()).or_default()
+            seen.entry(*k).or_default()
         }
         let mut order: Vec<K> = Vec::new();
         let mut seen: HashMap<K, Seen> = HashMap::new();
@@ -225,15 +225,18 @@ impl<K: Clone + Eq + Hash + Ord> Workload<K> {
             .into_iter()
             .filter_map(|k| {
                 let s = seen.remove(&k)?;
+                // A mind never ready in the trace never competed; replaying her, she never does.
+                let starts = s.first_ready?;
+                let need = s.need.unwrap_or_default(); // JUSTIFIED: a mind that never said her need runs at the need the slicer gives an unannounced one
                 let turn = if s.turns.1 == 0 { s.in_turn.max(1) } else { s.turns.0 / u64::from(s.turns.1) };
                 Some(MindLoad {
                     mind: k,
-                    need: s.need.unwrap_or_default(),
+                    need,
                     changes: s.changes,
                     step: mean(s.step),
                     turn: turn.max(1),
                     rest: mean(s.rest),
-                    starts: s.first_ready.unwrap_or_default(),
+                    starts,
                 })
             })
             .collect();
@@ -282,9 +285,9 @@ mod tests {
         let (every_step, _) = run(&mut Slicer::with(policy(), Box::new(Fixed(0.0))), &load, length);
         let (long, _) = run(&mut Slicer::with(policy(), Box::new(Fixed(5.0))), &load, length);
         assert!(climb.throughput > every_step.throughput * 1.3, "climb {:.1} vs every step {:.1}", climb.throughput, every_step.throughput);
-        assert!(climb.worst() <= Duration::from_secs(1), "climb waited {:?}", climb.worst());
+        assert!(climb.worst().is_none_or(|w| w <= Duration::from_secs(1)), "climb waited {:?}", climb.worst());
         // The wall caps even a fixed law: the slicer, not the law, keeps the bound.
-        assert!(long.worst() <= Duration::from_secs(1), "fixed 5 s waited {:?}", long.worst());
+        assert!(long.worst().is_none_or(|w| w <= Duration::from_secs(1)), "fixed 5 s waited {:?}", long.worst());
         assert_eq!((climb.control, every_step.control), ("throughput-climb", "fixed"));
     }
 

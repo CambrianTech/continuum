@@ -7,10 +7,11 @@ use std::sync::{Arc, OnceLock};
 use parking_lot::RwLock;
 
 use super::Telemetry;
-use crate::dataflow::Reader;
+use crate::dataflow::{OwnerId, Reader};
 
 /// One part's measured numbers, by name.
 struct Gauge {
+    owner: OwnerId,
     name: &'static str,
     telemetry: Reader<Telemetry>,
 }
@@ -23,12 +24,13 @@ pub struct Profiler {
 }
 
 impl Profiler {
-    pub(super) fn add(&self, name: &'static str, telemetry: Reader<Telemetry>) {
-        self.gauges.write().push(Gauge { name, telemetry });
+    pub(super) fn add(&self, owner: OwnerId, name: &'static str, telemetry: Reader<Telemetry>) {
+        self.gauges.write().push(Gauge { owner, name, telemetry });
     }
 
-    pub(super) fn clear(&self) {
-        self.gauges.write().clear();
+    /// An owner's parts leave with it; another owner's sharing this profiler (the node's) stay.
+    pub(super) fn clear(&self, owner: OwnerId) {
+        self.gauges.write().retain(|gauge| gauge.owner != owner);
     }
 
     /// Every part's numbers now, the longest-waiting first. A part that has handled nothing yet
@@ -45,13 +47,12 @@ impl Profiler {
     }
 }
 
-/// The node's owner's profiler, beside the node's bus: set once, by the node's owner at boot.
+/// The node's profiler, beside the node's bus: made once, by the first node owner. Every node
+/// owner's parts are the node's parts, so each one reads and adds to the same profile.
 static NODE: OnceLock<Profiler> = OnceLock::new();
 
-pub(super) fn register_node(profiler: &Profiler) {
-    if NODE.set(profiler.clone()).is_err() {
-        continuum_base::probe!(class = "sage.owner.second_node_owner", "a second node owner was built; the first one's profile stays the node's");
-    }
+pub(super) fn node_profiler() -> Profiler {
+    NODE.get_or_init(Profiler::default).clone()
 }
 
 /// The node's parts' numbers, the longest-waiting first; `None` before the node's owner is built.

@@ -99,7 +99,7 @@ pub fn relieve(drives: &[DriveInfo], pools: &[Arc<dyn ResourcePool>]) -> Vec<Rel
 /// What wakes relief: a disk frame, or a pass it handed off coming back finished.
 pub enum Frame {
     Disk(Arc<Volumes>),
-    Relieved { reliefs: Vec<Relief>, available: HashMap<PathBuf, u64>, pools: Vec<String> },
+    Relieved { reliefs: Vec<Relief>, available: HashMap<PathBuf, u64>, pools: Arc<[String]> },
 }
 
 impl From<Snapshot<Volumes>> for Frame {
@@ -125,13 +125,13 @@ struct Spent {
     /// The volume's free bytes after that pass.
     available: u64,
     /// The pools it asked, by name.
-    pools: Vec<String>,
+    pools: Arc<[String]>,
 }
 
 impl Spent {
     /// News since this pass: the volume has less room now, or a different set of pools could help.
     fn moved(&self, drive: &DriveInfo, pools: &[String]) -> bool {
-        drive.available_bytes < self.available || self.pools != pools
+        drive.available_bytes < self.available || *self.pools != *pools
     }
 }
 
@@ -147,7 +147,7 @@ impl Component for DiskRelief {
     async fn handle(&mut self, frame: Frame, ctx: &mut Ctx<Self>) {
         match frame {
             Frame::Disk(volumes) => self.frame(&volumes, ctx),
-            Frame::Relieved { reliefs, available, pools } => self.relieved(reliefs, &available, pools, ctx),
+            Frame::Relieved { reliefs, available, pools } => self.relieved(reliefs, available, pools, ctx),
         }
     }
 }
@@ -160,7 +160,7 @@ impl DiskRelief {
             return;
         }
         let pools: Vec<Arc<dyn ResourcePool>> = POOLS.read().clone();
-        let names: Vec<String> = pools.iter().map(|pool| pool.tier_name().to_owned()).collect();
+        let names: Arc<[String]> = pools.iter().map(|pool| pool.tier_name().to_owned()).collect();
         // A volume under pressure, unless the last pass on it came up short and nothing moved since.
         let drives: Vec<DriveInfo> = volumes
             .0
@@ -183,7 +183,7 @@ impl DiskRelief {
     }
 
     /// A handed-off pass came back: say what it freed, and remember a volume it could not bring back.
-    fn relieved(&mut self, reliefs: Vec<Relief>, available: &HashMap<PathBuf, u64>, pools: Vec<String>, ctx: &mut Ctx<Self>) {
+    fn relieved(&mut self, reliefs: Vec<Relief>, available: HashMap<PathBuf, u64>, pools: Arc<[String]>, ctx: &mut Ctx<Self>) {
         self.relieving = false;
         for relief in &reliefs {
             continuum_base::probe!(
@@ -195,11 +195,17 @@ impl DiskRelief {
                 asked = ?relief.asked,
                 "a pressured volume asked the pools on it for room"
             );
-            if relief.freed < relief.want {
-                let left = available.get(&relief.mount).copied().unwrap_or(0).saturating_add(relief.freed); // JUSTIFIED: every relief names a drive it was handed
-                self.spent.insert(relief.mount.clone(), Spent { available: left, pools: pools.clone() });
-            } else {
-                self.spent.remove(&relief.mount);
+        }
+        // Each volume the pass was handed: remembered when it came up short, forgotten when it did not.
+        for (mount, before) in available {
+            match reliefs.iter().find(|relief| relief.mount == mount) {
+                Some(relief) if relief.freed < relief.want => {
+                    self.spent.insert(mount, Spent { available: before.saturating_add(relief.freed), pools: Arc::clone(&pools) });
+                }
+                // Brought back below High, or no longer pressured by the time it ran.
+                _ => {
+                    self.spent.remove(&mount);
+                }
             }
         }
         ctx.publish(&mut self.said, reliefs);
@@ -314,7 +320,7 @@ mod tests {
     #[test]
     fn a_pass_that_came_up_short_waits_for_news() {
         let drive = |available: u64| DriveInfo { mount: "/".into(), total_bytes: 1_000, available_bytes: available, role: DriveRole::System, kind: DriveKind::Flash };
-        let spent = Spent { available: 80, pools: vec!["worktrees".to_owned()] };
+        let spent = Spent { available: 80, pools: Arc::from(["worktrees".to_owned()]) };
         let same = vec!["worktrees".to_owned()];
         assert!(!spent.moved(&drive(80), &same), "nothing changed: no new pass");
         assert!(!spent.moved(&drive(90), &same), "room came back by itself: still nothing to ask for");

@@ -44,8 +44,7 @@ pub struct Owner {
 impl Owner {
     /// The node's owner, on the node's bus, as `id` in its `epoch` (a restart is a new epoch).
     pub fn of_node(id: OwnerId, epoch: u64) -> Self {
-        let profiler = Profiler::default();
-        super::profile::register_node(&profiler);
+        let profiler = super::profile::node_profiler();
         Self { bus: Holds::Node(node()), id, epoch, parts: Vec::new(), profiler }
     }
 
@@ -60,7 +59,7 @@ impl Owner {
         let running = start(component, self.bus(), self.id, self.epoch);
         let teller = running.teller();
         let resting = teller.clone();
-        self.profiler.add(P::NAME, self.bus().reader::<Telemetry>(TELEMETRY, presence_key(P::NAME)));
+        self.profiler.add(self.id, P::NAME, self.bus().reader::<Telemetry>(TELEMETRY, presence_key(P::NAME)));
         self.parts.push(Part {
             _running: Box::new(running),
             need: self.bus().reader::<Need>(NEED, need_key(P::NAME)),
@@ -127,7 +126,7 @@ impl Owner {
 
 impl Drop for Owner {
     fn drop(&mut self) {
-        self.profiler.clear();
+        self.profiler.clear(self.id);
         // Newest first: a part started later may hear what an earlier one says.
         while let Some(part) = self.parts.pop() {
             drop(part);
