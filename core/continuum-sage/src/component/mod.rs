@@ -21,12 +21,14 @@ mod ctx;
 mod known;
 mod observe;
 mod need;
+mod owner;
 
 pub use bus::{node, Bus, Key, Taken};
 pub use ctx::Ctx;
 pub use known::{Known, LastSeen, Novelty, Seen};
 pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
 pub use need::{need_key, Need, Urgency, NEED};
+pub use owner::Owner;
 
 use std::future::Future;
 
