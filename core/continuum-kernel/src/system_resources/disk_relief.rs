@@ -15,8 +15,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
-use continuum_sage::component::{node, Component, Ctx, Key, Owner, Urgency, Wiring};
-use continuum_sage::dataflow::{OwnerId, Provenance, Publisher, RunId, Snapshot, StageId, StageIncarnation, TopicName};
+use continuum_sage::component::{node, Component, Ctx, Key, Owner, Source, Urgency, Wiring};
+use continuum_sage::dataflow::{Publisher, Snapshot, TopicName};
 use continuum_sage::Qos;
 
 use super::disk_pressure::DiskPressureLevel;
@@ -225,18 +225,14 @@ pub fn start_on(node: &mut Owner) {
 }
 
 /// Where the disk monitor's polls are said: a publisher, not a task, claimed on first use.
-static FRAMES: OnceLock<Option<parking_lot::Mutex<Publisher<Volumes>>>> = OnceLock::new();
+static FRAMES: OnceLock<Option<parking_lot::Mutex<Source<Volumes>>>> = OnceLock::new();
 
 /// The disk monitor's poll, said on the node's bus for relief to watch. Never waits.
 pub fn frame(drives: Vec<DriveInfo>) {
-    let Some(frames) = FRAMES.get_or_init(|| node().publisher::<Volumes>(DISK, Key::ONE).ok().map(parking_lot::Mutex::new)) else {
+    let Some(frames) = FRAMES.get_or_init(|| Source::on(node(), DISK, Key::ONE, "disk-monitor").ok().map(parking_lot::Mutex::new)) else {
         return;
     };
-    let by = Provenance {
-        by: RunId { incarnation: StageIncarnation { stage: StageId::named("disk-monitor"), owner: OwnerId(uuid::Uuid::nil()), epoch: 0 }, seq: 0 },
-        from: Vec::new(),
-    };
-    frames.lock().publish(Volumes(drives), by);
+    frames.lock().say(Volumes(drives));
 }
 
 #[cfg(test)]

@@ -113,6 +113,8 @@ use engine_install::{
     ENGINE_STALE,
 };
 mod snapshot;
+mod serving_state;
+pub use serving_state::ServingState;
 pub mod serving_hold;
 pub use snapshot::{
     await_ready_serving, await_snapshot_resettle, current_serving, has_reconciled,
