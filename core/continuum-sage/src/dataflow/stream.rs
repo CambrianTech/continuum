@@ -1,16 +1,26 @@
-//! An event topic: every event reaches every subscriber, in order, never dropped.
+//! An event topic: every event is offered to every subscriber, in order, and nobody waits on anybody.
 //!
-//! CBAR's reliable lane (object model 5.7, "built as CBAR"): for what must each be seen (a percept, a
-//! receipt, a surprise, a request to deliberate). One [`Emitter`] owns the topic; a worker subscribes
-//! by [`attach`](Subscribe::attach)ing its intake, and from then on is handed every event by handle
-//! (`Arc`). An emit waits until every subscriber has room (backpressure), so a slow subscriber slows
-//! its producer instead of losing events. A subscriber whose worker has stopped is let go; the others
-//! keep receiving.
+//! CBAR's event lane (object model 5.7, "built as CBAR"): a percept, a receipt, a surprise. One
+//! [`Emitter`] owns the topic; a worker subscribes by [`attach`](Subscribe::attach)ing its intake with
+//! the window it can hold, and from then on is handed each event by handle (`Arc`).
+//!
+//! An emit never waits (Joel, 2026-11-22: one part must never hold another back). It appends the event
+//! to each subscriber's own window and returns. Each subscription has its own delivery task that hands
+//! its window's events to its worker in order: only that task ever waits for its worker's room, the way
+//! a [`super::Reader`]'s delivery does. A subscriber that falls a whole window behind loses its oldest
+//! events, and the gap shows in the revisions it is handed (frames behind, never silence); a consumer
+//! that needs every event reads the topic's durable truth by cursor from the revision it last saw.
+//!
+//! This replaced a stream whose emit waited on each subscriber in turn, so the room feed stalled for
+//! every resident behind the slowest one's senses (docs/planning/LIVE-PATH-SERIAL-WAITS.md, #7).
 
+use std::collections::VecDeque;
+use std::num::NonZeroUsize;
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use parking_lot::Mutex;
+use tokio::sync::Notify;
 
 use super::topic::{InputRevision, TopicName};
 use crate::StageInput;
@@ -28,27 +38,69 @@ impl<T> Clone for Event<T> {
     }
 }
 
-#[async_trait]
-trait Subscriber<T>: Send + Sync {
-    /// False when the subscriber's worker has stopped.
-    async fn deliver(&self, event: &Event<T>) -> bool;
+/// One subscriber's window: the events it has not been handed yet, newest last.
+struct Window<T> {
+    events: Mutex<VecDeque<Event<T>>>,
+    /// How many it keeps; resizable live by its consumer ([`Resize`]).
+    holds: AtomicUsize,
+    /// Raised on every append; a permit is stored when the delivery is busy, so no wake is lost.
+    appended: Notify,
+    /// Where the subscription is in its life ([`Life`]).
+    life: AtomicU8,
 }
 
-struct Intake<I>(StageInput<I>);
+/// Where a subscription is in its life. Each side reads only the state the other sets, and once
+/// either has moved the other is finished with it, so one cell holds both.
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+enum Life {
+    Open = 0,
+    /// Its worker stopped: the emitter lets it go.
+    Gone = 1,
+    /// The emitter is gone: the delivery hands what is left and ends, letting its worker go.
+    Ended = 2,
+}
 
-#[async_trait]
-impl<T, I> Subscriber<T> for Intake<I>
-where
-    T: Send + Sync + 'static,
-    I: From<Event<T>> + Send + 'static,
-{
-    async fn deliver(&self, event: &Event<T>) -> bool {
-        let event = event.clone(); // each subscriber is handed its own handle (an Arc)
-        self.0.send(I::from(event)).await.is_ok()
+impl<T> Window<T> {
+    fn enter(&self, life: Life) {
+        self.life.store(life as u8, Ordering::Release);
+    }
+
+    fn is(&self, life: Life) -> bool {
+        self.life.load(Ordering::Acquire) == life as u8
+    }
+
+    /// Append, displacing the oldest when full. Never waits.
+    fn append(&self, event: &Event<T>) {
+        let mut events = self.events.lock();
+        while events.len() >= self.holds.load(Ordering::Relaxed) {
+            events.pop_front();
+        }
+        // Each subscriber holds its own handle to the one value.
+        events.push_back(Event { value: Arc::clone(&event.value), revision: event.revision });
+        drop(events);
+        self.appended.notify_one();
     }
 }
 
-type Subscribers<T> = Arc<Mutex<Vec<Arc<dyn Subscriber<T>>>>>;
+/// A subscription's window, resizable live by its consumer (from a measurement: a budget it was
+/// granted, the size its items turned out to be). Shrinking drops the oldest it holds now, the same
+/// rule as an overflow.
+pub trait Resize: Send + Sync {
+    fn resize(&self, holds: NonZeroUsize);
+}
+
+impl<T: Send + Sync> Resize for Window<T> {
+    fn resize(&self, holds: NonZeroUsize) {
+        let mut events = self.events.lock();
+        self.holds.store(holds.get(), Ordering::Relaxed);
+        while events.len() > holds.get() {
+            events.pop_front();
+        }
+    }
+}
+
+type Subscribers<T> = Arc<Mutex<Vec<Arc<Window<T>>>>>;
 
 /// The topic's one writer. Not `Clone`: an event stream has one owner.
 pub struct Emitter<T> {
@@ -75,31 +127,60 @@ pub fn stream<T: Send + Sync + 'static>(topic: TopicName) -> (Emitter<T>, Subscr
 }
 
 impl<T: Send + Sync + 'static> Subscribe<T> {
-    /// Hand every event emitted from now on to the worker behind `input`.
-    pub fn attach<I>(&self, input: &StageInput<I>)
+    /// Hand every event emitted from now on to the worker behind `input`, holding at most `window`
+    /// events it has not taken yet (what the consumer itself keeps of this topic).
+    pub fn attach<I>(&self, input: &StageInput<I>, window: NonZeroUsize) -> Arc<dyn Resize>
     where
         I: From<Event<T>> + Send + 'static,
     {
-        self.subscribers.lock().push(Arc::new(Intake(input.clone())));
+        let window = Arc::new(Window {
+            events: Mutex::new(VecDeque::new()),
+            holds: AtomicUsize::new(window.get()),
+            appended: Notify::new(),
+            life: AtomicU8::new(Life::Open as u8),
+        });
+        self.subscribers.lock().push(Arc::clone(&window));
+        let resize: Arc<dyn Resize> = Arc::clone(&window) as Arc<dyn Resize>;
+        let input = input.clone();
+        // Its own delivery: the only place this subscription ever waits, for its own worker's room.
+        tokio::spawn(async move {
+            loop {
+                let next = window.events.lock().pop_front();
+                match next {
+                    Some(event) => {
+                        if input.send(I::from(event)).await.is_err() {
+                            window.enter(Life::Gone);
+                            return;
+                        }
+                    }
+                    None if window.is(Life::Ended) => return,
+                    None => window.appended.notified().await,
+                }
+            }
+        });
+        resize
     }
 }
 
 impl<T: Send + Sync + 'static> Emitter<T> {
-    /// Deliver `value` to every subscriber, waiting for each one's room. Returns its revision.
-    pub async fn emit(&mut self, value: T) -> InputRevision {
+    /// Offer `value` to every subscriber and return its revision. Never waits.
+    pub fn emit(&mut self, value: T) -> InputRevision {
         self.emitted += 1;
         let event = Event { value: Arc::new(value), revision: InputRevision { topic: self.topic, through: self.emitted } };
-        // The list is copied under the lock and delivered to outside it: no lock across an await.
-        let subscribers = self.subscribers.lock().clone();
-        let mut stopped: Vec<Arc<dyn Subscriber<T>>> = Vec::new();
-        for subscriber in subscribers {
-            if !subscriber.deliver(&event).await {
-                stopped.push(subscriber);
-            }
-        }
-        if !stopped.is_empty() {
-            self.subscribers.lock().retain(|subscriber| !stopped.iter().any(|gone| Arc::ptr_eq(gone, subscriber)));
+        let mut subscribers = self.subscribers.lock();
+        subscribers.retain(|window| !window.is(Life::Gone));
+        for window in subscribers.iter() {
+            window.append(&event);
         }
         event.revision
+    }
+}
+
+impl<T> Drop for Emitter<T> {
+    fn drop(&mut self) {
+        for window in self.subscribers.lock().iter() {
+            window.enter(Life::Ended);
+            window.appended.notify_one();
+        }
     }
 }

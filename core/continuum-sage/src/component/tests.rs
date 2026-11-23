@@ -3,7 +3,7 @@
 use std::time::Duration;
 
 use super::*;
-use crate::dataflow::{Event, Publisher, Snapshot, TopicName};
+use crate::dataflow::{Event, OwnerId, Publisher, RunId, Snapshot, StageIncarnation, TopicName};
 use uuid::Uuid;
 
 const NUMBERS: TopicName = TopicName("test/numbers");
@@ -28,7 +28,7 @@ impl Component for Adder {
     const NAME: &'static str = "adder";
     const QOS: Qos = Qos::Work;
     fn wire(&self, wiring: &mut Wiring<'_, Self>) {
-        wiring.hear::<u64>(NUMBERS);
+        wiring.hear::<u64>(NUMBERS, std::num::NonZeroUsize::MIN.saturating_add(7));
     }
     async fn handle(&mut self, Number(n): Number, ctx: &mut Ctx<Self>) {
         self.total += n;
@@ -54,8 +54,8 @@ async fn a_part_hears_and_says_by_topic_with_provenance_from_the_engine() {
         Ok(numbers) => numbers,
         Err(taken) => return assert_eq!(Some(taken), None, "the numbers topic is unclaimed"),
     };
-    numbers.emit(2).await;
-    let last_sent = numbers.emit(3).await;
+    numbers.emit(2);
+    let last_sent = numbers.emit(3);
     let mut last: Option<Snapshot<u64>> = None;
     while last.as_ref().map(|s| *s.value) != Some(5) {
         last = total.changed().await.ok();
@@ -242,11 +242,12 @@ async fn a_part_decides_on_its_own_frontier_from_what_it_knows() {
     assert_eq!(Novelty::new(1.5), None);
 }
 
-// what this catches: per-component analysis that costs everyone always, or that needs code in the
-// component. Off by default (no telemetry is published); switched on by publishing to its observe
-// topic, the engine times each input and publishes the numbers as state; switched off, it stops.
+// what this catches: a bottleneck nobody can see because timing was off (2026-11-22: nothing in
+// production ever switched it on). Every component's inputs are measured always (wait in its intake and
+// time to handle) and published as state any reader watches live; the switch adds only a probe line per
+// input. Numbers accumulate: each input counts, watched or not.
 #[tokio::test]
-async fn a_component_is_watched_only_while_its_switch_is_on() {
+async fn every_input_is_measured_and_the_switch_adds_only_a_probe_line() {
     let bus = Bus::new();
     let mut switch = match bus.publisher::<Observe>(OBSERVE, presence_key("alarm")) {
         Ok(switch) => switch,
@@ -256,16 +257,174 @@ async fn a_component_is_watched_only_while_its_switch_is_on() {
     let (rang, mut rings) = tokio::sync::mpsc::unbounded_channel();
     let alarm = start(Alarm { rang }, &bus, OwnerId(Uuid::from_u128(6)), 1);
     let by = || crate::dataflow::Provenance { by: RunId { incarnation: StageIncarnation { stage: StageId::named("test"), owner: OwnerId(Uuid::from_u128(6)), epoch: 1 }, seq: 1 }, from: Vec::new() };
+    let handled = |telemetry: &crate::dataflow::Reader<Telemetry>| telemetry.latest().map(|t| t.value.handled);
     assert!(alarm.tell(AlarmIn::Ring("unwatched")).await);
     assert_eq!(rings.recv().await, Some("unwatched"));
-    assert!(telemetry.latest().is_none(), "off: nothing measured");
+    while handled(&telemetry) != Some(1) {
+        assert!(telemetry.changed().await.is_ok(), "its telemetry stays published while it runs");
+    }
     switch.publish(Observe::Timing, by());
     assert!(alarm.tell(AlarmIn::Ring("watched")).await);
     assert_eq!(rings.recv().await, Some("watched"));
-    let measured = telemetry.changed().await.map(|t| *t.value);
-    assert_eq!(measured.map(|t| t.handled), Ok(1), "on: each input is timed and published");
-    switch.publish(Observe::Off, by());
-    assert!(alarm.tell(AlarmIn::Ring("off again")).await);
-    assert_eq!(rings.recv().await, Some("off again"));
-    assert_eq!(telemetry.latest().map(|t| t.value.handled), Some(1), "off again: it stops");
+    while handled(&telemetry) != Some(2) {
+        assert!(telemetry.changed().await.is_ok(), "its telemetry stays published while it runs");
+    }
+    let measured = telemetry.latest().map(|t| *t.value);
+    assert!(measured.is_some_and(|t| t.max_wait >= t.last_wait && t.max_handle >= t.last_handle), "wait and handle times are kept: {measured:?}");
+}
+
+// what this catches: a component that awaits long work inside `handle` (disk relief held its worker
+// 24 s a pass on the M5, 2026-11-23). Work handed off with `ctx.off` runs elsewhere; the component
+// handles its other inputs meanwhile and takes the result as an input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work_handed_off_comes_back_as_an_input_while_the_part_keeps_hearing() {
+    enum Job {
+        Start(std::sync::mpsc::Receiver<()>),
+        Ping,
+        Done(bool),
+    }
+    struct Offloader {
+        said: tokio::sync::mpsc::UnboundedSender<&'static str>,
+    }
+    impl Component for Offloader {
+        type Input = Job;
+        const NAME: &'static str = "offloader";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, _: &mut Wiring<'_, Self>) {}
+        async fn handle(&mut self, input: Job, ctx: &mut Ctx<Self>) {
+            match input {
+                Job::Start(gate) => ctx.off(move || gate.recv().is_ok(), Job::Done),
+                Job::Ping => assert!(self.said.send("ping").is_ok(), "the test reads every value"),
+                Job::Done(opened) => assert!(self.said.send(if opened { "done" } else { "wrong" }).is_ok(), "the test reads every value"),
+            }
+        }
+    }
+    let (said, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let part = start(Offloader { said }, &Bus::new(), OwnerId(Uuid::from_u128(11)), 1);
+    let (open, gate) = std::sync::mpsc::channel();
+    assert!(part.tell(Job::Start(gate)).await);
+    assert!(part.tell(Job::Ping).await);
+    assert_eq!(heard.recv().await, Some("ping"), "it hears other inputs while the work is held");
+    assert!(open.send(()).is_ok(), "the work is still waiting on its gate");
+    assert_eq!(heard.recv().await, Some("done"), "the result arrives as an input");
+}
+
+// Timing runs: what the base costs per input, against a bare stage doing the same work.
+#[cfg(feature = "stress-tests")]
+mod stress {
+    use super::*;
+    use crate::{spawn_stage, Capacity, Stage};
+
+    const INPUTS: u64 = 200_000;
+
+    const BURST: TopicName = TopicName("stress/burst");
+
+    /// The window the hearer keeps of the burst: 256 events, this measurement's choice.
+    fn window() -> std::num::NonZeroUsize {
+        std::num::NonZeroUsize::MIN.saturating_add(255)
+    }
+
+    struct Hearer {
+        handled: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Component for Hearer {
+        type Input = Event<u64>;
+        const NAME: &'static str = "hearer";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, wiring: &mut Wiring<'_, Self>) {
+            wiring.hear::<u64>(BURST, window());
+        }
+        async fn handle(&mut self, input: Event<u64>, _: &mut Ctx<Self>) {
+            self.handled += 1;
+            if *input.value == INPUTS {
+                if let Some(done) = self.done.take() {
+                    assert!(done.send(self.handled).is_ok(), "the test waits for the count");
+                }
+            }
+        }
+    }
+
+    struct Bare {
+        sum: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Stage for Bare {
+        type Input = u64;
+        const QOS: Qos = Qos::Work;
+        async fn handle(&mut self, input: u64) {
+            self.sum += input;
+            if input == INPUTS {
+                if let Some(done) = self.done.take() {
+                    assert!(done.send(self.sum).is_ok(), "the test waits for the sum");
+                }
+            }
+        }
+    }
+
+    struct Counted {
+        sum: u64,
+        done: Option<tokio::sync::oneshot::Sender<u64>>,
+    }
+
+    impl Component for Counted {
+        type Input = u64;
+        const NAME: &'static str = "counted";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, _: &mut Wiring<'_, Self>) {}
+        async fn handle(&mut self, input: u64, _: &mut Ctx<Self>) {
+            self.sum += input;
+            if input == INPUTS {
+                if let Some(done) = self.done.take() {
+                    assert!(done.send(self.sum).is_ok(), "the test waits for the sum");
+                }
+            }
+        }
+    }
+
+    // what this catches: per-input cost the base adds to every component (publishes, clock reads,
+    // allocations) growing unseen. Prints ns per input for a bare stage and for a component; run with
+    // `cargo test -p continuum-sage --release --features stress-tests -- --nocapture per_input`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn per_input_cost_of_the_base_against_a_bare_stage() {
+        let (done, sum) = tokio::sync::oneshot::channel();
+        let (input, _worker) = spawn_stage(Bare { sum: 0, done: Some(done) }, Capacity::granted(std::num::NonZeroUsize::MIN));
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            assert!(input.send(value).await.is_ok());
+        }
+        assert!(sum.await.is_ok());
+        let bare = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+
+        let bus = Bus::new();
+        let (done, sum) = tokio::sync::oneshot::channel();
+        let part = start(Counted { sum: 0, done: Some(done) }, &bus, OwnerId(Uuid::from_u128(7)), 1);
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            assert!(part.tell(value).await);
+        }
+        assert!(sum.await.is_ok());
+        let component = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+        println!("per input: bare stage {bare:.0} ns, component {component:.0} ns, base adds {:.0} ns", component - bare);
+
+        // A burst on a topic it hears: its intake holds its window, so a delivery moves many per wake.
+        let (done, heard) = tokio::sync::oneshot::channel();
+        let mut emitter = match bus.emitter::<u64>(BURST) {
+            Ok(emitter) => emitter,
+            Err(taken) => return assert_eq!(Some(taken), None, "the burst topic is unclaimed"),
+        };
+        let _hearer = start(Hearer { handled: 0, done: Some(done) }, &bus, OwnerId(Uuid::from_u128(8)), 1);
+        let started = std::time::Instant::now();
+        for value in 1..=INPUTS {
+            emitter.emit(value);
+        }
+        let handled = match heard.await {
+            Ok(handled) => handled,
+            Err(gone) => return assert_eq!(Some(gone), None, "the hearer reports what it handled"),
+        };
+        let burst = started.elapsed().as_nanos() as f64 / INPUTS as f64;
+        println!("burst heard: {burst:.0} ns per event emitted, {handled} of {INPUTS} handled (window {}; the rest dropped oldest-first)", window());
+    }
 }

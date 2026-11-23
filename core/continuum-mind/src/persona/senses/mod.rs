@@ -24,7 +24,7 @@ use std::sync::{Arc, LazyLock};
 
 use continuum_base::time::EpochMs;
 use continuum_sage::dataflow::{OwnerId, Reader, TopicName};
-use continuum_sage::component::{start as start_part, Bus, Key, Running, Taken, Teller};
+use continuum_sage::component::{Bus, Key, Need, Owner, Taken, Teller};
 use parking_lot::RwLock;
 
 use uuid::Uuid;
@@ -57,6 +57,8 @@ pub struct Handle {
     senses: Teller<Senses>,
     awareness: Reader<AwarenessSnapshot>,
     calling: Reader<Calling>,
+    /// Where her time goes: her parts' measured numbers, read without holding them.
+    profiler: continuum_sage::component::Profiler,
 }
 
 impl Handle {
@@ -87,15 +89,12 @@ impl Handle {
     }
 }
 
-/// A resident's parts, owned by her conversation: dropping it takes her off the feed and stops them.
-/// Her mind's bus lives here, so every part started on it shares it.
+/// A resident: her identity, her handle, and the owner of her parts on her own mind's bus. Dropping
+/// her takes her off the feed and stops every part.
 pub struct Resident {
     persona: Uuid,
     handle: Handle,
-    bus: Arc<Bus>,
-    _senses: Running<Senses>,
-    /// Her channel digest; absent where no runtime registry exists to page her room from (a test).
-    _digest: Option<Running<digest::Digest>>,
+    parts: Owner,
 }
 
 impl Resident {
@@ -104,8 +103,23 @@ impl Resident {
     }
 
     /// Her mind's bus: where her parts hear and say.
-    pub fn bus(&self) -> &Arc<Bus> {
-        &self.bus
+    pub fn bus(&self) -> &Bus {
+        self.parts.bus()
+    }
+
+    /// Her need: the loudest of her parts', read now without waiting on any.
+    pub fn need(&self) -> Need {
+        self.parts.need()
+    }
+
+    /// Where her time goes: every part's measured waits and handle times, slowest-waiting first.
+    pub fn profile(&self) -> Vec<(&'static str, continuum_sage::component::Telemetry)> {
+        self.parts.profile()
+    }
+
+    /// Rest her: every part gives back what it holds and wakes on its next input.
+    pub async fn rest(&self) -> bool {
+        self.parts.rest().await
     }
 }
 
@@ -141,21 +155,27 @@ pub fn start(persona: Uuid, agent_name: &str, mut region: PerceptionRegion) -> R
         resume_pending,
         served_due: None,
     };
-    let running = start_part(senses, &bus, OwnerId(persona), now);
-    let digest = crate::persona::PersonaAircRuntimeRegistry::try_global().map(|registry| {
-        let digest = digest::Digest {
+    let mut parts = Owner::with_bus(Arc::clone(&bus), OwnerId(persona), now);
+    let senses = parts.start(senses);
+    // Her channel digest; absent where no runtime registry exists to page her room from (a test).
+    if let Some(registry) = crate::persona::PersonaAircRuntimeRegistry::try_global() {
+        parts.start(digest::Digest {
             persona,
             builder: crate::cognition::channel_substrate::global_channel_digest_builder(),
             personas: Arc::new(registry),
             digests: crate::cognition::channel_substrate::global_channel_digest_buffer(),
             built: continuum_sage::component::LastSeen::default(),
-        };
-        start_part(digest, &bus, OwnerId(persona), now)
-    });
-    let handle = Handle { senses: running.teller(), awareness, calling };
+        });
+    }
+    let handle = Handle { senses, awareness, calling, profiler: parts.profiler() };
     RESIDENTS.write().insert(persona, handle.clone());
     continuum_base::probe!(class = "mind.feed.registered", persona = %persona, "her senses are on the one feed");
-    Ok(Resident { persona, handle, bus, _senses: running, _digest: digest })
+    Ok(Resident { persona, handle, parts })
+}
+
+/// Every resident's parts' numbers, the longest-waiting part first in each.
+pub fn profiles() -> Vec<(Uuid, Vec<(&'static str, continuum_sage::component::Telemetry)>)> {
+    RESIDENTS.read().iter().map(|(persona, handle)| (*persona, handle.profiler.read())).collect()
 }
 
 /// Her senses on this core; `None` when she is not resident here.

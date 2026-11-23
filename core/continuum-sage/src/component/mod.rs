@@ -15,23 +15,40 @@
 //! subscribes, and whoever reads a state reads the newest without waiting (CBAR's frame pipeline).
 //! What a kind of owner adds (a mind: her bus, her identity, starting her parts) is a thin layer
 //! above this, never a copy of it.
+//!
+//! One concern per file: [`Component`] and [`Presence`] here (the contract); `delivered` (what
+//! reaches a worker); `wiring` (what it hears); `worker` (the engine and [`start`]); `running`
+//! (its handles); `ctx` (what its handler is given); `observe` (its measured numbers); `need`,
+//! `known`, `bus`; [`Owner`] (the parts one node or mind runs) and `profile` (where its time goes).
 
 mod bus;
 mod ctx;
+mod delivered;
 mod known;
-mod observe;
 mod need;
+mod observe;
+mod owner;
+mod profile;
+mod running;
+mod wiring;
+mod worker;
 
 pub use bus::{node, Bus, Key, Taken};
 pub use ctx::Ctx;
+pub use delivered::Delivered;
 pub use known::{Known, LastSeen, Novelty, Seen};
-pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
 pub use need::{need_key, Need, Urgency, NEED};
+pub use observe::{Observe, Telemetry, OBSERVE, TELEMETRY};
+pub use owner::Owner;
+pub use profile::{node_profile, Profiler};
+pub use running::{Running, Teller};
+pub use wiring::Wiring;
+pub use worker::start;
 
 use std::future::Future;
 
-use crate::dataflow::{Event, InputRevision, OwnerId, RunId, Snapshot, StageId, StageIncarnation, TopicName};
-use crate::{spawn_stage, Capacity, Qos, Stage, StageInput, StageWorker};
+use crate::dataflow::{StageId, TopicName};
+use crate::Qos;
 
 /// Something that works on its own. Implement this and nothing else: [`start`] gives it the mechanism.
 pub trait Component: Send + Sized + 'static {
@@ -71,288 +88,6 @@ pub const PRESENCE: TopicName = TopicName("sage/presence");
 /// The key a component's presence is published under: its name.
 pub fn presence_key(name: &'static str) -> Key {
     Key::of(StageId::named(name).as_uuid())
-}
-
-/// What reaches a component's worker: an input (with the frame it came from: none for an act or a
-/// timer), or the engine's request that it rest.
-pub struct Delivered<I> {
-    what: What<I>,
-    from: Option<InputRevision>,
-}
-
-enum What<I> {
-    Input(I),
-    Rest,
-}
-
-impl<I> Delivered<I> {
-    pub(super) fn act(input: I) -> Self {
-        Self { what: What::Input(input), from: None }
-    }
-}
-
-/// A component's intake: its inputs with the revision each came from.
-type Intake<I> = StageInput<Delivered<I>>;
-
-/// One declared subscription, attached once the component's intake exists.
-type Attach<I> = Box<dyn FnOnce(&Intake<I>) + Send>;
-
-/// Where a component declares its subscriptions.
-pub struct Wiring<'a, P: Component> {
-    bus: &'a Bus,
-    /// Each subscription, attached to the component's input once its worker exists.
-    attach: Vec<Attach<P::Input>>,
-}
-
-impl<P: Component> Wiring<'_, P> {
-    /// Its owner's bus, where it claims the topics it says.
-    pub fn bus(&self) -> &Bus {
-        self.bus
-    }
-
-    /// Every event on its owner's `topic` reaches this component, in order, never dropped.
-    pub fn hear<T>(&mut self, topic: TopicName)
-    where
-        T: Send + Sync + 'static,
-        P::Input: From<Event<T>>,
-    {
-        self.hear_on::<T>(self.bus, topic);
-    }
-
-    /// Every event on `topic` of another bus (the node's: the one feed) reaches this component.
-    pub fn hear_on<T>(&mut self, bus: &Bus, topic: TopicName)
-    where
-        T: Send + Sync + 'static,
-        P::Input: From<Event<T>>,
-    {
-        let subscribe = bus.subscribe::<T>(topic);
-        self.attach.push(Box::new(move |input| subscribe.attach(input)));
-    }
-
-    /// This component is handed the newest value of its owner's `topic` under `key`, then each change;
-    /// changes made while it is busy coalesce into the newest.
-    pub fn watch<T>(&mut self, topic: TopicName, key: Key)
-    where
-        T: Send + Sync + 'static,
-        P::Input: From<Snapshot<T>>,
-    {
-        let reader = self.bus.reader::<T>(topic, key);
-        self.attach.push(Box::new(move |input| reader.attach(input)));
-    }
-}
-
-impl<T, I: From<Event<T>>> From<Event<T>> for Delivered<I> {
-    fn from(event: Event<T>) -> Self {
-        let from = Some(event.revision);
-        Self { what: What::Input(I::from(event)), from }
-    }
-}
-
-impl<T, I: From<Snapshot<T>>> From<Snapshot<T>> for Delivered<I> {
-    fn from(snapshot: Snapshot<T>) -> Self {
-        let from = Some(snapshot.revision);
-        Self { what: What::Input(I::from(snapshot)), from }
-    }
-}
-
-struct Worker<P: Component> {
-    component: P,
-    ctx: Ctx<P>,
-    /// Its presence on its owner's bus; `None` when another component of the same name already
-    /// publishes there (a wiring defect, probed at start).
-    presence: Option<crate::dataflow::Publisher<Presence>>,
-    /// Its need on its owner's bus (same keying and defect rule as its presence).
-    need: Option<crate::dataflow::Publisher<Need>>,
-    published_need: Option<Need>,
-    /// Its observation switch, and what it measured while switched on.
-    observe: crate::dataflow::Reader<Observe>,
-    telemetry: Option<crate::dataflow::Publisher<Telemetry>>,
-    measured: Telemetry,
-    /// The last frame handled per topic, while watched: a gap is frames a coalescing reader skipped.
-    last_frames: std::collections::HashMap<TopicName, u64>,
-    now: Presence,
-}
-
-impl<P: Component> Worker<P> {
-    /// One watched input's numbers, published as its telemetry.
-    fn measure(&mut self, took: std::time::Duration, from: Option<InputRevision>) {
-        let skipped = match from {
-            Some(frame) => match self.last_frames.insert(frame.topic, frame.through) {
-                Some(last) => frame.through.saturating_sub(last + 1),
-                // Its first frame on this topic since it was watched: nothing to compare.
-                None => 0,
-            },
-            // An act or a timer carries no frame.
-            None => 0,
-        };
-        let waiting = match self.ctx.current_need() {
-            Some(need) => need.waiting,
-            // Before its intake exists nothing waits in it.
-            None => 0,
-        };
-        self.measured = Telemetry {
-            handled: self.measured.handled + 1,
-            last_handle: took,
-            max_handle: self.measured.max_handle.max(took),
-            waiting,
-            frames_skipped: self.measured.frames_skipped + skipped,
-        };
-        if let Some(publisher) = self.telemetry.as_mut() {
-            self.ctx.publish(publisher, self.measured);
-        }
-        continuum_base::probe!(class = "sage.component.handled", component = P::NAME, took_us = took.as_micros() as u64, waiting = waiting, frames_skipped = skipped, "a watched component handled an input");
-    }
-
-    /// Publish its need when it changed: its urgency and its intake depth now.
-    fn publish_need(&mut self) {
-        let Some(need) = self.ctx.current_need() else { return };
-        self.say_need(need);
-    }
-
-    fn say_need(&mut self, need: Need) {
-        if self.published_need == Some(need) {
-            return;
-        }
-        self.published_need = Some(need);
-        if let Some(publisher) = self.need.as_mut() {
-            self.ctx.publish(publisher, need);
-        }
-    }
-
-    fn enter(&mut self, presence: Presence) {
-        if presence == self.now {
-            return;
-        }
-        self.now = presence;
-        if let Some(publisher) = self.presence.as_mut() {
-            self.ctx.publish(publisher, presence);
-        }
-    }
-}
-
-impl<P: Component> Stage for Worker<P> {
-    type Input = Delivered<P::Input>;
-    const QOS: Qos = P::QOS;
-
-    async fn handle(&mut self, delivered: Delivered<P::Input>) {
-        match delivered.what {
-            What::Input(input) => {
-                let watched = self.observe.latest().is_some_and(|switch| *switch.value == Observe::Timing);
-                let started = watched.then(std::time::Instant::now);
-                self.enter(Presence::Acting);
-                self.ctx.begin(delivered.from);
-                self.component.handle(input, &mut self.ctx).await;
-                self.enter(Presence::Ready);
-                self.publish_need();
-                if let Some(started) = started {
-                    self.measure(started.elapsed(), delivered.from);
-                }
-            }
-            What::Rest if self.now == Presence::Resting => {}
-            What::Rest => {
-                self.component.rest().await;
-                self.enter(Presence::Resting);
-            }
-        }
-    }
-}
-
-/// A running part. Its owner tells it acts; dropping it stops the part.
-pub struct Running<P: Component> {
-    input: StageInput<Delivered<P::Input>>,
-    worker: StageWorker<Delivered<P::Input>>,
-}
-
-impl<P: Component> Running<P> {
-    /// Hand the part an act; false once it has stopped.
-    pub async fn tell(&self, input: P::Input) -> bool {
-        self.input.send(Delivered::act(input)).await.is_ok()
-    }
-
-    /// Ask it to rest: it gives back what it holds, and its next input wakes it. False once it
-    /// has stopped.
-    pub async fn rest(&self) -> bool {
-        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
-    }
-
-    /// A handle to tell it acts from elsewhere, without owning its lifetime.
-    pub fn teller(&self) -> Teller<P> {
-        Teller { input: self.input.clone() }
-    }
-}
-
-impl<P: Component> Drop for Running<P> {
-    fn drop(&mut self) {
-        self.worker.stop();
-    }
-}
-
-/// Tells a running part acts; holds no lifetime.
-pub struct Teller<P: Component> {
-    input: StageInput<Delivered<P::Input>>,
-}
-
-impl<P: Component> Clone for Teller<P> {
-    fn clone(&self) -> Self {
-        Self { input: self.input.clone() }
-    }
-}
-
-impl<P: Component> Teller<P> {
-    pub async fn tell(&self, input: P::Input) -> bool {
-        self.input.send(Delivered::act(input)).await.is_ok()
-    }
-
-    /// Ask it to rest (its owner rests, or its memory is wanted elsewhere).
-    pub async fn rest(&self) -> bool {
-        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
-    }
-}
-
-/// Claim a topic the engine publishes for a component; a second component of the same name on one
-/// bus is a wiring defect, probed, and runs without it.
-fn claim<T: Send + Sync + 'static>(bus: &Bus, topic: TopicName, name: &'static str) -> Option<crate::dataflow::Publisher<T>> {
-    match bus.publisher::<T>(topic, presence_key(name)) {
-        Ok(publisher) => Some(publisher),
-        Err(taken) => {
-            continuum_base::probe!(class = "sage.component.topic_taken", component = name, topic = taken.0 .0, "another component of this name already publishes this on its bus");
-            None
-        }
-    }
-}
-
-/// Start `component` for `owner` on its owner's `bus`: its subscriptions, its worker, its context. One
-/// input in hand and one waiting (the double buffer); every producer waits for room.
-pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) -> Running<P> {
-    let mut wiring = Wiring { bus, attach: Vec::new() };
-    component.wire(&mut wiring);
-    let incarnation = StageIncarnation { stage: StageId::named(P::NAME), owner, epoch };
-    // The context needs the component's own input for its timers, which exists only once the
-    // worker does: the worker is spawned with a context that receives it before any input.
-    let slot = ctx::InputSlot::default();
-    let mut worker = Worker {
-        component,
-        ctx: Ctx::new(RunId { incarnation, seq: 0 }, &slot),
-        presence: claim(bus, PRESENCE, P::NAME),
-        need: claim(bus, NEED, P::NAME),
-        published_need: None,
-        observe: bus.reader::<Observe>(OBSERVE, presence_key(P::NAME)),
-        telemetry: claim(bus, TELEMETRY, P::NAME),
-        measured: Telemetry::default(),
-        last_frames: std::collections::HashMap::new(),
-        now: Presence::Ready,
-    };
-    if let Some(publisher) = worker.presence.as_mut() {
-        worker.ctx.publish(publisher, Presence::Ready);
-    }
-    // A fresh intake holds nothing, and it has said nothing yet: content.
-    worker.say_need(Need { urgency: Urgency::Content, waiting: 0 });
-    let (input, worker) = spawn_stage(worker, Capacity::granted(std::num::NonZeroUsize::MIN));
-    slot.fill(&input);
-    for attach in wiring.attach {
-        attach(&input);
-    }
-    Running { input, worker }
 }
 
 #[cfg(test)]

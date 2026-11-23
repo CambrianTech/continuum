@@ -1094,6 +1094,95 @@ A page save or restore stalls every stream, because SLOT_SAVE and SLOT_RESTORE r
 
 **What follows:** plan rows SV-F1 to SV-F5 (section 8.2).
 
+### 4.1b' Batching at depth, and why it gives what it gives: measured 2026-11-22
+
+Apple M5 Pro, 64 GB; Qwen3.6-35B-A3B Q4_K_M; stock `llama-batched-bench` (cache build of 2026-11-18),
+`-b 2048 -ub 512 -fa on -ngl 99`, 128 decode tokens. Serving paused 23:03:46-23:15:57Z, the live core
+(3ef40434c7) relaunched from its slot and verified. Raw output in the session scratchpad.
+
+| Depth | KV | 1 stream t/s | 2 streams aggregate | 4 streams aggregate | Gain at 4 |
+|---|---|---|---|---|---|
+| 16k | unified (one pool) | 52.98 | 75.93 | 99.36 | 1.88x |
+| 16k | split (stream per sequence) | 53.20 | 76.35 | 100.58 | 1.89x |
+| 64k | unified, shared prompt | 38.53 | (not run) | 65.18 | 1.69x |
+
+Prefill: 686 t/s at 16k, 440 t/s at 64k.
+
+**One pool costs nothing here.** Split streams and the unified pool decode within 1.2%. On this hybrid
+model few layers are full attention, so the cross-sequence mask is cheap. So a mind's KV need not be a
+fixed share of the context: one pool, each mind's region contiguous and growing geometrically (as a
+`std::vector` grows), moved as one block copy (DMA-friendly), every resident mind decoded in one batch.
+
+**Why 1.9x and not 4x (a model that fits).** Each step costs a fixed part F, plus expert reads that grow
+with the distinct experts the batch touches. Assuming 128 experts with 8 active per token (to be
+confirmed from the GGUF) and uncorrelated routing, four tokens touch about 29 distinct experts (3.64x
+one token's 8). Solving the 16k numbers gives F = 10.8 ms and one token's expert reads = 8.1 ms. That
+predicts two streams at 75.5 t/s; measured 75.9. The gain is limited by each added sequence bringing
+mostly its own experts, not by a scheduling defect.
+
+**What that says to fix (the stall, engineered, not accepted):**
+1. **F is GPU time, not the CPU round trip** (measured; this corrects the first guess, which named graph
+   build, dispatch and syncs on the CPU). The fork's Metal timer (`GGML_METAL_TIMING=1`, fork 8da01ac4a)
+   on the canary pin at 4k context, serving paused 23:27:22-23:28:56Z:
+
+   | | GPU busy per step | GPU idle gap between steps | Host encode | Decode |
+   |---|---|---|---|---|
+   | 1 stream | 16.65 ms | 0.035 ms | 1.5 ms, overlapped | 58.3 t/s (17.15 ms/token) |
+   | 4 streams | 33.4-34.8 ms | 0.04 ms | 1.6 ms | 115.3 t/s aggregate |
+
+   The GPU is busy 97% of each token; the CPU between steps costs 35 microseconds. Each step is 3,726
+   graph nodes: 3,726 GPU dispatches averaging about 4.5 microseconds, each paying a launch and drain
+   whether it serves one stream or four (inferred: this is the fixed part). The busy time is about three
+   times what reading the active weights should take at the chip's bandwidth (bandwidth to be
+   confirmed). Targets, in order: **fusion** (fewer, larger kernels: norm+mul+add, the MoE route, gather
+   and matmul as one; upstream's `ggml-metal-fusion.cpp` is in the sync tree and not on the canary pin, so
+   the sync is measured first), **concurrent dispatch** of independent kernels, then the kernels
+   themselves.
+
+   **The upstream sync, measured** (same bench and settings, fork `fable/upstream-sync` 083664562 with
+   the timer, serving paused 00:06:10-00:07:08Z):
+
+   | 4k context | Canary pin | Synced fork | Gain |
+   |---|---|---|---|
+   | Decode, 1 stream | 58.3 t/s | 69.1 t/s | +19% |
+   | Decode, 4 streams aggregate | 115.3 t/s | 147.7 t/s | +28% |
+   | Prefill | about 790 t/s | 1,559-1,701 t/s | about 2x |
+   | GPU per decode step, 1 / 4 streams | 16.65 / 33.4-34.8 ms | 13.9 / 26.8 ms | |
+
+   Graph nodes rose slightly (3,726 to 3,817), so the gain is upstream's kernels, not fewer dispatches;
+   fusion and concurrent dispatch are still ahead. Shipping the sync is the next speed step for every
+   mind; its remaining conflicts are being resolved.
+2. **Expert reads run at about 150 GB/s effective** (8.1 ms for one token's experts, about 1.2 GB,
+   inferred). The M5 Pro's peak is to be confirmed. The `mul_mat_id` kernel at small batch is the
+   second target.
+3. **Batching keeps paying as it grows**, because the expert union saturates: the fitted model gives
+   about 127 t/s at 8 sequences and 170 t/s at 16. More resident minds, and draft tokens, ride nearly
+   free once most experts are read each step. MTP lost under concurrency at four streams (4.1b); at
+   larger batches that is to be re-measured.
+4. **Routing overlap is a lever**: minds whose tokens route to the same experts batch better.
+   Measured, not assumed, before anything schedules by it.
+5. **More work per step is the theme** (the lesson of looped-layer models such as Inkling 2 Mini: more
+   compute per byte of weights read). For a model that does not loop: batch minds (measured above),
+   speculative drafts while the batch is small (several tokens verified per weight read; MTP lost at four
+   streams in 4.1b, but the fixed per-step cost says it should pay at one or two, to be measured), and
+   fusion (fewer steps' worth of fixed cost).
+6. **Kernel parameters are tuned live, per node, never searched once** (Joel, 2026-11-22: "I like the
+   dynamic adjustment better than searching at startup"). Thread counts, chunk sizes and prefetch
+   distances (the parameters Magnitude searches for a minute at download) become a control loop on the
+   node's own step timings, like the lane's slice (SAGE.md, "The lane"), keeping only settings whose
+   output is identical. A one-time search goes stale as load, heat and context depth move.
+7. **A team is the system-level loop.** Minds checking one another refine a result with the same weights,
+   as a looped layer does. This engine makes each pass cheap: reviewers decode in the same batched step,
+   shared prefixes are copied rather than prefilled, and each mind keeps what a review taught her. The test
+   is a benchmark run correctly, as an academy activity (`BENCHMARKS-ARE-ADAPTERS-NOT-A-RUNNER.md`): the same
+   tasks and hardware, one model against a team of minds on this engine, scored on wall clock to a correct,
+   reviewed result and on cost. An expectation until it runs.
+
+Also checked: our fork already runs NVFP4 on Metal (c4c93981e: mul_mv, mul_mm, the MoE variants,
+get_rows), which upstream refuses (so stock llama.cpp sends those layers to the CPU, the reported cause
+of Inkling 2 Mini's slow GGUF decode on Macs), and the synced fork carries Inkling 2 Mini
+(`src/models/inkling2.cpp`, `inkling2-loop.cpp`). Unmeasured here.
+
 ### 4.1c The engine is fed by queues and signals, never held by permits (2026-10-28)
 
 Joel, 2026-10-28: "Its got to flow or have MANY queues"; "Semaphore really only exists for queue

@@ -36,7 +36,7 @@ pub use stage::{RunOutcome, Stage, StageContext};
 pub use topic::{InputRevision, Provenance, TopicKind, TopicName};
 pub use triggers::Triggers;
 pub use state::{state, Ended, Publisher, Reader, Snapshot};
-pub use stream::{stream, Emitter, Event, Subscribe};
+pub use stream::{stream, Emitter, Event, Resize, Subscribe};
 
 #[cfg(test)]
 mod tests;

@@ -33,15 +33,16 @@ pub trait Stage: Send + 'static {
     /// What a full stage does: never drops unless a signal stage opts in.
     const OVERFLOW: Overflow = Overflow::Reliable;
     fn handle(&mut self, input: Self::Input) -> impl Future<Output = ()> + Send;
-    /// Handle everything that was waiting, in order, in one wake: on a wake it does many. The
-    /// default handles them one by one; a stage that batches (one write for many tokens)
-    /// overrides it.
-    fn handle_all(&mut self, inputs: Vec<Self::Input>) -> impl Future<Output = ()> + Send
+    /// Handle everything that was waiting, in order, in one wake: on a wake it does many. It drains
+    /// `inputs`, a buffer the worker keeps and swaps with the intake's (a double buffer: nothing is
+    /// allocated per wake). The default handles them one by one; a stage that batches (one write
+    /// for many tokens) overrides it.
+    fn handle_all(&mut self, inputs: &mut std::collections::VecDeque<Self::Input>) -> impl Future<Output = ()> + Send
     where
         Self: Sized,
     {
         async move {
-            for input in inputs {
+            while let Some(input) = inputs.pop_front() {
                 self.handle(input).await;
             }
         }
@@ -173,9 +174,15 @@ impl<T> StageInput<T> {
     /// backpressure a producer awaits instead of spinning or dropping. Hands the item back only
     /// when the stage has stopped.
     pub async fn send(&self, mut item: T) -> Result<(), Stopped<T>> {
+        // The common case, room in the slot, takes the slot's lock and nothing else.
+        match self.push(item) {
+            Ok(_) => return Ok(()),
+            Err(PushError::Stopped(back)) => return Err(Stopped(back)),
+            Err(PushError::Full(back)) => item = back,
+        }
         loop {
-            // Registered before the slot is looked at, so a take between the look and the wait
-            // is never missed.
+            // Full: registered before the slot is looked at again, so a take between the look and
+            // the wait is never missed.
             let space = self.inbox.space.notified();
             tokio::pin!(space);
             space.as_mut().enable();
@@ -248,17 +255,21 @@ pub fn spawn_stage<S: Stage>(mut stage: S, capacity: Capacity) -> (StageInput<S:
         // panicked (the task's future is dropped as the panic unwinds). A waiting producer wakes
         // and gets its input back instead of waiting on a slot nothing will take.
         let _stops = stops;
+        // The worker's half of the double buffer: swapped with the intake's on each wake, drained,
+        // and swapped back empty with its memory kept, so a wake allocates nothing.
+        let mut next = Batch::default();
         loop {
             // Everything waiting is taken in one wake and handled in order: the lock is held for the
-            // take alone, never across the work.
-            let (next, closed) = {
+            // swap alone, never across the work.
+            let closed = {
                 let mut pending = inbox.pending.lock().unwrap_or_else(|e| e.into_inner()); // a poisoned slot still holds plain data, as in push
-                (std::mem::take(&mut *pending), inbox.stopped.load(Ordering::Acquire) || inbox.producers.load(Ordering::Acquire) == 0)
+                std::mem::swap(&mut *pending, &mut next);
+                inbox.stopped.load(Ordering::Acquire) || inbox.producers.load(Ordering::Acquire) == 0
             };
             if !next.ready.is_empty() {
                 inbox.space.notify_waiters();
-                drop(next.retired);
-                stage.handle_all(next.ready.into()).await;
+                next.retired.clear();
+                stage.handle_all(&mut next.ready).await;
             } else if closed {
                 return;
             } else {

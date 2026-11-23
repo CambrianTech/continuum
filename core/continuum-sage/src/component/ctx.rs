@@ -5,7 +5,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use super::{Delivered, Key, Component};
-use crate::dataflow::{Emitter, InputRevision, Provenance, Publisher, RunId};
+use crate::dataflow::{Emitter, InputRevision, Provenance, Publisher, RunId, TopicName};
 use crate::StageInput;
 
 /// The component's own input, filled once its worker exists (before any input is handled).
@@ -40,11 +40,21 @@ pub struct Ctx<P: Component> {
     timers: HashMap<Key, crate::clock::Alarm>,
     /// How much it wants to act, in its own judgment; published by the engine after each input.
     urgency: super::Urgency,
+    /// Its subscription windows by topic, to resize live.
+    windows: super::wiring::Windows,
 }
 
 impl<P: Component> Ctx<P> {
-    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>) -> Self {
-        Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content }
+    pub(super) fn new(run: RunId, myself: &InputSlot<P::Input>, windows: super::wiring::Windows) -> Self {
+        Self { run, from: None, myself: myself.clone(), timers: HashMap::new(), urgency: super::Urgency::Content, windows }
+    }
+
+    /// Resize its window on `topic` (one it hears): from a measurement it just took, never a constant.
+    /// Shrinking drops the oldest it holds now. False when it hears no such topic.
+    pub fn resize(&self, topic: TopicName, holds: std::num::NonZeroUsize) -> bool {
+        let Some(window) = self.windows.lock().get(&topic).cloned() else { return false };
+        window.resize(holds);
+        true
     }
 
     pub(super) fn begin(&mut self, from: Option<InputRevision>) {
@@ -75,9 +85,9 @@ impl<P: Component> Ctx<P> {
         publisher.publish(value, self.provenance())
     }
 
-    /// Emit an event this component writes; waits for each subscriber's room.
-    pub async fn emit<T: Send + Sync + 'static>(&self, emitter: &mut Emitter<T>, value: T) -> InputRevision {
-        emitter.emit(value).await
+    /// Emit an event this component writes. Never waits: each subscriber has its own window.
+    pub fn emit<T: Send + Sync + 'static>(&self, emitter: &mut Emitter<T>, value: T) -> InputRevision {
+        emitter.emit(value)
     }
 
     /// Deliver `input` to this component `after` from now, replacing any timer under `key`: a
@@ -93,6 +103,24 @@ impl<P: Component> Ctx<P> {
             });
         });
         self.timers.insert(key, alarm);
+    }
+
+    /// Run blocking `work` (a disk walk, a file write, a hash) off every worker, and hand its result to
+    /// this component as an input through `into`. Its handler returns at once: the component keeps
+    /// hearing everything else while the work runs, and takes the result like any other input, never
+    /// awaiting it inside `handle` (where its worker would be held for the work's whole length).
+    pub fn off<R: Send + 'static>(&self, work: impl FnOnce() -> R + Send + 'static, into: impl FnOnce(R) -> P::Input + Send + 'static) {
+        let Some(myself) = self.myself.0.get().cloned() else { return };
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(work).await {
+                Ok(result) => {
+                    if myself.send(Delivered::act(into(result))).await.is_err() {
+                        continuum_base::probe!(class = "sage.component.off_after_stop", component = P::NAME, "a component stopped before its off-worker result came back");
+                    }
+                }
+                Err(join) => continuum_base::probe!(class = "sage.component.off_failed", component = P::NAME, why = %join, "a component's off-worker work did not finish"),
+            }
+        });
     }
 
     /// Drop the timer under `key`, if any.

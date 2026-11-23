@@ -564,36 +564,69 @@ mod topics {
         assert!(worker.join().await.is_ok(), "the part ends with its last producer");
     }
 
-    // what this catches: a percept seen by one part and lost to another, reordered, or dropped
-    // because a subscriber was slow. Every subscriber gets every event in order; an emit waits
-    // for a busy subscriber's room; a stopped subscriber is let go without stopping the others.
+    // what this catches: one subscriber holding back the producer and every other subscriber (the
+    // room feed stalled for every resident behind the slowest one's senses, 2026-11-22). An emit never
+    // waits; a fast part gets every event in order while a slow one is busy; the slow one, a whole
+    // window behind, keeps the newest events and sees the gap in their revisions; a stopped
+    // subscriber is let go.
     #[tokio::test]
-    async fn every_event_reaches_every_subscriber_in_order_and_a_slow_one_holds_the_producer() {
+    async fn a_slow_subscriber_never_holds_the_producer_or_another_subscriber() {
         let (mut emitter, subscribe) = stream::<u64>(TopicName("her/percepts"));
         let (fast_in, _fast, mut fast, _) = part(true);
         let (slow_in, _slow, mut slow, slow_gate) = part(false);
         let (gone_in, gone, _, _) = part(true);
-        subscribe.attach(&fast_in);
-        subscribe.attach(&slow_in);
-        subscribe.attach(&gone_in);
+        // Each consumer sizes its own window: the fast one holds the whole burst, the slow one 4.
+        let burst = std::num::NonZeroUsize::MIN.saturating_add(31);
+        let window = std::num::NonZeroUsize::MIN.saturating_add(3);
+        subscribe.attach(&fast_in, burst);
+        subscribe.attach(&slow_in, window);
+        subscribe.attach(&gone_in, window);
         gone.stop();
-        // The slow part holds one input and one waits: the third emit must wait for its room.
-        assert_eq!(emitter.emit(1).await.through, 1);
-        emitter.emit(2).await;
-        {
-            let mut third = std::pin::pin!(emitter.emit(3));
-            for _ in 0..8 {
-                assert!(futures_util::poll!(third.as_mut()).is_pending(), "an emit waits for a busy subscriber instead of dropping");
-                tokio::task::yield_now().await;
+        // Twenty emits while the slow part takes nothing: each returns at once (emit is not async).
+        for value in 1..=20 {
+            assert_eq!(emitter.emit(value).through, value);
+        }
+        for expected in 1..=20 {
+            assert_eq!(fast.recv().await, Some(expected), "the fast part is handed every event, in order, while the slow one is busy");
+        }
+        slow_gate.add_permits(Semaphore::MAX_PERMITS);
+        let mut got = Vec::new();
+        while got.last() != Some(&20) {
+            match slow.recv().await {
+                Some(value) => got.push(value),
+                None => break,
             }
-            slow_gate.add_permits(Semaphore::MAX_PERMITS);
-            third.await;
         }
-        // The stopped subscriber never holds an emit: this one completes.
-        emitter.emit(4).await;
-        for expected in 1..=4 {
-            assert_eq!(fast.recv().await, Some(expected));
-            assert_eq!(slow.recv().await, Some(expected));
+        assert_eq!(got.last(), Some(&20), "the slow part ends on the newest");
+        assert!(got.windows(2).all(|w| w[0] < w[1]), "in order: {got:?}");
+        assert!(got.len() < 20, "a part a whole window behind lost its oldest, visible as a gap: {got:?}");
+    }
+
+    // what this catches: a window fixed at wiring, so a consumer whose budget changed (a capture
+    // writer granted less disk) must re-wire or hold too much. Resized live, a smaller window keeps
+    // only the newest of what it held and of what comes after; a larger one holds more again.
+    #[tokio::test]
+    async fn a_window_resized_live_keeps_the_newest() {
+        let (mut emitter, subscribe) = stream::<u64>(TopicName("her/percepts"));
+        let (slow_in, _slow, mut slow, slow_gate) = part(false);
+        let resize = subscribe.attach(&slow_in, std::num::NonZeroUsize::MIN.saturating_add(9)); // holds 10
+        for value in 1..=8 {
+            emitter.emit(value);
         }
+        resize.resize(std::num::NonZeroUsize::MIN.saturating_add(1)); // holds 2: drops the oldest now
+        for value in 9..=12 {
+            emitter.emit(value);
+        }
+        slow_gate.add_permits(Semaphore::MAX_PERMITS);
+        let mut got = Vec::new();
+        while got.last() != Some(&12) {
+            match slow.recv().await {
+                Some(value) => got.push(value),
+                None => break,
+            }
+        }
+        assert_eq!(got.last(), Some(&12), "it ends on the newest");
+        assert!(got.iter().filter(|v| **v >= 9).count() <= 4, "after the shrink it keeps only the newest: {got:?}");
+        assert!(got.len() < 12, "the shrink and the smaller window let the oldest go: {got:?}");
     }
 }

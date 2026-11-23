@@ -2969,6 +2969,7 @@ dependencies = [
  "continuum-perception",
  "continuum-positron",
  "continuum-process",
+ "continuum-sage",
  "continuum-saved-state",
  "continuum-sentinel",
  "continuum-service",

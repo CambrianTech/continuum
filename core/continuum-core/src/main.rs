@@ -514,6 +514,10 @@ async fn async_main(home: std::path::PathBuf) -> Result<(), Box<dyn std::error::
             .map(|d| d as std::sync::Arc<dyn continuum_core::system_resources::DiskReporter>)
             .collect(),
     );
+    // The node's parts: started here at boot, held for the core's life, stopped when it exits
+    // (SAGE.md: a component's lifetime is owned by its node, never started by its first caller).
+    let mut node_parts = continuum_sage::component::Owner::of_node(continuum_sage::dataflow::OwnerId(uuid::Uuid::nil()), 0);
+    continuum_core::system_resources::disk_relief::start_on(&mut node_parts);
 
     // Start IPC server in background thread FIRST (creates socket immediately).
     // The thread publishes `ipc::subscribe_ready()`'s watch once the Unix
