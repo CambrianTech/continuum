@@ -95,7 +95,6 @@ impl EngineLaunch {
             n_seq_max: 1,
             // The one-off context only; the scheduler's context sets its own (driver.rs).
             flash_attn: FlashAttn::Disabled,
-            // Kept off as the registry path keeps them (their fused Metal kernels threw across FFI).
             type_k: self.kv.k,
             type_v: self.kv.v,
             mmproj_path,
