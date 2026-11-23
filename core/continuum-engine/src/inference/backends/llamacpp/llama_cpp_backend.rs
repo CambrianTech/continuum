@@ -295,8 +295,6 @@ impl LlamaCppBackend {
                 n_ubatch: self.config.n_ubatch,
                 n_seq_max: 1,
                 flash_attn: self.config.flash_attn,
-                fused_gdn_ar: self.config.fused_gdn_ar,
-                fused_gdn_ch: self.config.fused_gdn_ch,
                 type_k: self.config.type_k,
                 type_v: self.config.type_v,
                 embeddings: false,

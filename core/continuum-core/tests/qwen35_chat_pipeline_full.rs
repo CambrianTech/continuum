@@ -57,8 +57,6 @@ async fn qwen35_persona_style_chat_produces_coherent_short_reply() {
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,
-        fused_gdn_ar: false,
-        fused_gdn_ch: false,
         ..Default::default()
     })
     .expect("load");
@@ -143,8 +141,6 @@ async fn qwen35_scheduler_json_grammar_returns_object() {
         n_seq_max: 1,
         n_ubatch: 128,
         flash_attn: FlashAttn::Disabled,
-        fused_gdn_ar: false,
-        fused_gdn_ch: false,
         ..Default::default()
     })
     .expect("load");

@@ -30,7 +30,7 @@ extern "C" {
     fn continuum_chat_render_describe(render: *const c_void, reply: *mut Reply) -> c_int;
     fn continuum_chat_render_parse(render: *const c_void, said: *const Utterance, reply: *mut Reply) -> c_int;
     #[cfg(test)]
-    fn continuum_chat_render_content_only(reasoning: c_int, reply: *mut Reply) -> c_int;
+    fn continuum_chat_render_content_only(reply: *mut Reply) -> c_int;
 }
 
 /// What every native call hands back: its result (a handle or an owned string) or its error text.
@@ -162,9 +162,9 @@ impl ChatRender {
 
     /// A content-only render without a model, for tests of the boundary itself.
     #[cfg(test)]
-    fn content_only(reasoning: ReasoningFormat) -> Result<Self, ChatRefusal> {
+    fn content_only() -> Result<Self, ChatRefusal> {
         let mut reply = Reply::new();
-        let status = unsafe { continuum_chat_render_content_only(reasoning.code(), &mut reply) };
+        let status = unsafe { continuum_chat_render_content_only(&mut reply) };
         Ok(Self { ptr: reply.taken("render", status)? })
     }
 }
