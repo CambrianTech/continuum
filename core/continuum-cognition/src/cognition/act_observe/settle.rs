@@ -11,7 +11,8 @@ use continuum_base::time::EpochMs;
 use std::sync::Arc;
 use uuid::Uuid;
 
-use crate::cognition::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics, WorkspaceCycle};
+use crate::cognition::workspace::{Burst, Decision, Situation, TurnFraming, TurnMetrics};
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 
 use super::apply::apply_act;
 use super::perception::{any_real_receipt, batch_evidence, claimed_file_without_act, collect_touched_paths, mutated_workspace, ConcernPhase, wrote_without_observation};

@@ -237,7 +237,8 @@
     // in the assembled broadcast the decider reads in phase 2.
     #[tokio::test]
     async fn bridged_grounding_reaches_the_broadcast() {
-        use crate::cognition::workspace::{Contribution, Decision, SalienceArbiter, WorkspaceCycle};
+        use crate::cognition::workspace::{Contribution, Decision, SalienceArbiter};
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
 
         // A deliberation faculty that proves it saw the bridged doctrine.
         struct SeesDoctrine;
@@ -345,7 +346,8 @@
     // bridge ships with.)
     #[tokio::test]
     async fn standing_framing_present_even_when_outsalienced() {
-        use crate::cognition::workspace::{Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink, WorkspaceCycle, WorkspaceTrace};
+        use crate::cognition::workspace::{Contribution, FacultyId as FId, SalienceArbiter, Workspace as Ws, WorkspaceCaptureSink, WorkspaceTrace};
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
 
         // A retrieved-tier faculty that bids ABOVE the standing-framing floor
         // (a very relevant memory) — the adversarial case for the canary.

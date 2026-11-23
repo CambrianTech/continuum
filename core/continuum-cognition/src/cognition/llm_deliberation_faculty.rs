@@ -57,7 +57,7 @@ fn deliberation_slot_class(
 }
 
 /// The persona's paged-in genome: the LoRA layers active for this faculty's next
-/// generation. Shared (the [`WorkspaceCycle`](super::workspace::WorkspaceCycle)
+/// generation. Shared (the [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle)
 /// holds the same handle and pages skills in/out); read wait-free on every
 /// generation via [`ArcSwap`] — virtual memory for skill, the page-in wire the
 /// genome loop trains against. Empty (the default) → base model, no gene.
@@ -94,7 +94,6 @@ mod prompt;
 pub use self::prompt::*;
 mod request;
 mod admission;
-pub(crate) mod admission_clock;
 use self::request::*;
 mod reply_claim;
 mod act_room;
@@ -113,7 +112,7 @@ pub struct ActiveVisualFeedback {
 
 /// A shared, wait-free model binding — the SAME [`ArcSwap`] the faculty reads on
 /// every generation and the owning
-/// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the served
+/// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle) re-homes when the served
 /// model changes. One `ArcSwap`, two holders — exactly like [`GenomeHandle`] and
 /// [`DecodingHandle`]. A re-home stores a fresh [`ModelBinding`]; the faculty's
 /// next generation reads it, and the genome + working memory + admission are
@@ -158,7 +157,7 @@ pub struct LlmDeliberationFaculty {
     /// The live model binding — the served adapter, the requested model, and the
     /// served context window, swapped ATOMICALLY as one unit when the served model
     /// re-homes (`serving/pin` or grid failover). Shared with the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) — one [`ArcSwap`], two
+    /// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle) — one [`ArcSwap`], two
     /// holders, exactly like `genome`/`decoding`. Read wait-free ONCE per turn (in
     /// [`Self::contribute`]) so an entire generation sees a consistent
     /// {adapter, model, window} triple even if a re-home lands mid-turn. See
@@ -200,7 +199,7 @@ pub struct LlmDeliberationFaculty {
     read_receipt: Option<Arc<dyn read_receipt::ReadReceipt>>,
     /// The persona's paged-in genome — the LoRA layers this faculty injects into
     /// every generation request ([`GenomeHandle`]). Shared with the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle), which pages skills
+    /// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle), which pages skills
     /// in/out; read wait-free here on each generation. Empty → base model. This is
     /// the page-in wire the genome loop measures (`cognition/eval` A/Bs base vs a
     /// paged-in gene through this exact field).
@@ -284,7 +283,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Share the persona's decoding handle — the same [`ArcSwap`] the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) flips to greedy for the
+    /// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle) flips to greedy for the
     /// eval window. Every generation reads it wait-free; when the eval guard sets
     /// `Some(0.0)` the next generation samples greedily, restored on guard drop.
     pub fn with_decoding(mut self, decoding: DecodingHandle) -> Self {
@@ -293,7 +292,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Share the persona's genome handle — the same [`ArcSwap`] the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) pages skills in/out of.
+    /// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle) pages skills in/out of.
     /// Every generation reads the current genome wait-free; a page-in on the cycle
     /// takes effect on the faculty's next generation (virtual memory for skill).
     pub fn with_genome(mut self, genome: GenomeHandle) -> Self {
@@ -302,7 +301,7 @@ impl LlmDeliberationFaculty {
     }
 
     /// Share the persona's model binding — the same [`ArcSwap`] the owning
-    /// [`WorkspaceCycle`](super::workspace::WorkspaceCycle) re-homes when the
+    /// [`WorkspaceCycle`](super::workspace_cycle::WorkspaceCycle) re-homes when the
     /// served model changes. REPLACES the throwaway handle `new` built, so after
     /// this call a `rebind_model` on the cycle takes effect on the faculty's next
     /// generation — exactly like `with_genome`/`with_decoding`. See

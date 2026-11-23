@@ -159,7 +159,7 @@ impl WorkspaceCycle {
             .as_ref()
             .and_then(|source| source.experience_for(room))
             .map(|manifest| manifest.affordances.into_iter().map(|a| a.command).collect())
-            .unwrap_or_default()
+            .unwrap_or_default() // JUSTIFIED: no source, no manifest, or none declared all mean no room-selected surface (doc above)
     }
 
     /// Re-home the persona's deliberation onto a newly served model — swap the

@@ -135,7 +135,7 @@ impl Burst {
 
     /// This turn's pre-effect mark (stop-drain S2): set by the loop when the turn has a
     /// confirmed obligation, so each tool batch and her reply are recorded before they happen.
-    pub fn with_effects(mut self, gate: Option<crate::cognition::act_observe::EffectGate>) -> Self {
+    pub fn with_effects(mut self, gate: Option<crate::cognition::workspace::EffectGate>) -> Self {
         self.effects = gate;
         self
     }
@@ -620,11 +620,7 @@ impl Workspace {
         self.broadcast
             .iter()
             .filter(|c| c.decision.is_some())
-            .max_by(|a, b| {
-                a.salience
-                    .partial_cmp(&b.salience)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.salience.total_cmp(&b.salience))
     }
 
     /// The deliberation FAULT this tick, if the model call FAILED (as opposed to
@@ -667,11 +663,7 @@ impl Workspace {
         self.broadcast
             .iter()
             .filter(|c| c.fault.is_some())
-            .max_by(|a, b| {
-                a.salience
-                    .partial_cmp(&b.salience)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .max_by(|a, b| a.salience.total_cmp(&b.salience))
             .and_then(|c| c.fault.as_deref())
     }
 }

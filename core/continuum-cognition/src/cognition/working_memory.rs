@@ -82,7 +82,7 @@ pub const WM_SETTLEMENT_PREFIX: &str = "[answered]";
 // behavior on a small machine is unchanged while a big window finally gets a big budget).
 // [[never-hardcode-a-context-window-4k-defaults-destroy-the-moe-thesis]]
 use crate::cognition::act_observe::Observation;
-use crate::cognition::tool_executor::tool_output::Reopen;
+use crate::cognition::result_store::reopen::Reopen;
 
 /// Her context view, the type her working memory checkpoints.
 pub(crate) type ContextView =
@@ -181,7 +181,7 @@ struct TurnPinnedFact {
 #[derive(Debug)]
 pub struct WorkingMemory {
     /// Process-unique construction ordinal. It keys this mind's set of live spill handles
-    /// (`spill::publish_live_handles`), and it lets any probe
+    /// (`result_store::publish_live_handles`), and it lets any probe
     /// that renders from this instance say WHICH instance it is, so a duplicate
     /// cycle serving the same persona (two working memories alternating under
     /// one mind — the 2026-08-21 split-brain, taken=3389 vs taken=0 in the same
@@ -448,13 +448,13 @@ impl VolatileSnapshot {
     /// saved, #4963) through one pin held until the restored memory publishes, and re-file each
     /// newly saved receipt's dependencies under its new key: from `seq:N` to its handle, or the
     /// next publish would prune them as belonging to no receipt (Codex on #4987).
-    pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::tool_executor::spill::LivePin {
+    pub fn retain_handleless(&mut self, persona_id: Uuid) -> crate::cognition::result_store::LivePin {
         // One shape to save into: a checkpoint from before the records gets them here.
         if self.actions.is_empty() {
             self.actions = self.action_records();
         }
         let unsaved = self.unsaved_receipts();
-        let pin = crate::cognition::tool_executor::spill::retain_handleless(
+        let pin = crate::cognition::result_store::retain_handleless(
             persona_id,
             self.actions
                 .iter_mut()
@@ -545,7 +545,7 @@ fn receipt_key(seq: u64, handle: Option<&str>) -> String {
 /// EVERY handle a mind can still reach from what it holds: each retained receipt's own, each
 /// collapsed pointer's, and the per-call results each of those receipts points at. The one
 /// owner of that set: working memory publishes it live, and eviction reads the same set from
-/// the persisted checkpoint (`persona_workspace::persisted_result_handles`).
+/// the list each checkpoint keeps beside it (`result_store::checkpoint_handles`).
 pub(crate) fn reachable_handles(
     receipts: HashSet<String>,
     receipt_children: &BTreeMap<String, Vec<String>>,
@@ -637,7 +637,7 @@ pub use thought_log::{ThoughtBody, ThoughtRecord};
 impl Drop for WorkingMemory {
     /// A mind that is gone points at nothing: its saved results may be evicted again.
     fn drop(&mut self) {
-        crate::cognition::tool_executor::spill::withdraw_live_handles(self.instance);
+        crate::cognition::result_store::withdraw_live_handles(self.instance);
     }
 }
 

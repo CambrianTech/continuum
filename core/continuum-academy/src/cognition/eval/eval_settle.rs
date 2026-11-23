@@ -6,7 +6,7 @@ use super::*;
 /// delivery byte-for-byte so a team-vs-solo delta is coordination, not a framing difference.
 /// Caller does the exam-hygiene reset/rewind (isolation is per-cycle).
 pub(super) async fn eval_settle(
-    cycle: &crate::cognition::workspace::WorkspaceCycle,
+    cycle: &crate::cognition::workspace_cycle::WorkspaceCycle,
     room: crate::identity::ActivityRoom,
     prompt: &str,
     max_acts: crate::cognition::act_observe::TurnBudget,
@@ -50,10 +50,10 @@ pub(super) async fn eval_settle(
 /// delta is PURE coordination value, not model-fit. This is the undeniable proof of teams:
 /// hold everything fixed but add a teammate. [[coordination-learning-flywheel]]
 pub(super) async fn run_pass_team(
-    writer: &crate::cognition::workspace::WorkspaceCycle,
-    writer_iso: &crate::cognition::workspace::EvalIsolation,
-    reviewer: &crate::cognition::workspace::WorkspaceCycle,
-    reviewer_iso: &crate::cognition::workspace::EvalIsolation,
+    writer: &crate::cognition::workspace_cycle::WorkspaceCycle,
+    writer_iso: &crate::cognition::workspace_cycle::EvalIsolation,
+    reviewer: &crate::cognition::workspace_cycle::WorkspaceCycle,
+    reviewer_iso: &crate::cognition::workspace_cycle::EvalIsolation,
     tasks: &[EvalTask],
     room: crate::identity::ActivityRoom,
     max_acts: crate::cognition::act_observe::TurnBudget,
@@ -77,7 +77,7 @@ pub(super) async fn run_pass_team(
     for t in tasks {
         // WRITER solves (same delivery as solo run_pass).
         let w = eval_settle(writer, room, &t.prompt, max_acts).await;
-        let writer_answer = w.spoken.clone().unwrap_or_default();
+        let writer_answer = w.spoken.clone().unwrap_or_default(); // JUSTIFIED: a turn that spoke nothing is graded on an empty answer, and that miss is the grade
 
         // REVIEWER reviews the writer's solution and produces the FINAL code.
         // The reviewer's job is QUALITY CONTROL, not rewriting. The failure mode a glass-box
@@ -97,7 +97,7 @@ pub(super) async fn run_pass_team(
             t.prompt, writer_answer
         );
         let r = eval_settle(reviewer, room, &review_prompt, max_acts).await;
-        let answer = r.spoken.clone().unwrap_or_default();
+        let answer = r.spoken.clone().unwrap_or_default(); // JUSTIFIED: a turn that spoke nothing is graded on an empty answer, and that miss is the grade
 
         // Infra fault on EITHER teammate's generation → the lane failed, not a wrong
         // answer. Team mode has no per-task retry loop (the solo run_pass owns bounded
@@ -156,7 +156,7 @@ pub(super) async fn run_pass_team(
                     .or(workspace_root)
                     .map(std::path::Path::new),
                 file,
-                t.lang.as_deref().unwrap_or("rust"),
+                t.lang.as_deref().unwrap_or("rust"), // JUSTIFIED: a task naming no language is a Rust task, the task schema's default
                 test,
             )
             .await

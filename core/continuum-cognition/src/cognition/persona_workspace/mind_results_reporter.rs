@@ -13,7 +13,7 @@
 //!
 //! Proof, once per saved copy, never under a mind's lock and never in `budget()`: at shed time
 //! each candidate's body is copied out (the lock held only for the copy) and compared with what
-//! its saved copy loads back to through the spill owner's one read (`spill::reproduces`, the
+//! its saved copy loads back to through the spill owner's one read (`result_store::reproduces`, the
 //! same text her view's `load` renders). A proven `(persona, handle)` is cached: the output is
 //! content-addressed and live-protected while a record names it, so the proof holds. Only
 //! proven bodies are planned and moved; an unproven one counts as pinned.
@@ -36,7 +36,7 @@ use tokio::sync::watch;
 use uuid::Uuid;
 
 use super::PersonaWorkspaceRegistry;
-use crate::cognition::tool_executor::spill;
+use crate::cognition::result_store;
 use crate::cognition::working_memory::{RecordId, ResidentResults, ShedCandidate, WorkingMemory};
 
 const NAME: &str = "mind_results";
@@ -88,7 +88,7 @@ pub(crate) fn prove(
     candidate: &ShedCandidate,
 ) -> Option<Result<(), LastCopy>> {
     let body = memory.resident_body(candidate.id, &candidate.handle)?;
-    Some(match spill::reproduces(persona, &candidate.handle, &body) {
+    Some(match result_store::reproduces(persona, &candidate.handle, &body) {
         Ok(true) => Ok(()),
         Ok(false) => Err(LastCopy::Mismatch),
         Err(error) => Err(LastCopy::Unreadable(error)),

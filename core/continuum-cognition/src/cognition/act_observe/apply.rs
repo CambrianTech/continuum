@@ -7,7 +7,7 @@ use continuum_base::time::EpochMs;
 use uuid::Uuid;
 
 use crate::ai::types::{ToolCall, ToolResult};
-use crate::cognition::workspace::WorkspaceCycle;
+use crate::cognition::workspace_cycle::WorkspaceCycle;
 
 use super::observation::{extract_paths, ActOutcome, ActStatus, Observation, ToolOutput, ToolVerb};
 
@@ -22,7 +22,7 @@ const PROPRIOCEPTION_RECALL_SALIENCE: f32 = 0.25;
 ///
 /// `room_id` is the room THIS act is about — passed per-call because one mind is
 /// in many rooms at once (a persona, like a Claude tab, is in multiple rooms
-/// simultaneously); the [`ActingBody`](crate::cognition::workspace::ActingBody) itself is
+/// simultaneously); the [`ActingBody`](crate::cognition::workspace_cycle::ActingBody) itself is
 /// room-agnostic.
 ///
 /// Returns [`ActOutcome`] — `NoHands` when the mind has no hands, `ExecutorError`
@@ -57,7 +57,7 @@ fn is_long_running(command: &str) -> bool {
 /// cross turns or rooms by construction — the wire is the scope, never an
 /// inference over timestamps.
 #[derive(Default)]
-pub struct ActChain(parking_lot::Mutex<Option<Uuid>>, Option<super::EffectGate>);
+pub struct ActChain(parking_lot::Mutex<Option<Uuid>>, Option<crate::cognition::workspace::EffectGate>);
 
 impl ActChain {
     /// A chain with no recorded antecedent — its first act links to nothing.
@@ -84,14 +84,14 @@ impl ActChain {
 
     /// The turn's pre-effect mark (stop-drain S2): held by the chain the turn owns, so it is
     /// dropped when the turn settles and can never mark another turn's effects.
-    pub fn with_effects(mut self, gate: Option<super::EffectGate>) -> Self {
+    pub fn with_effects(mut self, gate: Option<crate::cognition::workspace::EffectGate>) -> Self {
         self.1 = gate;
         self
     }
 
     /// Record `effect` before it happens, through this turn's mark when it has one.
-    pub async fn mark_before(&self, effect: &super::Effect) -> Result<(), String> {
-        super::EffectGate::before(self.1.as_ref(), effect).await
+    pub async fn mark_before(&self, effect: &crate::cognition::workspace::Effect) -> Result<(), String> {
+        crate::cognition::workspace::EffectGate::before(self.1.as_ref(), effect).await
     }
 
     /// The CAUSE of whatever act comes next in this chain: the latest admitted act
@@ -191,7 +191,7 @@ pub async fn apply_act(
         .collect();
     let marked = match effect_calls.is_empty() {
         true => Ok(()),
-        false => chain.mark_before(&super::Effect::ToolBatch { calls: effect_calls }).await,
+        false => chain.mark_before(&crate::cognition::workspace::Effect::ToolBatch { calls: effect_calls }).await,
     };
     if let Err(refusal) = marked {
         continuum_base::probe!(
@@ -282,7 +282,7 @@ pub async fn apply_act(
     const TOOL_BATCH_CEILING: std::time::Duration = std::time::Duration::from_secs(30 * 60);
     // Every result this batch saves stays live from before its file is written until working
     // memory has recorded the batch below (card 12b080c3).
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     // Her calls run exactly as she made them: a read returns the selection she asked for, and
     // her view alone decides what of it stays verbatim (HER-TOOLS §Answer, ONE-ACT stage 2).
     let foreground = batch.without_committed(|committed| {

@@ -12,7 +12,7 @@ mod investigation;
 use super::*;
 use super::test_support::*;
 use crate::cognition::workspace::Decision;
-use crate::cognition::workspace::ActingBody;
+use crate::cognition::workspace_cycle::ActingBody;
 use crate::cognition::workspace::Contribution;
 use crate::cognition::workspace::Faculty;
 use crate::cognition::workspace::FacultyId;
@@ -94,7 +94,7 @@ impl Faculty for AlwaysAct {
 struct CountingSpeaker {
     generations: Mutex<usize>,
     /// The step each generation ran as (`admission_clock::current_act`), in order.
-    steps: Mutex<Vec<Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>>>,
+    steps: Mutex<Vec<Option<crate::cognition::admission_clock::ActAt>>>,
 }
 impl CountingSpeaker {
     fn new() -> Arc<Self> {
@@ -106,7 +106,7 @@ impl CountingSpeaker {
     fn generations(&self) -> usize {
         *self.generations.lock().expect("lock")
     }
-    fn steps(&self) -> Vec<Option<crate::cognition::llm_deliberation_faculty::admission_clock::ActAt>> {
+    fn steps(&self) -> Vec<Option<crate::cognition::admission_clock::ActAt>> {
         self.steps.lock().expect("lock").clone()
     }
 }
@@ -123,7 +123,7 @@ impl Faculty for CountingSpeaker {
         self.steps
             .lock()
             .expect("lock")
-            .push(crate::cognition::llm_deliberation_faculty::admission_clock::current_act());
+            .push(crate::cognition::admission_clock::current_act());
         Some(Contribution::verdict(
             Decision::Speak {
                 text: "here is my analysis of the bug: the call to subs() is wrong".into(),

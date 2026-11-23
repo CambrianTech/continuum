@@ -24,7 +24,7 @@ impl WorkingMemory {
     /// Give her an archive: her own directory of the tool-output class. Called once where her
     /// resident mind is registered (a blocking worker at boot); until then her log is not bounded.
     pub fn bind_archive(&self, persona_id: Uuid) -> std::io::Result<()> {
-        let store = crate::cognition::tool_executor::spill::store()?.owned_by(persona_id);
+        let store = crate::cognition::result_store::store()?.owned_by(persona_id);
         let archive = archive::Archive::bind(persona_id, store)?;
         *self.archive.lock() = archive;
         Ok(())

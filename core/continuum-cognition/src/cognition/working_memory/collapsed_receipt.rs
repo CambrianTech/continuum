@@ -8,7 +8,7 @@
 use uuid::Uuid;
 
 use super::{action_log, workspace_name, ResultAttribution};
-use crate::cognition::tool_executor::tool_output::ToolOutputParams;
+use crate::cognition::result_store::reopen::ToolOutputParams;
 
 /// A collapsed, saved result: its provenance and the saved output its reopen call names.
 #[derive(Debug, Clone, PartialEq, Eq)]

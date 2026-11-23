@@ -12,7 +12,7 @@ use continuum_context::source::{Item, Source, StoredWhole};
 
 use super::{element, priority, ContextMessage, Producer};
 use crate::cognition::working_memory::{ActRendering, WorkingMemory};
-use crate::cognition::tool_executor::tool_output::Reopen;
+use crate::cognition::result_store::reopen::Reopen;
 
 /// The source's name: her view's fold edge for it is what bounds her resident log
 /// (`WorkingMemory::release_folded`).
@@ -149,7 +149,7 @@ impl Source<ContextMessage> for Actions<'_> {
         let stored = item.stored()?;
         let seq: u64 = item.key().parse().ok()?;
         let label = self.memory.action_whole_label(seq)?;
-        let body = crate::cognition::tool_executor::spill::saved_whole(self.persona, &stored.handle).ok()?;
+        let body = crate::cognition::result_store::saved_whole(self.persona, &stored.handle).ok()?;
         Some(ContextMessage::user(format!("{label}{body}")))
     }
 

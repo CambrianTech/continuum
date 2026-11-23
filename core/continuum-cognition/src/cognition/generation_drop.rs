@@ -125,7 +125,7 @@ impl InFlight {
     ) -> Self {
         // The step's deadline must know a generation is in flight: one it ends from here is
         // a drop, not a lane wait, though it leaves no receipt behind.
-        crate::cognition::llm_deliberation_faculty::admission_clock::note_dispatched();
+        crate::cognition::admission_clock::note_dispatched();
         Self {
             persona: persona.to_string(),
             request: request.map(str::to_owned),
@@ -171,7 +171,7 @@ impl Drop for InFlight {
         let lost_names = partial.tool_calls.join(",");
         // The act this generation belonged to, from the step's own scope; `None` when it ran
         // outside a settle step (never guessed).
-        let act = crate::cognition::llm_deliberation_faculty::admission_clock::current_act();
+        let act = crate::cognition::admission_clock::current_act();
         continuum_base::probe!(
             class = "persona.generation.dropped",
             request = ?self.request,

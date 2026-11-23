@@ -5,11 +5,10 @@
 //! caller's offline check, and never claims the selected snapshot was flushed
 //! at shutdown or authenticated to a process lifetime.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::fs::{self, File};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -42,13 +41,59 @@ pub struct CheckpointSelection {
     pub summary: CheckpointSummary,
 }
 
+/// The persona a plan adopts a checkpoint for. Never nil: the nil UUID names no one, so it is
+/// refused where the id is parsed (the command line, a plan file) and a plan cannot carry it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Uuid", into = "Uuid")]
+pub struct DeclaredPersona(Uuid);
+
+impl DeclaredPersona {
+    pub fn id(self) -> Uuid {
+        self.0
+    }
+}
+
+impl TryFrom<Uuid> for DeclaredPersona {
+    type Error = NilPersona;
+    fn try_from(id: Uuid) -> Result<Self, NilPersona> {
+        if id.is_nil() { Err(NilPersona) } else { Ok(Self(id)) }
+    }
+}
+
+impl From<DeclaredPersona> for Uuid {
+    fn from(persona: DeclaredPersona) -> Self {
+        persona.0
+    }
+}
+
+impl std::str::FromStr for DeclaredPersona {
+    type Err = PersonaParse;
+    fn from_str(text: &str) -> Result<Self, PersonaParse> {
+        Ok(Self::try_from(text.parse::<Uuid>()?)?)
+    }
+}
+
+/// The nil UUID offered as a persona.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the nil UUID names no persona")]
+pub struct NilPersona;
+
+/// Why text is not a declared persona.
+#[derive(Debug, thiserror::Error)]
+pub enum PersonaParse {
+    #[error("invalid persona UUID: {0}")]
+    Uuid(#[from] uuid::Error),
+    #[error(transparent)]
+    Nil(#[from] NilPersona),
+}
+
 /// Public reviewable preconditions. The UUID is a caller declaration checked
 /// against the selected directory; the legacy payload has no embedded UUID.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdoptionPlan {
     pub format_version: u32,
-    pub declared_persona_id: Uuid,
+    pub declared_persona_id: DeclaredPersona,
     pub source: CheckpointSelection,
     pub destination_path: PathBuf,
     pub prior_destination: Option<CheckpointSelection>,
@@ -209,10 +254,8 @@ fn resolved_path(path: &Path) -> Result<PathBuf, AdoptionError> {
     }
 }
 
-fn source_path(path: &Path, persona: Uuid) -> Result<PathBuf, AdoptionError> {
-    if persona.is_nil() {
-        return Err(invalid("an explicit non-nil persona UUID is required"));
-    }
+fn source_path(path: &Path, persona: DeclaredPersona) -> Result<PathBuf, AdoptionError> {
+    let persona = persona.id();
     let path = resolved_path(&std::path::absolute(path)?)?;
     if path.file_name().and_then(|s| s.to_str()) != Some("volatile.json")
         || path
@@ -235,9 +278,9 @@ fn source_path(path: &Path, persona: Uuid) -> Result<PathBuf, AdoptionError> {
 /// current checkpoint schema. Recovery OVER a corrupt/incompatible destination
 /// is deliberately unsupported here: its original bytes remain untouched and
 /// the caller receives the decoding error, never an implicit overwrite policy.
-pub fn inspect(source: &Path, persona_id: Uuid) -> Result<AdoptionPlan, AdoptionError> {
+pub fn inspect(source: &Path, persona_id: DeclaredPersona) -> Result<AdoptionPlan, AdoptionError> {
     let source = source_path(source, persona_id)?;
-    let destination_path = resolved_path(&std::path::absolute(volatile_path(persona_id)?)?)?;
+    let destination_path = resolved_path(&std::path::absolute(volatile_path(persona_id.id())?)?)?;
     if source == destination_path {
         return Err(invalid("source and destination must be distinct"));
     }
@@ -263,7 +306,7 @@ fn exists(path: &Path) -> io::Result<bool> {
 /// Same file lock used by save, load and adoption. Callers keep the returned
 /// handle alive until their complete file operation ends. Readers wait rather
 /// than interpreting another owner's work as an absent checkpoint.
-pub(super) fn lock_checkpoint(path: &Path, wait: bool) -> io::Result<File> {
+pub(super) fn lock_checkpoint(path: &Path, wait: bool) -> io::Result<continuum_host::durable::Lock> {
     let parent = path
         .parent()
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "checkpoint has no parent"))?;
@@ -280,73 +323,26 @@ pub(super) fn lock_checkpoint(path: &Path, wait: bool) -> io::Result<File> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(error),
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(lock_path)?;
-    if wait {
-        FileExt::lock_exclusive(&file)?;
-    } else {
-        FileExt::try_lock_exclusive(&file)?;
-    }
-    Ok(file)
+    continuum_host::durable::lock_path(&lock_path, wait)
 }
 
-pub(super) fn sync_parent(path: &Path) -> io::Result<()> {
-    // POSIX directory durability. Windows file contents are flushed below;
-    // this receipt does not promise power-loss directory-journal guarantees.
-    #[cfg(unix)]
-    File::open(
-        path.parent()
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent"))?,
-    )?
-    .sync_all()?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
-}
-
+/// Place `bytes` at `path` as immutable evidence: staged beside it, synced, and published without
+/// ever replacing what is there (`durable::write_new`), so an interrupted write never occupies the
+/// final name. Evidence already there (before, or placed by a racing publisher) is accepted only
+/// when it holds the same bytes, and its durability fence is completed again: a previous
+/// publication may have reached its name before its fence did.
 fn preserve(path: &Path, bytes: &[u8]) -> Result<(), AdoptionError> {
-    if exists(path)? {
-        return if read_bounded(path)? == bytes {
-            // A previous publication may have reached its final name before
-            // parent sync failed; equality alone does not complete that step.
-            sync_parent(path)?;
-            Ok(())
-        } else {
-            Err(AdoptionError::EvidenceConflict(path.display().to_string()))
-        };
-    }
-    let parent = path
-        .parent()
-        .ok_or_else(|| invalid("evidence has no parent"))?;
-    let temporary = parent.join(format!(".preserve-{}.tmp", Uuid::new_v4()));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    file.write_all(bytes)?;
-    file.sync_all()?;
-    drop(file);
-    // Publish a complete inode without overwriting existing evidence. Unlike a
-    // direct create+write, an interrupted write never occupies the final name.
-    // Both paths are on the same filesystem. Unsupported hard links are an IO
-    // refusal, not a fallback to a partially visible or destructive write.
-    let published = fs::hard_link(&temporary, path);
-    match published {
-        Ok(()) => {}
+    match continuum_host::durable::write_new(path, bytes) {
+        Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
             if read_bounded(path)? != bytes {
                 return Err(AdoptionError::EvidenceConflict(path.display().to_string()));
             }
+            continuum_host::durable::fence_path(path)?;
+            Ok(())
         }
-        Err(error) => return Err(error.into()),
+        Err(error) => Err(error.into()),
     }
-    fs::remove_file(&temporary)?;
-    sync_parent(path)?;
-    Ok(())
 }
 
 /// Adopt the selected bytes under the checkpoint owner's exclusion. The
@@ -362,7 +358,7 @@ pub fn adopt(
     }
     ensure_offline()?;
     let destination = resolved_path(&std::path::absolute(volatile_path(
-        plan.declared_persona_id,
+        plan.declared_persona_id.id(),
     )?)?)?;
     if destination != plan.destination_path
         || source_path(&plan.source.path, plan.declared_persona_id)? != plan.source.path
@@ -373,7 +369,7 @@ pub fn adopt(
     }
     let _lock = lock_checkpoint(&destination, false)?;
     ensure_offline()?;
-    let encoded_plan = serde_json::to_vec(plan).map_err(|error| invalid(error.to_string()))?;
+    let encoded_plan = serde_json::to_vec(plan).map_err(|error| invalid(error.to_string()))?; // file on disk: the plan preserved as adoption evidence
     let parent = destination
         .parent()
         .ok_or_else(|| invalid("destination has no parent"))?;
@@ -425,9 +421,9 @@ pub fn adopt(
         {
             // Complete a previous rename's directory durability step before
             // acknowledging recovery, even if its first attempt failed here.
-            sync_parent(&destination)?;
+            continuum_host::durable::fence_path(&destination)?;
             let encoded_receipt =
-                serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?;
+                serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?; // file on disk: the adoption receipt
             preserve(&receipt_path, &encoded_receipt)?;
             receipt.already_applied = true;
             return Ok(receipt);
@@ -464,8 +460,10 @@ pub fn adopt(
     if optional_selection(&destination)? != plan.prior_destination {
         return Err(AdoptionError::DestinationChanged);
     }
-    fs::rename(&staged, &destination)?;
-    sync_parent(&destination)?;
+    // The adopted checkpoint names handles the list beside the old one does not know: clear the
+    // list first, so until her next save writes one the checkpoint protects everything of hers.
+    crate::cognition::result_store::checkpoint_handles::clear(&destination)?;
+    continuum_host::durable::replace(&staged, &destination)?;
     let published = optional_selection(&destination)?;
     if published
         .as_ref()
@@ -476,7 +474,7 @@ pub fn adopt(
         ));
     }
     let encoded_receipt =
-        serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?;
+        serde_json::to_vec(&receipt).map_err(|error| invalid(error.to_string()))?; // file on disk: the adoption receipt
     preserve(&receipt_path, &encoded_receipt)?;
     Ok(receipt)
 }

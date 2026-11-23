@@ -228,11 +228,11 @@ mod tests {
     }
 
     /// A resident with hands, so her live cycle has the working memory notices are pinned in.
-    fn resident(persona: Uuid) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
+    fn resident(persona: Uuid) -> Arc<crate::cognition::workspace_cycle::WorkspaceCycle> {
         resident_with(persona, crate::ai::HeuristicInferenceAdapter::new())
     }
 
-    fn resident_with(persona: Uuid, adapter: crate::ai::HeuristicInferenceAdapter) -> Arc<crate::cognition::workspace::WorkspaceCycle> {
+    fn resident_with(persona: Uuid, adapter: crate::ai::HeuristicInferenceAdapter) -> Arc<crate::cognition::workspace_cycle::WorkspaceCycle> {
         let cfg = crate::cognition::persona_workspace::PersonaBrainConfig {
             persona_id: persona,
             persona_name: "Rhea".into(),
@@ -256,12 +256,12 @@ mod tests {
         crate::cognition::persona_workspace::global().register_from_cfg(cfg).unwrap() // unwrap: test fixture
     }
 
-    fn interrupted_notices(cycle: &crate::cognition::workspace::WorkspaceCycle) -> Vec<String> {
+    fn interrupted_notices(cycle: &crate::cognition::workspace_cycle::WorkspaceCycle) -> Vec<String> {
         let body = cycle.acting().unwrap(); // unwrap: the fixture registers her hands
         body.working_memory.pinned_facts().into_iter().filter(|fact| fact.starts_with("[interrupted]")).collect()
     }
 
-    fn notice_text_of(cycle: &crate::cognition::workspace::WorkspaceCycle) -> String {
+    fn notice_text_of(cycle: &crate::cognition::workspace_cycle::WorkspaceCycle) -> String {
         interrupted_notices(cycle).join("\n")
     }
 

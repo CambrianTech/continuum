@@ -148,11 +148,11 @@ fn an_unsaved_result_never_collapses_to_a_line_nothing_reopens() {
 #[test]
 fn an_evicted_result_is_still_seen_whole_through_its_stored_level() {
     // It saves through the production store: the class is the test fixture's, never ~/.continuum.
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let persona = uuid::Uuid::new_v4();
     let memory = WorkingMemory::new(8);
     let body = "a line of the evicted result\n".repeat(400);
-    let pin = crate::cognition::tool_executor::spill::LivePin::new();
+    let pin = crate::cognition::result_store::LivePin::new();
     memory.record_receipt_typed(&[], &body, None, pin.retain(persona, &body));
     memory.record_receipt_typed(&[], "the newest stays resident", None, pin.retain(persona, "the newest stays resident"));
     let (before, _) = memory.action_renderings();
@@ -306,7 +306,7 @@ fn a_restore_keeps_her_thoughts_and_settlements_in_order_under_the_same_keys() {
 #[test]
 fn an_older_thought_sheds_to_its_handle_and_is_still_seen_whole() {
     use super::thoughts::Thoughts;
-    crate::cognition::tool_executor::spill::prepare_store_fixture();
+    crate::cognition::result_store::prepare_store_fixture();
     let persona = uuid::Uuid::new_v4();
     let memory = WorkingMemory::new(8);
     let older = format!("weighing the parser branch {}", "and its index ".repeat(200));

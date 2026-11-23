@@ -82,6 +82,16 @@ pub fn write_replace(path: &Path, bytes: &[u8]) -> io::Result<()> {
     staged.replace(Path::new(name))
 }
 
+/// Write `bytes` as a new file at `path`, never replacing one already there (`AlreadyExists`):
+/// staged beside it, synced and published, so an interrupted write never occupies the name. A
+/// caller that finds the name taken by an identical publisher calls [`fence_path`] on it.
+pub fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let (dir, name) = staging::split(path)?;
+    let mut staged = Staging::new_in(dir)?;
+    staged.write_all(bytes)?;
+    staged.publish_new(Path::new(name))
+}
+
 /// [`write_replace`] for a file whose shape belongs to someone else (a workspace file a tool
 /// edits): the bytes land on a symlink's target, never over the link, and the replacement keeps
 /// the old file's permissions, so editing an executable script or a linked file changes only its

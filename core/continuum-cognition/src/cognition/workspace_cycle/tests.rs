@@ -1,5 +1,10 @@
 #![cfg(test)]
 
+use async_trait::async_trait;
+
+use super::*;
+use crate::ai::types::ToolCall;
+
     // what this catches: PROVENANCE BEING FILTERED BY ATTENTION. Card 0d51573a.
     // `ws.broadcast` is the FOCUSED set, so deriving receipts from it would drop the
     // generations of any faculty attention dropped (the arbiter cut by a count until card
@@ -40,7 +45,6 @@
             "the surviving faculty's receipt is kept too; got {ids:?}"
         );
     }
-    use super::*;
 
     mod causality {
         use super::*;

@@ -158,77 +158,59 @@ use super::*;
     }
 
     // what this catches: the restart gap (Astra on card 9197cd01). Across the restart a deploy
-    // performs, before a mind restores, its references exist only in its persisted checkpoint;
-    // the spill guard must read them from there. A newer checkpoint is seen (the cache keys on
-    // its modification time), and an unreadable one is an error the guard fails closed on.
+    // performs, before a mind restores, its references exist only in its persisted checkpoint; the
+    // list beside the checkpoint names them, including a result that collapsed out of the ring and is
+    // reachable only by its pointer (Astra on acdfb010a), and a newer checkpoint's set replaces the old.
     #[test]
-    pub(super) fn a_persisted_checkpoint_s_result_handles_are_readable_before_restore() {
-        let dir = std::env::temp_dir().join(format!("volatile-test-{}", Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("volatile.json");
-        let write = |handle: &str, age_secs: u64| {
-            let memory = WorkingMemory::new(8);
-            memory.record_receipt_typed(
-                &[],
-                "a saved result",
-                None,
-                crate::ai::types::ResultCustody::Whole { handle: handle.into() },
-            );
-            let persisted = PersistedVolatile {
-                wm: memory.snapshot(),
-                own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
-            };
-            std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(age_secs))
-                .unwrap();
+    pub(super) fn a_persisted_checkpoint_names_its_result_handles_before_restore() {
+        let checkpoint_of = |memory: &WorkingMemory| PersistedVolatile {
+            wm: memory.snapshot(),
+            own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
         };
-        // A result that collapsed out of the ring is referenced by its POINTER: the checkpoint
-        // of a mind with no live working memory still protects it (Astra on acdfb010a).
-        {
-            let memory = WorkingMemory::new(8);
-            let cap = 8_192; // a test body size; a shed below it collapses the older ones
-            let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
-            memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));
-            for _ in 0..4 {
-                memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
-            }
-            memory.record_settlement("done", None);
-            memory.evict_resident_results_over(0, &|_, _| true);
-            let persisted = PersistedVolatile {
-                wm: memory.snapshot(),
-                own_speech: OwnSpeechPersisted::ByRoom(Vec::new()),
-            };
-            drop(memory);
-            std::fs::write(&path, serde_json::to_vec(&persisted).unwrap()).unwrap();
-            std::fs::File::options()
-                .write(true)
-                .open(&path)
-                .unwrap()
-                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(200))
-                .unwrap();
-            assert!(
-                result_handles_at(&path).unwrap().contains("c011a75ed0000001"),
-                "a collapsed result's handle is protected through its persisted pointer"
-            );
+        let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
+        // A result that collapsed out of the ring is referenced by its POINTER.
+        let memory = WorkingMemory::new(8);
+        let cap = 8_192; // a test body size; a shed below it collapses the older ones
+        memory.record_receipt_typed(&[], &"c".repeat(cap / 2), None, saved("c011a75ed0000001"));
+        for _ in 0..4 {
+            memory.record_receipt_typed(&[], &"s".repeat(cap / 2), None, saved("5000000000000002"));
         }
-        write("0123456789abcdef", 100);
-        assert!(result_handles_at(&path).unwrap().contains("0123456789abcdef"));
-        write("fedcba9876543210", 10);
-        let handles = result_handles_at(&path).unwrap();
-        assert!(handles.contains("fedcba9876543210") && !handles.contains("0123456789abcdef"));
-        // Retiring archived bodies during a save must finish while the writer still
-        // owns the checkpoint, including when this process already cached its handles.
-        let writer = crate::cognition::persona_workspace::checkpoint_adoption::lock_checkpoint(&path, true).unwrap();
-        assert!(result_handles_at(&path).is_err(), "busy checkpoint must protect even cached handles");
-        drop(writer);
-        std::fs::write(&path, b"not a checkpoint").unwrap();
-        assert!(result_handles_at(&path).is_err(), "unreadable: the guard fails closed");
-        assert!(result_handles_at(&dir.join("absent.json")).unwrap().is_empty());
-        std::fs::remove_dir_all(&dir).ok();
+        memory.record_settlement("done", None);
+        memory.evict_resident_results_over(0, &|_, _| true);
+        assert!(
+            named_handles(&checkpoint_of(&memory)).contains("c011a75ed0000001"),
+            "a collapsed result's handle is named through its persisted pointer"
+        );
+        let one = |handle: &str| {
+            let memory = WorkingMemory::new(8);
+            memory.record_receipt_typed(&[], "a saved result", None, saved(handle));
+            named_handles(&checkpoint_of(&memory))
+        };
+        assert!(one("0123456789abcdef").contains("0123456789abcdef"));
+        let newer = one("fedcba9876543210");
+        assert!(newer.contains("fedcba9876543210") && !newer.contains("0123456789abcdef"), "a newer checkpoint names its own");
+    }
+
+    // what this catches: a checkpoint that lands without the list eviction reads beside it, or a list
+    // that lags it. After each save the list names exactly what that checkpoint names; a save that
+    // replaces the checkpoint leaves the list naming the new set, and spill protects by it.
+    #[test]
+    pub(super) fn each_save_keeps_the_list_of_handles_beside_its_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
+        let persona = Uuid::new_v4();
+        let saved = |handle: &str| crate::ai::types::ResultCustody::Whole { handle: handle.into() };
+        let path = volatile_path(persona).unwrap();
+        let first = WorkingMemory::new(8);
+        first.record_receipt_typed(&[], "a saved result", None, saved("0123456789abcdef"));
+        save_volatile(persona, SaveReason::Seam, None, &first).unwrap();
+        let listed = crate::cognition::result_store::checkpoint_handles::listed(&path).unwrap().unwrap_or_default();
+        assert!(listed.contains("0123456789abcdef"), "the first checkpoint's handle is listed beside it: {listed:?}");
+        let second = WorkingMemory::new(8);
+        second.record_receipt_typed(&[], "another saved result", None, saved("fedcba9876543210"));
+        save_volatile(persona, SaveReason::Seam, None, &second).unwrap();
+        let protected = crate::cognition::result_store::checkpoint_handles::protected(persona).unwrap();
+        assert!(protected.contains("fedcba9876543210") && !protected.contains("0123456789abcdef"), "the list follows the checkpoint that landed: {protected:?}");
     }
 
     // Uses the real persisted schema and WorkingMemory writer, not a second
@@ -268,7 +250,7 @@ use super::*;
         let original = std::fs::read(&destination).unwrap();
         let (source, selected) =
             adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         assert!(
             plan.source.summary.next_action_seq
                 < plan
@@ -316,7 +298,7 @@ use super::*;
             let persona = Uuid::new_v4();
             let (source, selected) =
                 adoption_source(&dir.path().join("legacy"), persona, "selected work");
-            let plan = inspect(&source, persona).unwrap();
+            let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
             assert!(plan.prior_destination.is_none());
             let (other, changed) =
                 adoption_source(&dir.path().join("other"), persona, "concurrent work");
@@ -353,7 +335,7 @@ use super::*;
         let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         let mut checks = 0;
         let outcome = adopt(&plan, || {
             checks += 1;
@@ -381,7 +363,7 @@ use super::*;
         let persona = Uuid::new_v4();
         let (source, selected) =
             adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         for _ in 0..2 {
             let mut checks = 0;
             assert!(adopt(&plan, || {
@@ -448,12 +430,12 @@ use super::*;
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
         assert!(matches!(
-            inspect(&source, Uuid::new_v4()),
+            inspect(&source, Uuid::new_v4().try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         std::fs::write(&source, b"{}").unwrap();
         assert!(matches!(
-            inspect(&source, persona),
+            inspect(&source, persona.try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         assert!(
@@ -466,7 +448,7 @@ use super::*;
         std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
         std::fs::write(&destination, b"corrupt native checkpoint").unwrap();
         assert!(matches!(
-            inspect(&source, persona),
+            inspect(&source, persona.try_into().unwrap()),
             Err(AdoptionError::Invalid(_))
         ));
         assert_eq!(
@@ -484,7 +466,7 @@ use super::*;
         let _home = crate::paths::NativeHomeOverride::install(&dir.path().join("native"));
         let persona = Uuid::new_v4();
         let (source, _) = adoption_source(&dir.path().join("legacy"), persona, "selected work");
-        let plan = inspect(&source, persona).unwrap();
+        let plan = inspect(&source, persona.try_into().unwrap()).unwrap();
         let owner = lock_checkpoint(&plan.destination_path, true).unwrap();
         assert!(
             matches!(adopt(&plan, || Ok(())), Err(AdoptionError::Io(error)) if error.kind() == fs2::lock_contended_error().kind())

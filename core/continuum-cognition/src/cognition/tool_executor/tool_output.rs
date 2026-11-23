@@ -10,12 +10,12 @@
 //! executor spilled under), so a persona can only ever read back its own output.
 
 use async_trait::async_trait;
-use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::cognition::tool_executor::output_id::OutputId;
-use crate::cognition::tool_executor::spill;
+use crate::cognition::result_store::output_id::OutputId;
+use crate::cognition::result_store;
+use crate::cognition::result_store::reopen::ToolOutputParams;
 use crate::cognition::working_memory::{ActOutputRefusal, ActRef};
 use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, ToolVerdict, VerbRef};
 
@@ -26,111 +26,6 @@ use crate::sdk_codegen::{ActionCommand, CommandError, Ctx, ProjectsOutcome, Tool
 // measured length, which was held in memory once when it was saved. Before 2026-11-06 it cut its
 // own slice to a fraction of the window (`render_slice_chars`), a second budget the turn's
 // allocation never saw, with grep defaults of 2 context lines and 50 matches.
-
-// Prebuilt failure-hunting filters, so a persona navigates a flood WITHOUT having to
-// know regex — the PX "hit the ground running" affordance for the overwhelming case
-// (a build/test/launch log torrent). Each maps to a battle-tested pattern covering the
-// common toolchains (rustc/cargo, node, python, clang, generic). The doc below rides her
-// schema every act, so it has none (the field that holds it says what it is).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, TS, JsonSchema)]
-#[serde(rename_all = "kebab-case")]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/tool/OutputFilter.ts"
-)]
-pub enum OutputFilter {
-    // No variant docs: they would turn her schema's plain enum into a `oneOf` of described
-    // constants on an `Always` verb. The names say what each greps (the pattern is below).
-    Errors,
-    Warnings,
-    Failures,
-    Summary,
-}
-
-impl OutputFilter {
-    /// The regex this preset greps for — spans common toolchains so one word works
-    /// whether she just ran cargo, npm, pytest, or clang.
-    fn pattern(self) -> &'static str {
-        match self {
-            OutputFilter::Errors => {
-                r"(?i)\berror\b|error\[|panic|fatal|exception|traceback|\bfailed\b|undefined reference|cannot find"
-            }
-            OutputFilter::Warnings => r"(?i)\bwarning\b|\bwarn\b|deprecated",
-            OutputFilter::Failures => {
-                r"(?i)test result: FAILED|FAILED|assertion.*failed|panicked at|AssertionError|✗|✖|\bFAIL\b"
-            }
-            OutputFilter::Summary => {
-                r"(?i)test result:|error\[|warning:|Compiling |Finished |Building |^error:|passed|failed|Exit code|BUILD (SUCCEEDED|FAILED)"
-            }
-        }
-    }
-}
-
-/// Inputs to `tool/output`. `outputId` (from the preview) or `act` (one of her act numbers),
-/// or both when they name the same output, or neither for her newest saved output; everything
-/// else selects WHAT to pull back.
-#[derive(Debug, Clone, Default, Serialize, Deserialize, TS, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[ts(
-    export,
-    export_to = "../../../protocol/typescript/tool/ToolOutputParams.ts"
-)]
-pub struct ToolOutputParams {
-    /// The saved output's id.
-    // `outputId` on the wire, NOT `handle`: every dispatch crosses
-    // `CommandRequest::from_value`, whose own `handle: Option<HandleRef>` claims that
-    // name and refuses a string for it (`expected struct HandleRef`) — so the call the
-    // spill-recovery hint told every citizen to make could not be made (card ea28d2f6).
-    #[serde(rename = "outputId")]
-    #[ts(optional)]
-    #[ts(type = "string")]
-    #[schemars(with = "Option<String>")]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub handle: Option<OutputId>,
-    /// Or an act number (#n): its saved output.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub act: Option<u64>,
-    /// A preset grep, no regex needed.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filter: Option<OutputFilter>,
-    /// A regex to grep for (overrides filter).
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub pattern: Option<String>,
-    /// Context lines per match.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub context_lines: Option<usize>,
-    /// First line of a range (1-based).
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub start_line: Option<usize>,
-    /// Last line of the range.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub end_line: Option<usize>,
-    /// Most matches shown.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub max_matches: Option<usize>,
-    /// Exact bytes from here (alone); continue at nextByteOffset.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub byte_offset: Option<u64>,
-    /// Bytes wanted from byteOffset.
-    #[ts(optional)]
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(type = "number")]
-    pub byte_length: Option<usize>,
-}
 
 /// Result of paging a spilled output: the scale of the full thing plus the
 /// bounded, line-numbered slice you asked for.
@@ -179,7 +74,7 @@ pub struct ToolOutput;
 
 #[async_trait]
 impl ActionCommand for ToolOutput {
-    const NAME: &'static str = "tool/output";
+    const NAME: &'static str = result_store::reopen::REOPEN_VERB;
     // THE RECOVERY VERB MUST BE IN HER VOCABULARY. Measured 2026-08-28: the
     // elision marker tells her to "jump straight to what broke" with
     // `tool/output`, and across every log on this box it had been called exactly
@@ -234,7 +129,7 @@ impl ActionCommand for ToolOutput {
         let handle = tokio::task::spawn_blocking(move || named_output(named, act, act_handle))
             .await
             .map_err(|e| CommandError::Internal(format!("reopening an act failed: {e}")))??;
-        let path = spill::resolve_output(persona_id, &handle)
+        let path = result_store::resolve_output(persona_id, &handle)
             .map_err(|e| CommandError::Invalid(e.to_string()))?;
         let range = line_range(params.start_line, params.end_line);
 
@@ -256,7 +151,7 @@ impl ActionCommand for ToolOutput {
         }
         // Disk scanning belongs off the async executor. The same spill owner handles
         // both views; no second content registry or private whole-file retrieval path.
-        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, spill::Allowance::Whole))
+        tokio::task::spawn_blocking(move || read_saved(&path, handle, params, range, result_store::Allowance::Whole))
             .await
             .map_err(|e| CommandError::Invalid(format!("saved output reader failed: {e}")))?
             .map_err(CommandError::Invalid)
@@ -267,65 +162,9 @@ continuum_kernel::register_outcome!(ToolOutput);
 
 /// The verb every handle she is shown names: it renders as her tool list offers it
 /// (`tool_output`, its path), and it only builds while `tool/output` is native and in every
-/// surface. Text that reopens something renders a [`Reopen`], which carries it.
+/// surface. Text that reopens something renders a [`Reopen`](result_store::reopen::Reopen), which carries it.
 pub const TOOL_OUTPUT: VerbRef<ToolOutput> = VerbRef::always();
 
-/// THE reopen affordance: one verb, one call form, its real parameter names (the command's own
-/// params, serialized), rendered once. Every handle she is shown (a folded act, a repeat, a saved
-/// result, a shed thought, a collapsed receipt, a too-large result) names its way back with this,
-/// so there is one form to learn and it is always a call she can make as written:
-/// `tool_output({"act":3})`, `tool_output({"outputId":"deadbeef"})`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Reopen<'a> {
-    /// One of her act numbers.
-    Act(u64),
-    /// A saved output, by the id its preview named.
-    Output(&'a str),
-    /// A range of a saved output's lines (`spill::LineRange`, its end the output's own when
-    /// open): where a page of it shown short continues.
-    Lines { output: &'a str, range: spill::LineRange },
-    /// A saved output's bytes from `offset`: where a page cut inside one line continues.
-    Bytes { output: &'a str, offset: u64 },
-}
-
-/// A reopen's arguments as her call carries them: [`ToolOutputParams`]' own wire names, borrowed,
-/// so rendering a handle never parses it (every handle she is shown was minted by the spill) and
-/// never fails. `a_reopen_is_one_call_she_can_make_as_written` parses each back as the command's
-/// params, so the two cannot drift.
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct ReopenArgs<'a> {
-    #[serde(rename = "outputId", skip_serializing_if = "Option::is_none")]
-    output: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    act: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    start_line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    end_line: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    byte_offset: Option<u64>,
-}
-
-impl<'a> Reopen<'a> {
-    fn args(self) -> ReopenArgs<'a> {
-        let none = ReopenArgs { output: None, act: None, start_line: None, end_line: None, byte_offset: None };
-        match self {
-            Reopen::Act(act) => ReopenArgs { act: Some(act), ..none },
-            Reopen::Output(output) => ReopenArgs { output: Some(output), ..none },
-            Reopen::Lines { output, range } => ReopenArgs { output: Some(output), start_line: Some(range.start), end_line: range.end, ..none },
-            Reopen::Bytes { output, offset } => ReopenArgs { output: Some(output), byte_offset: Some(offset), ..none },
-        }
-    }
-}
-
-impl std::fmt::Display for Reopen<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        // A struct of strings and numbers always serializes; an error is a formatter error.
-        let args = serde_json::to_string(&self.args()).map_err(|_| std::fmt::Error)?; // boundary: her tool-call wire, the arguments she reads and sends back as written
-        write!(f, "{TOOL_OUTPUT}({args})")
-    }
-}
 
 /// The saved output a reopen's result is a VIEW of: a command that declares `ToolEffect::Reopens`
 /// names its source in its result, and that source is the call's custody, never a new save. Saving
@@ -350,10 +189,10 @@ impl ProjectsOutcome for ToolOutput {
 
 /// The lines a range names, each half read as she would mean it: `endLine` alone is from the
 /// first line, `startLine` alone is to the last. Neither is no range.
-fn line_range(start: Option<usize>, end: Option<usize>) -> Option<spill::LineRange> {
+fn line_range(start: Option<usize>, end: Option<usize>) -> Option<result_store::LineRange> {
     match (start, end) {
         (None, None) => None,
-        (start, end) => Some(spill::LineRange { start: start.unwrap_or(1), end }), // unwrap_or: a missing start is the first line
+        (start, end) => Some(result_store::LineRange { start: start.unwrap_or(1), end }), // unwrap_or: a missing start is the first line
     }
 }
 
@@ -417,11 +256,11 @@ fn read_saved(
     path: &std::path::Path,
     handle: OutputId,
     params: ToolOutputParams,
-    range: Option<spill::LineRange>,
-    allowance: spill::Allowance,
+    range: Option<result_store::LineRange>,
+    allowance: result_store::Allowance,
 ) -> Result<ToolOutputResult, String> {
     if let Some(offset) = params.byte_offset {
-        let extent = spill::read_extent(path, offset, params.byte_length, allowance)?;
+        let extent = result_store::read_extent(path, offset, params.byte_length, allowance)?;
         return Ok(ToolOutputResult {
             handle,
             total_lines: None,
@@ -440,7 +279,7 @@ fn read_saved(
         .pattern
         .as_deref()
         .or_else(|| params.filter.map(|f| f.pattern()));
-    let inv = spill::investigate_file(
+    let inv = result_store::investigate_file(
         &path,
         effective_pattern,
         params.context_lines.unwrap_or_default(), // unwrap_or_default: no context asked for = the matching lines alone
@@ -465,6 +304,7 @@ fn read_saved(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cognition::result_store::reopen::{OutputFilter, Reopen};
 
     /// An output id from a literal the test spells as one.
     fn id(given: &str) -> OutputId {
@@ -513,7 +353,7 @@ mod tests {
         let path = dir.path().join("whole");
         let body: String = (1..=500).map(|n| format!("line {n} error\n")).collect();
         assert!(std::fs::write(&path, &body).is_ok());
-        let read = |params| read_saved(&path, id("ab"), params, None, spill::Allowance::Whole);
+        let read = |params| read_saved(&path, id("ab"), params, None, result_store::Allowance::Whole);
         let Ok(whole) = read(ToolOutputParams::default()) else { panic!("the whole reads back") };
         assert!(whole.content.contains("line 1 error") && whole.content.contains("line 500 error"), "{}", whole.content);
         assert!(!whole.truncated);
@@ -534,7 +374,7 @@ mod tests {
         assert_eq!(Reopen::Act(3).to_string(), r#"tool_output({"act":3})"#);
         assert_eq!(Reopen::Output("deadbeef").to_string(), r#"tool_output({"outputId":"deadbeef"})"#);
         // A page's reading on (`prompt/newest_result.rs`) is the same call with its selection.
-        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: spill::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
+        for reopen in [Reopen::Act(3), Reopen::Output("deadbeef"), Reopen::Lines { output: "deadbeef", range: result_store::LineRange { start: 41, end: Some(900) } }, Reopen::Lines { output: "deadbeef", range: result_store::LineRange { start: 41, end: None } }, Reopen::Bytes { output: "deadbeef", offset: 4_096 }] {
             let shown = reopen.to_string();
             let Some(args) = shown.strip_prefix(&format!("{offered}(")).and_then(|s| s.strip_suffix(')')) else {
                 panic!("{shown} is not a call of {offered}")
@@ -650,7 +490,7 @@ mod tests {
         };
         assert_eq!(by_act, by_handle);
         let read =
-            |handle: OutputId| read_saved(&path, handle, ToolOutputParams::default(), None, spill::Allowance::Whole);
+            |handle: OutputId| read_saved(&path, handle, ToolOutputParams::default(), None, result_store::Allowance::Whole);
         let (Ok(act_read), Ok(handle_read)) = (read(by_act), read(by_handle)) else {
             panic!("the saved output reads back")
         };
@@ -717,7 +557,7 @@ mod tests {
         assert!(std::fs::write(&path, "   Compiling foo\ntest it_works ... FAILED\ntest result: ok\n").is_ok());
         let search = |handle: &str| {
             let params = ToolOutputParams { pattern: Some("FAILED".into()), ..Default::default() };
-            let Ok(result) = read_saved(&path, id(handle), params, None, spill::Allowance::Whole) else {
+            let Ok(result) = read_saved(&path, id(handle), params, None, result_store::Allowance::Whole) else {
                 panic!("the search reads back")
             };
             let Ok(value) = serde_json::to_value(&result) else { panic!("a result serializes") };
@@ -746,7 +586,7 @@ mod tests {
         let path = dir.path().join("lines");
         assert!(std::fs::write(&path, "one\ntwo\nthree\nfour\n").is_ok());
         let read = |start, end| {
-            match read_saved(&path, id("ab"), ToolOutputParams::default(), line_range(start, end), spill::Allowance::Whole) {
+            match read_saved(&path, id("ab"), ToolOutputParams::default(), line_range(start, end), result_store::Allowance::Whole) {
                 Ok(read) => read.content.lines().map(|line| line.split_whitespace().last().unwrap_or_default().to_owned()).collect::<Vec<_>>(), // unwrap_or_default: a blank row has no word
                 Err(e) => panic!("{start:?}..{end:?}: {e}"),
             }
@@ -778,7 +618,7 @@ mod tests {
                     ..Default::default()
                 },
                 None,
-                spill::Allowance::Chars(12),
+                result_store::Allowance::Chars(12),
             )
             .unwrap();
             assert!(result.content.len() <= 12);
@@ -813,7 +653,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            spill::Allowance::Chars(256),
+            result_store::Allowance::Chars(256),
         )
         .unwrap();
         assert_eq!(result.total_lines, Some(4));
@@ -834,7 +674,7 @@ mod tests {
                 ..Default::default()
             },
             None,
-            spill::Allowance::Chars(256),
+            result_store::Allowance::Chars(256),
         )
         .unwrap_err();
         assert!(error.contains("byteOffset 0"));

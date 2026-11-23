@@ -1,6 +1,6 @@
 #![cfg(test)]
     use super::*;
-    use crate::cognition::llm_deliberation_faculty::admission_clock;
+    use crate::cognition::admission_clock;
     use crate::inference::resource_admission::{LaneAdmission, LanePriority};
 
     /// An act for `persona`: the first act of a turn in a fixed room.
@@ -397,8 +397,9 @@
         use crate::cognition::conversation::scripted_conversation::ScriptedConversation;
         use crate::cognition::conversation::PersonaConversation;
         use crate::cognition::workspace::{
-            Burst, Contribution, Faculty, FacultyId, SalienceArbiter, TurnAttention, TurnFraming, Workspace, WorkspaceCycle,
+            Burst, Contribution, Faculty, FacultyId, SalienceArbiter, TurnAttention, TurnFraming, Workspace,
         };
+        use crate::cognition::workspace_cycle::WorkspaceCycle;
         struct Hangs;
         #[async_trait::async_trait]
         impl Faculty for Hangs {
@@ -438,7 +439,7 @@
     // stage that finished, or was cancelled, gives its name back to the stage around it.
     #[tokio::test(start_paused = true)]
     async fn a_deadline_names_the_await_that_held_and_a_finished_or_cancelled_stage_gives_way() {
-        use crate::cognition::llm_deliberation_faculty::admission_clock::stage;
+        use crate::cognition::admission_clock::stage;
         let bound = std::time::Duration::from_secs(1500);
         let start = tokio::time::Instant::now();
         let inner = super::until_act_stalls(start + bound, bound, None, stage("outer", async {
