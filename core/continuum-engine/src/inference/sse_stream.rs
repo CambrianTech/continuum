@@ -899,10 +899,10 @@ mod tests {
         let id = format!("replay-{}", uuid::Uuid::new_v4());
         let tap = Arc::new(crate::inference::wire_tap::TapState::new());
         tap.arm(&id);
-        let mut interrupted = crate::inference::wire_tap::WireTap::open(Some(&id), &tap);
+        let mut interrupted = crate::inference::wire_tap::WireTap::open(Some(&id), Some(&tap));
         interrupted.push(&fragment(Some("work/note"), "{\"note\":\"clo"));
         drop(interrupted);
-        let mut retry = crate::inference::wire_tap::WireTap::open(Some(&id), &tap);
+        let mut retry = crate::inference::wire_tap::WireTap::open(Some(&id), Some(&tap));
         retry.push(&fragment(Some("work/note"), "{\"note\":"));
         retry.push(&fragment(None, "\"closed\"}"));
         retry.push("data: [DONE]");

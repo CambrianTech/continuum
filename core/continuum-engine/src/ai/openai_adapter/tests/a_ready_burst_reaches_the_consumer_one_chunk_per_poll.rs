@@ -35,7 +35,8 @@ async fn a_ready_burst_reaches_the_consumer_one_chunk_per_poll() {
         &request,
         false,
         response,
-        &sink
+        &sink,
+        None, // tap_state: deferred
     ));
     let mut cx = Context::from_waker(std::task::Waker::noop());
     let mut tokens = 0;

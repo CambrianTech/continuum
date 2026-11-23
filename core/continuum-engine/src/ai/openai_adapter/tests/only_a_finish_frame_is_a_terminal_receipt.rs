@@ -15,7 +15,7 @@ async fn only_a_finish_frame_is_a_terminal_receipt_never_a_bare_eof() {
     let (sink, _rx) = tokio::sync::mpsc::unbounded_channel();
     let consume = |body: &str| {
         let response = reqwest::Response::from(axum::http::Response::new(body.to_string()));
-        crate::inference::sse_stream::consume_sse_stream(&adapter.config, &request, false, response, &sink)
+        crate::inference::sse_stream::consume_sse_stream(&adapter.config, &request, false, response, &sink, None)
     };
     let cut = consume("data: {\"choices\":[{\"delta\":{\"content\":\"half a th\"}}]}\n\n")
         .await

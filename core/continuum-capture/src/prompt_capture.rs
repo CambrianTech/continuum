@@ -128,7 +128,7 @@ impl CaptureLease {
         // A recorded call keeps its raw stream too, so the terminal entry can show the tokens
         // the parse turned into this response (card fb6d7912).
         if token.is_some() {
-            continuum_engine::inference::wire_tap::arm(&call.request_id);
+            continuum_engine::inference::wire_tap::arm(None, &call.request_id);
         }
         Self {
             sink,
@@ -178,7 +178,7 @@ impl CaptureLease {
             error,
             self.started.elapsed().as_millis() as u64,
         );
-        continuum_engine::inference::wire_tap::take(&token.header.request_id);
+        continuum_engine::inference::wire_tap::take(None, &token.header.request_id);
         cursor
     }
 }
@@ -393,7 +393,7 @@ impl PromptCaptureSink for JsonlPromptCaptureSink {
             elapsed_ms,
             response,
             error,
-            wire: continuum_engine::inference::wire_tap::take(&header.request_id),
+            wire: continuum_engine::inference::wire_tap::take(None, &header.request_id),
             wire_omitted: None,
         };
         let record = within_row_limit(record, store::MAX_PAYLOAD_BYTES);
@@ -761,7 +761,7 @@ mod tests {
             ..Default::default()
         };
         let mut lease = CaptureLease::start(Arc::clone(&sink), &call(Uuid::new_v4(), &request_id), &request);
-        let mut stream = continuum_engine::inference::wire_tap::WireTap::open(Some(&request_id));
+        let mut stream = continuum_engine::inference::wire_tap::WireTap::open(Some(&request_id), None);
         stream.push(r#"{"choices":[{"delta":{"reasoning_content":"close the stray cards"}}]}"#);
         stream.push(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"work/create","arguments":"{\"title\":\"x\"}"}}]}}]}"#);
         drop(stream);
@@ -776,7 +776,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert!(events[1].as_str().unwrap().contains("work/create"), "as received, in order");
         assert_eq!(terminal["wire"]["open_at_end"], false);
-        assert_eq!(continuum_engine::inference::wire_tap::take(&request_id), None, "released when the call ended");
+        assert_eq!(continuum_engine::inference::wire_tap::take(None, &request_id), None, "released when the call ended");
 
         // A stream too large for a row is dropped from the entry and said, never allowed to
         // make the response itself unrecordable.
@@ -808,10 +808,10 @@ mod tests {
         let private_id = format!("wire-{}", Uuid::new_v4());
         let mind = continuum_rooms::mind_room::mind_room_id(persona);
         drop(CaptureLease::start(Arc::clone(&sink), &call(mind, &private_id), &request));
-        let mut thought = continuum_engine::inference::wire_tap::WireTap::open(Some(&private_id));
+        let mut thought = continuum_engine::inference::wire_tap::WireTap::open(Some(&private_id), None);
         thought.push("a private token");
         drop(thought);
-        assert_eq!(continuum_engine::inference::wire_tap::take(&private_id), None, "her mind room arms nothing");
+        assert_eq!(continuum_engine::inference::wire_tap::take(None, &private_id), None, "her mind room arms nothing");
     }
     #[test]
     fn concurrent_capture_wrappers_share_one_owner_and_keep_distinct_sessions() {

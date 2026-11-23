@@ -98,12 +98,13 @@ impl WireTap {
     /// Open a wire tap for `request_id` if it's armed in the given TapState.
     /// When `tap_state` is None, returns a no-op WireTap that collects nothing.
     pub fn open(request_id: Option<&str>, tap_state: Option<&Arc<TapState>>) -> Self {
-        let request_id = tap_state.and_then(|ts| request_id).and_then(|id| {
+        let request_id = if let (Some(ts), Some(id)) = (&tap_state, request_id) {
             let mut taps = ts.map.lock();
-            let watch = taps.get_mut(id).filter(|watch| !watch.closed)?;
-            watch.open += 1;
-            Some(id.to_owned())
-        });
+            if let Some(watch) = taps.get_mut(id).filter(|watch| !watch.closed) {
+                watch.open += 1;
+                Some(id.to_owned())
+            } else { None }
+        } else { None };
         Self {
             request_id: request_id.clone(),
             events: Vec::new(),
@@ -155,7 +156,7 @@ mod tests {
 
         // Unarmed request: nothing kept
         let id1 = format!("wire-test-{}", uuid::Uuid::new_v4());
-        let mut unwatched = WireTap::open(Some(&id1), &tap);
+        let mut unwatched = WireTap::open(Some(&id1), Some(&tap));
         unwatched.push("data: {}");
         drop(unwatched);
         assert_eq!(tap.take(&id1), None, "nothing is kept for a request no capture armed");
@@ -163,10 +164,10 @@ mod tests {
         // Armed request with two attempts (one interrupted)
         let id2 = format!("wire-test-{}", uuid::Uuid::new_v4());
         tap.arm(&id2);
-        let mut interrupted = WireTap::open(Some(&id2), &tap);
+        let mut interrupted = WireTap::open(Some(&id2), Some(&tap));
         interrupted.push("data: {\"partial\":1}");
         drop(interrupted);
-        let mut retry = WireTap::open(Some(&id2), &tap);
+        let mut retry = WireTap::open(Some(&id2), Some(&tap));
         retry.push("data: {\"whole\":1}");
         retry.push("data: [DONE]");
         drop(retry);
@@ -179,26 +180,25 @@ mod tests {
         // The call ends while an attempt is still streaming (a cancelled turn).
         let id3 = format!("wire-test-{}", uuid::Uuid::new_v4());
         tap.arm(&id3);
-        let mut streaming = WireTap::open(Some(&id3), &tap);
+        let mut streaming = WireTap::open(Some(&id3), Some(&tap));
         streaming.push("data: {\"mid\":1}");
         let wire = tap.take(&id3).expect("armed");
         assert!(wire.open_at_end && wire.attempts.is_empty(), "the open attempt is said, not hidden");
         // A closed watch takes no new attempt
-        assert!(WireTap::open(Some(&id3), &tap).request_id.is_none());
+        assert!(WireTap::open(Some(&id3), Some(&tap)).request_id.is_none());
         drop(streaming);
     }
 }
-/// Backward-compatible wrapper for external crates (like continuum-capture) that call
-/// wire_tap::arm/take but don't have direct access to an owned TapState. These are no-ops;
-/// the real tap state lives on InferenceCoordinator and is passed through engine internals.
-pub fn arm(_request_id: &str) {
-    // No-op for backward compatibility — callers outside engine should use TapState::arm()
+
+/// Optional wrapper for callers without direct TapState access.
+/// Pass `Some(&tap_state)` to capture; `None` explicitly opts out (documented as deferred wiring).
+pub fn arm(tap_state: Option<&Arc<TapState>>, request_id: &str) {
+    if let Some(ts) = tap_state { ts.arm(request_id); }
 }
 
-/// Backward-compatible wrapper for external crates (like continuum-capture) that call
-/// wire_tap::take but don't have direct access to an owned TapState. Returns None;
-/// the real tap state lives on InferenceCoordinator and is passed through engine internals.
-pub fn take(_request_id: &str) -> Option<Wire> {
-    // No-op for backward compatibility — callers outside engine should use TapState::take()
+/// Optional wrapper for callers without direct TapState access.
+/// Pass `Some(&tap_state)` to capture; `None` explicitly opts out (documented as deferred wiring).
+pub fn take(tap_state: Option<&Arc<TapState>>, request_id: &str) -> Option<Wire> {
+    tap_state.and_then(|ts| ts.take(request_id))
 }
 
