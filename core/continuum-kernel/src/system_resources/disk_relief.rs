@@ -150,7 +150,7 @@ impl Component for DiskRelief {
 
 /// Start disk relief as one of the node's parts, at boot: it runs until the node's owner drops
 /// (SAGE.md: a component's lifetime is owned by its node, never started by its first caller).
-pub fn start_on(node: &mut Owner<'_>) {
+pub fn start_on(node: &mut Owner) {
     match node.bus().publisher::<Vec<Relief>>(RELIEF, Key::ONE) {
         Ok(said) => {
             node.start(DiskRelief { said });
