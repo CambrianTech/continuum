@@ -25,6 +25,9 @@ pub(super) async fn settle_to_outcome<'c>(
     // than starting mid-air — the link that makes "which acts were done for this card"
     // a graph query instead of an inference.
     let chain = super::super::apply::ActChain::rooted_in(&burst.cause).with_effects(burst.effects.clone());
+    // Outcome counters for the hour-line summary (card c6c2c446, part 4).
+    let mut mutated_count = 0usize;
+    let mut no_deliverable_count = 0usize;
     // How many turns actually run with a head on their thread — the measurement that
     // tells us whether the causal graph is CONNECTED in the live system, rather than
     // connected in the one path I happened to wire by hand
@@ -136,6 +139,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 acts = acts,
                 "the node is stopping — the turn ended at an act boundary instead of starting its next generation"
             );
+            record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
             return SettleOutcome {
                 room: room_id,
                 decision: Decision::pass(),
@@ -237,6 +241,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     Ok(())
                 });
                 if let Err(error) = admitted {
+                    record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                     return SettleOutcome {
                         room: room_id,
                         decision: Decision::pass(),
@@ -565,6 +570,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 // make (2026-11-02); the fact names the count so pacing stays hers.
                 if framing.workspace_deliverable && budget.allows(acts + non_act_steps + 1) {
                     if let Some(body) = cycle.acting() {
+                        no_deliverable_count += 1;
                         if !mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::JustSettled) {
                             narrations_since_act += 1;
                             non_act_steps += 1;
@@ -589,10 +595,40 @@ pub(super) async fn settle_to_outcome<'c>(
                                 acts = acts,
                                 "workspace-deliverable turn spoke with no mutation receipt — recorded the fact and re-perceived (re-fires only after she acts again)"
                             );
+                            if narrations_since_act >= NO_DELIVERABLE_BLOCKER_THRESHOLD {
+                                body.working_memory.record_fact(&format!(
+                                    "[blocker] I've settled by speaking {} plans in a row without changing any file — \
+                                     I cannot deliver on this workspace contract through speech alone. Something must change before I can produce.",
+                                    narrations_since_act
+                                ));
+                                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
+                                return SettleOutcome {
+                                    room: room_id,
+                                    decision: Decision::Blocker {
+                                        reason: format!(
+                                            "I've spoken {} consecutive plans without mutating any workspace file; \
+                                             the substrate has told me I'm producing nothing for {} steps and I need\
+                                              a different approach — not more planning.", narrations_since_act, narrations_since_act
+                                        ),
+                                    },
+                                    spoken: None,
+                                    acts,
+                                    world_state: burst.rendered.clone(),
+                                    room_updates: Arc::clone(&burst.room_updates),
+                                    metrics,
+                                    generation_receipts: generation_receipts.clone(),
+                                    inference_error: None,
+                                    deferred_before_dispatch: false,
+                                    capacity_refusal: None,
+                                    touched_paths: touched,
+                                    turn_acts: turn_acts.clone(),
+                                };
+                            }
                             continue;
                         }
                     }
                 }
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                 return SettleOutcome {
                     room: room_id,
                     spoken: Some(text.clone()),
@@ -626,6 +662,9 @@ pub(super) async fn settle_to_outcome<'c>(
                 if framing.workspace_deliverable && !mutated_yet {
                     if let Some(body) = cycle.acting() {
                         mutated_yet = mutated_workspace(&body.working_memory.recent_entries(), ConcernPhase::Ongoing);
+                        if mutated_yet {
+                            mutated_count += 1;
+                        }
                     }
                 }
                 // THE DELIVERABLE FACT BELONGS ON THE ACT PATH, NOT ONLY ON SETTLE.
@@ -699,6 +738,7 @@ pub(super) async fn settle_to_outcome<'c>(
             // never a fabricated answer.
             SettleStep::WouldAct { calls, intent, origin }
             | SettleStep::ActUnfulfilled { calls, intent, origin } => {
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                 return SettleOutcome {
                     room: room_id,
                     decision: Decision::Act { calls, intent, origin },
@@ -716,6 +756,7 @@ pub(super) async fn settle_to_outcome<'c>(
                 };
             }
             SettleStep::Passed { reason } => {
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                 return SettleOutcome {
                     room: room_id,
                     decision: Decision::Pass { reason },
@@ -732,6 +773,26 @@ pub(super) async fn settle_to_outcome<'c>(
                     turn_acts: turn_acts.clone(),
                 };
             }
+
+            SettleStep::Blocker { reason } => {
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
+                return SettleOutcome {
+                    room: room_id,
+                    decision: Decision::Blocker { reason },
+                    spoken: None,
+                    acts,
+                    world_state: burst.rendered.clone(),
+                    room_updates: Arc::clone(&burst.room_updates),
+                    metrics,
+                    generation_receipts: generation_receipts.clone(),
+                    inference_error: None,
+                    deferred_before_dispatch: false,
+                    capacity_refusal: None,
+                    touched_paths: touched,
+                    turn_acts: turn_acts.clone(),
+                };
+            }
+
             // A turn-level disposition: capacity refused the assembly, or nothing was
             // dispatched and the admitted input stays pending (the projection
             // `SettleStep::from_settled` makes of a deferred outcome, read back as one).
@@ -740,6 +801,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     SettleStep::CapacityRefused { error, .. } => Some(error),
                     _ => None,
                 };
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                 return SettleOutcome {
                     room: room_id,
                     decision: Decision::pass(),
@@ -788,6 +850,7 @@ pub(super) async fn settle_to_outcome<'c>(
                         error = %error,
                         "deferred at the serving gate without reaching the model — act budget and deliberation retries left intact for the next tick"
                     );
+                    record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                     return SettleOutcome {
                         room: room_id,
                         decision: Decision::pass(),
@@ -831,6 +894,7 @@ pub(super) async fn settle_to_outcome<'c>(
                     );
                     continue;
                 }
+                record_hour_line(room_id, None, acts, non_act_steps, no_deliverable_count, mutated_yet, mutated_count);
                 return SettleOutcome {
                     room: room_id,
                     decision: Decision::pass(),
@@ -849,4 +913,36 @@ pub(super) async fn settle_to_outcome<'c>(
             }
         }
     }
+}
+
+/// How many consecutive no-deliverable detections before the substrate
+/// produces a `Blocker` outcome to steer the persona away from an infinite
+/// plan-loop. The card that opened this (c6c2c446) measured five such events;
+/// five is the threshold.
+pub(super) const NO_DELIVERABLE_BLOCKER_THRESHOLD: usize = 5;
+
+/// Record an hour-line summary probe for this settle cycle — aggregates
+/// outcome categories across all arms so the persona (and observers) can see
+/// how their turns distributed over time.
+fn record_hour_line(
+    room_id: Uuid,
+    persona_name: Option<&str>,
+    acts: usize,
+    non_act_steps: usize,
+    no_deliverable_count: usize,
+    mutated_yet: bool,
+    mutated_count: usize,
+) {
+    continuum_base::probe!(
+        class = "persona.settle.hour_line",
+        room_id = %room_id,
+        persona = ?persona_name,
+        acts = acts,
+        non_act_steps = non_act_steps,
+        no_deliverable_count = no_deliverable_count,
+        mutated_yet = mutated_yet,
+        mutated_count = mutated_count,
+        "hour-line summary of settle cycle: acts={}, non_acts={}, no_deliverables={}, mutated={}/{}",
+        acts, non_act_steps, no_deliverable_count, mutated_count, mutated_yet as usize
+    );
 }

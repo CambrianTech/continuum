@@ -100,6 +100,13 @@ pub enum Decision {
     /// *nothing* ([[a-citizen-saying-i-have-nothing-to-contribute-is-a-substrate-gap-report]]),
     /// and any consumer can surface WHY a turn produced no utterance.
     Pass { reason: Option<String> },
+    /// She cannot proceed — the work is blocked by something external or structural.
+    /// Unlike `Pass` (which means "the work is done"), a `Blocker` says "I cannot
+    /// complete this because X." The `reason` is required: without stating why,
+    /// a blocker collapses to anonymous silence, and the substrate treats that as
+    /// an unaccountable gap. This is how she hands the card back with a named
+    /// obstruction — not a pass in disguise.
+    Blocker { reason: String },
 }
 
 impl Decision {
@@ -470,7 +477,9 @@ impl Contribution {
             // The mind's narration of WHY it's acting — surfaced/audited like any
             // contribution content; the calls themselves live on the decision.
             Decision::Act { intent, .. } => intent.clone(),
-            Decision::Pass { reason } => reason.clone().unwrap_or_default(), // unwrap_or_default: a pass that gave no reason says none
+            Decision::Pass { reason } => reason.clone().unwrap_or_default(),
+            // A blocker states its reason — that IS the verdict content.
+            Decision::Blocker { reason } => reason.clone(),
         };
         Self {
             faculty: FacultyId::Deliberation,

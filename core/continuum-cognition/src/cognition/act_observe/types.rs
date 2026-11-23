@@ -141,6 +141,11 @@ pub enum SettleStep {
     /// held-work edge can tell a gradeable *done* from a *blocker* from a
     /// substrate-gap *nothing*; `None` for a bare pass.
     Passed { reason: Option<String> },
+    /// She has named an obstruction — she cannot complete the turn because something
+    /// external prevents progress. Unlike `Passed` (which means "the work is done"),
+    /// a blocker says "I cannot proceed because X." The caller reads this as a signal
+    /// to hand the card back with reason, not grade it as finished.
+    Blocker { reason: String },
     /// No generation or action occurred; the admitted input remains pending.
     DeferredBeforeDispatch,
     /// Required input exceeds the prompt budget. Prior acts remain committed;
@@ -231,6 +236,7 @@ impl SettleStep {
             }
             Decision::Act { calls, intent, .. } => SettleStep::Acted { calls, intent },
             Decision::Pass { reason } => SettleStep::Passed { reason },
+            Decision::Blocker { reason } => SettleStep::Blocker { reason },
         };
         (step, metrics, generation_receipts)
     }
