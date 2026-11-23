@@ -286,10 +286,11 @@ pub const HER_ACT_FIRST: &str = "her act comes first: her own background work yi
 /// A test that asserts immediate readiness refusal passes zero. See `EndpointSlots::admit_when_ready`
 /// for the boot window that cost Kimi 16 turns.
 pub async fn admit_turn(request: request::TurnRequest<'_>) -> Result<TurnAdmission, String> {
-    let (concurrency, class, key, pool, client, root, approx_tokens) = request.into_args();
     let readiness = request.readiness();
+    let deadline = request.deadline();
+    let (concurrency, class, key, pool, client, root, approx_tokens) = request.into_args();
     let admission = admit(&concurrency, class, key, pool, client, root, approx_tokens, false, readiness);
-    match request.deadline() {
+    match deadline {
         Some(deadline) => {
             if deadline <= tokio::time::Instant::now() {
                 return Err("turn deadline elapsed before admission".into());
