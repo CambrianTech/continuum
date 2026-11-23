@@ -11,52 +11,65 @@
 //! rides the turn's `Burst`, so the facts, the anchor and her `world_state` read one snapshot,
 //! and an eval fork, which reads no room, has an empty one.
 
-/// A room's recent lines and hers among them, oldest first: exactly one page of the airc room.
+/// One line of the room: the airc event it is, and what it said.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Line {
+    pub event: uuid::Uuid,
+    pub text: String,
+}
+
+/// A room's recent lines and hers among them, oldest first: exactly one page of the airc room,
+/// each line kept once with the room event it is, so a capture can name which events a served
+/// request was built from (Cormac on #6241).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Said {
-    own: Vec<String>,
-    room: Vec<String>,
+    lines: Vec<Line>,
+    /// Which of `lines` she sent.
+    hers: Vec<usize>,
 }
 
 impl Said {
     /// How many of the room's newest conversation events a turn reads: in a room of four
     /// residents about her own last eight, the self-history the repetition cluster of three
     /// needs with slack, and twice the 16-line chorus window the old ring held. An estimate
-    /// from those two needs, not a measurement; the view's grant should size it (follow-up).
+    /// from those two needs, not a measurement; the codec should size it from the model's
+    /// grant (Codex on #6241).
     pub const PAGE: usize = 32;
 
     /// The window over one page of the room's airc transcript (any order; read by lamport):
-    /// every conversation line, and those `me` sent.
+    /// every conversation line, and which of them `me` sent.
     pub fn of_room(page: &[airc_core::TranscriptEvent], me: uuid::Uuid) -> Self {
-        let mut lines: Vec<&airc_core::TranscriptEvent> = page.iter().collect();
-        lines.sort_by_key(|event| event.lamport);
+        let mut events: Vec<&airc_core::TranscriptEvent> = page.iter().collect();
+        events.sort_by_key(|event| event.lamport);
         let mut said = Self::default();
-        for event in lines {
+        for event in events {
             let Ok(line) = crate::cognition::conversation::room_event::room_content_from_event(event) else { continue };
             if line.text.trim().is_empty() {
                 continue;
             }
-            let mine = line.sender == me;
-            said.room.push(line.text);
-            if mine {
-                // Her line belongs to both views; her side keeps its own copy of the room's entry.
-                let hers = said.room[said.room.len() - 1].to_owned();
-                said.own.push(hers);
+            if line.sender == me {
+                said.hers.push(said.lines.len());
             }
+            said.lines.push(Line { event: event.event_id.as_uuid(), text: line.text });
         }
         said
     }
 
+    /// The room's lines with the events they are, oldest first.
+    pub fn lines(&self) -> &[Line] {
+        &self.lines
+    }
+
     /// Her own recent utterances in this room, oldest first (empty where she has said nothing,
     /// which is the right reading for a room she just entered).
-    pub fn own(&self) -> &[String] {
-        &self.own
+    pub fn own(&self) -> Vec<&str> {
+        self.hers.iter().filter_map(|at| self.lines.get(*at)).map(|line| line.text.as_str()).collect()
     }
 
     /// The room's recent lines, hers included (the echo counters skip exactly one copy of
     /// hers), oldest first.
-    pub fn room(&self) -> &[String] {
-        &self.room
+    pub fn room(&self) -> Vec<&str> {
+        self.lines.iter().map(|line| line.text.as_str()).collect()
     }
 }
 
@@ -99,5 +112,8 @@ mod tests {
         let said = Said::of_room(&page, me);
         assert_eq!(said.room(), ["are the wordstats tests green yet", "the wordstats tests are green", "thanks, merging"]);
         assert_eq!(said.own(), ["the wordstats tests are green"]);
+        // The page was reversed: in room order the lines are lamport 1, 3, 4 (page[3], [1], [0]).
+        let events: Vec<uuid::Uuid> = said.lines().iter().map(|line| line.event).collect();
+        assert_eq!(events, [3, 1, 0].map(|at| page[at].event_id.as_uuid()), "each line keeps the room event it is");
     }
 }

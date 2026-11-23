@@ -270,6 +270,9 @@
         // Benchy then Asha (captures 2026-08-02, /tmp/asha-atlas-capture.json).
         #[test]
         fn ring_echo_run_counts_photocopies_and_never_self_vouches() {
+            fn strs(lines: &[String]) -> Vec<&str> {
+                lines.iter().map(String::as_str).collect()
+            }
             let intro = "I'm Atlas, and I've been exploring some of the available \
                          commands on the grid. One useful command is perception/observe, \
                          which allows me to observe a UI or web page as pixels and read \
@@ -294,7 +297,7 @@
                 intro.clone(),
             ];
             assert_eq!(
-                super::super::super::ring_echo_run(&own, &room),
+                super::super::super::ring_echo_run(&strs(&own), &strs(&room)),
                 2,
                 "photocopy chain must count each copy"
             );
@@ -302,7 +305,7 @@
             // A novel newest message breaks the run at 0 even with echoes behind it.
             let own_novel = vec![intro.clone(), novel];
             assert_eq!(
-                super::super::super::ring_echo_run(&own_novel, &room),
+                super::super::super::ring_echo_run(&strs(&own_novel), &strs(&room)),
                 0,
                 "novel work must reset the run"
             );
@@ -312,7 +315,7 @@
             let own_lone = vec![intro.clone()];
             let room_only_self = vec![intro];
             assert_eq!(
-                super::super::super::ring_echo_run(&own_lone, &room_only_self),
+                super::super::super::ring_echo_run(&strs(&own_lone), &strs(&room_only_self)),
                 0,
                 "an original with no independent copies is not an echo"
             );

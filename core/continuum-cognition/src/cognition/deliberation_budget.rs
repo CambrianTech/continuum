@@ -139,7 +139,7 @@ pub(super) fn jaccard(a: &str, b: &str) -> f64 {
 /// as a structural fact — his prompts carried zero repetition awareness while
 /// he repeated. Detection runs on the RAW turns (before the dup-drop filters
 /// the render), so byte-identical repeats count as evidence too.
-pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Option<String> {
+pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[&str]) -> Option<String> {
     // Self-history source (#148): her knowledge of what SHE said must never
     // depend on the room's context budget. Under small serving slots the live
     // burst carries ~2 turns TOTAL (verified 2026-07-12: a persona 4× into a
@@ -151,7 +151,7 @@ pub(super) fn own_repetition_fact(turns: &[BurstTurn], spoken: &[String]) -> Opt
     // double-counting an event would fabricate repetition evidence.
     let from_ring: Vec<&str> = spoken
         .iter()
-        .map(String::as_str)
+        .copied()
         .filter(|s| !s.trim().is_empty())
         .collect();
     let own: Vec<&str> = if from_ring.is_empty() {
@@ -262,12 +262,12 @@ fn message_skeleton(text: &str) -> Option<(Vec<LineShape>, std::collections::Has
 /// topic swap as "genuinely new," which no fact contradicted. Pure fact, no
 /// output gate: it names what happened and the PASS affordance she already
 /// has; the fork stays hers.
-pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[String]) -> Option<String> {
+pub(super) fn template_loop_fact(turns: &[BurstTurn], spoken: &[&str]) -> Option<String> {
     // Same self-history sourcing as own_repetition_fact (#148): ring primary,
     // burst is_self fallback, never both (double-counting fabricates evidence).
     let from_ring: Vec<&str> = spoken
         .iter()
-        .map(String::as_str)
+        .copied()
         .filter(|s| !s.trim().is_empty())
         .collect();
     let own: Vec<&str> = if from_ring.is_empty() {
@@ -334,8 +334,8 @@ pub fn near_identical_substantial(a: &str, b: &str) -> bool {
 /// go silent) stays hers.
 pub(super) fn inbound_restates_fact(
     turns: &[BurstTurn],
-    own_speech: &[String],
-    room_speech: &[String],
+    own_speech: &[&str],
+    room_speech: &[&str],
 ) -> Option<String> {
     // Only rides an inbound wake: the newest visible turn must be a peer's.
     // If she spoke last, there is nothing pending to reply to and the
@@ -353,16 +353,16 @@ pub(super) fn inbound_restates_fact(
         .iter()
         .rev()
         .filter(|r| {
-            if !own_record_skipped && r.as_str() == newest.content {
+            if !own_record_skipped && **r == newest.content {
                 own_record_skipped = true;
                 return false;
             }
             true
         })
-        .map(String::as_str)
+        .copied()
         .collect();
     let prior_turns = turns[..turns.len() - 1].iter().map(|t| t.content.as_str());
-    let prior_own = own_speech.iter().map(String::as_str);
+    let prior_own = own_speech.iter().copied();
     prior_turns
         .chain(prior_own)
         .chain(prior_room)

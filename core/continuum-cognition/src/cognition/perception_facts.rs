@@ -40,11 +40,11 @@ pub struct FactContext<'a> {
     pub turns: &'a [BurstTurn],
     /// The persona's own-speech ring (say-seam recorded; primary self-history
     /// source so self-knowledge never depends on the room's context budget).
-    pub own_speech: &'a [String],
+    pub own_speech: &'a [&'a str],
     /// The room's recent-message ring (attach-seam recorded, once per
     /// message; #264) — room-history knowledge that never depends on the
     /// workspace's context budget, exactly as own_speech is for self.
-    pub room_speech: &'a [String],
+    pub room_speech: &'a [&'a str],
     /// Typed working memory when the persona has one (live spawns); eval
     /// forks and replays may run without it — ledger-class facts skip.
     pub working_memory: Option<&'a Arc<WorkingMemory>>,
@@ -135,7 +135,7 @@ impl PerceptionFact for PeerEcho {
     }
 
     fn render(&self, cx: &FactContext) -> Option<String> {
-        peer_echo_fact(cx.turns, cx.own_speech.last().map(String::as_str))
+        peer_echo_fact(cx.turns, cx.own_speech.last().copied())
     }
 }
 
@@ -261,7 +261,7 @@ mod tests {
             turn("Asha", "sounds good, starting now", true),
             BurstTurn::perception("The current room is available."),
         ];
-        let own = vec!["sounds good, starting now".to_string()];
+        let own = vec!["sounds good, starting now"];
         let cx = FactContext {
             turns: &turns,
             own_speech: &own,
@@ -282,7 +282,7 @@ mod tests {
     #[test]
     fn policy_disable_silences_one_fact_without_touching_others() {
         let turns = vec![turn("Anwen", "hello there team", false)];
-        let own: Vec<String> = Vec::new();
+        let own: Vec<&str> = Vec::new();
         let cx = FactContext {
             turns: &turns,
             own_speech: &own,

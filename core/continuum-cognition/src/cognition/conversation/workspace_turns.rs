@@ -123,7 +123,7 @@ pub fn echo_words(s: &str) -> std::collections::HashSet<String> {
 /// knowing that window exists).
 ///
 /// [`Said`]: crate::cognition::room::said::Said
-pub fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
+pub fn ring_echo_run(own_recent: &[&str], room_recent: &[&str]) -> usize {
     const CONTAINMENT: f32 = 0.8;
     let mut run = 0usize;
     for own in own_recent.iter().rev() {
@@ -138,7 +138,7 @@ pub fn ring_echo_run(own_recent: &[String], room_recent: &[String]) -> usize {
         let mut skipped_own_copy = false;
         let mut window: std::collections::HashSet<String> = std::collections::HashSet::new();
         for r in room_recent {
-            if !skipped_own_copy && r.as_str() == own.as_str() {
+            if !skipped_own_copy && r == own {
                 skipped_own_copy = true;
                 continue;
             }
@@ -169,7 +169,7 @@ pub fn append_ring_anchor_if_starved(
     if turns.iter().any(|t| t.content.starts_with("[anchor]")) {
         return;
     }
-    let run = ring_echo_run(said.own(), said.room());
+    let run = ring_echo_run(&said.own(), &said.room());
     if run >= PATTERN_FIRES_BEFORE_ANCHOR {
         continuum_base::probe!(
             class = "persona.pattern.ring_anchor",
