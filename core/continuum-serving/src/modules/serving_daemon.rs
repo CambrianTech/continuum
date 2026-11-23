@@ -599,7 +599,7 @@ use policy::{
     DOWNSHIFT_SUSTAINED_TICKS, MODEL_CHANGE_SUSTAINED_TICKS,
 };
 pub use policy::{
-    knee_model, FloorVerdict, COLD_BOOT_BELOW_FLOOR_GRACE,
+    knee_model,
 };
 mod health;
 use health::FrozenSlots;

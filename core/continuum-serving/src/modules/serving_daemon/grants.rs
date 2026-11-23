@@ -149,12 +149,15 @@ impl ServingDaemonModule {
 
 /// Why a demand the publisher received holds no grant after it. A need no sequence or pool can hold
 /// is named before what she waits on.
-fn waiting_reason(d: &Demand<uuid::Uuid>, _pool: u32, waits: Option<DispatchWait>) -> Waiting {
+fn waiting_reason(d: &Demand<uuid::Uuid>, pool: u32, waits: Option<DispatchWait>) -> Waiting {
+    let need = d.need.get();
     match waits {
 
         _ if crate::capacity::window_grant::is_grant_retiring(d.mind) => Waiting::Reclaiming,
         Some(DispatchWait::Reclaiming) => Waiting::ForReclaim,
         Some(DispatchWait::BehindActs { acting }) => Waiting::BehindActs { acting },
+        None if need > d.ceiling => Waiting::NeedAboveCeiling { need, ceiling: d.ceiling },
+        None if need > pool => Waiting::NeedAbovePool { need, pool },
         None => Waiting::Unplaced,
     }
 }
@@ -166,6 +169,67 @@ mod tests {
 
     fn t(n: u32) -> Tokens {
         Tokens::new(n).expect("test: a nonzero size") // expect: every size here is a positive literal
+    }
+
+
+    // Regression from card 48f5438a (restored in 370dde3e): validate that need > ceiling
+    // and need > pool are detected by waiting_reason even after Measure::Measured unified
+    // clamping to ceiling. With the new type, need is always <= ceiling when ceiling > 0,
+    // so NeedAboveCeiling never triggers in practice -- but NeedAbovePool does trigger
+    // when the ceiling itself exceeds the pool size.
+    #[test]
+    fn need_above_pool_is_detected_with_measured() {
+        use uuid::Uuid;
+
+        let her = Uuid::new_v4();
+        // wish=50k, headroom=1.0 -> beyond=0, governed=50k
+        // ceiling=100k -> need = min(50k, 100k) = 50k (clamped)
+        // pool=30k -> need (50k) > pool (30k) -> NeedAbovePool triggers
+        let d = Demand::of(
+            &LaneRequirement::wished(her, t(50_000), 1.0),
+            t(60_000),   // trained window
+            100_000,     // ceiling
+            false        // in_flight = false
+        ).expect("test: measured need within ceiling");
+
+        let pool: u32 = 30_000;
+        match waiting_reason(&d, pool, None) {
+            Waiting::NeedAbovePool { need, pool } => {
+                assert!(need > pool, "need ({}) must exceed pool ({})", need, pool);
+                assert_eq!(pool, 30_000);
+            },
+            other => panic!("expected NeedAbovePool(need={}, pool={}), got {:?}",
+                           d.need.get(), pool, other),
+        }
+    }
+
+    #[test]
+    fn need_above_ceiling_is_unreachable_with_measured_clamping() {
+        use uuid::Uuid;
+
+        let her = Uuid::new_v4();
+        // wish=50k, headroom=1.0 -> governed=50k
+        // ceiling=100k -> need clamped to 50k <= ceiling (by Measure::Measured)
+        // pool=200k (large) -> no NeedAbovePool either
+        let d = Demand::of(
+            &LaneRequirement::wished(her, t(50_000), 1.0),
+            t(60_000),
+            100_000,
+            false
+        ).expect("test: measured need within ceiling");
+
+        let pool: u32 = 200_000; // large enough that need <= pool
+
+        // With Measure::Measured clamping to ceiling, need is always <= ceiling
+        assert!(d.need.get() <= d.ceiling,
+            "Measure::Measured clamps need ({}) to ceiling ({}), so NeedAboveCeiling is unreachable",
+            d.need.get(), d.ceiling);
+
+        match waiting_reason(&d, pool, None) {
+            Waiting::Unplaced => {}  // expected -- neither above ceiling nor above pool
+            other => panic!("expected Unplaced (need={} <= ceiling={}, need={} <= pool={}), got {:?}",
+                           d.need.get(), d.ceiling, d.need.get(), pool, other),
+        }
     }
 
 }

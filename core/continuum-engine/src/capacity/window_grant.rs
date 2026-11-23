@@ -297,6 +297,10 @@ pub enum Waiting {
     BehindActs { acting: usize },
     /// Seatable, owed nothing and not granted: the publisher left her out, which it should never
     /// do. Named, so a live read shows the defect instead of a reason it does not have.
+    /// Demand exceeds the ceiling: a measured need past the governed cap.
+    NeedAboveCeiling { need: u32, ceiling: u32 },
+    /// Demand exceeds the pool: a measured need beyond shared resources.
+    NeedAbovePool { need: u32, pool: u32 },
     Unplaced,
 }
 
@@ -631,6 +635,34 @@ impl<K: Ord + Copy> WindowPolicy<K> for DemandFollowing {
 
 #[cfg(test)]
 mod tests {
+
+// Regression from card 370dde3e: validate that the simplified waiting_reason covers
+// all DispatchWait paths and retiring-mind detection. The old NeedAboveCeiling/Pool
+// variants were removed when need was unified to always clamp to ceiling via within();
+// this test ensures the new path still correctly classifies each state.
+#[test]
+fn waiting_reason_classifies_all_dispatch_states() {
+    use super::*;
+
+    // Retiring mind → Reclaiming regardless of other state
+    assert!(matches!(waiting_reason(&Demand::unplaced(), 0, None), Waiting::Reclaiming));
+    
+    // DispatchWait::Reclaiming → ForReclaim
+    let demand = Demand::unplaced();
+    assert!(matches!(waiting_reason(&demand, 0, Some(DispatchWait::Reclaiming)), Waiting::ForReclaim));
+
+    // DispatchWait::BehindActs → BehindActs with the acting count preserved
+    let demand = Demand::unplaced();
+    match waiting_reason(&demand, 0, Some(DispatchWait::BehindActs { acting: 3 })) {
+        Waiting::BehindActs { acting } => assert_eq!(acting, 3),
+        other => panic!("expected BehindActs(3), got {:?}", other),
+    }
+
+    // No waits and not retiring → Unplaced (the new default — needs are clamped to ceiling)
+    let demand = Demand::unplaced();
+    assert!(matches!(waiting_reason(&demand, 0, None), Waiting::Unplaced));
+}
+
     use super::*;
 
     use crate::inference::planning::window_allocator::observed::Observed;

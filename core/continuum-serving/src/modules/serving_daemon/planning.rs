@@ -344,6 +344,40 @@ impl ServingDaemonModule {
                 }
                 // New plan meets or beats standing closeness: publish it. When no fitting plan
                 // exists the node says so explicitly rather than silently retaining a worse option.
+                // COLD-BOOT ADOPTION (card c3c50e0d): when there's no standing plan and we detect an
+                // inherited engine on its port, adopt it at its own geometry against the physical budget.
+                // Without this path a node with a healthy inherited engine would boot dark for minutes
+                // while its residents waited (M5 2026-09-26: six minutes, sixteen residents dark).
+                if prev_closeness == 0 {
+                    if let Some(inc) = incumbent.as_deref() {
+                        let geometry = crate::inference::served_window_store::load_geometry()
+                            .filter(|g| g.model_id == inc)
+                            .and_then(|g| g.cache_geometry());
+                        if let Some(footprint) = candidates.iter().find(|c| c.model_id == inc) {
+                            let adopted_demand = demand.clone().with_sticky_window(geometry.map(|(w, _)| w));
+                            let plan = plan_serving(&self.physical_budget(), std::slice::from_ref(&footprint), &adopted_demand);
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_adopted",
+                                model = inc,
+                                lanes = plan.lanes as u64,
+                                window = plan.served_context_window as u64,
+                                usable_gb = (budget.usable_bytes / 1_000_000_000),
+                                physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                                "a cold boot: the inherited engine is planned at its own geometry \
+                                 against the physical budget — adopt, never nothing"
+                            );
+                            self.publish_plan_snapshot(intent_revision, Some(plan));
+                        } else {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan.incumbent_unplannable",
+                                model = inc,
+                                physical_usable_gb = (self.physical_budget().usable_bytes / 1_000_000_000),
+                                "a cold boot: the inherited engine cannot be planned even against \
+                                 the physical budget — refused, named; the reconcile stays idle"
+                            );
+                        }
+                    }
+                }
                 // DOWNSHIFT DEBOUNCE (#368): `plan_serving_stable`'s at-rest credit
                 // only shields the incumbent from its OWN residency — an external
                 // squeeze deep enough that even the credited budget can't hold it
@@ -543,8 +577,40 @@ impl ServingDaemonModule {
                 self.publish_plan_snapshot(intent_revision, Some(plan));
             }
             None => {
-                // No servable model on disk. Publish None and say so loudly —
-                // the spawner gates on a model being present (no silent serve).
+                // Try incumbent adoption as fallback: when no plan found at live budget,
+                // attempt to serve the inherited engine at physical capacity with its
+                // recorded geometry. This fixes card c3c50e0d where a node stayed dark
+                // for six minutes because nothing adopted the inherited engine.
+                if let Some(ref inc) = incumbent {
+                    let geometry = remembered.as_ref().map(|g| (g.per_slot_window, g.lanes));
+                    if let Some(inc_plan) = policy::incumbent_adoption_plan(&budget.host, candidates, inc, &demand, geometry) {
+                        // Use the incumbent plan instead of giving up entirely.
+                        self.publish_plan_snapshot(intent_revision, Some(inc_plan));
+                        PlanOutcome::Decided
+                    } else {
+                        // Incumbent can't fit even at physical capacity — proceed to empty.
+                        let entered_empty = {
+                            let mut last = self.last_plan_probe.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                            if last.as_ref().map(|(d, _)| d.as_str()) == Some("<no-servable-model>") {
+                                false
+                            } else {
+                                *last = Some(("<no-servable-model>".to_string(), 0));
+                                true
+                            }
+                        };
+                        if entered_empty {
+                            continuum_base::probe!(
+                                target: "continuum_core::modules::serving_daemon", class = "serving.plan",
+                                candidates = 0usize,
+                                "incumbent adoption failed — no servable model on disk, serving plan empty",
+                            );
+                        }
+                        self.publish_plan_snapshot(intent_revision, None);
+                        PlanOutcome::Decided
+                    }
+                } else {
+                    // No incumbent either. Publish empty.
+                    let entered_empty = {
                 // Same emit-on-change gate as the Some arm: loud ONCE at the
                 // transition, silent while the condition persists (#399).
                 let entered_empty = {

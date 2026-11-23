@@ -273,7 +273,7 @@ pub fn same_commit(a: &str, b: &str) -> bool {
 /// deploy. Twenty minutes comfortably covers the observed claim-drop-to-core-up window on
 /// the slowest tier and still names a reboot that died within the hour.
 ///
-/// Same shape, and the same reasoning, as `COLD_BOOT_BELOW_FLOOR_GRACE` in the serving
+/// Same shape, and the same reasoning, as the now-removed cold-boot grace in the
 /// planner: a transient and a real fault present identically in one sample, so wait rather
 /// than invent a second signal.
 pub const STRANDED_GRACE_MS: u64 = 20 * 60 * 1000;
