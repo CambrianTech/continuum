@@ -22,11 +22,17 @@ pub const OBSERVE: TopicName = TopicName("sage/observe");
 /// What the engine measured, keyed by the component's name.
 pub const TELEMETRY: TopicName = TopicName("sage/telemetry");
 
-/// One component's numbers since it was switched on.
+/// One component's numbers since it started, measured for every component on every input (two clock
+/// reads) and published as state; switching `Observe` on adds a probe line per input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Telemetry {
-    /// Inputs handled while watched.
+    /// Inputs handled.
     pub handled: u64,
+    /// How long its last input waited in its intake before it was handled: where this part, or what
+    /// it waits behind, is the bottleneck.
+    pub last_wait: Duration,
+    /// The longest any input waited in its intake.
+    pub max_wait: Duration,
     /// How long its last input took to handle.
     pub last_handle: Duration,
     /// The longest any input took: the serial cost this part adds where it is waited on.

@@ -80,6 +80,8 @@ pub fn presence_key(name: &'static str) -> Key {
 pub struct Delivered<I> {
     what: What<I>,
     from: Option<InputRevision>,
+    /// When it entered the intake: how long it waited there is measured for every component.
+    queued: std::time::Instant,
 }
 
 enum What<I> {
@@ -89,7 +91,7 @@ enum What<I> {
 
 impl<I> Delivered<I> {
     pub(super) fn act(input: I) -> Self {
-        Self { what: What::Input(input), from: None }
+        Self { what: What::Input(input), from: None, queued: std::time::Instant::now() }
     }
 }
 
@@ -147,14 +149,14 @@ impl<P: Component> Wiring<'_, P> {
 impl<T, I: From<Event<T>>> From<Event<T>> for Delivered<I> {
     fn from(event: Event<T>) -> Self {
         let from = Some(event.revision);
-        Self { what: What::Input(I::from(event)), from }
+        Self { what: What::Input(I::from(event)), from, queued: std::time::Instant::now() }
     }
 }
 
 impl<T, I: From<Snapshot<T>>> From<Snapshot<T>> for Delivered<I> {
     fn from(snapshot: Snapshot<T>) -> Self {
         let from = Some(snapshot.revision);
-        Self { what: What::Input(I::from(snapshot)), from }
+        Self { what: What::Input(I::from(snapshot)), from, queued: std::time::Instant::now() }
     }
 }
 
@@ -177,8 +179,8 @@ struct Worker<P: Component> {
 }
 
 impl<P: Component> Worker<P> {
-    /// One watched input's numbers, published as its telemetry.
-    fn measure(&mut self, took: std::time::Duration, from: Option<InputRevision>) {
+    /// One input's numbers, published as its telemetry; a probe line too while it is watched.
+    fn measure(&mut self, waited: std::time::Duration, took: std::time::Duration, from: Option<InputRevision>, watched: bool) {
         let skipped = match from {
             Some(frame) => match self.last_frames.insert(frame.topic, frame.through) {
                 Some(last) => frame.through.saturating_sub(last + 1),
@@ -195,6 +197,8 @@ impl<P: Component> Worker<P> {
         };
         self.measured = Telemetry {
             handled: self.measured.handled + 1,
+            last_wait: waited,
+            max_wait: self.measured.max_wait.max(waited),
             last_handle: took,
             max_handle: self.measured.max_handle.max(took),
             waiting,
@@ -203,7 +207,9 @@ impl<P: Component> Worker<P> {
         if let Some(publisher) = self.telemetry.as_mut() {
             self.ctx.publish(publisher, self.measured);
         }
-        continuum_base::probe!(class = "sage.component.handled", component = P::NAME, took_us = took.as_micros() as u64, waiting = waiting, frames_skipped = skipped, "a watched component handled an input");
+        if watched {
+            continuum_base::probe!(class = "sage.component.handled", component = P::NAME, waited_us = waited.as_micros() as u64, took_us = took.as_micros() as u64, waiting = waiting, frames_skipped = skipped, "a watched component handled an input");
+        }
     }
 
     /// Publish its need when it changed: its urgency and its intake depth now.
@@ -241,15 +247,14 @@ impl<P: Component> Stage for Worker<P> {
         match delivered.what {
             What::Input(input) => {
                 let watched = self.observe.latest().is_some_and(|switch| *switch.value == Observe::Timing);
-                let started = watched.then(std::time::Instant::now);
+                let started = std::time::Instant::now();
+                let waited = started.saturating_duration_since(delivered.queued);
                 self.enter(Presence::Acting);
                 self.ctx.begin(delivered.from);
                 self.component.handle(input, &mut self.ctx).await;
                 self.enter(Presence::Ready);
                 self.publish_need();
-                if let Some(started) = started {
-                    self.measure(started.elapsed(), delivered.from);
-                }
+                self.measure(waited, started.elapsed(), delivered.from, watched);
             }
             What::Rest if self.now == Presence::Resting => {}
             What::Rest => {
@@ -275,7 +280,7 @@ impl<P: Component> Running<P> {
     /// Ask it to rest: it gives back what it holds, and its next input wakes it. False once it
     /// has stopped.
     pub async fn rest(&self) -> bool {
-        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
+        self.input.send(Delivered { what: What::Rest, from: None, queued: std::time::Instant::now() }).await.is_ok()
     }
 
     /// A handle to tell it acts from elsewhere, without owning its lifetime.
@@ -308,7 +313,7 @@ impl<P: Component> Teller<P> {
 
     /// Ask it to rest (its owner rests, or its memory is wanted elsewhere).
     pub async fn rest(&self) -> bool {
-        self.input.send(Delivered { what: What::Rest, from: None }).await.is_ok()
+        self.input.send(Delivered { what: What::Rest, from: None, queued: std::time::Instant::now() }).await.is_ok()
     }
 }
 

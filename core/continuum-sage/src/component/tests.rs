@@ -242,11 +242,12 @@ async fn a_part_decides_on_its_own_frontier_from_what_it_knows() {
     assert_eq!(Novelty::new(1.5), None);
 }
 
-// what this catches: per-component analysis that costs everyone always, or that needs code in the
-// component. Off by default (no telemetry is published); switched on by publishing to its observe
-// topic, the engine times each input and publishes the numbers as state; switched off, it stops.
+// what this catches: a bottleneck nobody can see because timing was off (2026-11-22: nothing in
+// production ever switched it on). Every component's inputs are measured always (wait in its intake and
+// time to handle) and published as state any reader watches live; the switch adds only a probe line per
+// input. Numbers accumulate: each input counts, watched or not.
 #[tokio::test]
-async fn a_component_is_watched_only_while_its_switch_is_on() {
+async fn every_input_is_measured_and_the_switch_adds_only_a_probe_line() {
     let bus = Bus::new();
     let mut switch = match bus.publisher::<Observe>(OBSERVE, presence_key("alarm")) {
         Ok(switch) => switch,
@@ -256,16 +257,18 @@ async fn a_component_is_watched_only_while_its_switch_is_on() {
     let (rang, mut rings) = tokio::sync::mpsc::unbounded_channel();
     let alarm = start(Alarm { rang }, &bus, OwnerId(Uuid::from_u128(6)), 1);
     let by = || crate::dataflow::Provenance { by: RunId { incarnation: StageIncarnation { stage: StageId::named("test"), owner: OwnerId(Uuid::from_u128(6)), epoch: 1 }, seq: 1 }, from: Vec::new() };
+    let handled = |telemetry: &crate::dataflow::Reader<Telemetry>| telemetry.latest().map(|t| t.value.handled);
     assert!(alarm.tell(AlarmIn::Ring("unwatched")).await);
     assert_eq!(rings.recv().await, Some("unwatched"));
-    assert!(telemetry.latest().is_none(), "off: nothing measured");
+    while handled(&telemetry) != Some(1) {
+        let _ = telemetry.changed().await;
+    }
     switch.publish(Observe::Timing, by());
     assert!(alarm.tell(AlarmIn::Ring("watched")).await);
     assert_eq!(rings.recv().await, Some("watched"));
-    let measured = telemetry.changed().await.map(|t| *t.value);
-    assert_eq!(measured.map(|t| t.handled), Ok(1), "on: each input is timed and published");
-    switch.publish(Observe::Off, by());
-    assert!(alarm.tell(AlarmIn::Ring("off again")).await);
-    assert_eq!(rings.recv().await, Some("off again"));
-    assert_eq!(telemetry.latest().map(|t| t.value.handled), Some(1), "off again: it stops");
+    while handled(&telemetry) != Some(2) {
+        let _ = telemetry.changed().await;
+    }
+    let measured = telemetry.latest().map(|t| *t.value);
+    assert!(measured.is_some_and(|t| t.max_wait >= t.last_wait && t.max_handle >= t.last_handle), "wait and handle times are kept: {measured:?}");
 }
