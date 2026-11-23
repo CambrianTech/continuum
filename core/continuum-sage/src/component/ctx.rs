@@ -105,6 +105,24 @@ impl<P: Component> Ctx<P> {
         self.timers.insert(key, alarm);
     }
 
+    /// Run blocking `work` (a disk walk, a file write, a hash) off every worker, and hand its result to
+    /// this component as an input through `into`. Its handler returns at once: the component keeps
+    /// hearing everything else while the work runs, and takes the result like any other input, never
+    /// awaiting it inside `handle` (where its worker would be held for the work's whole length).
+    pub fn off<R: Send + 'static>(&self, work: impl FnOnce() -> R + Send + 'static, into: impl FnOnce(R) -> P::Input + Send + 'static) {
+        let Some(myself) = self.myself.0.get().cloned() else { return };
+        tokio::spawn(async move {
+            match tokio::task::spawn_blocking(work).await {
+                Ok(result) => {
+                    if myself.send(Delivered::act(into(result))).await.is_err() {
+                        continuum_base::probe!(class = "sage.component.off_after_stop", component = P::NAME, "a component stopped before its off-worker result came back");
+                    }
+                }
+                Err(join) => continuum_base::probe!(class = "sage.component.off_failed", component = P::NAME, why = %join, "a component's off-worker work did not finish"),
+            }
+        });
+    }
+
     /// Drop the timer under `key`, if any.
     pub fn cancel(&mut self, key: Key) {
         self.timers.remove(&key);

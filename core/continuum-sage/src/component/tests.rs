@@ -273,6 +273,42 @@ async fn every_input_is_measured_and_the_switch_adds_only_a_probe_line() {
     assert!(measured.is_some_and(|t| t.max_wait >= t.last_wait && t.max_handle >= t.last_handle), "wait and handle times are kept: {measured:?}");
 }
 
+// what this catches: a component that awaits long work inside `handle` (disk relief held its worker
+// 24 s a pass on the M5, 2026-11-23). Work handed off with `ctx.off` runs elsewhere; the component
+// handles its other inputs meanwhile and takes the result as an input.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn work_handed_off_comes_back_as_an_input_while_the_part_keeps_hearing() {
+    enum Job {
+        Start(std::sync::mpsc::Receiver<()>),
+        Ping,
+        Done(u32),
+    }
+    struct Offloader {
+        said: tokio::sync::mpsc::UnboundedSender<&'static str>,
+    }
+    impl Component for Offloader {
+        type Input = Job;
+        const NAME: &'static str = "offloader";
+        const QOS: Qos = Qos::Work;
+        fn wire(&self, _: &mut Wiring<'_, Self>) {}
+        async fn handle(&mut self, input: Job, ctx: &mut Ctx<Self>) {
+            match input {
+                Job::Start(gate) => ctx.off(move || gate.recv().map_or(0, |()| 7), Job::Done),
+                Job::Ping => assert!(self.said.send("ping").is_ok(), "the test reads every value"),
+                Job::Done(value) => assert!(self.said.send(if value == 7 { "done" } else { "wrong" }).is_ok(), "the test reads every value"),
+            }
+        }
+    }
+    let (said, mut heard) = tokio::sync::mpsc::unbounded_channel();
+    let part = start(Offloader { said }, &Bus::new(), OwnerId(Uuid::from_u128(11)), 1);
+    let (open, gate) = std::sync::mpsc::channel();
+    assert!(part.tell(Job::Start(gate)).await);
+    assert!(part.tell(Job::Ping).await);
+    assert_eq!(heard.recv().await, Some("ping"), "it hears other inputs while the work is held");
+    assert!(open.send(()).is_ok(), "the work is still waiting on its gate");
+    assert_eq!(heard.recv().await, Some("done"), "the result arrives as an input");
+}
+
 // Timing runs: what the base costs per input, against a bare stage doing the same work.
 #[cfg(feature = "stress-tests")]
 mod stress {
