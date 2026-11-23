@@ -394,6 +394,7 @@ impl LaneCaptureSink for InMemoryLaneCaptureSink {
     }
 }
 
+
 /// The coordinator. Holds the lane map + the registries it composes.
 pub struct InferenceCoordinator {
     footprint: Arc<FootprintRegistry>,
@@ -408,6 +409,11 @@ pub struct InferenceCoordinator {
     /// Capture sink for lane lifecycle events. Default = Noop
     /// (zero overhead). Swap via `with_capture_sink` at construction.
     capture_sink: Arc<dyn LaneCaptureSink>,
+    /// Owned tap state for wire_tap — replaces the static TAPS LazyLock.
+    /// Tests construct their own TapState for isolation; production uses a
+    /// freshly-constructed one so each coordinator instance has its own
+    /// tap map that cannot leak across test runs.
+    tap_state: Arc<crate::inference::wire_tap::TapState>,
 }
 
 impl InferenceCoordinator {
@@ -423,6 +429,7 @@ impl InferenceCoordinator {
             lanes: DashMap::new(),
             lease_counter: AtomicU64::new(0),
             capture_sink: Arc::new(NoopLaneCaptureSink),
+            tap_state: Arc::new(crate::inference::wire_tap::TapState::new()),
         }
     }
 

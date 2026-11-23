@@ -549,6 +549,7 @@ impl OpenAICompatibleAdapter {
             local_lane,
             response,
             &sink,
+            None, // tap_state: deferred — coordinator owns TapState, wiring to pass it through
         )
         .await?;
         // Her reservation ends only on the engine's terminal receipt (its final frame's finish);

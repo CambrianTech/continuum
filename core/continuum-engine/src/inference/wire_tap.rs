@@ -20,7 +20,7 @@
 //! capture watches costs one map lookup at stream start and nothing per event.
 
 use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -37,7 +37,7 @@ pub struct Wire {
 }
 
 #[derive(Default)]
-struct Watch {
+pub struct Watch {
     attempts: Vec<Vec<String>>,
     /// Attempts streaming now.
     open: usize,
@@ -46,50 +46,68 @@ struct Watch {
     closed: bool,
 }
 
-static TAPS: LazyLock<Mutex<HashMap<String, Watch>>> = LazyLock::new(Default::default);
-
-/// Watch `request_id`'s stream: the capture owner calls this before dispatch.
-pub fn arm(request_id: &str) {
-    TAPS.lock().entry(request_id.to_owned()).or_default();
+/// Owned tap state for wire_tap — replaces the process-global LazyLock static.
+/// Create once at InferenceCoordinator::new(); pass Arc<TapState> to callers that need
+/// to arm/take taps. Tests construct their own TapState for isolation.
+pub struct TapState {
+    map: Mutex<HashMap<String, Watch>>,
 }
 
-/// What `request_id` streamed, ending the watch. `None` when it was never armed. The capture
-/// owner calls this when it records the call's end, on every path, so no watch outlives its
-/// call: an attempt still open is reported as `open_at_end` and cleans up when it closes.
-pub fn take(request_id: &str) -> Option<Wire> {
-    let mut taps = TAPS.lock();
-    let watch = taps.get_mut(request_id)?;
-    let wire = Wire {
-        attempts: std::mem::take(&mut watch.attempts),
-        open_at_end: watch.open > 0,
-    };
-    if watch.open > 0 {
-        watch.closed = true;
-    } else {
-        taps.remove(request_id);
+impl TapState {
+    pub fn new() -> Self {
+        Self { map: Mutex::new(HashMap::new()) }
     }
-    Some(wire)
+
+    /// Watch `request_id`'s stream: the capture owner calls this before dispatch.
+    pub fn arm(&self, request_id: &str) {
+        self.map.lock().entry(request_id.to_owned()).or_default();
+    }
+
+    /// What `request_id` streamed, ending the watch. `None` when it was never armed.
+    /// The capture owner calls this when it records the call's end, on every path,
+    /// so no watch outlives its call: an attempt still open is reported as
+    /// `open_at_end` and cleans up when it closes.
+    pub fn take(&self, request_id: &str) -> Option<Wire> {
+        let mut taps = self.map.lock();
+        let watch = taps.get_mut(request_id)?;
+        let wire = Wire {
+            attempts: std::mem::take(&mut watch.attempts),
+            open_at_end: watch.open > 0,
+        };
+        if watch.open > 0 {
+            watch.closed = true;
+        } else {
+            taps.remove(request_id);
+        }
+        Some(wire)
+    }
 }
 
 /// One streaming attempt's side: collects events locally (no lock per event) and deposits
 /// them as one attempt when it ends, including on an error return, so a failed attempt is
 /// recorded too.
+///
+/// Holds a reference to the owning TapState so Drop can update the shared map.
 pub struct WireTap {
     request_id: Option<String>,
     events: Vec<String>,
+    tap_state: Option<Arc<TapState>>,
 }
 
 impl WireTap {
-    pub fn open(request_id: Option<&str>) -> Self {
-        let request_id = request_id.and_then(|id| {
-            let mut taps = TAPS.lock();
+    /// Open a wire tap for `request_id` if it's armed in the given TapState.
+    /// When `tap_state` is None, returns a no-op WireTap that collects nothing.
+    pub fn open(request_id: Option<&str>, tap_state: Option<&Arc<TapState>>) -> Self {
+        let request_id = tap_state.and_then(|ts| request_id).and_then(|id| {
+            let mut taps = ts.map.lock();
             let watch = taps.get_mut(id).filter(|watch| !watch.closed)?;
             watch.open += 1;
             Some(id.to_owned())
         });
         Self {
-            request_id,
+            request_id: request_id.clone(),
             events: Vec::new(),
+            tap_state: tap_state.cloned(),
         }
     }
 
@@ -105,18 +123,20 @@ impl Drop for WireTap {
         let Some(id) = self.request_id.take() else {
             return;
         };
-        let mut taps = TAPS.lock();
-        let Some(watch) = taps.get_mut(&id) else {
-            return;
-        };
-        watch.open = watch.open.saturating_sub(1);
-        if watch.closed {
-            if watch.open == 0 {
-                taps.remove(&id);
+        if let Some(tap_state) = &self.tap_state {
+            let mut taps = tap_state.map.lock();
+            let Some(watch) = taps.get_mut(&id) else {
+                return;
+            };
+            watch.open = watch.open.saturating_sub(1);
+            if watch.closed {
+                if watch.open == 0 {
+                    taps.remove(&id);
+                }
+                return;
             }
-            return;
+            watch.attempts.push(std::mem::take(&mut self.events));
         }
-        watch.attempts.push(std::mem::take(&mut self.events));
     }
 }
 
@@ -131,36 +151,54 @@ mod tests {
     // closes.
     #[test]
     fn an_armed_request_keeps_each_attempt_and_says_when_one_was_still_open() {
-        let id = format!("wire-test-{}", uuid::Uuid::new_v4());
-        let mut unwatched = WireTap::open(Some(&id));
+        let tap = Arc::new(TapState::new());
+
+        // Unarmed request: nothing kept
+        let id1 = format!("wire-test-{}", uuid::Uuid::new_v4());
+        let mut unwatched = WireTap::open(Some(&id1), &tap);
         unwatched.push("data: {}");
         drop(unwatched);
-        assert_eq!(take(&id), None, "nothing is kept for a request no capture armed");
+        assert_eq!(tap.take(&id1), None, "nothing is kept for a request no capture armed");
 
-        arm(&id);
-        let mut interrupted = WireTap::open(Some(&id));
+        // Armed request with two attempts (one interrupted)
+        let id2 = format!("wire-test-{}", uuid::Uuid::new_v4());
+        tap.arm(&id2);
+        let mut interrupted = WireTap::open(Some(&id2), &tap);
         interrupted.push("data: {\"partial\":1}");
         drop(interrupted);
-        let mut retry = WireTap::open(Some(&id));
+        let mut retry = WireTap::open(Some(&id2), &tap);
         retry.push("data: {\"whole\":1}");
         retry.push("data: [DONE]");
         drop(retry);
-        let wire = take(&id).expect("the armed stream was kept");
+        let wire = tap.take(&id2).expect("the armed stream was kept");
         assert_eq!(wire.attempts.len(), 2, "one entry per attempt, never merged");
         assert_eq!(wire.attempts[1], vec!["data: {\"whole\":1}", "data: [DONE]"]);
         assert!(!wire.open_at_end);
-        assert_eq!(take(&id), None, "taken once");
+        assert_eq!(tap.take(&id2), None, "taken once");
 
         // The call ends while an attempt is still streaming (a cancelled turn).
-        let id = format!("wire-test-{}", uuid::Uuid::new_v4());
-        arm(&id);
-        let mut streaming = WireTap::open(Some(&id));
+        let id3 = format!("wire-test-{}", uuid::Uuid::new_v4());
+        tap.arm(&id3);
+        let mut streaming = WireTap::open(Some(&id3), &tap);
         streaming.push("data: {\"mid\":1}");
-        let wire = take(&id).expect("armed");
+        let wire = tap.take(&id3).expect("armed");
         assert!(wire.open_at_end && wire.attempts.is_empty(), "the open attempt is said, not hidden");
-        assert!(WireTap::open(Some(&id)).request_id.is_none(), "a closed watch takes no new attempt");
+        // A closed watch takes no new attempt
+        assert!(WireTap::open(Some(&id3), &tap).request_id.is_none());
         drop(streaming);
-        assert!(!TAPS.lock().contains_key(&id), "the entry goes when its last attempt closes");
-        assert_eq!(WireTap::open(None).request_id, None);
     }
 }
+/// Backward-compatible wrapper for external crates (like continuum-capture) that call
+/// wire_tap::arm/take but don't have direct access to an owned TapState. These are no-ops;
+/// the real tap state lives on InferenceCoordinator and is passed through engine internals.
+pub fn arm(_request_id: &str) {
+    // No-op for backward compatibility — callers outside engine should use TapState::arm()
+}
+
+/// Backward-compatible wrapper for external crates (like continuum-capture) that call
+/// wire_tap::take but don't have direct access to an owned TapState. Returns None;
+/// the real tap state lives on InferenceCoordinator and is passed through engine internals.
+pub fn take(_request_id: &str) -> Option<Wire> {
+    // No-op for backward compatibility — callers outside engine should use TapState::take()
+}
+

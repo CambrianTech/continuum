@@ -314,6 +314,7 @@ pub(crate) async fn consume_sse_stream(
     local_lane: bool,
     response: reqwest::Response,
     sink: &tokio::sync::mpsc::UnboundedSender<GenerationChunk>,
+    tap_state: Option<&std::sync::Arc<crate::inference::wire_tap::TapState>>,
 ) -> Result<StreamOutcome, String> {
     // Consume the SSE stream: every token reaches `sink` the INSTANT it arrives, and its
     // consumer gets the turn before the next is parsed (`stream_sinks::deliver`).
@@ -355,7 +356,7 @@ pub(crate) async fn consume_sse_stream(
 
     let mut sse_buf: Vec<u8> = Vec::new();
     // Each raw event, kept only when a capture armed this request (card fb6d7912).
-    let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref());
+    let mut wire = crate::inference::wire_tap::WireTap::open(request.request_id.as_deref(), tap_state);
     let mut acc_content = String::new();
     let mut acc_reasoning = String::new();
     let mut acc_tools: Vec<StreamToolAccum> = Vec::new();
@@ -896,16 +897,17 @@ mod tests {
             )
         };
         let id = format!("replay-{}", uuid::Uuid::new_v4());
-        crate::inference::wire_tap::arm(&id);
-        let mut interrupted = crate::inference::wire_tap::WireTap::open(Some(&id));
+        let tap = Arc::new(crate::inference::wire_tap::TapState::new());
+        tap.arm(&id);
+        let mut interrupted = crate::inference::wire_tap::WireTap::open(Some(&id), &tap);
         interrupted.push(&fragment(Some("work/note"), "{\"note\":\"clo"));
         drop(interrupted);
-        let mut retry = crate::inference::wire_tap::WireTap::open(Some(&id));
+        let mut retry = crate::inference::wire_tap::WireTap::open(Some(&id), &tap);
         retry.push(&fragment(Some("work/note"), "{\"note\":"));
         retry.push(&fragment(None, "\"closed\"}"));
         retry.push("data: [DONE]");
         drop(retry);
-        let wire = crate::inference::wire_tap::take(&id).expect("captured");
+        let wire = tap.take(&id).expect("captured");
         let last = replay(wire.attempts.last().expect("the response's attempt"));
         assert_eq!((last[0].name.as_str(), last[0].arguments.as_str()), ("work/note", "{\"note\":\"closed\"}"));
         let merged = replay(&wire.attempts.concat());
