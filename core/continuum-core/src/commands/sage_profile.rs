@@ -9,7 +9,7 @@ use ts_rs::TS;
 
 use crate::sdk_codegen::{AccessLevel, ActionCommand, CommandError, Ctx};
 
-/// One part's measured numbers.
+/// One part's measured numbers: inputs handled, their waits in its intake, their times to handle.
 #[derive(Debug, Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(export, export_to = "../../../protocol/typescript/sage/PartProfile.ts")]
