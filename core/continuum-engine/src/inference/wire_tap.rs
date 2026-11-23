@@ -26,7 +26,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 
 /// What a capture saw of one request's raw stream.
-#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 pub struct Wire {
     /// One entry per streaming attempt, each its events in arrival order. The last attempt is
     /// the one the recorded response came from.

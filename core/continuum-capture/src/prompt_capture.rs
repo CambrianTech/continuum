@@ -33,7 +33,7 @@ pub struct PromptCall {
 }
 
 /// Input-only diagnostic provenance; hashes precede normal replay identity overrides.
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct InputComparison {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -44,14 +44,14 @@ pub struct InputComparison {
 }
 
 /// The selected schema and whole request remain in the existing capture payload.
-#[derive(Debug, Clone, Serialize, ts_rs::TS)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize, ts_rs::TS)]
 pub struct ToolSchemaComparison {
     pub tool_name: String,
     pub captured_schema_sha256: String,
     pub comparison_schema_sha256: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, serde::Deserialize)]
 pub struct ReplaySource {
     pub input_comparison: InputComparison,
     /// Whether replay pinned an implicit model using its recorded terminal response.

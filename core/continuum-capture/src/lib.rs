@@ -16,4 +16,6 @@ pub mod capture_log;
 pub mod capture_pool;
 /// The capture's write-behind: a SAGE component that hears capture records and appends them to their owner's log.
 pub mod capture_writer;
+/// A prompt call as frames: its submission, its end and an unwritable record, and their one decode.
+pub mod call_frames;
 pub mod prompt_capture;
