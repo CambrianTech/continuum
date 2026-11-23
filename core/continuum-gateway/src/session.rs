@@ -8,7 +8,8 @@
 
 use std::sync::Arc;
 
-use continuum_capture::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall, PromptCaptureSink};
+use continuum_capture::capture_writer::Delivery;
+use continuum_capture::prompt_capture::{CaptureLease, FramePromptCaptureSink, PromptCall, PromptCaptureSink};
 use continuum_engine::ai::{TextGenerationRequest, TextGenerationResponse};
 use uuid::Uuid;
 
@@ -26,37 +27,44 @@ pub(crate) fn session_of(request: &TextGenerationRequest) -> Uuid {
     Uuid::new_v5(&DRIVER_SESSIONS, head.as_bytes())
 }
 
-/// The capture could not be opened, so the call is refused rather than served unrecorded
-/// (the capture contract: no call outside the one capture, `continuum-capture`).
+/// Why a call cannot be recorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Unrecordable {
+    /// No capture writer runs on this node: a record said now would reach no disk.
+    NoWriter,
+    /// The call's submission could not be encoded as a frame.
+    Unencodable,
+}
+
+/// The call cannot be recorded, so it is refused rather than served unrecorded (the capture
+/// contract: no call outside the one capture, `continuum-capture`).
 #[derive(Debug)]
 pub(crate) struct CaptureUnavailable {
     session: Uuid,
-    error: std::io::Error,
+    why: Unrecordable,
 }
 
 impl std::fmt::Display for CaptureUnavailable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "this node cannot record session {} ({}); the call is refused rather than served unrecorded", self.session, self.error)
+        let why = match self.why {
+            Unrecordable::NoWriter => "no capture writer runs on this node",
+            Unrecordable::Unencodable => "its submission could not be encoded",
+        };
+        write!(f, "this node cannot record session {} ({why}); the call is refused rather than served unrecorded", self.session)
     }
 }
 
-/// Start recording one call of `session` in the capture `opened` for it. A capture that
-/// could not be opened refuses the call, said in a probe and to the agent.
-pub(crate) fn record(
-    opened: std::io::Result<JsonlPromptCaptureSink>,
-    session: Uuid,
-    request_id: &str,
-    wire: &'static str,
-    request: &TextGenerationRequest,
-) -> Result<CaptureLease, CaptureUnavailable> {
-    let sink: Arc<dyn PromptCaptureSink> = match opened {
-        Ok(sink) => Arc::new(sink),
-        Err(error) => {
-            continuum_base::probe!(class = "gateway.capture_unavailable", session = %session, error = %error,
-                "this agent call is refused: its capture cannot be opened");
-            return Err(CaptureUnavailable { session, error });
-        }
+/// Start recording one call of `session` through the node's capture writer. A call that
+/// cannot be recorded is refused, said in a probe and to the agent.
+pub(crate) fn record(session: Uuid, request_id: &str, wire: &'static str, request: &TextGenerationRequest) -> Result<CaptureLease, CaptureUnavailable> {
+    let refuse = |why: Unrecordable| {
+        continuum_base::probe!(class = "gateway.capture_unavailable", session = %session, why = ?why, "this agent call is refused: it cannot be recorded");
+        CaptureUnavailable { session, why }
     };
+    if !continuum_capture::capture_writer::running() {
+        return Err(refuse(Unrecordable::NoWriter));
+    }
+    let sink: Arc<dyn PromptCaptureSink> = Arc::new(FramePromptCaptureSink::new(session, Delivery::Node));
     let call = PromptCall {
         request_id: request_id.to_owned(),
         persona_id: session,
@@ -67,7 +75,11 @@ pub(crate) fn record(
         cause_root: None,
         replay_of: None,
     };
-    Ok(CaptureLease::start(sink, &call, request))
+    let lease = CaptureLease::start(sink, &call, request);
+    match lease.cursor() {
+        Some(_) => Ok(lease),
+        None => Err(refuse(Unrecordable::Unencodable)),
+    }
 }
 
 /// End a recorded call with the generation's outcome. A call that never reaches this (the
@@ -106,17 +118,17 @@ mod tests {
         assert_ne!(session_of(&first), session_of(&other));
     }
 
-    // what this catches: a call served unrecorded when its capture cannot be opened (the
-    // probe-only path of 34672ec73), invisible to the act inspector, replay and Dreaming.
+    // what this catches: a call served unrecorded when nothing can record it (the probe-only
+    // path of 34672ec73), invisible to the act inspector, replay and Dreaming. This test process
+    // starts no capture writer, so the call is refused.
     #[test]
-    fn a_capture_that_cannot_open_refuses_the_call() {
+    fn a_call_no_writer_can_record_is_refused() {
         let call = request("You are a coder.", &[("user", "fix median")]);
-        let opened = Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "capture home read-only"));
-        let Err(unavailable) = record(opened, session_of(&call), "chatcmpl_1", "openai_chat", &call) else {
-            panic!("test: an unopened capture must refuse the call");
+        let Err(unavailable) = record(session_of(&call), "chatcmpl_1", "openai_chat", &call) else {
+            panic!("test: a call with no capture writer must be refused");
         };
         let refused = crate::server::capture_refused::<crate::wire::chat::Chat>(&unavailable);
         assert_eq!(refused.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
-        assert!(unavailable.to_string().contains("capture home read-only"), "the agent is told why: {unavailable}");
+        assert!(unavailable.to_string().contains("no capture writer"), "the agent is told why: {unavailable}");
     }
 }

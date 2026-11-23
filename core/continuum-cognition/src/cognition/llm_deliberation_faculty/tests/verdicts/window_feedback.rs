@@ -179,7 +179,7 @@ async fn live_window_observation_cannot_overwrite_a_newer_binding() {
 #[tokio::test]
 async fn provider_context_feedback_refits_and_captures_each_attempt() {
     use crate::ai::inference_error::InferenceError;
-    use crate::cognition::prompt_capture::{self, CallStatus, JsonlPromptCaptureSink};
+    use crate::cognition::prompt_capture::{CallStatus, FramePromptCaptureSink, Playback};
     use crate::cognition::workspace::Burst;
 
     for (failed_response, residual) in [(false, false), (true, false), (false, true)] {
@@ -240,10 +240,7 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                 .with_tools(vec![read_tool()])
                 .with_working_memory(wm.clone())
                 .with_working_set(registry)
-                .with_prompt_capture(Arc::new(
-                    JsonlPromptCaptureSink::open(home.path(), persona)
-                        .expect("capture fixture"),
-                ));
+                .with_prompt_capture(Arc::new(FramePromptCaptureSink::at(home.path(), persona)));
         let mut turns: Vec<_> = (0..160)
             .map(|i| {
                 BurstTurn::attributed(
@@ -386,7 +383,8 @@ async fn provider_context_feedback_refits_and_captures_each_attempt() {
                     <= window as usize
             );
         }
-        let page = prompt_capture::page(home.path(), persona, None, false, 10)
+        let page = Playback::at(home.path(), persona)
+            .page(None, false, std::num::NonZeroUsize::new(10).expect("ten"))
             .expect("actual capture lifecycle");
         let terminals: Vec<_> = page
             .entries

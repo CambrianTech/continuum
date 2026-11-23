@@ -171,10 +171,6 @@ pub struct FromTurnsParams {
     export_to = "../../../protocol/typescript/dataset/FromCapturesParams.ts"
 )]
 pub struct FromCapturesParams {
-    /// Directory of live prompt-captures (default `~/.continuum/fixtures/prompt-captures`).
-    #[serde(default)]
-    #[ts(optional)]
-    pub captures_dir: Option<String>,
     /// Override the datasets root directory (default `~/.continuum/datasets`).
     #[serde(default)]
     #[ts(optional)]
@@ -224,17 +220,7 @@ pub struct FromCapturesParams {
 )]
 pub struct ImportRealClassEvalParams {
     /// Path to a cloned RealClassEval repo root (auto-discovers CSVs + tests).
-    #[serde(default)]
-    #[ts(optional)]
-    pub repo_dir: Option<String>,
-    /// Legacy single-CSV mode: path to one RealClassEval CSV (requires `testsDir`).
-    #[serde(default)]
-    #[ts(optional)]
-    pub csv_path: Option<String>,
-    /// Legacy single-CSV mode: directory of PYNGUIN test files.
-    #[serde(default)]
-    #[ts(optional)]
-    pub tests_dir: Option<String>,
+    pub repo_dir: String,
     /// Override the output directory (default `<datasets root>/realclasseval`).
     #[serde(default)]
     #[ts(optional)]

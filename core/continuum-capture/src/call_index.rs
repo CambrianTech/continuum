@@ -11,7 +11,7 @@ use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use crate::call_frames::{CallKey, IncompleteHead, SubmittedHead, TerminalHead};
 use crate::capture_log::{self, Cursor, Entry, LogError};
 use crate::frame::{FrameError, FrameKind};
-use crate::prompt_capture::CallStatus;
+use crate::call_frames::CallStatus;
 
 /// One frame's place: its cursor and its index entry (offset, length, when it was captured).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,6 +34,18 @@ impl CallPlaces {
     /// When the call was first captured: what orders calls oldest to newest.
     pub fn first_at(&self) -> Option<u64> {
         [self.submitted, self.terminal, self.incomplete].iter().flatten().map(|p| p.entry.captured_at_ms).min()
+    }
+
+    /// How the call stands: its end's status, else a receipt that it could not be recorded, else
+    /// submitted and not yet ended.
+    pub fn status(&self) -> CallStatus {
+        if let Some(ended) = self.ended {
+            return ended;
+        }
+        if self.incomplete.is_some() {
+            return CallStatus::Incomplete;
+        }
+        CallStatus::Submitted
     }
 
     fn without(&mut self, generation: u64) {
@@ -127,12 +139,12 @@ mod tests {
     use continuum_kernel::system_resources::disk_reporters::TrackedDir;
     use uuid::Uuid;
 
-    fn append(log: &mut CaptureLog, record: crate::capture_writer::CaptureRecord) {
+    fn append(log: &mut CaptureLog, record: crate::capture_log::CaptureRecord) {
         let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
         log.append_parts(crate::frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).expect("test: append");
     }
 
-    fn submitted(key: &CallKey, request: &TextGenerationRequest, at: u64) -> crate::capture_writer::CaptureRecord {
+    fn submitted(key: &CallKey, request: &TextGenerationRequest, at: u64) -> crate::capture_log::CaptureRecord {
         let head = SubmittedHead {
             key: key.clone(),
             build_sha: "abc".into(),
@@ -153,14 +165,14 @@ mod tests {
     #[test]
     fn a_call_is_found_by_its_key_across_generations_and_refreshes() {
         let dir = tempfile::tempdir().expect("test: dir");
-        let writer = TrackedDir::new("call-index-test", dir.path().to_path_buf()).writer().owned_by(Uuid::nil());
+        let writer = || TrackedDir::new("call-index-test", dir.path().to_path_buf()).writer().owned_by(Uuid::nil());
         let request = TextGenerationRequest { messages: vec![ChatMessage::text("user", "close the stray cards")], ..Default::default() };
         let (a, b) = (CallKey { session_id: Uuid::nil(), request_id: "z".into() }, CallKey { session_id: Uuid::nil(), request_id: "b".into() });
 
-        let mut first = CaptureLog::open(writer.clone()).expect("test: open");
+        let mut first = CaptureLog::open(writer()).expect("test: open");
         append(&mut first, submitted(&a, &request, 10));
         append(&mut first, submitted(&b, &request, 11));
-        let mut index = CallIndex::new(writer.clone());
+        let mut index = CallIndex::new(writer());
         index.refresh().expect("test: refresh");
         assert_eq!(index.get(&a).and_then(|p| p.submitted).map(|p| p.cursor), Some(Cursor { generation: 0, entry: 0 }));
         assert!(index.get(&a).is_some_and(|p| p.terminal.is_none()), "not ended yet");
@@ -168,7 +180,7 @@ mod tests {
         let end = TerminalHead { key: a.clone(), status: CallStatus::Completed, elapsed_ms: 5, error: None };
         append(&mut first, Ending { head: end.clone(), response: None, wire: None }.record(Uuid::nil(), 12).expect("test: record"));
         drop(first);
-        let mut second = CaptureLog::open(writer.clone()).expect("test: reopen");
+        let mut second = CaptureLog::open(writer()).expect("test: reopen");
         append(&mut second, Ending { head: TerminalHead { key: b.clone(), ..end }, response: None, wire: None }.record(Uuid::nil(), 13).expect("test: record"));
         index.refresh().expect("test: refresh");
         index.refresh().expect("test: a second refresh reads nothing new");
@@ -178,7 +190,7 @@ mod tests {
         let order: Vec<&str> = index.oldest_first().iter().map(|(k, _)| k.request_id.as_str()).collect();
         assert_eq!(order, ["z", "b"], "first captured first, whatever the keys' order");
 
-        std::fs::remove_file(writer.path(std::path::Path::new("0000000000000000.index")).expect("test: path")).expect("test: evict");
+        std::fs::remove_file(writer().path(std::path::Path::new("0000000000000000.index")).expect("test: path")).expect("test: evict");
         index.refresh().expect("test: refresh");
         assert!(index.get(&a).is_none(), "its generation is gone, and so is it");
         assert_eq!(index.get(&b).map(|p| (p.submitted, p.terminal.map(|t| t.cursor))), Some((None, Some(Cursor { generation: 1, entry: 0 }))), "its end outlives its submission");

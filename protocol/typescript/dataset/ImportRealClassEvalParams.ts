@@ -7,15 +7,7 @@ export type ImportRealClassEvalParams = {
 /**
  * Path to a cloned RealClassEval repo root (auto-discovers CSVs + tests).
  */
-repoDir?: string, 
-/**
- * Legacy single-CSV mode: path to one RealClassEval CSV (requires `testsDir`).
- */
-csvPath?: string, 
-/**
- * Legacy single-CSV mode: directory of PYNGUIN test files.
- */
-testsDir?: string, 
+repoDir: string, 
 /**
  * Override the output directory (default `<datasets root>/realclasseval`).
  */

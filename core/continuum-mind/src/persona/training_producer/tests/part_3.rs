@@ -9,7 +9,8 @@ use super::*;
     #[test]
     pub(super) fn a_staged_turn_is_read_back_as_the_calls_she_lived_and_a_hole_is_named() {
         use crate::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
-        use crate::cognition::prompt_capture::{CaptureLease, JsonlPromptCaptureSink, PromptCall};
+        use crate::cognition::capture::fixture_class;
+        use crate::cognition::prompt_capture::{CaptureLease, FramePromptCaptureSink, PromptCall};
         let dir = tempfile::tempdir().expect("capture dir");
         let persona = Uuid::new_v4();
         let request = TextGenerationRequest {
@@ -39,7 +40,8 @@ use super::*;
             error: None,
             timing: None,
         };
-        let sink = JsonlPromptCaptureSink::open(dir.path(), persona).expect("sink");
+        let sink = FramePromptCaptureSink::at(dir.path(), persona);
+        let class = fixture_class(dir.path());
         let call = PromptCall {
             request_id: "req-lived".into(),
             persona_id: persona,
@@ -52,15 +54,14 @@ use super::*;
         };
         let mut lease = CaptureLease::start(Arc::new(sink), &call, &request);
         let submitted = lease.cursor().expect("durable submission").to_owned();
-        // the receipt carries the COMPLETED entry's cursor: the submission holds no response
-        let cursor = lease.finish(Some(&response), None).expect("completed entry");
-        assert_ne!(cursor, submitted);
-        let (_, only_request) =
-            read_lived_calls(Some(dir.path()), persona, vec![Some(submitted)], Vec::new());
+        // read before the call ends: the submission alone holds no response
+        let (_, only_request) = read_lived_calls(Some(&class), persona, vec![Some(submitted.clone())], Vec::new());
         assert!(only_request.is_some_and(|r| r.contains("no terminal response")));
+        let cursor = lease.finish(Some(&response), None).expect("completed entry");
+        assert_eq!(cursor, submitted, "a call's cursor is its identity, the same before and after it ends");
 
         let (calls, missing) =
-            read_lived_calls(Some(dir.path()), persona, vec![Some(cursor.clone())], Vec::new());
+            read_lived_calls(Some(&class), persona, vec![Some(cursor.clone())], Vec::new());
         assert_eq!(missing, None);
         assert_eq!(calls.len(), 1);
         let lived = &calls[0];
@@ -79,7 +80,7 @@ use super::*;
         assert_eq!((again.len(), missing), (1, None));
 
         // A hole anywhere in the turn is named, never staged as complete.
-        let (_, hole) = read_lived_calls(Some(dir.path()), persona, vec![Some(cursor), None], Vec::new());
+        let (_, hole) = read_lived_calls(Some(&class), persona, vec![Some(cursor), None], Vec::new());
         assert!(hole.is_some_and(|reason| reason.contains("no capture cursor")));
 
         let stamp = OutcomeStamp {

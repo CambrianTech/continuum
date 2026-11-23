@@ -6,10 +6,6 @@ import type { PersonaRef } from "../identity/PersonaRef";
  */
 export type FromCapturesParams = { 
 /**
- * Directory of live prompt-captures (default `~/.continuum/fixtures/prompt-captures`).
- */
-capturesDir?: string, 
-/**
  * Override the datasets root directory (default `~/.continuum/datasets`).
  */
 outputDir?: string, 

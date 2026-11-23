@@ -14,11 +14,53 @@ use std::sync::Arc;
 use continuum_engine::ai::types::{ChatMessage, TextGenerationRequest, TextGenerationResponse};
 use continuum_engine::inference::wire_tap::Wire;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::capture_writer::CaptureRecord;
+use crate::capture_log::CaptureRecord;
 use crate::frame::{FrameError, FrameKind, FrameRef};
-use crate::prompt_capture::{CallStatus, ReplaySource};
+
+/// How a captured call stands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export, export_to = "../../../protocol/typescript/cognition/CallStatus.ts")]
+pub enum CallStatus {
+    Submitted,
+    Completed,
+    Failed,
+    Cancelled,
+    Incomplete,
+    Legacy,
+}
+
+/// Input-only diagnostic provenance; hashes precede normal replay identity overrides.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct InputComparison {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tool_schema: Option<ToolSchemaComparison>,
+    pub omitted_message_indices: Vec<u32>,
+    pub captured_request_sha256: String,
+    pub comparison_request_sha256: String,
+}
+
+/// The selected schema and whole request remain in the existing capture payload.
+#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
+pub struct ToolSchemaComparison {
+    pub tool_name: String,
+    pub captured_schema_sha256: String,
+    pub comparison_schema_sha256: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ReplaySource {
+    pub input_comparison: InputComparison,
+    /// Whether replay pinned an implicit model using its recorded terminal response.
+    pub model_from_response: bool,
+    pub persona_id: Uuid,
+    pub cursor: String,
+}
+
 
 /// One call's identity in its owner's log: the session that made it and its submitted request id.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]

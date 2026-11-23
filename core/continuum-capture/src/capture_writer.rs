@@ -21,22 +21,10 @@ use continuum_sage::dataflow::{Event, TopicName};
 use continuum_sage::Qos;
 use uuid::Uuid;
 
-use crate::capture_log::{self, CaptureLog, Entry};
-use crate::frame::FrameKind;
+use crate::capture_log::{self, CaptureRecord, Entry, OpenLogs};
 
 /// The topic every capture record is emitted on, on the node bus.
 pub const CAPTURE: TopicName = TopicName("capture/records");
-
-/// One record to capture: its owner, its kind, its header already encoded (`frame` keeps it as given)
-/// and its bulk as shared byte runs (handed over, never copied on the turn path).
-#[derive(Debug, Clone)]
-pub struct CaptureRecord {
-    pub owner: Uuid,
-    pub kind: FrameKind,
-    pub header: Vec<u8>,
-    pub runs: Vec<Arc<[u8]>>,
-    pub captured_at_ms: u64,
-}
 
 /// What the writer measured at start, from the frames it actually wrote before.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -87,7 +75,7 @@ pub fn newest_entries(class: &ClassWriter) -> Vec<Entry> {
 struct CaptureWriter {
     class: ClassWriter,
     bus: &'static Bus,
-    logs: Arc<parking_lot::Mutex<HashMap<Uuid, CaptureLog>>>,
+    logs: Arc<OpenLogs>,
     sizing: Sizing,
     /// The newest revision handled: a jump past it is records the window displaced.
     last: u64,
@@ -110,20 +98,14 @@ impl CaptureWriter {
         });
         continuum_base::probe!(class = "capture.writer.sized", window = sizing.window.get() as u64, mean_frame = ?sizing.mean_frame, bytes = ?bytes,
             "the capture writer's window, measured from the frames it wrote before");
-        Self { class, bus, logs: Default::default(), sizing, last: 0, _claim }
+        let logs: Arc<OpenLogs> = Default::default();
+        // Earlier builds' JSONL captures move into frames through these same open logs, off the
+        // workers, while the writer serves (card 699578cb, slice 5).
+        let (moving, into) = (class.clone(), Arc::clone(&logs));
+        tokio::task::spawn_blocking(move || crate::jsonl_migration::migrate(&moving, &into));
+        Self { class, bus, logs, sizing, last: 0, _claim }
     }
 
-}
-
-/// Append `record` to its owner's open log, opening the owner's next generation on its first.
-fn write(logs: &parking_lot::Mutex<HashMap<Uuid, CaptureLog>>, class: &ClassWriter, record: &CaptureRecord) -> std::io::Result<()> {
-    let mut logs = logs.lock();
-    let log = match logs.entry(record.owner) {
-        std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
-        std::collections::hash_map::Entry::Vacant(slot) => slot.insert(CaptureLog::open(class.owned_by(record.owner))?),
-    };
-    let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
-    log.append_parts(crate::frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).map(|_| ()).map_err(std::io::Error::other)
 }
 
 /// Where a capture's records go.
@@ -139,7 +121,7 @@ pub enum Delivery {
 /// An inline delivery's own open logs.
 pub struct Inline {
     class: ClassWriter,
-    logs: parking_lot::Mutex<HashMap<Uuid, CaptureLog>>,
+    logs: OpenLogs,
 }
 
 impl Delivery {
@@ -163,7 +145,7 @@ impl Delivery {
         match self {
             Self::Node => emit(record),
             Self::Inline(inline) => {
-                if let Err(error) = write(&inline.logs, &inline.class, &record) {
+                if let Err(error) = inline.logs.append(&inline.class, &record) {
                     continuum_base::probe!(class = "capture.write_failed", owner = %record.owner, error = %error,
                         "a capture record was not written: this record is lost, loudly");
                 }
@@ -208,6 +190,12 @@ pub fn start_node(class: ClassWriter) {
     }
 }
 
+/// Whether this node's capture writer was started: a caller that must not serve a call
+/// unrecorded refuses it when not.
+pub fn running() -> bool {
+    NODE.get().is_some()
+}
+
 impl From<Event<CaptureRecord>> for Heard {
     fn from(event: Event<CaptureRecord>) -> Self {
         Heard(event)
@@ -236,7 +224,7 @@ impl Component for CaptureWriter {
         }
         self.last = through;
         let (class, logs, record) = (self.class.clone(), Arc::clone(&self.logs), Arc::clone(&event.value));
-        let written = tokio::task::spawn_blocking(move || write(&logs, &class, &record)).await;
+        let written = tokio::task::spawn_blocking(move || logs.append(&class, &record)).await;
         let failure = match written {
             Ok(Ok(())) => None,
             Ok(Err(error)) => Some(error.to_string()),
@@ -252,6 +240,7 @@ impl Component for CaptureWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::frame::FrameKind;
 
     fn entry(captured_at_ms: u64, write_us: u32, length: u32) -> Entry {
         Entry { offset: 0, length, kind: FrameKind::Submitted as u8, captured_at_ms, write_us }

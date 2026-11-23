@@ -19,19 +19,20 @@ use serde::Serialize;
 use ts_rs::TS;
 use uuid::Uuid;
 
-use crate::call_frames::{self, CallFrame, CallKey, SubmittedHead, TerminalHead};
+use crate::call_frames::{self, CallFrame, CallKey, CallStatus, ReplaySource, SubmittedHead, TerminalHead};
 use crate::call_index::{CallIndex, CallPlaces, Placed};
 use crate::capture_log::{self, LogError};
 use crate::frame::{self, FrameError};
-use crate::prompt_capture::{CallStatus, ReplaySource};
 
 /// Why captured calls could not be read.
 #[derive(Debug, thiserror::Error)]
 pub enum PlaybackError {
     #[error("{0:?} is not a capture cursor (<session>/<request id>)")]
     BadCursor(String),
-    #[error("no captured frames for {0}: not written yet, or removed by retention")]
-    NotCaptured(String),
+    #[error("no captured frames for {}: not written yet, or removed by retention", cursor_of(.0))]
+    NotCaptured(CallKey),
+    #[error("{}: {refusal}", cursor_of(key))]
+    Undecodable { key: CallKey, refusal: DecodeRefusal },
     #[error(transparent)]
     Log(#[from] LogError),
     #[error(transparent)]
@@ -119,21 +120,32 @@ pub struct PlaybackDetail {
 }
 
 /// The exact request she was served and, when the call finished, the exact response she gave.
+#[derive(Debug, Serialize)]
 pub struct CapturedCall {
-    pub context_window: Option<u32>,
+    /// The submission's fields: its room, cause, window and identity.
+    pub head: SubmittedHead,
     pub request: TextGenerationRequest,
     pub response: Option<TextGenerationResponse>,
 }
 
+/// Why a call's detail is not a whole call.
+#[derive(Debug, thiserror::Error)]
+pub enum DecodeRefusal {
+    #[error("capture integrity: {}", .0.join("; "))]
+    Integrity(Vec<String>),
+    #[error("capture has no submitted request")]
+    NoSubmission,
+}
+
 /// Decode a call's detail into its typed call; a call with integrity issues or no submission is
 /// refused by name, never guessed at.
-pub fn decode(detail: PlaybackDetail) -> Result<CapturedCall, String> {
+pub fn decode(detail: PlaybackDetail) -> Result<CapturedCall, DecodeRefusal> {
     if !detail.issues.is_empty() {
-        return Err(format!("capture integrity: {}", detail.issues.join("; ")));
+        return Err(DecodeRefusal::Integrity(detail.issues));
     }
-    let submitted = detail.submitted.ok_or("capture has no submitted request")?;
+    let submitted = detail.submitted.ok_or(DecodeRefusal::NoSubmission)?;
     Ok(CapturedCall {
-        context_window: submitted.head.context_window,
+        head: submitted.head,
         request: submitted.request,
         response: detail.terminal.and_then(|end| end.response),
     })
@@ -156,7 +168,7 @@ impl Playback {
     /// `persona`'s calls under a `fixtures` class rooted at `dir`, for a test or tool.
     #[cfg(any(test, feature = "test-fixtures"))]
     pub fn at(dir: &std::path::Path, persona: Uuid) -> Self {
-        Self::of(&crate::prompt_capture::fixture_class(dir), persona)
+        Self::of(&crate::capture::fixture_class(dir), persona)
     }
 
     /// The owner's index, refreshed with what was appended since the last read.
@@ -173,14 +185,9 @@ impl Playback {
     }
 
     fn header(&self, key: &CallKey, places: &CallPlaces) -> Result<CallHeader, PlaybackError> {
-        let submitted = places.submitted.ok_or_else(|| PlaybackError::NotCaptured(cursor_of(key)))?;
+        let submitted = places.submitted.ok_or_else(|| PlaybackError::NotCaptured(key.clone()))?;
         let (_, raw) = capture_log::frame_head(&self.writer, submitted.cursor.generation, &submitted.entry)?;
         let head: SubmittedHead = rmp_serde::from_slice(&raw).map_err(FrameError::from)?;
-        let status = match (places.ended, places.incomplete) {
-            (Some(ended), _) => ended,
-            (None, Some(_)) => CallStatus::Incomplete,
-            (None, None) => CallStatus::Submitted,
-        };
         let newest = [places.submitted, places.terminal, places.incomplete].iter().flatten().map(|p| p.entry.captured_at_ms).max();
         Ok(CallHeader {
             cursor: cursor_of(key),
@@ -192,7 +199,7 @@ impl Playback {
             cause_root: head.cause_root,
             captured_at_ms: newest.unwrap_or(submitted.entry.captured_at_ms), // unwrap_or: the submission is one of the places, so a newest exists
             started_at_ms: submitted.entry.captured_at_ms,
-            status,
+            status: places.status(),
             model: head.model,
         })
     }
@@ -217,7 +224,7 @@ impl Playback {
         let boundary = match position {
             Some(position) => {
                 let key = key_of(position)?;
-                let at = listed.iter().position(|(k, _)| **k == key).ok_or_else(|| PlaybackError::NotCaptured(position.to_owned()))?;
+                let at = listed.iter().position(|(k, _)| **k == key).ok_or(PlaybackError::NotCaptured(key))?;
                 at + usize::from(newer)
             }
             None if newer => 0,
@@ -238,13 +245,17 @@ impl Playback {
     pub fn detail(&self, cursor: &str) -> Result<PlaybackDetail, PlaybackError> {
         let key = key_of(cursor)?;
         let index = self.index()?;
-        let places = index.lock().get(&key).cloned().ok_or_else(|| PlaybackError::NotCaptured(cursor.to_owned()))?;
+        let places = index.lock().get(&key).cloned().ok_or_else(|| PlaybackError::NotCaptured(key.clone()))?;
         let header = self.header(&key, &places)?;
         let mut issues = Vec::new();
-        let mut read = |placed: Option<Placed>| placed.map(|p| self.frame(p)).transpose().unwrap_or_else(|error| {
-            issues.push(error.to_string());
-            None
-        });
+        let mut read = |placed: Option<Placed>| match placed.map(|p| self.frame(p)) {
+            Some(Ok(frame)) => Some(frame),
+            Some(Err(error)) => {
+                issues.push(error.to_string());
+                None
+            }
+            None => None,
+        };
         let submitted = match read(places.submitted) {
             Some(CallFrame::Submitted { head, request, replay }) => Some(CapturedSubmission { head, request, replay }),
             _ => None,
@@ -254,6 +265,12 @@ impl Playback {
             _ => None,
         };
         Ok(PlaybackDetail { header, submitted, terminal, issues })
+    }
+
+    /// The call `cursor` names as its typed request and response, or why it is not whole.
+    pub fn call(&self, cursor: &str) -> Result<CapturedCall, PlaybackError> {
+        let key = key_of(cursor)?;
+        decode(self.detail(cursor)?).map_err(|refusal| PlaybackError::Undecodable { key, refusal })
     }
 
     /// The newest `limit` calls that completed with a response that is not a generation error,
@@ -271,7 +288,7 @@ impl Playback {
             .collect();
         let mut calls = Vec::new();
         for key in candidates {
-            let call = decode(self.detail(&cursor_of(&key))?).map_err(|error| PlaybackError::NotCaptured(format!("{}: {error}", cursor_of(&key))))?;
+            let call = self.call(&cursor_of(&key))?;
             if call.response.as_ref().is_some_and(|r| r.generation_error().is_none()) {
                 calls.push(call);
             }

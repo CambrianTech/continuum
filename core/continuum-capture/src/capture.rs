@@ -18,3 +18,10 @@ pub fn fixture_dir(relative: &str) -> Option<PathBuf> {
 pub fn prompt_class() -> std::io::Result<continuum_kernel::system_resources::disk_reporters::ClassWriter> {
     continuum_kernel::system_resources::disk_reporters::ClassWriter::of("fixtures")?.within("prompt-captures")
 }
+
+/// The prompt-captures scope of a `fixtures` class rooted at `dir`, for a test or tool.
+#[cfg(any(test, feature = "test-fixtures"))]
+pub fn fixture_class(dir: &std::path::Path) -> continuum_kernel::system_resources::disk_reporters::ClassWriter {
+    let class = continuum_kernel::system_resources::disk_reporters::TrackedDir::new("fixtures", dir.to_path_buf()).writer();
+    class.within("prompt-captures").expect("a plain scope name") // JUSTIFIED: a constant plain name, refused only if it had a separator
+}

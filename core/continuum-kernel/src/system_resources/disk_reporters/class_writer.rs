@@ -43,7 +43,7 @@ impl ClassWriter {
         super::tracked_dir(class).map(|dir| dir.writer()).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("disk class {class} is not registered: boot has not installed the registry, or the class has no row in standard_tracked_dirs"),
+                format!("disk class {class} has no directory in this process: boot registers the classes before any writer resolves one, and a class needs a row in standard_tracked_dirs"),
             )
         })
     }

@@ -66,71 +66,54 @@
     fn capture_to_example_tags_skill_axis_and_keeps_acting_turns() {
         // A prose turn: system + a room burst + a spoken reply → one SFT pair on
         // the `domain` axis.
-        let good = json!({
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "[room x]\npeer: where is render_ai_help?" }],
-            "response": { "text": "It's in core/continuum-core/src/commands/help.rs." }
-        });
-        let ex = capture_to_example(&good, true).expect("clean turn → example");
+        use crate::ai::types::{ChatMessage, TextGenerationRequest};
+        let turn = |user: &str| TextGenerationRequest {
+            system_prompt: Some("You are Asha.".into()),
+            messages: if user.is_empty() { Vec::new() } else { vec![ChatMessage::text("user", user)] },
+            ..Default::default()
+        };
+        let good = capture_reply("It's in core/continuum-core/src/commands/help.rs.");
+        let ex = capture_to_example(&turn("[room x]\npeer: where is render_ai_help?"), &good, true).expect("clean turn → example");
         let msgs = ex.get("messages").and_then(|m| m.as_array()).unwrap();
         assert_eq!(msgs[0]["role"], "system");
         assert_eq!(msgs.last().unwrap()["role"], "assistant");
-        assert!(msgs.last().unwrap()["content"]
-            .as_str()
-            .unwrap()
-            .contains("help.rs"));
+        assert!(msgs.last().unwrap()["content"].as_str().unwrap().contains("help.rs"));
         assert_eq!(ex["skillAxis"], "domain", "prose turn → domain axis");
 
-        // A tool-call envelope the model emitted as its literal answer (JSON-in-
-        // prompt) → KEPT, tagged operational. This is the act we want to train.
-        let tool_json = json!({
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "ping it" }],
-            "response": { "text": "{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}" }
-        });
-        let ex = capture_to_example(&tool_json, true).expect("acting turn → example");
-        assert_eq!(
-            ex["skillAxis"], "operational",
-            "JSON-in-prompt call → operational"
-        );
+        // A tool-call envelope the model emitted as its literal answer (JSON-in-prompt) → KEPT,
+        // tagged operational. This is the act we want to train.
+        let tool_json = capture_reply("{\"tool_call\": {\"name\": \"ping\", \"arguments\": {}}}");
+        let ex = capture_to_example(&turn("ping it"), &tool_json, true).expect("acting turn → example");
+        assert_eq!(ex["skillAxis"], "operational", "JSON-in-prompt call → operational");
 
-        // A structured `response.toolCalls` array (adapter-extracted) with prose
-        // preamble → KEPT, tagged operational.
-        let structured = json!({
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "write merge_intervals and test it" }],
-            "response": {
-                "text": "I'll write it then run the tests.",
-                "toolCalls": [{ "id": "c1", "input": { "code": "fn merge_intervals() {}" } }]
-            }
-        });
-        let ex = capture_to_example(&structured, true).expect("structured-call turn → example");
-        assert_eq!(
-            ex["skillAxis"], "operational",
-            "structured toolCalls → operational"
-        );
+        // A structured tool call (adapter-extracted) with prose preamble → KEPT, tagged operational.
+        let mut structured = capture_reply("I'll write it then run the tests.");
+        structured.tool_calls = Some(vec![crate::ai::types::ToolCall { id: "c1".into(), name: "code/write".into(), input: json!({ "code": "fn merge_intervals() {}" }) }]);
+        let ex = capture_to_example(&turn("write merge_intervals and test it"), &structured, true).expect("structured-call turn → example");
+        assert_eq!(ex["skillAxis"], "operational", "structured toolCalls → operational");
 
         // Empty response → dropped (no pair).
-        let empty = json!({
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "hi" }],
-            "response": { "text": "   " }
-        });
-        assert!(
-            capture_to_example(&empty, true).is_none(),
-            "empty response must be dropped"
-        );
-
+        assert!(capture_to_example(&turn("hi"), &capture_reply("   "), true).is_none(), "empty response must be dropped");
         // No burst (only system) → dropped (not a context→reply pair).
-        let no_burst = json!({
-            "system": "You are Asha.",
-            "messages": [],
-            "response": { "text": "hello" }
-        });
-        assert!(
-            capture_to_example(&no_burst, true).is_none(),
-            "system-only must be dropped"
-        );
+        assert!(capture_to_example(&turn(""), &capture_reply("hello"), true).is_none(), "system-only must be dropped");
+    }
+
+    fn capture_reply(text: &str) -> crate::ai::types::TextGenerationResponse {
+        crate::ai::types::TextGenerationResponse {
+            text: text.into(),
+            finish_reason: crate::ai::types::FinishReason::Stop,
+            model: "fixture".into(),
+            provider: "fixture".into(),
+            usage: Default::default(),
+            response_time_ms: 1,
+            request_id: "r".into(),
+            content: None,
+            tool_calls: None,
+            reasoning: None,
+            routing: None,
+            error: None,
+            timing: None,
+        }
     }
 
     // what this catches: L1 fork contamination (#427, 2026-08-14 citizenship
@@ -142,28 +125,23 @@
     // re-enters the training corpus unlabeled.
     #[test]
     fn from_captures_excludes_nil_room_forks_by_default() {
+        use crate::ai::types::{ChatMessage, TextGenerationRequest};
+        use crate::cognition::capture::fixture_class;
+        use crate::cognition::prompt_capture::{CaptureLease, FramePromptCaptureSink, PromptCall};
         let tmp = TempDir::new().unwrap();
         let captures_dir = tmp.path().join("captures");
-        std::fs::create_dir_all(&captures_dir).unwrap();
-
-        let live = json!({
-            "persona_id": "11111111-1111-1111-1111-111111111111",
-            "room_id": "22222222-2222-2222-2222-222222222222",
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "peer: how do rooms work?" }],
-            "response": { "text": "A room is an activity with a lifetime." }
-        });
-        let fork = json!({
-            "persona_id": "11111111-1111-1111-1111-111111111111",
-            "room_id": uuid::Uuid::nil().to_string(),
-            "system": "You are Asha.",
-            "messages": [{ "role": "user", "content": "[measurement] solve the task" }],
-            "response": { "text": "Working the benchmark instance now." }
-        });
-        create_test_csv(&captures_dir, "asha.jsonl", &format!("{live}\n{fork}\n"));
+        let persona = uuid::Uuid::new_v4();
+        let sink: std::sync::Arc<dyn crate::cognition::prompt_capture::PromptCaptureSink> = std::sync::Arc::new(FramePromptCaptureSink::at(&captures_dir, persona));
+        let lived = |room: uuid::Uuid, id: &str, user: &str, reply: &str| {
+            let call = PromptCall { request_id: id.into(), persona_id: persona, room_id: room, cycle_id: Some(1), context_window: None, cause: "stimulus", cause_root: None, replay_of: None };
+            let request = TextGenerationRequest { system_prompt: Some("You are Asha.".into()), messages: vec![ChatMessage::text("user", user)], ..Default::default() };
+            CaptureLease::start(std::sync::Arc::clone(&sink), &call, &request).finish(Some(&capture_reply(reply)), None);
+        };
+        lived(uuid::Uuid::new_v4(), "live", "peer: how do rooms work?", "A room is an activity with a lifetime.");
+        lived(uuid::Uuid::nil(), "fork", "[measurement] solve the task", "Working the benchmark instance now.");
+        let class = fixture_class(&captures_dir);
 
         let params = |name: &str, include_forks: bool| FromCapturesParams {
-            captures_dir: Some(captures_dir.to_str().unwrap().to_string()),
             output_dir: Some(tmp.path().join("out").to_str().unwrap().to_string()),
             name: name.to_string(),
             split_ratio: 1.0,
@@ -176,14 +154,14 @@
 
         // Default: the fork tick is excluded — only the lived room turn trains.
         let v = service()
-            .from_captures(&params("live-only", false))
+            .from_captures(&class, &params("live-only", false))
             .unwrap();
         assert_eq!(v.total_examples, 1, "nil-room fork must be excluded");
 
         // Explicit opt-in: both convert (a fork corpus is a legitimate goal,
         // it just must never be the silent default).
         let v = service()
-            .from_captures(&params("with-forks", true))
+            .from_captures(&class, &params("with-forks", true))
             .unwrap();
         assert_eq!(v.total_examples, 2, "opt-in must include the fork tick");
     }
@@ -301,54 +279,8 @@
         assert!(err.contains("not found"), "got: {err}");
     }
 
-    // what this catches: RealClassEval legacy single-CSV mode imports with metrics
-    // and the arxiv source stamp; all rows count as pre-cutoff (is_post=false).
-    #[test]
-    fn import_realclasseval_legacy_csv_mode() {
-        let tmp = TempDir::new().unwrap();
-
-        let csv_content = r#"snippet_id,class_name,human_written_code,class_skeleton,cyclomatic_complexity,lines_of_code
-snippet_0,Calculator,"class Calculator:\n    def add(self, a, b):\n        return a + b","class Calculator:\n    def add(self, a, b):\n        pass",1,3
-snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return text.split()","class Parser:\n    def parse(self, text):\n        pass",2,5"#;
-
-        let csv_path = create_test_csv(tmp.path(), "RealClassEval.csv", csv_content);
-
-        let tests_dir = tmp.path().join("tests");
-        std::fs::create_dir_all(&tests_dir).unwrap();
-        create_test_csv(
-            &tests_dir,
-            "test_snippet_0.py",
-            "def test_add():\n    c = Calculator()\n    assert c.add(1, 2) == 3\n",
-        );
-
-        let output_dir = tmp.path().join("out");
-
-        let v = service()
-            .import_realclasseval(&ImportRealClassEvalParams {
-                repo_dir: None,
-                csv_path: Some(csv_path.to_str().unwrap().to_string()),
-                tests_dir: Some(tests_dir.to_str().unwrap().to_string()),
-                output_dir: Some(output_dir.to_str().unwrap().to_string()),
-                split_ratio: 0.5,
-            })
-            .unwrap();
-
-        assert_eq!(v.name, "realclasseval");
-        assert_eq!(v.total_examples, 2);
-        assert_eq!(v.source.as_deref(), Some("arxiv:2510.26130"));
-        // Legacy mode: all counted as pre-cutoff (is_post=false)
-        assert_eq!(v.pre_cutoff, Some(2));
-        assert!(
-            v.metrics
-                .as_ref()
-                .and_then(|m| m.avg_cyclomatic_complexity)
-                .unwrap()
-                > 0.0
-        );
-    }
-
     // what this catches: RealClassEval repo-dir auto-discovery splits csn (pre) +
-    // post_cut-off (post) and labels the cutoff counts correctly.
+    // post_cut-off (post), labels the cutoff counts correctly, and reads complexity metrics.
     #[test]
     fn import_realclasseval_repo_dir_mode() {
         let tmp = TempDir::new().unwrap();
@@ -359,7 +291,7 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         let csn_dfs = base.join("csn").join("dfs");
         std::fs::create_dir_all(&csn_dfs).unwrap();
         create_test_csv(&csn_dfs, "no_docstr.csv",
-            "snippet_id,class_name,human_written_code,class_skeleton\nsnippet_10,Foo,\"class Foo:\\n    pass\",\"class Foo:\\n    pass\"\n");
+            "snippet_id,class_name,human_written_code,class_skeleton,cyclomatic_complexity,lines_of_code\nsnippet_10,Foo,\"class Foo:\\n    pass\",\"class Foo:\\n    pass\",2,2\n");
 
         let csn_tests = base
             .join("csn")
@@ -385,9 +317,7 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
 
         let v = service()
             .import_realclasseval(&ImportRealClassEvalParams {
-                repo_dir: Some(tmp.path().to_str().unwrap().to_string()),
-                csv_path: None,
-                tests_dir: None,
+                repo_dir: tmp.path().to_str().unwrap().to_string(),
                 output_dir: Some(output_dir.to_str().unwrap().to_string()),
                 split_ratio: 0.5,
             })
@@ -398,6 +328,7 @@ snippet_200,Parser,"class Parser:\n    def parse(self, text):\n        return te
         assert_eq!(v.source.as_deref(), Some("arxiv:2510.26130"));
         assert_eq!(v.pre_cutoff, Some(1)); // csn
         assert_eq!(v.post_cutoff, Some(1)); // post_cut-off
+        assert!(v.metrics.as_ref().and_then(|m| m.avg_cyclomatic_complexity).unwrap() > 0.0, "complexity read from its column");
 
         assert!(output_dir.join("train.jsonl").exists());
         assert!(output_dir.join("eval.jsonl").exists());

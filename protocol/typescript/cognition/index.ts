@@ -80,7 +80,6 @@ export type { ModelRequirement } from './ModelRequirement';
 export type { NativeBatchOutcome } from './NativeBatchOutcome';
 export type { Observation } from './Observation';
 export type { ParsedToolBatch } from './ParsedToolBatch';
-export type { PayloadRef } from './PayloadRef';
 export type { PersonaMediaConfigLite } from './PersonaMediaConfigLite';
 export type { PersonaResponse } from './PersonaResponse';
 export type { PersonaRosterEntry } from './PersonaRosterEntry';

@@ -3,9 +3,8 @@
 //! waits on the disk. Playback (`call_playback`) reads them back and never runs cognition.
 use continuum_base::time::EpochMs;
 use continuum_engine::ai::types::{TextGenerationRequest, TextGenerationResponse};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::sync::Arc;
-use ts_rs::TS;
 use uuid::Uuid;
 
 use crate::call_frames::{CallKey, Ending, IncompleteHead, Submission, SubmittedHead, TerminalHead};
@@ -14,22 +13,8 @@ use crate::capture_writer::Delivery;
 #[path = "capture_owner.rs"]
 pub mod owner;
 
-pub use crate::call_playback::{decode, CallHeader, CapturedCall, Playback, PlaybackDetail, PlaybackError, PlaybackPage};
-/// Where the JSONL captures of earlier builds live, until the one-time migration moves them.
-pub const FIXTURE_DIR: &str = "fixtures/prompt-captures";
-
-/// How a captured call stands.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "snake_case")]
-#[ts(export, export_to = "../../../protocol/typescript/cognition/CallStatus.ts")]
-pub enum CallStatus {
-    Submitted,
-    Completed,
-    Failed,
-    Cancelled,
-    Incomplete,
-    Legacy,
-}
+pub use crate::call_frames::{CallStatus, InputComparison, ReplaySource, ToolSchemaComparison};
+pub use crate::call_playback::{decode, CallHeader, CapturedCall, CapturedEnd, CapturedSubmission, DecodeRefusal, Playback, PlaybackDetail, PlaybackError, PlaybackPage};
 
 #[derive(Debug, Serialize)]
 pub struct PromptCall {
@@ -44,34 +29,6 @@ pub struct PromptCall {
     /// Present only for an isolated replay; the original record remains untouched.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub replay_of: Option<ReplaySource>,
-}
-
-/// Input-only diagnostic provenance; hashes precede normal replay identity overrides.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
-pub struct InputComparison {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[ts(optional)]
-    pub tool_schema: Option<ToolSchemaComparison>,
-    pub omitted_message_indices: Vec<u32>,
-    pub captured_request_sha256: String,
-    pub comparison_request_sha256: String,
-}
-
-/// The selected schema and whole request remain in the existing capture payload.
-#[derive(Debug, Clone, Serialize, Deserialize, ts_rs::TS)]
-pub struct ToolSchemaComparison {
-    pub tool_name: String,
-    pub captured_schema_sha256: String,
-    pub comparison_schema_sha256: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct ReplaySource {
-    pub input_comparison: InputComparison,
-    /// Whether replay pinned an implicit model using its recorded terminal response.
-    pub model_from_response: bool,
-    pub persona_id: Uuid,
-    pub cursor: String,
 }
 
 /// A submitted call's identity, held by its lease until the call ends.
@@ -203,7 +160,7 @@ impl FramePromptCaptureSink {
     /// A sink appending inline under `dir` (the root of a `fixtures` class in a test or tool).
     #[cfg(any(test, feature = "test-fixtures"))]
     pub fn at(dir: &std::path::Path, persona_id: Uuid) -> Self {
-        Self::new(persona_id, Delivery::inline(fixture_class(dir)))
+        Self::new(persona_id, Delivery::inline(crate::capture::fixture_class(dir)))
     }
 
     pub fn with_session(mut self, session_id: Uuid) -> Self {
@@ -221,13 +178,6 @@ impl FramePromptCaptureSink {
                 "a capture record and its incomplete receipt both failed to encode: nothing of this call is recorded"),
         }
     }
-}
-
-/// The prompt-captures scope of a `fixtures` class rooted at `dir`, for a test or tool.
-#[cfg(any(test, feature = "test-fixtures"))]
-pub fn fixture_class(dir: &std::path::Path) -> continuum_kernel::system_resources::disk_reporters::ClassWriter {
-    let class = continuum_kernel::system_resources::disk_reporters::TrackedDir::new("fixtures", dir.to_path_buf()).writer();
-    class.within("prompt-captures").expect("a plain scope name") // JUSTIFIED: a constant plain name, refused only if it had a separator
 }
 
 impl PromptCaptureSink for FramePromptCaptureSink {
@@ -289,7 +239,7 @@ mod tests {
     /// Every byte under `dir`, by path (`fs::metadata`, never a listing's size: on Windows a listing
     /// reports a file's size as of its open while a writer holds it, BigMama).
     fn bytes(dir: &std::path::Path) -> u64 {
-        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).map(|p| if p.is_dir() { bytes(&p) } else { std::fs::metadata(&p).map_or(0, |m| m.len()) }).sum()
+        std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).filter_map(|p| if p.is_dir() { Some(bytes(&p)) } else { std::fs::metadata(&p).ok().map(|m| m.len()) }).sum()
     }
 
     // what this catches: a turn in her mind room landing in the prompt capture (and so in every SFT
@@ -379,7 +329,7 @@ mod tests {
             let detail = playback.detail(&entry.cursor).expect("matching request");
             let submitted = detail.submitted.expect("its request");
             assert_eq!((submitted.head.key.request_id.as_str(), submitted.head.key.session_id), (entry.request_id.as_str(), entry.session_id));
-            assert_eq!(detail.terminal.map(|end| end.head.key), (entry.status != CallStatus::Submitted).then(|| submitted.head.key.clone()), "an end joined to its own call only");
+            assert_eq!(detail.terminal.as_ref().map(|end| &end.head.key), (entry.status != CallStatus::Submitted).then_some(&submitted.head.key), "an end joined to its own call only");
         }
         assert_eq!(page.entries[2].cursor, third.cursor, "the cursor a lease hands out is the one playback lists");
     }

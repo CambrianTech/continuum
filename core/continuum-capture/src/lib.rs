@@ -16,6 +16,8 @@ pub mod capture_log;
 pub mod capture_pool;
 /// The capture's write-behind: a SAGE component that hears capture records and appends them to their owner's log.
 pub mod capture_writer;
+/// The one-time move of earlier builds' JSONL prompt captures into frames, verified before removal.
+pub mod jsonl_migration;
 /// A prompt call as frames: its submission, its end and an unwritable record, and their one decode.
 pub mod call_frames;
 /// Where each captured call is in its owner's log, by key: read from frame headers, extended from each index tail.

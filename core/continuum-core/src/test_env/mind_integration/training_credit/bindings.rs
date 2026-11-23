@@ -282,7 +282,7 @@ use super::*;
                 Ok(true)
             ));
             let mut later_receipts = original.receipts.clone();
-            later_receipts.push(captured(persona, served_receipt("later-generation", "actual-model")));
+            later_receipts.push(captured(persona, served_receipt("later-generation", "actual-model")).await);
             assert!(
                 capture
                     .record(
@@ -399,8 +399,9 @@ use super::*;
             _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => panic!("drain never submitted"),
         }
         let mut later_receipts = older.receipts.clone();
-        later_receipts
-            .extend((4..8).map(|n| captured(persona, served_receipt(&format!("generation-{n}"), "model-a"))));
+        for n in 4..8 {
+            later_receipts.push(captured(persona, served_receipt(&format!("generation-{n}"), "model-a")).await);
+        }
         assert!(
             capture
                 .record(

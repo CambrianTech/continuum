@@ -541,8 +541,6 @@ mod tests {
     // native-home seam, not hand-authored JSON or process environment mutation.
     #[test]
     fn native_home_capture_round_trips_through_inspection_and_replay() {
-        use crate::ai::types::{ChatMessage, FinishReason, TextGenerationResponse, UsageMetrics};
-        use crate::cognition::prompt_capture::{JsonlPromptCaptureSink, PromptCaptureSink};
         use crate::cognition::workspace::{WorkspaceCaptureSink, WorkspaceTrace};
         use crate::cognition::workspace_capture::JsonlWorkspaceCaptureSink;
 
@@ -569,45 +567,12 @@ mod tests {
         workspace.record(&trace);
         drop(workspace);
 
-        let response = TextGenerationResponse {
-            text: "The source review is complete.".into(),
-            finish_reason: FinishReason::Stop,
-            model: "fixture-model".into(),
-            provider: "fixture".into(),
-            usage: UsageMetrics::default(),
-            response_time_ms: 1,
-            request_id: "capture-roundtrip".into(),
-            content: None,
-            tool_calls: None,
-            reasoning: None,
-            routing: None,
-            error: None,
-            timing: None,
-        };
-        let prompt = JsonlPromptCaptureSink::open_for_persona(persona).unwrap();
-        prompt.record(
-            persona,
-            room,
-            "stimulus",
-            0,
-            grounding,
-            &[ChatMessage::text("user", request)],
-            &[],
-            &response,
-        );
-        drop(prompt);
-
         let persona_text = persona.to_string();
         for (relative, field, expected) in [
             (
                 super::super::workspace_capture::FIXTURE_DIR,
                 "world_state",
                 request,
-            ),
-            (
-                super::super::prompt_capture::FIXTURE_DIR,
-                "system",
-                grounding,
             ),
         ] {
             // Where the sinks wrote, through the one owner they write through (card 3c8b03ae).

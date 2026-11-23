@@ -21,10 +21,7 @@ pub(super) fn turn_to_example(turn: &Value, include_system: bool, include_histor
         return None;
     }
 
-    let persona_name = turn
-        .get("personaName")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let persona_name = turn.get("personaName").and_then(|v| v.as_str()).filter(|name| !name.is_empty());
     let mut messages: Vec<Value> = Vec::new();
 
     if include_system {
@@ -46,8 +43,8 @@ pub(super) fn turn_to_example(turn: &Value, include_system: bool, include_histor
                 if text.is_empty() {
                     continue;
                 }
-                let sender = h.get("senderName").and_then(|s| s.as_str()).unwrap_or("");
-                let role = if !persona_name.is_empty() && sender == persona_name {
+                let sender = h.get("senderName").and_then(|s| s.as_str());
+                let role = if persona_name.is_some() && sender == persona_name {
                     "assistant"
                 } else {
                     "user"
@@ -85,47 +82,31 @@ pub(super) fn turn_to_example(turn: &Value, include_system: bool, include_histor
 /// axis (control-plane JSON leaking into room prose) while destroying exactly the
 /// dev-task signal. We keep both and let the consumer filter: a chat-prose dataset
 /// asks for `"domain"`, the dev-task/self-verify loop for `"operational"`.
-pub(super) fn capture_to_example(cap: &Value, include_system: bool) -> Option<Value> {
-    let assistant = cap.get("response")?.get("text")?.as_str()?.trim();
+pub(super) fn capture_to_example(
+    request: &crate::ai::types::TextGenerationRequest,
+    response: &crate::ai::types::TextGenerationResponse,
+    include_system: bool,
+) -> Option<Value> {
+    let assistant = response.text.trim();
     if assistant.is_empty() {
         return None;
     }
-    let acted = crate::ai::json_in_prompt_tools::parse_tool_call(assistant).is_some()
-        || cap
-            .get("response")
-            .and_then(|r| r.get("toolCalls"))
-            .and_then(|t| t.as_array())
-            .is_some_and(|a| !a.is_empty());
+    let acted = crate::ai::json_in_prompt_tools::parse_tool_call(assistant).is_some() || response.has_tool_calls();
     let skill_axis = if acted { "operational" } else { "domain" };
     let mut messages: Vec<Value> = Vec::new();
-    if include_system {
-        if let Some(sys) = cap.get("system").and_then(|s| s.as_str()) {
-            let sys = sys.trim();
-            if !sys.is_empty() {
-                messages.push(json!({ "role": "system", "content": sys }));
-            }
-        }
+    if let Some(sys) = request.system_prompt.as_deref().map(str::trim).filter(|sys| include_system && !sys.is_empty()) {
+        messages.push(json!({ "role": "system", "content": sys }));
     }
-    if let Some(arr) = cap.get("messages").and_then(|m| m.as_array()) {
-        for m in arr {
-            let (Some(role), Some(content)) = (
-                m.get("role").and_then(|r| r.as_str()),
-                m.get("content").and_then(|c| c.as_str()),
-            ) else {
-                continue;
-            };
-            let content = content.trim();
-            if content.is_empty() {
-                continue;
-            }
-            messages.push(json!({ "role": role, "content": content }));
+    for message in &request.messages {
+        // a text turn is a pair's context; a multimodal or tool-protocol part is not prose to learn
+        let crate::ai::types::MessageContent::Text(content) = &message.content else { continue };
+        let content = content.trim();
+        if !content.is_empty() {
+            messages.push(json!({ "role": message.role, "content": content }));
         }
     }
     // Need at least one non-system (burst) message → an actual (context → reply) pair.
-    if messages
-        .iter()
-        .all(|m| m.get("role").and_then(|r| r.as_str()) == Some("system"))
-    {
+    if messages.iter().all(|m| m.get("role").and_then(|r| r.as_str()) == Some("system")) {
         return None;
     }
     messages.push(json!({ "role": "assistant", "content": assistant }));
@@ -134,16 +115,12 @@ pub(super) fn capture_to_example(cap: &Value, include_system: bool) -> Option<Va
 
 /// Write examples as JSONL (one JSON object per line).
 pub(super) fn write_jsonl(path: &Path, examples: &[Value]) -> Result<(), String> {
-    use std::io::Write;
-    let file = std::fs::File::create(path)
-        .map_err(|e| format!("Failed to create {}: {e}", path.display()))?;
-    let mut writer = std::io::BufWriter::new(file);
-
+    let mut bytes = Vec::new();
     for example in examples {
-        serde_json::to_writer(&mut writer, example)
+        serde_json::to_writer(&mut bytes, example) // BOUNDARY: a dataset's JSONL is its disk format
             .map_err(|e| format!("Failed to write JSONL: {e}"))?;
-        writeln!(&mut writer).map_err(|e| format!("Failed to write newline: {e}"))?;
+        bytes.push(b'\n');
     }
-
-    Ok(())
+    // whole or not at all: a reader never trains on half a split
+    continuum_host::durable::write_replace(path, &bytes).map_err(|e| format!("Failed to write {}: {e}", path.display()))
 }

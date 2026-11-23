@@ -581,27 +581,16 @@ pub(super) fn assemble_workspace_cycle(
         ));
     }
 
-    // Verbatim prompt capture (best-effort): the EXACT system prompt + message
-    // thread + raw response of every deliberation LLM call → a per-persona JSONL
-    // under the same fixtures root as the workspace trace. So "what tokens was she
-    // fed, what did she emit?" is answerable token-for-token. Native hosts use
-    // the recorder's shared home discovery even without a shell HOME variable.
-    // A persona can respawn within one process and restart its cycle counter.
-    // Both capture owners receive the SAME construction session, so session +
-    // persona + CycleId joins every request without a singular workspace call ID.
+    // Verbatim prompt capture: the EXACT request and raw response of every deliberation LLM call,
+    // said as frames to the node's capture writer, which appends them behind the turn (the turn
+    // never waits on the disk). So "what tokens was she fed, what did she emit?" is answerable
+    // token-for-token. A persona can respawn within one process and restart its cycle counter;
+    // both capture owners receive the SAME construction session, so session + persona + CycleId
+    // joins every request without a singular workspace call ID.
     let capture_session = Uuid::new_v4();
     if capture == Capture::Recorded {
-        match super::super::prompt_capture::JsonlPromptCaptureSink::open_for_persona(cfg.persona_id) {
-            Ok(sink) => {
-                deliberation =
-                    deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)))
-            }
-            Err(e) => tracing::warn!(
-                persona_id = %cfg.persona_id,
-                error = %e,
-                "prompt capture unavailable; deliberation runs without verbatim capture"
-            ),
-        }
+        let sink = super::super::prompt_capture::FramePromptCaptureSink::new(cfg.persona_id, continuum_capture::capture_writer::Delivery::Node);
+        deliberation = deliberation.with_prompt_capture(Arc::new(sink.with_session(capture_session)));
     }
 
     faculties.push(Arc::new(deliberation));

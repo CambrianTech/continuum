@@ -15,9 +15,11 @@
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use continuum_kernel::system_resources::disk_reporters::ClassWriter;
 use serde::Serialize;
+use uuid::Uuid;
 
 use crate::frame::{self, FrameError, FrameKind};
 
@@ -220,6 +222,35 @@ pub fn frame_at(writer: &ClassWriter, generation: u64, entry: &Entry) -> io::Res
     let mut bytes = vec![0u8; entry.length as usize];
     file.read_exact(&mut bytes)?;
     Ok(bytes)
+}
+
+/// One record to capture: its owner, its kind, its header already encoded (`frame` keeps it as given)
+/// and its bulk as shared byte runs (handed over, never copied on the turn path).
+#[derive(Debug, Clone)]
+pub struct CaptureRecord {
+    pub owner: Uuid,
+    pub kind: FrameKind,
+    pub header: Vec<u8>,
+    pub runs: Vec<Arc<[u8]>>,
+    pub captured_at_ms: u64,
+}
+
+/// Each owner's open log, opened on its first record: the one place records are appended, shared
+/// by the node's writer and the one-time migration so they never open competing generations.
+#[derive(Default)]
+pub struct OpenLogs(parking_lot::Mutex<std::collections::HashMap<uuid::Uuid, CaptureLog>>);
+
+impl OpenLogs {
+    /// Append `record` to its owner's open log in `class`, opening the owner's next generation first.
+    pub fn append(&self, class: &ClassWriter, record: &CaptureRecord) -> io::Result<()> {
+        let mut logs = self.0.lock();
+        let log = match logs.entry(record.owner) {
+            std::collections::hash_map::Entry::Occupied(open) => open.into_mut(),
+            std::collections::hash_map::Entry::Vacant(slot) => slot.insert(CaptureLog::open(class.owned_by(record.owner))?),
+        };
+        let runs: Vec<&[u8]> = record.runs.iter().map(AsRef::as_ref).collect();
+        log.append_parts(frame::Parts { kind: record.kind, header: &record.header, runs: &runs }, record.captured_at_ms).map(|_| ()).map_err(io::Error::other)
+    }
 }
 
 /// Every indexed frame of every generation, oldest first, handed to `each` with its cursor.
