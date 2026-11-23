@@ -152,6 +152,7 @@ pub fn start<P: Component>(component: P, bus: &Bus, owner: OwnerId, epoch: u64) 
     // round trip each; the cost divides by the depth).
     let (input, worker) = spawn_stage(worker, Capacity::granted(wiring.intake()));
     slot.fill(&input);
+    let windows = wiring.windows();
     wiring.attach(&input);
-    Running::new(input, worker)
+    Running::new(input, worker, windows)
 }

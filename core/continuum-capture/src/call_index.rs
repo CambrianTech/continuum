@@ -31,9 +31,11 @@ pub struct CallPlaces {
 }
 
 impl CallPlaces {
-    /// When the call was first captured: what orders calls oldest to newest.
-    pub fn first_at(&self) -> Option<u64> {
-        [self.submitted, self.terminal, self.incomplete].iter().flatten().map(|p| p.entry.captured_at_ms).min()
+    /// When and where the call was first captured: what orders calls oldest to newest. Two calls
+    /// captured in one millisecond keep the order they were written in (their cursors), never an
+    /// order of their keys (a session id is random: Linux CI listed two such calls swapped, 2026-11-23).
+    pub fn first(&self) -> Option<(u64, Cursor)> {
+        [self.submitted, self.terminal, self.incomplete].iter().flatten().map(|p| (p.entry.captured_at_ms, p.cursor)).min()
     }
 
     /// How the call stands: its end's status, else a receipt that it could not be recorded, else
@@ -125,7 +127,7 @@ impl CallIndex {
     /// Every call, oldest first captured first.
     pub fn oldest_first(&self) -> Vec<(&CallKey, &CallPlaces)> {
         let mut calls: Vec<_> = self.calls.iter().collect();
-        calls.sort_by_key(|(key, places)| (places.first_at(), *key));
+        calls.sort_by_key(|(key, places)| (places.first(), *key));
         calls
     }
 }
@@ -156,6 +158,24 @@ mod tests {
             model: None,
         };
         Submission { head, request, replay: None }.record(Uuid::nil(), at).expect("test: record")
+    }
+
+    // what this catches (Linux CI, 2026-11-23): two calls captured in one millisecond listed in the
+    // order of their keys (a random session id) instead of the order they were written in.
+    #[test]
+    fn calls_captured_in_one_millisecond_keep_their_write_order() {
+        let dir = tempfile::tempdir().expect("test: dir");
+        let writer = || TrackedDir::new("call-index-tie-test", dir.path().to_path_buf()).writer().owned_by(Uuid::nil());
+        let request = TextGenerationRequest { messages: vec![ChatMessage::text("user", "tie")], ..Default::default() };
+        // keyed so the keys sort opposite to the write order
+        let (written_first, written_second) = (CallKey { session_id: Uuid::max(), request_id: "a".into() }, CallKey { session_id: Uuid::nil(), request_id: "a".into() });
+        let mut log = CaptureLog::open(writer()).expect("test: open");
+        append(&mut log, submitted(&written_first, &request, 10));
+        append(&mut log, submitted(&written_second, &request, 10));
+        let mut index = CallIndex::new(writer());
+        index.refresh().expect("test: refresh");
+        let order: Vec<Uuid> = index.oldest_first().iter().map(|(k, _)| k.session_id).collect();
+        assert_eq!(order, [Uuid::max(), Uuid::nil()], "the call written first is listed first");
     }
 
     // what this catches: a call whose end is filed under another call, a refresh that re-reads or

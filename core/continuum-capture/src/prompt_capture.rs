@@ -31,11 +31,12 @@ pub struct PromptCall {
     pub replay_of: Option<ReplaySource>,
 }
 
-/// A submitted call's identity, held by its lease until the call ends.
-#[derive(Debug, Clone)]
+/// A submitted call's identity, held by its lease until the call ends, with the place reserved for
+/// its terminal record (spent by its end, or by the Cancelled a dropped lease writes).
 pub struct CaptureToken {
     key: CallKey,
     cursor: String,
+    terminal: crate::capture_room::Slot,
 }
 
 /// Where a call's lifecycle is captured: its submission, then its end. No response is
@@ -46,7 +47,7 @@ pub trait PromptCaptureSink: Send + Sync {
     /// response once the writer has appended both.
     fn terminal(
         &self,
-        token: &CaptureToken,
+        token: CaptureToken,
         status: CallStatus,
         response: Option<&TextGenerationResponse>,
         error: Option<&str>,
@@ -123,14 +124,15 @@ impl CaptureLease {
         error: Option<&str>,
     ) -> Option<String> {
         let token = self.token.take()?;
+        let request_id = token.key.request_id.clone();
         let cursor = self.sink.terminal(
-            &token,
+            token,
             status,
             response,
             error,
             self.started.elapsed().as_millis() as u64,
         );
-        continuum_engine::inference::wire_tap::take(&token.key.request_id);
+        continuum_engine::inference::wire_tap::take(&request_id);
         cursor
     }
 }
@@ -168,12 +170,13 @@ impl FramePromptCaptureSink {
         self
     }
 
-    /// A record that could not be encoded is said in its place, never silently dropped.
-    fn incomplete(&self, key: &CallKey, error: &crate::frame::FrameError) {
+    /// A record that could not be encoded is said in its place (and in its reserved slot), never
+    /// silently dropped.
+    fn incomplete(&self, key: &CallKey, error: &crate::frame::FrameError, slot: crate::capture_room::Slot) {
         tracing::warn!(target: "cognition::capture", persona = %self.persona_id, %error, "prompt lifecycle capture incomplete");
         let receipt = IncompleteHead { key: key.clone(), error: error.to_string() };
         match receipt.record(self.persona_id, EpochMs::now().millis()) {
-            Ok(record) => self.delivery.deliver(record),
+            Ok(record) => self.delivery.deliver(record, slot),
             Err(error) => continuum_base::probe!(class = "capture.receipt_unencodable", persona = %self.persona_id, error = %error,
                 "a capture record and its incomplete receipt both failed to encode: nothing of this call is recorded"),
         }
@@ -193,33 +196,43 @@ impl PromptCaptureSink for FramePromptCaptureSink {
             cause_root: call.cause_root,
             model: request.model.clone(),
         };
-        match (Submission { head, request, replay: call.replay_of.as_ref() }).record(self.persona_id, EpochMs::now().millis()) {
-            Ok(record) => self.delivery.deliver(record),
-            Err(error) => {
-                self.incomplete(&key, &error);
+        // Both records' places first: neither the submission nor its end can be displaced.
+        let [submission, terminal] = match self.delivery.reserve::<2>() {
+            Ok(slots) => slots,
+            Err(unreserved) => {
+                continuum_base::probe!(class = "capture.unreserved", persona = %self.persona_id, request = %call.request_id, why = %unreserved,
+                    "a call got no room in the capture writer's window: it is served unrecorded, said here");
                 return None;
             }
+        };
+        match (Submission { head, request, replay: call.replay_of.as_ref() }).record(self.persona_id, EpochMs::now().millis()) {
+            Ok(record) => self.delivery.deliver(record, submission),
+            Err(error) => {
+                self.incomplete(&key, &error, submission);
+                return None; // the terminal's place frees itself with `terminal`
+            }
         }
-        Some(CaptureToken { cursor: crate::call_playback::cursor_of(&key), key })
+        Some(CaptureToken { cursor: crate::call_playback::cursor_of(&key), key, terminal })
     }
 
     fn terminal(
         &self,
-        token: &CaptureToken,
+        token: CaptureToken,
         status: CallStatus,
         response: Option<&TextGenerationResponse>,
         error: Option<&str>,
         elapsed_ms: u64,
     ) -> Option<String> {
-        let wire = continuum_engine::inference::wire_tap::take(&token.key.request_id);
-        let head = TerminalHead { key: token.key.clone(), status, elapsed_ms, error: error.map(str::to_owned) };
+        let CaptureToken { key, cursor, terminal } = token;
+        let wire = continuum_engine::inference::wire_tap::take(&key.request_id);
+        let head = TerminalHead { key: key.clone(), status, elapsed_ms, error: error.map(str::to_owned) };
         match (Ending { head, response, wire: wire.as_ref() }).record(self.persona_id, EpochMs::now().millis()) {
             Ok(record) => {
-                self.delivery.deliver(record);
-                Some(token.cursor.clone())
+                self.delivery.deliver(record, terminal);
+                Some(cursor)
             }
             Err(error) => {
-                self.incomplete(&token.key, &error);
+                self.incomplete(&key, &error, terminal);
                 None
             }
         }
@@ -314,8 +327,8 @@ mod tests {
         let second = FramePromptCaptureSink::at(dir.path(), persona);
         assert_ne!(first.session_id, second.session_id, "construction sessions disambiguate restarted cycle counters");
         let second_token = second.submitted(&call(persona, Uuid::nil(), "second"), &request).expect("submitted second");
-        second.terminal(&second_token, CallStatus::Failed, None, Some("fixture failure"), 2);
-        first.terminal(&first_token, CallStatus::Cancelled, None, Some("fixture cancellation"), 4);
+        second.terminal(second_token, CallStatus::Failed, None, Some("fixture failure"), 2);
+        first.terminal(first_token, CallStatus::Cancelled, None, Some("fixture cancellation"), 4);
         drop((first, second));
         let reopened = FramePromptCaptureSink::at(dir.path(), persona);
         let third = reopened.submitted(&call(persona, Uuid::nil(), "third"), &request).expect("submitted after the restart");

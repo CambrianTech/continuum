@@ -33,11 +33,19 @@ impl<P: Component> Teller<P> {
 pub struct Running<P: Component> {
     teller: Teller<P>,
     worker: StageWorker<Delivered<P::Input>>,
+    windows: super::wiring::Windows,
 }
 
 impl<P: Component> Running<P> {
-    pub(super) fn new(input: StageInput<Delivered<P::Input>>, worker: StageWorker<Delivered<P::Input>>) -> Self {
-        Self { teller: Teller { input }, worker }
+    pub(super) fn new(input: StageInput<Delivered<P::Input>>, worker: StageWorker<Delivered<P::Input>>, windows: super::wiring::Windows) -> Self {
+        Self { teller: Teller { input }, worker, windows }
+    }
+
+    /// Its window on `topic`, for the one owner that reserves room in it before producers send:
+    /// a producer that must not lose a record grows the window first, synchronously. None when it
+    /// hears no such topic.
+    pub fn window(&self, topic: crate::dataflow::TopicName) -> Option<std::sync::Arc<dyn crate::dataflow::Resize>> {
+        self.windows.lock().get(&topic).cloned()
     }
 
     /// Hand the part an act; false once it has stopped.

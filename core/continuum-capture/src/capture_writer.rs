@@ -140,10 +140,24 @@ impl Delivery {
         Self::Inline(inline)
     }
 
-    /// Deliver `record`; a record that cannot go is said, loudly, and lost.
-    pub fn deliver(&self, record: CaptureRecord) {
+    /// Reserve a place for each of a call's `N` records before the first is delivered: a node delivery
+    /// grows the writer's window now, so none of them can be displaced; an inline one appends in the
+    /// caller and holds nothing.
+    pub fn reserve<const N: usize>(&self) -> Result<[crate::capture_room::Slot; N], crate::capture_room::Unreserved> {
         match self {
-            Self::Node => emit(record),
+            Self::Node => crate::capture_room::reserve::<N>(),
+            Self::Inline(_) => Ok(std::array::from_fn(|_| crate::capture_room::Slot::inline())),
+        }
+    }
+
+    /// Deliver `record` into the place `slot` reserved for it; a record that cannot go is said,
+    /// loudly, and lost.
+    pub fn deliver(&self, record: CaptureRecord, slot: crate::capture_room::Slot) {
+        match self {
+            Self::Node => {
+                emit(record);
+                slot.spend();
+            }
             Self::Inline(inline) => {
                 if let Err(error) = inline.logs.append(&inline.class, &record) {
                     continuum_base::probe!(class = "capture.write_failed", owner = %record.owner, error = %error,
@@ -183,7 +197,18 @@ pub fn start_node(class: ClassWriter) {
     NODE.get_or_init(|| {
         started = true;
         let bus = continuum_sage::component::node();
-        continuum_sage::component::start(CaptureWriter::new(class, bus), bus, continuum_sage::dataflow::OwnerId(Uuid::nil()), 0)
+        let writer = CaptureWriter::new(class, bus);
+        let base = writer.sizing.window;
+        let running = continuum_sage::component::start(writer, bus, continuum_sage::dataflow::OwnerId(Uuid::nil()), 0);
+        // Calls reserve their records in this window before delivering any (capture_room).
+        match running.window(CAPTURE) {
+            Some(window) => {
+                crate::capture_room::install(window, base);
+            }
+            None => continuum_base::probe!(class = "capture.writer.no_window",
+                "the capture writer hears no capture topic: no call can reserve room, so none is recorded"),
+        }
+        running
     });
     if !started {
         continuum_base::probe!(class = "capture.writer.started_twice", "the node's capture writer was started a second time; the first keeps running");
@@ -223,6 +248,9 @@ impl Component for CaptureWriter {
                 "capture records were displaced from the writer's window before they were written (estimated_bytes = count x measured mean frame: an estimate)");
         }
         self.last = through;
+        if displaced > 0 {
+            crate::capture_room::free(displaced as usize);
+        }
         let (class, logs, record) = (self.class.clone(), Arc::clone(&self.logs), Arc::clone(&event.value));
         let written = tokio::task::spawn_blocking(move || logs.append(&class, &record)).await;
         let failure = match written {
@@ -230,6 +258,8 @@ impl Component for CaptureWriter {
             Ok(Err(error)) => Some(error.to_string()),
             Err(join) => Some(join.to_string()),
         };
+        // its place is free once it is written, or failed loudly below
+        crate::capture_room::free(1);
         if let Some(error) = failure {
             continuum_base::probe!(class = "capture.write_failed", owner = %event.value.owner, error = %error,
                 "a capture record was heard but not written: this record is lost, loudly");
@@ -261,5 +291,45 @@ mod tests {
         // slow appends (12 ms) put everything within one span: the window holds all five
         let slow: Vec<Entry> = [0, 1, 2, 10, 12].iter().map(|&t| entry(t, 12_000, 300)).collect();
         assert_eq!(sizing(&slow).window.get(), 5);
+    }
+
+    // what this catches (the IntelMac and the 5090, 2026-11-23: a fresh node's window held one
+    // record, so a call's Submitted and Terminal arriving within one append lost the Submitted):
+    // the production path, a sink delivering to the node, losing a reserved record; a reservation
+    // that never frees (the window only ever grows); an unspent slot that never frees; or N calls'
+    // pairs delivered at once, before the writer runs, losing any of them.
+    #[tokio::test]
+    async fn every_reserved_record_reaches_the_node_writer_and_its_place_is_freed() {
+        use continuum_kernel::system_resources::disk_reporters::TrackedDir;
+        use continuum_sage::component::{presence_key, Telemetry, TELEMETRY};
+
+        let dir = tempfile::tempdir().expect("test: dir");
+        let class = || TrackedDir::new("captures-node-test", dir.path().to_path_buf()).writer();
+        start_node(class());
+        assert!(running(), "the node writer runs once started");
+
+        let record = |owner, kind| CaptureRecord { owner, kind, header: vec![0x90], runs: vec![Arc::from(&b"prompt"[..])], captured_at_ms: 1 };
+        // a slot a call never spends frees itself
+        drop(Delivery::Node.reserve::<2>().expect("test: room"));
+        assert_eq!(crate::capture_room::reserved(), Some(0), "unspent slots free themselves");
+
+        // five calls, each delivering its pair back to back before the writer has run once
+        let owners: Vec<Uuid> = (0..5).map(|_| Uuid::new_v4()).collect();
+        for &owner in &owners {
+            let [submitted, terminal] = Delivery::Node.reserve::<2>().expect("test: room for the pair");
+            Delivery::Node.deliver(record(owner, FrameKind::Submitted), submitted);
+            Delivery::Node.deliver(record(owner, FrameKind::Terminal), terminal);
+        }
+
+        let mut telemetry = continuum_sage::component::node().reader::<Telemetry>(TELEMETRY, presence_key(CaptureWriter::NAME));
+        while telemetry.latest().is_none_or(|t| t.value.handled < 10) {
+            telemetry.changed().await.expect("test: the node bus outlives the writer");
+        }
+        for owner in owners {
+            let mut kinds = Vec::new();
+            capture_log::scan(&class().owned_by(owner), |_, frame| kinds.push(frame.kind)).expect("test: the owner's log reads");
+            assert_eq!(kinds, vec![FrameKind::Submitted, FrameKind::Terminal], "both of the call's records, in order");
+        }
+        assert_eq!(crate::capture_room::reserved(), Some(0), "every written record freed its place: the window is back to its base");
     }
 }
